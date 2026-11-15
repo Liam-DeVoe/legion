@@ -106,7 +106,10 @@ states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
-live sessions with `setLiveSessions` from `e2e/agents.ts`. It starts
+live sessions with `setLiveSessions` from `e2e/agents.ts`, stop one of them with
+`setSessionStopped` (the listener still knows it, so a send to it is stored and
+Dispatch records the attempt `queued`), and say what a send answers it was with
+`setSessionSendState`. It starts
 `e2e/fake-broker.ts` as the secrets broker, so the
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
@@ -262,17 +265,37 @@ the servers, since both serve its origin, so A's and B's ports are held first (a
 `held-port.py keep` each) and each server serves on its keeper's port. Both servers sign
 cookies with one key the run generates, so a person stays signed in whichever answers.
 `DISPATCH_E2E_SERVER_BIN` runs a prebuilt `envoy-dispatch` instead of the one `run-server.sh`
-builds from this checkout, and `DISPATCH_E2E_SERVER_BIN_B` gives Dispatch B one of its own, so a
-run can put two builds of the server against the one database as `DISPATCH_E2E_WEB_DIST_B` puts
-two builds of the dashboard there; `scripts/e2e/dispatch-two-builds.sh` is the proof that uses
+builds from this checkout, and `DISPATCH_E2E_BINARY_B` gives Dispatch B one of its own (the
+harness hands it on as B's `DISPATCH_E2E_SERVER_BIN`), so a run can put two builds of the server
+against the one database as `DISPATCH_E2E_WEB_DIST_B` puts two builds of the dashboard there;
+`scripts/e2e/dispatch-two-builds.sh` and the cross-build spec below are the proofs that use
 them. It runs
 the `*.multiprocess.e2e.ts` specs but the sign-in spec below, in Chromium, which the default run
 leaves out; arguments after `--` reach Playwright
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`). A spec
 pins a request to one process with the `X-Dispatch-E2E-Process: a|b` header or a whole browser
-context with the `dispatch-e2e-process` cookie, and reads which process served what from the
-proxy's `/_proxy/requests` and `/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole
-contract. Any `DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
+context with the `dispatch-e2e-process` cookie, or splits a context with the `dispatch-e2e-page`
+and `dispatch-e2e-api` cookies (its page from one process, its API, sockets and `/auth` from the
+other), and reads which process served what from the proxy's `/_proxy/requests` and
+`/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole contract. Any
+`DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
+
+To run one build's page against another build's server, give B a previous release, as CI's
+`dispatch-two-builds` job does with the directory `packages/envoy/scripts/build-dispatch-build.sh`
+writes:
+
+```bash
+DISPATCH_E2E_BINARY_B=<dir>/envoy-dispatch DISPATCH_E2E_WEB_DIST_B=<dir>/web \
+  bun run e2e:multiprocess -- cross-build.multiprocess
+```
+
+B then runs that envoy-dispatch and serves that web dist (both paths absolute or from
+`packages/envoy`). That build must be `legion-envoy-v30.11.0` or later, which
+`build-dispatch-build.sh` refuses to go below: it writes the default assignee every project needs
+since migration `20261111210103`, it serves on the port the harness holds for it, as
+A does, and signs cookies with the run's shared key, so no run names a port for B and the run's
+global setup checks it like any other B. `e2e/cross-build.multiprocess.e2e.ts` splits each browser
+context, its page from one build and its API, sockets and `/auth` from the other.
 
 `DISPATCH_E2E_SIGNIN=oidc` signs people in as a deployment does instead of through dev sign-in:
 the harness also starts `packages/envoy/cmd/dev-oidc-issuer` (`e2e/run-signin-issuer.sh`), and
@@ -465,6 +488,56 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   bash packages/dispatch/e2e/acceptance/verification.sh
 ```
 
+`e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
+the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
+proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
+Verification document, and each runs that check's `run` and asserts its `negative_control`:
+
+- `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
+  refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
+  the rule, and stores nothing of them: `ci_check` beside a `run`, `ci_check` with a `when` of
+  `after_merge`, `ci_check` with no `negative_control`, and `ci_check` added to a check that
+  holds a recorded result. A `ci_check` on a fresh block id is stored, and a new block under the
+  old id is refused again. A check carrying neither `ci_check` nor `run` is stored as before. A
+  document socket that declares schema version 3 is admitted with the scope `readonly`, and one
+  that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`, the Hocuspocus
+  frames the browser sends). The live editor's half of `k1` is the browser row of
+  `e2e/verification.e2e.ts`.
+- `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
+  pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
+  names the run and no recorder. A failed run prints `fail`, and `check_results` holds no row for
+  either block. The head of the merged pull request still answers. Three such checks at one head
+  cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
+  merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
+  to 2,000.
+- `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
+  holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
+  of one name are decided by the higher id, in both orders of their conclusions.
+- `k4`: a tester's and an implementer's result for a check CI proves are refused `409
+  CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
+  recorded and `dispatch results` shows it.
+- `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
+  stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
+  GitHub serves that Dispatch's own head record does not hold yet.
+
+Its inputs are all required: `DISPATCH_URL`, the bearer, `PROJECT`, `FAKE_GITHUB_PORT` (the fake
+GitHub the server reads), `DATABASE_URL` (the server's own database) and `DEV_SIGNIN_LOGIN` (a
+document socket admits a person alone, so the sockets of `k1` sign that person in). The harness
+runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
+each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
+one repository holding the same pull requests and each head's check runs, replacing every
+repository the fake served. That repository is `PROJECT`'s default where it maps one, and
+otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
+every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
+fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
+prints:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  FAKE_GITHUB_PORT=9022 DATABASE_URL=<the database it prints> DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/ci-check.sh
+```
+
 `e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
 every project), and only reads. For every document it can list (each project's documents and each
 issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
@@ -472,7 +545,74 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-All three source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
+names blocks: a list written over a paragraph's whole text, a list written over the text of a
+nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
+matched item's own marker, and the markdown each edit answers with. It takes the first three
+inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
+that project. The create of that project names `DISPATCH_DEFAULT_ASSIGNEE`, the person its
+unowned work lands on: the bearer acts for no person, so the server refuses a project that names
+none (`400 INVALID_PROJECT`). That input is required with `DISPATCH_URL` and no `PROJECT`; with
+`DATABASE_URL` it defaults to `alice`, whom the instance this run starts seeds and signs in; and
+with a `PROJECT` the server already holds, nothing is created and it is not read. It is the one
+driver that can start its own server: given `DATABASE_URL`, a
+loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
+its own trap. That command truncates and reseeds the database it is given, so before anything
+starts the run asks the server the connection string reaches, through `psql`, which database it
+is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
+through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
+through, and a database of the same name as the shared one on a server it cannot prove is
+another: two names that differ pass, and two equal names pass only where both servers answered a
+port and the ports differ. It parses neither string itself, so the database it judges is the one
+libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
+set, as the instance reads it.
+The connection string the run is given must carry everything libpq needs to connect — host, port,
+user, password and TLS settings among them — since the run unsets every `PG*` variable before it
+starts the instance, so none survives into it.
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
+  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
+```
+`e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
+document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
+the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
+acts for no person, so the project it creates must name the person its unowned work lands on
+(`400 INVALID_PROJECT` otherwise). It makes the project and the issue it needs, and runs ten
+assertions:
+`dispatch artifact --issue <KEY> --name "Launch notes"`, with neither `--path` nor `--content`,
+exits zero and says the document was made, naming its `dispatch://` reference; that reference
+reads back one version whose markdown is empty; `dispatch read --issue <KEY>` lists the document
+under `Documents:`; `dispatch doc-edit` writes a line into it and the line reads back; the same
+name a second time with no content is refused, naming the document that holds the title; that
+same create with `--force` is refused too, since a create with no content has no version
+`--force` could ask for; `--name rows.jsonl` with no content is refused by the Markdown-name
+rule, which sends nothing; and `--path` and `--content` each still make a document. Each passing
+assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` and exits 1, and
+a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
+cut short fails a reader that reads that line.
+
+`e2e/acceptance/with-harness.sh` runs one command against a stack of its own, for a driver that
+has no server to speak to: it starts `e2e/harness-up.ts`, waits for the stack's exports, applies
+them, runs the command with `DISPATCH_E2E_PORT` and the rest in its environment, and stops the
+stack when the command ends, exiting with the command's own status. From `packages/dispatch`:
+
+```bash
+DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
+  bash -c 'curl -sS -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_dev/signin?login=alice" &&
+    DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
+    DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
+```
+
+The `curl` is the harness's dev sign-in (`/auth/_dev/signin`), which records `alice` as a person
+who has signed in, so the project may name her.
+
+`e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
+was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
+stacks through Playwright's own global setup now, which no shell driver can reach.
+
+All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 

@@ -10,6 +10,16 @@
 export const MAX_ISSUE_BLOCKERS = 20;
 
 /**
+ * Maximum entries in an issue's `advances` input, before duplicate ids are removed: the most
+ * priorities one issue states it advances. It counts the issue's own relations alone, never what
+ * a child inherits from the issues above it, which is read-side: an issue five deep would
+ * otherwise pass the cap without writing anything. Generated into Go as
+ * `contracts.MaxIssueAdvances`, which `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`
+ * enforce as `400 ADVANCES_INPUT` naming the limit.
+ */
+export const MAX_ISSUE_ADVANCES = 20;
+
+/**
  * The longest issue title, in UTF-16 units, counted after the trim `POST /api/v1/issues` and
  * `PATCH /api/v1/issues/{key}` apply; a longer one is `400 CAP_EXCEEDED`. Production's longest
  * title was 326 characters when this was set. It bounds the duplicate-title check, which compares
@@ -66,6 +76,35 @@ export const DELIVERY_CAPABILITIES = ["aside", "btw", "steer"] as const;
 export type DeliveryCapability = (typeof DELIVERY_CAPABILITIES)[number];
 
 export type MessageDeliveryMode = DeliveryCapability;
+
+/**
+ * The four states one delivery attempt, of a message or of a mention, is in.
+ *
+ * `pending` is an attempt Dispatch committed and has not settled: it is before the listener
+ * call, or its outcome was never learned. `sent` and `queued` are both the listener having
+ * taken the message, and every reader that asks whether it took it counts the two alike - the
+ * outbox publishes no second copy, the delivery sweep settles neither as failed, and the
+ * session may take either as its own turn. They differ in one thing: a sent message is with a
+ * session that is running now, and a queued one waits in the consumer of a session the listener
+ * knows and that is not running, which gets it when it runs again, within the
+ * `DELIVERY_DUPLICATE_WINDOW_MS` the stream keeps it. `failed` is everything else, and only a
+ * failed attempt may be retried: a queued attempt is already stored, so a repeat would store a
+ * second copy.
+ */
+export const DELIVERY_ATTEMPT_STATES = ["pending", "sent", "queued", "failed"] as const;
+
+export type DeliveryAttemptState = (typeof DELIVERY_ATTEMPT_STATES)[number];
+
+/** What a delivery receipt in the event log carries: an attempt that settled, never `pending`,
+ *  because the sender that appends the receipt holds the attempt's claim and settles the row in
+ *  the statement that appends it. */
+export const SETTLED_DELIVERY_STATES = [
+  "sent",
+  "queued",
+  "failed",
+] as const satisfies readonly DeliveryAttemptState[];
+
+export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 
 /**
  * The most sessions one broadcast sends to (`POST /api/v1/broadcasts`'s `session_ids`, after the
@@ -227,21 +266,21 @@ export const IDEMPOTENCY_LEASE_MS = 60 * 1000;
  *
  * - The notification stream stores such a frame under a MsgId of its dedupe key and topic, so it
  *   keeps one copy and answers the repeat as a duplicate, which the attempt records as
- *   `duplicate`. That protects a session the listener pushes to from the stream. It does not
- *   protect a session that subscribes over core NATS: JetStream's check applies to the stream's
- *   copy only, and a core subscriber is handed every publish, repeats included.
- * - Each host that subscribes over core NATS (the Oh My Pi extension, the Claude Code channel)
- *   hands its agent at most one frame per such key inside this window, through
- *   `createDeliveryDedupe` in `@legion/envoy-client/delivery`. A frame the host answered with an
- *   error instead (a BTW whose side turn failed) was never handed over, so the host releases its
- *   key and a same-mode re-send of it reaches the agent.
+ *   `duplicate`. Every session is reached from that stored copy — by the relay of its own
+ *   consumer, or by the listener's push to its serve port — so the stream's check sits between
+ *   the bus and each of them.
+ * - Each host hands its agent at most one frame per such key inside this window, through
+ *   `createDeliveryDedupe` in `@legion/envoy-client/delivery`, which catches a repeat the
+ *   stream's own window no longer holds. A frame the host answered with an error instead (a BTW
+ *   whose side turn failed) was never handed over, so the host releases its key and a same-mode
+ *   re-send of it reaches the agent.
  *
  * It fails in three places. A host's `createDeliveryDedupe` holds its keys in memory, so a host
  * that keeps nothing else and restarts after the first frame landed has forgotten it, and a Retry
  * reaches that agent a second time; that is ordinary, not rare: `claude --resume` starts a new
  * channel process on the same conversation, and a Sandbox pod resumes its session in a new
- * process. pi-envoy and claude-envoy, from the releases that carry `@legion/envoy-client/replay`,
- * also keep a ledger of the frames their session was handed (pi-envoy in the session's
+ * process. pi-envoy and claude-envoy, from the releases that carry
+ * `@legion/envoy-client/delivery-ledger`, also keep a ledger of the frames their session was handed (pi-envoy in the session's
  * transcript, claude-envoy in a file per session id) and drop a repeat it holds after a restart,
  * for 72 hours and up to 20,000 frames; only a crash between the hand-over and the ledger write
  * still lets that Retry through. Older plugins still forget, and the dashboard cannot tell which
@@ -272,6 +311,9 @@ export const IDEMPOTENCY_LEASE_MS = 60 * 1000;
  * that the repeat arrives.
  */
 export const DELIVERY_DUPLICATE_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+/** `DELIVERY_DUPLICATE_WINDOW_MS` in whole hours, for text that names the window. */
+export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_600_000;
 
 /**
  * The cause a delivery attempt records when the listener never answered its send. The listener
@@ -350,6 +392,43 @@ export const DOCUMENT_SCHEMA_CLOSE_CODE = 4409;
  *  that document answer (`409 DOC_SCHEMA`). Generated into Go as
  *  `contracts.DocumentSchemaCloseReason`. */
 export const DOCUMENT_SCHEMA_CLOSE_REASON = "DOC_SCHEMA";
+
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it
+ * holds has an element that this Dispatch process's build cannot read: a newer build wrote it while
+ * two builds serve one database during a release. It completes the upgrade and closes with this
+ * code, and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`, before any sync, so a browser editor never
+ * receives a tree it would write back without that element. The pinned `@hocuspocus/provider`
+ * (2.15) stops reconnecting only on 4401 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so
+ * it reconnects on this code with its backoff, and a later attempt can reach a build that reads the
+ * document. 425 is HTTP's "Too Early". Generated into Go as
+ * `contracts.DocumentNewerContentCloseCode`.
+ */
+export const DOCUMENT_NEWER_CONTENT_CLOSE_CODE = 4425;
+
+/** The reason the document websocket closes with `DOCUMENT_NEWER_CONTENT_CLOSE_CODE`: the code reads
+ *  of that document answer (`409 DOC_NEWER_CONTENT`). Generated into Go as
+ *  `contracts.DocumentNewerContentCloseReason`. */
+export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
+
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) ends an open writable socket with once
+ * the live server processes no longer admit the page that opened it: a build whose numbers the
+ * admission held against has joined or rolled away, so that page may no longer write
+ * (`RunSchemaAdmission`). The close carries this code and
+ * `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`; what that close waits for, and what a peer too slow
+ * to take it reads instead, are in `packages/envoy/cmd/dispatch/README.md`, "Two builds at once",
+ * which is the one statement of that rule. The pinned `@hocuspocus/provider` (2.15) stops
+ * reconnecting only on 4401, 4403 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so the
+ * page reconnects on this code, presents its numbers again and is admitted again: read-only,
+ * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
+ * fleet withdrew is. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ */
+export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
+
+/** The reason the document websocket closes with `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE`.
+ *  Generated into Go as `contracts.DocumentAdmissionRevokedCloseReason`. */
+export const DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON = "DOC_ADMISSION_REVOKED";
 
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
  *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS). It is in the private 4000-4999 range, apart

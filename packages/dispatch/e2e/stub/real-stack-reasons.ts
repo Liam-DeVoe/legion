@@ -99,6 +99,10 @@ export const realStackReasons: Record<string, string> = {
   "conversation.e2e.ts":
     "names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked",
   "coverage.e2e.ts": "coverage flags are the server's computation, cleared by a write",
+  "create-document-refusals.e2e.ts":
+    "every row reads a refusal: the taken title the control checks against the owner's own list, the role slug and the duplicate the server refuses in its own words, and the closed issue's one sentence; each then reads the issue's documents again to prove nothing was written",
+  "create-document.e2e.ts":
+    "makes a document and then reads its own write - the versions it holds, the list it is listed in and the line typed into its live editor after a reload; the double press is answered by the server's idempotency key",
   "create-issue-decision-claim.e2e.ts":
     "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
@@ -107,11 +111,15 @@ export const realStackReasons: Record<string, string> = {
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",
   "delivery-groups.e2e.ts": "grouping and the window's counts are the server's aggregation",
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
+  "delivery-queued.e2e.ts":
+    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
   "doc.e2e.ts": "every row lives in the live document room, its connections and versions",
   "document-and-comment-read-alike.e2e.ts": "each row asserts inside the live spec editor",
+  "document-way-back.e2e.ts":
+    "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
@@ -149,7 +157,6 @@ export const realStackReasons: Record<string, string> = {
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
-  "inbox-search.e2e.ts": "a write in flight",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
   "inbox-thread-pane.e2e.ts":
@@ -221,8 +228,12 @@ export const realStackReasons: Record<string, string> = {
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
+  "priorities.e2e.ts":
+    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-default-assignee.e2e.ts":
+    "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",

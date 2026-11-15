@@ -27,6 +27,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -112,6 +113,7 @@ var commands = map[string]commandEntry{
 	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
 	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
+	"git":            {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
 	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
 	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
@@ -626,11 +628,14 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
+	fmt.Fprintln(stdout, heldAdmissionSummary(state.Admission.Held))
 	fmt.Fprintln(stdout, memorySummary(state.Issues))
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
+	fmt.Fprintln(stdout, mergeWaitsSummary(mergeWaits(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
+	fmt.Fprintln(stdout, entrySummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -660,8 +665,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-// blockedSummary is the one line an operator reads for the issues Legion is waiting to start
-// behind a Dispatch issue nobody has finished (api.Admission.Blocked): how many, and each by
+// blockedSummary is the one line an operator reads for the issues Legion waits on a Dispatch
+// issue nobody has finished for (api.Admission.Blocked), the ones it has still to start and the
+// ones it started that gave their slot back for the wait: how many, and each by
 // issue with what it waits on, in the state's own key order. Nothing here is the daemon's to
 // clear — a blocker is finished in Dispatch by a person — so the line names them and stops.
 func blockedSummary(blocked []api.BlockedIssue) string {
@@ -673,6 +679,38 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 		waits[i] = issue.Issue + " waits on " + strings.Join(issue.BlockedBy, ", ")
 	}
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
+}
+
+// heldAdmissionSummary is the one line an operator reads for the issues the daemon's own record
+// holds in the workflow that stand in neither the active set nor the waiting line
+// (api.Admission.Held): how many, and how many of each word for why, in the ladder's own order
+// (record.HeldReasons), so two readings of one state print one line. A word no row carries is
+// left out.
+//
+// The prefix names the admission list because `legion state` prints a second held line below
+// this one, the lifecycle rows the daemon holds behind their issues' running ones
+// (heldSummary): these are issues nothing starts, those are outbox rows nothing has sent, and a
+// reader counting one must not read the other's number. It names no issue: a deployment holding
+// hundreds would print a line per issue, and each row with its word is in `legion state --json`.
+func heldAdmissionSummary(held []api.HeldIssue) string {
+	if len(held) == 0 {
+		return "admission.held: none"
+	}
+	counts := map[record.HeldReason]int{}
+	for _, issue := range held {
+		counts[issue.Reason]++
+	}
+	words := make([]string, 0, len(counts))
+	for _, reason := range record.HeldReasons {
+		if count := counts[reason]; count > 0 {
+			words = append(words, fmt.Sprintf("%s %d", reason, count))
+		}
+	}
+	noun := "issues"
+	if len(held) == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("admission.held: %d %s — %s", len(held), noun, strings.Join(words, ", "))
 }
 
 // waitingLineLines are the lines an operator reads for the issues waiting for an admission slot
@@ -890,6 +928,105 @@ func checksSummary(checks []issueCheck) string {
 		len(checks), oldest.issue, oldest.check.PullRequest, merge, oldest.check.Role, look, oldest.check.NextWakeAt.UTC().Format(time.RFC3339))
 }
 
+// issueMergeWait is one review round's wait on GitHub (api.MergeWaitView) with the issue it
+// belongs to and that issue's pull request, which is where the number the line names comes from.
+type issueMergeWait struct {
+	issue string
+	wait  api.MergeWaitView
+	pull  *api.PullRequestView
+}
+
+// mergeWaits is every review round of the state's issues that waits on GitHub's merge state for
+// the head its reviewer's approval stands on (api.MergeWaitView), oldest head first and then by
+// issue key, so the oldest is the one named whatever order the map came in. Oldest is the head
+// that has stood longest, the smallest `headUpdatedAt`, because the wait an operator must act on
+// is the one a head has sat through, not the one the daemon last read.
+func mergeWaits(issues map[string]api.Issue) []issueMergeWait {
+	var waits []issueMergeWait
+	for key, issue := range issues {
+		if issue.MergeWait != nil {
+			waits = append(waits, issueMergeWait{issue: key, wait: *issue.MergeWait, pull: issue.PullRequest})
+		}
+	}
+	slices.SortFunc(waits, func(a, b issueMergeWait) int {
+		return cmp.Or(olderHead(a.wait.HeadUpdatedAt, b.wait.HeadUpdatedAt), cmp.Compare(a.issue, b.issue))
+	})
+	return waits
+}
+
+// olderHead orders two rounds by the moment their head was last updated, oldest first, and sorts
+// a round whose record holds no such moment last however long it may have been there: an unknown
+// time is no evidence of age, and a round the daemon knows no time for would otherwise be named
+// the oldest ahead of every round it does know one for. Two rounds with no time are equal here,
+// and the issue key decides between them.
+func olderHead(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	}
+	return a.Compare(*b)
+}
+
+// mergeWaitsSummary is the one line an operator reads for the review rounds waiting on GitHub's
+// merge state for their head: how many, and the oldest head — its issue, pull request and head,
+// and what the record holds of the daemon's last read of that head. The line says "the oldest
+// head" rather than "the oldest" because the order is the head's (`headUpdatedAt`, mergeWaits
+// above) and the only moment the line prints is the read's: a reader told "the oldest" takes the
+// time beside it for the reason the round was chosen, and the round named is routinely the one
+// read most recently. It is printed beside the open production checks because both are work that
+// has left the agents and stands on something outside Legion.
+//
+// What follows the head is one reading, chosen by the one switch below over whether the wait
+// carries a merge state and whether it carries the moment of the read, and that switch is the
+// whole model: there are four readings and no other, and each says what the record holds rather
+// than what did or did not happen at GitHub, so only a reading with a state on record says
+// `GitHub said`. `GitHub said <state>, read <time>` is a wait holding a merge state for this head
+// and the moment of the read that gave it, in UTC. `GitHub said <state>, read time not recorded`
+// is a wait holding a merge state and no moment of the read: the time is what the record lacks,
+// so the line never says no read was made. `read <time> with no merge state` is a wait holding the
+// moment of a read and no merge state, so the line names the read rather than claiming no answer
+// came. `no read recorded for this head` is a wait holding neither: no merge state and no read
+// time for the head the wait names, and `record.PullRequest.StateReadAt`'s doc says when that is.
+//
+// The pull request number is the issue's own view of it. An issue that carries a merge wait and
+// no pull request view cannot happen — the daemon builds the wait from the pull request record,
+// so there is a record to build the view from as well — but this prints a daemon's answer, which
+// an older or a newer contract may shape otherwise, and a line that panicked on it would take
+// the whole command down over one issue: such a round is named `#unrecorded` and is read like any
+// other.
+func mergeWaitsSummary(waits []issueMergeWait) string {
+	if len(waits) == 0 {
+		return "merge waits: none"
+	}
+	oldest := waits[0]
+	head := oldest.wait.WaitsOn
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	number := "unrecorded"
+	if oldest.pull != nil {
+		number = strconv.Itoa(oldest.pull.Number)
+	}
+	var reading string
+	state, at := oldest.wait.MergeState, oldest.wait.StateReadAt
+	switch {
+	case state != "" && at != nil:
+		reading = "GitHub said " + state + ", read " + at.UTC().Format(time.RFC3339)
+	case state != "":
+		reading = "GitHub said " + state + ", read time not recorded"
+	case at != nil:
+		reading = "read " + at.UTC().Format(time.RFC3339) + " with no merge state"
+	default:
+		reading = "no read recorded for this head"
+	}
+	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, %s",
+		len(waits), oldest.issue, number, head, reading)
+}
+
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
 // pod's drift opened over every role of the issue (`pod:<pod uid>`), which is the one round this
 // daemon opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's,
@@ -1054,6 +1191,63 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 		}
 	}
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
+}
+
+// entryBehind is one issue whose role has not been given the work its phase entry names: the
+// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
+// of), the entry that role's phases row stands on and the entry it was given.
+type entryBehind struct {
+	issue string
+	role  legionclaim.Role
+	entry int64
+	given int64
+}
+
+// entriesBehind is every issue of the state whose two entry numbers differ
+// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
+// phase worker role carries neither number, so it is never named here: the projection writes
+// them only where phase.RoleFor names a role, and that is the role this reads back for the
+// line.
+func entriesBehind(issues map[string]api.Issue) []entryBehind {
+	var behind []entryBehind
+	for _, key := range slices.Sorted(maps.Keys(issues)) {
+		issue := issues[key]
+		if issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
+			entry: issue.PhaseEntry, given: issue.GivenEntry})
+	}
+	return behind
+}
+
+// entrySummary is the one line an operator reads for the roles that have not been given the work
+// their phase entry names: how many, and each by issue and role with the two numbers. A
+// difference here is one of four things. An entry raised seconds ago, which the next pass
+// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
+// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
+// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
+// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
+// line is named here, and its difference stands for as long as it waits, which is hours on a
+// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
+// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
+// the difference reads for the rest of that turn and closes on the first pass after the task is
+// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
+// states each skip), whose difference stands until something outside that pass moves it.
+//
+// The daemon's own "a role was behind the entry its phases row names" log line names the roles
+// that pass sends the work to and no others, so a difference of that last kind is read here and
+// nowhere else.
+func entrySummary(issues map[string]api.Issue) string {
+	behind := entriesBehind(issues)
+	if len(behind) == 0 {
+		return "roles not given their phase entry: none"
+	}
+	named := make([]string, len(behind))
+	for i, row := range behind {
+		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+	}
+	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

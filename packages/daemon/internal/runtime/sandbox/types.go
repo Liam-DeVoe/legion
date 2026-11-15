@@ -174,9 +174,11 @@ type Options struct {
 	// key the pod and the image probe mount at ProvidersDir/OMP_SESSION_SQL_DSN, which the shim,
 	// seeing the pointer, never exports; under cloudsql-iam no pod mounts a session key at all —
 	// each pod's launcher container (an issue pod's `roles`, the controller pod's `controller`)
-	// is told the instance, database and login once (sessionProxyFlags), proxies a socket of each
-	// generation's own to Cloud SQL as the pod itself, and writes the URL file in that
-	// generation's private directory.
+	// is told the instance, database and login once, and the Google service account to
+	// impersonate where the store names one (sessionProxyFlags), proxies a socket of each
+	// generation's own to Cloud SQL as the pod itself or, impersonating it with the pod's own
+	// credentials, as that account, and writes the URL file in that generation's private
+	// directory.
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
@@ -274,6 +276,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
+	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
+	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
+	// its pod, and every role's shim reads that install. The daemon fills it from its GitHub App
+	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
+	// every role whose launcher names a tag and starts a launcher that names none as it is.
+	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
