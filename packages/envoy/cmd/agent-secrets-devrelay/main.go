@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const exitUsageError = 2
@@ -124,7 +125,9 @@ func (c *commonFlags) client() (*apiClient, error) {
 	if token == "" {
 		return nil, fmt.Errorf("the account token file %s is empty", c.tokenFile)
 	}
-	return &apiClient{base: c.broker, http: &http.Client{Timeout: 30 * time.Second}, token: token}, nil
+	// The bearer below is this account's own, so a 3xx answered for the broker must not
+	// carry it to another host (redirects.Refused).
+	return &apiClient{base: c.broker, http: redirects.Refused(&http.Client{Timeout: 30 * time.Second}), token: token}, nil
 }
 
 // ---------------------------------------------------------------------------

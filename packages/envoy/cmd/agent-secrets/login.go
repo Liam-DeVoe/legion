@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -101,7 +102,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 		SignedInAt: time.Now().UTC(),
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: base,
+		BrokerURL: brokeraddr.New(base),
 		Key:       boxKey,
 		Subject:   &brokerclient.PersonIdentity{Flow: flow, RefreshToken: signedIn.RefreshToken, Person: signedIn.Person},
 		Actor:     machine,
@@ -219,7 +220,7 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 		return record, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own: set %s", brokerclient.IdentityVar)
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: base,
+		BrokerURL: brokeraddr.New(base),
 		Key:       boxKey,
 		Subject:   &brokerclient.PersonIdentity{Flow: flow, RefreshToken: record.RefreshToken, Person: record.Person},
 		Actor:     machine,

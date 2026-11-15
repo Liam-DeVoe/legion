@@ -92,6 +92,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -617,7 +618,7 @@ func registerMachineSession(ctx context.Context, dir string, key *ecdsa.PrivateK
 		return "", err
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: base, Key: key, Subject: identity,
+		BrokerURL: brokeraddr.New(base), Key: key, Subject: identity,
 		Session: brokerclient.TradeSession(os.Getenv, ""), HTTP: brokerclient.HTTPClient(),
 	})
 	if err != nil {

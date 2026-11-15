@@ -581,7 +581,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL, details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -608,10 +608,9 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-launcher needs method and url"}
 	}
-	if !operatorRoute(s.Broker.URL, method, url) {
+	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
 		peer.Close()
-		b := redact.URL(s.Broker.URL)
-		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", b, method, redact.URL(url))}
+		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", s.Broker.URL, method, redact.URL(url))}
 	}
 	sess, unknown := s.Registry.RootOrUnknown(pid)
 	if sess != nil {

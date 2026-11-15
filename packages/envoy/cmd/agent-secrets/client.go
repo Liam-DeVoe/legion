@@ -39,6 +39,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 type client struct {
@@ -74,8 +75,12 @@ const enrollmentEndedCode = "ENROLLMENT_NOT_LIVE"
 // whole-call timeout is leasetime.RenewClientTimeout, the same figure the broker's lease bound
 // charges a renewal an outage black-holes: a connection a front door accepts with nothing
 // behind it costs this renewer the whole of it.
+//
+// Redirects are refused (redirects.Refused): every call this client makes carries a Proof header
+// of this session's own (doProof), and a 3xx answered for the broker - by the broker, or by
+// anyone who can answer for it - must not hand that proof to a host the deployment never named.
 func newClient(baseURL string) *client {
-	return &client{baseURL: baseURL, http: &http.Client{Timeout: leasetime.RenewClientTimeout}}
+	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
 }
 
 // apiError is the broker's {"code":...,"error":...} error envelope, plus the HTTP status it came
@@ -257,6 +262,14 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, nil, &cutOffError{method + " " + redact.Call(c.baseURL, url), redact.Error(err, c.baseURL)}
+	}
+	if resp.StatusCode/100 == 3 {
+		// A redirect this client refuses to follow (redirects.Refused), handed back as the
+		// non-2xx it is. Its body is not printed: net/http writes the target into the body
+		// of a redirect it answers a GET with (`<a href="…">Found</a>`), and that target,
+		// with whatever query it carries, is what refusing the redirect keeps out of this
+		// process. The status alone says what happened.
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Message: "a redirect, which this client does not follow"}
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {

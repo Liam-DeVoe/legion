@@ -1,0 +1,80 @@
+// Package brokeraddr holds the secrets broker's configured address (AGENT_SECRETS_URL, and every
+// setting that names the same broker) in a type no output can print whole. Such an address may
+// carry a user name and a password (http://user:password@host:port), and a plain string holding it
+// prints both wherever a log field, an error or a line on stderr names the broker. An Address
+// prints only what internal/redact's URL prints - the address as written when it is provably a
+// plain http(s) URL, and redact.NotPrinted otherwise - under every fmt verb, as a slog value, and
+// as a field of a struct fmt prints. Its value is read through Raw, which only the building of a
+// request to the broker may call.
+//
+// It is a package of its own, outside internal/, because packages/daemon's `legion controller
+// start` holds the address too, and Go's internal-package rule refuses that module every package
+// under github.com/sjawhar/envoy/internal/.
+package brokeraddr
+
+import (
+	"fmt"
+	"log/slog"
+
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// Address is a configured broker address. Its zero value is no address, and prints empty.
+//
+// The address sits behind a *string so that fmt cannot print it where it asks the Address for no
+// method: an Address in a struct's unexported field, or under %p, fmt prints field by field through
+// reflection, and it prints a *string it finds there as the memory address it holds, never as the
+// text it points to. A string field would print as written there, and so would a pointer to a
+// struct, which fmt follows when it reports a verb a pointer does not take, such as %s. Two
+// Addresses made from the same text are therefore not ==.
+type Address struct {
+	raw *string
+}
+
+// New is raw as an Address, kept exactly as written: a caller that trims or checks the value does
+// so before, as it would with the string.
+func New(raw string) Address {
+	if raw == "" {
+		return Address{}
+	}
+	return Address{&raw}
+}
+
+// Raw is the address as configured, credential included, for building a request to the broker and
+// the proof and OAuth endpoints such a request names. Every caller keeps what it answers out of
+// every output - a log field, an error's text, a line on stderr - since printing it is the leak
+// this type exists to prevent: a message names the address through the Address itself, a request
+// URL built from it through Call, and that request's error through Error or Cause.
+func (a Address) Raw() string {
+	if a.raw == nil {
+		return ""
+	}
+	return *a.raw
+}
+
+// Empty reports whether no address is configured.
+func (a Address) Empty() bool { return a.raw == nil }
+
+// Clean reports whether the address prints as written: it is set, and redact.Clean accepts it.
+func (a Address) Clean() bool { return redact.Clean(a.Raw()) }
+
+// String is the address as a message may print it: redact.URL of it.
+func (a Address) String() string { return redact.URL(a.Raw()) }
+
+// Format prints String under the verb, flags, width and precision it is given, as fmt prints that
+// string, so %q quotes the printed form, %x and %X hex-encode it, and %#v quotes it rather than
+// spelling out the Address's fields as Go syntax would.
+func (a Address) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), a.String())
+}
+
+// LogValue is String, so a structured log field names the address only as a message may.
+func (a Address) LogValue() slog.Value { return slog.StringValue(a.String()) }
+
+// Call is redact.Call with the address as the base: callURL, a request URL built from Raw, as a
+// message may print it.
+func (a Address) Call(callURL string) string { return redact.Call(a.Raw(), callURL) }
+
+// Error is redact.Error with the address as the base: err, from a request built from Raw, as a
+// message may print it.
+func (a Address) Error(err error) error { return redact.Error(err, a.Raw()) }

@@ -5,6 +5,7 @@ package helper
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -23,11 +24,12 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 // noCredentialMsg is the exact instruction returned whenever the helper has no machine
@@ -120,7 +122,10 @@ type loginState struct {
 // sign-in of its own user, and the rule a session acts under is the spec's — a session acts for
 // a person only after that person's own sign-in on the box.
 type Broker struct {
-	URL          string
+	// URL is the broker's base URL (AGENT_SECRETS_URL), held as a brokeraddr.Address so that no
+	// log line or error of the helper prints a credential it carries. Its Raw builds each
+	// request and the audience and htu each proof names; nothing else reads it.
+	URL          brokeraddr.Address
 	OperatorFile string // login_hint source; read per login, as before
 	// MachineFile is where the helper keeps its machine login across restarts (AGENT_SECRETS_MACHINE_FILE).
 	MachineFile string
@@ -265,39 +270,51 @@ func (b *Broker) oauthConfig() *oauth2.Config {
 	return &oauth2.Config{
 		ClientID: oauthwire.ClientID, Scopes: []string{oauthwire.Scope},
 		Endpoint: oauth2.Endpoint{
-			DeviceAuthURL: b.URL + "/v1/oauth/device_authorization",
-			TokenURL:      b.URL + "/v1/oauth/token",
+			DeviceAuthURL: b.URL.Raw() + "/v1/oauth/device_authorization",
+			TokenURL:      b.URL.Raw() + "/v1/oauth/token",
 			AuthStyle:     oauth2.AuthStyleInParams,
 		},
 	}
 }
 
-// httpClient is b.HTTP, or http.DefaultClient when it is nil, as net/http reads a nil client.
+// httpClient is b.HTTP, or http.DefaultClient when it is nil, as net/http reads a nil client, with
+// redirects refused (redirects.Refused): every call the helper makes to the broker carries a
+// proof, a request object, a device code or a refresh token, and a 3xx answered for the broker
+// must not hand any of them to a host the deployment never named. It is a copy of its own each
+// call, so the caller may change it.
 func (b *Broker) httpClient() *http.Client {
-	if b.HTTP == nil {
-		return http.DefaultClient
-	}
-	return b.HTTP
+	return redirects.Refused(cmp.Or(b.HTTP, http.DefaultClient))
 }
 
 // tokenContext is ctx carrying the client x/oauth2 sends token requests with: b.HTTP's transport
-// and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires.
+// and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires,
+// and with redirects refused, as httpClient's are.
 func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) context.Context {
 	client := b.httpClient()
 	base := client.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: brokerclient.NewDPoPTransport(key, base), Timeout: client.Timeout})
+	client.Transport = brokerclient.NewDPoPTransport(key, base)
+	return context.WithValue(ctx, oauth2.HTTPClient, client)
 }
 
-// oauthBrokerError is err as a BrokerError when the broker answered it with an OAuth error: the
-// device authorization endpoint's own refusals (invalid_request, described "<CODE>: <message>")
-// carry the broker's code and message, any other OAuth error its error code and description.
-func oauthBrokerError(err error) error {
+// oauthBrokerError is err, from an OAuth call to the broker at addr, as a message may print it
+// (addr.Error), and as a BrokerError when the broker answered it with an OAuth error the redactor
+// printed whole: the device authorization endpoint's own refusals (invalid_request, described
+// "<CODE>: <message>") carry the broker's code and message, any other OAuth error its error code
+// and description.
+//
+// An answer the redactor did not print whole - every answer beside an address that carries a
+// credential, which the broker or anyone answering for it can repeat back - stays as it printed
+// it, the failure's class and status: the code and description under it are the very text it
+// withheld, and a BrokerError made of them would print them all the same. The redactor printed
+// err whole exactly when it answers err itself, which is what its own contract says it does.
+func oauthBrokerError(err error, addr brokeraddr.Address) error {
+	shown := addr.Error(err)
 	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) {
-		return err
+	if !errors.As(err, &re) || shown != err {
+		return shown
 	}
 	be := &BrokerError{Code: re.ErrorCode, Message: re.ErrorDescription}
 	if re.Response != nil {
@@ -349,7 +366,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 		return "", err
 	}
 	details := []record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: hostname}}
-	compact, err := record.Sign(key, b.URL, details, "", operator, nil, time.Now())
+	compact, err := record.Sign(key, b.URL.Raw(), details, "", operator, nil, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -357,7 +374,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	da, err := cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.httpClient()),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint))
 	if err != nil {
-		return "", oauthBrokerError(redact.Error(err, b.URL))
+		return "", oauthBrokerError(err, b.URL)
 	}
 	if da.DeviceCode == "" || da.UserCode == "" {
 		return "", errors.New("broker returned no device_code/user_code")
@@ -536,7 +553,7 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 // It is best effort: a failure is logged at WARN, never retried, and changes nothing the helper
 // holds.
 func (b *Broker) retireReplaced(old *machineCredential) {
-	url := b.URL + "/v1/operator/machines/" + old.id + "/retire"
+	url := b.URL.Raw() + "/v1/operator/machines/" + old.id + "/retire"
 	err := func() error {
 		compact, err := proof.SignLauncher(old.key, old.id, http.MethodPost, url, time.Now())
 		if err != nil {
@@ -544,7 +561,7 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 		}
 		req, err := http.NewRequest(http.MethodPost, url, nil)
 		if err != nil {
-			return redact.Error(err, b.URL)
+			return b.URL.Error(err)
 		}
 		req.Header.Set("Proof", compact)
 		return b.do(req, []int{http.StatusNoContent}, nil)
@@ -654,7 +671,7 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 			return nil
 		})
 		if err != nil {
-			b.logger().Error("the helper stopped trading this machine's identity; it enrols no session until this is fixed", "error", redact.Error(err, b.URL))
+			b.logger().Error("the helper stopped trading this machine's identity; it enrols no session until this is fixed", "error", b.URL.Error(err))
 		}
 		once.Do(func() { close(first) })
 	}()
@@ -915,7 +932,7 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 	tok, err := b.oauthConfig().TokenSource(b.tokenContext(ctx, cred.key),
 		&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token()
 	if err != nil {
-		err = redact.Error(err, b.URL)
+		err = b.URL.Error(err)
 		var re *oauth2.RetrieveError
 		switch {
 		case errors.As(err, &re) && re.Response != nil && re.Response.StatusCode == http.StatusTooManyRequests:
@@ -1373,7 +1390,7 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Authority, cred *machineCredential,
 	kind, runtimeID, thumbprint string, sessionID *string,
 ) (string, time.Time, error) {
-	url := b.URL + "/v1/enrollments"
+	url := b.URL.Raw() + "/v1/enrollments"
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodPost, url, time.Now())
 	if err != nil {
 		return "", time.Time{}, err
@@ -1388,7 +1405,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Author
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", time.Time{}, redact.Error(err, b.URL)
+		return "", time.Time{}, b.URL.Error(err)
 	}
 	req.Header.Set("Proof", compact)
 	req.Header.Set("Content-Type", "application/json")
@@ -1431,14 +1448,14 @@ func (b *Broker) Renew(ctx context.Context, s *Session) (time.Time, identity, er
 // that back would tell it nothing it does not have.
 func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, error) {
 	id := cur.EnrollmentID
-	url := b.URL + "/v1/enrollments/" + id + "/renew"
+	url := b.URL.Raw() + "/v1/enrollments/" + id + "/renew"
 	compact, err := proof.Sign(cur.Key, id, http.MethodPost, url, time.Now())
 	if err != nil {
 		return time.Time{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return time.Time{}, redact.Error(err, b.URL)
+		return time.Time{}, b.URL.Error(err)
 	}
 	req.Header.Set("Proof", compact)
 	var out leaseReply
@@ -1477,14 +1494,14 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 // revokeUnder is one DELETE /v1/enrollments/{id} signed with authority; cred is this machine's
 // held credential where that is what signed, which a 401 LAUNCHER_INVALID drops.
 func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Authority, cred *machineCredential, enrollmentID string) error {
-	url := b.URL + "/v1/enrollments/" + enrollmentID
+	url := b.URL.Raw() + "/v1/enrollments/" + enrollmentID
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodDelete, url, time.Now())
 	if err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
-		return redact.Error(err, b.URL)
+		return b.URL.Error(err)
 	}
 	req.Header.Set("Proof", compact)
 	if err := b.do(req, []int{http.StatusNoContent, http.StatusNotFound}, nil); err != nil {
@@ -1496,17 +1513,18 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	return nil
 }
 
-// do sends req and decodes the broker's answer. A failed exchange goes through redact.Error, so
-// no message or log line the helper makes from it carries a credential AGENT_SECRETS_URL holds.
+// do sends req and decodes the broker's answer. A failed exchange - the request, or the read of
+// its answer - goes through the address's Error (brokeraddr.Address.Error), so no message or log
+// line the helper makes from it carries a credential AGENT_SECRETS_URL holds.
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	resp, err := b.httpClient().Do(req)
 	if err != nil {
-		return redact.Error(err, b.URL)
+		return b.URL.Error(err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return b.URL.Error(err)
 	}
 	if !slices.Contains(ok, resp.StatusCode) {
 		var e struct {

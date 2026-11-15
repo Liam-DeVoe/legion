@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
@@ -106,7 +107,7 @@ func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, 
 	}
 	srv := &helper.Server{
 		Registry: helper.NewRegistry(filepath.Join(dir, "sessions.json")),
-		Broker:   &helper.Broker{URL: brokerURL, OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: http.DefaultClient},
+		Broker:   &helper.Broker{URL: brokeraddr.New(brokerURL), OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: http.DefaultClient},
 		Hostname: "testhost",
 		PeerOf:   helper.PeerOf,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),

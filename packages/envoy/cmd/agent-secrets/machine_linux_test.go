@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -40,7 +41,7 @@ func tableRows(t *testing.T, stdout string) (header []string, rows [][]string) {
 // returns its helper.Broker and the launcher credential its approval minted.
 func loggedInElsewhere(t *testing.T, rig *brokertest.Rig, host string) (*helper.Broker, string) {
 	t.Helper()
-	b := &helper.Broker{URL: rig.URL, OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
+	b := &helper.Broker{URL: brokeraddr.New(rig.URL), OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
 	t.Cleanup(b.Close)
 	code, err := b.Login(context.Background(), host)
 	if err != nil {

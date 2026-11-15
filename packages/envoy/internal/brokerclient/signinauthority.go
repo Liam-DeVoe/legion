@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"sync"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // SignInsDir is the directory that holds one record per person, so `agent-secrets login`, which
@@ -101,7 +103,7 @@ type SignInAuthority struct {
 	Flow *DeviceFlow
 	// BrokerURL, HTTP and Log are the trade's, as Config's own members of those names. The
 	// session name is not: it is the person's, and SessionFor settles it.
-	BrokerURL string
+	BrokerURL brokeraddr.Address
 	HTTP      *http.Client
 	Log       *slog.Logger
 
