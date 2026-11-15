@@ -102,25 +102,17 @@ func TestStartedParentWaitsReadsTheOpenChildrenOfAStartedParent(t *testing.T) {
 			must(t, records.PutDispatchIssue(ctx, tx, row))
 		}
 
-		waits, err := StartedParentWaits(ctx, tx, records, "LEGION", issues, LineFacts{})
-		must(t, err)
-		want := map[string]ChildWait{parent: {Parent: parent, Open: []OpenChild{{Key: filed, Status: "backlog"}}}}
-		if !reflect.DeepEqual(waits, want) {
-			t.Fatalf("StartedParentWaits = %+v, want %+v: %s is held under the accepted %s and %s is done",
-				waits, want, heldChild, root, finished)
-		}
-
 		facts, err := ReadLineFacts(ctx, tx, records, "LEGION", issues, nil)
 		must(t, err)
+		want := map[string]ChildWait{parent: {Parent: parent, Open: []OpenChild{{Key: filed, Status: "backlog"}}}}
 		if !reflect.DeepEqual(facts.StartedParentWaits, want) {
-			t.Fatalf("the line's facts carry %+v, want %+v", facts.StartedParentWaits, want)
+			t.Fatalf("the line's facts carry %+v, want %+v: %s is held under the accepted %s and %s is done",
+				facts.StartedParentWaits, want, heldChild, root, finished)
 		}
 		if !facts.Gates[root].Open() {
 			t.Fatalf("the gate of %s reads closed in the line's facts, want it open", root)
 		}
-		childWaits, err := ChildWaitsOf(ctx, tx, records, "LEGION", issues, facts)
-		must(t, err)
-		if len(childWaits) != 0 {
+		if childWaits := ChildWaitsOf(facts); len(childWaits) != 0 {
 			t.Fatalf("the children-first waits under the open gate = %+v, want none: %s's open child is the started parent's to read, and %s, at admitted, has none",
 				childWaits, parent, heldChild)
 		}

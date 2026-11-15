@@ -447,11 +447,10 @@ type LineFacts struct {
 	Held map[string][]string
 	// ChildWaits is the children-first judgement of this pass, by parent key: the issues whose
 	// own first phase the line must not offer a slot to because Dispatch still shows an open
-	// child under them. Only the caller can fill it — the judgement reads the Dispatch mirror's
-	// parent column against the daemon's own records, which takes the transaction the line itself
-	// is never given (ChildWaitsOf) — and a caller that fills it with nothing says that nothing
-	// waits for its children. It is never stored: each admission pass computes it again, so a
-	// mirror row that has gone stale costs one pass and no more.
+	// child under them. Only the caller can fill it — from the judgement ReadLineFacts made in
+	// the transaction the line itself is never given (ChildWaitsOf) — and a caller that fills it
+	// with nothing says that nothing waits for its children. It is never stored: each admission
+	// pass computes it again, so a mirror row that has gone stale costs one pass and no more.
 	ChildWaits map[string]ChildWait
 	// Waits is what each issue the daemon has started waits on, by issue key, for the started
 	// issues that wait on another issue and for no other: the two waits are the unfinished
@@ -463,7 +462,7 @@ type LineFacts struct {
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
 	// StartedParentWaits is the open Dispatch children of each issue whose phases have started,
-	// by parent key (StartedParentWaits over StartedParents): an issue in planning through
+	// by parent key (readChildWaits over StartedParents): an issue in planning through
 	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
 	// entry for one no open child holds. It is what the admission pass moves a started parent into
 	// awaiting_children by and takes one back to the start it held by (admit's childrenWaits), and
@@ -474,6 +473,10 @@ type LineFacts struct {
 	// the judgement reads the mirror against the daemon's records in the transaction the line is
 	// never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
+	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
+	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
+	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
+	childrenFirst map[string]ChildWait
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -631,10 +634,11 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 // ReadLineFacts reads the facts of one admission pass for issues: one tree-lifecycle read
 // (ReadLifecycles), one read of the records above the pass's own (ReadParents), one read of the
 // tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf), one read of the starts the
-// project owes, and the open children of every started parent (StartedParentWaits: no read where
-// no issue has started a phase, and two where any has), whatever the number of trees, gates and
-// issues involved. project is the Dispatch project key and steps the design-gate steps the
-// deployment gates.
+// project owes, and both judgements of a parent's open children — the started parents'
+// (LineFacts.StartedParentWaits) and the children-first waits ChildWaitsOf hands on — from one
+// read of the children (readChildWaits: no read where no issue can wait on its children, and two
+// where any can), whatever the number of trees, gates and issues involved. project is the
+// Dispatch project key and steps the design-gate steps the deployment gates.
 //
 // The roots are read before the gates because the gates cover both sets of roots: the roots
 // among the pass's own issues (treeRoots) and the roots those issues leave out, which this read
@@ -675,9 +679,10 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 		}
 	}
 	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}
-	// The started parents are read last, since an issue owing a start is one of them
-	// (StartedParents) and the cycle walk crosses the records above the pass's own.
-	if facts.StartedParentWaits, err = StartedParentWaits(ctx, tx, store, project, issues, facts); err != nil {
+	// The children are read last, since the gates say which issues are children-first
+	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
+	// crosses the records above the pass's own.
+	if facts.childrenFirst, facts.StartedParentWaits, err = readChildWaits(ctx, tx, store, project, issues, facts); err != nil {
 		return LineFacts{}, err
 	}
 	return facts, nil

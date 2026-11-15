@@ -117,6 +117,19 @@ func (s *Postgres) IssuesOf(ctx context.Context, tx pgx.Tx, project string, keys
 	return issues, nil
 }
 
+// IssuesByKey is the record of each of keys, whatever its project, by key; a key with no record is
+// left out. No keys read nothing.
+func (s *Postgres) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]Issue, error) {
+	if len(keys) == 0 {
+		return []Issue{}, nil
+	}
+	issues, err := queryIssues(ctx, tx, "select "+issueColumns+" from issues where key = any($1) order by key", keys)
+	if err != nil {
+		return nil, fmt.Errorf("read issues %v: %w", keys, err)
+	}
+	return issues, nil
+}
+
 // AncestorsOf is the record of each of keys and of every issue above it on the chain of recorded
 // parents, by key order, for the issues of project; a key with no record contributes nothing. No
 // keys read nothing.
@@ -1674,18 +1687,19 @@ func (s *Postgres) GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string)
 	return gatesWhere(ctx, tx, "basis_pending_ask = $1", ask, "pending on request "+ask)
 }
 
-// GatesRestingOn is every gate that rests on ancestor in this generation (DesignGate.RestsOnIssue),
-// of every tree, in issue and then step order: rests_on names the ancestor a basis first opened
-// the step on, and basis_issue the ancestor of the basis the step stands open on or waits on now.
-// The condition is the indexed prefilter, and the rule over each row as read decides: a pending
-// row an earlier release's write of a person's approval opened still names its ancestor in
-// basis_issue, but reads back with no basis (basisAsWritten), and so rests on nothing.
-func (s *Postgres) GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestor string) ([]DesignGate, error) {
-	gates, err := gatesWhere(ctx, tx, "rests_on = $1 or basis_issue = $1", ancestor, "resting on "+ancestor)
+// GatesRestingOn is every gate that rests on one of ancestors in this generation
+// (DesignGate.RestsOnIssue), of every tree, in issue and then step order: rests_on names the
+// ancestor a basis first opened the step on, and basis_issue the ancestor of the basis the step
+// stands open on or waits on now. The condition is the indexed prefilter, and the rule over each
+// row as read decides: a pending row an earlier release's write of a person's approval opened
+// still names its ancestor in basis_issue, but reads back with no basis (basisAsWritten), and so
+// rests on nothing.
+func (s *Postgres) GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestors ...string) ([]DesignGate, error) {
+	gates, err := gatesWhere(ctx, tx, "rests_on = any($1) or basis_issue = any($1)", ancestors, "resting on "+strings.Join(ancestors, ", "))
 	if err != nil {
 		return nil, err
 	}
-	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return !gate.RestsOnIssue(ancestor) }), nil
+	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return !slices.ContainsFunc(ancestors, gate.RestsOnIssue) }), nil
 }
 
 // gatesWhere is every gate the condition selects with arg as its one parameter, in issue and then

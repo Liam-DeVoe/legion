@@ -335,7 +335,7 @@ func TestAFirstAdmissionStartsItsArchitectWithNoTask(t *testing.T) {
 // start, which leaves it kept until it is delivered. With the gate open at its latest version
 // there is nothing to request, and under gates.design off no person approves anything.
 func TestARootReadmittedOnAnOlderApprovalIsToldBothVersions(t *testing.T) {
-	const versions = " " + keptVersions
+	versions := " " + keptVersions(3, 4)
 	const decided = "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: dispatch://LEGION-ROOT/spec (design-approved by user:alice). Read each before you continue."
 	for _, tc := range []struct {
 		name     string
@@ -456,7 +456,7 @@ func TestAReadmissionKeepsOrDropsTheApprovalAnEarlierKept(t *testing.T) {
 // starts its architect naming both versions: the second re-admission finds no gate and keeps the
 // pair the first kept, which the undelivered start released.
 func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *testing.T) {
-	const versions = keptVersions
+	versions := keptVersions(3, 4)
 	ctx := context.Background()
 	pool := migratedPool(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
@@ -489,13 +489,16 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 	}
 }
 
-// keptVersions is the start task's sentence for the person's approval of version 3 of
-// LEGION-ROOT's primary document, which has moved on to version 4 (workflow.KeptDecisionsTask):
-// it names that approval, asks for a request of the latest version and names R1's path beside it
-// (dispatch://INFRA-3320, R2).
-const keptVersions = "A person approved version 3 of the primary document, and the primary document is now at version 4. " +
-	"Request approval of version 4, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. " +
-	"The other way is to write LEGION-ROOT as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
+// keptVersions is the start task's sentence for the person's approval of version approved of
+// LEGION-ROOT's primary document, which has moved on to version latest
+// (workflow.KeptDecisionsTask): it names that approval, asks for a request of the latest version
+// and names R1's path beside it (dispatch://INFRA-3320, R2).
+func keptVersions(approved, latest int) string {
+	return fmt.Sprintf("A person approved version %d of the primary document, and the primary document is now at version %d. "+
+		"Request approval of version %d, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. "+
+		"The other way is to write LEGION-ROOT as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says.",
+		approved, latest, latest)
+}
 
 // The approval a re-admission keeps is the person's own (record.DesignGate.ApprovedByPerson), never
 // the version an ancestor's approval opened the step at (dispatch://INFRA-3320, R2 and R3). A step
@@ -512,22 +515,16 @@ func TestTheKeptApprovalOfAReadmittedRootIsThePersonsAndNotTheBasis(t *testing.T
 		ApprovedMark: record.EventMark{Seq: 3, At: fixedNow}}
 	closed := record.CloseBasis(record.OpenOnBasis(personal, basis))
 	closed.LatestVersion = 5
-	kept := func(approved, latest int) string {
-		return fmt.Sprintf("A person approved version %d of the primary document, and the primary document is now at version %d. "+
-			"Request approval of version %d, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. "+
-			"The other way is to write LEGION-ROOT as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says.",
-			approved, latest, latest)
-	}
 	for _, tc := range []struct {
 		name     string
 		gate     record.DesignGate
 		want     string
 		approved int
 	}{
-		{"a step open on a basis that keeps the person's approval of version 2", record.OpenOnBasis(personal, basis), kept(2, 4), 2},
+		{"a step open on a basis that keeps the person's approval of version 2", record.OpenOnBasis(personal, basis), keptVersions(2, 4), 2},
 		{"a step open on a basis with no person's approval",
 			record.OpenOnBasis(record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root", LatestVersion: 4}, basis), "", 0},
-		{"a step whose basis a new version closed", closed, kept(2, 5), 2},
+		{"a step whose basis a new version closed", closed, keptVersions(2, 5), 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -537,11 +534,7 @@ func TestTheKeptApprovalOfAReadmittedRootIsThePersonsAndNotTheBasis(t *testing.T
 			admission := New(record.NewStore(), engine, 1, testProject, nil)
 			admission.now = func() time.Time { return fixedNow }
 			parkedRoot(t, pool)
-			inTx(t, pool, func(tx pgx.Tx) {
-				if err := record.NewStore().PutGate(ctx, tx, tc.gate); err != nil {
-					t.Fatalf("put the gate: %v", err)
-				}
-			})
+			seedGate(t, pool, tc.gate)
 
 			readmitRoot(t, pool, admission)
 

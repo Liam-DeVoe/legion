@@ -208,13 +208,17 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 // since the phase keeps no slot), so no link of it is judged, and it waits on its children alone
 // until they are finished (R11).
 func ChildRows(issues []record.Issue, facts record.LineFacts) []record.BlockedIssue {
+	rows := record.ChildWaitRows(facts.ChildWaits)
+	if len(facts.StartedParentWaits) == 0 {
+		return rows
+	}
 	waiting := make(map[string]record.ChildWait)
 	for _, issue := range issues {
 		if wait, open := facts.StartedParentWaits[issue.Key]; open && issue.Phase == phase.AwaitingChildren {
 			waiting[issue.Key] = wait
 		}
 	}
-	return append(record.ChildWaitRows(facts.ChildWaits), record.ChildWaitRows(waiting)...)
+	return append(rows, record.ChildWaitRows(waiting)...)
 }
 
 // Exempt says whether an issue starts whatever its links say, and so is neither held by the
@@ -400,14 +404,15 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // not read this package, so the hold is handed to the line as a fact (record.LineFacts.Held,
 // HeldIssues). The children-first wait is handed to it the same way and for a like reason — the
 // line is given facts rather than a transaction, and that judgement reads the Dispatch mirror
-// against the daemon's own records (record.LineFacts.ChildWaits, record.ChildWaitsOf) — and is
-// read again on each judgement rather than stored anywhere, so a mirror row that has gone stale
-// holds a parent for one pass and no longer. The waits of the issues the daemon has started are
-// judged there too (record.LineFacts.Waits, startedWaits), from those same rows and child waits,
-// because the line stands a started issue that waits in its first part and must be told which
-// issues those are; the set of started issues (startedIssues) is judged once here and given to
-// both readings of it. Then the line. Then the rows of the issues the line itself names, which
-// only the line can say.
+// against the daemon's own records, which the read of the facts made in the one read of the
+// children it judged the started parents from (record.LineFacts.ChildWaits,
+// record.ChildWaitsOf) — and is judged again on each read of the facts rather than stored
+// anywhere, so a mirror row that has gone stale holds a parent for one pass and no longer. The
+// waits of the issues the daemon has started are judged there too (record.LineFacts.Waits,
+// startedWaits), from those same rows and child waits, because the line stands a started issue
+// that waits in its first part and must be told which issues those are; the set of started
+// issues (startedIssues) is judged once here and given to both readings of it. Then the line.
+// Then the rows of the issues the line itself names, which only the line can say.
 //
 // rows is whatever the caller has already read, nil on its first judgement; loadMissing reads
 // only the keys it does not hold, so a pass that reads the line twice makes one mirror read in
@@ -452,9 +457,7 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 		return rows, facts, nil, nil, err
 	}
 	facts.Held = HeldIssues(rows, issues)
-	if facts.ChildWaits, err = record.ChildWaitsOf(ctx, tx, store, project, issues, facts); err != nil {
-		return rows, facts, nil, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
-	}
+	facts.ChildWaits = record.ChildWaitsOf(facts)
 	facts.Waits = startedWaits(rows, issues, started, facts)
 	line, held := record.Waiting(issues, slots, facts)
 	rows, err = loadMissing(ctx, tx, store, project, Judged(issues, record.WaitingIssues(line)), rows)

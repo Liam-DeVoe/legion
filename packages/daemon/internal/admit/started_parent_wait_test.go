@@ -86,7 +86,8 @@ func spWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Phase, 
 }
 
 // spMirror writes what Dispatch says of key now — its status, its parent and the keys it waits
-// on — at sequence seq, which a later write must pass to replace it.
+// on — at sequence seq, which a later write must pass to replace it: seedMirrorChild's row at a
+// later sequence, for a test that changes what Dispatch shows.
 func spMirror(t *testing.T, pool *pgxpool.Pool, key, status, parent string, seq int64, waits ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -127,25 +128,13 @@ func spNotices(t *testing.T, pool *pgxpool.Pool, key string) []record.Notice {
 	return gateNotices(t, pool, key, workflow.AwaitingChildrenNoticeKind)
 }
 
-// spEnded is every phase-ended message queued for key, in outbox order.
-func spEnded(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseEnded {
-	t.Helper()
-	var ended []record.PhaseEnded
-	for _, effect := range effects(t, pool) {
-		if message, ok := effect.payload.(record.PhaseEnded); ok && effect.issue == key {
-			ended = append(ended, message)
-		}
-	}
-	return ended
-}
-
 // spRetired is every task retirement queued for key (a `retire_task` supervise row), in outbox
 // order.
 func spRetired(t *testing.T, pool *pgxpool.Pool, key string) []record.SuperviseRequest {
 	t.Helper()
 	var retired []record.SuperviseRequest
-	for _, effect := range effects(t, pool) {
-		if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == key && request.Op == "retire_task" {
+	for _, request := range pwPayloads[record.SuperviseRequest](t, pool, key) {
+		if request.Op == "retire_task" {
 			retired = append(retired, request)
 		}
 	}
@@ -219,7 +208,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		if told := spNotices(t, pool, spParent); len(told) != 1 || !strings.Contains(told[0].Reason, spChild+" (todo)") {
 			t.Fatalf("awaiting-children notices = %+v, want one naming %s", told, spChild)
 		}
-		if ended := spEnded(t, pool, spParent); len(ended) != 0 {
+		if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 0 {
 			t.Fatalf("phase-ended messages = %+v, want none: no worker runs in accepting", ended)
 		}
 		if retired := spRetired(t, pool, spParent); len(retired) != 0 {
@@ -260,7 +249,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		if starts := startsOf(t, pool, spParent); len(starts) != 0 {
 			t.Fatalf("starts of %s = %+v, want none: the owed start is finished so it never delivers", spParent, starts)
 		}
-		if ended := spEnded(t, pool, spParent); len(ended) != 0 {
+		if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 0 {
 			t.Fatalf("phase-ended messages = %+v, want none: no worker had the phase", ended)
 		}
 		if retired := spRetired(t, pool, spParent); len(retired) != 0 {
@@ -287,7 +276,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != phase.Implementing || got.ChildrenWait.Task != given {
 			t.Fatalf("the parent = phase %s, held start %+v; want awaiting_children holding implementing with the entry's task", got.Phase, got.ChildrenWait)
 		}
-		ended := spEnded(t, pool, spParent)
+		ended := pwPayloads[record.PhaseEnded](t, pool, spParent)
 		if len(ended) != 1 || ended[0].Role != claim.RoleImplementer || ended[0].From != phase.Implementing ||
 			ended[0].To != phase.AwaitingChildren || ended[0].TaskFollows || !strings.Contains(ended[0].Reason, spChild+" (backlog)") ||
 			!strings.Contains(ended[0].Reason, "the admission pass stopped the implementer's implementing phase") {
@@ -363,7 +352,7 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 			if told := spNotices(t, pool, spParent); len(told) != 0 {
 				t.Fatalf("awaiting-children notices = %+v, want none", told)
 			}
-			if ended := spEnded(t, pool, spParent); len(ended) != 0 {
+			if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 0 {
 				t.Fatalf("phase-ended messages = %+v, want none", ended)
 			}
 		})
@@ -392,7 +381,7 @@ func TestASecondPassOverAMovedParentSendsNothingAgain(t *testing.T) {
 	if told := spNotices(t, pool, spParent); len(told) != 1 {
 		t.Fatalf("awaiting-children notices = %+v, want still one", told)
 	}
-	if ended := spEnded(t, pool, spParent); len(ended) != 1 {
+	if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 1 {
 		t.Fatalf("phase-ended messages = %+v, want still one", ended)
 	}
 }
@@ -578,7 +567,7 @@ func TestABlockedByLinkHoldsAReturnedParentByTheMomentItsWaitEnded(t *testing.T)
 	for parent, child := range map[string]string{early: earlyChild, late: lateChild} {
 		spWaiting(t, pool, parent, phase.Implementing, "Continue "+parent+". Issue: "+parent+". Phase: implementing.", "a review asked for changes", nil)
 		seedMirror(t, pool, parent, "in_progress", blocker)
-		spMirror(t, pool, child, "todo", parent, 1)
+		seedMirrorChild(t, pool, child, "todo", parent)
 	}
 
 	spPass(t, pool, admission)
@@ -636,8 +625,8 @@ func TestAGrandparentComesBackAfterItsChildHasComeBackAndClosed(t *testing.T) {
 		spSeedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: "implementer", Entry: 1,
 			EntryTask: "Continue " + key + ". Issue: " + key + ". Phase: implementing.", EntryRaisedAt: fixedNow.Add(-time.Hour)})
 	}
-	spMirror(t, pool, parent, "in_progress", grandparent, 1)
-	spMirror(t, pool, grandchild, "todo", parent, 1)
+	seedMirrorChild(t, pool, parent, "in_progress", grandparent)
+	seedMirrorChild(t, pool, grandchild, "todo", parent)
 
 	spPass(t, pool, admission)
 	for _, key := range []string{grandparent, parent} {

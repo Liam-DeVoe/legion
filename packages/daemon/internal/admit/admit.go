@@ -1666,12 +1666,24 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	held func(string) bool,
 ) (bool, error) {
+	// Either move reaches a parent in awaiting_children or one an open child holds, and nothing
+	// else, and on most passes there is neither: the rest is read for those alone, in byte order
+	// of their keys (SQL's `order by key` may collate otherwise).
+	var parents []record.Issue
+	for _, issue := range issues {
+		if _, open := facts.StartedParentWaits[issue.Key]; open || issue.Phase == phase.AwaitingChildren {
+			parents = append(parents, issue)
+		}
+	}
+	if len(parents) == 0 {
+		return false, nil
+	}
+	slices.SortFunc(parents, func(left, right record.Issue) int { return cmp.Compare(left.Key, right.Key) })
 	running := record.RunningRoots(issues, facts)
 	owed := make(map[string][]record.OwedStart, len(facts.OwedRows))
 	for _, start := range facts.OwedRows {
 		owed[start.Issue] = append(owed[start.Issue], start)
 	}
-	parents := slices.SortedFunc(slices.Values(issues), func(left, right record.Issue) int { return cmp.Compare(left.Key, right.Key) })
 	wrote := false
 	for _, parent := range parents {
 		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) {

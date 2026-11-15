@@ -43,22 +43,6 @@ func (r *personHandoverRig) restart() {
 	settled(r.t, r.d, "answer its state after the restart", func(api.State) bool { return true })
 }
 
-// personEdit applies ops to artifactID as the person at a browser, through the edits route a
-// session's editDocument takes, and answers the version it wrote.
-func (r *personHandoverRig) personEdit(artifactID string, ops ...map[string]string) int {
-	r.t.Helper()
-	var edited struct {
-		Version *struct {
-			Number int `json:"number"`
-		} `json:"version"`
-	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asPerson)
-	if edited.Version == nil {
-		r.t.Fatalf("the person's edit of %s wrote no version", artifactID)
-	}
-	return edited.Version.Number
-}
-
 // catchUpNow has the one composer of a root architect's catch-up (workflow.QueueCatchUp, which the
 // architect's ready writes through) state key's tree as the record holds it now, for the launch
 // admit registered, and answers its spec step: what a relaunched architect of key reads. A ready
@@ -219,11 +203,7 @@ const basisReason = "The checks serve the ancestor's requirement; both fresh rev
 func (r *personHandoverRig) ancestor(title string, fields map[string]any, ids ...string) (scratchIssue, int) {
 	r.t.Helper()
 	issue := r.create(asSession, title, fields)
-	var blocks strings.Builder
-	for _, id := range ids {
-		fmt.Fprintf(&blocks, ":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n\n", id, id, id)
-	}
-	return issue, r.editDocument(issue.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": blocks.String()})
+	return issue, r.editDocument(issue.PrimaryArtifactID, insertAtEnd(requirementBlocks(ids...)))
 }
 
 // plainCall is a register_gate body of root's spec step at version with no basis: today's
@@ -305,9 +285,7 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 	if opt.holdSeed {
 		held.hold(run.root.Key, record.OutboxKindGateSeed)
 	}
-	if status, refusal := r.gateCall(basisCall(run.grant(), run.root, run.rootVersion, run.parent.PrimaryArtifactID, run.basisVersion, basisReason)); status != http.StatusOK {
-		t.Fatalf("%s's registration on %s's approval of version %d = %d %+v, want 200", run.root.Key, run.parent.Key, run.basisVersion, status, refusal)
-	}
+	r.registerOn(run)
 	if opt.approvedV2 {
 		r.reopenedOnBasis(run)
 	} else {
@@ -359,7 +337,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	// 1. The held seed, P's new version and the changes request on it, the seed, the restart.
 	one := r.openRun(held, []string{"Kestrel nest monitor", "Raptor habitat survey"}, stayingOptions{holdSeed: true})
 	base := r.stepReads(one.root.Key)
-	newer := r.personEdit(one.parent.PrimaryArtifactID, insertParagraph("The survey adds the northern ridge."))
+	newer := r.editAs(one.parent.PrimaryArtifactID, asPerson, insertParagraph("The survey adds the northern ridge."))
 	r.quiet(one.parent.Key)
 	r.stays(fmt.Sprintf("run 1, the person's version %d of P's primary document, the seed still due", newer), one.root.Key, base)
 	r.requestChanges(one.parent.PrimaryArtifactID, "Name the ridge's access road.")
@@ -581,20 +559,6 @@ func (r *personHandoverRig) applyAsTheDaemon(source, id string, fact intake.Fact
 	return result
 }
 
-// stored is the daemon's record of key, nil when it records none.
-func (r *personHandoverRig) stored(key string) *record.Issue {
-	r.t.Helper()
-	var issue *record.Issue
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
-		var err error
-		issue, err = record.NewStore().Issue(r.t.Context(), tx, key)
-		return err
-	}); err != nil {
-		r.t.Fatalf("read the record of %s: %v", key, err)
-	}
-	return issue
-}
-
 // moveRecord writes key's record in phase to, as close_scratch_dispatch_test.go writes a record in
 // merging, once every write the daemon queued on key has run: a phase the rig runs no agent to
 // reach.
@@ -622,17 +586,7 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 // ask Dispatch opened for the request.
 func (r *personHandoverRig) requestApprovalWithVerification(artifactID, summary string) string {
 	r.t.Helper()
-	var requested struct {
-		Ask *struct {
-			ID string `json:"id"`
-		} `json:"ask"`
-	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests",
-		map[string]any{"summary": summary, "include_verification": true}, &requested, asSession)
-	if requested.Ask == nil || requested.Ask.ID == "" {
-		r.t.Fatalf("Dispatch opened no ask for the approval request of %s with its Verification document", artifactID)
-	}
-	return requested.Ask.ID
+	return r.approvalRequest(artifactID, map[string]any{"summary": summary, "include_verification": true})
 }
 
 // resolveAsk closes ask with no answer as identity, as `dispatch ask-resolve` does.
@@ -729,7 +683,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	case ancestorMember:
 		r.setStatus(run.parent.Key, "todo")
 		testwait.Eventually(t, "the daemon to record "+run.parent.Key+" as a member of "+run.owner.Key+"'s tree", func() bool {
-			recorded := r.stored(run.parent.Key)
+			recorded := readIssue(t, r.pool, run.parent.Key)
 			return recorded != nil && recorded.Tree == run.owner.Key
 		})
 	case ancestorUnrecorded:
@@ -750,9 +704,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	}
 	if opt.openedBefore || opt.member != "" {
 		r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
-		if status, refusal := r.gateCall(basisCall(run.grant(), run.root, 1, run.parent.PrimaryArtifactID, run.basisVersion, basisReason)); status != http.StatusOK {
-			t.Fatalf("%s's registration on %s's approval of version %d = %d %+v, want 200", run.root.Key, run.parent.Key, run.basisVersion, status, refusal)
-		}
+		r.registerBasis(run.grant(), run.root, 1, run.parent, run.basisVersion, basisReason)
 		r.openedOnBasis(run.root, run.parent, 1, run.basisVersion)
 		r.dispatchRowsDone(run.root.Key)
 		if opt.member != "" {
@@ -778,8 +730,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	}
 	served := "p2"
 	if !opt.noV4 {
-		run.basisVersion = r.editDocument(run.parent.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end",
-			"markdown": ":::requirement{#p4}\n**p4.** The change delivers p4.\n:::\n"})
+		run.basisVersion = r.editDocument(run.parent.PrimaryArtifactID, insertAtEnd(requirementBlock("p4")))
 		if !opt.noRequest {
 			run.ask = r.requestApproval(run.parent.PrimaryArtifactID, fmt.Sprintf("Version %d adds p4, which %s delivers.", run.basisVersion, run.root.Key))
 		}
@@ -798,9 +749,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 // document the run names, with the proofs' reason, which must answer 200.
 func (r *personHandoverRig) registerOn(run basisRun) {
 	r.t.Helper()
-	if status, refusal := r.gateCall(basisCall(run.grant(), run.root, run.rootVersion, run.parent.PrimaryArtifactID, run.basisVersion, basisReason)); status != http.StatusOK {
-		r.t.Fatalf("%s's registration on version %d of %s's document = %d %+v, want 200", run.root.Key, run.basisVersion, run.parent.Key, status, refusal)
-	}
+	r.registerBasis(run.grant(), run.root, run.rootVersion, run.parent, run.basisVersion, basisReason)
 }
 
 // pendingRegistered is what k11's negative control reads after a pending registration of run's

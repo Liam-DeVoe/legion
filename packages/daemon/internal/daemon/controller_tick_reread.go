@@ -128,23 +128,25 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 	return keys, parents, nil
 }
 
-// readObserved is Dispatch's answer for keys and for the children of parents: one GetIssue for
-// each key while they number blockerReadFanout or fewer, and one whole-project listing above
-// that, whose every summary is taken — it is one request for all of them, and a row it refreshes
-// beyond the keys asked for costs nothing behind the mirror's own sequence fence. A key of
-// another project is read one at a time in either branch, since the listing is of this daemon's
-// project alone and names no issue of another.
+// readObserved is Dispatch's answer for keys and for the children of parents. Where no issue has
+// started a phase, it is one GetIssue for each key while they number blockerReadFanout or fewer;
+// above that it is one whole-project listing, whose every summary is taken — it is one request
+// for all of them, and a row it refreshes beyond the keys asked for costs nothing behind the
+// mirror's own sequence fence. A key of another project is read one at a time in every branch,
+// since the listing is of this daemon's project alone and names no issue of another.
 //
-// The children of parents are read in both branches, from the listing, which is the one read of
-// Dispatch the daemon makes that names an issue's children (dispatch.IssueSummary.Parent): the
-// listing branch takes them with every other summary, and the single-read branch lists the
-// project once more where some parent stands and takes the summary of each issue whose parent is
-// one of them and that no single read above already answered. A child filed and not released
-// reaches the daemon so within one wake interval, and so does its close, its move to icebox and
-// its move to another parent, since every child the mirror already holds under a started parent
-// is among keys (waitedOn). The single-read branch takes the children alone, not the whole
-// listing, so a turn writes the mirror rows of what it waits on and of those children and no
-// others.
+// The children of parents are read from the listing, which is the one read of Dispatch the daemon
+// makes that names an issue's children (dispatch.IssueSummary.Parent). Above the bound the listing
+// takes them with every other summary. At or below it, where some parent stands, the turn lists
+// the project once and takes the summary of each key of this project it waits on and of each
+// issue whose parent is one of parents. The listing already holds every key of this project, with
+// the fields a single read gives (blockers.Observed), so the turn reads none of them singly as
+// well: that would repeat up to blockerReadFanout requests on nearly every turn of a project at
+// work. A child filed and not released reaches the daemon so within one wake interval, and so
+// does its close, its move to icebox and its move to another parent, since every child the mirror
+// already holds under a started parent is among keys (waitedOn). That branch takes the keys and
+// the children alone, not the whole listing, so a turn writes the mirror rows of what it waits on
+// and of those children and no others.
 //
 // This turn is the only reader of a foreign key: an event whose subject key is another project's
 // is dropped undecoded (intake.decodeDispatchFact), so a foreign blocker's close reaches the
@@ -158,7 +160,9 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 // A key whose read fails is logged and left out, and so is one Dispatch no longer serves, which
 // is no error at all: the rest of the turn goes on with what was read, and the row of a key left
 // out keeps the last thing Dispatch said about it. A listing that fails is logged and leaves out
-// what it would have read, the children of parents among it.
+// what it would have read: above the bound the turn goes on with nothing read, and where a parent
+// stands it leaves out the children of parents, and the turn reads this project's keys one at a
+// time instead, as it reads them where no parent stands.
 func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []string) []intake.IssueStatus {
 	if len(keys) > blockerReadFanout {
 		summaries, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
@@ -181,35 +185,47 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 		return observed
 	}
 	observed := make([]intake.IssueStatus, 0, len(keys))
+	if len(parents) == 0 {
+		for _, key := range keys {
+			if status, read := w.readBlocker(ctx, key); read {
+				observed = append(observed, status)
+			}
+		}
+		return observed
+	}
+	own := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
+		if w.ownDispatchKey(key) {
+			own[key] = struct{}{}
+			continue
+		}
 		if status, read := w.readBlocker(ctx, key); read {
 			observed = append(observed, status)
 		}
 	}
-	if len(parents) == 0 {
-		return observed
-	}
 	summaries, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
 	if err != nil {
 		w.log.Warn("the controller tick's read of the children of the issues whose phases have started failed", "parents", len(parents), "error", err)
+		for _, key := range keys {
+			if _, waited := own[key]; !waited {
+				continue
+			}
+			if status, read := w.readBlocker(ctx, key); read {
+				observed = append(observed, status)
+			}
+		}
 		return observed
 	}
-	read := make(map[string]struct{}, len(observed))
-	for _, status := range observed {
-		read[status.Key] = struct{}{}
-	}
 	for _, summary := range summaries {
+		_, waited := own[summary.Key]
 		// parents comes sorted (record.StartedParents), so each summary's parent is one search.
-		if summary.Parent == nil {
-			continue
+		started := false
+		if summary.Parent != nil {
+			_, started = slices.BinarySearch(parents, *summary.Parent)
 		}
-		if _, started := slices.BinarySearch(parents, *summary.Parent); !started {
-			continue
+		if waited || started {
+			observed = append(observed, blockers.Observed(w.dispatchProject, summary))
 		}
-		if _, answered := read[summary.Key]; answered {
-			continue
-		}
-		observed = append(observed, blockers.Observed(w.dispatchProject, summary))
 	}
 	return observed
 }

@@ -26,12 +26,14 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 	// The project waits on 25 keys or fewer: one root fewer than the single-read bound each waits
 	// on a blocker of its own, and the waiting parent's open child, once the mirror holds it, is
-	// the bound's last key. Each turn reads them one at a time and lists the project once for
-	// the children of the issues whose phases started. The first turn takes the filed child from
-	// that listing, though it sends the daemon no event, and its own admission pass moves the
-	// parent. A daemon restart before the next turn, on a new store with a new engine and a new
-	// admission, finds the parent waiting with the start it held; the child then moves to icebox,
-	// with no event either, and one more turn takes the parent back to that start.
+	// the bound's last key. Every one of them is a key of this project, so each turn takes them
+	// from the one listing it makes for the children of the issues whose phases started, and reads
+	// none of them singly: the listing holds every key of the project with the fields a single read
+	// gives. The first turn takes the filed child from that listing, though it sends the daemon no
+	// event, and its own admission pass moves the parent. A daemon restart before the next turn, on
+	// a new store with a new engine and a new admission, finds the parent waiting with the start it
+	// held; the child then moves to icebox, with no event either, and one more turn takes the
+	// parent back to that start.
 	t.Run("the tick's re-read moves a parent over a child filed in triage, a restart keeps the start it holds, and the child's move to icebox brings it back", func(t *testing.T) {
 		ctx := context.Background()
 		pool := isolatedOutboxPool(t)
@@ -39,22 +41,17 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		w := tickRuntime(t, pool, client)
 		seedStartedParent(t, pool, startedParent)
 		seedBlockedRoots(t, pool, blockerReadFanout-1)
-		blockers := make([]string, 0, blockerReadFanout)
-		for i := 1; i < blockerReadFanout; i++ {
-			blockers = append(blockers, ownBlocker(i))
-		}
-		slices.Sort(blockers)
 
 		w.applyControllerTick(ctx, time.Now())
 
-		if asked, listings := client.asked(), client.listings(); !slices.Equal(sortedKeys(asked), blockers) || listings != 1 {
-			t.Fatalf("the first turn read %v singly and listed the project %d times, want the %d blockers singly and one listing for the children",
-				asked, listings, len(blockers))
+		if asked, listings := client.asked(), client.listings(); len(asked) != 0 || listings != 1 {
+			t.Fatalf("the first turn read %v singly and listed the project %d times, want no single read and one listing for the %d blockers and the children",
+				asked, listings, blockerReadFanout-1)
 		}
 		if row := tickMirrored(t, pool)[filedChild]; row.Status != "triage" || row.Parent != startedParent {
 			t.Fatalf("the mirror holds %s as %+v after one turn, want the listing's reading: triage under %s", filedChild, row, startedParent)
 		}
-		moved := tickIssue(t, pool, startedParent)
+		moved := recordOf(t, pool, record.NewStore(), startedParent)
 		if moved.Phase != phase.AwaitingChildren || moved.ChildrenWait == nil || moved.ChildrenWait.Start != phase.Implementing {
 			t.Fatalf("%s after the turn = phase %s, held start %+v; want awaiting_children holding implementing", startedParent, moved.Phase, moved.ChildrenWait)
 		}
@@ -69,16 +66,14 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 		t.Cleanup(restartedStore.Close)
 		restarted := tickRuntime(t, restartedStore.Pool(), client)
-		client.serve(dispatch.Issue{Key: filedChild, Project: "CAPTURE", Status: "triage", Parent: &parent, LastSeq: 1})
 
 		restarted.applyControllerTick(ctx, time.Now().Add(time.Second))
 
-		if asked, listings := client.asked(), client.listings(); !slices.Equal(sortedKeys(asked[len(blockers):]), sortedKeys(append(slices.Clone(blockers), filedChild))) ||
-			listings != 2 {
-			t.Fatalf("the turns read %v singly and listed the project %d times, want the second turn to read the %d keys of the bound singly and list once",
+		if asked, listings := client.asked(), client.listings(); len(asked) != 0 || listings != 2 {
+			t.Fatalf("the turns read %v singly and listed the project %d times, want the second turn to take the %d keys of the bound from one listing as well",
 				asked, listings, blockerReadFanout)
 		}
-		again := tickIssue(t, pool, startedParent)
+		again := recordOf(t, pool, record.NewStore(), startedParent)
 		if again.Phase != phase.AwaitingChildren || !sameChildrenWait(again.ChildrenWait, moved.ChildrenWait) || !again.ForwardMergeOwed {
 			t.Fatalf("%s after the restarted daemon's turn = phase %s, held start %+v; want it waiting still with %+v",
 				startedParent, again.Phase, again.ChildrenWait, moved.ChildrenWait)
@@ -88,14 +83,13 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		iceboxed := filed
 		iceboxed.Status, iceboxed.LastSeq = "icebox", 2
 		client.summaries = []dispatch.IssueSummary{iceboxed}
-		client.serve(dispatch.Issue{Key: filedChild, Project: "CAPTURE", Status: "icebox", Parent: &parent, LastSeq: 2})
 
 		restarted.applyControllerTick(ctx, time.Now().Add(2*time.Second))
 
 		if row := tickMirrored(t, pool)[filedChild]; row.Status != "icebox" || row.Seq != 2 {
 			t.Fatalf("the mirror holds %s as %+v, want icebox at 2", filedChild, row)
 		}
-		back := tickIssue(t, pool, startedParent)
+		back := recordOf(t, pool, record.NewStore(), startedParent)
 		if back.Phase != phase.Implementing || back.ChildrenWait != nil {
 			t.Fatalf("%s after its only child moved to icebox and one more turn = phase %s, held start %+v; want implementing, the start it held",
 				startedParent, back.Phase, back.ChildrenWait)
@@ -146,7 +140,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			return open
 		}
 
-		if err := runner.armBackstops(ctx, tickIssue(t, pool, startedParent)); err != nil {
+		if err := runner.armBackstops(ctx, recordOf(t, pool, record.NewStore(), startedParent)); err != nil {
 			t.Fatalf("arm the earlier release's backstops: %v", err)
 		}
 		if open := armed(); open != 1 {
@@ -154,7 +148,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 
 		w.applyControllerTick(ctx, time.Now())
-		waiting := tickIssue(t, pool, startedParent)
+		waiting := recordOf(t, pool, record.NewStore(), startedParent)
 		if waiting.Phase != phase.AwaitingChildren {
 			t.Fatalf("%s after the turn = %s, want awaiting_children", startedParent, waiting.Phase)
 		}
@@ -166,13 +160,6 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("open backstops after the release in awaiting_children = %d, want none", open)
 		}
 	})
-}
-
-// sortedKeys is keys sorted, in a slice of its own.
-func sortedKeys(keys []string) []string {
-	sorted := slices.Clone(keys)
-	slices.Sort(sorted)
-	return sorted
 }
 
 // sameChildrenWait says whether a and b are one held start, its moment compared as an instant.

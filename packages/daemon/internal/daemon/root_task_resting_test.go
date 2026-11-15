@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -50,13 +48,9 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 			putOutboxIssue(t, pool, records, record.Issue{Key: resting, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: heldTaskProject, Tree: resting, Title: "Resting", Phase: tc.at, Generation: 1, Status: tc.status, Rank: "B"})
 			at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-				return records.PutGate(ctx, tx, record.OpenOnBasis(record.DesignGate{Issue: resting, ArtifactID: "artifact-320", LatestVersion: 2},
-					record.GateBasis{Issue: heldTaskRoot, ArtifactID: "artifact-310", Version: 3, Approval: record.EventMark{Seq: 40, At: at},
-						Approver: "user:alice", RegisteredAt: at}))
-			}); err != nil {
-				t.Fatalf("put the resting root's gate: %v", err)
-			}
+			putOutboxGate(t, pool, records, record.OpenOnBasis(record.DesignGate{Issue: resting, ArtifactID: "artifact-320", LatestVersion: 2},
+				record.GateBasis{Issue: heldTaskRoot, ArtifactID: "artifact-310", Version: 3, Approval: record.EventMark{Seq: 40, At: at},
+					Approver: "user:alice", RegisteredAt: at}))
 			// The task named one decision this delivery no longer holds: something else told it.
 			named, err := json.Marshal(record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-310/ask/ask-1", At: at,
 				Issue: heldTaskRoot, Decision: record.DecisionAskAnswered, Actor: "user:alice"}}, KeptApproval: tc.approval})

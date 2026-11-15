@@ -289,10 +289,11 @@ type treeWaits struct {
 // says what is the architect's own to do.
 //
 // With them come, for each issue of the tree still in the workflow, in key order, the roots that
-// rest on its approval and are still in the workflow (RestingRoots, dispatch://INFRA-3320 R8):
-// their work holds that issue's acceptance and its close, and a resting-root notice that told of
-// one is ended undelivered when the architect's claim has failed, as the phase-finished notice
-// is, so the reason names them beside the accepting list.
+// rest on its approval and are still in the workflow (RestingRoots, dispatch://INFRA-3320 R8),
+// read for the whole tree at once (restingRootsOn): their work holds that issue's acceptance and
+// its close, and a resting-root notice that told of one is ended undelivered when the architect's
+// claim has failed, as the phase-finished notice is, so the reason names them beside the
+// accepting list.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, treeWaits, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
 	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
@@ -332,6 +333,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	catchUp.Issues = make([]record.CatchUpIssue, 0, len(issues))
 	var waits treeWaits
+	var live []string
 	for _, issue := range issues {
 		listed := record.CatchUpIssue{Key: issue.Key, Title: issue.Title, Phase: issue.Phase, Status: issue.Status}
 		if issue.Parent != nil {
@@ -344,12 +346,15 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		if issue.Phase == phase.Accepting {
 			waits.accepting = append(waits.accepting, issue.Key)
 		}
-		resting, err := RestingRoots(ctx, tx, store, issue.Key)
-		if err != nil {
-			return record.CatchUp{}, treeWaits{}, err
-		}
-		if len(resting) > 0 {
-			waits.resting = append(waits.resting, restingClause(issue.Key, resting))
+		live = append(live, issue.Key)
+	}
+	resting, err := restingRootsOn(ctx, tx, store, live)
+	if err != nil {
+		return record.CatchUp{}, treeWaits{}, err
+	}
+	for _, key := range live {
+		if roots := resting[key]; len(roots) > 0 {
+			waits.resting = append(waits.resting, restingClause(key, roots))
 		}
 	}
 	return catchUp, waits, nil

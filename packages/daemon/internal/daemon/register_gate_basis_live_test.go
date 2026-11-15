@@ -223,7 +223,7 @@ func (r *registerGateBasisLive) registers() {
 func (r *registerGateBasisLive) refusesOverAnOpenBlock() {
 	t := r.t
 	t.Helper()
-	version := r.editDocument(r.root.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": personHandoverBlock})
+	version := r.editDocument(r.root.PrimaryArtifactID, insertAtEnd(personHandoverBlock))
 	ask := r.blockAsk(r.root.Key, "wave")
 	// The daemon's own writes to Dispatch for R run first, so nothing of them lands between the
 	// two snapshots.

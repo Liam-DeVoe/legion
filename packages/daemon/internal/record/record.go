@@ -1485,6 +1485,9 @@ type Store interface {
 	// IssuesOf is the record of each of keys that is an issue of project, by key, leaving out a key
 	// with no record; no keys read nothing.
 	IssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error)
+	// IssuesByKey is the record of each of keys, whatever its project, by key, leaving out a key
+	// with no record; no keys read nothing. It is Issue for many keys in one query.
+	IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]Issue, error)
 	// AncestorsOf is the record of each of keys and of every issue above it on the chain of
 	// recorded parents, by key, for the issues of project; it walks the chain in one query
 	// whatever its depth. It is what the waiting line's pass reads of the issues its live read
@@ -1748,10 +1751,11 @@ type Store interface {
 	// GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, in
 	// issue and then step order, of every tree.
 	GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string) ([]DesignGate, error)
-	// GatesRestingOn is every gate that rests on ancestor in this generation
+	// GatesRestingOn is every gate that rests on one of ancestors in this generation
 	// (DesignGate.RestsOnIssue), in issue and then step order, of every tree: each a basis on
-	// ancestor opened at some point, and each whose basis names ancestor now, standing or pending.
-	GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestor string) ([]DesignGate, error)
+	// such an ancestor opened at some point, and each whose basis names one now, standing or
+	// pending. It is one query whatever the number of ancestors.
+	GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestors ...string) ([]DesignGate, error)
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate). A basis it carries names its ancestor, the
 	// ancestor's document and version and the daemon's time of the registration, and a pending

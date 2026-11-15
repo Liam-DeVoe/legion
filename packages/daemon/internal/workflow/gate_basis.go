@@ -371,12 +371,20 @@ func RestingRoots(ctx context.Context, tx pgx.Tx, store record.Store, ancestor s
 	if err != nil {
 		return nil, err
 	}
+	return restingRoots(gates, func(key string) (*record.Issue, error) { return store.Issue(ctx, tx, key) })
+}
+
+// restingRoots is the roots of gates, the gates that rest on one ancestor in issue and then step
+// order, that are still in the workflow, each with its steps that rest (RestingRoots). rootOf is
+// each root's record by key, nil for a key with no record, asked once for each root's run of
+// gates.
+func restingRoots(gates []record.DesignGate, rootOf func(key string) (*record.Issue, error)) ([]RestingRoot, error) {
 	var roots []RestingRoot
 	read, live := "", false
 	for _, gate := range gates {
 		if gate.Issue != read {
 			read = gate.Issue
-			root, err := store.Issue(ctx, tx, gate.Issue)
+			root, err := rootOf(gate.Issue)
 			if err != nil {
 				return nil, err
 			}
@@ -389,6 +397,51 @@ func RestingRoots(ctx context.Context, tx pgx.Tx, store record.Store, ancestor s
 		}
 	}
 	return roots, nil
+}
+
+// restingRootsOn is RestingRoots for each of ancestors, by ancestor key, with no entry for an
+// ancestor no root still in the workflow rests on, in two reads whatever their number: the gates
+// resting on any of them (Store.GatesRestingOn) and the record of every root those gates name
+// (Store.IssuesByKey), each root read once however many of ancestors it rests on.
+func restingRootsOn(ctx context.Context, tx pgx.Tx, store record.Store, ancestors []string) (map[string][]RestingRoot, error) {
+	if len(ancestors) == 0 {
+		return nil, nil
+	}
+	gates, err := store.GatesRestingOn(ctx, tx, ancestors...)
+	if err != nil || len(gates) == 0 {
+		return nil, err
+	}
+	keys := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		keys = append(keys, gate.Issue)
+	}
+	// The gates come in issue order, so each root's key is a run that Compact leaves once.
+	rows, err := store.IssuesByKey(ctx, tx, slices.Compact(keys))
+	if err != nil {
+		return nil, err
+	}
+	records := make(map[string]record.Issue, len(rows))
+	for _, row := range rows {
+		records[row.Key] = row
+	}
+	rootOf := func(key string) (*record.Issue, error) {
+		if root, recorded := records[key]; recorded {
+			return &root, nil
+		}
+		return nil, nil
+	}
+	resting := make(map[string][]RestingRoot, len(ancestors))
+	for _, ancestor := range ancestors {
+		on := slices.DeleteFunc(slices.Clone(gates), func(gate record.DesignGate) bool { return !gate.RestsOnIssue(ancestor) })
+		roots, err := restingRoots(on, rootOf)
+		if err != nil {
+			return nil, err
+		}
+		if len(roots) > 0 {
+			resting[ancestor] = roots
+		}
+	}
+	return resting, nil
 }
 
 // RestingRootsTask is what the architect of ancestor is told of the roots that rest on its
@@ -535,7 +588,9 @@ func ownDocumentEnded(root string, gate record.DesignGate, fact intake.DispatchA
 // that stands open on the ancestor's approval changes on nothing done to that document (R3): it
 // passes on a person's changes request on the version it rests on, made after that approval
 // (tellBasisChanges), and stays open. A row of a step the deployment does not gate holds nothing
-// and takes no event, as artifactIgnored rules for a root's own document.
+// and takes no event, as artifactIgnored rules for a root's own document. The root is read only
+// for a step that takes the event: most events on a basis document change nothing for a step that
+// stands open on it.
 func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) error {
 	gates, err := e.store.GatesForBasisArtifact(ctx, tx, fact.ArtifactID)
 	if err != nil {
@@ -545,6 +600,10 @@ func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		if !e.gatesStep(gate.Step) {
 			continue
 		}
+		pending := gate.PendingOnBasis()
+		if !pending && !BasisChangesRequest(gate, fact.Kind == intake.DispatchArtifactChangesRequested, fact.Version, fact.Actor, fact.Mark) {
+			continue
+		}
 		root, err := e.store.Issue(ctx, tx, gate.Issue)
 		if err != nil {
 			return err
@@ -552,10 +611,9 @@ func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		if root == nil {
 			continue
 		}
-		switch {
-		case gate.PendingOnBasis():
+		if pending {
 			err = e.pendingBasisArtifact(ctx, tx, *root, gate, fact)
-		case BasisChangesRequest(gate, fact.Kind == intake.DispatchArtifactChangesRequested, fact.Version, fact.Actor, fact.Mark):
+		} else {
 			err = e.tellBasisChanges(ctx, tx, *root, gate, intake.BasisReview{Mark: fact.Mark, Actor: fact.Actor, Reason: fact.Reason})
 		}
 		if err != nil {

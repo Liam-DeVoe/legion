@@ -96,23 +96,14 @@ func basisSeedBasis(version int) record.GateBasis {
 // approval of version 3.
 func (r *basisSeedRig) openOnBasis(key, document string) {
 	r.t.Helper()
-	r.putGate(record.OpenOnBasis(record.DesignGate{Issue: key, ArtifactID: document, LatestVersion: 4}, basisSeedBasis(3)))
+	putOutboxGate(r.t, r.pool, r.records, record.OpenOnBasis(record.DesignGate{Issue: key, ArtifactID: document, LatestVersion: 4}, basisSeedBasis(3)))
 }
 
 // pendingOnBasis writes key's spec step closed at version 4, waiting on the ancestor's request
 // ask-100 for a person's approval of version 4.
 func (r *basisSeedRig) pendingOnBasis(key, document string) {
 	r.t.Helper()
-	r.putGate(record.PendOnBasis(record.DesignGate{Issue: key, ArtifactID: document, LatestVersion: 4}, basisSeedBasis(4), "ask-100"))
-}
-
-func (r *basisSeedRig) putGate(gate record.DesignGate) {
-	r.t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		return r.records.PutGate(context.Background(), tx, gate)
-	}); err != nil {
-		r.t.Fatalf("put the gate of %s: %v", gate.Issue, err)
-	}
+	putOutboxGate(r.t, r.pool, r.records, record.PendOnBasis(record.DesignGate{Issue: key, ArtifactID: document, LatestVersion: 4}, basisSeedBasis(4), "ask-100"))
 }
 
 // gate is the root's spec step as the store holds it.
@@ -129,29 +120,30 @@ func (r *basisSeedRig) gate() record.DesignGate {
 	return *gate
 }
 
-// notices is every notice of kind the outbox holds keyed by issue, in order.
-func (r *basisSeedRig) notices(issue string, kind record.NoticeKind) []record.Notice {
-	r.t.Helper()
-	rows, err := r.pool.Query(context.Background(), `select payload from outbox where kind = 'notice' and issue = $1
+// noticesOfKind is every notice of kind the outbox holds keyed by issue, oldest first, delivered
+// or not: the basis tests' rigs read what the daemon told an architect through it.
+func noticesOfKind(t *testing.T, pool *store.Pool, issue string, kind record.NoticeKind) []record.Notice {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload from outbox where kind = 'notice' and issue = $1
 		and payload->>'kind' = $2 order by id`, issue, string(kind))
 	if err != nil {
-		r.t.Fatalf("read the %s notices of %s: %v", kind, issue, err)
+		t.Fatalf("read the %s notices of %s: %v", kind, issue, err)
 	}
 	defer rows.Close()
 	var notices []record.Notice
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			r.t.Fatalf("scan a %s notice of %s: %v", kind, issue, err)
+			t.Fatalf("scan a %s notice of %s: %v", kind, issue, err)
 		}
 		var notice record.Notice
 		if err := json.Unmarshal(payload, &notice); err != nil {
-			r.t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
+			t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
 		}
 		notices = append(notices, notice)
 	}
 	if err := rows.Err(); err != nil {
-		r.t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)
+		t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)
 	}
 	return notices
 }
@@ -225,14 +217,14 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 			if tc.open && gate.Basis.Approval != (record.EventMark{Seq: 60, At: approvedAt}) && gate.Basis.Approval != (record.EventMark{At: approvedAt}) {
 				t.Fatalf("the basis = %#v, want it on the person's approval of version 4 at %s", gate.Basis, approvedAt)
 			}
-			if opened := rig.notices(basisSeedRoot, "design-approved"); (len(opened) == 1) != tc.open || len(opened) > 1 {
+			if opened := noticesOfKind(t, rig.pool, basisSeedRoot, "design-approved"); (len(opened) == 1) != tc.open || len(opened) > 1 {
 				t.Fatalf("design-approved notices = %#v, want one for an opening alone", opened)
 			}
-			ended := rig.notices(basisSeedRoot, "basis-ended")
+			ended := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-ended")
 			if (tc.ended == "") != (len(ended) == 0) || len(ended) > 1 || tc.ended != "" && !strings.Contains(ended[0].Reason, tc.ended) {
 				t.Fatalf("basis-ended notices = %#v, want one naming %q, or none", ended, tc.ended)
 			}
-			root, ancestor := rig.notices(basisSeedRoot, "basis-changes-requested"), rig.notices(basisSeedAncestor, "basis-changes-requested")
+			root, ancestor := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-changes-requested"), noticesOfKind(t, rig.pool, basisSeedAncestor, "basis-changes-requested")
 			if len(root) != tc.asked || len(ancestor) != tc.asked ||
 				tc.asked == 1 && (!strings.Contains(root[0].Reason, `"name the rollback path"`) || !strings.Contains(ancestor[0].Reason, `"name the rollback path"`)) {
 				t.Fatalf("basis-changes-requested notices = %#v to the root and %#v to the ancestor, want %d each naming the reason", root, ancestor, tc.asked)
@@ -272,7 +264,7 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 		if gate := rig.gate(); !gate.OnBasis() || !record.GateOpen(gate) || gate.Basis.Version != 3 {
 			t.Fatalf("the spec step = %#v, want it open on version 3 of the ancestor's document", gate)
 		}
-		root, ancestor := rig.notices(basisSeedRoot, "basis-changes-requested"), rig.notices(basisSeedAncestor, "basis-changes-requested")
+		root, ancestor := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-changes-requested"), noticesOfKind(t, rig.pool, basisSeedAncestor, "basis-changes-requested")
 		if len(root) != 2 || len(ancestor) != 2 {
 			t.Fatalf("basis-changes-requested notices = %#v to the root and %#v to the ancestor, want two each", root, ancestor)
 		}
@@ -286,7 +278,7 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 			}
 		}
 		for _, kind := range []record.NoticeKind{"design-changes-requested", "basis-ended"} {
-			if got := rig.notices(basisSeedRoot, kind); len(got) != 0 {
+			if got := noticesOfKind(t, rig.pool, basisSeedRoot, kind); len(got) != 0 {
 				t.Fatalf("%s notices = %#v, want none", kind, got)
 			}
 		}
@@ -304,7 +296,7 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 		if gate := rig.gate(); !gate.OnBasis() || !record.GateOpen(gate) {
 			t.Fatalf("the spec step = %#v, want it open on the basis", gate)
 		}
-		if got := rig.notices(basisSeedRoot, "basis-changes-requested"); len(got) != 0 {
+		if got := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-changes-requested"); len(got) != 0 {
 			t.Fatalf("basis-changes-requested notices = %#v, want none for a review the approval followed", got)
 		}
 	})
@@ -321,15 +313,16 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 		if gate := rig.gate(); gate.Basis != nil || record.GateOpen(gate) || gate.LatestVersion != 5 {
 			t.Fatalf("the spec step = %#v, want it closed at version 5 with no basis", gate)
 		}
-		if got := rig.notices(basisSeedRoot, "basis-changes-requested"); len(got) != 0 {
+		if got := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-changes-requested"); len(got) != 0 {
 			t.Fatalf("basis-changes-requested notices = %#v, want none: the closed step reads no ancestor", got)
 		}
 	})
 }
 
 // At boot the daemon queues one pending-basis seed for each step of the project that waits on an
-// ancestor's request, whatever phase its root stands in, and none for a step open on a basis, for
-// an issue Dispatch shows done, or for another project's issue. The seed it queued then opens the
+// ancestor's request, whatever phase its root stands in, in the pass that queues the publication
+// of every recorded gate (queueRecordedGatesPublish), and none for a step open on a basis, for an
+// issue Dispatch shows done, or for another project's issue. The seed it queued then opens the
 // step on the person's approval the daemon missed, and the boot left the open step as it was.
 func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 	rig := newBasisSeedRig(t)
@@ -358,7 +351,7 @@ func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 	rig.pendingOnBasis(otherProject, "artifact-other")
 
 	boot := &workflowRuntime{pool: rig.pool, records: rig.records, dispatchProject: "LEGION", log: quietLogger()}
-	if err := boot.queuePendingBasisSeeds(context.Background()); err != nil {
+	if err := boot.queueRecordedGatesPublish(context.Background()); err != nil {
 		t.Fatalf("the boot's pass: %v", err)
 	}
 

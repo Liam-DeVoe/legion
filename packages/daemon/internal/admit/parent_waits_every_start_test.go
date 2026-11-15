@@ -405,7 +405,7 @@ func pwHoldsMove(t *testing.T, move pwMove) {
 	if posts := pwPayloads[record.MessagePost](t, pool, spParent); len(posts) != 0 {
 		t.Fatalf("messages = %+v, want none: no hook's firing message, and no cap message below the cap", posts)
 	}
-	ended := spEnded(t, pool, spParent)
+	ended := pwPayloads[record.PhaseEnded](t, pool, spParent)
 	if move.ended == "" {
 		if len(ended) != 0 {
 			t.Fatalf("phase-ended messages = %+v, want none: the role that made the move ended its own phase", ended)
@@ -418,7 +418,7 @@ func pwHoldsMove(t *testing.T, move pwMove) {
 	if kinds := pwNoticeKinds(t, pool, spParent); !maps.Equal(kinds, want) {
 		t.Fatalf("notices by kind after a second pass = %v, want still %v", kinds, want)
 	}
-	if again := spEnded(t, pool, spParent); len(again) != len(ended) {
+	if again := pwPayloads[record.PhaseEnded](t, pool, spParent); len(again) != len(ended) {
 		t.Fatalf("phase-ended messages after a second pass = %+v, want still %d", again, len(ended))
 	}
 }
@@ -491,7 +491,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		pwHeld(t, pool, spParent, phase.Accepting, cause, spChild+" (todo)")
 		pwNotice(t, pool, phase.Accepting, phase.Accepting, cause, spChild+" (todo)")
 		pwStatuses(t, pool, spParent, pwInProgressOver("needs_review"))
-		if ended := spEnded(t, pool, spParent); len(ended) != 0 {
+		if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 0 {
 			t.Fatalf("phase-ended messages = %+v, want none: no worker runs in accepting", ended)
 		}
 	})
@@ -530,7 +530,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if starts := startsOf(t, pool, spParent); len(starts) != 0 {
 			t.Fatalf("starts of %s = %+v, want none: the written start is finished and never delivered", spParent, starts)
 		}
-		if ended, retired := spEnded(t, pool, spParent), spRetired(t, pool, spParent); len(ended) != 0 || len(retired) != 0 {
+		if ended, retired := pwPayloads[record.PhaseEnded](t, pool, spParent), spRetired(t, pool, spParent); len(ended) != 0 || len(retired) != 0 {
 			t.Fatalf("phase-ended messages = %+v, task retirements = %+v; want none: no worker had the phase", ended, retired)
 		}
 		pwStatuses(t, pool, spParent, nil)
@@ -642,7 +642,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the held task = %q, want the implementer's task %q", wait.Task, pwTask(spParent, phase.Implementing))
 		}
 		pwNotice(t, pool, phase.Implementing, phase.Implementing, cause, spChild+" (todo)")
-		pwToldR10(t, spEnded(t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason)
+		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason)
 
 		pwRefused(t, pwApply(t, pool, admission, "api", "late", pwLate(spParent, claim.RoleImplementer, token, "implement-late")),
 			"HANDOFF_NOT_CURRENT_PHASE", "the implementer's completion of the ended phase")
@@ -651,7 +651,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 
 		spPass(t, pool, admission)
-		if ended := spEnded(t, pool, spParent); len(ended) != 1 {
+		if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 1 {
 			t.Fatalf("phase-ended messages after a second pass = %+v, want still one", ended)
 		}
 		if told := spNotices(t, pool, spParent); len(told) != 1 {
@@ -677,7 +677,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		spPass(t, pool, admission)
 
 		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
-		pwToldR10(t, spEnded(t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason)
+		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason)
 		if state, by := pwClaimState(t, pool, token); state != supervise.StateSuspended || by != supervise.SuspendedByReleased {
 			t.Fatalf("the implementer's claim = %s by %q, want it released still, for the message's delivery to wake", state, by)
 		}
@@ -694,7 +694,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		spPass(t, pool, admission)
 
 		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
-		pwToldR10(t, spEnded(t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason)
+		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason)
 		pwRefused(t, pwApply(t, pool, admission, "api", "late", pwLate(spParent, claim.RoleImplementer, token, "implement-late")),
 			"HANDOFF_NOT_CURRENT_PHASE", "the completion of the implementer whose turn ran at the pass")
 	})
@@ -708,7 +708,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		const cause = "the admission pass stopped the tester's testing phase"
 		wait := pwHeld(t, pool, spParent, phase.Testing, cause, spChild+" (todo)")
 		pwNotice(t, pool, phase.Testing, phase.Testing, cause, spChild+" (todo)")
-		pwToldR10(t, spEnded(t, pool, spParent), claim.RoleTester, phase.Testing, wait.Reason)
+		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleTester, phase.Testing, wait.Reason)
 		pwStatuses(t, pool, spParent, pwInProgressOver("testing"))
 
 		spMirror(t, pool, spChild, "done", spParent, 2)
@@ -915,7 +915,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if got := issue(t, pool, spParent); got.Phase != phase.Testing || got.ChildrenWait != nil {
 			t.Fatalf("the parent after the merge = phase %s, held start %+v; want testing", got.Phase, got.ChildrenWait)
 		}
-		if ended := spEnded(t, pool, spParent); len(ended) != 0 {
+		if ended := pwPayloads[record.PhaseEnded](t, pool, spParent); len(ended) != 0 {
 			t.Fatalf("phase-ended messages = %+v, want none: the tester of a merged parent is sent nothing", ended)
 		}
 
@@ -928,7 +928,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleReviewer {
 			t.Fatalf("worker starts = %+v, want the reviewer's", starts)
 		}
-		if told, ended := spNotices(t, pool, spParent), spEnded(t, pool, spParent); len(told) != 0 || len(ended) != 0 {
+		if told, ended := spNotices(t, pool, spParent), pwPayloads[record.PhaseEnded](t, pool, spParent); len(told) != 0 || len(ended) != 0 {
 			t.Fatalf("awaiting-children notices = %+v, phase-ended messages = %+v; want none", told, ended)
 		}
 	})
@@ -1002,7 +1002,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if kinds := pwNoticeKinds(t, pool, spParent); !maps.Equal(kinds, map[record.NoticeKind]int{"checks-red": 1}) {
 			t.Fatalf("notices by kind = %v, want the checks-red notice alone", kinds)
 		}
-		ended := spEnded(t, pool, spParent)
+		ended := pwPayloads[record.PhaseEnded](t, pool, spParent)
 		if len(ended) != 1 || ended[0].Role != claim.RoleImplementer || ended[0].To != phase.Implementing || !ended[0].TaskFollows {
 			t.Fatalf("phase-ended messages = %+v, want today's one to the implementer, its implementing task following", ended)
 		}

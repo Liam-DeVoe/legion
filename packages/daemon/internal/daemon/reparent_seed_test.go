@@ -105,8 +105,7 @@ func TestTheReparentSeedNamesR1sPathOnlyWhereTheParentOpensIt(t *testing.T) {
 			if len(messages) != 1 || messages[0] != tc.want {
 				t.Fatalf("the messages on %s = %q, want one reading %q", reparentedRoot, messages, tc.want)
 			}
-			notices := reparentOutbox(t, pool, `select payload->>'reason' from outbox where kind = 'notice' and issue = $1
-				and payload->>'kind' = 'child-status' order by id`, reparentParent)
+			notices := childStatusNotices(t, pool, reparentParent)
 			if len(notices) != 1 || notices[0] != tc.want {
 				t.Fatalf("the child-status notices to the tree of %s = %q, want one reading %q", reparentParent, notices, tc.want)
 			}

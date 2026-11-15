@@ -2,8 +2,6 @@ package admit
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -129,10 +127,8 @@ func awaitingRun(t *testing.T) (*pgxpool.Pool, *Admission) {
 // wait by design whatever the line does, and a wait on a child nobody released is a wait by
 // design only while the project's line can move, since releasing that child is the tree's own
 // work. Each project is the waiting root alone, quiet past the bound, measured over three passes.
-//
-// The line moves in the third case because a claim of another tree is at work (lineCanMove's
-// first term): that tree is not told, being at work, and the waiting tree is not told either,
-// which is the case a child filed and not released meets in a project whose work goes on.
+// The case of a line that moves, because a claim of another tree is at work, is a subtest of
+// TestParentWaitsHoldsNoSlotAndComesBack, over the same seed.
 func TestTheMeasureReadsAWaitingParentAsAFirstPhaseChildrenWait(t *testing.T) {
 	const (
 		root  = "LEGION-950"
@@ -146,20 +142,6 @@ func TestTheMeasureReadsAWaitingParentAsAFirstPhaseChildrenWait(t *testing.T) {
 		for pass, roots := range waitPasses(t, pool, admission, nil, root) {
 			if want := []string{root}; !reflect.DeepEqual(roots, want) {
 				t.Fatalf("after pass %d the controller was told of %v, want %v: a wait on a child nobody released is the tree's own work", pass+1, roots, want)
-			}
-		}
-	})
-
-	t.Run("a child nobody released, the line moving", func(t *testing.T) {
-		pool, admission := awaitingRun(t)
-		seedMirrorChild(t, pool, child, "backlog", root)
-		const working = "LEGION-960"
-		seedQuietRoot(t, pool, working, "B", phase.Implementing)
-		seedMirror(t, pool, working, "in_progress")
-		seedClaim(t, claimStore(t, pool), working, working, claim.RoleImplementer, supervise.StateWorking)
-		for pass, roots := range waitPasses(t, pool, admission, nil, root, working) {
-			if roots != nil {
-				t.Fatalf("pass %d told the controller of %v, want nothing: %s waits by design while %s's work goes on", pass+1, roots, root, working)
 			}
 		}
 	})
@@ -184,122 +166,6 @@ func TestTheMeasureReadsAWaitingParentAsAFirstPhaseChildrenWait(t *testing.T) {
 			t.Fatalf("%s after the passes = %s, want it waiting still on its released child", root, got.Phase)
 		}
 	})
-}
-
-// A linger's hand-over carries a child waiting in awaiting_children whole (dispatch://INFRA-3320
-// R13): the readmission's orphan branch keeps the issue row, so the child becomes a root of its own
-// at a new generation still in awaiting_children, with the start it held, the forward merge it
-// owes and the moment it last waited, its pull request, its phases rows and its old root's design
-// gate. Its promotion as a queued root opens its tree, writes it in_progress, takes no slot —
-// awaiting_children keeps none, so the cap does not bind it (capLets), and the cap here is full —
-// and starts its architect alone: no worker of a waiting parent starts (startMidPhaseMembers).
-// Once its own child is done, the next pass takes it back to the start it held, whose worker's
-// start waits in the line for the slot the cap has not got.
-func TestALingersHandOverCarriesAWaitingChildWhole(t *testing.T) {
-	const (
-		root       = "LEGION-208"
-		child      = "LEGION-209"
-		grandchild = "LEGION-210"
-		artifact   = "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26"
-		task       = "Continue LEGION-209. Issue: LEGION-209. Phase: implementing."
-		reason     = "a review asked for changes, while these Dispatch children of LEGION-209 were open: LEGION-210 (backlog)"
-	)
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedStarted(t, pool, spFiller, phase.Implementing, nil)
-	until := fixedNow.Add(time.Hour)
-	waited := fixedNow.Add(-2 * time.Hour)
-	held := record.ChildrenWait{Start: phase.Implementing, Task: task, Reason: reason, Since: waited}
-	parent := root
-	inTx(t, pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		for _, put := range []error{
-			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
-				Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
-				Project: testProject, Title: child, Parent: &parent, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress", Rank: "B",
-				LastDispatchSeq: 1, ChildrenWait: &held, ForwardMergeOwed: true, ChildrenWaitedAt: &waited}),
-			records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
-			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209",
-				HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen}),
-			records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleImplementer, Claim: "implementer", Entry: 2,
-				EntryTask: task, EntryRaisedAt: waited.Add(-time.Hour)}),
-			records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-		} {
-			if put != nil {
-				t.Fatalf("seed: %v", put)
-			}
-		}
-	})
-	seedMirrorChild(t, pool, grandchild, "backlog", child)
-
-	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: true, DaemonActor: true}, engine)
-
-	got := issue(t, pool, child)
-	if got.Tree != child || got.Generation != 2 || got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, &held) {
-		t.Fatalf("the handed-over child = tree %s, generation %d, phase %s, held start %+v; want its own tree at generation 2, waiting still with %+v",
-			got.Tree, got.Generation, got.Phase, got.ChildrenWait, held)
-	}
-	if !got.ForwardMergeOwed || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waited) {
-		t.Fatalf("the handed-over child = forward merge owed %t, waited at %v; want both carried", got.ForwardMergeOwed, got.ChildrenWaitedAt)
-	}
-	// Promoted as any handed-over root is: in_progress, its tree open and the mark of its arrival
-	// gone, holding no slot under the full cap, with its architect started and no worker.
-	if got.Status != "in_progress" || got.HandedOverFrom != "" {
-		t.Fatalf("the handed-over child = status %s, handed over from %q; want it promoted in_progress", got.Status, got.HandedOverFrom)
-	}
-	if holdsSlot(t, pool, child) {
-		t.Fatalf("slots = %+v, want none for %s: awaiting_children keeps no slot", slots(t, pool), child)
-	}
-	if architectStarts(t, pool, child) != 1 {
-		t.Fatalf("architect starts of %s = %d, want one", child, architectStarts(t, pool, child))
-	}
-	for _, start := range startsOf(t, pool, child) {
-		if start.role != claim.RoleArchitect {
-			t.Fatalf("starts of %s = %+v, want the architect's alone: no worker of a waiting parent starts", child, startsOf(t, pool, child))
-		}
-	}
-	written := false
-	for _, effect := range effects(t, pool) {
-		if effect.issue == child && reflect.DeepEqual(effect.payload, record.OrdinaryStatusWrite("in_progress", "todo", "")) {
-			written = true
-		}
-	}
-	if !written {
-		t.Fatalf("outbox effects = %+v, want %s written in_progress at its promotion", effects(t, pool), child)
-	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		pr, err := records.PullRequest(ctx, tx, child)
-		if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
-			t.Fatalf("carried pull request = %#v, %v; want head-42 at generation 2", pr, err)
-		}
-		gates, err := records.GatesOf(ctx, tx, child)
-		if gate := record.SpecGate(gates); err != nil || gate == nil || gate.ArtifactID != artifact {
-			t.Fatalf("carried gate = %#v, %v", gates, err)
-		}
-	})
-	if row := spPhaseRow(t, pool, child, claim.RoleImplementer); row.Entry != 2 || row.EntryTask != task {
-		t.Fatalf("the implementer's phases row = %+v, want it carried at entry 2", row)
-	}
-
-	// Its own child is done: the next pass takes it back to the start it held.
-	spMirror(t, pool, grandchild, "done", child, 2)
-	spPass(t, pool, admission)
-
-	back := issue(t, pool, child)
-	if back.Phase != phase.Implementing || back.ChildrenWait != nil {
-		t.Fatalf("the carried root after its child is done = phase %s, held start %+v; want implementing with nothing held", back.Phase, back.ChildrenWait)
-	}
-	starts := startsOf(t, pool, child)
-	implementer := slices.IndexFunc(starts, func(start midPhaseStart) bool { return start.role == claim.RoleImplementer })
-	if implementer < 0 || !starts[implementer].needsSlot || starts[implementer].claimable ||
-		!strings.HasPrefix(starts[implementer].task, task) {
-		t.Fatalf("starts of %s = %+v, want the implementer's on the held task, waiting for a slot under the full cap", child, starts)
-	}
 }
 
 // A root that waited in awaiting_children and that a person parked lingers at done with nothing

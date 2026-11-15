@@ -66,39 +66,15 @@ func seedLiveAncestor(t *testing.T, pool *pgxpool.Pool) {
 // pendingSeeds is every pending-basis seed the outbox holds for issue, in order.
 func pendingSeeds(t *testing.T, pool *pgxpool.Pool, issue string) []record.PendingBasisSeed {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload from outbox where kind = $1 and issue = $2 order by id`,
-		string(record.OutboxKindPendingBasisSeed), issue)
-	if err != nil {
-		t.Fatalf("read the pending-basis seeds of %s: %v", issue, err)
-	}
-	defer rows.Close()
 	var seeds []record.PendingBasisSeed
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan a pending-basis seed of %s: %v", issue, err)
-		}
+	for _, row := range issueOutboxOf(t, pool, issue, string(record.OutboxKindPendingBasisSeed)) {
 		var seed record.PendingBasisSeed
-		if err := json.Unmarshal(payload, &seed); err != nil {
+		if err := json.Unmarshal(row.payload, &seed); err != nil {
 			t.Fatalf("decode a pending-basis seed of %s: %v", issue, err)
 		}
 		seeds = append(seeds, seed)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the pending-basis seeds of %s: %v", issue, err)
-	}
 	return seeds
-}
-
-// gateSeedCount is how many gate seeds the outbox holds for issue.
-func gateSeedCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
-	t.Helper()
-	var got int
-	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1 and issue = $2`,
-		string(record.OutboxKindGateSeed), issue).Scan(&got); err != nil {
-		t.Fatalf("count the gate seeds of %s: %v", issue, err)
-	}
-	return got
 }
 
 // The message a registration on an approved basis posts on the root (R2): its first line, by which
@@ -173,7 +149,7 @@ func TestARegistrationOnAnApprovedBasisOpensTheStepAndRecordsIt(t *testing.T) {
 			t.Fatalf("the resting-root reason %q names no %q", resting[0].Reason, part)
 		}
 	}
-	if got := gateSeedCount(t, pool, gatedRoot); got != 1 {
+	if got := outboxKindCount(t, pool, gatedRoot, record.OutboxKindGateSeed); got != 1 {
 		t.Fatalf("gate seeds = %d, want the registration's one", got)
 	}
 	if got := recordedRoot(t, pool); got.ViewOf != basisAncestor || got.DeclaredSeq != 0 {

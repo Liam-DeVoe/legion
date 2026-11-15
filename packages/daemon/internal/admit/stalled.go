@@ -516,7 +516,7 @@ func silences(word record.HeldReason) bool { return silencedTree[word] }
 // waits and the started parents' waits. None of it is judged here: the line and the words are
 // record.Waiting's two answers through blockers.JudgeLine, the child waits are
 // record.ChildWaits' through the same judgement and the started parents' are the pass's
-// (record.StartedParentWaits), and the slots are the pass's own rows.
+// (record.LineFacts.StartedParentWaits), and the slots are the pass's own rows.
 type lineHolds struct {
 	// line is the waiting line's entries, by issue key. An entry says whether its issue already
 	// holds a slot (record.LineEntry.Holds), which is the one fact of the cap's own hold.

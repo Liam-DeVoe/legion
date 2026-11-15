@@ -60,15 +60,7 @@ func registerResting(t *testing.T, pool *pgxpool.Pool, apply func(string, intake
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.OnBasis() || gate.RestsOn != basisAncestor {
 		t.Fatalf("R's spec step = %#v, want it open on P's approval and resting on %s", gate, basisAncestor)
 	}
-	standIn(t, pool, gatedRoot, phase.Implementing, "in_progress")
-}
-
-// standIn records key standing in at with status, as the workflow's own moves leave it.
-func standIn(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status string) {
-	t.Helper()
-	if _, err := pool.Exec(t.Context(), "update issues set phase = $2, status = $3 where key = $1", key, string(at), status); err != nil {
-		t.Fatalf("stand %s in %s: %v", key, at, err)
-	}
+	leave(t, pool, gatedRoot, phase.Implementing, "in_progress")
 }
 
 // closeIssue applies Dispatch's event of key moving to status (done, backlog), which takes it out
@@ -82,11 +74,13 @@ func closeIssue(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent, s
 	applyMirrored(t, pool, engine, key+"-"+status, intake.DispatchIssue{Key: key, Seq: seq, Type: kind, Status: status, Title: key, Parent: parent, Rank: "V"})
 }
 
-// mirrorChild writes what Dispatch shows of key, a child of parent, at seq.
-func mirrorChild(t *testing.T, pool *pgxpool.Pool, key, parent, status string, seq int64) {
+// mirrorChild writes what Dispatch shows of key, a child of parent at status, at seq, waiting on
+// blockers: what seedMirrorChild writes, where a test needs a later sequence or a link.
+func mirrorChild(t *testing.T, pool *pgxpool.Pool, key, parent, status string, seq int64, blockers ...string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{Key: key, Project: "LEGION", Status: status, Parent: parent, Seq: seq})
+		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{Key: key, Project: "LEGION", Status: status, Parent: parent,
+			Blockers: blockers, Seq: seq})
 	})
 }
 
@@ -100,7 +94,7 @@ func seedOwnApprovalChild(t *testing.T, pool *pgxpool.Pool) {
 		HandedOver: true, LastDispatchSeq: 1})
 	seedGate(t, pool, record.DesignGate{Issue: restingOwnChild, ArtifactID: "artifact-301", LatestVersion: 2, ApprovedVersion: new(2),
 		ApprovedMark: record.EventMark{Seq: 3, At: basisApprovedAt}})
-	mirrorChild(t, pool, restingOwnChild, basisAncestor, "in_progress", 1)
+	seedMirrorChild(t, pool, restingOwnChild, "in_progress", basisAncestor)
 }
 
 // refusedWith fails unless result is a 409 refusal of code whose message names each of names, and
@@ -179,7 +173,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		}
 
 		// The merged close needs no hold of its own (R8): the sign-off waited for R.
-		standIn(t, pool, basisAncestor, phase.Merging, "retro")
+		leave(t, pool, basisAncestor, phase.Merging, "retro")
 		applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41"})
 		if got := phaseOf(t, pool, basisAncestor); got != phase.Done {
 			t.Fatalf("P = %s after its merge, want done: the merge closes it as any merge does", got)
@@ -271,7 +265,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		}
 
 		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
-		mirrorChild(t, pool, restingNeverLet, basisAncestor, "backlog", 1)
+		seedMirrorChild(t, pool, restingNeverLet, "backlog", basisAncestor)
 		message = refusedWith(t, closeRootNow(t, pool, "close-held-by-a-child", basisAncestor), signOffChildOpen, "LEGION-303 (backlog)")
 		if want := "LEGION-100 is not closed while these Dispatch children of it are open: LEGION-303 (backlog). A parent closes after its children. " +
 			"Close or icebox each child that was never released " + parkRule + ", say in a comment which of those it is, and close the tree again. " +
@@ -311,14 +305,14 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		registerResting(t, pool, applyFacts(t, pool, engine))
 		// R is a Dispatch child of P as well, so it is both resting and open: the resting hold,
 		// which comes first, names it.
-		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 1)
+		seedMirrorChild(t, pool, gatedRoot, "in_progress", basisAncestor)
 		seedOwnApprovalChild(t, pool)
 
 		message := refusedWith(t, signOffNow(t, pool, "signoff-beneath", basisAncestor), signOffChildInWorkflow, restingMember)
 		if strings.Contains(message, gatedRoot) || strings.Contains(message, restingOwnChild) {
 			t.Fatalf("the refusal %q names the holds that come after the first", message)
 		}
-		standIn(t, pool, restingMember, phase.Done, "done")
+		leave(t, pool, restingMember, phase.Done, "done")
 
 		message = refusedWith(t, signOffNow(t, pool, "signoff-resting", basisAncestor), signOffRestingRoot, restingNamed)
 		if strings.Contains(message, restingOwnChild) {

@@ -596,16 +596,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
-				// Every row that reaches here is below phaseEntriesContract and gateBasisContract
-				// too, so the two entry numbers and `treeRuns` go whatever the row is, as the
-				// decided record's keys above do.
+				// Every row that reaches here is below phaseEntriesContract, quietTimeContract and
+				// gateBasisContract too, so the two entry numbers, the tree's quiet time and
+				// `treeRuns` go whatever the row is, as the decided record's keys above do.
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
+				delete(issue, TreeMovedAtField)
+				delete(issue, QuietHoursField)
 				delete(issue, "treeRuns")
-				if !tc.quiet {
-					delete(issue, TreeMovedAtField)
-					delete(issue, QuietHoursField)
-				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)

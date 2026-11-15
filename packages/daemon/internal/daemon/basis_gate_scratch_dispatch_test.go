@@ -15,8 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -82,6 +80,15 @@ func (r *personHandoverRig) gateCall(body map[string]any) (int, api.Failure) {
 		}
 	}
 	return status, failure
+}
+
+// registerBasis is root's register_gate at version on version basisVersion of parent's primary
+// document, with reason, under grant, which must answer 200.
+func (r *personHandoverRig) registerBasis(grant string, root scratchIssue, version int, parent scratchIssue, basisVersion int, reason string) {
+	r.t.Helper()
+	if status, refusal := r.gateCall(basisCall(grant, root, version, parent.PrimaryArtifactID, basisVersion, reason)); status != http.StatusOK {
+		r.t.Fatalf("%s's registration at version %d on version %d of %s's document = %d %+v, want 200", root.Key, version, basisVersion, parent.Key, status, refusal)
+	}
 }
 
 // gateAnswer is what one register_gate call sent off the test's goroutine came to.
@@ -405,7 +412,12 @@ func (d *consumerDrop) count() int {
 // insertParagraph is the edit that appends one paragraph to a document: a new version that changes
 // no block.
 func insertParagraph(text string) map[string]string {
-	return map[string]string{"op": "insert", "after": "end", "markdown": text + "\n"}
+	return insertAtEnd(text + "\n")
+}
+
+// insertAtEnd is the edit that appends markdown, as written, to the end of a document.
+func insertAtEnd(markdown string) map[string]string {
+	return map[string]string{"op": "insert", "after": "end", "markdown": markdown}
 }
 
 // k1 (dispatch://INFRA-3320, R1, R2, R4 and R8). A root R that ran as a tree of its own, set under
@@ -632,9 +644,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.linkUnder(carriedRoot, carriedParent, true)
 	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
 	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
-	if status, refusal := r.gateCall(basisCall(carriedGrant(), carriedRoot, 1, carriedParent.PrimaryArtifactID, carried.Version, reason)); status != http.StatusOK {
-		t.Fatalf("%s's registration on %s's carried approval of version %d = %d %+v, want 200", carriedRoot.Key, carriedParent.Key, carried.Version, status, refusal)
-	}
+	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
 	_, message = r.openedOnBasis(carriedRoot, carriedParent, 1, carried.Version)
 	if resting := r.notices(carriedParent.Key, "resting-root"); len(resting) != 1 || !strings.Contains(resting[0].Reason, carriedRoot.Key) {
 		t.Fatalf("the resting-root notices to %s's architect = %+v, want one naming %s", carriedParent.Key, resting, carriedRoot.Key)
@@ -655,9 +665,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.setStatus(backlogParent.Key, "backlog")
 	r.linkUnder(backlogRoot, backlogParent, false)
 	r.writeDocument(backlogRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(backlogParent.Key, "p2")}}))
-	if status, refusal := r.gateCall(basisCall(backlogGrant(), backlogRoot, 1, backlogParent.PrimaryArtifactID, backlogApproval.Version, reason)); status != http.StatusOK {
-		t.Fatalf("%s's registration on the approval of %s, on the backlog, = %d %+v, want 200", backlogRoot.Key, backlogParent.Key, status, refusal)
-	}
+	r.registerBasis(backlogGrant(), backlogRoot, 1, backlogParent, backlogApproval.Version, reason)
 	r.openedOnBasis(backlogRoot, backlogParent, 1, backlogApproval.Version)
 	if resting := r.notices(backlogParent.Key, "resting-root"); len(resting) != 0 {
 		t.Fatalf("the daemon queued resting-root notices %+v on %s, which it records in no live tree; want none", resting, backlogParent.Key)
@@ -686,9 +694,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.linkUnder(olderRoot, olderParent, true)
 	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
 	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
-	if status, refusal := r.gateCall(basisCall(olderGrant(), olderRoot, fourth, olderParent.PrimaryArtifactID, olderApproval.Version, reason)); status != http.StatusOK {
-		t.Fatalf("%s's registration at version %d on %s's approval = %d %+v, want 200", olderRoot.Key, fourth, olderParent.Key, status, refusal)
-	}
+	r.registerBasis(olderGrant(), olderRoot, fourth, olderParent, olderApproval.Version, reason)
 	state, message = r.openedOnBasis(olderRoot, olderParent, fourth, olderApproval.Version)
 	view, err := json.Marshal(state.Issues[olderRoot.Key])
 	if err != nil {
@@ -893,14 +899,13 @@ func TestBasisGateRefusals(t *testing.T) {
 	pv = r.approve(parent.PrimaryArtifactID).Version
 
 	// R's own documents.
-	rv = r.editDocument(root.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": ":::requirement{#r1}\n**R1.** The beacon's own requirement.\n:::\n"})
+	rv = r.editDocument(root.PrimaryArtifactID, insertAtEnd(":::requirement{#r1}\n**R1.** The beacon's own requirement.\n:::\n"))
 	cases.refused("R's primary document holding a requirement block", call(), http.StatusConflict, "VIEW_HOLDS_REQUIREMENT",
 		root.Key+"'s primary document", "holds requirement block r1")
 	cases.refused("a version of R's document below its latest", with(call(), "version", rv-1), http.StatusConflict, "ROOT_VERSION_NOT_LATEST",
 		fmt.Sprintf("at version %d, and the call names version %d", rv, rv-1))
 	rv = r.editDocument(root.PrimaryArtifactID, map[string]string{"op": "delete", "block": "r1"})
-	rv = r.editDocument(root.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end",
-		"markdown": fmt.Sprintf(":::check{#ks serves=\"%s\" surface=\"api\"}\nA check in the spec.\n:::\n", p2)})
+	rv = r.editDocument(root.PrimaryArtifactID, insertAtEnd(fmt.Sprintf(":::check{#ks serves=\"%s\" surface=\"api\"}\nA check in the spec.\n:::\n", p2)))
 	cases.refused("a check block in R's primary document that serves P2", call(), http.StatusConflict, "VIEW_CHECK_OUTSIDE_VERIFICATION",
 		root.Key+"'s primary document", "holds check block ks")
 	rv = r.editDocument(root.PrimaryArtifactID, map[string]string{"op": "delete", "block": "ks"})
@@ -930,7 +935,7 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "kn", serves: []string{pn}},
 		rigCheck{id: "kg", serves: []string{pgone}}))
 	r.editDocument(parent.PrimaryArtifactID, map[string]string{"op": "delete", "block": "pn"}, map[string]string{"op": "delete", "block": "pgone"},
-		map[string]string{"op": "insert", "after": "end", "markdown": ":::callout{#pn}\nA note that is no requirement.\n:::\n"})
+		insertAtEnd(":::callout{#pn}\nA note that is no requirement.\n:::\n"))
 	pv = r.approve(parent.PrimaryArtifactID).Version
 	cases.refused("a check that serves a block of P's primary document that is no requirement", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
 		"check kn", "serves "+pn, "p1, p2, p3, p:4")
@@ -1055,12 +1060,8 @@ func TestBasisGateRefusals(t *testing.T) {
 	cases.refused("P's primary document with no requirement block", call(), http.StatusConflict, "BASIS_NO_REQUIREMENTS",
 		fmt.Sprintf("at version %d marks no requirement block", pv))
 	// The daemon's record of P in merging, written as mergeClosesTheIssue writes one.
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutIssue(t.Context(), tx, record.Issue{Key: parent.Key, Repo: "acme/widgets", DefaultBranch: "main",
-			GitHubRepo: "acme/widgets", Tree: parent.Key, Project: r.cfg.Project, Title: parent.Key, Phase: phase.Merging, Generation: 1,
-			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
-	}); err != nil {
-		t.Fatalf("record %s in merging: %v", parent.Key, err)
-	}
+	putOutboxIssue(t, r.pool, record.NewStore(), record.Issue{Key: parent.Key, Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Tree: parent.Key, Project: r.cfg.Project, Title: parent.Key, Phase: phase.Merging, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
 	cases.refused("P recorded by the daemon in merging", call(), http.StatusConflict, "BASIS_ACCEPTED", "the daemon records "+parent.Key+" in merging")
 }

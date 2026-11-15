@@ -171,8 +171,8 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 }
 
 // openChildren is the keys of the open Dispatch children of one wait on them — a children-first
-// wait (ChildWaits) or a started parent's (StartedParentWaits) — in the order that judgement lists
-// them (ChildWait.Open, Dispatch key order).
+// wait (ChildWaits) or a started parent's (LineFacts.StartedParentWaits) — in the order that
+// judgement lists them (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
 	children := make([]string, len(wait.Open))
 	for i, child := range wait.Open {

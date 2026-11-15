@@ -49,16 +49,6 @@ func cwSeedParent(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, 
 	return issue
 }
 
-// cwSeedChild writes what Dispatch shows of child: a child of parent at status, waiting on
-// blockers, which the daemon has never recorded.
-func cwSeedChild(t *testing.T, pool *pgxpool.Pool, child, parent, status string, blockers ...string) {
-	t.Helper()
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{
-			Key: child, Project: "LEGION", Status: status, Parent: parent, Blockers: blockers, Seq: 1})
-	})
-}
-
 // cwSeedWaiting records key already in awaiting_children, holding the start of start, with the
 // forward merge owed, as the move leaves a parent.
 func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Phase) record.Issue {
@@ -92,22 +82,6 @@ func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 		t.Fatalf("the %s transition of %s: %v", trigger, key, err)
 	}
 	committed()
-}
-
-// cwNotices is every notice of kind queued for key, oldest first.
-func cwNotices(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeKind) []record.Notice {
-	t.Helper()
-	var notices []record.Notice
-	for _, row := range issueOutboxOf(t, pool, key, string(record.OutboxKindNotice)) {
-		var notice record.Notice
-		if err := json.Unmarshal(row.payload, &notice); err != nil {
-			t.Fatalf("decode notice row %d: %v", row.id, err)
-		}
-		if notice.Kind == kind {
-			notices = append(notices, notice)
-		}
-	}
-	return notices
 }
 
 // cwPhaseEnded is every phase-ended message queued for key, oldest first.
@@ -154,7 +128,7 @@ func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.
 		held[row.From] = true
 		t.Run(fmt.Sprintf("%s on %s to %s", row.From, row.Trigger, row.To), func(t *testing.T) {
 			cwSeedParent(t, pool, key, row.From, number)
-			cwSeedChild(t, pool, child, key, "todo")
+			seedMirrorChild(t, pool, child, "todo", key)
 			handoff := record.PhaseRow{Issue: key, Role: phase.RoleFor(row.From), Summary: "the work of " + string(row.From), Verdict: cwVerdict(row.Trigger)}
 
 			cwTransition(t, pool, engine, key, row.Trigger, row.To, handoff, "the words of the move")
@@ -208,14 +182,14 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 				seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: key, Repo: "sjawhar/legion", Number: number,
 					Branch: "legion/" + key, HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})
 			}
-			cwSeedChild(t, pool, child, key, "todo")
+			seedMirrorChild(t, pool, child, "todo", key)
 
 			cwTransition(t, pool, engine, key, tc.trigger, tc.want, record.PhaseRow{Issue: key, Role: phase.RoleFor(tc.from), Verdict: cwVerdict(tc.trigger)}, "the head conflicts with main")
 
 			if got := storedIssue(t, pool, key); got.Phase != tc.want || got.ChildrenWait != nil {
 				t.Fatalf("%s after the move = phase %s, held start %+v; want %s and nothing held", key, got.Phase, got.ChildrenWait, tc.want)
 			}
-			if told := cwNotices(t, pool, key, AwaitingChildrenNoticeKind); len(told) != 0 {
+			if told := noticesOfKind(t, pool, key, AwaitingChildrenNoticeKind); len(told) != 0 {
 				t.Fatalf("awaiting-children notices = %+v, want none outside the rule", told)
 			}
 		})
@@ -249,13 +223,13 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			cwSeedParent(t, pool, cwParent, tc.from, 42)
-			cwSeedChild(t, pool, cwChild, cwParent, "todo", cwParent)
-			cwSeedChild(t, pool, "LEGION-210", cwParent, "backlog")
+			mirrorChild(t, pool, cwChild, cwParent, "todo", 1, cwParent)
+			seedMirrorChild(t, pool, "LEGION-210", "backlog", cwParent)
 			tc.handoff.Issue = cwParent
 
 			cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, tc.trigger, tc.to, tc.handoff, tc.reason)
 
-			told := cwNotices(t, pool, cwParent, AwaitingChildrenNoticeKind)
+			told := noticesOfKind(t, pool, cwParent, AwaitingChildrenNoticeKind)
 			if len(told) != 1 {
 				t.Fatalf("awaiting-children notices = %+v, want one", told)
 			}
@@ -277,7 +251,7 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 				}
 			}
 			for _, replaced := range []record.NoticeKind{"phase-finished", "checks-red"} {
-				if got := cwNotices(t, pool, cwParent, replaced); len(got) != 0 {
+				if got := noticesOfKind(t, pool, cwParent, replaced); len(got) != 0 {
 					t.Fatalf("%s notices = %+v, want none: the awaiting-children notice replaces it", replaced, got)
 				}
 			}
@@ -319,7 +293,7 @@ func TestAConflictHeldForTheChildrenTellsTheEndedRoleNoTaskFollows(t *testing.T)
 		t.Run(string(tc.from), func(t *testing.T) {
 			pool := migratedPool(t)
 			cwSeedParent(t, pool, cwParent, tc.from, 42)
-			cwSeedChild(t, pool, cwChild, cwParent, "todo")
+			seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 
 			cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerConflict, phase.Implementing, record.PhaseRow{Issue: cwParent}, conflict)
 
@@ -347,7 +321,7 @@ func TestTheMoveOwesAForwardMergeAndKeepsTheHeldStart(t *testing.T) {
 	// The parent still owed a forward merge from an earlier wait, which the held task must not
 	// carry: the return adds the request to the implementing task it starts.
 	cwSeedParent(t, pool, cwParent, phase.Implementing, 42, func(issue *record.Issue) { issue.ForwardMergeOwed = true })
-	cwSeedChild(t, pool, cwChild, cwParent, "in_progress")
+	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
 
 	cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerImplementationReady, phase.Testing,
 		record.PhaseRow{Issue: cwParent, Role: claim.RoleImplementer, HandoffCommit: "head", Summary: "implemented"}, "")
@@ -376,7 +350,7 @@ func TestTheMoveOwesAForwardMergeAndKeepsTheHeldStart(t *testing.T) {
 func TestTheMoveWritesInProgressOverAnotherStatus(t *testing.T) {
 	pool := migratedPool(t)
 	cwSeedParent(t, pool, cwParent, phase.Testing, 42)
-	cwSeedChild(t, pool, cwChild, cwParent, "todo")
+	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 
 	cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerTesterPassed, phase.Reviewing,
 		record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "pass"}, "")
@@ -397,10 +371,10 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	cwSeedParent(t, pool, cwParent, phase.Testing, 42)
-	cwSeedChild(t, pool, cwChild, cwParent, "todo")
+	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 	cwTransition(t, pool, engine, cwParent, TriggerTesterPassed, phase.Reviewing, record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "pass"}, "")
 	first := storedIssue(t, pool, cwParent)
-	rows := outboxRowCount(t, pool)
+	rows := outboxRows(t, pool)
 
 	ctx, committed := intake.WithCommitHooks(t.Context())
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -411,25 +385,15 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 	}
 	committed()
 
-	if got := outboxRowCount(t, pool); got != rows {
+	if got := outboxRows(t, pool); got != rows {
 		t.Fatalf("outbox rows after the second move = %d, want the %d the first left", got, rows)
 	}
-	if told := cwNotices(t, pool, cwParent, AwaitingChildrenNoticeKind); len(told) != 1 {
+	if told := noticesOfKind(t, pool, cwParent, AwaitingChildrenNoticeKind); len(told) != 1 {
 		t.Fatalf("awaiting-children notices = %+v, want still one", told)
 	}
 	if again := storedIssue(t, pool, cwParent); !sameChildrenWait(again.ChildrenWait, first.ChildrenWait) {
 		t.Fatalf("the held start after the second move = %+v, want the first's %+v", again.ChildrenWait, first.ChildrenWait)
 	}
-}
-
-// outboxRowCount is how many rows the outbox holds.
-func outboxRowCount(t *testing.T, pool *pgxpool.Pool) int {
-	t.Helper()
-	var rows int
-	if err := pool.QueryRow(t.Context(), "select count(*) from outbox").Scan(&rows); err != nil {
-		t.Fatalf("count the outbox: %v", err)
-	}
-	return rows
 }
 
 // The counts of a held move run as they run today (R10): a move back counts the implementer's pass
@@ -454,15 +418,12 @@ func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 			pool := migratedPool(t)
 			cwSeedParent(t, pool, cwParent, phase.Testing, 42)
 			if tc.child {
-				cwSeedChild(t, pool, cwChild, cwParent, "todo")
+				seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 			}
 
 			cwTransition(t, pool, hooked, cwParent, TriggerTesterFailed, phase.Implementing, record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "fail"}, "")
 
-			implementer, err := testPhaseRow(t, pool, claim.RoleImplementer)
-			if err != nil {
-				t.Fatal(err)
-			}
+			implementer := phaseRowOf(t, pool, claim.RoleImplementer)
 			if implementer.Pass != 1 || implementer.BackwardMoves["testing-implementing"] != 1 {
 				t.Fatalf("the implementer's counts = pass %d, moves %v; want one pass and one testing-implementing", implementer.Pass, implementer.BackwardMoves)
 			}
@@ -475,7 +436,7 @@ func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 	t.Run("a request for changes at the cap", func(t *testing.T) {
 		pool := migratedPool(t)
 		cwSeedParent(t, pool, cwParent, phase.Reviewing, 42)
-		cwSeedChild(t, pool, cwChild, cwParent, "todo")
+		seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 		seedPhase(t, pool, record.PhaseRow{Issue: cwParent, Role: claim.RoleImplementer, Rounds: 2})
 
 		cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerReviewRejected, "", record.PhaseRow{Issue: cwParent, Role: claim.RoleReviewer}, "rename the widget")
@@ -483,10 +444,7 @@ func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 		if got := storedIssue(t, pool, cwParent); got.Phase != phase.AwaitingChildren {
 			t.Fatalf("the parent = %s, want awaiting_children", got.Phase)
 		}
-		implementer, err := testPhaseRow(t, pool, claim.RoleImplementer)
-		if err != nil {
-			t.Fatal(err)
-		}
+		implementer := phaseRowOf(t, pool, claim.RoleImplementer)
 		if implementer.Rounds != 3 {
 			t.Fatalf("rounds = %d, want the request for changes counted", implementer.Rounds)
 		}
@@ -495,25 +453,13 @@ func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 		if bodies := messageBodies(t, pool); len(bodies) != 1 || bodies[0] != want {
 			t.Fatalf("messages = %q, want the cap's %q", bodies, want)
 		}
-		if told := cwNotices(t, pool, cwParent, "pr-blocked"); len(told) != 1 || told[0].Reason != want {
+		if told := noticesOfKind(t, pool, cwParent, "pr-blocked"); len(told) != 1 || told[0].Reason != want {
 			t.Fatalf("pr-blocked notices = %+v, want one carrying %q", told, want)
 		}
 		if held := storedIssue(t, pool, cwParent).ChildrenWait; held == nil || !strings.Contains(held.Reason, "a review asked for changes: rename the widget") {
 			t.Fatalf("the held start = %+v, want its reason to carry the review's words", held)
 		}
 	})
-}
-
-// testPhaseRow is LEGION-208's phases row of role as the record holds it.
-func testPhaseRow(t *testing.T, pool *pgxpool.Pool, role claim.Role) (record.PhaseRow, error) {
-	t.Helper()
-	var row record.PhaseRow
-	err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
-		rows, err := record.NewStore().Phases(t.Context(), tx, cwParent)
-		row = record.PhaseRowOf(rows, role)
-		return err
-	})
-	return row, err
 }
 
 // The move cancels every open backstop of the parent's pod in its own transaction, through the
@@ -532,7 +478,7 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 
 	t.Run("with the pod tables", func(t *testing.T) {
 		rig := newWakeRig(t)
-		cwSeedChild(t, rig.pool, cwChild, cwParent, "todo")
+		seedMirrorChild(t, rig.pool, cwChild, "todo", cwParent)
 		armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(time.Hour))
 		armBackstop(t, rig.pool, claim.RoleTester, wakeAt.Add(2*time.Hour))
 
@@ -549,7 +495,7 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 	t.Run("without them", func(t *testing.T) {
 		pool := migratedPool(t)
 		cwSeedParent(t, pool, cwParent, phase.Implementing, 42)
-		cwSeedChild(t, pool, cwChild, cwParent, "todo")
+		seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 		armBackstop(t, pool, claim.RoleImplementer, wakeAt.Add(time.Hour))
 
 		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("back", back)
@@ -652,7 +598,7 @@ func TestTheTransitionThatAsksForTheForwardMergeClearsIt(t *testing.T) {
 func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 	pool := migratedPool(t)
 	waiting := cwSeedWaiting(t, pool, cwParent, phase.Testing)
-	cwSeedChild(t, pool, cwChild, cwParent, "todo")
+	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
 	apply("conflict", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: "head",
@@ -712,7 +658,7 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			cwSeedParent(t, pool, cwParent, tc.at, 42, tc.change)
-			cwSeedChild(t, pool, cwChild, cwParent, "todo")
+			seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 
 			if result := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("release", tc.fact); result.Refusal != nil {
 				t.Fatalf("the release was refused: %+v", result.Refusal)
@@ -729,7 +675,7 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 			if starts := superviseRowsOf(t, pool, cwParent, "start"); len(starts) != 0 {
 				t.Fatalf("start rows = %+v, want none", starts)
 			}
-			if told := cwNotices(t, pool, cwParent, AwaitingChildrenNoticeKind); len(told) != 1 {
+			if told := noticesOfKind(t, pool, cwParent, AwaitingChildrenNoticeKind); len(told) != 1 {
 				t.Fatalf("awaiting-children notices = %+v, want one", told)
 			}
 			if got := statusWrites(t, pool, cwParent); !slices.Equal(got, tc.status) {
@@ -741,14 +687,14 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 	t.Run("an escalation", func(t *testing.T) {
 		pool := migratedPool(t)
 		cwSeedParent(t, pool, cwParent, phase.Held, 42, heldFrom(phase.Testing))
-		cwSeedChild(t, pool, cwChild, cwParent, "todo")
+		seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 
 		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("escalate", intake.RetryOrEscalate{Issue: cwParent, Decision: intake.EscalateDecision, Reason: "a person must look"})
 
 		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Held || got.Hold == nil || got.Hold.Reason != record.HoldEscalated || got.ChildrenWait != nil {
 			t.Fatalf("the parent = phase %s, hold %+v, held start %+v; want it held and escalated, as today", got.Phase, got.Hold, got.ChildrenWait)
 		}
-		if told := cwNotices(t, pool, cwParent, AwaitingChildrenNoticeKind); len(told) != 0 {
+		if told := noticesOfKind(t, pool, cwParent, AwaitingChildrenNoticeKind); len(told) != 0 {
 			t.Fatalf("awaiting-children notices = %+v, want none", told)
 		}
 	})
@@ -761,7 +707,7 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 	pool := migratedPool(t)
 	cwSeedWaiting(t, pool, cwParent, phase.Testing)
-	cwSeedChild(t, pool, cwChild, cwParent, "in_progress")
+	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
 	for _, tc := range []struct {
@@ -830,10 +776,7 @@ func TestACompletionOfAPhaseTheWaitStoppedIsRefused(t *testing.T) {
 			if refused := refusalCode(result) == "HANDOFF_NOT_CURRENT_PHASE"; refused != tc.refused {
 				t.Fatalf("the late completion = %+v, want refused %t", result.Refusal, tc.refused)
 			}
-			row, err := testPhaseRow(t, pool, claim.RoleTester)
-			if err != nil {
-				t.Fatal(err)
-			}
+			row := phaseRowOf(t, pool, claim.RoleTester)
 			if recorded := row.HandoffRecord == "test-1"; recorded == tc.refused {
 				t.Fatalf("the tester's row = %+v, want its completion recorded %t", row, !tc.refused)
 			}

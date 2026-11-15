@@ -248,10 +248,9 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 				t.Fatalf("the child's view fact = %q, want none: the old root's view fact is of its own documents", got)
 			}
 			var mergerTasks []string
-			for _, effect := range effects(t, pool) {
-				if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == carryChild && request.Op == "start" &&
-					request.Role == claim.RoleMerger {
-					mergerTasks = append(mergerTasks, request.Task)
+			for _, start := range startsOf(t, pool, carryChild) {
+				if start.role == claim.RoleMerger {
+					mergerTasks = append(mergerTasks, start.task)
 				}
 			}
 			want := "Continue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Resume the existing phase work."

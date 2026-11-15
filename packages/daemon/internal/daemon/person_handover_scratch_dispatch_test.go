@@ -449,12 +449,18 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 // versions the document in the route's own transaction, and answers the version it wrote.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
+	return r.editAs(artifactID, asSession, ops...)
+}
+
+// editAs is editDocument as identity: asPerson is the person at a browser.
+func (r *personHandoverRig) editAs(artifactID string, identity scratchIdentity, ops ...map[string]string) int {
+	r.t.Helper()
 	var edited struct {
 		Version *struct {
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, identity)
 	if edited.Version == nil {
 		r.t.Fatalf("the edit of %s wrote no version", artifactID)
 	}
@@ -508,15 +514,21 @@ func (r *personHandoverRig) requestChanges(artifactID, reason string) scratchRev
 // for the request.
 func (r *personHandoverRig) requestApproval(artifactID, summary string) string {
 	r.t.Helper()
+	return r.approvalRequest(artifactID, map[string]any{"summary": summary})
+}
+
+// approvalRequest posts request to artifactID's approval-requests route as a session, and answers
+// the ask Dispatch opened for it.
+func (r *personHandoverRig) approvalRequest(artifactID string, request map[string]any) string {
+	r.t.Helper()
 	var requested struct {
 		Ask *struct {
 			ID string `json:"id"`
 		} `json:"ask"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests",
-		map[string]any{"summary": summary}, &requested, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests", request, &requested, asSession)
 	if requested.Ask == nil || requested.Ask.ID == "" {
-		r.t.Fatalf("Dispatch opened no ask for the approval request of %s", artifactID)
+		r.t.Fatalf("Dispatch opened no ask for the approval request %v of %s", request, artifactID)
 	}
 	return requested.Ask.ID
 }
@@ -562,12 +574,21 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 // requirementsMarkdown is a primary document headed title whose requirement blocks are ids, in
 // that order, each with a sentence of its own: the requirements a view's checks serve.
 func requirementsMarkdown(title string, ids ...string) string {
+	return fmt.Sprintf("# %s\n\nWhat this issue states, one requirement to a block.\n\n", title) + requirementBlocks(ids...)
+}
+
+// requirementBlocks is the requirement blocks ids, in that order, each followed by a blank line.
+func requirementBlocks(ids ...string) string {
 	var text strings.Builder
-	fmt.Fprintf(&text, "# %s\n\nWhat this issue states, one requirement to a block.\n\n", title)
 	for _, id := range ids {
-		fmt.Fprintf(&text, ":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n\n", id, id, id)
+		text.WriteString(requirementBlock(id) + "\n")
 	}
 	return text.String()
+}
+
+// requirementBlock is the requirement block id, with a sentence of its own.
+func requirementBlock(id string) string {
+	return fmt.Sprintf(":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n", id, id, id)
 }
 
 // rigCheck is one check of a Verification document: its id and the blocks its `serves` names, in
@@ -646,28 +667,7 @@ func (r *personHandoverRig) messages(key string) []string {
 // outbox: nothing answers the Envoy address the notice runner publishes to, so none is finished.
 func (r *personHandoverRig) notices(key, kind string) []record.Notice {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.t.Context(), `select payload from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3 order by id`,
-		string(record.OutboxKindNotice), key, kind)
-	if err != nil {
-		r.t.Fatalf("read the %s notices queued on %s: %v", kind, key, err)
-	}
-	defer rows.Close()
-	var notices []record.Notice
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			r.t.Fatalf("scan a %s notice queued on %s: %v", kind, key, err)
-		}
-		var notice record.Notice
-		if err := json.Unmarshal(payload, &notice); err != nil {
-			r.t.Fatalf("decode the %s notice %s queued on %s: %v", kind, payload, key, err)
-		}
-		notices = append(notices, notice)
-	}
-	if err := rows.Err(); err != nil {
-		r.t.Fatalf("read the %s notices queued on %s: %v", kind, key, err)
-	}
-	return notices
+	return noticesOfKind(r.t, r.pool, key, record.NoticeKind(kind))
 }
 
 // roleMessages is the body of every message the daemon has queued to a role of key, oldest
@@ -1287,7 +1287,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	// 7. The carried case.
 	carried := r.create(asSession, "Regional wave decision pending", labelled)
 	r.setStatus(carried.Key, "backlog")
-	blockVersion := r.editDocument(carried.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": personHandoverBlock})
+	blockVersion := r.editDocument(carried.PrimaryArtifactID, insertAtEnd(personHandoverBlock))
 	askID := r.blockAsk(carried.Key, "wave")
 	approved := r.approve(carried.PrimaryArtifactID)
 	if approved.Version != blockVersion {

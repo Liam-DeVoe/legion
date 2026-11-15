@@ -104,8 +104,8 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 			t.Fatalf("the turn read %v one at a time, want exactly %v", asked, want)
 		}
 		// The one listing is the read of CAPTURE-50's children, which the turn makes for every
-		// issue whose phases have started (readObserved), and which takes no summary but a
-		// child's: the waited-on key is read singly all the same.
+		// issue whose phases have started (readObserved), and which takes only the summaries of
+		// this project: the waited-on key is another project's, so it is read singly all the same.
 		if listings := client.listings(); listings != 1 {
 			t.Fatalf("the turn listed the project %d times, want one, for the children of CAPTURE-50, an issue in implementing", listings)
 		}

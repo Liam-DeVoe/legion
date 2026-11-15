@@ -257,7 +257,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			"a review asked for changes, while these Dispatch children of LEGION-310 were open: LEGION-311 (todo)", nil)
 		seedMirror(t, pool, second, "in_progress", blocker)
 		seedMirror(t, pool, blocker, "todo")
-		spMirror(t, pool, secondChild, "todo", second, 1)
+		seedMirrorChild(t, pool, secondChild, "todo", second)
 		if open := pnOpenBackstops(t, pool, spParent); open != 1 {
 			t.Fatalf("open backstops of %s before the move = %d, want the earlier release's one", spParent, open)
 		}
@@ -604,7 +604,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		for parent, child := range map[string]string{early: earlyChild, late: lateChild} {
 			spWaiting(t, pool, parent, phase.Implementing, "Continue "+parent+". Issue: "+parent+". Phase: implementing.", "a review asked for changes", nil)
 			seedMirror(t, pool, parent, "in_progress", blocker)
-			spMirror(t, pool, child, "todo", parent, 1)
+			seedMirrorChild(t, pool, child, "todo", parent)
 		}
 
 		spMirror(t, pool, earlyChild, "done", early, 2)
@@ -653,8 +653,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			Generation: 1, Status: "in_progress", Rank: parent})
 		takeSlot(t, pool, parent)
 		seedPullRequest(t, pool, grandparent, 43, record.PullRequestOpen)
-		spMirror(t, pool, parent, "in_progress", grandparent, 1)
-		spMirror(t, pool, grandchild, "todo", parent, 1)
+		seedMirrorChild(t, pool, parent, "in_progress", grandparent)
+		seedMirrorChild(t, pool, grandchild, "todo", parent)
 		spSeedPhase(t, pool, record.PhaseRow{Issue: parent, Role: claim.RoleImplementer, Claim: "implementer", Entry: 1,
 			EntryTask: pwTask(parent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour)})
 

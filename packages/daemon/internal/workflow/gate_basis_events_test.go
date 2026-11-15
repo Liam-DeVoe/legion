@@ -77,7 +77,7 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 	if len(resting) != 2 || !strings.Contains(resting[1].Reason, "An ancestor's approval opened the spec step of LEGION-208") {
 		t.Fatalf("resting-root notices = %#v, want the pending registration's and the opening's", resting)
 	}
-	if got := gateSeedCount(t, pool, gatedRoot); got != 2 {
+	if got := outboxKindCount(t, pool, gatedRoot, record.OutboxKindGateSeed); got != 2 {
 		t.Fatalf("gate seeds = %d, want the registration's and the opening's", got)
 	}
 	if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 0 {
@@ -328,17 +328,6 @@ func TestAPendingBasisAnswersARootAwaitingAPersonWithNoNotice(t *testing.T) {
 	}
 }
 
-// roleMessageCount is how many role messages the outbox holds: what a move of a tree's standing
-// gate tells its phase holders (tellGateMoved).
-func roleMessageCount(t *testing.T, pool *pgxpool.Pool) int {
-	t.Helper()
-	var got int
-	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1`, string(record.OutboxKindRoleMessage)).Scan(&got); err != nil {
-		t.Fatalf("count the role messages: %v", err)
-	}
-	return got
-}
-
 // A step an ancestor's approval opened changes as an approved step of the root's own document
 // changes (R3): a newer version of that document closes it, falling back to the person's approval
 // of an earlier version it kept, and tells the tree the close as any close does; a person's changes
@@ -371,7 +360,7 @@ func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
 			seedLiveAncestor(t, pool)
 			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(2), ApprovedMark: personal})
 			apply("register-on-basis", onBasis(approvedBasis(), 6))
-			moved := roleMessageCount(t, pool)
+			moved := outboxKindCount(t, pool, gatedRoot, record.OutboxKindRoleMessage)
 
 			apply("own-act", tc.fact)
 
@@ -389,7 +378,7 @@ func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
 			if got := noticesOfKind(t, pool, gatedRoot, "design-changes-requested"); len(got) != tc.changes {
 				t.Fatalf("design-changes-requested notices = %#v, want %d", got, tc.changes)
 			}
-			if got := roleMessageCount(t, pool) - moved; got != tc.moved {
+			if got := outboxKindCount(t, pool, gatedRoot, record.OutboxKindRoleMessage) - moved; got != tc.moved {
 				t.Fatalf("role messages the act queued = %d, want %d", got, tc.moved)
 			}
 			if got := noticesOfKind(t, pool, gatedRoot, "design-approved"); len(got) != 1 {
