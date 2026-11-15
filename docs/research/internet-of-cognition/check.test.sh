@@ -1175,6 +1175,34 @@ else
     printf 'SKIP the exemption with --constraints= and --build-constraints: uv, or an environment it builds here offline, is missing\n'
 fi
 
+# 72. --landed holds each step this tree commits to a page, not only the pages it finds.
+# At 8f53f0c8ca the gate looked only at the pages that carry a Landed line, so a judgement
+# whose landed pages had lost that line, or a judgement Dispatch did not answer the read of
+# (an empty text), ended "each of the 0 landed pages ... all 5 assertions passed". Each
+# title of sources.json's landed list needs a page that carries its Landed line, and a read
+# of the judgement that gives nothing cannot be judged.
+dir="$(fresh landed-lines-gone)"
+sed -i '/^- \*\*Landed:\*\*/d' "$dir/judgement.md"
+grep -q '\*\*Landed:\*\*' "$dir/judgement.md" && { printf 'FAIL the Landed lines could not be deleted\n'; exit 1; }
+case_result "a judgement whose landed pages lost their Landed line fails --landed" landed-proof "$(fixture_run "$dir" --landed)"
+dir="$(fresh landed-empty-judgement)"
+: >"$dir/judgement.md"
+out="$(fixture_run "$dir" --landed)"
+if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+    CASES_FAILED=$((CASES_FAILED + 1))
+    printf 'FAIL an empty judgement is no pass of --landed: the gate passed it: %s\n' "$(printf '%s\n' "$out" | grep '^PASS landed-proof' | head -1)"
+else
+    CASES_PASSED=$((CASES_PASSED + 1))
+    printf 'PASS an empty judgement is no pass of --landed\n'
+fi
+# A Dispatch that does not answer is a mode that cannot run, as case 70 says of a missing
+# env.sh and a spent budget. At 8f53f0c8ca, with no Dispatch, --citations ended exit 1
+# with one FAIL per reference "resolves to no node Dispatch holds", blaming the evidence
+# for the outage; the empty judgement above is what --landed read with no Dispatch.
+dir="$(fresh citations-no-dispatch)"
+out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
+ending_result "--citations with no Dispatch to resolve against cannot run: exit 2, the reason last" 2 '^check\.sh cannot run' "$?" "$out"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
