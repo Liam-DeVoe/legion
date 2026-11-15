@@ -147,10 +147,13 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
 			listener := newHoldingListener(t)
-			// The server's clock stands still: the held send's listener window never comes due, and
-			// the lease of a run that died is not renewed again (this test ages it itself).
+			// The server's clock moves only where the test moves it: the held send's listener window
+			// never comes due, and the lease of a run that died is not renewed again (this test ages
+			// it itself).
+			start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			clock := clocktest.New(start)
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.url, clock: clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)),
+				envoyURL: listener.url, clock: clock,
 			})
 			issue := createTestIssue(t, handler, "SWEEP", "Swept deliveries")
 			document := createProjectDocument(t, handler, "SWEEP", "Runbook", "# Runbook\n\nStep one.\n").ID
@@ -160,6 +163,22 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			t.Cleanup(func() {
 				listener.release()
 				server.Close()
+			})
+			// A row that fails before its release leaves the write's sender held, and once the
+			// cleanup above releases it, waiting out a take-over's backoff on this clock, which
+			// nothing else moves: closing the server and the server's own cleanup would wait for that
+			// sender until the binary's deadline. So the first cleanup moves the clock past every
+			// timer armed on it and past the take-over window of every sender's first try: a held
+			// send's listener window runs out, and a try that fails after the move starts no backoff
+			// (takeoverRetry.again). A row that passed has no sender left waiting on it.
+			t.Cleanup(func() {
+				past := start.Add(listenerTakeoverWindow)
+				for _, at := range clock.Armed() {
+					if at.After(past) {
+						past = at
+					}
+				}
+				clock.Set(past)
 			})
 
 			ctx, abort := context.WithCancel(context.Background())
@@ -231,9 +250,24 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				}
 			}
 
-			// The dead sender's own outcome, arriving late, is no longer its to record.
+			// The dead sender's own outcome, arriving late, is no longer its to record. The held send
+			// is answered 503 at last, a listener take-over's answer, so its sender waits out the
+			// take-over's first backoff on the server's clock before it tries again (takeoverRetry):
+			// the clock has not moved since that sender's first try, and the test moves it through
+			// the backoff once the sender has armed it. Its renewal then finds the claim the sweep
+			// took, so it settles nothing and sends nothing more.
 			listener.release()
+			backoff := start.Add(takeoverFirstBackoff)
+			awaitArmedAt(t, clock, "the dead sender's backoff after its held send's late 503", backoff)
+			clock.Set(backoff)
+			// The dead sender is the write's keyed handler or the broadcast's delivery, both the
+			// server's detached work, or a comment's lane on the mention sender, which this stops:
+			// the test writes nothing more.
 			served.detached.wait()
+			served.mentions.wait()
+			if sent := listener.answered(key); sent != 1 {
+				t.Fatalf("after the dead sender's late outcome the listener answered %d sends under %s, want the one resume", sent, key)
+			}
 			var attempts int
 			var state string
 			if err := database.Pool.QueryRow(context.Background(),
