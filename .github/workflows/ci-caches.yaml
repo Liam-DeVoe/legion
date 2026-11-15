@@ -359,8 +359,11 @@ jobs:
     runs-on: ubuntu-24.04
     # The action takes seconds: 13 s with its own Go download and a cache miss, in ci.yaml's
     # envoy-go-checks of run 43553309875, and this job 27 s and 26 s whole (runs 43586962074 and
-    # 43592826052). Budget (ci-budgets.md's Budgets note): those 27 s measured, plus the action's
-    # one retried call, its Go modules at the module bound, 5 x 180 + 150 = 1050 s, so
+    # 43592826052). Each was measured before the action's fetch was split out of its build; the
+    # split fetch is `go list -deps` of the command, which fetches only the two modules that build
+    # fetched itself, so each figure holds the same work. Budget (ci-budgets.md's Budgets note):
+    # those 27 s measured, plus the action's one retried call, its Go modules at the module bound,
+    # 5 x 180 + 150 = 1050 s, so
     # 27 + 1050 = 1077 s; the step's own budget below is 18 min, and this key strictly exceeds it
     # -> 19 min.
     timeout-minutes: 19
@@ -370,8 +373,8 @@ jobs:
           persist-credentials: false
 
       # Its own retry arithmetic, which is the action's: the Go modules at the module bound,
-      # 5 x 180 + 150 = 1050 s, beside the 13 s the action measured on a cache miss,
-      # 13 + 1050 = 1063 s -> 18 min.
+      # 5 x 180 + 150 = 1050 s, beside the 13 s the action measured on a cache miss (the job's
+      # comment above says what that figure holds), 13 + 1050 = 1063 s -> 18 min.
       - name: Fill the architecture-check action's cache and check main's notes
         uses: ./.github/actions/architecture-check
         timeout-minutes: 18

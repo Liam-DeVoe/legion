@@ -1352,8 +1352,8 @@ GATES = [
          ".github/actions/architecture-check/action.yml:95 and :121 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:16), which check.sh:82 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:92 reads"),
+         "(.github/actions/architecture-check/action.yml:16), which check.sh:101 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:111 reads"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks") + CI_SELF),
 
 

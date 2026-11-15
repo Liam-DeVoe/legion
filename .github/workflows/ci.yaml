@@ -5181,6 +5181,9 @@ jobs:
       # the check's lines"). A refused note set fails the job before its other checks run.
       # Its own retry arithmetic, which is the action's: the Go modules at the module bound,
       # 5 x 180 + 150 = 1050 s, beside the 13 s it measured on a cache miss in run 43553309875,
+      # before its fetch was split out of its build; the split fetch is `go list -deps` of the
+      # command, which fetches only the two modules that build fetched itself, so that 13 s holds
+      # the same work (the fetch alone took 6 s on an empty cache in a pod).
       # 13 + 1050 = 1063 s -> 18 min.
       - id: architecture-notes
         name: Check this repository's architecture notes with the composite action
