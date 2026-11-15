@@ -10,7 +10,9 @@ body: |-
   A refusal's line lists the first secret names up to 32 KiB of them as it writes them
   (JSON-escaped, each with its quotes), counts every name in `secrets_count`, says how many it
   left out in `secrets_omitted`, and, as the airlock's call line does, keeps at most 256 bytes of
-  each field the caller wrote, since Cloud Logging refuses an entry over 256 KiB.
+  each field the caller wrote, since Cloud Logging refuses an entry over 256 KiB. A line net/http
+  writes on the airlock's servers is now `airlock proxy: net/http`, with net/http's text cut the
+  same way in its `error` field.
   The broker serves Prometheus metrics on a port of its own, `BROKER_METRICS_LISTEN_ADDR`
   (`127.0.0.1:13382` by default), and on no other port: `broker_answers_total`,
   `broker_mint_attempts_total`, `broker_unservable_secrets` and `broker_policy_store_reads_total`.
