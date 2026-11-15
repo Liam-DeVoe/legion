@@ -1210,6 +1210,10 @@ jobs:
               # registration answer (packages/envoy-client/test/subscribe-answer.ts), so the tsc
               # program of this package compiles that file too.
               - 'packages/envoy-client/test/subscribe-answer.ts'
+              # src/capability-report-patterns.test.ts and scripts/analyze-patterns.ts read the
+              # pattern analyzer's rows from envoy-client's test helper, so the tsc program of
+              # this package compiles it too.
+              - 'packages/envoy-client/test/pattern-analysis.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'

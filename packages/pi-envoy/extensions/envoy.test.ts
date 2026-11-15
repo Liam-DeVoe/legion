@@ -6909,9 +6909,19 @@ console.log(JSON.stringify(args));
     // The caller is not held past one bound, but the server's answer is still asked for: a subject
     // the connection could not confirm is confirmed once it can, without the open that wrote it
     // waiting. The asking stops the moment an answer comes.
-    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    //
+    // The background confirmation sleeps this long before each ask. The row runs on Bun's fake
+    // clock and moves it one sleep at a time, so every ask is one the row let through and none
+    // comes while the clock is held: what the row counts does not turn on the machine's speed.
+    const delay = 10;
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = String(delay);
     let live = sessionContext("ses_background");
     let stop: (() => Promise<unknown>) | undefined;
+    // One sleep of the background confirmation ends, and the ask it starts runs to its end.
+    const oneSleep = async (): Promise<void> => {
+      jest.advanceTimersByTime(delay);
+      await settle();
+    };
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
       const { default: envoyExtension } = await import("./envoy.ts?background-confirm");
@@ -6922,30 +6932,32 @@ console.log(JSON.stringify(args));
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
       reconnecting.catch(() => undefined);
       natsState.heldFlush = reconnecting as unknown as Promise<void>;
+      jest.useFakeTimers();
+      // The start's first open is rejected at once, which marks the connection and starts the
+      // background confirmation's first sleep.
+      await fixture.handlers.get("session_start")?.({}, live);
 
-      const started = fixture.handlers.get("session_start")?.({}, live);
-      started?.catch(() => undefined);
-      await started;
-
-      // While the connection answers nothing, the confirmation keeps asking.
-      const asked = natsState.flushes.length;
-      await until(
-        "three more asks of the background confirmation",
-        () => natsState.flushes.length >= asked + 3
-      );
+      // While the connection answers nothing, the confirmation keeps asking: one ask each time its
+      // sleep ends.
+      for (let sleep = 1; sleep <= 3; sleep += 1) {
+        const asked = natsState.flushes.length;
+        await oneSleep();
+        expect(natsState.flushes.length).toBe(asked + 1);
+      }
 
       // The connection answers: the asking stops rather than running for the session's life. The
-      // ask that is answered ends the loop, and the loop clears the connection's mark only as it
-      // ends, so the relay subject a session switch opens then takes a round trip of its own:
-      // that round trip shows the loop over, where a quiet spell would only fail to show it
-      // running.
-      const unanswered = natsState.flushes.length;
+      // ask that is answered ends the loop, so no sleep after it brings another ask.
       natsState.heldFlush = undefined;
-      await until(
-        "the background confirmation's ask the connection answers",
-        () => natsState.flushes.length > unanswered
-      );
-      await settle();
+      const unanswered = natsState.flushes.length;
+      await oneSleep();
+      expect(natsState.flushes.length).toBe(unanswered + 1);
+      for (let sleep = 1; sleep <= 3; sleep += 1) await oneSleep();
+      expect(natsState.flushes.length).toBe(unanswered + 1);
+
+      // The loop clears the connection's mark only as it ends, so the relay subject a session
+      // switch opens then takes a round trip of its own. The clock is held across the switch, so
+      // that round trip is the switch's: a loop still running would have kept the mark, and the
+      // switch would have asked nothing.
       natsState.flushes.length = 0;
       live = sessionContext("ses_background_b");
       await fixture.handlers.get("session_switch")?.({}, live);
@@ -6953,6 +6965,8 @@ console.log(JSON.stringify(args));
       expect(natsState.flushes.length).toBeGreaterThan(0);
     } finally {
       natsState.heldFlush = undefined;
+      // The shutdown runs on the real clock, so nothing it waits for is held.
+      jest.useRealTimers();
       await stop?.();
       delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;
     }
@@ -20956,8 +20970,8 @@ describe("consumer delivery", () => {
 
     await fixture.handlers.get("session_start")?.({}, firstContext);
     await until(
-      () => natsState.controls.get(deliverSubject(first))?.active() === true,
-      "the first session's relay subject"
+      "the first session's relay subject",
+      () => natsState.controls.get(deliverSubject(first))?.active() === true
     );
     const firstRelay = natsState.controls.get(deliverSubject(first));
     const states = consumerStates();
@@ -20969,8 +20983,8 @@ describe("consumer delivery", () => {
     // subscriber, which a server answers no-responders, and the new id is answered.
     await fixture.handlers.get("session_switch")?.({}, sessionContext(next));
     await until(
-      () => natsState.controls.get(deliverSubject(next))?.active() === true,
-      "the new session's relay subject"
+      "the new session's relay subject",
+      () => natsState.controls.get(deliverSubject(next))?.active() === true
     );
     // The switch tells the session its id changed; that notice is the one card it is shown.
     const shown = cards().length;
@@ -20983,8 +20997,8 @@ describe("consumer delivery", () => {
     await settle();
     // The session subscribes its relay subject again, and is answered again.
     await until(
-      () => natsState.controls.get(deliverSubject(next)) !== nextRelay,
-      "the relay subject subscribed again"
+      "the relay subject subscribed again",
+      () => natsState.controls.get(deliverSubject(next)) !== nextRelay
     );
     const reopened = natsState.controls.get(deliverSubject(next));
     expect(await probe(reopened)).toEqual(["done"]);
