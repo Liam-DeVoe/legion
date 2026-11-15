@@ -161,8 +161,10 @@ jobs:
     # beside the `go build` and are waited on with it, so they add no wall of their own (28 s
     # and about 30 s against the go build's 104 s in run 42809067358). No step here carries a
     # budget, so
-    # the rule in this file's head gives this job the measured maximum of every step,
-    # 84 + 81 = 165 s, rounded up: three minutes. The figure below is larger than that
+    # the rule in this file's head gave this job the measured maximum of every step,
+    # 84 + 81 = 165 s, rounded up: three minutes. At this shape, over the 26 green binaries
+    # jobs of this branch's runs of 2026-11-15, the step maxima sum to 239 s (the build step
+    # 154 s, job 132738250756), which the rule rounds up to four. The figure below is larger than that
     # on purpose and is not that arithmetic. Every run of that sample restored the Go cache; a
     # run that misses it builds four commands cold, which the planner measured at 3m37s for
     # ./cmd/dispatch alone, and three minutes would cancel it. So the budget carries the cold
@@ -216,7 +218,7 @@ jobs:
       # `bun run build:web-b` writes web/dist-b, the second rollout bundle the multiprocess
       # job's two-builds rows read. DISPATCH_BUILD=e2e-b, which that script carries, is what
       # gives it a build id of its own: web/vite.config.ts:102-109 defaults the id to
-      # GITHUB_SHA, and e2e/two-builds.multiprocess.e2e.ts:91-99 fails when the two entries
+      # GITHUB_SHA, and e2e/two-builds.multiprocess.e2e.ts:79-91 fails when the two entries
       # match. It is built on the full lane alone, the only lane that runs the multiprocess job,
       # so a pull-request run pays nothing for it.
       #
@@ -360,14 +362,15 @@ jobs:
     # read 532 to 636 s on 2026-11-11 and 750 s in run 43251567200, about a quarter more. So the
     # budget takes the maximum over every run, as the rule says, and not a median. The maximum
     # each step reached over those 18 legs and every leg of this branch's runs of 2026-11-15 -
-    # its fifteen full-lane runs (43656706589, 43664675139, 43667557013, 43669817025,
+    # its eighteen full-lane runs (43656706589, 43664675139, 43667557013, 43669817025,
     # 43670689833, 43672161759, 43674112121, 43676043057, 43687205491, 43689921885,
-    # 43692383387, 43716814270, 43720076901, 43723836932 and 43731214579) and its pull-request
-    # runs - read the same way, in seconds:
+    # 43692383387, 43716814270, 43720076901, 43723836932, 43731214579, 43744059348,
+    # 43747732723 and 43751151528) and the shard legs of its 24 pull-request runs that
+    # concluded by 20:50Z - read the same way, in seconds:
     #
     #   step                                                 max
     #   Set up job                                             2
-    #   Initialize containers                                 48
+    #   Initialize containers                                 50
     #   actions/checkout                                      13
     #   Start an S3-compatible server for uploaded files       1
     #   actions/download-artifact, the binaries               12
@@ -396,10 +399,10 @@ jobs:
     # 131300609469, run 43251567200), and the 780 s floor of job 131642902948, which the old
     # 13 minutes stopped before its end. Taken at 835 s: 835 x 1.15 = 960.25 s -> 17 min. The
     # job's budget is that 1,020 s plus the maxima above of every step without a budget, which
-    # sum to 130 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
-    # The new maxima are `Initialize containers` 48 s (job 132662152729), the binaries download
-    # 12 s (job 132677831857) and `bun install` 15 s (job 132696863686, a pull-request leg).
-    # 1,020 + 130 = 1,150 s, 19 min 10 s, rounded up to the 20 minutes below. That is a backstop
+    # sum to 132 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
+    # The new maxima are `Initialize containers` 50 s (job 132900324043, a pull-request leg),
+    # the binaries download 12 s (job 132677831857) and `bun install` 15 s (job 132696863686, a
+    # pull-request leg). 1,020 + 132 = 1,152 s, 19 min 12 s, rounded up to the 20 minutes below. That is a backstop
     # above the sum of the step budgets, as this file's head says a job budget is, and above the
     # 913 s the slowest leg took whole (job 132671046743), and the 860 s of job 131642902948,
     # the leg the old 13 minutes stopped.
@@ -453,7 +456,8 @@ jobs:
       # after the install, until dispatch://INFRA-1109: the start costs 0 s and the poll cost
       # 16 to 23 s a leg in run 42809067358, all of it the volume server coming up while nothing
       # else was running. Started here it comes up behind the two downloads and the Bun install,
-      # so the poll should answer at once. The poll is not weakened by the move - it is the same
+      # and the poll read at most 10 s a leg in this branch's runs of 2026-11-15 (job
+      # 132690968751). The poll is not weakened by the move - it is the same
       # bucket PUT, the same object write, read and delete, and the same 60-attempt ceiling.
       #
       # The three flags after `-dir` are the image's, not weed's own defaults, and they come
@@ -491,7 +495,7 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
@@ -859,22 +863,23 @@ jobs:
     # 90ee14dd, each step's `completed_at` less its `started_at`. This job ran once in each
     # of them, and green each time. Its browser step read 156, 123 and 135 s on 2026-11-11, 143,
     # 170, 169, 140 and 170 s on 2026-11-12, and 135 s at 90ee14dd; the job read 192 to 233 s.
-    # The maximum each step reached over the nine jobs, in seconds:
+    # The maximum each step reached over the nine jobs and the 18 of this branch's full-lane
+    # runs of 2026-11-15 (43656706589 to 43751151528), read the same way, in seconds:
     #
     #   step                                                 max
-    #   Set up job                                             1
-    #   Initialize containers                                 41
+    #   Set up job                                             2
+    #   Initialize containers                                 46
     #   actions/checkout                                      10
-    #   actions/download-artifact, the binaries                5
+    #   actions/download-artifact, the binaries                7
     #   Make the downloaded binaries executable                0
-    #   ./.github/actions/setup-bun                            3
-    #   bun install --frozen-lockfile                         10
+    #   ./.github/actions/setup-bun                            4
+    #   bun install --frozen-lockfile                         12
     #   Build contracts for dispatch e2e                       1
-    #   actions/download-artifact, the dashboard               2
+    #   actions/download-artifact, the dashboard               3
     #   Read the lanes' PostgreSQL and time its provider       4
     #   Browser-test dispatch dashboard                      170   (carries its own budget)
     #   upload-artifact, this leg's blob report                2
-    #   What the run left behind                               0
+    #   What the run left behind                               1
     #   upload-artifact, the record directory                  2
     #   upload-artifact, the failed rows' traces               1
     #   Post Run ./.github/actions/setup-bun                   1
@@ -890,8 +895,12 @@ jobs:
     # and both of the slowest readings are runs of 2026-11-12, the day the machines got slower
     # (this file's head). A step that outruns the budget fails by name, which is a reading of
     # its own. The job's budget is that 240 s plus the maxima above of every step without a
-    # budget, which sum to 86 s - each of the three uploads counted, since each is a step: 2 + 2
-    # + 1, not 2. 240 + 86 = 326 s, 5 min 26 s, rounded up to the 6 minutes below. That is a
+    # budget, which sum to 99 s - each of the three uploads counted, since each is a step: 2 + 2
+    # + 1, not 2. The day's runs moved seven of them: `Set up job` 2 s (job 132697146332),
+    # `Initialize containers` 46 s (job 132904452897), the binaries download 7 s (job
+    # 132671046700), setup-bun 4 s (job 132662152627), `bun install` 12 s (job 132926233794),
+    # the dashboard download 3 s (job 132680625798) and `What the run left behind` 1 s (job
+    # 132730913813); their browser step read at most 146 s (job 132671046700). 240 + 99 = 339 s, 5 min 39 s, rounded up to the 6 minutes below. That is a
     # backstop above the sum of the step budgets, as this file's head says a job budget is, and
     # above the 233 s the slowest of these jobs took whole (job 131262995896, run 43240954914).
     #
@@ -914,7 +923,7 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
@@ -1195,9 +1204,11 @@ jobs:
     # The budget, by the rule in this file's head and from those figures: the step budgets are
     # unchanged at 4 + 4 + 2 min - the two browser steps absorb those 8.3 to 10.4 s inside
     # maxima (202 s and 13 s) measured when the dashboard step still ran two Vite builds this
-    # job no longer runs - and the measured maximum of every step without one loses the
-    # `Initialize containers` it carried, 135 - 21 = 114 s. 10 min plus 114 s is 11 min 54 s,
-    # which rounds up to 12 minutes.
+    # job no longer runs - and the measured maximum of every step without one is the 135 s
+    # above with the 11 s of the two downloads and the chmod added, less the
+    # `Initialize containers` it carried and the setup-go and Go cache restore that left (21, 11
+    # and 20 s, the last two read below): 135 + 11 - 21 - 31 = 94 s. 10 min plus 94 s is
+    # 11 min 34 s, which rounds up to 12 minutes.
     #
     # The nine runs the shard job's head lists, the first of them still with this job's
     # `postgres:` service, read every step of this job inside those budgets, by the shard job's
@@ -1211,8 +1222,11 @@ jobs:
     # Since those runs the job lost two steps without a budget, actions/setup-go and the Go
     # cache restore, which read at most 11 s (job 131262996021, run 43240954914) and 20 s (job
     # 131300609277, run 43251567200) there: the dev OIDC issuer they served is the binaries
-    # job's build now. The 114 s above still counts them, so it over-states this job's steps
-    # without a budget by up to 31 s, and the 12 minutes stand as a backstop above the sum.
+    # job's build now. Those are the 31 s the sum above takes off. This branch's eighteen
+    # full-lane runs of 2026-11-15 read this job's steps without a budget at 33 s, each at its
+    # maximum and summed (the checkout 9 s, job 132926233684, the largest), with the dashboard
+    # step at most 99 s and the sign-in step 13 s (both job 132904452893), so the 12 minutes
+    # stand as a backstop above the sum.
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1220,7 +1234,7 @@ jobs:
           persist-credentials: false
       # What the binaries job built. The server is named on DISPATCH_E2E_SERVER_BIN by both
       # browser steps below, so e2e/run-server.sh executes it instead of building one in each
-      # server's boot wait (run-server.sh:369-372), which is what the step `Build the Dispatch
+      # server's boot wait (run-server.sh:376-379), which is what the step `Build the Dispatch
       # server` was here to make cheap; that step is gone with the build it anticipated. The
       # dev OIDC issuer is named on DISPATCH_E2E_SIGNIN_ISSUER_BIN by the sign-in step, so
       # e2e/run-signin-issuer.sh executes it instead of building one. The path is the directory
@@ -1232,13 +1246,13 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       # Both dashboards this job serves, built once by the binaries job: web/dist is A's and
       # web/dist-b is B's, the second rollout bundle with the build id e2e/two-builds.
-      # multiprocess.e2e.ts:91-99 holds apart from A's. This job runs on the full lane alone,
+      # multiprocess.e2e.ts:79-91 holds apart from A's. This job runs on the full lane alone,
       # which is the lane that bundle is built on.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1395,9 +1409,12 @@ jobs:
   # The budget, by the rule in this file's head: the two step budgets stay at 4 and 4 min - the
   # browser step absorbs the provider's 8.3 to 10.4 s (the one sample behind that figure is the
   # visual job of run 43045412941, which the multiprocess job's head says no later run splits
-  # out) inside a budget set for rows whose step took 16 to 26 s in CI - and the borrowed
-  # maximum for the steps without one loses the `Initialize containers` it carried,
-  # 135 - 21 = 114 s. 8 min plus 114 s is 9 min 54 s, which rounds up to 10 minutes.
+  # out) inside a budget set for rows whose step took 16 to 26 s in CI then, and 31 s at most in
+  # this branch's runs of 2026-11-15 (job 132904106542) - and the borrowed maximum for the steps
+  # without one is the multiprocess job's 94 s, the 135 s with the downloads and the chmod
+  # added and the `Initialize containers`, setup-go and Go cache restore taken off, as that
+  # job's head says. 8 min plus 94 s is 9 min 34 s, which rounds up to 10 minutes. This job's
+  # own steps without a budget read 42 s summed at their maxima over the day's runs.
   #
   # This job now has runs of its own: the nine runs the shard job's head lists, read by that
   # job's command, the first of them still with this job's `postgres:` service. Every step is
@@ -1426,7 +1443,7 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
@@ -1460,7 +1477,7 @@ jobs:
         # (packages/dispatch/package.json). The two binaries
         # the harness would otherwise build are named here rather than in this step's `env:`,
         # for the reason the shard job's head gives: the server e2e/run-server.sh executes
-        # (run-server.sh:369-372 builds one for a caller that names none) and the directory
+        # (run-server.sh:376-379 builds one for a caller that names none) and the directory
         # e2e/run-broker.sh serves the broker's three commands from - this lane runs one
         # process against the fake broker, which is what starts the real one
         # (e2e/harness-real-broker.ts). This stack's Postgres is named the same way, and on the
@@ -1540,8 +1557,8 @@ jobs:
   #
   # The rule is in this file's head. The browser step's maximum was 106 s over those five
   # columns, so 106 x 1.15 = 122 s -> 3 min, and the job budget was that step's 180 s plus the
-  # measured maximum of every step without one, which is 314 s of the five columns together:
-  # 494 s -> 9 min.
+  # measured maximum of every step without one, which is 316 s of the five columns together:
+  # 496 s -> 9 min.
   #
   # The browser step then outran its budget on main, which is this rule's signal to derive it
   # again. Over the 17 merge-group runs of this job from 2026-11-14T08:40Z to 2026-11-15T06:25Z
@@ -1554,15 +1571,16 @@ jobs:
   # takes the maximum over every run all the same, so 4 minutes stands, with room.
   #
   # The job's sum is taken over every step of the job as it is now, each at its maximum over
-  # every run this shape and the five columns above have, this branch's ten full runs of
-  # 2026-11-15 among them (43672161759 to 43731214579), in seconds: `Set up job` 2 (job
+  # every run this shape and the five columns above have, this branch's eighteen full-lane runs
+  # of 2026-11-15 among them (43656706589 to 43751151528), in seconds: `Set up job` 2 (job
   # 132730913819), the checkout 9, the binaries download 7 (job 130609653873), the chmod 0, the
   # dashboard download 3, setup-bun 218 (job 128713801668), bun install 13 (job 131300609202),
-  # the contracts build 1, the image pull 46 (job 132730913819, run 43687205491), the upload 3,
-  # `Post Run ./.github/actions/setup-bun` 1, `Post Run actions/checkout` 1 (job 132830691048)
-  # and `Complete job` 0. Those sum to 304 s - setup-go, the go cache restore and the dashboard
-  # build left this job (dispatch://INFRA-1109), which is why it is not the 314 s of the five
-  # columns - and 240 + 304 = 544 s, 9 min 4 s, rounded up to the 10 minutes below.
+  # the contracts build 1, the image pull 55 (job 132915472142, run 43747732723), the upload 3
+  # (job 132904452885), `Post Run ./.github/actions/setup-bun` 1, `Post Run actions/checkout` 1
+  # (job 132830691048) and `Complete job` 0. Those sum to 313 s - setup-go, the go cache restore
+  # and the dashboard build left this job (dispatch://INFRA-1109), which is why it is not the
+  # 316 s of the five columns - and 240 + 313 = 553 s, 9 min 13 s, rounded up to the 10 minutes
+  # below.
   #
   # The first run of the five columns was the only one this job had when these budgets were
   # first written, and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's
@@ -1598,7 +1616,7 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
@@ -1647,7 +1665,7 @@ jobs:
           # What the binaries job built, which e2e/run-server.sh and e2e/run-broker.sh execute
           # instead of building: the server by its path, the broker's three by the directory
           # that holds them. This is what stops this job building a Dispatch server inside its
-          # own browser step (run-server.sh:369-372 builds one for a caller that names none),
+          # own browser step (run-server.sh:376-379 builds one for a caller that names none),
           # and the real broker's three commands with it - this job runs one process against
           # the fake broker, which is what starts the real one (e2e/harness-real-broker.ts).
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
@@ -1714,7 +1732,13 @@ jobs:
     # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
     # 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
     # 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment
-    # carried before was measured on another branch and is replaced by that sample.
+    # carried before was measured on another branch and is replaced by that sample. The merge
+    # jobs of this branch's runs of 2026-11-15 read at most 44 s whole (job 132733634671, run
+    # 43687205491), which is the figure `merge_maximum` takes off the lane's bound, and their
+    # steps without a budget sum to 48 s at their maxima (checkout 10 s, `bun install` 12 s and
+    # the merge of the blob reports 5 s among them), 49 s with the 1 s the refused-download step
+    # is allotted below, since no run of that day ran it. 180 + 49 = 229 s is 3 min 49 s, so the
+    # rule gives the same 4 minutes as the older sample below.
     #
     # Each step's own maximum over that sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
     # setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest
@@ -2152,8 +2176,8 @@ jobs:
       # $RUNNER_TEMP/jobs.json, carrying each job's `started_at` and `completed_at` as the jobs
       # API already answers them - so this reading costs no request and no second route.
       #
-      # It is a reading that fails, unlike the four above it: above the lane's budget the step
-      # exits 1 and the job is red. The budgets, 2,656 s on the full lane and 856 s on the
+      # It is a reading that fails, as reading one does and readings two to four do not: above
+      # the lane's budget the step exits 1 and the job is red. The budgets, 2,656 s on the full lane and 856 s on the
       # pull-request lane, are the committed ceiling of 2,700 s and 900 s less this job's own
       # worst case of 44 s,
       # which a job reading inside its own run cannot see of itself: its `completed_at` is null
@@ -2166,12 +2190,13 @@ jobs:
       - name: Reading five, the lane's machine time
         if: always()
         run: .github/scripts/dispatch-browser-run-reads.sh machine-time "$RUNNER_TEMP/jobs.json" "${{ inputs.lane }}"
-      # The verdict, which the four reporting readings above do not give: they report, and this
-      # fails. Two of the job's four failures are here - an upstream job that neither succeeded
-      # nor was skipped, the binaries job among them, and a failed row in the merged report -
-      # the third, a missing blob, is in reading one, where it is found, and the fourth, a lane
-      # over its machine-time budget, is reading five's own, which that reading fails on
-      # because a budget nothing fails on refuses nothing.
+      # The verdict, which readings two to four do not give: they report, and this fails. Two of
+      # the job's failures are here - an upstream job that neither succeeded nor was skipped, the
+      # binaries job among them, and a failed row in the merged report. The others fail where they
+      # are found: the merge step on no blob to merge or no JSON report written, reading one on
+      # no leg to hold the report against, a missing blob, or a merged report that dropped rows
+      # the legs ran, and reading five on a lane over its machine-time budget, because a budget
+      # nothing fails on refuses nothing.
       - name: Fail when a leg failed or the merged report holds a failed row
         if: always()
         run: |
