@@ -154,15 +154,14 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 	if !m.claim.DeathCharged {
 		*run++
 	}
+	// The charge line and the continued line are read together, so they carry one key list.
+	attrs := []any{"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
+		"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail}
 	if *run >= m.deps.Limits.LaunchFailures {
-		m.log.Warn(chargedFromOutsideLine,
-			"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
-			"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail)
+		m.log.Warn(chargedFromOutsideLine, attrs...)
 		return m.died(ctx, observation)
 	}
-	m.log.Info(continuedFromOutsideLine,
-		"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
-		"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail)
+	m.log.Info(continuedFromOutsideLine, attrs...)
 	m.claim.DeathCharged = true
 	if !starting {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()

@@ -5003,7 +5003,9 @@ The daemon keeps a copy of each issue workspace's unpushed work outside the pod 
 Three triggers take that copy:
 the end of each turn of the issue, a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`), and each push of the issue's branch that the daemon records (`copyWorkspaceAtPush`, the same file).
 The 5 minutes run from the start of the copy before it and not from its end, and no `legion.yaml` key changes them.
-The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, so while that tick comes on time two of the cadence's copies of one turn start at most 5 minutes apart and never less than 4 minutes apart.
+The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, whatever took that copy, so while a turn runs and that tick comes on time, a cadence copy starts no less than 4 minutes and no more than 5 minutes after the copy before it, whatever took that one.
+That is the bound on a working turn's newest copy: the next copy of it starts no more than 5 minutes after the last one did.
+Two cadence copies can be further apart than that when a turn's end, a push or an owed copy came between them, since each copy starts the 5 minutes again.
 The copies a turn's end and a push take, and a copy owed behind one in flight, start when they come, whatever the period.
 A copy the shim is still building after 4 minutes is abandoned and logged `budget_spent`, so even a slow copy has ended by the tick that starts the next one, and two copies of one workspace never run at once.
 Between turns the cadence copies an issue only to retry a copy of it that came to nothing, as described below, and never on its period alone:
@@ -5021,7 +5023,7 @@ The copy is asked of the first live role of the issue that has a running process
 Only a shim can build it, in the workspace its own role already works in.
 The daemon stores it in its own database, in the `workspace_running_copies` table, one row per issue, and never in the `workspace_bundles` row an idle release writes.
 A stored copy is logged at Info as `running copy: stored a copy of an issue workspace's unpushed work`, with the issue, the role, `bytes`, `taken` and `took`.
-`taken` is when the copy's take began, by the database's clock, which is the copy's own time and the one the 5 minutes are measured on; the line's own timestamp is when the copy ended, so read the cadence from `taken` and not from the line's time.
+`taken` is when the copy's take began, by the database's clock, which is the copy's own time; it is read a moment after the cadence starts its 5 minutes again for that copy, by the daemon's own clock, so it stands close to the period's start, and the line's own timestamp is when the copy ended, so read the cadence from `taken` and not from the line's time.
 A workspace that holds nothing unpushed drops the issue's running copy instead, so no pod restores work that has since been pushed, unless that copy's own take began after the drop's, when the row holds work the drop never read and stands.
 A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name

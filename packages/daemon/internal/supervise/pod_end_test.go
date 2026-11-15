@@ -287,24 +287,25 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 			Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), PodEnd: runtime.PodEndNotOurs, Detail: detail,
 		}})
 	}
-	// wantContinued fails unless the continued line was written lines times, the last of them at
-	// Info carrying the two runs' counts, the limit, starting and the observation's detail.
-	wantContinued := func(h *harness, lines int, runs Budgets, starting bool) {
+	// wantRunLine fails unless line was written lines times, the last of them at level carrying
+	// the two runs' counts, the limit, starting and the observation's detail: the continued line
+	// and the charge line carry one key list, and each is held to it.
+	wantRunLine := func(h *harness, line string, level slog.Level, lines int, runs Budgets, starting bool) {
 		h.t.Helper()
-		continued := h.records.of(continuedLine)
-		if len(continued) != lines {
-			h.t.Fatalf("%q was written %d times, want %d", continuedLine, len(continued), lines)
+		written := h.records.of(line)
+		if len(written) != lines {
+			h.t.Fatalf("%q was written %d times, want %d", line, len(written), lines)
 		}
-		r := continued[lines-1]
-		if r.level != slog.LevelInfo {
-			h.t.Fatalf("%q is %s, want INFO", continuedLine, r.level)
+		r := written[lines-1]
+		if r.level != level {
+			h.t.Fatalf("%q is %s, want %s", line, r.level, level)
 		}
 		for _, want := range []struct{ key, value string }{
 			{"podEndsNotOurs", strconv.Itoa(runs.PodEndsNotOurs)}, {"startEndsNotOurs", strconv.Itoa(runs.StartEndsNotOurs)},
 			{"limit", strconv.Itoa(limit)}, {"starting", strconv.FormatBool(starting)}, {"detail", detail},
 		} {
 			if got, ok := r.attr(want.key); !ok || got.String() != want.value {
-				h.t.Errorf("%q carries %s=%v (present %v), want %q", continuedLine, want.key, got, ok, want.value)
+				h.t.Errorf("%q carries %s=%v (present %v), want %q", line, want.key, got, ok, want.value)
 			}
 		}
 	}
@@ -316,7 +317,7 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 
 			h.wantState(StateLaunching)
 			h.wantBudgets(Budgets{PodEndsNotOurs: end})
-			wantContinued(h, end, Budgets{PodEndsNotOurs: end}, false)
+			wantRunLine(h, continuedLine, slog.LevelInfo, end, Budgets{PodEndsNotOurs: end}, false)
 			h.relaunched()
 			h.wantOwed(owedTask)
 		}
@@ -332,13 +333,7 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 			t.Fatalf("%q was written %d times, want the %d of the ends below the limit: the end the limit charges was logged as continued",
 				continuedLine, len(continued), limit-1)
 		}
-		charged := h.records.of(chargedLine)
-		if len(charged) != 1 {
-			t.Fatalf("%q was written %d times, want once, for the end that reached the limit", chargedLine, len(charged))
-		}
-		if charged[0].level != slog.LevelWarn {
-			t.Fatalf("%q is %s, want WARN", chargedLine, charged[0].level)
-		}
+		wantRunLine(h, chargedLine, slog.LevelWarn, 1, Budgets{PodEndsNotOurs: limit}, false)
 	})
 	t.Run("an agent still starting", func(t *testing.T) {
 		h := newHarnessOf(t, queuedClaim())
@@ -348,7 +343,7 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 		endFromOutside(h)
 
 		h.wantBudgets(Budgets{StartEndsNotOurs: 1})
-		wantContinued(h, 1, Budgets{StartEndsNotOurs: 1}, true)
+		wantRunLine(h, continuedLine, slog.LevelInfo, 1, Budgets{StartEndsNotOurs: 1}, true)
 	})
 }
 

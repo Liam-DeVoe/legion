@@ -59,9 +59,11 @@ const runningCopyBudget = runningCopyPeriod - idleTickInterval
 const (
 	// runningCopyStoredLine is a copy taken and stored, at Info: the issue, the bytes it holds,
 	// `taken`, the store's time the copy's take began (store.WorkspaceCopyBegun), which is the
-	// copy's own time and the one the cadence's period is measured on, and how long the copy took,
-	// the bundler's build and the write together. The line's own timestamp is when the copy ended,
-	// so a reader measuring the cadence reads `taken` and not the line's time.
+	// copy's own time, and how long the copy took, the bundler's build and the write together. The
+	// cadence's period runs on its own clock from runningCopy.started, which the copy's take sets a
+	// moment before the store's time is read, so `taken` stands close to the period's start. The
+	// line's own timestamp is when the copy ended, so a reader measuring the cadence reads `taken`
+	// and not the line's time.
 	runningCopyStoredLine = "running copy: stored a copy of an issue workspace's unpushed work"
 	// runningCopyDroppedLine is a workspace that bundled to nothing, at Info. The store refuses
 	// an empty copy, so the issue's running copy is dropped instead: a copy taken minutes ago

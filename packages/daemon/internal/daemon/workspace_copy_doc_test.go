@@ -49,8 +49,8 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 	_, region := testdoc.Region(t, "docs/kubernetes.md", cadence, copyCadenceStart, copyCadenceEnd)
 	testdoc.RequireDocFacts(t, cadence, region, []testdoc.Fact{
 		{Fact: "the second trigger and its bound, runningCopyPeriod", Phrase: "every " + period + " while a turn of that issue runs"},
-		{Fact: "the bound on the starts of two of the cadence's copies of one turn, runningCopyPeriod less idleTickInterval at the least",
-			Phrase: "two of the cadence's copies of one turn start at most " + period + " apart and never less than " + docMinutes(t, runningCopyPeriod-idleTickInterval) + " apart"},
+		{Fact: "the bound on a cadence copy's start after the copy before it, whatever took that one, runningCopyPeriod less idleTickInterval at the least",
+			Phrase: "a cadence copy starts no less than " + docMinutes(t, runningCopyPeriod-idleTickInterval) + " and no more than " + period + " after the copy before it, whatever took that one"},
 		{Fact: "the budget a copy is given, runningCopyBudget", Phrase: "still building after " + docMinutes(t, runningCopyBudget)},
 		{Fact: "the line a copy that was not stored is logged with, runningCopyUnsavedLine", Phrase: runningCopyUnsavedLine},
 	})
