@@ -88,10 +88,7 @@ func newRig(t *testing.T) *rig {
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "signing-key")
 	signInConfig := brokertest.SignIn(issuer, key)
-	accounts, err := oidc.New(context.Background(), issuer.URL(), dispatchAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	accounts := oidc.NewIssuerSet([]oidc.NamedIssuer{{URL: issuer.URL()}}, dispatchAudience, 0)
 
 	enr := &enroll.Service{Store: st, Lease: time.Hour}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
@@ -109,7 +106,7 @@ func newRig(t *testing.T) *rig {
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: accounts},
+		AccountTokens: enroll.K8sPodVerifier{Issuers: accounts},
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

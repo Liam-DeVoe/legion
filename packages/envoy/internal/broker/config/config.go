@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
+	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -396,7 +397,7 @@ type Config struct {
 	// not hold or naming one twice, and any issuer name while BROKER_K8S_OIDC_ISSUER is one bare
 	// URL, refuse the boot. Needs BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no
 	// service logs in with a token.
-	ServiceLogins map[string]ServiceLogin
+	ServiceLogins map[string]enroll.ServiceLogin
 	// BROKER_K8S_OIDC_ISSUER: the issuers of the Kubernetes ServiceAccount tokens the broker takes,
 	// one for each cluster whose pods enroll, log a service in or call its API: comma-separated
 	// <name>=<issuer URL> entries, such as first=https://oidc.first.example,second=https://oidc.second.example,
@@ -584,15 +585,6 @@ type Config struct {
 	TrustedProxyHeader string
 }
 
-// ServiceLogin is one BROKER_SERVICE_LOGINS entry, which Config.ServiceLogins keys by its
-// ServiceAccount subject: the service the account logs in as, and the names, in
-// BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens it logs in with — the entry's own, or the
-// first issuer's alone where it names none.
-type ServiceLogin struct {
-	Service string
-	Issuers []string
-}
-
 // The four settings the broker's sign-in needs, each read by its own name: the provider's issuer,
 // the client's id, the file holding the client's secret, and the Workspace domain.
 const (
@@ -726,9 +718,9 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 // and the issuers accountIssuers gives it from issuers, the list BROKER_K8S_OIDC_ISSUER names. It
 // refuses, naming the entry, what checkServiceAccount refuses, an entry ending in "=" with no name
 // after it, and what accountIssuers refuses. No entries answer nil, as an unset setting does.
-func parseServiceLogins(setting, value string, issuers []oidc.NamedIssuer) (map[string]ServiceLogin, error) {
+func parseServiceLogins(setting, value string, issuers []oidc.NamedIssuer) (map[string]enroll.ServiceLogin, error) {
 	const form = "<service>=system:serviceaccount:<namespace>:<name> entries, each optionally followed by =<issuer name>[,<issuer name>…]"
-	var logins map[string]ServiceLogin
+	var logins map[string]enroll.ServiceLogin
 	seen := map[string]string{}
 	for _, text := range strings.Fields(value) {
 		head, names, ok := cutIssuerNames(text)
@@ -744,9 +736,9 @@ func parseServiceLogins(setting, value string, issuers []oidc.NamedIssuer) (map[
 			return nil, err
 		}
 		if logins == nil {
-			logins = map[string]ServiceLogin{}
+			logins = map[string]enroll.ServiceLogin{}
 		}
-		logins[subject] = ServiceLogin{Service: service, Issuers: named}
+		logins[subject] = enroll.ServiceLogin{Service: service, Issuers: named}
 	}
 	return logins, nil
 }

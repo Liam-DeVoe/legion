@@ -120,8 +120,9 @@ type Rig struct {
 	// signing key they are minted under.
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
-	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon.
-	serviceLogins map[string]string
+	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon,
+	// from the one issuer the Rig trusts.
+	serviceLogins map[string]enroll.ServiceLogin
 }
 
 // Option changes how NewRig wires its broker.
@@ -184,17 +185,20 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	// The one issuer the Rig trusts, as a deployment's BROKER_K8S_OIDC_ISSUER names one cluster: a
+	// bare URL, so the issuer has no name.
+	podIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
+	podVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, podAudience, 0)}
 
-	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
+	serviceLogins := map[string]enroll.ServiceLogin{DaemonAccount: {Service: "legion-daemon", Issuers: []string{""}}}
 	// BROKER_SERVICES: the account every pod MintPodToken mints a token for runs as, bound to the
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	enr := &enroll.Service{
+		Store: st, Lease: config.lease, Pod: podVerifier, Issuers: podIssuers,
+		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount,
+	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// A session name belongs to one principal here as it does on the real broker: the binder is
 	// a store on the same pool the OAuth provider's own store uses (NewOAuthProvider, built
@@ -222,7 +226,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		},
 		// The one verifier serves both, as the broker's own wiring does: a pod enrolling and a
 		// listed caller present tokens of the same issuer for the same audience.
-		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
+		AccountTokens: podVerifier,
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
@@ -249,13 +253,17 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 // Caller is the account a caller name carries, for an api.Deps a test wires itself as well as for
 // the Rig's own: the broker's boot reads BROKER_API_ACCOUNTS this way, and a name its table does
-// not know fails t here exactly as it would refuse that boot.
+// not know fails t here exactly as it would refuse that boot. Its issuers are the ones the boot
+// gives a Kubernetes account's entry that names none under one bare BROKER_K8S_OIDC_ISSUER URL,
+// as every such rig is wired: that one issuer, which has no name. A Google account's entry names
+// no issuer, and nothing reads its issuers.
 func Caller(t *testing.T, name string) api.Account {
 	t.Helper()
 	account, known := api.AccountFor(name)
 	if !known {
 		t.Fatalf("api.AccountFor(%q): the broker knows no caller of that name", name)
 	}
+	account.Issuers = []string{""}
 	return account
 }
 

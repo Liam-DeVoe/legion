@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
+	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -1074,7 +1075,7 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Each entry names no issuer, so each takes BROKER_K8S_OIDC_ISSUER's one, unnamed issuer.
-	want := map[string]ServiceLogin{
+	want := map[string]enroll.ServiceLogin{
 		"system:serviceaccount:legion-system:legion-daemon-a": {Service: "legion-daemon", Issuers: []string{""}},
 		"system:serviceaccount:legion-system:legion-daemon-b": {Service: "legion-daemon", Issuers: []string{""}},
 	}
@@ -1136,7 +1137,7 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 	if !maps.Equal(cfg.ServicesByAccount, want) {
 		t.Errorf("ServicesByAccount = %v, want %v", cfg.ServicesByAccount, want)
 	}
-	if wantLogins := map[string]ServiceLogin{account: {Service: "legion-daemon", Issuers: []string{""}}}; !reflect.DeepEqual(cfg.ServiceLogins, wantLogins) {
+	if wantLogins := map[string]enroll.ServiceLogin{account: {Service: "legion-daemon", Issuers: []string{""}}}; !reflect.DeepEqual(cfg.ServiceLogins, wantLogins) {
 		t.Errorf("ServiceLogins = %v, want %v", cfg.ServiceLogins, wantLogins)
 	}
 }
@@ -1675,7 +1676,7 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 		if want := map[string]api.Account{"system:serviceaccount:example-ns:example-dispatch": dispatch}; !reflect.DeepEqual(cfg.APIAccounts, want) {
 			t.Errorf("APIAccounts = %+v, want %+v", cfg.APIAccounts, want)
 		}
-		if want := map[string]ServiceLogin{"system:serviceaccount:legion-system:legion-daemon": {Service: "legion-daemon", Issuers: []string{""}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
+		if want := map[string]enroll.ServiceLogin{"system:serviceaccount:legion-system:legion-daemon": {Service: "legion-daemon", Issuers: []string{""}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
 			t.Errorf("ServiceLogins = %+v, want %+v", cfg.ServiceLogins, want)
 		}
 	})
@@ -1818,7 +1819,7 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		if want := map[string]api.Account{dispatchSubject: dispatchWith("first")}; !reflect.DeepEqual(cfg.APIAccounts, want) {
 			t.Errorf("APIAccounts = %+v, want %+v", cfg.APIAccounts, want)
 		}
-		if want := map[string]ServiceLogin{daemonSubject: {Service: "legion-daemon", Issuers: []string{"first"}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
+		if want := map[string]enroll.ServiceLogin{daemonSubject: {Service: "legion-daemon", Issuers: []string{"first"}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
 			t.Errorf("ServiceLogins = %+v, want %+v", cfg.ServiceLogins, want)
 		}
 	})
@@ -1840,7 +1841,7 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		if want := map[string]api.Account{exampleListenerAccount: listener}; !reflect.DeepEqual(cfg.GoogleAPIAccounts, want) {
 			t.Errorf("GoogleAPIAccounts = %+v, want %+v, which names no issuer", cfg.GoogleAPIAccounts, want)
 		}
-		if want := map[string]ServiceLogin{daemonSubject: {Service: "legion-daemon", Issuers: []string{"second"}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
+		if want := map[string]enroll.ServiceLogin{daemonSubject: {Service: "legion-daemon", Issuers: []string{"second"}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
 			t.Errorf("ServiceLogins = %+v, want %+v", cfg.ServiceLogins, want)
 		}
 	})

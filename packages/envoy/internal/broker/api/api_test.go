@@ -74,9 +74,9 @@ type testServer struct {
 	// server calls take; minted once per server so a test may send it from a goroutine too.
 	uiToken string
 	// ServiceLogins is the broker's live BROKER_SERVICE_LOGINS, daemonAccount and
-	// otherDaemonAccount each logging in as legion-daemon; a test removes an entry to take an
-	// account off it.
-	ServiceLogins map[string]string
+	// otherDaemonAccount each logging in as legion-daemon from the server's one issuer; a test
+	// removes an entry to take an account off it.
+	ServiceLogins map[string]enroll.ServiceLogin
 }
 
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
@@ -120,16 +120,23 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
+	// One issuer, as a deployment's BROKER_K8S_OIDC_ISSUER names one cluster: a bare URL, so the
+	// issuer has no name, and every entry below names it by that empty name, as config.Load fills
+	// an entry that names none.
+	podIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
+	podVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, podAudience, 0)}
+	serviceLogins := map[string]enroll.ServiceLogin{
+		daemonAccount:      {Service: "legion-daemon", Issuers: []string{""}},
+		otherDaemonAccount: {Service: "legion-daemon", Issuers: []string{""}},
 	}
-	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
 	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
 	// outside it is a pod no login here launches (POD_NOT_LAUNCHED).
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	enr := &enroll.Service{
+		Store: st, Lease: time.Hour, Pod: podVerifier, Issuers: podIssuers,
+		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount,
+	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// Wired as cmd/broker/main.go wires it, so a session name belongs to one principal on this
 	// server too: the enrollment route refuses a name another principal holds.
@@ -151,7 +158,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	deps := api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, dispatchCaller)},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
+		AccountTokens: podVerifier,
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

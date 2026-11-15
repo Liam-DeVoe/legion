@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,9 +44,9 @@ type Deps struct {
 	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
 	GoogleAPIAccounts map[string]Account
 	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuer and audience a pod enrolls with (cmd/broker passes the one verifier it
-	// builds). Nil is a broker that trusts no Kubernetes issuer, where no Kubernetes caller
-	// authenticates.
+	// Kubernetes issuers and audience a pod enrolls with (cmd/broker passes the one verifier it
+	// builds), each token against the issuer it names. Nil is a broker that trusts no Kubernetes
+	// issuer, where no Kubernetes caller authenticates.
 	AccountTokens enroll.PodVerifier
 	// GoogleAccountTokens verifies a Google caller's identity token, against the issuer and
 	// audience BROKER_GOOGLE_OIDC_ISSUER and BROKER_GOOGLE_OIDC_AUDIENCE name — the audience
@@ -392,16 +393,20 @@ type GoogleVerifier interface {
 // listener calls from a VM that holds no Kubernetes token. Which verifier judges a token is the
 // token's own issuer: a verifier answers oidc.ErrIssuer for a token of any issuer but its own,
 // which is the one error that means "not mine" rather than a refusal, so a token neither
-// verifier claims is simply invalid and no token is ever judged twice.
+// verifier claims is simply invalid and no token is ever judged twice. The Kubernetes verifier
+// holds every issuer BROKER_K8S_OIDC_ISSUER names, and answers oidc.ErrIssuer for a token of any
+// other, a Google token among them.
 //
 // The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
 // means the same thing for either kind: a broker that trusts no issuer for its callers at all
 // (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
 // token includes one naming no verified account, since the email claim is what names the caller
 // — one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied token
-// is spendable for at most an hour, and an account BROKER_API_ACCOUNTS does not name. Only the
-// last is a 403: the credential is sound and it is the broker's list that refuses. No refusal
-// repeats the token.
+// is spendable for at most an hour, and an account BROKER_API_ACCOUNTS does not name, or names
+// with issuers that do not hold the one that signed its Kubernetes token. Only the last is a
+// 403: the credential is sound and it is the broker's list that refuses. A Kubernetes token
+// whose issuer the broker cannot read yet is 503 OIDC_ISSUER_UNAVAILABLE, since nothing was
+// decided about it. No refusal repeats the token.
 func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
@@ -411,7 +416,7 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 	if s.deps.AccountTokens != nil {
 		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
 		if !errors.Is(err, oidc.ErrIssuer) {
-			return s.listedCaller(w, err, claims.Subject, claims.IssuedAt, claims.Expiry, s.deps.APIAccounts)
+			return s.listedCaller(w, err, claims.Subject, claims.IssuedAt, claims.Expiry, s.deps.APIAccounts, &claims.Issuer)
 		}
 	}
 	if s.deps.GoogleAccountTokens != nil {
@@ -421,7 +426,7 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
 				return caller{}, false
 			}
-			return s.listedCaller(w, err, token.Identity.Account, token.IssuedAt, token.Expiry, s.deps.GoogleAPIAccounts)
+			return s.listedCaller(w, err, token.Identity.Account, token.IssuedAt, token.Expiry, s.deps.GoogleAPIAccounts, nil)
 		}
 	}
 	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
@@ -431,10 +436,17 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 // listedCaller is accountCaller's judgement of one verified token, whichever kind it is: err is
 // what its verifier answered, account the name it is looked up by (a ServiceAccount subject or a
 // Google account address), and accounts the half of BROKER_API_ACCOUNTS its kind is listed in.
-func (s *server) listedCaller(w http.ResponseWriter, err error, account string, issuedAt, expiry time.Time, accounts map[string]Account) (caller, bool) {
+// issuer is the BROKER_K8S_OIDC_ISSUER issuer that signed a Kubernetes token, which the
+// account's entry must name, since the same account name in another cluster is another
+// ServiceAccount; nil for a Google token, whose entry names no issuer and whose verifier's outage
+// stays the 401 it was.
+func (s *server) listedCaller(w http.ResponseWriter, err error, account string, issuedAt, expiry time.Time, accounts map[string]Account, issuer *oidc.NamedIssuer) (caller, bool) {
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
+		return caller{}, false
+	case issuer != nil && errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
@@ -451,6 +463,10 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this account is not in BROKER_API_ACCOUNTS")
 		return caller{}, false
 	}
+	if issuer != nil && !slices.Contains(listed.Issuers, issuer.Name) {
+		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this account's BROKER_API_ACCOUNTS entry does not name the issuer that signed its token")
+		return caller{}, false
+	}
 	return caller{account: listed}, true
 }
 
@@ -459,15 +475,20 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 // machine.ServiceAccount, which serviceAuth hands the handler. It is the token login's own
 // check (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
 // login accept exactly the same credential: the same verifier, the same hour-from-issue bound
-// on a copied token, and the same list. An account the list does not name is 403
-// ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
-// trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
-// authenticate no one. No refusal repeats the token.
+// on a copied token, and the same list, issuers and all. An account the list does not name, or
+// names with issuers that do not hold its token's, is 403 ACCOUNT_NOT_LISTED, the credential
+// being sound and the broker's list refusing; a token whose issuer the broker cannot read yet is
+// 503 OIDC_ISSUER_UNAVAILABLE; a broker that trusts no Kubernetes token issuer answers 401
+// ACCOUNT_TOKENS_OFF, as this class's routes then authenticate no one. No refusal repeats the
+// token.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
 	case errors.Is(err, machine.ErrTokenLoginsOff):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no Kubernetes token issuer, so no service authenticates with a ServiceAccount token")
+		return caller{}, false
+	case errors.Is(err, machine.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
 		return caller{}, false
 	case errors.Is(err, machine.ErrTokenExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the ServiceAccount token has expired")
@@ -476,7 +497,7 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the ServiceAccount token lives longer than an hour from its issue")
 		return caller{}, false
 	case errors.Is(err, machine.ErrAccountNotListed):
-		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this ServiceAccount is not in BROKER_SERVICE_LOGINS")
+		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this ServiceAccount is not in BROKER_SERVICE_LOGINS for the issuer that signed its token")
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
@@ -608,6 +629,17 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 	slog.Error("broker: "+op+" failed", "error", err)
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
+}
+
+// writeIssuerUnavailable answers a ServiceAccount token whose issuer the broker cannot read yet —
+// its discovery document has not been read, or its key set cannot be (oidc.ErrIssuerUnavailable)
+// — with 503 OIDC_ISSUER_UNAVAILABLE and Dispatch's sentence for the same fault
+// (serviceTokenActor). It is a 5xx because nothing was decided about the token: the Legion daemon
+// stops trying after a 4xx and tries again after a 5xx. It logs nothing, since the issuer's
+// background read logs its own failures at most once a minute and a line here would repeat that
+// for every token.
+func writeIssuerUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE", "the service-account token issuer cannot be reached; try again in a minute")
 }
 
 // writeJSON answers status with v, which is one of this package's named response types: the

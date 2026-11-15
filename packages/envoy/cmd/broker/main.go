@@ -324,14 +324,17 @@ func main() {
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
 	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest}
-	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
-	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
-	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
-	// makes one discovery read per issuer rather than two, one set is held in memory, and a
-	// rotation becomes visible to both at the same moment.
+	// The token issuers the broker trusts. The clusters' issuers (BROKER_K8S_OIDC_ISSUER) are one
+	// verifier over all of them, each read in the background, so the broker boots and serves while
+	// one of them cannot be read and answers that issuer's tokens 503 until it can. Google's issuer
+	// keeps one key source read here, by both its verifier and the RFC 8693 exchange below, which
+	// resolves a subject token's own key through the same *oidc.Keys, so the boot makes one
+	// discovery read of it rather than two and a rotation becomes visible to both at once. The
+	// exchange's own cluster issuer (BROKER_EXCHANGE_K8S_ISSUER) is read here too, for the
+	// exchange alone.
 	//
-	// Discovery is bounded: an issuer that accepts the connection and never answers refuses the
-	// boot instead of hanging it with no health endpoint serving.
+	// Those two reads are bounded: an issuer that accepts the connection and never answers
+	// refuses the boot instead of hanging it with no health endpoint serving.
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
@@ -426,8 +429,8 @@ func main() {
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
-		Store: st, Lease: lease, Pod: pod, ServiceLogins: serviceLoginServices(cfg.ServiceLogins), ServicesByAccount: cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount,
+		Store: st, Lease: lease, Pod: pod, Issuers: cfg.K8sOIDCIssuers, ServiceLogins: cfg.ServiceLogins,
+		ServicesByAccount: cfg.ServicesByAccount, VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate)
@@ -463,10 +466,12 @@ func main() {
 	fatal(err)
 	exchangeConfig := oauth.ExchangeConfig{Policy: exchangePolicy}
 	if cfg.ExchangeK8sAudience != "" {
-		// The key source the account verifier already reads: a subject token is the same
-		// cluster's projected token, for an audience of its own (BROKER_EXCHANGE_K8S_AUDIENCE),
-		// and BROKER_EXCHANGE_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, so this is never nil.
-		exchangeConfig.Kubernetes = oauth.IssuerConfig{Issuer: firstK8sIssuer(cfg), Audience: cfg.ExchangeK8sAudience, Keys: discovered.K8sKeys}
+		// The key source discoverVerifiers read at boot for the one cluster issuer the exchange
+		// takes, BROKER_EXCHANGE_K8S_ISSUER: a subject token is that cluster's projected token, for
+		// an audience of its own (BROKER_EXCHANGE_K8S_AUDIENCE), and the exchange's library takes
+		// one issuer for each token type. BROKER_EXCHANGE_K8S_AUDIENCE is what made it read one, so
+		// this is never nil.
+		exchangeConfig.Kubernetes = oauth.IssuerConfig{Issuer: cfg.ExchangeK8sIssuer.URL, Audience: cfg.ExchangeK8sAudience, Keys: discovered.ExchangeK8sKeys}
 	}
 	if cfg.GoogleOIDCAudience != "" {
 		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
@@ -1077,15 +1082,24 @@ func serviceNames(cfg config.Config) []string {
 // keysFunc is issuerKeys' shape, a seam for a test that must not reach a real issuer.
 type keysFunc func(ctx context.Context, issuer string) (*oidc.Keys, error)
 
-// verifiers are what one boot's discovery of the token issuers the broker trusts produced: a
-// verifier per issuer and the key set behind each, since the RFC 8693 exchange resolves a subject
-// token's own key itself and must read the very set its verifier reads.
+// issuerKeySpacing is the least time between a failed read of a cluster issuer's key set and the
+// next (oidc.WithKeyFailureSpacing), the spacing oidc's own background read keeps between two
+// failed reads of a discovery document. The token login gives a token answered 503 its address's
+// request back, so while an issuer's key set cannot be read, this and not that bucket is what
+// holds a flood of its tokens to one read of the set in 5 seconds.
+const issuerKeySpacing = 5 * time.Second
+
+// verifiers are what one boot's discovery of the token issuers the broker trusts produced: the
+// verifiers, and the key sets the RFC 8693 exchange resolves a subject token's own key against.
 type verifiers struct {
-	// Pod verifies a pod's enrollment token and a service's login token, nil on a broker told
-	// about no cluster.
+	// Pod verifies a pod's enrollment token and a service's login token, each against the issuer
+	// of BROKER_K8S_OIDC_ISSUER that its iss names, and refuses a token of any other issuer as
+	// oidc.ErrIssuer. Each issuer is read in the background, and until one is, its tokens are
+	// oidc.ErrIssuerUnavailable. Nil on a broker told about no cluster.
 	Pod enroll.PodVerifier
-	// K8sKeys is the cluster issuer's published keys, nil where Pod is.
-	K8sKeys *oidc.Keys
+	// ExchangeK8sKeys is the published keys of the exchange's cluster issuer
+	// (BROKER_EXCHANGE_K8S_ISSUER), nil on a broker with no exchange audience.
+	ExchangeK8sKeys *oidc.Keys
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
 	// which registers no Google subject token type.
 	GoogleKeys *oidc.Keys
@@ -1096,25 +1110,43 @@ type verifiers struct {
 	GoogleIdentities *oidc.Verifier
 }
 
-// discoverVerifiers reads the key sets of the token issuers the broker trusts (keysFor, issuerKeys
-// in production) and builds a verifier on each: the cluster's (BROKER_K8S_OIDC_ISSUER and
-// BROKER_K8S_OIDC_AUDIENCE), one verifier for both a pod's enrollment token and a service's login
-// token, which are the same cluster's projected tokens for the same audience, whose key set it
-// also answers for the RFC 8693 exchange; and Google's (BROKER_GOOGLE_OIDC_ISSUER), for a
-// machine's identity token, only when BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the
-// exchange resolves a machine's subject token against, logging one line that names the issuer,
-// the audience, the machine services and how many machine entries the exchange holds. With no
-// Google audience it reads and logs nothing about Google, and answers no Google keys, so the
-// broker registers no Google subject token type.
+// discoverVerifiers builds the verifiers of the token issuers the broker trusts and reads the key
+// sets the RFC 8693 exchange needs (keysFor, issuerKeys in production).
+//
+// The clusters' issuers (BROKER_K8S_OIDC_ISSUER, for BROKER_K8S_OIDC_AUDIENCE) are one verifier,
+// an oidc.IssuerSet, for both a pod's enrollment token and a service's login token. It tries each
+// issuer once, all at the same time (IssuerSet.Boot), and logs one line for each, naming it and
+// whether it was read; then it reads, in the background until ctx ends, each one it could not,
+// and logs one more line when it does. None of them refuses the boot: until an issuer is read,
+// its tokens are answered 503.
+//
+// The exchange's cluster issuer (BROKER_EXCHANGE_K8S_ISSUER) is read again apart from that set,
+// with keysFor, since the exchange's library takes a key source built at boot, and a failure
+// refuses the boot as it always has. Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's
+// identity token, is read only when BROKER_GOOGLE_OIDC_AUDIENCE is set, and its key set serves
+// both a listed caller's Google verifier and the exchange, which resolves a machine's subject
+// token against it; that read logs one line naming the issuer, the audience, the machine services
+// and how many machine entries the exchange holds. With no Google audience it reads and logs
+// nothing about Google, and answers no Google keys, so the broker registers no Google subject
+// token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
-	if issuer := firstK8sIssuer(cfg); issuer != "" {
-		keys, err := keysFor(ctx, issuer)
+	if cfg.ExchangeK8sAudience != "" {
+		keys, err := keysFor(ctx, cfg.ExchangeK8sIssuer.URL)
 		if err != nil {
 			return verifiers{}, err
 		}
-		found.K8sKeys = keys
-		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer, cfg.K8sOIDCAudience, keys)}
+		found.ExchangeK8sKeys = keys
+	}
+	if len(cfg.K8sOIDCIssuers) > 0 {
+		issuers := oidc.NewIssuerSet(cfg.K8sOIDCIssuers, cfg.K8sOIDCAudience, issuerKeySpacing)
+		for _, read := range issuers.Boot(ctx) {
+			slog.Info("broker: kubernetes issuer", append(issuerAttrs(read.Issuer), "read", read.Read)...)
+		}
+		go issuers.Run(ctx, func(issuer oidc.NamedIssuer) {
+			slog.Info("broker: kubernetes issuer read", issuerAttrs(issuer)...)
+		})
+		found.Pod = enroll.K8sPodVerifier{Issuers: issuers}
 	}
 	if cfg.GoogleOIDCAudience == "" {
 		return found, nil
@@ -1135,26 +1167,13 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	return found, nil
 }
 
-// firstK8sIssuer is the URL of the first issuer BROKER_K8S_OIDC_ISSUER names, the one issuer
-// whose keys this boot reads, or "" for a broker told about no cluster.
-func firstK8sIssuer(cfg config.Config) string {
-	if len(cfg.K8sOIDCIssuers) == 0 {
-		return ""
+// issuerAttrs names a cluster issuer on a log line: its name, which one bare BROKER_K8S_OIDC_ISSUER
+// URL does not give it, and its URL.
+func issuerAttrs(issuer oidc.NamedIssuer) []any {
+	if issuer.Name == "" {
+		return []any{"url", issuer.URL}
 	}
-	return cfg.K8sOIDCIssuers[0].URL
-}
-
-// serviceLoginServices is BROKER_SERVICE_LOGINS as the enrollment service reads it: each
-// ServiceAccount subject answering the service it logs in as.
-func serviceLoginServices(logins map[string]config.ServiceLogin) map[string]string {
-	if logins == nil {
-		return nil
-	}
-	services := make(map[string]string, len(logins))
-	for subject, login := range logins {
-		services[subject] = login.Service
-	}
-	return services
+	return []any{"name", issuer.Name, "url", issuer.URL}
 }
 
 // machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the
@@ -1214,13 +1233,14 @@ func personSignIns() oauth.PersonSignIns {
 	}
 }
 
-// issuerKeys reads issuer's published signing keys: the source a token's own key is resolved
-// against, both for the verifier that answers whether a token verifies (a projected
-// service-account token) and for the RFC 8693 exchange, which
-// needs the key itself. It takes the same boot deadline
-// discovery does: an issuer that accepts the connection and never answers refuses the boot rather
-// than hanging it with no health endpoint serving. No key is fetched here; the first token read
-// reads the set.
+// issuerKeys reads issuer's published signing keys at boot, for a key source the RFC 8693
+// exchange resolves a subject token's own key against, since it needs the key itself: the
+// exchange's cluster issuer's, Google's, which a listed caller's Google verifier reads too, and
+// GitHub's. It takes the same boot deadline discovery does: an issuer that accepts the connection
+// and never answers refuses the boot rather than hanging it with no health endpoint serving. No
+// key is fetched here; the first token read reads the set. The clusters' issuers whose tokens pods
+// and services present are not read here but by the oidc.IssuerSet discoverVerifiers builds, in
+// the background, and none of them refuses the boot.
 func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	discovery, cancel := context.WithTimeout(ctx, oidc.DiscoveryTimeout)
 	defer cancel()
