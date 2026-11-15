@@ -446,7 +446,7 @@ Up to 2026-11-15 the guards and their readings were:
   `envoy-go-race-docs`: 65 minutes, against `internal/dispatch/docs`'s 1881.151 s.
   `envoy-go-docs-finalizers`: 45 minutes, against `internal/dispatch/docs`'s 1261.698 s.
 
-- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 25 minutes, against 718.638 s; `dispatch-two-builds`: 30 minutes, against 526.292 s over its 2 green merge-group runs; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
+- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 25 minutes, against 718.638 s; `dispatch-two-builds`: 30 minutes, against 575.933 s over its 8 green merge-group runs; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
 
 - `envoy-infra-go`: 10 minutes for the unit step, against `gcp`'s 28.059 s, and 30 for each natslive call, against `core`'s 124.22 s on a restored cache, since a cold cache installs four tools first.
   `envoy-smoke`: 5 minutes for the smoke test (16.133 s) and 15 for the live tests (145.791 s).
@@ -702,11 +702,14 @@ the shim's rescue test, run with no `LEGION_WORKSPACE` of its own, pushed the po
   Guard unsets every `LEGION_*`, `GIT_*`, `JJ_*`, `GH_*` and `GITHUB_*` variable, `SSH_AUTH_SOCK` and `SSH_ASKPASS`, and the three names that place an Oh My Pi session (`OMP_SESSION_SQL_DSN_FILE`, `OMP_SESSION_STORAGE` and `OMP_SESSION_SQL_DSN`, which carries the same URL by value), keeping the tests' own inputs (`LEGION_TEST_*`, `LEGION_E2E*`, `GITHUB_ACTIONS`, and the names the package passes), and sets `GIT_ALLOW_PROTOCOL=file`, which a repository's own `protocol.<name>.allow` cannot override.
   The session store a pod names holds the conversation of every agent of the deployment, so a test that opened it would read and write what those agents are reading and writing.
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
+  Guard also takes off the process's `PATH` every directory whose `git` is the image's git wrapper (`/opt/legion/bin/git`, or a link to it), which leads a pod's `PATH`: that git puts Legion's leak guard in front of every push, and that jj refuses a push whose git is any other, so a fixture's push to a local bare repository under the test's empty home was refused in a pod and passed on CI, whose `PATH` holds no such directory.
+  It is the process's `PATH` that matters, because `exec.Command` and `exec.LookPath` look a bare name up on it whatever `PATH` the command's `Env` holds.
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point:
   that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
-- A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's, and an identity.
+- A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
+  The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
   Isolated keeps no test input either, so a fixture that needs one appends it after.
 

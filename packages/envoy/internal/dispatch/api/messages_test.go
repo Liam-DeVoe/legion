@@ -2045,7 +2045,7 @@ func TestASupersededAttemptIsNotSettledAgainByItsOriginalSender(t *testing.T) {
 				attemptSessionID: "s1", title: "planner",
 			},
 		},
-		nil, false, "",
+		sendOutcome{},
 	); err != nil {
 		t.Fatalf("the returning sender's settle: %v", err)
 	}
@@ -2478,7 +2478,7 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 				attemptSessionID: "s1", title: "planner",
 			},
 		},
-		&envelope, false, "",
+		sendOutcome{envelopeID: &envelope},
 	)
 	if err != nil {
 		t.Fatalf("the stalled sender's settle: %v", err)

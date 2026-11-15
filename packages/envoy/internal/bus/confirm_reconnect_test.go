@@ -2,7 +2,6 @@ package bus
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -240,7 +240,7 @@ func answeringServer(t *testing.T, deny string, stored bool) *nats.Conn {
 func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 	subject := "notifications.role.reviewer"
 	conn := answeringServer(t, subject, false)
-	client := &Client{Conn: conn}
+	client := &Client{Conn: conn, clock: clocktest.New(time.Now())}
 	// A publish whose own flush has the server's violation recorded before it returns.
 	answered := func(msg *nats.Msg) error {
 		if err := conn.PublishMsg(msg); err != nil {
@@ -250,9 +250,11 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 	}
 
 	// publishConfirmed flushes within its context's deadline and reads a context with none as a
-	// window already spent, so the test gives it the deadline PublishCoreContext gives it in
-	// production, PublishBound, under the shared wait's own context.
-	ctx, cancel := context.WithTimeout(testwait.Context(t), PublishBound)
+	// window already spent, so the test gives it the bound PublishCoreContext gives it in
+	// production, PublishBound, armed as production arms it (armBound) on a clock that stands
+	// still, under the shared wait's own context: the window it reads is the whole bound, and
+	// no load spends it.
+	ctx, cancel := client.armBound(testwait.Context(t), PublishBound)
 	defer cancel()
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {

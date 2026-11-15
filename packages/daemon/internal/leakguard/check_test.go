@@ -283,12 +283,22 @@ func stoppedPush(t *testing.T, ctx context.Context, clock *clocktest.Fake, stop 
 
 // stoppedAtItsBound is call's answer under a bound of 2 s on clock, which the test moves to the
 // bound once the stand-in program that writes started has started, and not before: the guard
-// reads the time a child starts at before it starts it.
+// reads the time a child starts at before it starts it (stoppedOnceStarted).
 func stoppedAtItsBound(t *testing.T, clock *clocktest.Fake, started string, call func(context.Context) error) error {
 	t.Helper()
 	ctx := boundOn(t, clock, 2*time.Second)
+	return stoppedOnceStarted(t, started, func() { clock.Advance(2 * time.Second) }, func() error { return call(ctx) })
+}
+
+// stoppedOnceStarted is call's answer once the test has run stop, which ends the call's context
+// (a cancel, or a move of the test clock to a deadline on it). stop runs once the stand-in
+// program that writes started has started, and not before: an end that came before the program
+// started would stop nothing it is meant to. A call that answers before the program starts fails
+// the test.
+func stoppedOnceStarted(t *testing.T, started string, stop func(), call func() error) error {
+	t.Helper()
 	answered := make(chan error, 1)
-	go func() { answered <- call(ctx) }()
+	go func() { answered <- call() }()
 	testwait.Eventually(t, "the stand-in program to start", func() bool {
 		select {
 		case err := <-answered:
@@ -298,8 +308,8 @@ func stoppedAtItsBound(t *testing.T, clock *clocktest.Fake, started string, call
 		_, err := os.Stat(started)
 		return err == nil
 	})
-	clock.Advance(2 * time.Second)
-	return testwait.Receive(t, "the call's answer once its bound passed", answered)
+	stop()
+	return testwait.Receive(t, "the call's answer once its stop came", answered)
 }
 
 // says fails the test for each of wants that the setup failure's line does not hold.

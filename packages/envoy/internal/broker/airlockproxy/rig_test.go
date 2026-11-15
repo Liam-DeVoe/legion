@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -102,6 +103,11 @@ type fakeGrants struct {
 	// it ran under. A row moves it to play a policy change the broker took by its periodic
 	// reload, which reaches a pod's held values no other way.
 	version string
+	// versionPanic, once a row sets it (panicReadingVersion), is what every later PolicyVersion
+	// panics with. The proxy reads the version only in its read of a grant's values (valuesFor),
+	// which a bound call makes from its handler, so for a bound call it is a handler of the inner
+	// server that panics.
+	versionPanic any
 	// access is the placeholder each (grant, name, slot) of an exchange was minted, as the
 	// broker's own table holds it: minted once and answered again after.
 	access      map[string]string
@@ -150,7 +156,17 @@ func (f *fakeGrants) AirlockValues(_ context.Context, grantID string) (map[strin
 func (f *fakeGrants) PolicyVersion() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.versionPanic != nil {
+		panic(f.versionPanic)
+	}
 	return f.version
+}
+
+// panicReadingVersion makes every later PolicyVersion panic with value.
+func (f *fakeGrants) panicReadingVersion(value any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.versionPanic = value
 }
 
 // setPolicyVersion is a policy change the broker took: the version every later read answers,
@@ -264,9 +280,15 @@ type logCapture struct {
 	logtest.Recorder
 }
 
-// calls is every line one call to a bound host logged. Records answers a slice of its own, so a
-// row reads the lines written so far while the proxy goes on writing.
+// calls is every line one call to a bound host logged that the airlock carried or failed. Records
+// answers a slice of its own, so a row reads the lines written so far while the proxy goes on
+// writing.
 func (c *logCapture) calls() []logLine { return c.lines(callMessage) }
+
+// refusals is every refusal record the proxy wrote (refuse), read the same way: a refused call to
+// a bound host writes one in place of its call line, and a refusal of the outer server writes
+// one too. refuse writes it before the answer, so a row that has its answer reads it at once.
+func (c *logCapture) refusals() []logLine { return c.lines(answer.RefusalMessage) }
 
 // joins is every line the close of a joined connection logged, read the same way.
 func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }

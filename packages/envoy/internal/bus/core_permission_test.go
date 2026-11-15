@@ -162,6 +162,26 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 	}
 }
 
+// The connection probe's request (RequestCore) the server denies answers the denial at once, not
+// as a subject that kept silent until the deadline: the send route counts the session connected
+// and logs the denial (cmd/listener), and a probe that waited would spend the send's budget. Its
+// deadline and the client's own bound are on a clock that stands still, so a request that waited
+// either out would never be answered, and the shared wait names it.
+func TestARequestCoreNATSDeniesAnswersTheDenialAtOnce(t *testing.T) {
+	still := clocktest.Held()
+	client, _ := grantedClient(t, bus.WithClock(still))
+	ctx, cancel := still.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	answered := make(chan error, 1)
+	go func() {
+		_, err := client.RequestCore(ctx, deniedRole, natsgo.Header{"Envoy-Probe": []string{"1"}})
+		answered <- err
+	}()
+	if err := testwait.Receive(t, "the denied request's answer with its deadline's clock standing still", answered); !errors.Is(err, bus.ErrPublishDenied) {
+		t.Fatalf("denied request answered %v, want ErrPublishDenied", err)
+	}
+}
+
 // The server's refusal of the core subscription the client sent again on reconnecting reads as an
 // inactive subscription until a server that grants it accepts it again. nats.go keeps a refused
 // subscription valid and only records the refusal, so the listener's role lane, reconnected onto

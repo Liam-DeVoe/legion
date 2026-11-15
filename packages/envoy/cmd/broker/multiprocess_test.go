@@ -59,7 +59,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/reread"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
@@ -90,12 +89,6 @@ const (
 	multiprocessNewOwner = "grace@example.com"
 )
 
-// migrateTimeout bounds how long a process of a pair gets to log "broker listening". It is far
-// past listenTimeout because the two processes start together against an unmigrated database and
-// one of them waits on the other's migration advisory lock (store.go's pg_advisory_xact_lock),
-// a wait that is unbounded by design.
-const migrateTimeout = 2 * time.Minute
-
 // fakeSecretsJSON is the secret store every broker here is started over: BROKER_FAKE_SECRETS_FILE's
 // shape (cmd/broker/main.go's own note on it) holding the one agent-tier secret, owned by owner.
 // A row that retags the secret writes this same function's output with another owner, so what it
@@ -122,35 +115,25 @@ func writeFakeSecrets(t *testing.T, path, owner string) {
 	}
 }
 
-// writeFakeSecretsWithNoOwner writes the fixture secret with its owner tag taken off, which the
-// policy refuses as owner-tag-missing and logs policy.RefusedMessage for on EVERY read of it.
-// That line is the only observable a row has for "this process read the store": the broker logs
-// nothing for a read it is happy with, and no route reports what a pod has read. A row that
-// counts store reads therefore stages the fixture this way first and counts the lines after.
-func writeFakeSecretsWithNoOwner(t *testing.T, path string) {
+// storeReads is how many times a process has read the secret store since it started: the
+// read="list" and read="describe" samples of broker_policy_store_reads_total on its own metrics
+// port, the one its "broker metrics listening" line names. That counter is the observable for
+// "this process read the store", where the broker logs no line for a read whose secrets it
+// serves. A row takes it before and after what it drives; the difference is the reads that drove.
+func storeReads(t *testing.T, process *brokerProcess) int {
 	t.Helper()
-	content := `{"secrets": [
-		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
-	]}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write the fake secrets file %s: %v", path, err)
-	}
-}
-
-// storeReads is how many times a process has read the fixture secret out of the store since it
-// started, counted from the refusal line writeFakeSecretsWithNoOwner's tags make it log on each
-// read. A row takes it before and after what it drives; the difference is the reads that drove.
-func storeReads(process *brokerProcess) int {
-	return strings.Count(process.Log(), policy.RefusedMessage)
+	reads := scrapeMetric(t, process.MetricsAddr(t), "broker_policy_store_reads_total")
+	return int(reads[`read="list"`] + reads[`read="describe"`])
 }
 
 // storeReadsPerPod is storeReads for every process of the fleet, index-matched with
 // fleet.Processes, read in one pass so that the counts a row does its arithmetic on are of one
 // moment rather than of as many moments as there are pods.
-func storeReadsPerPod(fleet *brokerFleet) []int {
+func storeReadsPerPod(t *testing.T, fleet *brokerFleet) []int {
+	t.Helper()
 	reads := make([]int, len(fleet.Processes))
 	for i, process := range fleet.Processes {
-		reads[i] = storeReads(process)
+		reads[i] = storeReads(t, process)
 	}
 	return reads
 }
@@ -346,32 +329,32 @@ func awaitRereadRate(t *testing.T, process *brokerProcess, replicas int) rereadR
 		})
 }
 
-// backstopReloads is how many whole-namespace policy reloads process has logged so far: the
-// five-minute backstop behind the fan-out (policy.ReloadedMessage), which reads the store again
-// for its own reasons.
-func backstopReloads(process *brokerProcess) int {
-	return strings.Count(process.Log(), policy.ReloadedMessage)
+// backstopReloads is how many whole-namespace policy loads process has taken so far: the
+// read="list" sample of broker_policy_store_reads_total on its own metrics port (storeReads).
+// After its boot's own, each is the five-minute backstop behind the fan-out, which reads the store
+// again for its own reasons; a reread, the fan-out's included, is a read="describe" and moves
+// nothing here.
+func backstopReloads(t *testing.T, process *brokerProcess) int {
+	t.Helper()
+	return int(scrapeMetric(t, process.MetricsAddr(t), "broker_policy_store_reads_total")[`read="list"`])
 }
 
 // awaitFanOutRead waits for process to log that it reread secret because a peer fanned that
-// reread out to it (reread.ReadMessage, cause reread.CauseFanOut), and fails at once if it logs
-// a backstop reload past backstopsBefore while the wait runs. Those two lines are the pod's own
-// record of why it read the store again, and reading the fan-out's own line is what tells this
-// row's narrowing from one the backstop would have made anyway — which no bound of the test's
-// could say.
+// reread out to it (reread.ReadMessage, cause reread.CauseFanOut), and fails at once if its
+// whole-namespace loads pass backstopsBefore while the wait runs. The fan-out's line and the
+// store's read counter are the pod's own record of why it read the store again, and reading the
+// fan-out's own line is what tells this row's narrowing from one the backstop would have made
+// anyway — which no bound of the test's could say.
 func awaitFanOutRead(t *testing.T, process *brokerProcess, secret string, backstopsBefore int) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("the process at %s to log its read of %s on a peer's fan-out", process.Addr, secret),
 		func() (string, bool) {
-			log := process.Log()
-			if backstops := strings.Count(log, policy.ReloadedMessage); backstops > backstopsBefore {
-				t.Fatalf("the process at %s ran its backstop policy reload while this row waited for the fan-out's read of %s, so a narrowing it serves from now on is the reload's as much as the fan-out's:\n%s",
-					process.Addr, secret, log)
+			if backstops := backstopReloads(t, process); backstops > backstopsBefore {
+				t.Fatalf("the process at %s took %d whole-namespace policy loads, %d before, while this row waited for the fan-out's read of %s: its backstop reload ran, so a narrowing it serves from now on is the reload's as much as the fan-out's:\n%s",
+					process.Addr, backstops, backstopsBefore, secret, process.Log())
 			}
-			for _, line := range linesCarrying(log, reread.ReadMessage) {
-				if strings.Contains(line, "secret="+secret) && strings.Contains(line, "cause="+reread.CauseFanOut) {
-					return line, true
-				}
+			if read := recordsWith(process.Log(), reread.ReadMessage, map[string]any{"secret": secret, "cause": reread.CauseFanOut}); len(read) != 0 {
+				return fmt.Sprint(read[0]), true
 			}
 			return fmt.Sprintf("no fan-out read of %s logged yet", secret), false
 		})
@@ -561,9 +544,8 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	writeFakeSecrets(t, fakeSecretsFile, multiprocessPerson)
 	caller := newListedCaller(t)
-	// It does not wait for its own listening line here: its database is fresh and unmigrated, so
-	// the wait is AwaitListening's own migrateTimeout rather than startBroker's listenTimeout,
-	// which is sized for a broker that has only to bind.
+	// It waits for its own listening line below rather than here: its database is fresh and
+	// unmigrated, and AwaitListening's shared wait covers the migration as it covers a bind.
 	solo.Process = startBroker(t, brokerOptions{
 		Binary:             binary,
 		NoWaitForListening: true,
@@ -829,9 +811,9 @@ func TestTwoBrokers(t *testing.T) {
 	// A reread told to one process takes effect on the other. This is what the fan-out is for: a
 	// retag that narrows who may have a secret must be in force across the whole Deployment
 	// within seconds, rather than at each pod's own five-minute reload (policyRefresh in
-	// main.go). One POST rereads the pod it reached and, on its 200 path alone, tells every
-	// other pod serving the same database to do the same, over Postgres LISTEN/NOTIFY
-	// (internal/broker/reread).
+	// main.go). One POST rereads the pod it reached and, once that pod has merged the tags it
+	// read (its 200 here), tells every other pod serving the same database to do the same, over
+	// Postgres LISTEN/NOTIFY (internal/broker/reread).
 	//
 	// The row is the production story with its control placed before the act: the store is
 	// retagged, a fresh session is STILL granted the secret by B, and only then is A told to
@@ -850,9 +832,10 @@ func TestTwoBrokers(t *testing.T) {
 	t.Run("4_ARereadOnOneProcessNarrowsTheSecretOnTheOther", func(t *testing.T) {
 		// B learns of the reread through the fan-out, within milliseconds. Its five-minute
 		// reload (policyRefresh) is the fan-out's documented backstop and would narrow the
-		// secret too, far later; nothing B logs tells one read of the store from the other, so
-		// this row reads the narrowing alone, and what an accepted reread costs the fleet in
-		// store reads is row 1's.
+		// secret too, far later; B's fan-out read logs a line of its own and its reload moves
+		// its whole-namespace load count (awaitFanOutRead), so this row reads which of them read
+		// the store before it reads the narrowing, and what an accepted reread costs the fleet
+		// in store reads is row 1's.
 		const host = "two-brokers-reread"
 		// A is the process the reread is sent to; B is the one that must learn of it without
 		// the test ever telling it anything.
@@ -882,7 +865,7 @@ func TestTwoBrokers(t *testing.T) {
 				b.Addr, control.Status, control.Body)
 		}
 
-		backstops := backstopReloads(pair.Processes[1])
+		backstops := backstopReloads(t, pair.Processes[1])
 		status, body := a.Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 		var reread struct {
 			Served bool `json:"served"`
@@ -1110,7 +1093,6 @@ func TestTwoBrokers(t *testing.T) {
 		)
 		stopping := startBrokerFleet(t, binary, []time.Duration{0, drain})
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
-		writeFakeSecretsWithNoOwner(t, stopping.FakeSecretsFile)
 
 		signalled := draining.Terminate(t)
 		testwait.Until(t, fmt.Sprintf("GET /healthz at the signalled process %s to answer 503 SHUTTING_DOWN", draining.Addr),
@@ -1123,20 +1105,20 @@ func TestTwoBrokers(t *testing.T) {
 				draining.Addr, status, body)
 		}
 
-		before := [2]int{storeReads(serving), storeReads(draining)}
+		before := [2]int{storeReads(t, serving), storeReads(t, draining)}
 		status, body := stopping.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 		if status != http.StatusOK {
 			t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 200 that fans out",
 				multiprocessSecret, stopping.Clients[0].Addr, status, body)
 		}
-		backstops := backstopReloads(draining)
+		backstops := backstopReloads(t, draining)
 		awaitFanOutRead(t, draining, multiprocessSecret, backstops)
-		if storeReads(serving) == before[0] {
+		if storeReads(t, serving) == before[0] {
 			t.Fatalf("the process that served the reread (%s) never read the store itself; the row cannot say what the draining pod took from a call that did nothing",
 				stopping.Clients[0].Addr)
 		}
-		if storeReads(draining) == before[1] {
-			t.Fatalf("the draining process %s logged the fan-out's read of %s but read no secret the store refuses; the row reads that read's own line",
+		if storeReads(t, draining) == before[1] {
+			t.Fatalf("the draining process %s logged the fan-out's read of %s but its broker_policy_store_reads_total did not move; the row reads that read's own count",
 				draining.Addr, multiprocessSecret)
 		}
 		t.Logf("the draining process %s reread %s %s after its SIGTERM, told by %s",
@@ -1189,8 +1171,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 			t.Run(fmt.Sprintf("%dPods", replicas), func(t *testing.T) {
 				fleet := startBrokerFleet(t, binary, make([]time.Duration, replicas), fastSweep)
 				every := awaitFleetRereadRate(t, fleet)
-				writeFakeSecretsWithNoOwner(t, fleet.FakeSecretsFile)
-				before := storeReadsPerPod(fleet)
+				before := storeReadsPerPod(t, fleet)
 
 				status, body := fleet.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 				if status != http.StatusOK {
@@ -1204,7 +1185,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 				var after []int
 				testwait.Eventually(t, fmt.Sprintf("each of the %d processes to read the store after one accepted reread at %s", replicas, fleet.Clients[0].Addr),
 					func() bool {
-						after = storeReadsPerPod(fleet)
+						after = storeReadsPerPod(t, fleet)
 						return readEverywhere(before, after)
 					})
 				// Exactly one read per pod, named pod by pod rather than summed: a pod that
@@ -1440,17 +1421,6 @@ func sessionHolder(t *testing.T, conn *pgx.Conn, session string) (string, bool) 
 	return principal, fixed
 }
 
-// linesCarrying is every line of a process's log that carries want.
-func linesCarrying(log, want string) []string {
-	var lines []string
-	for line := range strings.Lines(log) {
-		if strings.Contains(line, want) {
-			lines = append(lines, strings.TrimSpace(line))
-		}
-	}
-	return lines
-}
-
 // TestAFixedSessionNameAcrossARollout drives a rollout that re-points a fixed session name, on
 // real broker processes and one database: the configuration of the process serving a claim
 // decides who the name is for, so no process reserving its own configuration's names at its first
@@ -1537,9 +1507,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 			}
 		}
 		for _, broker := range []rolloutBroker{old, twin} {
-			if took := linesCarrying(broker.process.Log(), takeoverWarning); len(took) != 0 {
-				t.Errorf("%s logged that it took a fixed name from its holder, where both processes fix it for the one entry they served:\n%s",
-					broker.name, strings.Join(took, "\n"))
+			if took := recordsWith(broker.process.Log(), takeoverWarning, nil); len(took) != 0 {
+				t.Errorf("%s logged that it took a fixed name from its holder, where both processes fix it for the one entry they served: %v",
+					broker.name, took)
 			}
 		}
 	})
@@ -1564,9 +1534,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		// The take is logged, naming both principals. This is also what makes the absence of the
 		// line anywhere else in this test mean something: it is the line a take logs.
 		next.process.Await(t, takeoverWarning)
-		if took := linesCarrying(next.process.Log(), takeoverWarning); len(took) != 1 ||
-			!strings.Contains(took[0], "from="+oldEntryPrincipal) || !strings.Contains(took[0], "to="+newEntryPrincipal) {
-			t.Fatalf("%s logged %d takeovers %q; want exactly one, from %s to %s", next.name, len(took), took, oldEntryPrincipal, newEntryPrincipal)
+		if took := recordsWith(next.process.Log(), takeoverWarning, nil); len(took) != 1 ||
+			!carries(took[0], map[string]any{"from": oldEntryPrincipal, "to": newEntryPrincipal}) {
+			t.Fatalf("%s logged %d takeovers %v; want exactly one, from %s to %s", next.name, len(took), took, oldEntryPrincipal, newEntryPrincipal)
 		}
 
 		restarted := start(t, "an old-configuration process restarted mid-rollout", oldEntryAccount)
@@ -1587,12 +1557,12 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 				restarted.name, next.name, oldEntryAccount, rolloutSession, status, body)
 		}
 		log := restarted.process.Log()
-		if took := linesCarrying(log, takeoverWarning); len(took) != 0 {
-			t.Errorf("%s logged that it took a fixed name from its holder:\n%s", restarted.name, strings.Join(took, "\n"))
+		if took := recordsWith(log, takeoverWarning, nil); len(took) != 0 {
+			t.Errorf("%s logged that it took a fixed name from its holder: %v", restarted.name, took)
 		}
-		if left := linesCarrying(log, leftWarning); len(left) != 1 ||
-			!strings.Contains(left[0], "holder="+newEntryPrincipal) || !strings.Contains(left[0], "entry="+oldEntryPrincipal) {
-			t.Errorf("%s logged %d names left with their holder %q; want exactly one, %s left with %s until %s claims it",
+		if left := recordsWith(log, leftWarning, nil); len(left) != 1 ||
+			!carries(left[0], map[string]any{"holder": newEntryPrincipal, "entry": oldEntryPrincipal}) {
+			t.Errorf("%s logged %d names left with their holder %v; want exactly one, %s left with %s until %s claims it",
 				restarted.name, len(left), left, rolloutSession, newEntryPrincipal, oldEntryPrincipal)
 		}
 	})
@@ -1631,14 +1601,14 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		// was expected shows up at the next count.
 		requireTakes := func(broker rolloutBroker, want int, from, to string) {
 			t.Helper()
-			var took []string
+			var took []map[string]any
 			testwait.Eventually(t, fmt.Sprintf("%s to have logged %d takeovers", broker.name, want), func() bool {
-				took = linesCarrying(broker.process.Log(), takeoverWarning)
+				took = recordsWith(broker.process.Log(), takeoverWarning, nil)
 				return len(took) >= want
 			})
 			if len(took) != want || want > 0 &&
-				(!strings.Contains(took[want-1], "from="+from) || !strings.Contains(took[want-1], "to="+to)) {
-				t.Fatalf("%s logged %d takeovers %q; want %d, the last from %s to %s", broker.name, len(took), took, want, from, to)
+				!carries(took[want-1], map[string]any{"from": from, "to": to}) {
+				t.Fatalf("%s logged %d takeovers %v; want %d, the last from %s to %s", broker.name, len(took), took, want, from, to)
 			}
 		}
 
@@ -1651,9 +1621,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		requireHolder(next.name+" served the new entry's first exchange there", newEntryPrincipal)
 		requireTakes(old, 0, "", "")
 		requireTakes(next, 0, "", "")
-		if left := linesCarrying(next.process.Log(), leftWarning); len(left) != 0 {
-			t.Fatalf("%s logged names left with another holder at its first exchange, the new entry's own on a name the new entry holds:\n%s",
-				next.name, strings.Join(left, "\n"))
+		if left := recordsWith(next.process.Log(), leftWarning, nil); len(left) != 0 {
+			t.Fatalf("%s logged names left with another holder at its first exchange, the new entry's own on a name the new entry holds: %v",
+				next.name, left)
 		}
 
 		const turns = 3

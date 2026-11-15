@@ -741,14 +741,14 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 	fresh := b.cred.Load()
 
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(old, rejected); err != rejected {
+	if err := b.clearOnInvalid(context.Background(), old, rejected); err != rejected {
 		t.Fatalf("a rejection of a replaced credential reached its caller as %v; want the broker's refusal as it came", err)
 	}
 	if b.cred.Load() != fresh || b.LoginStatus().State != "issued" {
 		t.Fatalf("a late rejection of the replaced credential changed the new login: cred replaced %v, state %q", b.cred.Load() != fresh, b.LoginStatus().State)
 	}
 
-	if err := b.clearOnInvalid(fresh, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), fresh, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if b.cred.Load() != nil || b.LoginStatus().State == "issued" {
@@ -780,7 +780,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 			"the reader is parked on stateMu, which keeps no count of its waiters: no state of the broker says it has arrived, no later action can reach it while this drop holds the lock, and the login it reads ran over the fake broker's real HTTP, which synctest cannot hold")
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if got := <-read; got.State != "expired" || !got.Refused || got.CredentialHeld {
@@ -804,7 +804,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 		t.Fatal(err)
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if got := b.LoginStatus(); got.State != "pending" || !got.Refused || got.CredentialHeld {
