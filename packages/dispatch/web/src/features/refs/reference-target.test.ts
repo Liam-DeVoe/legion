@@ -416,13 +416,24 @@ test("a reference answers the edit and the deletion of the post it names, or who
     )
   );
   const standing = blockRead("Beta as written.");
+  // The words of the refusal decide nothing, either way: the block of the deleted post `m-1` is
+  // refused in words that say nothing of a delete, and the block of the standing post `m-2` is
+  // refused in the very words the server once wrote for a deleted post. The post's own mark is
+  // what each reading follows.
   reads.getReferences.mockImplementation((reference) =>
-    reference.includes("/message/") || reference.includes("/ask/")
-      ? Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }))
-      : Promise.resolve({
-          ...standing,
-          node: { ...standing.node, edited_at: "2026-09-09T02:00:00Z" },
-        })
+    reference.includes("/message/m-2#")
+      ? Promise.reject(
+          new ApiError(404, {
+            code: "NOT_FOUND",
+            error: 'no block "b1" in message m-2: this message is deleted',
+          })
+        )
+      : reference.includes("/message/") || reference.includes("/ask/")
+        ? Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }))
+        : Promise.resolve({
+            ...standing,
+            node: { ...standing.node, edited_at: "2026-09-09T02:00:00Z" },
+          })
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) =>

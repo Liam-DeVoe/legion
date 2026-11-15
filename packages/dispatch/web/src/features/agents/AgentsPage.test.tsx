@@ -271,7 +271,6 @@ function renderAgents({
         recipients: [],
       }
   );
-  const getBlockSchema = spyOn(api, "getBlockSchema").mockResolvedValue({ types: [], version: 1 });
   const createMessageDelivery = spyOn(api, "createMessageDelivery").mockResolvedValue({
     accepted_as: null,
     accepted_at: null,
@@ -318,7 +317,6 @@ function renderAgents({
     createBroadcast,
     createMessageDelivery,
     createMessage,
-    getBlockSchema,
     getBroadcast,
     getInbox,
     getMyAgentState,
@@ -330,7 +328,6 @@ function renderAgents({
     queryClient,
     restore: () => {
       getBroadcast.mockRestore();
-      getBlockSchema.mockRestore();
       getMyAgentState.mockRestore();
       createComment.mockRestore();
       createMessage.mockRestore();

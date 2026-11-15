@@ -1,4 +1,9 @@
-import { DispatchGatewayError, DispatchServiceError, isNoRoute } from "../dispatch-http";
+import {
+  DispatchGatewayError,
+  DispatchNoRouteError,
+  DispatchServiceError,
+  isNoRoute,
+} from "../dispatch-http";
 import { messageFor } from "../errors";
 
 /**
@@ -60,7 +65,12 @@ const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"
  * Dispatch's own server is deployed by hand (dispatch://INFRA-1464), so for a while these
  * commands run against a server with no route by which an agent edits or deletes a post or reads
  * the bodies one replaced: its router answers `404 NOT_FOUND` "no route for …" (`isNoRoute`) to
- * both deletes, the message edit and the history reads. Its comment edit, the one route that was
+ * both deletes, the message edit and the history reads, and a request every attempt of which was
+ * answered that way arrives here as `DispatchNoRouteError`, whose own message is the one a
+ * rolling release writes. Both are read as the server's age: a roll puts the route in place
+ * within a minute, while a Dispatch that predates post corrections answers that way until it is
+ * deployed, and only this sentence tells an agent which to expect. Its comment edit, the one
+ * route that was
  * there before, refuses this release's call in one of two ways, by the credential. It first reads
  * the person it acts for (`actingPerson`), which answers a credential without the person scope
  * `403 OAUTH_SCOPE_REQUIRED`; the route at this head names no scope, so only an older build
@@ -87,7 +97,9 @@ export async function throughPostCorrections<T>(
         (dispatchAnswered(error, 400) &&
           error.code === "INVALID_JSON" &&
           error.message === OLDER_COMMENT_EDIT_ACTOR));
-    if (!isNoRoute(error) && !commentEditIsAge) throw error;
+    if (!isNoRoute(error) && !(error instanceof DispatchNoRouteError) && !commentEditIsAge) {
+      throw error;
+    }
     throw new Error(
       `This Dispatch (${url}) predates post corrections: it has no route by which an agent edits ` +
         "or deletes a post or reads the bodies one replaced. Until it is deployed with this " +
