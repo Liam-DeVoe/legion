@@ -667,11 +667,12 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 //     other, so it holds a list of the two settings it knows to do neither: each bounds how long
 //     a statement waits or runs. A SET LOCAL ends with the migration's transaction, so it turns
 //     off the reads of its own migration alone. A session SET, a RESET and a RESET ALL turn off
-//     the reads of their own migration and of every later one, because they outlive the
-//     migration: the runner applies each migration on a connection of its pool, and it gives
-//     each migration only the text settings and the settings that resolve names
-//     (resetSettings), so the next migration can take that connection with any other setting
-//     on it. The pass does not tell those settings from the others, which only refuses more;
+//     the reads of their own migration and of every later one. Such a setting stays on the
+//     runner's connection until its migration's transaction ends, and the runner then resets the
+//     session (ResetSession) before the connection goes back to its pool, so no later migration
+//     meets it. The pass still turns off the reads of the later migrations, which only refuses
+//     more. Of the seven settings that the runner gives each migration (resetSettings and
+//     pinSettings), the pass tells only lock_timeout from the rest;
 //   - every other statement keeps them on only where it takes no exemption and keepsReadsOn
 //     names it, and turns them off for its own migration and every later one where it does not. A
 //     pending migration could drop an enum and create a domain with a constraint under its name,
@@ -698,9 +699,16 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 // statement runs, such as a column's default, a check constraint, or a domain's check or
 // default. Such code can call set_config and change search_path, role or
 // session_authorization for the session. The runner gives those settings their reset values at
-// the start of each migration (resetSettings), so the change does not reach the names of a later
-// migration. What such code can do besides that, such as create a type or enable an event
-// trigger, the census does not see.
+// the start of each migration (resetSettings), and it resets the session after each migration
+// (ResetSession), so the change does not reach the names of a later migration. Neither reset
+// runs between two statements of one migration. But in a migration that the census exempts, only
+// an added column's default runs code, and catalogOnlyColumn holds that default to a constant, a
+// cast of a constant, an SQL value function or a stable or immutable pg_catalog function with no
+// argument. So the change does not reach the names of a later statement of the same migration
+// either, except through a cast whose function is user-written and not volatile. Only an earlier
+// release can have created such a cast, because a pending CREATE CAST is off the keep-on list.
+// What such code can do besides that, such as create a type or enable an event trigger, the
+// census does not see.
 func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, exemptionsOff string, err error) {
 	for _, s := range statements {
 		if s.node == "VariableSetStmt" {
@@ -721,7 +729,9 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 			if name := strings.ToLower(set.Name); name == "lock_timeout" || name == "statement_timeout" {
 				continue
 			}
-			// The pooled connection keeps a session setting for the next migration it runs.
+			// A session SET stays on the runner's connection until its migration's transaction
+			// ends, and the runner then resets the session (ResetSession), so no later migration
+			// meets it. The later migrations' reads still go off, which only refuses more.
 			here, later = true, later || !set.IsLocal
 			continue
 		}
@@ -933,15 +943,15 @@ const cannotSeeAnEventTrigger = ", so the census cannot see whether it creates o
 // The words name the relation in the second case, and in the third case they name a DO block, a
 // CALL and a statement of an extension. Some statements turn the catalog reads off and take no
 // exemption. A SET or a RESET creates and enables no event trigger, and the census counts every
-// event trigger that is not disabled, whatever session_replication_role a setting gives. A
-// statement of a kind on the list that creates a table, a view or a function with a name that
-// pg_catalog holds, or that calls set_config itself or through a view or a rule (keepsReadsOn),
-// creates and enables no event trigger either: a function that it replaces runs only when a
-// statement calls it. None of these statements changes which relation names catalogRelation
-// counts after it, since that read does not depend on the catalog reads. On PostgreSQL 18.6, a
-// census that counted only a pg_catalog name after such a statement exempted a DROP COLUMN after
-// an UPDATE of a view over pg_event_trigger, and the trigger that the UPDATE enabled counted every
-// row of a 1.2 GiB table.
+// event trigger that is not disabled, whatever session_replication_role a setting gives. So
+// catalogReadsOff reads every SET and RESET itself and never passes one here. A statement of a
+// kind on the list that creates a table, a view or a function with a name that pg_catalog holds,
+// or that calls set_config itself or through a view or a rule (keepsReadsOn), creates and enables
+// no event trigger either: a function that it replaces runs only when a statement calls it. None
+// of these statements changes which relation names catalogRelation counts after it, since that
+// read does not depend on the catalog reads. On PostgreSQL 18.6, a census that counted only a
+// pg_catalog name after such a statement exempted a DROP COLUMN after an UPDATE of a view over
+// pg_event_trigger, and the trigger that the UPDATE enabled counted every row of a 1.2 GiB table.
 //
 // Where s takes neither, setConfig says whether s calls set_config, in its parse tree or in the
 // query of a view or a rule of a relation it names (catalogRelation), and catalogReadsOff gives
@@ -949,8 +959,6 @@ const cannotSeeAnEventTrigger = ", so the census cannot see whether it creates o
 // statement.
 func (c *classifier) takesLaterExemptions(s statement) (reason string, setConfig bool, err error) {
 	switch s.node {
-	case "VariableSetStmt":
-		return "", false, nil
 	case "CreateEventTrigStmt", "AlterEventTrigStmt":
 		return "creates or alters an event trigger", false, nil
 	}

@@ -1316,7 +1316,8 @@ rolling one attempt back would roll back the migrations before it too.
 
 The runner also applies each migration with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8` (`textSettings` in `internal/pgmigrate/lock.go`), set in the statement that sets `lock_timeout`: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
 So Postgres reads a migration's text as the census reads it ("Pre-deploy census" below), whatever a session setting, a connection option or a database default says.
-A session setting can come from an earlier migration: a `set` without `local` outlives its migration, and the next migration can run on the same connection.
+A `set` without `local` in a migration stays on its connection until the migration's transaction ends.
+The runner then resets the connection's session (below), so no later migration meets the setting.
 With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
 With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
 With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
@@ -1329,8 +1330,10 @@ Postgres resolves a name that a migration writes without its schema by these thr
 `search_path` lists the schemas that a lookup searches, and its default starts with `"$user"`, the schema named for the session user, which `session_authorization` sets.
 `role` sets the current user, whose privileges decide which of those schemas a lookup can use.
 `session_authorization` comes first, because a change of it ends a `set role` and changes the user that `role` and `"$user"` depend on.
-An earlier migration can change each of the three for the session, with a `set` or through stored code that calls `set_config`, such as a column default, a check constraint, or a domain's check or default.
-Without this reset, on PostgreSQL 18.6, an insert ran a column default that put another schema first in the `search_path`.
+A migration can change each of the three for the session, with a `set` or through stored code that calls `set_config`, such as a column default, a check constraint, or a domain's check or default.
+The change stays until the migration's transaction ends, and then the runner resets the connection's session (below), so no later migration meets it.
+The runner still gives the three these values at the start of each migration, whatever session the pooled connection brings.
+Without either reset, on PostgreSQL 18.6, an insert ran a column default that put another schema first in the `search_path`.
 The next migration on that connection added a column of type `mood`, which then named that schema's domain `mood` in place of the enum that the census read, and Postgres rewrote the table.
 The census reads with the same three values ("Pre-deploy census" below), so a migration resolves its names as the census did, whatever an earlier migration did to the session.
 The value that `reset` gives comes from a connection option, the role's default or the database's default, and never from a session `set`.
@@ -1338,6 +1341,20 @@ So the census and the runner must connect as the same login with the same connec
 In a deployment, both take `DATABASE_URL` from the same Secret.
 The runner gives the three these values for its own check and record of a migration's version too: before the check, and again after the migration's statements (`pgmigrate.Pin`), since stored code that a migration runs can change them for the rest of its transaction.
 Without the second reset, stored code that put another schema with its own `schema_migrations` first in the `search_path` made the runner record the version in that table.
+The runner does not give the three these values between two statements of one migration, so stored code that one statement runs can change what the names of a later statement of the same migration resolve to.
+In a migration that the census exempts, only an added column's default runs code.
+The census holds that default to a constant, a cast of a constant, an SQL value function or a stable or immutable `pg_catalog` function with no argument.
+So such a change reaches a later statement of an exempt migration only through a cast whose function is user-written and not volatile.
+Only an earlier release can have created such a cast, because a pending `create cast` stops the census's catalog reads ("Pre-deploy census" below).
+
+After each migration's transaction ends, the runner gives its advisory key back and then resets the connection's session, before the connection goes back to the pool (`pgmigrate.ResetSession`).
+The reset runs `discard all`, which gives every setting its `reset` value, ends a `set role`, and drops the temporary tables and prepared statements that the migration left.
+It then runs pgx's `DeallocateAll`, because the pool runs in cache-statement mode, and pgx would otherwise name prepared statements that the server dropped (SQLSTATE `26000`).
+The reset runs after the unlock, because `discard all` also releases the session's advisory locks.
+A connection whose reset fails is closed, not given back.
+The non-transactional path closes its connection, so it needs no reset.
+The secrets broker's runner resets its connection the same way, after the one transaction in which it applies its whole set.
+Without the reset, a migration's `set statement_timeout = 0` without `local` stayed on the pooled connection for the service's next queries.
 
 The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.
@@ -2363,9 +2380,12 @@ It refuses:
     The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads and `set "Lock_Timeout" = '1s'` does not.
 
   - every migration after a pending migration that sets or resets such a setting for the session, without `local`, or runs `reset all`.
-    The runner applies each migration on a connection of its pool, and that connection keeps a session setting for the next migration it runs.
-    The runner sets the three text settings and the three settings that resolve names at the start of each migration, and no other setting.
-    The census does not tell those six settings from the others, which only refuses more.
+    Such a setting stays on the runner's connection until its migration's transaction ends.
+    The runner then resets the connection's session before the connection goes back to its pool ("Database migrations" above), so no later migration meets the setting.
+    The census still turns off the catalog reads of the later migrations, which only refuses more.
+    At the start of each migration the runner sets `lock_timeout`, the three text settings and the three settings that resolve names, and no other setting.
+    The census tells `lock_timeout` and `statement_timeout` from the other settings, because those two keep the reads on.
+    It tells none of the other six settings that the runner sets from the rest, which only refuses more.
     A `set local` ends with its migration's transaction, so the later migrations still read the catalog.
 
   - a migration that holds a statement that is not on the list below, and every migration after it.
@@ -2430,7 +2450,7 @@ It refuses:
   The census reads every statement that a pending migration's text shows, whoever may run it, a superuser included.
   It also reads the query of every view and every rule of a relation that a statement names, for a relation of `pg_catalog` and for a call of `set_config`.
   It does not read the body of a function, whether a statement, a view's query or a rule calls it, and it does not read a trigger's body.
-  Nor does it read the code of a column default, a check or a domain, but that code changes no later migration's names ("Database migrations" above).
+  Nor does it read the code of a column default, a check or a domain, which changes no later migration's names, and a later statement's only through a cast function ("Database migrations" above).
   The limit is the rest of what stored code does, such as create a type or enable an event trigger.
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
