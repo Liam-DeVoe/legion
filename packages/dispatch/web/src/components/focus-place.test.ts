@@ -18,13 +18,7 @@ const mainRef: { current: HTMLElement | null } = { current: null };
 function mainOf(...labels: string[]): { main: HTMLElement; buttons: HTMLButtonElement[] } {
   const main = document.createElement("main");
   main.id = "main-content";
-  const buttons = labels.map((label) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    main.append(button);
-    return button;
-  });
+  const buttons = labels.map((label) => buttonIn(main, label));
   document.body.append(main);
   mainRef.current = main;
   return { buttons, main };
@@ -481,7 +475,7 @@ test("a panel that is no modal, losing its last controls, keeps the focus inside
 });
 
 // (u) So does the Inbox drawer, a modal dialog of rows: its last two rows answered together, the
-// focus stays in the drawer, on its first row's control.
+// focus stays in the drawer, on its first control (the real drawer's is its Close button).
 test("the Inbox drawer, losing its last rows, keeps the focus inside it", async () => {
   await withRescue(async () => {
     const pageSearch = pageSearchIn(mainOf("Before").main);
@@ -552,24 +546,18 @@ test("the main content with nothing left at the place goes to its search box, it
 });
 
 // (w) A control outside the main content - the sidebar's - whose place has gone hands the focus
-// to the sidebar's control before it, else its first, and never into the main content or onto
-// the body.
+// to the sidebar's control before it, and never into the main content or onto the body.
 test("a control outside the main content whose place has gone stays outside it, on the control before it", async () => {
   const aside = document.createElement("aside");
-  const [kept, middle, last] = ["Inbox", "Projects", "Agents"].map((label) =>
-    buttonIn(aside, label)
-  );
+  const [, middle, last] = ["Inbox", "Projects", "Agents"].map((label) => buttonIn(aside, label));
   document.body.prepend(aside);
   try {
     await withRescue(async () => {
       const [inMain] = mainOf("In the main content").buttons;
       last?.focus();
-      lose(last as HTMLElement, () => {
-        last?.remove();
-        middle?.remove();
-      });
+      lose(last as HTMLElement);
       await settled();
-      expect(kept).toHaveFocus();
+      expect(middle).toHaveFocus();
       expect(inMain).not.toHaveFocus();
     });
   } finally {
@@ -593,5 +581,26 @@ test("a modal dialog that loses every control takes the focus itself", async () 
     expect(dialog).toHaveFocus();
     expect(dialog).toHaveAttribute("tabindex", "-1");
     expect(pageSearch).not.toHaveFocus();
+  });
+});
+
+// (y) A dialog hidden while it stays mounted - the phone thread kept for a reply - has gone as
+// much as one taken away: a loss in it goes back to the control that opened it, still in the
+// page, rather than to the hidden dialog itself.
+test("a dialog hidden while it stays mounted hands the focus back to its opener", async () => {
+  await withRescue(async () => {
+    const [, opener] = mainOf("Before", "Open thread", "After").buttons;
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.append(dialog);
+    const reply = buttonIn(dialog, "Reply");
+    opener?.focus();
+    reply.focus();
+    // Back hides the dialog under the focus, and its `focusout` comes once it is hidden.
+    dialog.hidden = true;
+    reply.blur();
+    await settled();
+    expect(opener).toHaveFocus();
   });
 });

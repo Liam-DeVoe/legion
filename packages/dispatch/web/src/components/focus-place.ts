@@ -144,8 +144,15 @@ function regionOf(element: Element, main: HTMLElement | null): Element {
  *  neither holds a place nor is handed a focus it cannot show. */
 function drawnIn(region: Element, main: HTMLElement | null): HTMLElement[] {
   return focusableIn(region).filter(
-    (control) => rendered(control) && regionOf(control, main) === region
+    (control) => regionOf(control, main) === region && rendered(control)
   );
+}
+
+/** Whether `region` is still a place the focus can be answered in: in the page and drawn. A
+ *  dialog kept mounted under `hidden` - the phone thread holding a reply - has gone as much as
+ *  one taken away. */
+function present(region: Element): boolean {
+  return region.isConnected && rendered(region);
 }
 
 /** How many of `controls` come before `node` in the page. */
@@ -263,20 +270,21 @@ function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLEleme
 }
 
 /** Hands on the focus `loss`'s element took with it when it went, inside the region it was lost
- *  in while that region is still in the page: to the control the region now draws at its place,
- *  else the one before it, else - in the main content alone - the page's search box, then its
- *  filter trigger, else the region's first control, else the region itself, which is every
- *  region but the document (the body holding the focus is the loss itself). A dialog that has no
- *  Tab stop of its own is given `tabindex="-1"` as the focus lands on it, so that it can take
- *  it. The page behind a modal dialog is never reached. From a region that went with it - a
- *  dialog that closed - only back to the place the dialog was opened from (its `opener`, or that
- *  dialog's own opener where it closed too): that element, the control that opened it, if it can
- *  still take the focus, else the control now at its place, else the one before it. A dialog
- *  opened from the body hands the focus nowhere: the body is where the reader was. */
+ *  in while that region is still in the page and drawn (`present`): to the control the region now
+ *  draws at its place, else the one before it, else - in the main content alone - the page's
+ *  search box, then its filter trigger, else the region's first control, else the region itself,
+ *  which is every region but the document (the body holding the focus is the loss itself). A
+ *  dialog that has no Tab stop of its own is given `tabindex="-1"` only when the focus is landed
+ *  on it, so that it can take it. The page behind a modal dialog is never reached. From a region
+ *  that has gone - a dialog that closed, or one hidden while it stays mounted - only back to the
+ *  place the dialog was opened from (its `opener`, or that dialog's own opener where it has gone
+ *  too): that element, the control that opened it, if it can still take the focus, else the
+ *  control now at its place, else the one before it. A dialog opened from the body hands the
+ *  focus nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { region } = loss;
   let candidates: (HTMLElement | null | undefined)[] = [];
-  if (region.isConnected) {
+  if (present(region)) {
     const own = drawnIn(region, main);
     candidates = [
       controlAt(own, loss.index),
@@ -287,7 +295,7 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     ];
   } else {
     let opener = loss.opener;
-    while (opener !== null && !opener.region.isConnected) opener = opener.opener;
+    while (opener !== null && !present(opener.region)) opener = opener.opener;
     if (opener !== null && opener.path === loss.path) {
       candidates = [opener.element, controlAt(drawnIn(opener.region, main), opener.index)];
     }
@@ -297,7 +305,7 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     if (!candidate.isConnected || !rendered(candidate)) continue;
     if (land(candidate)) return;
   }
-  if (!region.isConnected || region === document.body || !(region instanceof HTMLElement)) return;
+  if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
   if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
   land(region);
 }
