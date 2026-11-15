@@ -319,10 +319,9 @@ func TestMessageBlockIndexFollowsAnEditAndADelete(t *testing.T) {
 	if events := issueEventsOfType(t, handler, issue.Key, "message.deleted"); len(events) != 1 {
 		t.Fatalf("the issue holds %d message.deleted events, want the one the delete appended", len(events))
 	}
-	// A deleted post is reachable by no meaning search: the re-index with the empty body leaves
-	// the message with no block, and the arm's next pass drops every window of an owner left
-	// with no block in the statement that clears its marker (refs.WriteItemWindows,
-	// refs/blocks.go, writeWindows).
+	// A deleted post is reachable by no meaning search: the delete drops every window of the
+	// message in its own transaction (clearDeletedPostBody, refs.WriteItemWindows), and the
+	// arm's pass after it writes none back, since the empty body splits into no block.
 	windowOwedItems(t, database)
 	if windows := postEmbeddingWindows(t, database, "message/"+message.ID); windows != 0 {
 		t.Fatalf("the deleted message keeps %d embedding windows, want none: a meaning search would reach it", windows)

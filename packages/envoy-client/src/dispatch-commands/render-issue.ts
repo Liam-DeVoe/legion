@@ -381,10 +381,13 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
  * carries, or, on a post its author deleted, the mark the read of the event carries in place of
  * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
  * every earlier event of a post once it is deleted, which is why the body is read for absence.
- * The words of a post its author edited are the words that event carried, which an edit since
- * has replaced, so the line says the post was edited and when: the read of the event stamps
- * every event of such a post with the time of its last edit (`attachPostMarks`, `api/events.go`),
- * and a reader meeting stale words with no mark is what this issue is about.
+ * An event of a post its author edited carries the words that event carried, which a later edit
+ * may have replaced: the post's own `created` event and every `edited` event but the last one
+ * carry words that are gone, and the newest `edited` event carries the words the post holds now.
+ * The read of the event stamps every event of such a post with the time of its last edit
+ * (`attachPostMarks`, `api/events.go`), so the line names that time and a reader can tell which
+ * it is meeting. A reader given stale words with no mark is the fault dispatch://INFRA-1523
+ * exists for.
  *
  * The payload is named in the reading a `DispatchEvent` carries, the one Dispatch writes, so
  * its `deleted_by` is a `WrittenActor` and not the served row's `Actor`: a build with

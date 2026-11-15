@@ -823,6 +823,31 @@ test("a deleted comment offers no Edit and no reply, and its live reply keeps Ed
   }
 });
 
+// The card's reply box quotes the thread's root, so the root's edit is marked in that quote as on
+// the root's own byline, as the Inbox's box quoting the same thread marks it: a quote of an
+// edited root carries ` · edited`, a quote of a root nobody edited does not.
+test("a margin thread's reply quote marks an edited root edited, and a standing root carries no mark", () => {
+  const editedRoot = comment("root-1", "Root comment", root.created_at, {
+    edited_at: "2026-09-10T00:04:00Z",
+  });
+  const edited = renderCard(thread({ root: { comment: editedRoot, kind: "comment" } }));
+  try {
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    expect(composer).toHaveTextContent("Replying to alice · edited");
+  } finally {
+    edited.unmount();
+  }
+
+  const standing = renderCard(thread());
+  try {
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    expect(composer).toHaveTextContent("Replying to alice");
+    expect(composer).not.toHaveTextContent("edited");
+  } finally {
+    standing.unmount();
+  }
+});
+
 // A collapsed card folds its byline away, so the root's ` · edited` sits beside the preview: an
 // edited root carries it, a root nobody edited does not, and a deleted root reads as deleted.
 test("a collapsed card marks an edited root beside its preview, and a standing root carries no mark", async () => {

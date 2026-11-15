@@ -277,12 +277,13 @@ func IndexItem(
 //   - the block index, re-indexed from the empty body, which splits into no block: each block's
 //     position is nulled, removed_at is stamped, a null text is written at the new revision for
 //     a kind that records one, and each block mention goes (ReplaceCountedItemEdit,
-//     indexItemBlocks). The item's embedding windows are not dropped here: the block-index
-//     tick's window arm drops the windows of an item left with no block, in a transaction of its
-//     own one tick after this one (WriteItemWindows). Until then the meaning arm of search can
-//     return the deleted item, with the empty snippet its cleared body gives, while the keyword
-//     arm drops it with its body; the hit carries the item's delete mark, so every reader of it
-//     says the post is deleted (api's stampSearchPostMarks).
+//     indexItemBlocks). The item's embedding windows are not dropped here: the delete drops them
+//     next, in this same transaction, by writing the windows of an item left with no block,
+//     which are none (api's clearDeletedPostBody, WriteItemWindows), so no meaning search finds
+//     the deleted item once the delete commits. A window that outlives the delete some other
+//     way still matches, with the empty snippet the cleared body gives, while the keyword arm
+//     drops the item with its body; search stamps that hit with the item's delete mark (api's
+//     stampSearchPostMarks).
 //   - each block's stored excerpt, which a removal keeps and which is what a reply read serves
 //     as the text of the block it answers (ReplyBlocks), so without this clear a reply still
 //     prints the deleted text.
@@ -941,8 +942,12 @@ func lockItem(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, 
 }
 
 // WriteItemWindows writes the windows of comment, message or ask itemID's blocks, and nothing
-// else, in the caller's transaction, for the block-index tick's window arm: it is to an item
-// what WriteDocumentWindows is to a document. It takes the item row `for no key update`, the
+// else, in the caller's transaction: it is to an item what WriteDocumentWindows is to a
+// document. Two callers run it. The block-index tick's window arm runs it for an item whose
+// text was written, and the delete of a comment or an issue message runs it in its own
+// transaction, after the tombstone, where the cleared body splits into no block and the call is
+// a delete of the item's window rows alone, with no embedding to make (clearDeletedPostBody,
+// api/post_history.go). It takes the item row `for no key update`, the
 // lock an edit of the item takes, and reads under that lock the text the item's blocks were
 // split from - its stored body and its issue's title in that one statement, or an ask's parts
 // (AskParts) after a lock of its own (itemWindowText) - pairs it with the item's current block
@@ -951,9 +956,11 @@ func lockItem(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, 
 // (clearItemWindowsOwed, writeWindows). It writes no block row and no reference: the index of
 // this item's blocks stands, and only its windows are missing.
 //
-// It is the one writer of an item's windows. An index of the item's blocks records the blocks
-// and leaves the windows that stand for them to this arm (indexItemBlocks), so every set of
-// windows an item holds was written here, one reconciliation tick behind the write of its text.
+// It is the one writer of an item's windows, and after a delete the one remover of them. An
+// index of the item's blocks records the blocks and leaves the windows that stand for them to
+// this call (indexItemBlocks), so every set of windows an item holds was written here: one
+// reconciliation tick behind the write of its text, and at the delete itself for a post whose
+// author deleted it.
 //
 // It reports whether it wrote them. An item gone since it was listed is no longer anyone's to
 // window. An item whose stored text no longer splits into the blocks the index holds - a parser

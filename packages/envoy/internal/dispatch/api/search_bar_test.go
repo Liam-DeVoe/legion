@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // searchComment writes one comment on an issue as login and answers its id: the corpus of every
@@ -619,13 +620,16 @@ func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
 	}
 }
 
-// A delete clears a post's body, so the keyword arm drops the post at once, but the windows the
-// meaning arm matches are the block-index tick's to drop, one tick after the delete
-// (refs.TombstoneItem). Until that tick the meaning arm returns the deleted comment or message
-// with an empty snippet, and the hit carries the post's delete mark so its reader can say the
-// post is deleted; a hit of a post that stands carries none (stampSearchPostMarks). The windows
-// are written and embedded as the package's meaning rows seed them, and the tick is not run
-// between the delete and the search: that gap is what this row stands in.
+// A delete clears a post's body, so the keyword arm drops the post at once, and it drops the
+// post's windows in the same transaction (TestDeleteDropsThePostsWindowsBeforeAnyTick). A
+// window that outlives the delete some other way still matches, and the meaning arm then
+// returns the deleted comment or message with an empty snippet; the hit carries the post's
+// delete mark so its reader can say the post is deleted, and a hit of a post that stands
+// carries none (stampSearchPostMarks). The windows are written and embedded as the package's
+// meaning rows seed them; after the delete each deleted post's windows are written back as
+// they stood and the post is marked owed its windows, which is what a delete that dropped no
+// window would leave (refs.recordItemIndexed), and the tick is not run between that and the
+// search.
 func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -640,15 +644,21 @@ func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "message_block", "message/"+deletedMessage, angledVector(0.9, 4))
 	embedWindowsAs(t, database, embedder, "message_block", "message/"+keptMessage, angledVector(0.9, 5))
 	processAllPending(t, database, embedder)
+	left := map[string]string{}
+	for _, ownerKey := range []string{"comment/" + deletedComment, "message/" + deletedMessage} {
+		left[ownerKey] = postWindowRows(t, database, ownerKey)
+	}
 
 	comment := deleteThreadComment(t, handler, deletedComment, "alice")
 	message := deleteIssueMessage(t, handler, deletedMessage, "alice")
 	if comment.DeletedAt == nil || message.DeletedAt == nil {
 		t.Fatalf("the deletes answered no mark: comment %#v, message %#v", comment.DeletedAt, message.DeletedAt)
 	}
+	writeBackPostWindows(t, database, "comment_block_state", "comment_id", deletedComment, left["comment/"+deletedComment])
+	writeBackPostWindows(t, database, "message_block_state", "message_id", deletedMessage, left["message/"+deletedMessage])
 	for _, ownerKey := range []string{"comment/" + deletedComment, "message/" + deletedMessage} {
 		if windows := postEmbeddingWindows(t, database, ownerKey); windows == 0 {
-			t.Fatalf("%s holds no window after its delete, so no meaning hit can be what this row reads", ownerKey)
+			t.Fatalf("%s holds no window after its windows were written back, so no meaning hit can be what this row reads", ownerKey)
 		}
 	}
 
@@ -684,13 +694,106 @@ func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
 		}
 	}
 
-	// The tick then drops the deleted posts' windows, and the meaning arm no longer finds them.
+	// The tick then drops the windows left behind, and the meaning arm no longer finds them.
 	windowOwedItems(t, database)
 	after := searchResponse(t, handler, "q=wibbleflorp")
 	for _, gone := range []struct{ kind, id string }{{"comment", deletedComment}, {"message", deletedMessage}} {
 		if searchResultOf(after, gone.kind, gone.id) != nil {
 			t.Fatalf("after the tick, results = %#v still hold the deleted %s %s", after.Results, gone.kind, gone.id)
 		}
+	}
+}
+
+// postWindowRows is every embeddings row of the post whose owner key is ownerKey, each whole, as
+// one JSON array: what writeBackPostWindows writes back.
+func postWindowRows(t *testing.T, database *store.Store, ownerKey string) string {
+	t.Helper()
+	var rows string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(jsonb_agg(to_jsonb(e)), '[]')::text from embeddings e where split_part(e.id, '#', 1) = $1
+	`, ownerKey).Scan(&rows); err != nil {
+		t.Fatalf("read the embedding windows of %s: %v", ownerKey, err)
+	}
+	return rows
+}
+
+// writeBackPostWindows writes rows, which postWindowRows read, back into embeddings as they
+// stood, keeping any of them still there, and marks the post owed its windows on its state row
+// (state, keyed by column): what a delete that dropped no window would leave, its windows
+// standing and the post listed for the block-index tick's window arm (refs.recordItemIndexed).
+func writeBackPostWindows(t *testing.T, database *store.Store, state, column, id, rows string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into embeddings select * from jsonb_populate_recordset(null::embeddings, $1::jsonb)
+		on conflict (kind, id) do nothing
+	`, rows); err != nil {
+		t.Fatalf("write back the embedding windows of %s: %v", id, err)
+	}
+	if tag, err := database.Pool.Exec(ctx,
+		`update `+state+` set windows_owed_at = now() where `+column+` = $1`, id); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("mark %s owed its windows: %v", id, err)
+	}
+}
+
+// A delete drops the post's embedding windows in its own transaction (clearDeletedPostBody,
+// refs.WriteItemWindows), so the moment the delete answers, with no block-index tick run since,
+// a deleted comment and a deleted message hold no window and the meaning arm of search returns
+// neither. The windows are written and embedded as the package's meaning rows seed them, and
+// the same query finds all four posts before the delete, so the arm reached the two it then
+// loses; a comment and a message that stand are the control after it, found as before.
+func TestDeleteDropsThePostsWindowsBeforeAnyTick(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "Body text.")
+	deletedComment := searchComment(t, handler, issue.Key, "alice", "A remark about the quadrant, to withdraw.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "A remark about the astrolabe that stands.")
+	deletedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the sextant, to withdraw.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the compass that stands.")
+	// A distinct axis each, as angledVector requires of vectors answering one query.
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+deletedComment, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+keptComment, angledVector(0.9, 3))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+deletedMessage, angledVector(0.9, 4))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+keptMessage, angledVector(0.9, 5))
+	processAllPending(t, database, embedder)
+
+	deleted := []struct{ kind, id, ownerKey string }{
+		{"comment", deletedComment, "comment/" + deletedComment},
+		{"message", deletedMessage, "message/" + deletedMessage},
+	}
+	kept := []struct{ kind, id string }{{"comment", keptComment}, {"message", keptMessage}}
+	requireNoKeywordHit(t, "q=wibbleflorp")
+	before := searchResponse(t, handler, "q=wibbleflorp")
+	for _, post := range deleted {
+		searchHit(t, before, post.kind, post.id)
+		if windows := postEmbeddingWindows(t, database, post.ownerKey); windows == 0 {
+			t.Fatalf("%s holds no window before its delete, so dropping them proves nothing", post.ownerKey)
+		}
+	}
+	for _, post := range kept {
+		searchHit(t, before, post.kind, post.id)
+	}
+
+	deleteThreadComment(t, handler, deletedComment, "alice")
+	deleteIssueMessage(t, handler, deletedMessage, "alice")
+
+	for _, post := range deleted {
+		if windows := postEmbeddingWindows(t, database, post.ownerKey); windows != 0 {
+			t.Fatalf("%s keeps %d windows after its delete answered: a meaning search reaches it until a tick drops them",
+				post.ownerKey, windows)
+		}
+	}
+	after := searchResponse(t, handler, "q=wibbleflorp")
+	if after.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", after.Degraded)
+	}
+	for _, post := range deleted {
+		if hit := searchResultOf(after, post.kind, post.id); hit != nil {
+			t.Fatalf("the meaning arm still returns the deleted %s %s after its delete: %#v", post.kind, post.id, hit)
+		}
+	}
+	for _, post := range kept {
+		searchHit(t, after, post.kind, post.id)
 	}
 }
 

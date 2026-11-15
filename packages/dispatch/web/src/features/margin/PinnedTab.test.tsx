@@ -246,3 +246,51 @@ test("a pinned message event its author edited marks its byline edited, and one 
     view.unmount();
   }
 });
+
+// The read of an event of a post its author edited and then deleted gives it both marks and no
+// body (`attachPostMarks` in `api/events.go`). The deleted line stands where the body was, and
+// the byline carries no ` · edited`: the deleted line already says what became of the text.
+test("a pinned message event of a post edited and then deleted reads as deleted, and its byline is not marked edited", () => {
+  const editedThenDeleted: DispatchEvent = {
+    ...messageEvent,
+    payload: {
+      author: { id: "alice", kind: "user" },
+      broadcast_id: null,
+      reply_block: null,
+      created_at: "2026-09-10T00:00:00Z",
+      deleted_at: "2026-09-10T00:06:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      deliveries: [],
+      edited_at: "2026-09-10T00:05:00Z",
+      id: "message-1",
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      target: null,
+    },
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <PinnedTab
+          conversations={[]}
+          events={[editedThenDeleted]}
+          onUnpin={() => {}}
+          onUnpinConversation={() => {}}
+          pinnedIds={["1"]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const card = view.container.querySelector("article");
+    expect(card?.textContent).toContain("Deleted by alice");
+    expect(card?.textContent).not.toContain("Pinned message");
+    expect(card?.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+  }
+});

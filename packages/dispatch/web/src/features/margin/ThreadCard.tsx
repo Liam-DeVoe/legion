@@ -369,7 +369,8 @@ export function ThreadCard({
      Reopen, Edit, Accept and Reject stay hidden; on a decided suggestion's thread, which offers
      no reply, it shows only a reply of its own still out or its refusal, and still sends
      (`finishing`). A deleted root takes no reply either - the server refuses one (409) - so the
-     composer stays away from it. `contents`, so the composer's own box is the one laid out. It
+     composer stays away from it. Its quote of the root marks the root edited as the root's own
+     byline does (`replyParent`). `contents`, so the composer's own box is the one laid out. It
      sits next to the newest message: under the root in Newest first, at the foot of the thread
      in Oldest first. */
   const replyComposer =
@@ -386,6 +387,7 @@ export function ThreadCard({
           onClose={onToggle}
           onSent={() => {}}
           owner={composerOwner(owner)}
+          replyParent={root}
           replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
         />
       </div>

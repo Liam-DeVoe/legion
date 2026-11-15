@@ -91,9 +91,12 @@ const deletedPostDeliveryError = "not sent: the post was deleted"
 // A comment clears its suggestion with its body, since the suggestion's replacement text is the
 // comment's text too, and a message carries no suggestion: the kind decides which, and the clear
 // rides the one update, so the kind's search trigger rewrites the row's vector once from the
-// cleared body and the deleted post stops matching a keyword search. Its meaning hits stand
-// until the block-index tick drops its windows, and each such hit carries the post's delete
-// mark (stampSearchPostMarks, search.go).
+// cleared body and the deleted post stops matching a keyword search. The post's embedding
+// windows go in this transaction too (refs.WriteItemWindows): the cleared body splits into no
+// block, so the write enqueues no window and deletes each window the post held, and no meaning
+// search finds the post once the delete commits. A window that outlives the delete some other
+// way still matches, and search stamps that hit with the post's delete mark
+// (stampSearchPostMarks, search.go).
 func (s *server) clearDeletedPostBody(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -128,6 +131,9 @@ func (s *server) clearDeletedPostBody(
 	deletedAt = deletedAt.UTC()
 	changes, err := refs.TombstoneItem(ctx, tx, kind, itemID, previousBody, s.deps.ServerURL, deletedAt)
 	if err != nil {
+		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	if _, err := refs.WriteItemWindows(ctx, tx, kind, itemID); err != nil {
 		return time.Time{}, model.ReferenceChanges{}, err
 	}
 	return deletedAt, changes, nil
