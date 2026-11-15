@@ -552,6 +552,9 @@ test("the Delivery page's Legion section reads 84 days and its Previous 84 days 
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
   await seedLegionFinishedTree();
+  // The page opens once the evals over the tree are built; the preset starts before their first
+  // day, so the cards say they measure from it and their figures read no value.
+  await legionWindow(LEGION_PROJECT, { filed: 1, finished: 2 });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const evalReads: { url: string; status: number }[] = [];
@@ -575,7 +578,6 @@ test("the Delivery page's Legion section reads 84 days and its Previous 84 days 
     const label = `${LEGION_PROJECT}: Work time to merge`;
     const workTime = block.locator('[data-legion-metric="work_time"]');
     await expect(workTime.locator(`[data-chart="${label}"]`)).toBeVisible();
-    await expect(workTime.locator('[data-legion-figure="Issues finished"]')).toHaveText(/^[0-9]+$/);
     await expect
       .poll(() => evalReads.filter((read) => read.url.includes("/items")).length)
       .toBeGreaterThan(0);
