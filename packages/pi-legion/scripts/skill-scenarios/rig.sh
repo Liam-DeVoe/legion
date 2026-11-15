@@ -18,10 +18,16 @@
 #                                                  whether each run's world could take what its
 #                                                  agents did and the run stayed in its own world,
 #                                                  scoring nothing (health.ts): the run finished;
-#                                                  every completion names its role and none was
-#                                                  refused in a way its label's daemon would not
-#                                                  refuse it, and its world took the completions it
-#                                                  must take (completion-answers.ts's ANSWERS); the
+#                                                  every service of its label's own came from its
+#                                                  label's checkout (<run>/services-from against
+#                                                  its built-from, services_from); no agent's claim
+#                                                  boot was refused but a first attempt's before
+#                                                  its first turn, which the rig relaunched
+#                                                  (boot_agent); every completion names
+#                                                  its role and none was refused in a way its
+#                                                  label's daemon would not refuse it, and its
+#                                                  world took the completions it must take
+#                                                  (completion-answers.ts's ANSWERS); the
 #                                                  daemon stand-in answered no route 404 that the
 #                                                  run's label's daemon registers, and no turn
 #                                                  outcome it answered failed the claim; no
@@ -36,9 +42,11 @@
 #                                                  another process's /proc environ or cmdline, or a
 #                                                  credential under /var/run/legion or
 #                                                  /var/run/secrets; and no call reached a host off
-#                                                  its world. Give a batch's runs in one call;
-#                                                  exits 0 when every run is healthy, 1 otherwise,
-#                                                  2 on a usage error
+#                                                  its world, each command read by its own grammar
+#                                                  once its wrappers are read off. It prints how
+#                                                  many relaunches each label's runs took. Give a
+#                                                  batch's runs in one call; exits 0 when every
+#                                                  run is healthy, 1 otherwise, 2 on a usage error
 #   rig.sh world     <label> <run dir>             the run's world, one `<kind> <path>` a line
 #                                                  (world_paths): what its namespace hides and
 #                                                  what it shows again
@@ -193,8 +201,14 @@
 # and they cannot detect a lost skill rule. A new scenario is an instrument only once an ablate
 # arm has scored lower on it.
 #
-# A batch's services are a Postgres, a NATS, and the Envoy listener built from this checkout. The
-# Postgres and the NATS are two containers the batch starts and removes, or, when
+# A batch's services are a Postgres, a NATS, the Dispatch server every run starts its own Dispatch
+# on, built from this checkout, and one Envoy listener for each label, built from that label's own
+# checkout (services_up), since a label's agents load that checkout's plugins and production runs
+# a machine's listener from the release its plugins come from. Each binary is built once per
+# checkout and kept under <work>/builds (go_binary). Each run carries the provenance of every
+# service and program it is built or started from, <run>/services-from beside its built-from
+# (services_from), and `rig.sh health` holds every service of its label's own to that label's
+# checkout. The Postgres and the NATS are two containers the batch starts and removes, or, when
 # SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
 # URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
 # docker. Each run gets a Dispatch of its own (own_dispatch): a database named after the run
@@ -204,8 +218,8 @@
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
 # and score.ts does not score two runs that name one database. A given server's URL carries its
-# port and docker assigns a container's host port; the listener serves on a port the kernel chose
-# and scripts/e2e/lib/rig.sh holds for it
+# port and docker assigns a container's host port; each listener serves on a port the kernel
+# chose and scripts/e2e/lib/rig.sh holds for it
 # until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
 # reports, and the kernel assigns each run's daemon stand-in its port.
 #
@@ -300,6 +314,13 @@
 #   - A worker run gets a Legion project of its own, built from its scenario, its case, its label,
 #     its number and its batch (run_project), since the Envoy role topics it claims carry that
 #     project and every worker run is booted on one issue key.
+#   - A phase worker whose claim boot is refused before its first turn (the daemon stand-in refuses
+#     its `claims/register`, or its plugin prints `claim boot failed at …` and exits, as round
+#     23's reviewer did on the Envoy listener's consumer refusal) is launched once more in the same
+#     run, as production's daemon relaunches it, and the first attempt is kept under
+#     <run>/boot-1/<role>/ (boot_agent). Once, where the daemon's launch budget allows more: a
+#     second refusal stands, and health names both attempts. One refused after its first turn is
+#     never relaunched.
 #   - Its agent runs in a user, mount and PID namespace of its own, started with `env -i` (launch,
 #     world_paths, private_world): the scratch root TMPDIR names, the issue workspaces, the work
 #     directory, every label's checkout, /var/run/legion and /var/run/secrets are each an empty
@@ -458,12 +479,15 @@ tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
 # What a command started, for its exit trap: the run directory and its agent's tmux session, the
-# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
-# ports and directory. `booted` is the role of the agent a run has already run, empty until the
-# first one, and `sessions_dir` the Oh My Pi session directory of the agent running now: a run
-# that boots more than one agent gives each its own (worker_boot).
-R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' record_pid='' runs_pid='' batch_scenario=''
-S='' envoy_port='' dispatch_port='' pg_url='' nats_url='' booted='' sessions_dir=''
+# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), each label's Envoy
+# listener (listener_pids, one per label of the batch), and the services' ports and directory.
+# `booted` is the role of the agent a run has already run, empty until the first one, and
+# `sessions_dir` the Oh My Pi session directory of the agent running now: a run that boots more
+# than one agent gives each its own (worker_boot). `services_env` is the services file of the
+# run's label (cmd_run), which a worker run's pane and its recorder read.
+R='' session='' daemon_pid='' dispatch_pid='' record_pid='' runs_pid='' batch_scenario=''
+S='' envoy_port='' dispatch_port='' pg_url='' nats_url='' booted='' sessions_dir='' services_env=''
+listener_pids=()
 
 label_dir() {
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
@@ -1236,35 +1260,137 @@ cmd_live_read() {
   bun "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
 }
 
-services_env=$work/services/env
+# The services file of LABEL's runs, which services_up writes for each label of its batch: that
+# label's own Envoy listener (ENVOY_URL), the batch's NATS and the listener token, the lines a
+# worker run's pane carries (worker_boot) and its recorder reads (start_recorder). cmd_run points
+# services_env at its label's.
+label_services() { printf '%s\n' "$work/services/env-$1"; }
+# The service provenance of LABEL's runs (services_from), which services_up writes beside the
+# services file and cmd_run copies into each run as <run>/services-from.
+label_provenance() { printf '%s\n' "$work/services/services-from-$1"; }
 # The Postgres SKILL_SCENARIOS_POSTGRES_URL names, written by services_up and read by own_dispatch,
 # which runs in a process of its own (`rig.sh run`): a run takes the Postgres its batch brought up,
 # never one its own environment names. The file is 0600, since the URL can carry a password, and
 # its absence is how a run knows its batch started a container instead.
 services_postgres=$work/services/postgres-url
+# The two images a batch starts when it is given no servers, by digest (services_up), which each
+# run's provenance names (services_from): ghcr.io/cybermonklabs/legion/ci's copies of
+# pgvector/pgvector and nats:2.10 (.github/ci-images.yaml).
+postgres_image=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+nats_image=ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
 
-# start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
-# the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
+# build_dir CHECKOUT prints where the Go binaries built from CHECKOUT are kept:
+# $work/builds/<the first 16 hex digits of the digest of CHECKOUT's path>, beside the daemon facts
+# daemon-pane.ts keeps under $work/daemon-facts, and kept, as they are, from one batch to the next.
+build_dir() { printf '%s/builds/%s\n' "$work" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"; }
+
+# go_binary CHECKOUT PACKAGE NAME builds the command PACKAGE (./cmd/listener, ./cmd/dispatch) of
+# CHECKOUT's own packages/envoy module, in that module and under its own go.work, as NAME in
+# CHECKOUT's build directory (build_dir), and prints the binary's path. One binary per checkout,
+# kept across batches: `go build -o` relinks only an output whose sources changed, so each binary
+# is the build of its checkout's tree as it stands, and a second batch of an unchanged tree builds
+# nothing. One batch at a time holds the work directory (lock_services), so no two builds of one
+# binary race.
+go_binary() {
+  local dir
+  dir=$(build_dir "$1")
+  mkdir -p "$dir"
+  (cd "$1/packages/envoy" && go build -o "$dir/$3" "$2") >&2 || return 1
+  printf '%s\n' "$dir/$3"
+}
+
+# start_listener LABEL BINARY serves LABEL's Envoy listener, BINARY (go_binary of the label's own
+# checkout), on a port the kernel chose, held from that choice until the listener serves on it
+# (lib/rig.sh's start_held), and sets envoy_port. Each label's listener is a service of its own,
+# listener_<label> (its log $S/logs/listener_<label>.log and its port file
+# $work/listener_<label>.port, the label's hyphens as underscores, which no label holds), its pid
+# in listener_pids, under a machine id of its own: a listener's durable NATS consumer is named for
+# its machine (bus.ListenerDurable), and two listeners under one id on the batch's one NATS would
+# take each other's deliveries, which no two machines of production do.
 start_listener() {
+  local name=listener_${1//-/_} pid
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag" NATS_URLS="$nats_url" \
-    start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
+    ENVOY_MACHINE_ID="$tag-$1" NATS_URLS="$nats_url" \
+    start_held "$name" envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$2"
+  pid=${name}_pid
+  listener_pids+=("${!pid}")
+  await_start "$name" "${!pid}" 60 "the $1 label's Envoy listener to answer /v1/sessions" \
     curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+}
+
+# file_digest FILE prints `sha256:<hex>` of FILE's bytes, or `missing` when there is no such file.
+file_digest() {
+  [ -f "$1" ] || {
+    echo missing
+    return 0
+  }
+  printf 'sha256:%s\n' "$(sha256sum <"$1" | cut -d' ' -f1)"
+}
+
+# services_from LISTENER DISPATCH prints the service provenance of the runs of the label
+# load_label loaded last (co, pin, P, profile): one `<service> <scope> <from> <digest>` a line,
+# for every service and program a run of that label is built or started from. services_up writes
+# it for each label before any run starts, and cmd_run copies it into the run as
+# <run>/services-from, beside its built-from, before any agent of the run starts: health.ts's
+# "service provenance" rule reads it against that built-from. <scope> is
+#   label   a service the run's own label's checkout gives it, <from> being that checkout, which
+#           health holds to built-from's `checkout` line: its Envoy listener (LISTENER, built from
+#           it), its packed plugins and its model route (cmd_profile), the daemon facts the daemon
+#           stand-in answers by (daemon-pane.ts, read out of built-from's checkout) and its worker
+#           pane, which that checkout's daemon module composes (worker-pane.ts);
+#   pin     its Oh My Pi, the version that checkout pins (.omp-pin), <from> being the pin;
+#   shared  a service production shares across versions, or this rig's own instrument, <from>
+#           being where it comes from: the Dispatch server (DISPATCH, built from this checkout),
+#           the stand-ins, readers and seed programs of this directory, NATS, Postgres and the
+#           push guard's check.
+# <digest> is file_digest of the binary or program file a run starts (`missing` where that file is
+# not there), or `-` where it starts none. The README's skill-scenarios section
+# (packages/pi-envoy/scripts/README.md) holds the table of every service, with the reason each
+# shared one is shared.
+services_from() {
+  local listener=$1 dispatch=$2 omp program
+  omp=$(pinned_omp "$pin") || exit 1
+  printf 'envoy-listener label %s %s\n' "$co" "$(file_digest "$listener")"
+  printf 'plugins label %s -\n' "$co"
+  printf 'model-route label %s %s\n' "$co" "$(file_digest "$P/home/.omp/profiles/$profile/agent/models.yml")"
+  printf 'daemon-facts label %s -\n' "$co"
+  printf 'worker-pane label %s -\n' "$co"
+  printf 'omp pin %s %s\n' "$pin" "$(file_digest "$omp")"
+  printf 'dispatch shared %s %s\n' "$root" "$(file_digest "$dispatch")"
+  for program in daemon-standin.ts daemon-pane.go daemon-routes.go worker-pane.ts gh-standin.ts seed.ts record-publishes.ts; do
+    printf '%s shared %s %s\n' "$program" "$here" "$(file_digest "$here/$program")"
+  done
+  if given_services; then
+    printf 'nats shared %s -\n' "$(safe_url "$nats_url")"
+    printf 'postgres shared %s -\n' "$(safe_url "$pg_url")"
+  else
+    printf 'nats shared %s sha256:%s\n' "${nats_image%@*}" "${nats_image#*@sha256:}"
+    printf 'postgres shared %s sha256:%s\n' "${postgres_image%@*}" "${postgres_image#*@sha256:}"
+  fi
+  if [ -n "${PUBLIC_LEAK_CHECK:-}" ]; then
+    printf 'leak-check shared %s %s\n' "$PUBLIC_LEAK_CHECK" "$(file_digest "$PUBLIC_LEAK_CHECK")"
+  else
+    printf 'leak-check shared none -\n'
+  fi
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
 # harness's fake Envoy and GitHub, which run-server.sh names and this rig does not run, are port 1,
-# where nothing listens; its broker switch is empty, so the server has no secrets broker.
+# where nothing listens; its broker switch is empty, so the server has no secrets broker. The
+# server is the one the batch built from this checkout (services_up, go_binary), which
+# run-server.sh runs in place of a build of its own (DISPATCH_E2E_SERVER_BIN), so every run of the
+# batch runs the binary its provenance names (services_from).
 # With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held until
 # the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
 # and the log is emptied first, so the line read is this run's own start.
 start_dispatch() {
-  local url=$1 log=$evidence/logs/dispatch.log
+  local url=$1 log=$evidence/logs/dispatch.log server
+  server=$(build_dir "$root")/dispatch-e2e
+  [ -x "$server" ] || fail "no Dispatch server at $server: the run's batch builds it (services_up)"
   : >"$log"
   DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
-    start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
+    DISPATCH_E2E_SERVER_BIN=$server start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
   dispatch_port=$(report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:')
@@ -1272,13 +1398,19 @@ start_dispatch() {
     curl -fsS -o /dev/null -H 'Authorization: Bearer e2e-token' "http://127.0.0.1:$dispatch_port/api/v1/whoami"
 }
 
-# services_files prints each file a batch's services make, one a line: the services env and the
-# given Postgres's URL every run reads, the listener's token, the Dispatch token, the built
-# listener and the port file lib/rig.sh's start_held writes for it (and removes before it starts
-# the listener). lock_services refuses a batch while one of them is there and services_down
-# removes them, so each is a file this batch made, never an earlier batch's.
+# services_files prints each file a batch's services make, one a line: the given Postgres's URL
+# every run reads, the listener token, the Dispatch token, and each label's services file
+# (label_services), its provenance (label_provenance) and the port file lib/rig.sh's start_held
+# writes for its listener (start_listener; start_held removes it before it starts the listener),
+# those three of every label whose file is there. lock_services refuses a batch while one of them
+# is there and services_down removes them, so each is a file this batch made, never an earlier
+# batch's. The binaries are no such file: they are kept from one batch to the next (go_binary).
 services_files() {
-  printf '%s\n' "$services_env" "$services_postgres" "$S/envoy-token" "$S/dispatch-token" "$S/envoy-listener" "$work/listener.port"
+  local file
+  printf '%s\n' "$services_postgres" "$S/envoy-token" "$S/dispatch-token"
+  for file in "$S"/env-* "$S"/services-from-* "$work"/listener_*.port; do
+    [ ! -e "$file" ] && [ ! -L "$file" ] || printf '%s\n' "$file"
+  done
 }
 
 # One batch at a time per work directory: $work/services/up is its lock, taken before the batch
@@ -1359,6 +1491,15 @@ nats_ready() {
 # holds) names nothing, so that container stays.
 containers=()
 
+# services_up LABEL... brings up the batch's services: its Postgres and its NATS, the Dispatch
+# server every run of the batch starts its own Dispatch on (own_dispatch), built from this
+# checkout, and, for each LABEL, an Envoy listener built from that label's own checkout
+# (go_binary, start_listener), the label's services file (label_services) naming that listener,
+# and the label's service provenance (services_from, label_provenance). A label's agents load the
+# plugins of its own checkout, so one listener built from this checkout paired a base label's
+# plugins, main ff2a10ef's from before #2603, with a listener from after it, a pairing no deploy
+# ever had, and the base runs lost their claim boot to its `409 not_requested`.
+#
 # Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
 # (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
@@ -1367,23 +1508,22 @@ containers=()
 # not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port label dispatch listener
+  local listening=()
   needs=$((30 * parallel + 20))
   if given_services; then
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
   else
-    # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
     docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-      -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+      -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 "$postgres_image" \
       -c max_connections=$needs >/dev/null
     containers+=("$tag-pg")
     pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
     [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
     pg_url="postgres://postgres:ci@127.0.0.1:$pg_port/postgres?sslmode=disable"
-    # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
-    docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f -js >/dev/null
+    docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
     containers+=("$tag-nats")
     nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
     [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
@@ -1399,27 +1539,33 @@ services_up() {
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   fi
-  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
+  dispatch=$(go_binary "$root" ./cmd/dispatch dispatch-e2e) || fail "the Dispatch server of $root did not build"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
-  start_listener
-  {
-    echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    echo "ENVOY_NATS_URL=$nats_url"
-    echo "ENVOY_TOKEN_FILE=$S/envoy-token"
-  } >"$services_env"
-  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
+  for label in "$@"; do
+    load_label "$label"
+    listener=$(go_binary "$co" ./cmd/listener envoy-listener) || fail "the Envoy listener of label $label's checkout $co did not build"
+    start_listener "$label" "$listener"
+    {
+      echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
+      echo "ENVOY_NATS_URL=$nats_url"
+      echo "ENVOY_TOKEN_FILE=$S/envoy-token"
+    } >"$(label_services "$label")"
+    services_from "$listener" "$dispatch" >"$(label_provenance "$label")"
+    listening+=("$label :$envoy_port")
+  done
+  note "services up: listeners ${listening[*]}, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
 }
 
-# services_down stops and removes what this batch started and made, and nothing else: the
-# containers it started (containers), and its services' files (services_files), which
-# lock_services found absent before this batch made them, then its lock. A given Postgres and a
-# given NATS keep running, and every database a run made on that Postgres (own_dispatch) stays
-# there for the operator to drop.
+# services_down stops and removes what this batch started and made, and nothing else: each
+# label's listener (listener_pids), the containers it started (containers), and its services'
+# files (services_files), which lock_services found absent before this batch made them, then its
+# lock. A given Postgres and a given NATS keep running, and every database a run made on that
+# Postgres (own_dispatch) stays there for the operator to drop.
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
-  stop_tree "${listener_pid:-}"
+  local pid files
+  for pid in "${listener_pids[@]}"; do stop_tree "$pid"; done
   [ ${#containers[@]} = 0 ] || docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
-  local files
   mapfile -t files < <(services_files)
   rm -f -- "${files[@]}" "$S/up"
 }
@@ -2663,7 +2809,8 @@ run_project() {
 # under the role of the agent it served, its own HOME, its own Oh My Pi session directory and its
 # own last line of output, and the role of each is in the calls it records (SKILL_SCENARIO_AGENT),
 # while the run keeps one calls.jsonl, one pushes.log and one record of what reached the daemon,
-# $R/daemon.log, which every stand-in of the run appends to.
+# $R/daemon.log, which every stand-in of the run appends to. The agent is launched by boot_agent,
+# which relaunches it once when its claim boot is refused before its first turn.
 worker_boot() {
   local name=$1 project=$2 role=$3 phase=${4:-} completed=${5:-} state port pane_gh pane_vars
   state=$R/state
@@ -2710,14 +2857,14 @@ worker_boot() {
   # recording stand-in, as the pane's real gh. It reads the repository and the default branch its
   # addressing names out of $R/world.json too, as the daemon stand-in does.
   bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
-  # The run's Envoy is the batch's own listener, named once. The daemon's pane carries an
-  # ENVOY_URL of its own — the default it gives a pane whose environment configures no Envoy
-  # (daemon-pane.ts's DEFAULT_ENVOY_URL) — and $services_env carries the listener this batch
-  # started, so the file held the address twice and `launch`'s `env -i` decided which one the
-  # agent got by the order of the two lines. The pane's line is dropped here: one fact, one
-  # line, and a reader of pane.env sees the address the run's sessions actually reach. `sed`
-  # rather than `grep -v`, which exits 1 on a worker.env whose every line it dropped and would
-  # take `set -e` with it.
+  # The run's Envoy is its label's own listener in the batch, built from the label's checkout
+  # (services_up), named once. The daemon's pane carries an ENVOY_URL of its own — the default it
+  # gives a pane whose environment configures no Envoy (daemon-pane.ts's DEFAULT_ENVOY_URL) — and
+  # $services_env carries the label's listener, so the file held the address twice and `launch`'s
+  # `env -i` decided which one the agent got by the order of the two lines. The pane's line is
+  # dropped here: one fact, one line, and a reader of pane.env sees the address the run's
+  # sessions actually reach. `sed` rather than `grep -v`, which exits 1 on a worker.env whose
+  # every line it dropped and would take `set -e` with it.
   {
     sed '/^ENVOY_URL=/d' "$R/worker.env"
     cat "$services_env"
@@ -2752,8 +2899,51 @@ worker_boot() {
     fail "worker_boot: $R/pane.env names no PATH with a gh on it, so no call of this run could reach the gh stand-in"
   env -i "${pane_vars[@]}" "$pane_gh" --open ||
     fail "worker_boot: the pane's gh ($pane_gh) could not open $R/calls.jsonl"
-  launch "$name"
+  boot_agent "$name" "$role"
   booted=$role
+}
+
+# boot_agent NAME ROLE launches the agent of ROLE (launch) and, when its claim boot was refused
+# before its first turn, launches it once more in the same run, as production's daemon relaunches
+# an agent whose process exits at its boot. Round 23's world-health check at 2926519c lost
+# reviewer-text-findings-text-only-base-1 so: its plugin exited at boot with `claim boot failed
+# at claimRole after claims/register …: … asked for no session consumer …`, the refusal of the
+# Envoy listener (session_delivery.go), then one listener built from the head clone for both
+# labels and now each label's own (services_up), and a rig run is one `omp -p` with nobody to
+# launch it again. How often it fires, by label, is the count `rig.sh health` prints. What counts
+# is read by health.ts --boot-refusal, the one reader of it, whose "claim boot" rule holds the run
+# to the same record: the daemon stand-in's refusal of the agent's `claims/register` (its
+# $R/daemon.log lines of ROLE since the launch began), or the plugin's own `claim boot failed at …`
+# line in $R/out.txt, and only when the agent's transcripts hold no turn, no model call and no tool
+# call. A refusal after the first turn is never relaunched: the daemon's relaunch would not take
+# that turn back.
+#
+# The first attempt is kept whole beside the second, under $R/boot-1/ROLE: its out.txt, its
+# session directory (sessions/) and the stand-in's lines of it (daemon.log), while the second
+# attempt's output, transcript and HOME stand where any agent's do, so the score and health read
+# the run on the second attempt's record. The stand-in, its boot token and the agent's HOME are
+# the first attempt's, as a pod's are across the daemon's relaunch. This is narrower than the
+# daemon's launch budget, which relaunches an agent until its launch failure limit: the rig
+# relaunches once, and a second refusal stands, the run unhealthy, naming both attempts.
+boot_agent() {
+  local name=$1 role=$2 since first refusal status=0
+  since=$(date -u +%FT%T.%3NZ)
+  launch "$name"
+  refusal=$(bun "$here/health.ts" --boot-refusal "$R" "$role" "$since" "$sessions_dir") || status=$?
+  case $status in
+  0) ;;
+  1) return 0 ;;
+  *) fail "boot_agent: health.ts could not read the $role's boot (exit $status)" ;;
+  esac
+  first=$R/boot-1/$role
+  mkdir -p "$first"
+  mv "$R/out.txt" "$first/out.txt"
+  mv "$sessions_dir" "$first/sessions"
+  mkdir -p "$sessions_dir"
+  jq -c --arg role "$role" --arg since "$since" 'select(.role == $role and .at >= $since)' \
+    "$R/daemon.log" >"$first/daemon.log"
+  note "${R##*/}: the $role's claim boot was refused before its first turn ($refusal); launching it once more, the first attempt kept in $first"
+  launch "$name"
 }
 
 # worker_run_world INDEX START [CASE] is the start every worker run shares: the run's own
@@ -2975,7 +3165,11 @@ cmd_run() {
   require_namespace
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
-  [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
+  # The run's services are its label's in its batch (services_up): its listener, built from the
+  # label's own checkout, and that label's provenance, which the batch wrote with it.
+  services_env=$(label_services "${P##*/}")
+  [ -f "$services_env" ] && [ -f "$(label_provenance "${P##*/}")" ] ||
+    fail "a run needs its batch's services for label $2 ($services_env and $(label_provenance "${P##*/}")): run \`rig.sh batch $scenario 1 $2\`"
   # A cased scenario's run name carries its case, so each case's batches are numbered apart
   # (next_run) and no case's run takes another's name.
   run_case=$(scenario_case "$scenario") || exit 1
@@ -2998,6 +3192,10 @@ cmd_run() {
   # The run's own record of its case, which the scorer holds to the name above.
   [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
   cp "$P/built-from" "$R/built-from"
+  # What each service of the run comes from, beside what its label was built from, before any of
+  # it starts (services_from): health.ts holds every service of the label's own to built-from's
+  # checkout.
+  cp "$(label_provenance "${P##*/}")" "$R/services-from"
   # The run's own Legion project, computed here and nowhere else, so no run claims another's role
   # token or reads a message addressed to one: the run's scenario, case, label and number, and
   # its batch (run_project). Its recorder subscribes to this project's topics and its agents
@@ -3070,7 +3268,8 @@ cmd_batch() {
   esac
   lock_services
   on_exit stop_batch
-  services_up
+  # One listener per label, each built from that label's own checkout (services_up).
+  services_up "$@"
   start=$(date +%s)
   # Each label's runs are numbered from one above that label's highest run, live or archived
   # (next_run), read once this batch holds the work directory (lock_services): a batch never gives

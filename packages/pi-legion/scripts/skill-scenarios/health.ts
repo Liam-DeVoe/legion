@@ -50,7 +50,30 @@
  *      http(s) URL a `read`, `fetch` or `grep` is given as its path; no network URL in a file the
  *      run wrote and then ran (`fileRuns`); and no network URL in any string argument of a tool
  *      TEXT_TOOLS does not name, a tool nobody named included. A URL in text a call writes (a
- *      review body, a reply, a commit message, a file never run) is a link, not a reach.
+ *      review body, a reply, a commit message, a file never run) is a link, not a reach. A bash
+ *      command is read by each program's own grammar, in the positions that take a host
+ *      (`commandHosts`): a remote in scp form, `[user@]host:path`, only where git, jj, scp, rsync
+ *      or sftp take an address; the host operands of ssh, scp, sftp, rsync, nc, ncat and telnet
+ *      and the ssh options that name one (`-J`, `-o ProxyJump`, `-o HostName`); a host `gh`'s
+ *      `--hostname`, `-R HOST/OWNER/REPO` (or its URL) or GH_HOST names, which the run's gh
+ *      serves only for github.com and the loopback; and a gh named by a path, or run as
+ *      `legion gh`, that is not the run's own stand-in (<run>/bin/gh), whatever it names. A
+ *      wrapper (sudo, env, timeout, nice, nohup, xargs, command, exec, time, `sh -c`) is read off,
+ *      and the command it runs read as if it stood alone;
+ *  14. claim boot: no agent's claim boot was refused but a first attempt's at boot, before its
+ *      first turn, which rig.sh relaunched once and keeps under <run>/boot-1/<role>/ (`claimBoot`):
+ *      a world answer production's daemon meets with a relaunch. A run whose relaunch registered
+ *      is judged as any other, on the second attempt's record; one refused on both attempts, and
+ *      one refused after a turn, are not. It is read third, after `finished` and rule 15;
+ *  15. service provenance: the run carries <run>/services-from (rig.sh's services_from, which
+ *      cmd_run copies into the run before any agent starts), and every service of it whose scope
+ *      is `label` — its Envoy listener, plugins, model route, daemon facts and worker pane, each of
+ *      LABEL_SERVICES among them — came from the checkout its built-from names
+ *      (`serviceProvenance`): a service from another checkout paired the label's plugins with a
+ *      service no deploy of theirs ran beside them, as one listener built from the head checkout
+ *      paired main ff2a10ef's pi-envoy with a listener from after #2603 and lost the base runs'
+ *      claim boot to its `409 not_requested`. It is read second, after `finished`: a world built
+ *      from the wrong checkout explains every rule after it.
  * Rules 6 and 8 to 13 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
  * and each subagent's) through score.ts's readers. The run's own directory is the one its pane
  * file names (`SKILL_SCENARIO_RUN`, which the transcripts' paths are written under) and the
@@ -61,17 +84,28 @@
  *
  * Prints one line per run, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the first rule
  * the run fails with the evidence it failed on; then, for each rule, `health: <rule>: <n> of <m>
- * runs`, the runs that rule alone flags; then how many runs wrote outside their own directory,
- * which is no verdict; then `health: <n> of <m> runs unhealthy`. Exits 0 when every run is healthy,
+ * runs`, the runs that rule alone flags; then, for each label of the runs given, how often rig.sh
+ * relaunched an agent at its boot (`relaunches`: `health: boot relaunches, <label>: <n> in <r> of
+ * <m> runs`, each relaunch an agent's first attempt kept under <run>/boot-1/<role>/); then how
+ * many runs wrote outside their own directory, which is no verdict; then `health: <n> of <m> runs
+ * unhealthy`. Exits 0 when every run is healthy,
  * 1 otherwise, and 2, printing no run, for no argument or for a path that is not a run directory
  * of a scenario `ANSWERS` names and of a label `LABEL_DAEMONS` names.
+ *
+ * `health.ts --boot-refusal <run dir> <role> <since> <sessions dir>` is rig.sh's question after an
+ * agent's launch (boot_agent): it prints the claim boot refusal that agent met before its first
+ * turn, read from <run>/out.txt, the stand-in's lines of that role at or after <since> and the
+ * transcripts under <sessions dir>, and exits 0 for a relaunch; exits 1 for none, a refusal
+ * after a turn included; and 2 for a usage error.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
+import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { z } from "zod";
 import {
   answerOf,
+  type DaemonLine,
   daemonLines,
   finished,
   labelOf,
@@ -90,8 +124,10 @@ import {
   transcriptFiles,
   withoutBodies,
 } from "./score";
+import type { SessionEntry } from "./transcript";
 
 const USAGE = "usage: rig.sh health [--tmp-snapshot <file>] <run dir>...";
+const BOOT_USAGE = "usage: health.ts --boot-refusal <run dir> <role> <since> <sessions dir>";
 
 /** A tool call's arguments, as a transcript records them: an object of named values. */
 const ToolArgs = z.record(z.string(), z.unknown());
@@ -561,22 +597,706 @@ const NETWORK_URL =
 /** Any URL, with its host: what the pane names (nats://, postgres://) counts as the world's. */
 const ANY_URL =
   /\b[a-z][a-z0-9+.-]*:\/\/(?:[^\s/@'"`]*@)?(\[[0-9A-Fa-f:.]+\]|[^\s/:?#'"`()<>;|&]+)/gi;
-/** A git remote in scp form, `<user>@<host>:<path>`. */
-const SCP_REMOTE = /^[\w.-]+@([\w.-]+):/;
-/** A host a curl or wget operand names without a scheme: a name with a dot, an address or
+/** An address in scp form, `[<user>@]<host>:<path>`, with its host: no slash before its first
+ * colon, which is how git (`url_is_local_not_ssh`), scp(1) and rsync(1) tell a remote from a
+ * local path, so `docs/cli.md:12` and `./a:b` are paths. */
+const SCP_ADDRESS = /^(?:[^\s@/:]+@)?(\[[0-9A-Fa-f:.]+\]|[^\s@/:[\]]+):/;
+
+/** The host an address in scp form names (SCP_ADDRESS), or undefined for a URL (`://`, which
+ * `urlHosts` reads) and for a path; rsync's `<host>::<module>` is a daemon on that host. Read
+ * only where a command takes an address, never as a free word: in a word anywhere else,
+ * `HEAD:docs/cli.md`, `main:path` or `main@origin:docs/cli.md` is a revision and a path. */
+function scpHost(address: string): string | undefined {
+  return address.includes("://") ? undefined : SCP_ADDRESS.exec(address)?.[1];
+}
+
+/** A host a curl or wget argument names without a scheme: a name with a dot, an address or
  * localhost, followed by a port or a path. */
 const BARE_HOST =
   /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?(?:[/:]|$)/i;
-/** The curl and wget options whose value is the next word, which is no URL. */
-const VALUE_FLAGS = new Set(
-  "-o -O -H -d -X -u -T -F -A -e -b -c -w -x -P --output --output-document --header --data --data-raw --data-binary --data-urlencode --request --user --upload-file --form --user-agent --referer --cookie --cookie-jar --write-out --proxy --directory-prefix".split(
-    " "
-  )
+
+/** Option names, given apart by blanks, as a set. */
+function optionSet(names: string): ReadonlySet<string> {
+  return new Set(names.trim().split(/\s+/));
+}
+const NO_OPTIONS: ReadonlySet<string> = new Set();
+
+/** A command's arguments: its operands in order, and each option it is given with its value. */
+interface Arguments {
+  readonly operands: string[];
+  readonly options: [name: string, value?: string][];
+}
+
+/** Reads the option `words[at]` into `options`, `valued` naming the options whose value is the
+ * next word, and answers where the next word to read stands. `--name=value` is one option with
+ * its value. A word of short options (`-sSo`) is each of its letters, and the first of them that
+ * takes a value takes the rest of the word, or the next word when it ends the word, as getopt
+ * (curl, wget, the OpenSSH tools), git's parse-options and jj's clap read them. */
+function readOption(
+  words: readonly string[],
+  at: number,
+  valued: ReadonlySet<string>,
+  options: [name: string, value?: string][]
+): number {
+  const word = words[at] ?? "";
+  const long = /^(--[^=]+)=([\s\S]*)$/.exec(word);
+  if (long !== null) {
+    options.push([long[1] ?? "", long[2]]);
+    return at + 1;
+  }
+  if (word.startsWith("--") || word === "-") {
+    options.push(valued.has(word) ? [word, words[at + 1]] : [word]);
+    return valued.has(word) ? at + 2 : at + 1;
+  }
+  for (let letter = 1; letter < word.length; letter++) {
+    const name = `-${word[letter]}`;
+    if (!valued.has(name)) options.push([name]);
+    else if (letter + 1 < word.length) {
+      options.push([name, word.slice(letter + 1)]);
+      return at + 1;
+    } else {
+      options.push([name, words[at + 1]]);
+      return at + 2;
+    }
+  }
+  return at + 1;
+}
+
+/** A command's words read as its Arguments by the options it takes (`readOption`), wherever they
+ * stand among its operands, as a getopt that permutes them reads them (GNU's, git's, jj's). */
+function argumentsOf(words: readonly string[], valued: ReadonlySet<string>): Arguments {
+  const operands: string[] = [];
+  const options: [name: string, value?: string][] = [];
+  for (let at = 0; at < words.length; ) {
+    const word = words[at] ?? "";
+    if (word.startsWith("-")) at = readOption(words, at, valued, options);
+    else {
+      operands.push(word);
+      at++;
+    }
+  }
+  return { operands, options };
+}
+
+/** Whether `args` gives any of the options `names`. */
+function given(args: Arguments, ...names: string[]): boolean {
+  return args.options.some(([name]) => names.includes(name));
+}
+
+/** The value `args` gives each of the options `names`, in order. */
+function valuesOf(args: Arguments, ...names: string[]): (string | undefined)[] {
+  return args.options.filter(([name]) => names.includes(name)).map(([, value]) => value);
+}
+
+/** Where the first operand of `words` stands past the options before it, `valued` naming those
+ * whose value is the next word; the words' length when they have none. */
+function firstOperand(words: readonly string[], valued: ReadonlySet<string>): number {
+  for (let at = 0; at < words.length; at++) {
+    const word = words[at] ?? "";
+    if (valued.has(word)) at++;
+    else if (!word.startsWith("-")) return at;
+  }
+  return words.length;
+}
+
+/** A command's words read as its Arguments the way a getopt that stops at the first operand reads
+ * them (POSIX order: a `+` option string, or OpenSSH's own getopt): options (`readOption`) up to
+ * the first word that is none, or up to `--`, which ends them, and every word from there an
+ * operand; `-` alone is an operand. sudo, env, timeout, nice, nohup, xargs, time, ssh, scp and
+ * sftp read theirs so, and a wrapper's operands are the command it runs. */
+function posixArguments(words: readonly string[], valued: ReadonlySet<string>): Arguments {
+  const options: [name: string, value?: string][] = [];
+  for (let at = 0; at < words.length; ) {
+    const word = words[at] ?? "";
+    if (word === "--") return { operands: words.slice(at + 1), options };
+    if (!word.startsWith("-") || word === "-") return { operands: words.slice(at), options };
+    at = readOption(words, at, valued, options);
+  }
+  return { operands: [], options };
+}
+
+/** curl's options whose value is the next word (`curl --help all`, curl 8.14.1). */
+const CURL_VALUED = optionSet(`
+  --abstract-unix-socket --alt-svc --aws-sigv4 --cacert --capath -E --cert --cert-type --ciphers
+  -K --config --connect-timeout --connect-to -C --continue-at -b --cookie -c --cookie-jar
+  --create-file-mode --crlfile --curves -d --data --data-ascii --data-binary --data-raw
+  --data-urlencode --delegation --dns-interface --dns-ipv4-addr --dns-ipv6-addr --dns-servers
+  --doh-url -D --dump-header --ech --egd-file --engine --etag-compare --etag-save
+  --expect100-timeout -F --form --form-string --ftp-account --ftp-alternative-to-user
+  --ftp-method -P --ftp-port --ftp-ssl-ccc-mode --happy-eyeballs-timeout-ms --haproxy-clientip
+  -H --header -h --help --hostpubmd5 --hostpubsha256 --hsts --interface --ip-tos --ipfs-gateway
+  --json --keepalive-cnt --keepalive-time --key --key-type --krb --libcurl --limit-rate
+  --local-port --login-options --mail-auth --mail-from --mail-rcpt --max-filesize --max-redirs
+  -m --max-time --netrc-file --noproxy --oauth2-bearer -o --output --output-dir --parallel-max
+  --pass --pinnedpubkey --preproxy --proto --proto-default --proto-redir -x --proxy
+  --proxy-cacert --proxy-capath --proxy-cert --proxy-cert-type --proxy-ciphers --proxy-crlfile
+  --proxy-header --proxy-key --proxy-key-type --proxy-pass --proxy-pinnedpubkey
+  --proxy-service-name --proxy-tls13-ciphers --proxy-tlsauthtype --proxy-tlspassword
+  --proxy-tlsuser -U --proxy-user --proxy1.0 --pubkey -Q --quote --random-file -r --range --rate
+  -e --referer -X --request --request-target --resolve --retry --retry-delay --retry-max-time
+  --sasl-authzid --service-name --sigalgs --socks4 --socks4a --socks5 --socks5-gssapi-service
+  --socks5-hostname -Y --speed-limit -y --speed-time --ssl-sessions --stderr -t --telnet-option
+  --tftp-blksize -z --time-cond --tls-max --tls13-ciphers --tlsauthtype --tlspassword --tlsuser
+  --trace --trace-ascii --trace-config --unix-socket -T --upload-file --upload-flags --url
+  --url-query -u --user -A --user-agent --variable --vlan-priority -w --write-out
+`);
+/** The options of CURL_VALUED whose value is a host or a URL curl connects to: the URL it fetches
+ * (`--url`), a proxy's (`[protocol://]host[:port]`), its DNS-over-HTTPS server's and its IPFS
+ * gateway's. */
+const CURL_HOSTS = [
+  "--url",
+  "-x",
+  "--proxy",
+  "--preproxy",
+  "--proxy1.0",
+  "--socks4",
+  "--socks4a",
+  "--socks5",
+  "--socks5-hostname",
+  "--doh-url",
+  "--ipfs-gateway",
+];
+/** wget's options whose value is the next word (`wget --help`, GNU Wget 1.25.0). */
+const WGET_VALUED = optionSet(`
+  -e --execute -o --output-file -a --append-output --report-speed -i --input-file -B --base
+  --config --rejected-log -t --tries --retry-on-http-error -O --output-document --start-pos
+  --progress -T --timeout --dns-timeout --connect-timeout --read-timeout -w --wait --waitretry
+  -Q --quota --bind-address --limit-rate --restrict-file-names --prefer-family --user --password
+  --use-askpass --local-encoding --remote-encoding -P --directory-prefix --cut-dirs --http-user
+  --http-password --default-page --header --compression --proxy-user --proxy-password --referer
+  -U --user-agent --load-cookies --save-cookies --post-data --post-file --method --body-data
+  --body-file --secure-protocol --certificate --certificate-type --private-key
+  --private-key-type --ca-certificate --ca-directory --crl-file --pinnedpubkey --ciphers
+  --ftp-user --ftp-password --warc-file --warc-header --warc-max-size --warc-dedup
+  --warc-tempdir -l --level --backups -A --accept -R --reject --accept-regex --reject-regex
+  --regex-type -D --domains --exclude-domains --follow-tags --ignore-tags -I
+  --include-directories -X --exclude-directories --hsts-file
+`);
+/** The options of WGET_VALUED whose value is a URL wget fetches from: `--base`, which it resolves
+ * the links of its `--input-file` against. */
+const WGET_HOSTS = ["-B", "--base"];
+
+/** A git or jj subcommand that takes a repository's address: its options whose value is the next
+ * word, and the addresses its arguments give. */
+type AddressTaker = readonly [
+  valued: ReadonlySet<string>,
+  addresses: (args: Arguments) => readonly (string | undefined)[],
+];
+
+/** git's own options, before its subcommand, whose value is the next word: git(1)'s `-C <path>`
+ * and `-c <name>=<value>`, and those git 2.47's git.c (`handle_options`) also takes apart from
+ * their value (`--git-dir`, `--work-tree`, `--namespace`, `--config-env`, `--attr-source`,
+ * `--shallow-file`). */
+const GIT_GLOBAL = optionSet(
+  "-C -c --git-dir --work-tree --namespace --config-env --attr-source --shallow-file"
 );
+
+/** The address a git configuration variable gives (git-config(1), Variables): the value of
+ * `remote.<name>.url` and `remote.<name>.pushurl`, and the `<base>` of `url.<base>.insteadOf` and
+ * `url.<base>.pushInsteadOf`, which git rewrites a URL that starts with the value to. */
+function configAddress(key: string, value: string | undefined): string | undefined {
+  if (/^remote\..+\.(?:push)?url$/i.test(key)) return value;
+  return /^url\.(.+)\.(?:push)?insteadof$/i.exec(key)?.[1];
+}
+
+/** git config's modes whose operand after a variable's name is a pattern or a URL it matches,
+ * not a value it sets (git-config(1), DEPRECATED MODES). */
+const CONFIG_MATCHES = [
+  "--get",
+  "--get-all",
+  "--get-regexp",
+  "--get-urlmatch",
+  "--unset",
+  "--unset-all",
+];
+
+/** The git subcommands that take a repository's address, by their path: each one's options whose
+ * value is the next word, as git 2.47.3's `git <subcommand> -h` lists them, and the arguments its
+ * documentation's synopsis names as an address. */
+const GIT_TAKERS = new Map<string, AddressTaker>([
+  // git-clone(1): `git clone [<options>] [--] <repository> [<directory>]`.
+  [
+    "clone",
+    [
+      optionSet(`
+        -j --jobs --template --reference --reference-if-able -o --origin -b --branch -u
+        --upload-pack --depth --shallow-since --shallow-exclude --separate-git-dir --ref-format -c
+        --config --server-option --filter --bundle-uri
+      `),
+      ({ operands }) => [operands[0]],
+    ],
+  ],
+  // git-fetch(1): `git fetch [<options>] [<repository> [<refspec>...]]`, and
+  // `git fetch --multiple [<options>] [(<repository> | <group>)...]`.
+  [
+    "fetch",
+    [
+      optionSet(`
+        --upload-pack -j --jobs --depth --shallow-since --shallow-exclude --deepen --refmap -o
+        --server-option --negotiation-tip --filter
+      `),
+      (args) => (given(args, "--multiple", "-m") ? args.operands : [args.operands[0]]),
+    ],
+  ],
+  // git-pull(1): `git pull [<options>] [<repository> [<refspec>...]]`.
+  [
+    "pull",
+    [
+      optionSet(`
+        --cleanup -s --strategy -X --strategy-option --upload-pack --depth --shallow-since
+        --shallow-exclude --deepen --refmap -o --server-option --negotiation-tip
+      `),
+      ({ operands }) => [operands[0]],
+    ],
+  ],
+  // git-push(1): `git push [<options>] [<repository> [<refspec>...]]`, and `--repo=<repository>`,
+  // "equivalent to the <repository> argument. If both are specified, the command-line argument
+  // takes precedence": `git push --repo=<url> HEAD:main` pushes to the repository `HEAD:main`.
+  [
+    "push",
+    [
+      optionSet("--repo --recurse-submodules --receive-pack --exec -o --push-option"),
+      (args) => [args.operands[0] ?? valuesOf(args, "--repo").at(-1)],
+    ],
+  ],
+  // git-ls-remote(1): `git ls-remote [<options>] [<repository> [<patterns>...]]`.
+  [
+    "ls-remote",
+    [optionSet("--upload-pack --sort -o --server-option"), ({ operands }) => [operands[0]]],
+  ],
+  // git-remote(1): `git remote add [<options>] <name> <URL>`.
+  ["remote add", [optionSet("-t --track -m --master"), ({ operands }) => [operands[1]]]],
+  // git-remote(1): `git remote set-url [--push] <name> <newurl> [<oldurl>]` and
+  // `git remote set-url --add [--push] <name> <newurl>`; with `--delete` its <URL> is a regex of
+  // the URLs it removes.
+  ["remote set-url", [NO_OPTIONS, (args) => (given(args, "--delete") ? [] : [args.operands[1]])]],
+  // git-submodule(1): `git submodule add [<options>] [--] <repository> [<path>]`, its options as
+  // git-submodule.sh's cmd_add reads them.
+  [
+    "submodule add",
+    [
+      optionSet("-b --branch --reference --ref-format --name --depth"),
+      ({ operands }) => [operands[0]],
+    ],
+  ],
+  // git-submodule(1): `git submodule set-url [--] <path> <newurl>`.
+  ["submodule set-url", [NO_OPTIONS, ({ operands }) => [operands[1]]]],
+  // git-archive(1): `--remote=<repo>`, "retrieve a tar archive from a remote repository".
+  [
+    "archive",
+    [
+      optionSet(
+        "--format --prefix --add-file --add-virtual-file -o --output --mtime --remote --exec"
+      ),
+      (args) => valuesOf(args, "--remote"),
+    ],
+  ],
+  // git-config(1): `git config set <name> <value>`, and `git config [--add | --replace-all] <name>
+  // <value>` of its deprecated modes. Its other subcommands (`get`, `unset`, …) name no variable
+  // first, so configAddress reads none of them.
+  [
+    "config",
+    [
+      optionSet("-f --file --blob -t --type --value --url --default --comment"),
+      (args) => {
+        const [mode, ...rest] = args.operands;
+        const set = mode === "set" ? rest : given(args, ...CONFIG_MATCHES) ? [] : args.operands;
+        return [configAddress(set[0] ?? "", set[1])];
+      },
+    ],
+  ],
+]);
+
+/** jj's global options whose value is the next word, which stand before or after its subcommand
+ * (jj's CLI reference, https://docs.jj-vcs.dev/latest/cli-reference/, `jj`'s Options). */
+const JJ_GLOBAL = optionSet(
+  "-R --repository --at-operation --at-op --color --config --config-file"
+);
+
+/** The jj subcommands that take a repository's address, by their path, as jj's CLI reference
+ * gives them: each one's options whose value is the next word, and its arguments that are an
+ * address. */
+const JJ_TAKERS = new Map<string, AddressTaker>([
+  // `jj git clone [OPTIONS] <SOURCE> [DESTINATION]`, <SOURCE> the "URL or path of the Git repo".
+  [
+    "git clone",
+    [
+      optionSet("--remote --depth -b --branch -t --tag --object-hash"),
+      ({ operands }) => [operands[0]],
+    ],
+  ],
+  // `jj git remote add [OPTIONS] <REMOTE> <URL>`, and `--push-url <PUSH_URL>`.
+  [
+    "git remote add",
+    [optionSet("--push-url"), (args) => [args.operands[1], ...valuesOf(args, "--push-url")]],
+  ],
+  // `jj git remote set-url [OPTIONS] <REMOTE> [URL]`, and `--push <PUSH>` and `--fetch <FETCH>`.
+  [
+    "git remote set-url",
+    [
+      optionSet("--push --fetch"),
+      (args) => [args.operands[1], ...valuesOf(args, "--push", "--fetch")],
+    ],
+  ],
+]);
+
+/** The addresses `words` give as the subcommand of `takers` that their first operands name
+ * (`remote add`, after `path`), the options before each of those operands read by `valued`, which
+ * that subcommand takes too. None when they name no subcommand of `takers`. */
+function takerAddresses(
+  words: readonly string[],
+  valued: ReadonlySet<string>,
+  takers: ReadonlyMap<string, AddressTaker>,
+  path = ""
+): readonly (string | undefined)[] {
+  const at = firstOperand(words, valued);
+  if (at === words.length) return [];
+  const key = `${path}${words[at]}`;
+  const rest = words.slice(at + 1);
+  const taker = takers.get(key);
+  if (taker !== undefined) return taker[1](argumentsOf(rest, new Set([...valued, ...taker[0]])));
+  return [...takers.keys()].some((one) => one.startsWith(`${key} `))
+    ? takerAddresses(rest, valued, takers, `${key} `)
+    : [];
+}
+
+/** The repository addresses a `git` or `jj` command gives where it takes one: the address each
+ * `git -c <name>=<value>` gives (configAddress), and the arguments of the subcommand of GIT_TAKERS
+ * or JJ_TAKERS it runs that are an address. A word anywhere else is none: round 23's
+ * `jj -R . file show main@origin:docs/cli.md` names a revision and a path, and reaches no host. */
+function repositoryAddresses(name: string, words: readonly string[]): string[] {
+  let found: readonly (string | undefined)[] = [];
+  if (name === "jj") found = takerAddresses(words, JJ_GLOBAL, JJ_TAKERS);
+  if (name === "git") {
+    const sub = firstOperand(words, GIT_GLOBAL);
+    const settings = valuesOf(argumentsOf(words.slice(0, sub), GIT_GLOBAL), "-c");
+    found = [
+      ...settings.map((setting = "") => {
+        const [key = "", ...value] = setting.split("=");
+        return configAddress(key, value.join("="));
+      }),
+      ...takerAddresses(words.slice(sub), NO_OPTIONS, GIT_TAKERS),
+    ];
+  }
+  return found.filter((one): one is string => one !== undefined);
+}
 
 /** A host as the world compares it: lower case, an IPv6 address out of its brackets. */
 function hostName(host: string): string {
   return host.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+}
+
+/** ssh's options whose value is the next word (ssh(1), OpenSSH 9). */
+const SSH_VALUED = optionSet("-B -b -c -D -E -e -F -I -i -J -L -l -m -O -o -P -p -Q -R -S -W -w");
+/** scp's options whose value is the next word (scp(1), OpenSSH 9). */
+const SCP_VALUED = optionSet("-c -D -F -i -J -l -o -P -S -X");
+/** sftp's options whose value is the next word (sftp(1), OpenSSH 9). */
+const SFTP_VALUED = optionSet("-B -b -c -D -F -i -J -l -o -P -R -S -s -X");
+/** rsync's options whose value is the next word (rsync(1), rsync 3.2). */
+const RSYNC_VALUED = optionSet(`
+  -e --rsh -B --block-size -f --filter -T --temp-dir -M --remote-option -@ --modify-window
+  --rsync-path --backup-dir --suffix --chmod --max-delete --max-size --min-size --max-alloc
+  --partial-dir --usermap --groupmap --chown --timeout --contimeout --compare-dest --copy-dest
+  --link-dest --compress-choice --zc --compress-level --zl --skip-compress --exclude
+  --exclude-from --include --include-from --files-from --out-format --log-file --log-file-format
+  --password-file --bwlimit --stop-after --stop-at --write-batch --only-write-batch --read-batch
+  --protocol --iconv --checksum-seed --checksum-choice --cc --address --port --sockopts --outbuf
+  --info --debug --stderr --early-input --copy-as
+`);
+/** nc's options whose value is the next word: OpenBSD's netcat (nc(1)), which Debian and Ubuntu
+ * install as `nc`. */
+const NC_VALUED = optionSet("-e -H -I -i -K -M -m -O -o -P -p -q -R -s -T -V -W -w -X -x -Z");
+/** ncat's options whose value is the next word (ncat(1), Nmap 7). */
+const NCAT_VALUED = optionSet(`
+  -c --sh-exec -e --exec --lua-exec -g -G -m --max-conns -d --delay -o --output -x --hex-dump -i
+  --idle-timeout -p --source-port -s --source -w --wait --proxy --proxy-type --proxy-auth
+  --proxy-dns --ssl-cert --ssl-key --ssl-trustfile --ssl-ciphers --ssl-servername --ssl-alpn
+  --allow --allowfile --deny --denyfile
+`);
+/** telnet's options whose value is the next word (telnet(1), netkit's and inetutils'). */
+const TELNET_VALUED = optionSet("-b -e -k -l -n -S -X");
+
+/** The host of each `[<user>@]<host>[:<port>]` of a comma-separated list: an ssh jump (`-J`,
+ * `ProxyJump`), a proxy of nc's or ncat's. An `ssh://` one is a URL, which `urlHosts` reads, and
+ * `none` names none. */
+function endpointHosts(list: string): string[] {
+  return list.split(",").flatMap((one) => {
+    if (one === "" || one === "none" || one.includes("://")) return [];
+    const host = one.slice(one.lastIndexOf("@") + 1);
+    return [
+      host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.replace(/:\d*$/, ""),
+    ];
+  });
+}
+
+/** The hosts ssh's options `args` connect to (ssh(1), ssh_config(5)): each jump host of `-J` and
+ * of `-o ProxyJump`, and the host `-o HostName` names, which ssh connects to in place of the one
+ * its destination names (a `%` token in it names that destination again). An `-o` value is
+ * `Keyword=value` or `Keyword value`, its keyword in any case. */
+function sshOptionHosts(args: Arguments): { jumps: Reach[]; target?: Reach } {
+  const jumps: Reach[] = [];
+  let target: Reach | undefined;
+  for (const value of valuesOf(args, "-J"))
+    for (const host of endpointHosts(value ?? ""))
+      jumps.push({ host: hostName(host), named: value ?? "" });
+  for (const value of valuesOf(args, "-o").map((one) => one ?? "")) {
+    const option = /^\s*([A-Za-z]+)\s*(?:=\s*|\s+)(\S+)/.exec(value);
+    const keyword = option?.[1]?.toLowerCase();
+    const setting = option?.[2] ?? "";
+    if (keyword === "proxyjump")
+      for (const host of endpointHosts(setting)) jumps.push({ host: hostName(host), named: value });
+    if (keyword === "hostname" && !setting.includes("%"))
+      target = { host: hostName(setting), named: value };
+  }
+  return { jumps, target };
+}
+
+/** The host an ssh destination names, `[<user>@]<host>` (the last `@` ends the user); none for an
+ * `ssh://` one, a URL `urlHosts` reads. */
+function destinationHost(destination: string): string | undefined {
+  return destination.includes("://")
+    ? undefined
+    : destination.slice(destination.lastIndexOf("@") + 1) || undefined;
+}
+
+/** The hosts each of ssh, scp, sftp, rsync, nc, ncat and telnet reaches, by its own grammar: the
+ * operands it takes a host in and the options that name one. A word anywhere else is none. */
+const REMOTE_READERS: Readonly<Record<string, (words: readonly string[]) => Reach[]>> = {
+  // ssh(1): `ssh [options] destination [options] [command]`; OpenSSH reads its options again
+  // after the destination. `-G` prints the configuration and `-V` the version, and neither
+  // connects.
+  ssh: (words) => {
+    const before = posixArguments(words, SSH_VALUED);
+    const [destination = "", ...rest] = before.operands;
+    const args = {
+      operands: [],
+      options: [...before.options, ...posixArguments(rest, SSH_VALUED).options],
+    };
+    if (given(args, "-G", "-V")) return [];
+    const { jumps, target } = sshOptionHosts(args);
+    const host = destinationHost(destination);
+    const reached =
+      target ?? (host === undefined ? undefined : { host: hostName(host), named: destination });
+    return [...jumps, ...(reached === undefined ? [] : [reached])];
+  },
+  // scp(1): `scp [options] source ... target`, each a local path or `[user@]host:[path]`
+  // (SCP_ADDRESS), every remote one reached at `-o HostName` where that names one.
+  scp: (words) => {
+    const args = posixArguments(words, SCP_VALUED);
+    const { jumps, target } = sshOptionHosts(args);
+    const remotes = args.operands.flatMap((operand) => {
+      const host = scpHost(operand);
+      return host === undefined ? [] : [{ host: hostName(host), named: operand }];
+    });
+    return [...jumps, ...(target !== undefined && remotes.length > 0 ? [target] : remotes)];
+  },
+  // sftp(1): `sftp [options] destination`, `[user@]host[:path]`.
+  sftp: (words) => {
+    const args = posixArguments(words, SFTP_VALUED);
+    const { jumps, target } = sshOptionHosts(args);
+    const [destination] = args.operands;
+    const host =
+      destination === undefined
+        ? undefined
+        : (scpHost(destination) ?? destinationHost(destination));
+    const reached =
+      host === undefined
+        ? undefined
+        : (target ?? { host: hostName(host), named: destination ?? "" });
+    return [...jumps, ...(reached === undefined ? [] : [reached])];
+  },
+  // rsync(1): each operand a local path, `[user@]host:path` through its remote shell or
+  // `[user@]host::module` of a daemon (SCP_ADDRESS), an `rsync://` URL being read as one. The
+  // remote shell `-e` names is a program, never a host; an ssh one's own options are read
+  // (`-e 'ssh -J bastion'`).
+  rsync: (words) => {
+    const args = argumentsOf(words, RSYNC_VALUED);
+    const shells = valuesOf(args, "-e", "--rsh")
+      .map((value) => wordsOf(value ?? ""))
+      .filter(([program = ""]) => path.posix.basename(program) === "ssh")
+      .map((shell) => sshOptionHosts(posixArguments(shell.slice(1), SSH_VALUED)));
+    const target = shells.find((shell) => shell.target !== undefined)?.target;
+    const remotes = args.operands.flatMap((operand) => {
+      const host = scpHost(operand);
+      return host === undefined ? [] : [{ host: hostName(host), named: operand }];
+    });
+    return [
+      ...shells.flatMap((shell) => shell.jumps),
+      ...(target !== undefined && remotes.length > 0 ? [target] : remotes),
+    ];
+  },
+  // nc(1), OpenBSD's: `nc [options] [destination] [port]`, and `-x proxy[:port]`. A listener
+  // (`-l`) reaches nothing, nor a Unix socket (`-U`).
+  nc: (words) => ncHosts(argumentsOf(words, NC_VALUED), ["-x"], ["-l", "-U"]),
+  netcat: (words) => ncHosts(argumentsOf(words, NC_VALUED), ["-x"], ["-l", "-U"]),
+  // ncat(1): `ncat [options] [hostname] [port]`, and `--proxy host[:port]`.
+  ncat: (words) =>
+    ncHosts(
+      argumentsOf(words, NCAT_VALUED),
+      ["--proxy"],
+      ["-l", "--listen", "-U", "--unixsock", "--vsock"]
+    ),
+  // telnet(1): `telnet [options] [host [port]]`.
+  telnet: (words) => {
+    const [host] = argumentsOf(words, TELNET_VALUED).operands;
+    return host === undefined ? [] : [{ host: hostName(host), named: host }];
+  },
+};
+
+/** The hosts an nc or ncat command reaches: each proxy `proxies` names, and its destination, its
+ * first operand, unless one of `local` makes it listen or speak to a socket of no host. */
+function ncHosts(args: Arguments, proxies: string[], local: string[]): Reach[] {
+  const through = valuesOf(args, ...proxies).flatMap((value = "") =>
+    endpointHosts(value).map((host) => ({ host: hostName(host), named: value }))
+  );
+  const [destination] = args.operands;
+  return given(args, ...local) || destination === undefined
+    ? through
+    : [...through, { host: hostName(destination), named: destination }];
+}
+
+/** The hosts the run's gh serves: github.com, which its stand-in plays (gh-standin.ts), and the
+ * loopback. */
+const GH_SERVED = ["github.com", "127.0.0.1", "localhost", "::1"];
+
+/** The repositories a gh command's words give `-R`/`--repo`, in either spelling. */
+function ghRepos(words: readonly string[]): string[] {
+  return words.flatMap((word, at) => {
+    const before = words[at - 1];
+    const repo =
+      before === "-R" || before === "--repo" ? word : /^(?:-R|--repo=)(.+)$/.exec(word)?.[1];
+    return repo === undefined ? [] : [repo];
+  });
+}
+
+/** Every host a `gh` command names, which the run's gh serves when it is one of GH_SERVED:
+ * `--hostname`'s, the HOST a `-R`/`--repo` names (gh's `[HOST/]OWNER/REPO`, and the URL
+ * `https://HOST/OWNER/REPO` it takes, which `bashHosts` leaves to this rule rather than its URL
+ * reading) and GH_HOST's, `env` giving the variables the command runs with. And a gh named by a
+ * path or run through `legion gh` (`gh`, that path) is the real gh unless the path is the run's
+ * own stand-in (`offWorldReach`): a bare `gh` resolves on the pane's PATH to <run>/bin/gh, and any
+ * other gh reaches GitHub itself, whatever host it names. A path that holds an expansion
+ * (`$R/bin/gh`) is not in the text, so it is read as the stand-in. */
+function ghHosts(words: readonly string[], env: ReadonlyMap<string, string>, gh?: string): Reach[] {
+  const named: Reach[] = [];
+  words.forEach((word, at) => {
+    const host = words[at - 1] === "--hostname" ? word : /^--hostname=(.+)$/.exec(word)?.[1];
+    if (host !== undefined) named.push({ host: hostName(host), named: word, served: GH_SERVED });
+  });
+  for (const repo of ghRepos(words)) {
+    const url = /^https?:\/\/(?:[^/@\s]*@)?([^/:\s]+)(?::\d+)?\/[^/\s]+\/[^/\s]+\/?$/i.exec(repo);
+    const parts = repo.includes("://") ? [] : repo.split("/");
+    const host = url?.[1] ?? (parts.length === 3 ? parts[0] : undefined);
+    if (host !== undefined) named.push({ host: hostName(host), named: repo, served: GH_SERVED });
+  }
+  const host = env.get("GH_HOST");
+  if (host !== undefined && host !== "")
+    named.push({ host: hostName(host), named: `GH_HOST=${host}`, served: GH_SERVED });
+  return gh === undefined
+    ? named
+    : [{ host: named[0]?.host ?? "github.com", named: gh, gh }, ...named];
+}
+
+/** sudo's options whose value is the next word (sudo(8), sudo 1.9). */
+const SUDO_VALUED = optionSet(`
+  -a -C -c -D -g -p -R -r -T -t -U -u --auth-type --close-from --login-class --chdir --group
+  --prompt --chroot --role --command-timeout --type --other-user --user
+`);
+/** env's options whose value is the next word (env(1), GNU coreutils 9, and BSD's `-P`). */
+const ENV_VALUED = optionSet("-u --unset -C --chdir -S --split-string -P");
+/** A variable's assignment, `NAME=value`, as a shell, env(1) and sudo(8) read one. */
+const ASSIGNMENT = /^([A-Za-z_]\w*)=([\s\S]*)$/;
+
+/** What a wrapper runs: the command, and the variables it sets for it. */
+interface Wrapped {
+  readonly env: readonly [name: string, value: string][];
+  readonly command: readonly string[];
+}
+
+/** The command `words` give after the assignments before it (env(1), sudo(8)), with those
+ * assignments; undefined for words that give none. */
+function assigned(words: readonly string[]): Wrapped | undefined {
+  const env: [name: string, value: string][] = [];
+  let at = 0;
+  for (let found = ASSIGNMENT.exec(words[0] ?? ""); found !== null; ) {
+    env.push([found[1] ?? "", found[2] ?? ""]);
+    found = ASSIGNMENT.exec(words[++at] ?? "");
+  }
+  return at < words.length ? { env, command: words.slice(at) } : undefined;
+}
+
+/** The command `operands` give, or undefined for none. */
+function ran(operands: readonly string[]): Wrapped | undefined {
+  return operands.length === 0 ? undefined : { env: [], command: operands };
+}
+
+/** The commands that run another, each read by its own grammar (`posixArguments`, every one of
+ * them stopping at its first operand) into the command it runs, or undefined where it runs none.
+ * A wrapper is no reach of its own: what it runs is read as if it stood alone (`invocationOf`). */
+const WRAPPERS: Readonly<Record<string, (words: readonly string[]) => Wrapped | undefined>> = {
+  // sudo(8): `sudo [options] [VAR=value...] [--] command`. `-e` edits files, `-l` lists what
+  // may run, `-v` and `-K` refresh or drop the timestamp, `-V` and `-h` print: none runs it.
+  sudo: (words) => {
+    const args = posixArguments(words, SUDO_VALUED);
+    const runs = !given(args, "-e", "--edit", "-l", "--list", "-v", "--validate", "-K");
+    return runs && !given(args, "--remove-timestamp", "-V", "--version", "-h", "--help")
+      ? assigned(args.operands)
+      : undefined;
+  },
+  // env(1): `env [options] [-] [NAME=value...] [command]`, `-` being `-i`; `-S` splits its
+  // string into the words it stands for. With no command it prints the environment.
+  env: (words) => {
+    const args = posixArguments(words, ENV_VALUED);
+    const split = valuesOf(args, "-S", "--split-string").flatMap((value) => wordsOf(value ?? ""));
+    const operands = [...split, ...args.operands];
+    return assigned(operands[0] === "-" ? operands.slice(1) : operands);
+  },
+  // timeout(1): `timeout [options] DURATION command`.
+  timeout: (words) =>
+    ran(posixArguments(words, optionSet("-s --signal -k --kill-after")).operands.slice(1)),
+  // nice(1): `nice [-n N] command`, and the older `nice -N command`.
+  nice: (words) => ran(posixArguments(words, optionSet("-n --adjustment")).operands),
+  // nohup(1): `nohup command`.
+  nohup: (words) => ran(posixArguments(words, NO_OPTIONS).operands),
+  // xargs(1): `xargs [options] [command [initial-arguments]]`, `echo` with no command; `-e`,
+  // `-i` and `-l` take a value only against them.
+  xargs: (words) =>
+    ran(
+      posixArguments(
+        words,
+        optionSet(
+          "-a -d -E -I -L -n -P -s --arg-file --delimiter --max-args --max-procs --max-chars --process-slot-var"
+        )
+      ).operands
+    ),
+  // The shell's `command [-p] command`; `command -v` and `-V` print what a name is, running none.
+  command: (words) => {
+    const args = posixArguments(words, NO_OPTIONS);
+    return given(args, "-v", "-V") ? undefined : ran(args.operands);
+  },
+  // The shell's `exec [-cl] [-a name] [command]`; with no command it only redirects.
+  exec: (words) => ran(posixArguments(words, optionSet("-a")).operands),
+  // The shell's `time [-p] command`, and time(1)'s `-f FORMAT` and `-o FILE`.
+  time: (words) => ran(posixArguments(words, optionSet("-f --format -o --output")).operands),
+};
+
+/** The program a shell's words give it inline, the first operand after a `-c` among its options
+ * (`sh -c '…'`, `bash -lc '…'`, `bash -o pipefail -c '…'`), its options read as bash(1) reads
+ * them (`-o`, `+o`, `-O`, `+O`, `--rcfile` and `--init-file` take the next word); undefined for
+ * a shell given no `-c`. */
+function inlineProgram(words: readonly string[]): string | undefined {
+  let inline = false;
+  for (let at = 0; at < words.length; at++) {
+    const word = words[at] ?? "";
+    if (word === "--" || word === "-") return inline ? words[at + 1] : undefined;
+    if (!/^[-+]/.test(word)) return inline ? word : undefined;
+    if (word === "--rcfile" || word === "--init-file") at++;
+    else if (!word.startsWith("--")) {
+      if (word.slice(1).includes("c")) inline = true;
+      if (/[oO]/.test(word.slice(1))) at++;
+    }
+  }
+  return undefined;
 }
 
 /** A flag whose value is text the command writes (a comment's body, a commit's message, a
@@ -588,11 +1308,16 @@ const TEXT_FLAG =
 const FIELD_FLAG = /(^|\s)(-f|-F|--field|--raw-field)(=|[ \t]+)((?:'[^']*'|"[^"]*"|[^\s'"])+)/g;
 
 /** A host a call reaches, with the text that names it and, for a URL a program holds, where that
- * program is (` in a here-document python3 runs`). */
+ * program is (` in a here-document python3 runs`). `served` names the hosts that serve it in place
+ * of the run's world (a gh host value, GH_SERVED); `gh`, a gh named by a path or run through
+ * `legion gh`, which reaches off the world unless it is the run's own stand-in, whatever host it
+ * names (`ghHosts`). */
 interface Reach {
   readonly host: string;
   readonly named: string;
   readonly via?: string;
+  readonly served?: readonly string[];
+  readonly gh?: string;
 }
 
 /** The interpreters whose program health reads: the shells and the languages an agent writes a
@@ -607,23 +1332,87 @@ const REDIRECTION = /(?:\d+|&)?[<>]{1,2}\|?[ \t]*\S*/g;
 /** A redirection of a command's output, `>` or `>>`, with its target, relative or not. */
 const OUTPUT = /(?:^|[^<>&\d])1?(>>?)\|?[ \t]*['"]?([^\s'";&|()<>`]+)/g;
 
-/** Each command of shell text by SHELL_COMMAND: its first word, that word's base name, the rest of
- * its text, and where the command lies in the text. */
-function commandsOf(code: string) {
+/** A command of shell text, as SHELL_COMMAND reads it: its first word, that word's base name, the
+ * rest of its text, its lead, the text before its first word that SHELL_COMMAND reads as its
+ * place (the separator before it, its prefix assignments and a `command`, `exec` or `env` it
+ * starts with), and where the command lies in the text. */
+interface ShellCommand {
+  readonly word: string;
+  readonly name: string;
+  readonly rest: string;
+  readonly lead: string;
+  readonly at: number;
+  readonly end: number;
+}
+
+/** Each command of shell text by SHELL_COMMAND. */
+function commandsOf(code: string): ShellCommand[] {
   return [...code.matchAll(SHELL_COMMAND)].map((hit) => ({
     word: hit[1] ?? "",
     name: path.posix.basename(hit[1] ?? ""),
     rest: hit[2] ?? "",
+    lead: hit[0].slice(0, hit[0].length - (hit[1] ?? "").length - (hit[2] ?? "").length),
     at: hit.index ?? 0,
     end: (hit.index ?? 0) + hit[0].length,
   }));
 }
 
+/** A shell word with the quotes around it taken off. */
+function unquoted(word: string): string {
+  return word.replace(/^(['"])(.*)\1$/, "$2");
+}
+
 /** A command's words after its first, unquoted, with its redirections left out. */
 function wordsOf(rest: string): string[] {
-  return [...rest.replace(REDIRECTION, " ").matchAll(WORD)].map((word) =>
-    word[0].replace(/^(['"])(.*)\1$/, "$2")
-  );
+  return [...rest.replace(REDIRECTION, " ").matchAll(WORD)].map((word) => unquoted(word[0]));
+}
+
+/** An assignment in a command's lead (`commandsOf`), which SHELL_COMMAND reads before its word;
+ * one before a `;`, `&` or `|` stands alone, and every pane exports GH_HOST, the one variable
+ * health reads, so it is the command's too. */
+const LEAD_ASSIGNMENT = /([A-Za-z_]\w*)=((?:'[^']*'|"[^"]*"|[^\s'";&|])*)/g;
+/** The wrapper a command's lead ends with, which SHELL_COMMAND reads as part of its place. */
+const LEAD_WRAPPER = /(?:^|[\s;&|(`])(command|exec|env)[ \t]+$/;
+
+/** A command as it runs once its wrappers are read off (WRAPPERS): the word that names it, that
+ * word's base name, its words, and the variables its prefix assignments and the wrappers before
+ * it set. */
+interface Invocation {
+  readonly word: string;
+  readonly name: string;
+  readonly words: readonly string[];
+  readonly env: ReadonlyMap<string, string>;
+}
+
+/** The command `one` runs (Invocation), or undefined for a wrapper that runs none (`command -v
+ * gh`) and for a command that is assignments alone (`assignmentsOf`). */
+function invocationOf(one: ShellCommand): Invocation | undefined {
+  const env = new Map<string, string>();
+  for (const hit of one.lead.matchAll(LEAD_ASSIGNMENT))
+    env.set(hit[1] ?? "", unquoted(hit[2] ?? ""));
+  const wrapper = LEAD_WRAPPER.exec(one.lead)?.[1];
+  let word = wrapper ?? one.word;
+  let words = [...(wrapper === undefined ? [] : [unquoted(one.word)]), ...wordsOf(one.rest)];
+  if (wrapper === undefined && ASSIGNMENT.test(unquoted(word))) return undefined;
+  for (;;) {
+    const name = path.posix.basename(word);
+    const read = WRAPPERS[name];
+    if (read === undefined) return { word, name, words, env };
+    const wrapped = read(words);
+    if (wrapped === undefined) return undefined;
+    for (const [key, value] of wrapped.env) env.set(key, value);
+    [word = "", ...words] = wrapped.command;
+  }
+}
+
+/** The variables a command that is assignments alone sets (`GH_HOST=ghe.example.com;`), or
+ * undefined for any other command. SHELL_COMMAND reads its last assignment as its word. */
+function assignmentsOf(one: ShellCommand): Map<string, string> | undefined {
+  if (LEAD_WRAPPER.test(one.lead) || !ASSIGNMENT.test(unquoted(one.word))) return undefined;
+  const set = new Map<string, string>();
+  for (const text of [one.lead, one.word, one.rest])
+    for (const hit of text.matchAll(LEAD_ASSIGNMENT)) set.set(hit[1] ?? "", unquoted(hit[2] ?? ""));
+  return set;
 }
 
 /** The program an interpreter command runs: its first operand, a script's path (`python3 f.py`,
@@ -674,14 +1463,99 @@ function programHosts(text: string, shell: boolean): Reach[] {
   return shell ? bashHosts(text) : urlHosts(text);
 }
 
+/** Every host one command reaches, read as it runs once its wrappers are read off
+ * (`invocationOf`), by its own grammar, with `env` the variables it runs with: a remote in scp
+ * form where `git` or `jj` takes a repository's address (`repositoryAddresses`, `scpHost`); a host
+ * a curl or wget operand or an option of theirs that takes a host (CURL_HOSTS, WGET_HOSTS) names
+ * without a scheme; the hosts of ssh, scp, sftp, rsync, nc, ncat and telnet (REMOTE_READERS); and
+ * those a `gh` names, and the gh itself when it is named by a path or run as `legion gh`
+ * (`ghHosts`). A host that holds an expansion (`ssh "$HOST"`, xargs's `{}`) is passed over,
+ * since it is not in the text. */
+function commandHosts(
+  { word, name, words }: Invocation,
+  env: ReadonlyMap<string, string>
+): Reach[] {
+  const hosts: Reach[] = [];
+  for (const address of repositoryAddresses(name, words)) {
+    const host = scpHost(address);
+    if (host !== undefined) hosts.push({ host: hostName(host), named: address });
+  }
+  if (name === "curl" || name === "wget") {
+    const [valued, takesHost] =
+      name === "curl" ? [CURL_VALUED, CURL_HOSTS] : [WGET_VALUED, WGET_HOSTS];
+    const args = argumentsOf(words, valued);
+    for (const one of [...args.operands, ...valuesOf(args, ...takesHost)]) {
+      const bare = BARE_HOST.exec(one ?? "");
+      if (one !== undefined && bare !== null && !one.includes("://"))
+        hosts.push({ host: hostName(bare[1] ?? ""), named: one });
+    }
+  }
+  hosts.push(...(REMOTE_READERS[name]?.(words) ?? []));
+  if (name === "gh")
+    hosts.push(...ghHosts(words, env, word.includes("/") && !/[$`]/.test(word) ? word : undefined));
+  if (name === "legion" && words[0] === "gh")
+    hosts.push(...ghHosts(words.slice(1), env, "legion gh"));
+  return hosts.filter((one) => one.gh !== undefined || !/[$`{}*?]/.test(one.host));
+}
+
 /** Every host a `bash` command reaches, with the text that names it: the host of every network
  * URL in it but those in text it writes (the values of TEXT_FLAG and of a `body`, `title` or
- * `message` FIELD_FLAG, and here-document bodies but those an interpreter runs, `bodyRunner`), the
- * scp-form remote of a `git` or `jj` command, a curl or wget operand that names a host without a
- * scheme, and the host a `gh api --hostname` names. */
-function bashHosts(command: string): Reach[] {
+ * `message` FIELD_FLAG, and here-document bodies but those an interpreter runs, `bodyRunner`) and
+ * the repository URL a gh's `-R` names, which the gh rule reads (`ghHosts`); and every host each
+ * of its commands reaches (`commandHosts`), the program a shell is given inline (`sh -c '…'`,
+ * `inlineProgram`) read as a command of its own. No command is read inside a quoted string a
+ * command is given as text (`spoken`). A command's words leave its redirections out (`wordsOf`),
+ * so `curl … > report.json` names no host `report.json`. The variables a command runs with are
+ * those its prefix and its wrappers set, over those `env` holds and those a command of
+ * assignments alone or an `export` set before it: every pane exports GH_HOST (empty,
+ * daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh after it. */
+function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()): Reach[] {
   const { code, bodies } = withoutBodies(command);
-  const reached = code
+  const inline = [...code.matchAll(SHELL_INLINE)];
+  // A quoted string that holds a `;`, `&`, `|`, a bracket, a backquote or a line break is text a
+  // command is given (a commit message, a review body) or a program given whole (`sh -c '…'`):
+  // SHELL_COMMAND would read a command inside it at each of those, so a body's `…; ssh keys
+  // unchanged` would name a host `keys`. Commands are read with each such string emptied at its
+  // own length, so a shell's program is still read from `code`, where SHELL_INLINE finds it.
+  const spoken = code.replace(SHELL_QUOTED, (quoted) =>
+    /[;&|()`\n]/.test(quoted) ? `${quoted[0]}${"_".repeat(quoted.length - 2)}${quoted[0]}` : quoted
+  );
+  // The text the URL reading reads: `code` with each repository URL a gh's `-R` names emptied at
+  // its own length, since the gh rule decides that host (github.com is the world's there).
+  const urls = code.split("");
+  const commands: Reach[] = [];
+  const shell = new Map(env);
+  for (const one of commandsOf(spoken)) {
+    const set = assignmentsOf(one);
+    for (const [key, value] of set ?? []) shell.set(key, value);
+    const run = set === undefined ? invocationOf(one) : undefined;
+    if (run === undefined) continue;
+    if (run.name === "export")
+      for (const found of run.words.map((word) => ASSIGNMENT.exec(word)))
+        if (found !== null) shell.set(found[1] ?? "", found[2] ?? "");
+    const runs = new Map([...shell, ...run.env]);
+    commands.push(...commandHosts(run, runs));
+    const gh =
+      run.name === "gh"
+        ? run.words
+        : run.name === "legion" && run.words[0] === "gh"
+          ? run.words
+          : [];
+    for (const repo of ghRepos(gh).filter((one) => one.includes("://"))) {
+      const at = code.indexOf(repo, one.at);
+      if (at >= 0 && at < one.end) urls.fill("_", at, at + repo.length);
+    }
+    const program = SHELL.test(run.name) ? inlineProgram(run.words) : undefined;
+    if (program === undefined) continue;
+    // The program whole, from `code`, where SHELL_INLINE reads the quotes of one that starts in
+    // this command: `spoken` empties one that holds a separator.
+    const quoted = inline.find((hit) => (hit.index ?? 0) >= one.at && (hit.index ?? 0) < one.end);
+    const text = quoted === undefined ? program : (quoted[1] ?? "").slice(1, -1);
+    for (const reach of bashHosts(text, runs))
+      commands.push({ ...reach, via: reach.via ?? ` in the program ${run.name} -c runs` });
+  }
+  const reached = urls
+    .join("")
     .replace(TEXT_FLAG, (_all, lead, flag, separator) => `${lead}${flag}${separator}''`)
     .replace(FIELD_FLAG, (all, lead, flag, separator, value) =>
       /^['"]?(?:body|title|message)=/.test(value) ? `${lead}${flag}${separator}''` : all
@@ -693,31 +1567,7 @@ function bashHosts(command: string): Reach[] {
       for (const one of programHosts(body.text, SHELL.test(runner)))
         hosts.push({ ...one, via: one.via ?? ` in a here-document ${runner} runs` });
   }
-  for (const hit of code.matchAll(SHELL_COMMAND)) {
-    const name = path.posix.basename(hit[1] ?? "");
-    const words = [...(hit[2] ?? "").matchAll(WORD)].map((word) =>
-      word[0].replace(/^(['"])(.*)\1$/, "$2")
-    );
-    words.forEach((word, at) => {
-      const before = words[at - 1] ?? "";
-      const scp = SCP_REMOTE.exec(word);
-      if ((name === "git" || name === "jj") && scp !== null && !word.includes("://"))
-        hosts.push({ host: hostName(scp[1] ?? ""), named: word });
-      const bare = BARE_HOST.exec(word);
-      if (
-        (name === "curl" || name === "wget") &&
-        bare !== null &&
-        !word.includes("://") &&
-        !VALUE_FLAGS.has(before)
-      )
-        hosts.push({ host: hostName(bare[1] ?? ""), named: word });
-      if (name === "gh" && before === "--hostname")
-        hosts.push({ host: hostName(word), named: word });
-      if (name === "gh" && word.startsWith("--hostname="))
-        hosts.push({ host: hostName(word.slice("--hostname=".length)), named: word });
-    });
-  }
-  return hosts;
+  return [...hosts, ...commands];
 }
 
 /** The files a `bash` command writes a here-document's body into, with the body: `cat > f`,
@@ -1140,12 +1990,21 @@ function record(
 /** The first call of `calls` that reaches a host not in `hosts`, as a reason, read in the order the
  * calls were made (a transcript's own order where two calls share a time): every `web_search` call,
  * which always leaves the world, and the hosts each call reaches (`reachesOf`), given the files the
- * calls before it wrote. */
+ * calls before it wrote. A reach some hosts serve in place of the world's (`served`) is held to
+ * those, and a gh run by a path (`gh`) to the run's own stand-in, <own>/bin/gh of each of `own`,
+ * the run's directories, a relative path read from the run's cwd (<own>/cwd, where launch starts
+ * the agent). */
 export function offWorldReach(
   calls: readonly Call[],
-  hosts: ReadonlySet<string>
+  hosts: ReadonlySet<string>,
+  own: readonly string[] = []
 ): string | undefined {
   const allowed = [...hosts].join(", ");
+  const standIns = own.map((dir) => path.posix.join(dir, "bin", "gh"));
+  const outside = (one: Reach): boolean =>
+    one.gh !== undefined
+      ? !own.some((dir, at) => path.posix.resolve(dir, "cwd", one.gh ?? "") === standIns[at])
+      : !(one.served?.includes(one.host) ?? hosts.has(one.host));
   const written: Written[] = [];
   const ordered = calls
     .map((call, index) => ({ call, index }))
@@ -1154,19 +2013,26 @@ export function offWorldReach(
     const call = deviceCall(made);
     if (call.tool === "web_search")
       return `off-world network: a ${call.shown} call in ${call.file} searches the web, which no host of the run's world serves`;
-    const off = reachesOf(call, written).find((one) => !hosts.has(one.host));
+    const off = reachesOf(call, written).find(outside);
     if (off !== undefined)
-      return `off-world network: a ${call.shown} call in ${call.file} reaches ${off.host} (${off.named})${off.via ?? ""}, no host of the run's world (${allowed})`;
+      return `off-world network: a ${call.shown} call in ${call.file} reaches ${off.host} (${off.named})${off.via ?? ""}, ${
+        off.gh !== undefined
+          ? `a gh that is not the run's own stand-in (${standIns.join(", ")}), and no world of this rig serves another`
+          : off.served !== undefined
+            ? `no host the run's gh serves (${off.served.join(", ")})`
+            : `no host of the run's world (${allowed})`
+      }`;
     written.push(...record(writtenText(call), written, call.shown, call.file));
   }
   return undefined;
 }
 
 /** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`,
- * `offWorldReach`). No tool is taken out of a profile for this: a profile without a tool is a
- * world that differs from production. */
+ * `offWorldReach`), a gh held to the run's own stand-in in either of its directories. No tool is
+ * taken out of a profile for this: a profile without a tool is a world that differs from
+ * production. */
 function offWorld(run: Run): string | undefined {
-  return offWorldReach(run.calls, worldHosts(run));
+  return offWorldReach(run.calls, worldHosts(run), run.own);
 }
 
 /** Commands whose operands are files they write: every operand, or the last, which is the
@@ -1355,6 +2221,215 @@ function failedClaim(run: Run): string | undefined {
     : `failed claim: the stand-in answered the ${failed.role}'s turn outcome at ${failed.at} with failed, so the daemon would have failed that claim`;
 }
 
+/** Where rig.sh keeps the first attempt of an agent it relaunched (its `boot_agent`):
+ * <run>/boot-1/<role>/, holding that attempt's out.txt, its sessions/ and the daemon stand-in's
+ * lines of it (daemon.log), while the second attempt's record stands where any agent's does. */
+const FIRST_BOOT = "boot-1";
+/** The route a phase worker's claim boot registers on. */
+const REGISTER_PATH = "/legion/v1/claims/register";
+
+/** One launch of an agent as the run records it: its pane output, the daemon stand-in's lines of
+ * it, and every entry of its session's transcripts, its subagents' included. */
+interface BootAttempt {
+  readonly out: string;
+  readonly daemon: readonly DaemonLine[];
+  readonly entries: readonly SessionEntry[];
+}
+
+/** The refusal an attempt's claim boot met, or undefined: the daemon stand-in's refusal of its
+ * `claims/register`, or the line the plugin prints for a boot that registered and could not
+ * finish (CLAIM_BOOT_FAILED_OPENING, `stopAfterRegistration` in
+ * packages/pi-shared/src/legion-claim-core.ts), which round 23's refusal by the Envoy listener of
+ * a session that held no consumer ends in. The plugin exits on either, so the daemon launches the
+ * agent again. */
+function bootRefusal(attempt: BootAttempt): string | undefined {
+  const refused = attempt.daemon.find((line) => line.path === REGISTER_PATH && line.status >= 400);
+  if (refused !== undefined)
+    return `the daemon stand-in answered the ${refused.role ?? "agent"}'s ${refused.method ?? "POST"} ${REGISTER_PATH} ${answerOf(refused)}`;
+  const opened = attempt.out.indexOf(CLAIM_BOOT_FAILED_OPENING);
+  if (opened < 0) return undefined;
+  const ended = attempt.out.indexOf("\n", opened);
+  return attempt.out.slice(opened, ended < 0 ? undefined : ended);
+}
+
+/** Whether an attempt made a turn: a model call or a tool call its transcripts recorded, an
+ * assistant message or a tool result. */
+function madeTurn(attempt: BootAttempt): boolean {
+  return attempt.entries.some(
+    (entry) => entry.message?.role === "assistant" || entry.message?.role === "toolResult"
+  );
+}
+
+/** Every entry of every transcript under `dir`, at any depth: an attempt's session directory,
+ * which holds its subagents' too. */
+function entriesUnder(dir: string): SessionEntry[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".jsonl"))
+    .sort()
+    .flatMap((file) => transcriptEntries(path.join(dir, file)));
+}
+
+/** The refusal rig.sh relaunches an agent for, or undefined: a claim boot refused (`bootRefusal`)
+ * before the agent's first turn (`madeTurn`). One refused after a turn is never relaunched: the
+ * daemon's relaunch would not take that turn back. */
+function relaunchFor(attempt: BootAttempt): string | undefined {
+  return madeTurn(attempt) ? undefined : bootRefusal(attempt);
+}
+
+/** Rule 14: the first claim boot refusal of the run that is no declared world answer. The one
+ * declared is a first attempt's at boot, before any turn, which rig.sh relaunched
+ * (<run>/boot-1/<role>/): production's daemon relaunches such an agent, and the run is judged as
+ * any other on the second attempt's record. A relaunch whose first attempt records no refusal, or
+ * a turn, is the rig's own error; a relaunch refused again names both attempts; and any other
+ * refusal, in an agent's output (`outputs`) or in the stand-in's log past each first attempt's
+ * own lines, is one met after a turn, which no relaunch would take back, or one never
+ * relaunched. */
+function claimBoot(run: Run): string | undefined {
+  const lines = daemonLines(run.dir);
+  const firsts = path.join(run.dir, FIRST_BOOT);
+  const firstLines = new Map<string, number>();
+  for (const role of existsSync(firsts) ? readdirSync(firsts).sort() : []) {
+    const dir = path.join(firsts, role);
+    const out = path.join(dir, "out.txt");
+    const first = {
+      out: existsSync(out) ? readFileSync(out, "utf8") : "",
+      daemon: daemonLines(dir),
+      entries: entriesUnder(path.join(dir, "sessions")),
+    };
+    const refusal = bootRefusal(first);
+    if (refusal === undefined)
+      return `relaunched with no refusal: <run>/${FIRST_BOOT}/${role} records no claim boot refusal of the ${role}'s first attempt`;
+    if (madeTurn(first))
+      return `relaunched after a turn: the ${role}'s first attempt (<run>/${FIRST_BOOT}/${role}) made a turn before its claim boot was refused (${refusal}), which the daemon's relaunch would not take back`;
+    firstLines.set(role, first.daemon.length);
+    // The second attempt's output: out-<role>.txt once another agent was booted after it
+    // (worker_boot), and out.txt while it is the run's last.
+    const file = existsSync(path.join(run.dir, `out-${role}.txt`)) ? `out-${role}.txt` : "out.txt";
+    const again = bootRefusal({
+      out: existsSync(path.join(run.dir, file))
+        ? readFileSync(path.join(run.dir, file), "utf8")
+        : "",
+      daemon: lines.filter((line) => line.role === role).slice(first.daemon.length),
+      entries: [],
+    });
+    if (again !== undefined)
+      return `claim boot refused on both attempts: the ${role}'s first (<run>/${FIRST_BOOT}/${role}/out.txt): ${refusal}; its relaunch (<run>/${file}): ${again}`;
+  }
+  const never =
+    "and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it";
+  for (const [file, text] of outputs(run.dir)) {
+    const refusal = bootRefusal({ out: text, daemon: [], entries: [] });
+    if (refusal !== undefined) return `claim boot refused: ${refusal} (<run>/${file}), ${never}`;
+  }
+  // The stand-in's lines of each role past those its first attempt holds.
+  const seen = new Map<string, number>();
+  const later = lines.filter((line) => {
+    const index = seen.get(line.role ?? "") ?? 0;
+    seen.set(line.role ?? "", index + 1);
+    return index >= (firstLines.get(line.role ?? "") ?? 0);
+  });
+  const refusal = bootRefusal({ out: "", daemon: later, entries: [] });
+  return refusal === undefined
+    ? undefined
+    : `claim boot refused: ${refusal} (<run>/daemon.log), ${never}`;
+}
+
+/** Where rig.sh's cmd_run keeps what each service of the run comes from (its services_from), one
+ * `<service> <scope> <from> <digest>` a line, beside the run's built-from, before any agent of the
+ * run starts. */
+const PROVENANCE = "services-from";
+/** The services the run's own label's checkout gives every run of the label, which its
+ * provenance must name with scope `label`: the Envoy listener built from that checkout, the
+ * daemon facts the stand-in answers by, read out of it, and the worker pane its daemon module
+ * composes. rig.sh names more services of scope `label` (the plugins and the model route,
+ * which cmd_profile installs from the checkout), and each is held to the checkout as these are. */
+const LABEL_SERVICES = ["envoy-listener", "daemon-facts", "worker-pane"] as const;
+
+/** One line of a run's provenance, as the rule reads it: its digest is a record for the reader. */
+interface Provenance {
+  readonly service: string;
+  /** `label`, `pin` or `shared` (rig.sh's services_from says what each means). */
+  readonly scope: string;
+  readonly from: string;
+}
+
+/** The lines of the provenance file `file`: each line's first two words, and what lies between
+ * them and its last word, the digest, as its `from`, so a checkout whose path holds a space reads
+ * whole. Throws for a line of fewer than four words, which rig.sh never writes. */
+function provenanceOf(file: string): Provenance[] {
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const words = line.split(" ");
+      if (words.length < 4)
+        throw new Error(
+          `<run>/${PROVENANCE} holds a line that is no \`<service> <scope> <from> <digest>\`: ${line}`
+        );
+      return {
+        service: words[0] ?? "",
+        scope: words[1] ?? "",
+        from: words.slice(2, -1).join(" "),
+      };
+    });
+}
+
+/** Rule 15: why the run's services are not all its own label's, as a reason: no provenance
+ * file, a built-from that names no checkout, a service of scope `label` from any checkout but the
+ * one built-from names (a base run whose listener the head checkout built, say), or a service of
+ * LABEL_SERVICES the provenance does not name as its label's. */
+function serviceProvenance(run: Run): string | undefined {
+  const file = path.join(run.dir, PROVENANCE);
+  if (!existsSync(file))
+    return `no service provenance: the run has no <run>/${PROVENANCE}, so which checkout its Envoy listener and its other services came from is unknown`;
+  let checkout: string;
+  try {
+    checkout = path.posix.normalize(labelCheckout(run.dir));
+  } catch (error) {
+    return `service provenance unknown: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const lines = provenanceOf(file);
+  const foreign = lines.find(
+    (line) => line.scope === "label" && path.posix.normalize(line.from) !== checkout
+  );
+  if (foreign !== undefined)
+    return `foreign service: the run's ${foreign.service} came from ${foreign.from}, not from ${checkout}, the checkout of the ${run.label} label its built-from names`;
+  const missing = LABEL_SERVICES.find(
+    (service) => !lines.some((line) => line.service === service && line.scope === "label")
+  );
+  return missing === undefined
+    ? undefined
+    : `service provenance: <run>/${PROVENANCE} names no ${missing} of the ${run.label} label's own checkout (${checkout})`;
+}
+
+/** How often rig.sh relaunched an agent of `runs` at its boot, one line per label in byte order:
+ * `health: boot relaunches, <label>: <n> in <r> of <m> runs`, each relaunch an agent's first
+ * attempt rig.sh kept under <run>/boot-1/<role>/ (its boot_agent), <r> the runs that hold one and
+ * <m> the label's runs given. A label none of whose runs was relaunched reads 0, so a batch's
+ * count names every label of it. */
+function relaunches(runs: readonly Run[]): string[] {
+  const counts = new Map<string, { relaunched: number; runs: number; of: number }>();
+  for (const run of runs) {
+    const first = path.join(run.dir, FIRST_BOOT);
+    const roles = existsSync(first)
+      ? readdirSync(first).filter((role) => statSync(path.join(first, role)).isDirectory()).length
+      : 0;
+    const count = counts.get(run.label) ?? { relaunched: 0, runs: 0, of: 0 };
+    counts.set(run.label, {
+      relaunched: count.relaunched + roles,
+      runs: count.runs + (roles > 0 ? 1 : 0),
+      of: count.of + 1,
+    });
+  }
+  return [...counts]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(
+      ([label, count]) =>
+        `health: boot relaunches, ${label}: ${count.relaunched} in ${count.runs} of ${count.of} runs`
+    );
+}
+
 /** Every rule, in the order a run's line names the first it fails. A rule is given the run and
  * every run health was given, which only the cross-run rule reads. */
 const RULES: readonly {
@@ -1365,6 +2440,12 @@ const RULES: readonly {
     name: "finished",
     judge: (run) => (finished(run.dir) ? undefined : "unfinished: out.txt has no exit= line"),
   },
+  // Rule 15, read right after the first: a service from another checkout than the label's own
+  // explains every rule after it (a listener that refused the label's plugins at their boot).
+  { name: "service provenance", judge: serviceProvenance },
+  // Rule 14, read next: an agent that died at its boot explains every rule after it (no
+  // completion taken, a half that never started).
+  { name: "claim boot", judge: claimBoot },
   {
     name: "completions",
     judge: (run) => {
@@ -1398,6 +2479,38 @@ const RULES: readonly {
 
 if (import.meta.main) {
   const argv = Bun.argv.slice(2);
+  // rig.sh's boot_agent asks, once an agent's launch has ended, whether to relaunch it: the one
+  // reader of a boot refusal, which the "claim boot" rule then holds the record to. It prints the
+  // refusal and exits 0 for a relaunch, exits 1 for none, and 2 for a usage error or a record it
+  // cannot read, which a status of 1 would have read as no refusal.
+  if (argv[0] === "--boot-refusal") {
+    const [, dir, role, since, sessions, ...extra] = argv;
+    if (
+      dir === undefined ||
+      role === undefined ||
+      since === undefined ||
+      sessions === undefined ||
+      extra.length > 0
+    ) {
+      console.error(BOOT_USAGE);
+      process.exit(2);
+    }
+    let refusal: string | undefined;
+    try {
+      const out = path.join(dir, "out.txt");
+      refusal = relaunchFor({
+        out: existsSync(out) ? readFileSync(out, "utf8") : "",
+        daemon: daemonLines(dir).filter((line) => line.role === role && line.at >= since),
+        entries: entriesUnder(sessions),
+      });
+    } catch (error) {
+      console.error(`health: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(2);
+    }
+    if (refusal === undefined) process.exit(1);
+    console.log(refusal);
+    process.exit(0);
+  }
   // The shared scratch's entries before the batch's first run, one path a line: what a run with
   // no record of its own (scratch-before.txt) is held to, and added to the record of one that has.
   let snapshot: string[] | undefined;
@@ -1457,6 +2570,9 @@ if (import.meta.main) {
   }
   for (const [name, count] of flagged)
     console.log(`health: ${name}: ${count} of ${runs.length} runs`);
+  // How often each label's agents met a boot refusal the rig relaunched them for, which no rule
+  // flags (rule 14 declares a first attempt's): a batch reads its relaunches here, by label.
+  for (const line of relaunches(runs)) console.log(line);
   // A run's own writes outside its directory are no verdict on it: recorded here, and judged
   // where another run read them (`otherRunWrite`).
   console.log(

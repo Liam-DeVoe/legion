@@ -1291,10 +1291,12 @@ const CONTRACT_REFUSED =
  * could not finish booting, or undefined when `text` holds none: the line opening
  * `CLAIM_BOOT_FAILED_OPENING`, which names the step, the daemon it dialled and why
  * (`stopAfterRegistration` in `packages/pi-shared/src/legion-claim-core.ts`). The agent then
- * exits so the daemon would launch it again, which no run of this rig does, so the half is gone
- * from the middle of the run (`unscored`). The opening is imported from the module that writes
- * it rather than written again here, since a rewording there would otherwise leave this reading
- * nothing with no test failing. */
+ * exits so the daemon would launch it again. The rig launches it once more only when that came
+ * before its first turn, and keeps that first attempt under <run>/boot-1/<role>/, which this
+ * reads none of (rig.sh's boot_agent); a half whose own output holds the line is one refused
+ * after its first turn or on its relaunch too, so the half is gone from the middle of the run
+ * (`unscored`). The opening is imported from the module that writes it rather than written again
+ * here, since a rewording there would otherwise leave this reading nothing with no test failing. */
 function claimBootFailure(text: string): string | undefined {
   const opened = text.indexOf(CLAIM_BOOT_FAILED_OPENING);
   if (opened < 0) return undefined;
@@ -4298,12 +4300,14 @@ function unscored(
   if (!finished(runDir)) return "out.txt has no exit= line: the run never finished";
   // A half that died in its claim boot measured nothing: it registered with the daemon, could
   // not finish the boot — whichever step its line names — and exited so the daemon would launch
-  // it again, which no run of this rig does. Six of the twelve runs of 2026-11-11 exited 1 with
-  // `claim boot failed after claims/register registered <role>; exiting so the daemon launches
-  // it again: ECONNREFUSED`, and each was scored as a failure of the text under test, which is
-  // a scorer reading an agent that was stopped as an agent that chose. The row names the half
-  // by its own output file, the sentence it left, and when the run last reached its daemon,
-  // which is where a reader of the rig looks next.
+  // it again. The rig launches it once more only when that came before its first turn, and reads
+  // the run on that second attempt (rig.sh's boot_agent), so a half whose own output holds the
+  // line here was refused after a turn or on both attempts. Six of the twelve runs of 2026-11-11
+  // exited 1 with `claim boot failed after claims/register registered <role>; exiting so the
+  // daemon launches it again: ECONNREFUSED`, and each was scored as a failure of the text under
+  // test, which is a scorer reading an agent that was stopped as an agent that chose. The row
+  // names the half by its own output file, the sentence it left, and when the run last reached
+  // its daemon, which is where a reader of the rig looks next.
   for (const [file, text] of outputs(runDir)) {
     const failed = claimBootFailure(text);
     if (failed !== undefined)

@@ -194,7 +194,9 @@ put(
   0o755
 );
 
-// The work directory: the label's profile, and the batch's services file and Dispatch token.
+// The work directory: the label's profile, the batch's services file and provenance for it, its
+// Dispatch token, and the Dispatch server the batch built from the checkout (rig.sh's go_binary,
+// under build_dir), which the run-server.sh stand-in is given and does not run.
 const work = path.join(scratch, "work");
 /** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'). */
 function label(name: string, settings: string) {
@@ -217,8 +219,19 @@ label(
 );
 // A profile built before the installers raised the handler limit.
 label("stale", "modelRoles:\n  default: anthropic/m\n");
-put(path.join(work, "services/env"), "ENVOY_URL=http://127.0.0.1:1\n");
+put(path.join(work, "services/env-on"), "ENVOY_URL=http://127.0.0.1:1\n");
+put(path.join(work, "services/services-from-on"), `envoy-listener label ${co} sha256:00\n`);
 put(path.join(work, "services/dispatch-token"), "e2e-token\n");
+put(
+  path.join(
+    work,
+    "builds",
+    new Bun.CryptoHasher("sha256").update(co).digest("hex").slice(0, 16),
+    "dispatch-e2e"
+  ),
+  "#!/bin/sh\nexit 1\n",
+  0o755
+);
 /** The tag rig.sh names the work directory's containers with. */
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
@@ -338,6 +351,14 @@ beforeAll(async () => {
 
 test.skipIf(withoutRuns)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+});
+
+// Catches: a run that carries no record of what its services came from, which health refuses.
+test.skipIf(withoutRuns)("each run carries its label's service provenance", () => {
+  for (const { dir } of runs)
+    expect(readFileSync(path.join(dir, "services-from"), "utf8")).toBe(
+      `envoy-listener label ${co} sha256:00\n`
+    );
 });
 
 test.skipIf(withoutRuns)("each run makes a database of its own in the batch's Postgres", () => {

@@ -126,7 +126,35 @@ if (invocation.length === 2 && invocation[0] === "gh" && invocation[1] === "--op
   openRecord();
   process.exit(0);
 }
-const [as = "gh", ...args] = invocation;
+/** The repository `repo` names when gh reads it as one of github.com, the host the world plays:
+ * `github.com/OWNER/REPO` or `https://github.com/OWNER/REPO` (gh's `[HOST/]OWNER/REPO`, and the
+ * URL it takes), as OWNER/REPO; `repo` as it stands for any other. */
+function onGithub(repo: string): string {
+  return /^(?:https?:\/\/)?github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(repo)?.[1] ?? repo;
+}
+/** A gh call as the world answers it: `--hostname github.com` (in either spelling) left out, and
+ * a `-R`/`--repo` of github.com's (`onGithub`) given as OWNER/REPO, wherever in the argv the flag
+ * stands. github.com is gh's own default host, so GitHub answers such a call as it answers the
+ * bare one, and every route of the world, and every reader of the record, reads it so: the
+ * record keeps this argv. A call naming any other host is left as it stands, and no route of the
+ * world answers it, as GitHub's never would. */
+function asGithub(argv: readonly string[]): string[] {
+  const read: string[] = [];
+  for (let at = 0; at < argv.length; at++) {
+    const word = argv[at] ?? "";
+    if (word === "--hostname" && argv[at + 1]?.toLowerCase() === "github.com") at++;
+    else if (word.toLowerCase() === "--hostname=github.com") continue;
+    else if ((word === "-R" || word === "--repo") && at + 1 < argv.length)
+      read.push(word, onGithub(argv[++at] ?? ""));
+    else {
+      const joined = /^(-R|--repo=)(.+)$/.exec(word);
+      read.push(joined === null ? word : `${joined[1]}${onGithub(joined[2] ?? "")}`);
+    }
+  }
+  return read;
+}
+const [as = "gh", ...given] = invocation;
+const args = as === "gh" ? asGithub(given) : given;
 const at = new Date().toISOString();
 openRecord();
 const fixtures = Fixtures.parse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));

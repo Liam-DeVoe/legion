@@ -38,6 +38,23 @@ const withoutDocker = skipWithout("docker");
 const withoutGo = skipWithout("go");
 /** This checkout, the one the head label is built from. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
+/** The checkout a run built here names in its built-from unless its row names another. */
+const RUN_CHECKOUT = "/recorded/checkout";
+/** A run's services-from as rig.sh's services_from writes it, one `<service> <scope> <from>
+ * <digest>` a line, every service of the label's own (scope `label`) from `checkout`: the file
+ * health's "service provenance" rule holds to the run's built-from. */
+function servicesFrom(checkout: string): string {
+  return [
+    `envoy-listener label ${checkout} sha256:${"0".repeat(64)}`,
+    `plugins label ${checkout} -`,
+    `model-route label ${checkout} -`,
+    `daemon-facts label ${checkout} -`,
+    `worker-pane label ${checkout} -`,
+    "omp pin omp@stub missing",
+    `dispatch shared /rig sha256:${"1".repeat(64)}`,
+    "",
+  ].join("\n");
+}
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
@@ -114,12 +131,12 @@ beforeAll(() => {
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
 });
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise data and config directories when the caller names them. A tool on
- * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
- * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
- * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
- * to every agent. A caller that names neither variable gets neither: the developer's own home
- * decides nothing here. */
+ * own, and the caller's mise data and config directories and PUBLIC_LEAK_CHECK when the caller
+ * names them. A tool on PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME
+ * such a shim finds neither its installs nor its global config, so it fails. make_omp_home keeps
+ * the operator's two directories for the processes it starts for the same reason, and base_env
+ * passes MISE_DATA_DIR to every agent. A caller that names none of them gets none: the
+ * developer's own home decides nothing here. */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
@@ -132,6 +149,16 @@ const childEnv = {
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  // On a Legion pod the `git` on PATH is the leak-check wrapper (/opt/legion/bin/git), which
+  // refuses every push whose shared check it cannot find: through PUBLIC_LEAK_CHECK, then
+  // public-leak-check.sh on PATH, then the pointer file under the configuration home, which the
+  // fresh HOME above does not hold. A pod carries the variable, so a childEnv without it had every
+  // push a world's build makes to its own remote.git refused on a pod with no pointer file (40
+  // rows, tester 2026-11-15). rig.sh's push_guard passes it to an agent's pane by the same rule,
+  // and rig-isolation.test.ts's env to its rigs; the "childEnv" rows below hold it to that.
+  ...(process.env.PUBLIC_LEAK_CHECK === undefined
+    ? {}
+    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
 };
 
 let profiles = 0;
@@ -474,9 +501,9 @@ describe("a setup that fails after install_model_route", () => {
   });
 });
 
-/** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
- * environment of PATH and the test's own HOME. */
-function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
+/** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in childEnv
+ * with ENV over it: a variable ENV gives as undefined is left out of the child's environment. */
+function bash(script: string, args: string[] = [], env: Record<string, string | undefined> = {}) {
   const result = spawnChecked(["bash", "-c", script, "-", ...args], {
     env: { ...childEnv, ...env },
   });
@@ -731,6 +758,10 @@ describe("cmd_batch numbering", () => {
           "lock_services",
           "services_up",
           "services_down",
+          "build_dir",
+          "go_binary",
+          "label_services",
+          "label_provenance",
           "next_run",
           "scenario_case",
           "askgate_case",
@@ -738,7 +769,7 @@ describe("cmd_batch numbering", () => {
           "threads_case",
           "cmd_batch",
         ].map(fn),
-        "load_label() { :; }",
+        "load_label() { co=$root; }",
         "push_guard() { :; }",
         "require_namespace() { :; }",
         "stop_batch() { services_down; }",
@@ -746,10 +777,10 @@ describe("cmd_batch numbering", () => {
         'until_true() { shift 2; "$@"; }',
         "pg_sql() { printf '%s\\n' 100; }",
         "nats_ready() { :; }",
-        'start_listener() { envoy_port=4100; : >"$work/listener.port"; }',
+        'start_listener() { envoy_port=4100; : >"$work/listener_$1.port"; }',
+        "services_from() { printf 'envoy-listener label %s -\\n' \"$co\"; }",
         'go() { : >"$3"; }',
         "work=$1 here=$2 root=$3 tag=rig-test containers=()",
-        "services_env=$work/services/env",
         "services_postgres=$work/services/postgres-url",
         'cmd_batch "$4" 1 head',
       ].join("\n"),
@@ -941,7 +972,8 @@ describe("a run or live read of a name already taken", () => {
     writeFileSync(path.join(dir, "out.txt"), "an earlier run\nexit=0\n");
     writeFileSync(path.join(dir, "sessions", "s.jsonl"), '{"type":"session"}\n');
     mkdirSync(path.join(work, "services"));
-    writeFileSync(path.join(work, "services", "env"), "");
+    writeFileSync(path.join(work, "services", "env-head"), "");
+    writeFileSync(path.join(work, "services", "services-from-head"), "");
     mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
     return { work, dir, digest: treeDigest(dir) };
   }
@@ -963,9 +995,11 @@ describe("a run or live read of a name already taken", () => {
           "reviewer_case",
           "threads_case",
           "cmd_run",
+          "label_services",
+          "label_provenance",
         ].map(fn),
         ...stubs,
-        "work=$1 services_env=$1/services/env",
+        "work=$1",
         "cmd_run ask-on-message head 3 1 100",
       ].join("\n"),
       [work]
@@ -1020,6 +1054,85 @@ describe("a run or live read of a name already taken", () => {
   });
 });
 
+// A run's services are its label's in its batch: the services file naming that label's listener,
+// and the label's provenance (services_up), which the run carries as <run>/services-from beside
+// its built-from from before anything of it starts. The scenario's runner stands in for what the
+// run starts, and records what the run's directory held when it began.
+describe("cmd_run and its label's services", () => {
+  /** A run of label base, in a work directory whose batch left `services` (file name → text). */
+  function started(services: Record<string, string>) {
+    const work = freshDir("run-services");
+    mkdirSync(path.join(work, "services"));
+    for (const [file, text] of Object.entries(services))
+      writeFileSync(path.join(work, "services", file), text);
+    mkdirSync(path.join(work, "profiles", "base"), { recursive: true });
+    writeFileSync(path.join(work, "profiles", "base", "built-from"), "checkout /co/base\n");
+    const result = bash(
+      [
+        ...[
+          "fail",
+          "on_exit",
+          "scenario_case",
+          "askgate_case",
+          "reviewer_case",
+          "threads_case",
+          "run_project",
+          "label_services",
+          "label_provenance",
+          "cmd_run",
+        ].map(fn),
+        "load_label() { P=$work/profiles/$1; co=/co/$1; }",
+        "push_guard() { :; }",
+        "require_namespace() { :; }",
+        "scratch_before() { :; }",
+        "stop_run() { :; }",
+        'run_ask_on_message() { cp "$R/services-from" "$R/at-start" && printf \'%s\\n\' "$services_env" >"$R/services-env" && echo exit=0 >"$R/out.txt"; }',
+        "work=$1 tag=rig-test",
+        "cmd_run ask-on-message base 1 1 100",
+      ].join("\n"),
+      [work]
+    );
+    return { work, run: path.join(work, "runs", "ask-on-message-base-1"), result };
+  }
+
+  // Catches: a run with no record of what its services came from, or one recorded only after its
+  // agent started, and a run pointed at another label's services file.
+  test("a run carries its label's provenance before its world starts, and reads its label's services file", () => {
+    const provenance = "envoy-listener label /co/base sha256:00\n";
+    const { work, run, result } = started({
+      "env-base": "ENVOY_URL=http://127.0.0.1:4102\n",
+      "services-from-base": provenance,
+      "env-head": "ENVOY_URL=http://127.0.0.1:4101\n",
+      "services-from-head": "envoy-listener label /co/head sha256:00\n",
+    });
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(run, "at-start"), "utf8")).toBe(provenance);
+    expect(readFileSync(path.join(run, "services-from"), "utf8")).toBe(provenance);
+    expect(readFileSync(path.join(run, "built-from"), "utf8")).toBe("checkout /co/base\n");
+    expect(readFileSync(path.join(run, "services-env"), "utf8")).toBe(
+      `${path.join(work, "services", "env-base")}\n`
+    );
+  });
+
+  // Catches: a run started on a batch that brought up no services for its label, or wrote no
+  // provenance for it, which would run on another label's listener or with none recorded.
+  test("a run whose batch left no services file or no provenance for its label is refused before it starts", () => {
+    const cases: Record<string, string>[] = [
+      { "env-head": "", "services-from-head": "" },
+      { "env-base": "" },
+      { "services-from-base": "" },
+    ];
+    for (const services of cases) {
+      const { run, result } = started(services);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        "skill-scenarios: a run needs its batch's services for label base"
+      );
+      expect(existsSync(run)).toBe(false);
+    }
+  });
+});
+
 // A Legion pod's `git` is a leak-check wrapper (/opt/legion/bin/git): every push runs the leak
 // guard, which finds the shared check through PUBLIC_LEAK_CHECK. A run's HOME and configuration
 // home are its own and hold no pointer file, so a pane without the variable had every push of the
@@ -1032,7 +1145,9 @@ describe("push_guard", () => {
   /** A `git` that runs the real one and nothing else. */
   const PLAIN = '#!/bin/sh\nexec /usr/bin/git "$@"\n';
   /** base_env for a run of its own, with `git` first on the caller's PATH and the caller's
-   * PUBLIC_LEAK_CHECK `check` (none for undefined): its status, its stderr and its pane's lines. */
+   * PUBLIC_LEAK_CHECK `check` (none for undefined): its status, its stderr and its pane's lines.
+   * The row's `check` replaces the one childEnv carries from this host, so a host's own
+   * PUBLIC_LEAK_CHECK decides nothing here. */
   function pane(git: string, check: string | undefined, callerPath?: string) {
     const dir = freshDir("push-guard");
     const bin = path.join(dir, "caller-bin");
@@ -1051,7 +1166,7 @@ describe("push_guard", () => {
       {
         PATH: callerPath ?? `${bin}:${childEnv.PATH}`,
         USER: "rig",
-        ...(check === undefined ? {} : { PUBLIC_LEAK_CHECK: check }),
+        PUBLIC_LEAK_CHECK: check,
       }
     );
     const file = path.join(R, "pane.env");
@@ -1145,6 +1260,122 @@ describe("push_guard", () => {
       expect(secret.err).toContain("LEAK CHECK: refusing");
     }
   );
+});
+
+// childEnv is read once, as this file loads, from the environment its process started in, and
+// every script a row runs gets it and nothing more. The rows that failed for its dropping
+// PUBLIC_LEAK_CHECK (40 of them, on a pod with no pointer file: tester, 2026-11-15) pass on every
+// host whose `git` is no leak-check wrapper, GitHub's runner among them, so none of them can catch
+// the variable dropped again there. These two bring a pod's refusal to every host: the second
+// starts this file again in a child `bun test` whose environment, set before the child loads the
+// file, names a readable PUBLIC_LEAK_CHECK and puts first on PATH a `git` that refuses every push
+// unless that variable names a readable file; and it runs there the first row alone, which builds
+// a world with rig.sh's own functions and pushes it to the world's remote.git.
+describe("childEnv", () => {
+  const BUILD = "a world built for real pushes to its own remote under a leak-check git";
+  /** Set for the child `bun test` the second row starts, and by nothing else. */
+  const CHILD = "SKILL_SCENARIOS_CHILD_ENV_ROW";
+
+  // Registered in that child alone: anywhere else the `git` on PATH and the check are the host's,
+  // and the row would read the host rather than childEnv.
+  if (process.env[CHILD] !== undefined)
+    test(BUILD, () => {
+      const dir = freshDir("child-env-world");
+      const result = bash(
+        [
+          ...[
+            "fail",
+            "fixture_open",
+            "fixture_git",
+            "fixture_first_commit",
+            "fixture_head_commit",
+            "fixture_implement",
+            "fixture_workspace",
+            "fixture_checks",
+            "fixture_body",
+            "fixture_write",
+            "concluded_checks",
+            "tester_proof_world",
+          ].map(fn),
+          definition("fixture_cli"),
+          ...[
+            "worker_repo",
+            "worker_base",
+            "world_author_name",
+            "world_author_email",
+            "world_login",
+          ].map(assignment),
+          "R=$1 worker_key=LWEVAL-1",
+          "tester_proof_world 1 100",
+        ].join("\n"),
+        [dir]
+      );
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      // The pull request's branch on the world's remote is the commit its checkout made.
+      const heads = bash(
+        'git -C "$1/remote.git" rev-parse legion/LWEVAL-1 && git -C "$1/src" rev-parse HEAD',
+        [dir]
+      );
+      const [pushed = "", made] = heads.stdout.trim().split("\n");
+      expect(pushed).toMatch(/^[0-9a-f]{40}$/);
+      expect(pushed).toBe(made);
+    });
+
+  // Catches: a childEnv that drops the caller's PUBLIC_LEAK_CHECK, on any host. The stand-in git
+  // then refuses the world's pushes with `LEAK CHECK SETUP ERROR`, as a pod's wrapper refused the
+  // 40 rows', the child's row fails on that stderr, and this row fails quoting the child's report.
+  test("it carries the caller's PUBLIC_LEAK_CHECK to every push a world's build makes", () => {
+    const dir = freshDir("child-env");
+    const bin = path.join(dir, "bin");
+    mkdirSync(bin);
+    const check = path.join(dir, "public-leak-check.sh");
+    writeFileSync(check, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const pushes = path.join(dir, "pushes");
+    // Legion's leak-check git as far as this row needs one (/opt/legion/bin/git and its pre-push
+    // hook): a push runs only where PUBLIC_LEAK_CHECK names a readable file, every other command
+    // is the real git's, and each push is recorded by its refspec with the check it ran under.
+    writeFileSync(
+      path.join(bin, "git"),
+      [
+        "#!/bin/sh",
+        'case " $* " in',
+        '*" push "*)',
+        "  for last; do :; done",
+        '  if [ -f "$PUBLIC_LEAK_CHECK" ] && [ -r "$PUBLIC_LEAK_CHECK" ]; then',
+        `    printf '%s %s\\n' "$last" "$PUBLIC_LEAK_CHECK" >>'${pushes}'`,
+        "  else",
+        `    printf '%s refused\\n' "$last" >>'${pushes}'`,
+        `    echo "LEAK CHECK SETUP ERROR: the push of $last: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names \${PUBLIC_LEAK_CHECK:-none}" >&2`,
+        "    exit 2",
+        "  fi",
+        "  ;;",
+        "esac",
+        'exec /usr/bin/git "$@"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    const child = spawnChecked(
+      [process.execPath, "test", import.meta.path, "-t", `^childEnv ${BUILD}$`],
+      {
+        cwd: path.resolve(import.meta.dir, "../.."),
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          PUBLIC_LEAK_CHECK: check,
+          [CHILD]: "1",
+        },
+      }
+    );
+    const report = `${child.stdout.toString()}${child.stderr.toString()}`;
+    expect({ code: child.exitCode, report }).toEqual({
+      code: 0,
+      report: expect.stringMatching(/^ 1 pass$[\s\S]*^ 0 fail$/m),
+    });
+    // Both pushes the world makes went through the stand-in, each under the check: its base
+    // (fixture_first_commit) and the pull request's branch (fixture_head_commit).
+    expect(readFileSync(pushes, "utf8")).toBe(`main ${check}\nlegion/LWEVAL-1 ${check}\n`);
+  });
 });
 
 // Every worker run's Envoy role topics are its Legion project's and its issue's, and worker_boot
@@ -1388,7 +1619,8 @@ describe("worker_boot", () => {
       "",
     ].join("\n");
 
-  /** worker_boot for ROLE in PHASE, with every process it starts stubbed, on a run whose world
+  /** worker_boot for ROLE in PHASE, with every process it starts stubbed, boot_agent's launch of
+   * the agent among them (its arguments kept in boot-agent-args), on a run whose world
    * fixture_write wrote, and the boot's own result unjudged. `gh` writes the pane's own gh,
    * `panePath` the PATH the pane file carries, which is where the boot looks for it, and
    * `paneRun` the run that file records calls under: a row breaks one of the three to say what
@@ -1432,7 +1664,7 @@ describe("worker_boot", () => {
         "await_start() { :; }",
         "base_env() { :; }",
         "standins() { :; }",
-        "launch() { :; }",
+        'boot_agent() { printf "%s\\n" "$*" >"$R/boot-agent-args"; }',
         'bun() { printf "%s\\n" "$*" >>"$R/bun-args"; }',
         "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='' daemon_pid=''",
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
@@ -1623,6 +1855,14 @@ describe("worker_boot", () => {
     const { dir, started } = boot("tester", "");
     expect(started.split(" ").slice(-2)).toEqual([dir, "tester"]);
   });
+
+  // Catches: a worker launched by a bare `launch`, which no claim boot refusal relaunches
+  // (boot_agent's rows in "launch" below hold the relaunch itself), or launched as another role,
+  // whose record the relaunch would read for the wrong stand-in's lines.
+  test("the agent is launched through boot_agent, with the run's name and its role", () => {
+    const { dir } = boot("reviewer", "reviewing");
+    expect(readFileSync(path.join(dir, "boot-agent-args"), "utf8")).toBe("the-run reviewer\n");
+  });
 });
 
 // Catches: a recorder that computes a project of its own instead of taking the run's. It would
@@ -1750,8 +1990,9 @@ describe("run_threads_closed", () => {
 
 // `rig.sh health <run dir>...`: whether each run's world could take what its agents did, read
 // through completion-answers.ts, which the score's refused-completion rule reads too. Each row
-// builds run directories as a batch leaves them: named as cmd_run names a run, with an out.txt
-// and a daemon.log that each stand-in of the run opened with its own line before its agent's.
+// builds run directories as a batch leaves them: named as cmd_run names a run, with an out.txt,
+// a daemon.log that each stand-in of the run opened with its own line before its agent's, and
+// the built-from and services-from cmd_run copies into it.
 describe("health", () => {
   const complete = (status: number, code?: string, role?: string, phase?: string) => ({
     at: "2026-11-13T18:00:00.000Z",
@@ -1765,15 +2006,25 @@ describe("health", () => {
   /** A run directory named `name`, under a directory of its own, whose daemon.log holds one
    * opening line per boot, each followed by that boot's lines; `finished` false leaves out.txt
    * with no `exit=` line, as a run that never ended leaves it; `checkout` is the checkout its
-   * built-from names, none for "". */
-  function run(name: string, boots: object[][], { finished = true, checkout = "" } = {}) {
+   * built-from names, and `provenance` its services-from, every service of its label's own from
+   * that checkout by default and none at all for false. */
+  function run(
+    name: string,
+    boots: object[][],
+    {
+      finished = true,
+      checkout = RUN_CHECKOUT,
+      provenance = servicesFrom(checkout),
+    }: { finished?: boolean; checkout?: string; provenance?: string | false } = {}
+  ) {
     const dir = path.join(freshDir("health"), name);
     mkdirSync(dir);
     writeFileSync(
       path.join(dir, "out.txt"),
       finished ? "the agent's output\nexit=0\n" : "the agent's output\n"
     );
-    if (checkout !== "") writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
+    writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
+    if (provenance !== false) writeFileSync(path.join(dir, "services-from"), provenance);
     writeFileSync(
       path.join(dir, "daemon.log"),
       boots
@@ -1977,8 +2228,9 @@ describe("health", () => {
   // and for the other label a checkout holding a daemon's API source alone that registers no
   // `claims/turn-outcome`, as main `ff2a10ef`'s does not. A line naming no method (the kept
   // batch's, written before the stand-in logged one) is held to every route of its path; a 404 of
-  // a route no daemon registers is any daemon's own answer; and a run with a 404 whose built-from
-  // names no checkout is unhealthy, since whose answer it was is unknown.
+  // a route no daemon registers is any daemon's own answer; and a run with a 404 whose label's
+  // daemon's routes cannot be read (its built-from names a checkout holding no daemon) is
+  // unhealthy, since whose answer it was is unknown.
   test.skipIf(withoutGo)(
     "a 404 of a route the run's label's daemon registers is unhealthy, and of one it does not, healthy",
     () => {
@@ -2186,8 +2438,9 @@ describe("health", () => {
    * directory its transcripts' paths are written under (a run read from the archive or from a
    * copy is read under another), with `pane`'s lines after its own; the transcript `steps` under
    * `sessions/<agent>` (the run's own for ""), its gh calls, the world's routes and repository, a
-   * reviewer completion taken, its built-from naming `checkout` when one is given, and, given
-   * `before`, the shared scratch's entries when it started (rig.sh's scratch_before). */
+   * reviewer completion taken, its built-from and services-from naming `checkout` (RUN_CHECKOUT
+   * unless one is given), and, given `before`, the shared scratch's entries when it started
+   * (rig.sh's scratch_before). */
   function worldRun(
     name: string,
     {
@@ -2195,7 +2448,7 @@ describe("health", () => {
       agent = "",
       calls = [],
       before,
-      checkout = "",
+      checkout = RUN_CHECKOUT,
       pane = [],
     }: {
       steps?: Step[];
@@ -2725,9 +2978,11 @@ describe("health", () => {
   });
 
   // Catches: a host a bash command reaches with no URL's scheme read as no host at all: a git
-  // remote in scp form, a curl operand that names a host bare, and a `gh api --hostname`. And a
-  // run whose curl writes to a file with a dot in its name (`-o report.json`) and whose git
-  // remote is a local path read as reaching either.
+  // remote in scp form, a curl operand that names a host bare, a `gh api --hostname` of a host the
+  // run's gh does not serve, and a gh that is not the run's own stand-in. And a run whose curl
+  // writes to a file with a dot in its name (`-o report.json`), whose git remote is a local path,
+  // whose gh names github.com, which its stand-in plays, and whose bare gh is that stand-in read
+  // as reaching any.
   test("a bash call that reaches a host with no scheme is off its world", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
     const scp = worldRun("threads-closed-text-fixes-head-6", {
@@ -2737,18 +2992,22 @@ describe("health", () => {
       steps: [bash("curl -sS api.github.com/repos/cybermonklabs/legion")],
     }).dir;
     const hostname = worldRun("threads-closed-text-fixes-head-8", {
-      steps: [bash("gh api --hostname github.com repos/cybermonklabs/legion/pulls/2827")],
+      steps: [bash("gh api --hostname ghe.example.com repos/cybermonklabs/legion/pulls/2827")],
     }).dir;
     const joined = worldRun("threads-closed-code-defect-head-6", {
-      steps: [bash("gh api --hostname=github.com repos/cybermonklabs/legion/pulls/2827")],
+      steps: [bash("gh api --hostname=github.com repos/example/widgets/pulls/1001")],
     }).dir;
+    const real = worldRun("threads-closed-code-defect-head-7", {
+      steps: [bash("/usr/bin/gh pr view 1001")],
+    });
     const local = worldRun("threads-closed-text-fixes-head-9", {
       steps: [
         bash("curl -sS -o report.json http://127.0.0.1:4101/api/v1/whoami"),
         bash("git -C ws remote add origin ../remote.git && git -C ws fetch origin"),
+        bash("gh pr view 1001"),
       ],
     }).dir;
-    const runs = [scp, bare, hostname, joined, local];
+    const runs = [scp, bare, hostname, joined, real.dir, local];
     const { stdout } = health(...runs);
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     const off = (named: string, host: string) =>
@@ -2756,8 +3015,9 @@ describe("health", () => {
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       `threads-closed-text-fixes-head-6  unhealthy: ${off("git@github.com:cybermonklabs/legion.git", "github.com")}`,
       `threads-closed-text-fixes-head-7  unhealthy: ${off("api.github.com/repos/cybermonklabs/legion", "api.github.com")}`,
-      `threads-closed-text-fixes-head-8  unhealthy: ${off("github.com", "github.com")}`,
-      `threads-closed-code-defect-head-6  unhealthy: ${off("--hostname=github.com", "github.com")}`,
+      `threads-closed-text-fixes-head-8  unhealthy: off-world network: a bash call in ${session} reaches ghe.example.com (ghe.example.com), no host the run's gh serves (github.com, 127.0.0.1, localhost, ::1)`,
+      "threads-closed-code-defect-head-6  healthy",
+      `threads-closed-code-defect-head-7  unhealthy: off-world network: a bash call in ${session} reaches github.com (/usr/bin/gh), a gh that is not the run's own stand-in (${real.dir}/bin/gh, ${real.ran}/bin/gh), and no world of this rig serves another`,
       "threads-closed-text-fixes-head-9  healthy",
     ]);
   });
@@ -2813,21 +3073,112 @@ describe("health", () => {
     }
   );
 
+  // Catches: a base run whose Envoy listener the head checkout built read as healthy, the
+  // pairing that put main ff2a10ef's pi-envoy beside a listener from after #2603 and lost the
+  // base runs' claim boot to its `409 not_requested`; and a run whose every service of its
+  // label's own came from that label's checkout read as unhealthy, on either label.
+  test("a base run whose listener the head checkout built is unhealthy, and a run whose services of its own are all its label's, healthy", () => {
+    const base = "/recorded/base-checkout";
+    const head = "/recorded/head-checkout";
+    const foreign = run("threads-closed-code-defect-base-9", [[]], {
+      checkout: base,
+      provenance: servicesFrom(base).replace(
+        `envoy-listener label ${base}`,
+        `envoy-listener label ${head}`
+      ),
+    });
+    const own = run("threads-closed-code-defect-base-10", [[]], { checkout: base });
+    const ownHead = run("threads-closed-code-defect-head-14", [[]], { checkout: head });
+    const { code, stdout } = health(foreign, own, ownHead);
+    expect(code).toBe(1);
+    expect(verdict(stdout, foreign)).toBe(
+      `threads-closed-code-defect-base-9  unhealthy: foreign service: the run's envoy-listener came from ${head}, not from ${base}, the checkout of the base label its built-from names`
+    );
+    expect(verdict(stdout, own)).toBe("threads-closed-code-defect-base-10  healthy");
+    expect(verdict(stdout, ownHead)).toBe("threads-closed-code-defect-head-14  healthy");
+    expect(stdout).toContain("health: service provenance: 1 of 3 runs\n");
+  });
+
+  // Catches: a run that carries no record of what its services came from read as healthy, and
+  // one whose record names a service of its label's own as no label's (the listener, here, as a
+  // shared one) or whose built-from names no checkout to hold the record to.
+  test("a run with no service provenance, one naming a service of its label's own as shared, or one with no checkout to hold it to, is unhealthy", () => {
+    const missing = run(
+      "reviewer-text-findings-defect-head-4",
+      [[complete(200, undefined, "reviewer")]],
+      { provenance: false }
+    );
+    const shared = run("threads-closed-text-fixes-head-9", [[]], {
+      provenance: servicesFrom(RUN_CHECKOUT).replace(
+        `envoy-listener label ${RUN_CHECKOUT}`,
+        `envoy-listener shared ${RUN_CHECKOUT}`
+      ),
+    });
+    const unnamed = run("threads-closed-text-fixes-head-10", [[]]);
+    writeFileSync(path.join(unnamed, "built-from"), "skills 00\n");
+    const { code, stdout } = health(missing, shared, unnamed);
+    expect(code).toBe(1);
+    expect(verdict(stdout, missing)).toBe(
+      "reviewer-text-findings-defect-head-4  unhealthy: no service provenance: the run has no <run>/services-from, so which checkout its Envoy listener and its other services came from is unknown"
+    );
+    expect(verdict(stdout, shared)).toBe(
+      `threads-closed-text-fixes-head-9  unhealthy: service provenance: <run>/services-from names no envoy-listener of the head label's own checkout (${RUN_CHECKOUT})`
+    );
+    expect(verdict(stdout, unnamed)).toContain(
+      "threads-closed-text-fixes-head-10  unhealthy: service provenance unknown: "
+    );
+    expect(verdict(stdout, unnamed)).toContain("names no checkout");
+  });
+
+  // Catches: a batch that cannot tell how often each label's agents were relaunched at their
+  // boot, where a label whose world refused its plugins at every boot relaunches every agent and
+  // reads healthy on each relaunch, and a count that merges the labels or leaves one out.
+  test("health prints how often each label's agents were relaunched at their boot", () => {
+    const relaunched = (name: string, roles: string[]) => {
+      const dir = run(name, [[]]);
+      for (const role of roles)
+        mkdirSync(path.join(dir, "boot-1", role, "sessions"), { recursive: true });
+      return dir;
+    };
+    const { stdout } = health(
+      relaunched("threads-closed-text-fixes-base-11", ["implementer", "reviewer"]),
+      relaunched("threads-closed-code-defect-base-11", ["implementer"]),
+      relaunched("threads-closed-code-defect-base-12", []),
+      relaunched("threads-closed-code-defect-head-15", [])
+    );
+    expect(stdout.split("\n").filter((line) => line.startsWith("health: boot relaunches"))).toEqual(
+      [
+        "health: boot relaunches, base: 3 in 2 of 3 runs",
+        "health: boot relaunches, head: 0 in 0 of 1 runs",
+      ]
+    );
+  });
+
   // The tester's fixture of 2026-11-14 (health-fixture/): twenty-one runs covering the fifteen
   // completion worlds (fields in either order, a log line that is no JSON, a role-less 409, a
   // head reviewer's late refusal after its own 200 and one before it), a
   // later run reading an earlier run's /tmp write, a read of an entry from before the batch, a run
   // reading its own file, another run's path named only in a subagent's transcript, and a push
   // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
-  // `tmp-snapshot` the /tmp entries before the batch. Catches: a health that disagrees with that
-  // independent reading on any run of it.
+  // `tmp-snapshot` the /tmp entries before the batch. The runs were recorded before a run carried
+  // its service provenance, so each is read from a copy given the built-from and services-from
+  // cmd_run now copies into a run, every service of its label's own from that label's checkout.
+  // Catches: a health that disagrees with that independent reading on any run of it.
   test("the tester's fixture reads as the tester read it, run for run", () => {
     const fixture = path.join(import.meta.dir, "health-fixture");
     const names = readdirSync(path.join(fixture, "runs")).sort();
+    const copies = path.join(freshDir("health-fixture"), "runs");
+    for (const name of names) {
+      const copy = path.join(copies, name);
+      cpSync(path.join(fixture, "runs", name), copy, { recursive: true });
+      const checkout = `/recorded/${name.includes("-base-") ? "base" : "head"}-checkout`;
+      writeFileSync(path.join(copy, "built-from"), `checkout ${checkout}\n`);
+      writeFileSync(path.join(copy, "services-from"), servicesFrom(checkout));
+    }
     const { stdout } = health(
       "--tmp-snapshot",
       path.join(fixture, "tmp-snapshot"),
-      ...names.map((name) => path.join(fixture, "runs", name))
+      ...names.map((name) => path.join(copies, name))
     );
     const expected = Object.fromEntries(
       readFileSync(path.join(fixture, "expected"), "utf8")
@@ -2835,7 +3186,7 @@ describe("health", () => {
         .filter((line) => line !== "")
         .map((line) => line.split(" ") as [string, string])
     );
-    expect(names.map((name) => [name, verdict(stdout, path.join(fixture, "runs", name))])).toEqual(
+    expect(names.map((name) => [name, verdict(stdout, path.join(copies, name))])).toEqual(
       names.map((name) => [
         name,
         expect.stringMatching(
@@ -5422,6 +5773,9 @@ sleep() { command sleep 0.05; }`;
     callerPath?: string[];
     /** The rig's own directory (`here`); this one by default. */
     here?: string;
+    /** The role boot_agent launches the agent as, relaunching it as it would, in place of one
+     * `launch`, the run's own sessions/ its session directory. */
+    boot?: string;
   }
   /** A work directory holding the run `name` under runs/, with the run's prompt and pane file,
    * another live run and an archived one, each with a file of its own, and each label's profile
@@ -5481,7 +5835,14 @@ sleep() { command sleep 0.05; }`;
         quotedAssignment("private_world"),
         standIns,
         `R=$1 work=$2 tag=t pin=omp@pin P=$work/profiles/${label} co=$3 here=$4`,
-        `launch ${name} "\${@:5}"`,
+        ...(options.boot === undefined
+          ? [`launch ${name} "\${@:5}"`]
+          : [
+              fn("note"),
+              fn("boot_agent"),
+              `sessions_dir=$R/sessions`,
+              `boot_agent ${name} ${options.boot}`,
+            ]),
       ].join("\n"),
       [run, work, checkouts[label] ?? "", options.here ?? RIG, ...args],
       {
@@ -5508,6 +5869,138 @@ sleep() { command sleep 0.05; }`;
       expect(result.code).toBe(0);
       expect(out).toBe(
         `${work}/bin/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${work}/runs/spec-writing-s1-1/sessions\nexit=0\n`
+      );
+    }
+  );
+
+  /** The line the plugin prints when the Envoy listener refuses the claim of a session that holds
+   * no consumer, after its registration (round 23's, at 2926519c). */
+  const ENVOY_REFUSAL =
+    "claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-reviewer with the daemon at http://127.0.0.1:4321; exiting so the daemon launches it again: the session asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true";
+  /** An omp that stands in for a reviewer phase worker and its plugin, each launch of it doing
+   * what its line of `$R/plan` names: `envoy`, registered with the daemon stand-in and refused by
+   * the listener at its claim (ENVOY_REFUSAL); `register`, refused 401 by the stand-in's
+   * `claims/register`; `late`, refused as `envoy` is once its first turn is in its transcript;
+   * `works`, a turn and a completion the stand-in took. Each writes the stand-in's lines of it to
+   * $R/daemon.log, as the stand-in does, and its transcript under the session directory it is
+   * given, and counts its launches in $R/attempts. */
+  const BOOTING = [
+    "R=$SKILL_SCENARIO_RUN",
+    'n=$(( $(cat "$R/attempts" 2>/dev/null || echo 0) + 1 ))',
+    'echo "$n" >"$R/attempts"',
+    'for word; do [ "$previous" = --session-dir ] && sessions=$word; previous=$word; done',
+    `logged() { printf '{"at":"%s","method":"POST","path":"/legion/v1/%s","status":%s%s,"role":"reviewer"}\\n' "$(date -u +%FT%T.%3NZ)" "$1" "$2" "\${3:-}" >>"$R/daemon.log"; }`,
+    `opened() { printf '{"type":"session","id":"s%s"}\\n{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Review it."}]}}\\n' "$n" >"$sessions/s$n.jsonl"; }`,
+    `turned() { printf '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Reading the pull request."}]}}\\n' >>"$sessions/s$n.jsonl"; }`,
+    'case $(sed -n "$n"p "$R/plan") in',
+    `envoy) logged claims/register 200; opened; echo "[legion] ${ENVOY_REFUSAL}" >&2; exit 1 ;;`,
+    `register) logged claims/register 401 ',"code":"INVALID_BOOT_TOKEN"'; opened; echo "[legion] claims/register registration failed (401): Invalid boot token" >&2; exit 1 ;;`,
+    `late) logged claims/register 200; opened; turned; echo "[legion] ${ENVOY_REFUSAL}" >&2; exit 1 ;;`,
+    "works) logged claims/register 200; opened; turned; logged handoff/complete 200; echo reviewed ;;",
+    "esac",
+  ].join("\n");
+  /** The reviewer-text-findings run `name` whose reviewer meets `plan`, booted by boot_agent:
+   * boot_agent's result, the run, its first attempt's record, how many launches it made, and the
+   * verdict `rig.sh health` gives the run. The run carries the built-from and services-from
+   * cmd_run copies into it before its agent starts, naming the label's checkout (launched's). */
+  function booted(name: string, plan: string[]) {
+    const work = freshDir("boot-agent");
+    const run = path.join(work, "runs", name);
+    mkdirSync(run, { recursive: true });
+    writeFileSync(path.join(run, "plan"), `${plan.join("\n")}\n`);
+    writeFileSync(path.join(run, "built-from"), `checkout ${work}-checkout\n`);
+    writeFileSync(path.join(run, "services-from"), servicesFrom(`${work}-checkout`));
+    const { result } = launched(work, name, BOOTING, [], { boot: "reviewer" });
+    const health = spawnChecked(["bash", path.join(RIG, "rig.sh"), "health", run], {
+      env: { ...childEnv, SKILL_SCENARIOS_WORK: freshDir("boot-health") },
+    });
+    return {
+      result,
+      run,
+      first: path.join(run, "boot-1", "reviewer"),
+      attempts: readFileSync(path.join(run, "attempts"), "utf8").trim(),
+      verdict: health.stdout
+        .toString()
+        .split("\n")
+        .find((line) => line.startsWith(`${name}  `)),
+    };
+  }
+
+  // Catches: an agent whose claim boot was refused before its first turn left as the run's
+  // record, where production's daemon launches it again (round 23's base reviewer, which the
+  // listener refused); the first attempt dropped, or left where the score and health read the
+  // run's own record; and its refusal read as the run's, whether the listener refused the claim
+  // after the registration or the stand-in refused the registration itself.
+  test.skipIf(withoutNamespace)(
+    "a worker refused at its claim boot before its first turn is launched once more, both attempts kept, and the run is healthy",
+    () => {
+      for (const [refused, kept] of [
+        ["envoy", ENVOY_REFUSAL],
+        ["register", "claims/register registration failed (401): Invalid boot token"],
+      ] as const) {
+        const name = "reviewer-text-findings-text-only-head-1";
+        const { result, run, first, attempts, verdict } = booted(name, [refused, "works"]);
+        expect(result).toMatchObject({ code: 0, stderr: "" });
+        expect(result.stdout).toContain(
+          `skill-scenarios: ${name}: the reviewer's claim boot was refused before its first turn (`
+        );
+        expect(attempts).toBe("2");
+        // The first attempt, whole, beside the second: its output, its transcript and the
+        // stand-in's lines of it.
+        expect(readFileSync(path.join(first, "out.txt"), "utf8")).toBe(
+          `[legion] ${kept}\nexit=1\n`
+        );
+        expect(readdirSync(path.join(first, "sessions"))).toEqual(["s1.jsonl"]);
+        expect(
+          readFileSync(path.join(first, "daemon.log"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line).status)
+        ).toEqual([refused === "envoy" ? 200 : 401]);
+        // The second where any agent's record stands.
+        expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe("reviewed\nexit=0\n");
+        expect(readdirSync(path.join(run, "sessions"))).toEqual(["s2.jsonl"]);
+        expect(verdict).toBe(`${name}  healthy`);
+      }
+    }
+  );
+
+  // Catches: a relaunch the rig repeats until the agent boots, which is no budget of this rig's;
+  // and a run refused on its relaunch too judged healthy on the first refusal's declaration, or
+  // named by one attempt alone. The stand-in's refusal of each attempt is told apart by the lines
+  // the first attempt's record keeps.
+  test.skipIf(withoutNamespace)(
+    "a worker refused at both attempts is launched twice and no more, and the run is unhealthy, naming both",
+    () => {
+      const name = "reviewer-text-findings-text-only-base-1";
+      const { result, first, attempts, verdict } = booted(name, ["register", "register", "works"]);
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(attempts).toBe("2");
+      expect(existsSync(path.join(first, "out.txt"))).toBe(true);
+      const answered =
+        "the daemon stand-in answered the reviewer's POST /legion/v1/claims/register 401 INVALID_BOOT_TOKEN";
+      expect(verdict).toBe(
+        `${name}  unhealthy: claim boot refused on both attempts: the reviewer's first (<run>/boot-1/reviewer/out.txt): ${answered}; its relaunch (<run>/out.txt): ${answered}`
+      );
+    }
+  );
+
+  // Catches: an agent relaunched after its first turn, which the daemon's relaunch would not take
+  // back, and such a run read as healthy.
+  test.skipIf(withoutNamespace)(
+    "a worker refused after its first turn is not relaunched, and the run is unhealthy",
+    () => {
+      const name = "reviewer-text-findings-defect-head-1";
+      const { result, run, first, attempts, verdict } = booted(name, ["late", "works"]);
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(result.stdout).not.toContain("claim boot was refused");
+      expect(attempts).toBe("1");
+      expect(existsSync(first)).toBe(false);
+      expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe(
+        `[legion] ${ENVOY_REFUSAL}\nexit=1\n`
+      );
+      expect(verdict).toBe(
+        `${name}  unhealthy: claim boot refused: ${ENVOY_REFUSAL} (<run>/out.txt), and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it`
       );
     }
   );
@@ -5995,31 +6488,66 @@ sleep() { command sleep 0.05; }`;
 // A batch's Postgres and its NATS are the servers SKILL_SCENARIOS_POSTGRES_URL and
 // SKILL_SCENARIOS_NATS_URL name when both are set, and otherwise two containers it starts. The
 // harness gives services_up a docker that records its command line and answers `docker port`, so
-// the container branch runs where there is no docker, and a pg_sql that answers every query with
-// 100, the max_connections of a server that admits 100.
+// the container branch runs where there is no docker, a pg_sql that answers every query with
+// 100, the max_connections of a server that admits 100, a `go` that records the directory each
+// build runs in and writes a binary naming it, and a load_label whose label's checkout is a
+// directory of the row's own (<work>/checkouts/<label>).
 describe("services_up and services_down", () => {
   const stubs = `
 until_true() { shift 2; "$@"; }
 pg_sql() { printf '%s\\n' 100; }
 nats_ready() { :; }
-start_listener() { envoy_port=4100; }
-go() { printf 'go %s\\n' "$*" >>"$S/go-calls"; }
+start_listener() { started=$(( \${started:-0} + 1 )); envoy_port=410$started; printf '%s %s\\n' "$1" "$2" >>"$S/listeners"; }
+load_label() { P=$work/profiles/$1; co=$work/checkouts/$1; pin=omp@stub; profile=skills-$1; }
+pinned_omp() { printf '%s\\n' "$work/omp"; }
+go() { printf '%s go %s\\n' "$PWD" "$*" >>"$S/go-calls"; printf 'built in %s\\n' "$PWD" >"$3"; }
 docker() {
   printf 'docker %s\\n' "$*" >>"$S/docker-calls"
   case $1 in port) case $2 in *-pg) echo 127.0.0.1:55432 ;; *) echo 127.0.0.1:54222 ;; esac ;; esac
 }`;
+  /** services_up's own definition and every helper of rig.sh's it calls. */
+  const servicesUp = [
+    ...[
+      "note",
+      "fail",
+      "given_services",
+      "safe_url",
+      "build_dir",
+      "go_binary",
+      "file_digest",
+      "services_from",
+      "label_services",
+      "label_provenance",
+      "services_up",
+    ].map(fn),
+    assignment("postgres_image"),
+    assignment("nats_image"),
+  ].join("\n");
   const given = {
     SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig:secret@127.0.0.1:5432/postgres?sslmode=disable",
     SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
   };
-  function up(env: Record<string, string>) {
-    const S = freshDir("services-up");
+  /** The directory rig.sh's build_dir keeps `checkout`'s binaries in, under `work`: the first 16
+   * hex digits of the digest of the checkout's path. */
+  const builds = (work: string, checkout: string) =>
+    path.join(
+      work,
+      "builds",
+      new Bun.CryptoHasher("sha256").update(checkout).digest("hex").slice(0, 16)
+    );
+  /** services_up for `labels`, each with a checkout of its own under the work directory. */
+  function up(env: Record<string, string>, labels: string[] = ["head"]) {
+    const work = freshDir("services-up");
+    const S = path.join(work, "services");
+    mkdirSync(S);
+    for (const label of labels)
+      mkdirSync(path.join(work, "checkouts", label, "packages", "envoy"), { recursive: true });
     const result = bash(
-      `${fn("note")}\n${fn("fail")}\n${fn("given_services")}\n${fn("safe_url")}\n${fn("services_up")}\n${stubs}\nS=$1 root=$2 tag=rig-test\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
-      [S, root],
+      `${servicesUp}\n${stubs}\nwork=$1 S=$1/services root=$2 here=$3 tag=rig-test\nservices_postgres=$S/postgres-url\nshift 3\nservices_up "$@"`,
+      [work, root, import.meta.dir, ...labels],
       env
     );
-    return { S, ...result };
+    return { work, S, ...result };
   }
 
   // Catches: a batch that starts a container although the operator gave it both servers, which is
@@ -6032,10 +6560,10 @@ docker() {
       `${given.SKILL_SCENARIOS_POSTGRES_URL}\n`
     );
     expect(statSync(path.join(S, "postgres-url")).mode & 0o777).toBe(0o600);
-    expect(readFileSync(path.join(S, "env"), "utf8")).toContain(
+    expect(readFileSync(path.join(S, "env-head"), "utf8")).toContain(
       "ENVOY_NATS_URL=nats://127.0.0.1:4222\n"
     );
-    // The listener is still built from the checkout.
+    // The listener is still built.
     expect(readFileSync(path.join(S, "go-calls"), "utf8")).toContain("build -o");
     // No message prints the password.
     expect(stdout).toContain("Postgres postgres://rig@127.0.0.1:5432/postgres?sslmode=disable");
@@ -6066,7 +6594,7 @@ docker() {
       expect(calls).toContain("max_connections=50");
       expect(calls).toContain("--name rig-test-nats");
       expect(existsSync(path.join(S, "postgres-url"))).toBe(false);
-      expect(readFileSync(path.join(S, "env"), "utf8")).toContain(
+      expect(readFileSync(path.join(S, "env-head"), "utf8")).toContain(
         "ENVOY_NATS_URL=nats://127.0.0.1:54222\n"
       );
       expect(stdout).toContain(
@@ -6075,10 +6603,103 @@ docker() {
     }
   });
 
-  /** The files a batch's services make (rig.sh's services_files), under S and the work directory. */
-  const SERVICES_FILES = ["env", "postgres-url", "envoy-token", "dispatch-token", "envoy-listener"];
+  // Catches: one listener built from the rig's own checkout for every label, which paired main
+  // ff2a10ef's pi-envoy, from before #2603, with a listener from after it, and lost the base runs'
+  // claim boot to its `409 not_requested`; a listener started from a binary other than its
+  // label's; and labels whose runs are pointed at one listener. The Dispatch server, which
+  // production shares across versions, is this checkout's.
+  test("each label's listener is built in that label's own checkout, started from that build, and named in that label's services file", () => {
+    const { work, S, code, stderr } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "1" }, [
+      "head",
+      "base",
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const checkout = (label: string) => path.join(work, "checkouts", label);
+    const listener = (label: string) => path.join(builds(work, checkout(label)), "envoy-listener");
+    expect(readFileSync(path.join(S, "go-calls"), "utf8").split("\n")).toEqual([
+      `${root}/packages/envoy go build -o ${builds(work, root)}/dispatch-e2e ./cmd/dispatch`,
+      `${checkout("head")}/packages/envoy go build -o ${listener("head")} ./cmd/listener`,
+      `${checkout("base")}/packages/envoy go build -o ${listener("base")} ./cmd/listener`,
+      "",
+    ]);
+    expect(readFileSync(listener("base"), "utf8")).toBe(
+      `built in ${checkout("base")}/packages/envoy\n`
+    );
+    expect(readFileSync(path.join(S, "listeners"), "utf8")).toBe(
+      `head ${listener("head")}\nbase ${listener("base")}\n`
+    );
+    expect(readFileSync(path.join(S, "env-head"), "utf8")).toContain(
+      "ENVOY_URL=http://127.0.0.1:4101\n"
+    );
+    expect(readFileSync(path.join(S, "env-base"), "utf8")).toContain(
+      "ENVOY_URL=http://127.0.0.1:4102\n"
+    );
+  });
+
+  // Catches: a provenance that names the rig's checkout, or none, for a service the label's own
+  // checkout gives its runs, and one whose digest is not the binary the label's listener runs.
+  test("each label's provenance names its own checkout for every service of its own, with its listener's digest", () => {
+    const { work, S, code } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "1" }, ["head", "base"]);
+    expect(code).toBe(0);
+    const checkout = path.join(work, "checkouts", "base");
+    const binary = readFileSync(path.join(builds(work, checkout), "envoy-listener"));
+    const lines = readFileSync(path.join(S, "services-from-base"), "utf8").split("\n");
+    expect(lines).toContain(
+      `envoy-listener label ${checkout} sha256:${new Bun.CryptoHasher("sha256").update(binary).digest("hex")}`
+    );
+    const own = lines.filter((line) => line.split(" ")[1] === "label");
+    expect(own.map((line) => line.split(" ")[0])).toEqual([
+      "envoy-listener",
+      "plugins",
+      "model-route",
+      "daemon-facts",
+      "worker-pane",
+    ]);
+    for (const line of own) expect(line.split(" ")[2]).toBe(checkout);
+    expect(lines).toContain("omp pin omp@stub missing");
+    expect(lines.find((line) => line.startsWith("dispatch "))).toStartWith(
+      `dispatch shared ${root} sha256:`
+    );
+    expect(lines).toContain("nats shared nats://127.0.0.1:4222 -");
+    expect(lines).toContain(
+      "postgres shared postgres://rig@127.0.0.1:5432/postgres?sslmode=disable -"
+    );
+  });
+
+  // Catches: two labels' listeners started as one service (one log, one port file, one pid kept)
+  // or under one machine id, whose durable NATS consumer the two would share and take each
+  // other's deliveries from; and a listener started from any binary but the one it is given.
+  test("start_listener starts the label's binary as a service and a machine of its own", () => {
+    const S = freshDir("start-listener");
+    writeFileSync(path.join(S, "envoy-token"), "token\n");
+    const result = bash(
+      [
+        fn("start_listener"),
+        `start_held() { printf '%s|%s|%s\\n' "$1" "$ENVOY_MACHINE_ID" "\${@: -1}" >>"$S/held"; printf -v "$2" %s 4100; printf -v "\${1}_pid" %s "$((4200 + \${#listener_pids[@]}))"; }`,
+        "await_start() { :; }",
+        "S=$1 tag=rig-test nats_url=nats://127.0.0.1:4222 listener_pids=()",
+        "start_listener head /builds/a/envoy-listener",
+        "start_listener ablate-x /builds/b/envoy-listener",
+        `echo "\${listener_pids[*]}"`,
+      ].join("\n"),
+      [S]
+    );
+    expect(result).toMatchObject({ code: 0, stdout: "4200 4201\n" });
+    expect(readFileSync(path.join(S, "held"), "utf8")).toBe(
+      "listener_head|rig-test-head|/builds/a/envoy-listener\nlistener_ablate_x|rig-test-ablate-x|/builds/b/envoy-listener\n"
+    );
+  });
+
+  /** The files a batch's services make for label head (rig.sh's services_files), under S. */
+  const SERVICES_FILES = [
+    "env-head",
+    "services-from-head",
+    "postgres-url",
+    "envoy-token",
+    "dispatch-token",
+  ];
   /** services_up and the stubs its rows run it on, for a row that tears down after it. */
-  const upStubs = `${fn("note")}\n${fn("fail")}\n${fn("safe_url")}\n${fn("services_up")}\n${stubs}\nroot=${root}`;
+  const upStubs = `${servicesUp}\n${stubs}\nroot=${root}`;
   /** A work directory whose services directory holds every file a batch made (SERVICES_FILES,
    * the listener's port file and the lock), then services_down, with `prelude` run first. */
   function down(env: Record<string, string>, prelude = "") {
@@ -6086,24 +6707,25 @@ docker() {
     const S = path.join(work, "services");
     mkdirSync(S);
     for (const file of [...SERVICES_FILES, "up"]) writeFileSync(path.join(S, file), "");
-    writeFileSync(path.join(work, "listener.port"), "4100\n");
+    writeFileSync(path.join(work, "listener_head.port"), "4100\n");
     const result = bash(
-      `${fn("given_services")}\n${fn("services_files")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nwork=$1 S=$1/services tag=rig-test containers=()\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nlistener_pid=4242\n${prelude}\nservices_down`,
+      `${fn("given_services")}\n${fn("services_files")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nwork=$1 S=$1/services tag=rig-test containers=()\nservices_postgres=$S/postgres-url\nlistener_pids=(4242 4343)\n${prelude}\nservices_down`,
       [work],
       env
     );
     return { S, work, ...result };
   }
 
-  // Catches: a teardown that removes a server it was given, or the databases on it, and one that
-  // leaves a file of the batch's services there, which the next batch's lock would then refuse.
-  test("both URLs set: the listener stops, the batch's own files go, and no docker runs", () => {
+  // Catches: a teardown that removes a server it was given, or the databases on it, one that
+  // leaves a label's listener running, and one that leaves a file of the batch's services there,
+  // which the next batch's lock would then refuse.
+  test("both URLs set: every label's listener stops, the batch's own files go, and no docker runs", () => {
     const { S, work, code } = down(given);
     expect(code).toBe(0);
     expect(existsSync(path.join(S, "docker-calls"))).toBe(false);
-    expect(readFileSync(path.join(S, "stopped"), "utf8")).toBe("stop_tree 4242\n");
+    expect(readFileSync(path.join(S, "stopped"), "utf8")).toBe("stop_tree 4242\nstop_tree 4343\n");
     expect(readdirSync(S)).toEqual(["stopped"]);
-    expect(existsSync(path.join(work, "listener.port"))).toBe(false);
+    expect(existsSync(path.join(work, "listener_head.port"))).toBe(false);
   });
 
   // Catches: a teardown that leaves the batch's own containers running.
@@ -6131,24 +6753,26 @@ docker() {
   });
 
   // Catches: a batch that takes the lock over the files a batch killed outright left, and then
-  // overwrites or removes them (services_up writes each, services_down removes each).
+  // overwrites or removes them (services_up writes each, services_down removes each), a label's
+  // own among them.
   test("a file an earlier batch left is refused, named, and kept, and the lock is not held", () => {
     const work = freshDir("services-lock");
     const S = path.join(work, "services");
     mkdirSync(S);
     writeFileSync(path.join(S, "envoy-token"), "an earlier batch's token\n");
-    writeFileSync(path.join(work, "listener.port"), "4100\n");
+    writeFileSync(path.join(S, "services-from-base"), "envoy-listener label /co -\n");
+    writeFileSync(path.join(work, "listener_base.port"), "4100\n");
     const result = bash(
-      `${fn("fail")}\n${fn("services_files")}\n${fn("lock_services")}\nwork=$1 tag=rig-test\nservices_env=$work/services/env\nservices_postgres=$work/services/postgres-url\nlock_services`,
+      `${fn("fail")}\n${fn("services_files")}\n${fn("lock_services")}\nwork=$1 tag=rig-test\nservices_postgres=$work/services/postgres-url\nlock_services`,
       [work]
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(
-      `an earlier batch left ${S}/envoy-token ${work}/listener.port; a batch replaces no earlier batch's file`
+      `an earlier batch left ${S}/envoy-token ${S}/services-from-base ${work}/listener_base.port; a batch replaces no earlier batch's file`
     );
     expect(readFileSync(path.join(S, "envoy-token"), "utf8")).toBe("an earlier batch's token\n");
-    expect(readFileSync(path.join(work, "listener.port"), "utf8")).toBe("4100\n");
-    expect(readdirSync(S).sort()).toEqual(["envoy-token", "logs"]);
+    expect(readFileSync(path.join(work, "listener_base.port"), "utf8")).toBe("4100\n");
+    expect(readdirSync(S).sort()).toEqual(["envoy-token", "logs", "services-from-base"]);
   });
 });
 

@@ -6,12 +6,16 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
 const SESSION = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
 const API = "https://api.github.com/repos/cybermonklabs/legion";
 const LINK = "https://github.com/cybermonklabs/legion/pull/2827";
+/** The run's own directory, whose bin/gh is its gh stand-in. */
+const RUN = "/work/runs/threads-closed-text-fixes-head-1";
 
-/** Rule 13's reason for an agent that made `steps`, one tool call each, in that order. */
+/** Rule 13's reason for an agent of the run RUN that made `steps`, one tool call each, in that
+ * order. */
 function reach(...steps: [tool: string, args: Record<string, unknown>][]): string | undefined {
   return offWorldReach(
     steps.map(([tool, args], at) => ({ file: SESSION, tool, args, at })),
-    LOOPBACK
+    LOOPBACK,
+    [RUN]
   );
 }
 const bash = (command: string): [string, Record<string, unknown>] => ["bash", { command }];
@@ -279,6 +283,290 @@ describe("health: rule 13, off-world network, a remote in scp form", () => {
         `off-world network: a bash call in ${SESSION} reaches github.com (${remote}), no host of the run's world (127.0.0.1, localhost, ::1)`
       );
   });
+});
+
+// Catches: a position that takes a repository's address (git-clone(1), git-fetch(1) and the other
+// subcommands health.ts's GIT_TAKERS and JJ_TAKERS cite) read as no address, past the options
+// before it, so a remote in scp form there goes unread; and a word of git or jj where the command
+// takes no address (a revset, a regex of URLs to delete, a value a mode matches, a `--repo` that
+// git push's own repository argument overrides) read as a reach.
+describe("health: rule 13, off-world network, where git and jj take a repository's address", () => {
+  const remote = "git@github.com:cybermonklabs/legion.git";
+  const off = (named: string) =>
+    `off-world network: a bash call in ${SESSION} reaches github.com (${named}), no host of the run's world (127.0.0.1, localhost, ::1)`;
+
+  for (const [command, named] of [
+    [`git clone --depth 1 -b main --single-branch ${remote} src`, remote],
+    [`git -C ws -c core.quotepath=off pull ${remote} main`, remote],
+    [`git fetch --multiple origin ${remote}`, remote],
+    [`git push --repo=${remote}`, remote],
+    [`git ls-remote --sort version:refname ${remote}`, remote],
+    [`git remote -v set-url --push origin ${remote}`, remote],
+    [`git submodule add -b main ${remote} vendor/legion`, remote],
+    [`git submodule set-url vendor/legion ${remote}`, remote],
+    [`git archive --remote ${remote} HEAD`, remote],
+    [`git config --add remote.upstream.url ${remote}`, remote],
+    [`git config set --comment mirror remote.upstream.pushurl ${remote}`, remote],
+    [`git -c remote.origin.url=${remote} fetch origin`, remote],
+    ["git config --global url.git@github.com:.insteadOf gh:", "git@github.com:"],
+    [`jj -R ws git remote add upstream ../legion.git --push-url ${remote}`, remote],
+    [`jj git remote set-url origin --fetch ${remote}`, remote],
+    [`jj --config ui.color=never git clone --remote upstream ${remote} src`, remote],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(off(named));
+    });
+
+  for (const command of [
+    "jj log -r 'main@origin::@'",
+    `git remote set-url --delete origin ${remote}`,
+    `git config --unset remote.origin.url ${remote}`,
+    `git push --repo=${remote} origin main`,
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+// Catches: a word of curl or wget where the program takes no host read as one (the file a value
+// option takes, apart or at the end of a word of short options, or a redirection's target); one
+// program's option read by the other's (wget's `-c` takes no cookie jar, curl's `-O` no file), so
+// the URL after it goes unread; and the host an option of theirs connects to (`--url`, a proxy,
+// wget's `--base`) read as none.
+describe("health: rule 13, off-world network, where curl and wget take a host", () => {
+  const api = "api.github.com/repos/cybermonklabs/legion";
+  const whoami = "http://127.0.0.1:4101/api/v1/whoami";
+  for (const [command, host, named] of [
+    [`curl -O ${api}/tarball`, "api.github.com", `${api}/tarball`],
+    [`curl -sS --url ${api}`, "api.github.com", api],
+    [`curl -sS -x proxy.example.com:3128 ${whoami}`, "proxy.example.com", "proxy.example.com:3128"],
+    [`wget -c ${api}/tarball`, "api.github.com", `${api}/tarball`],
+    ["wget -F -i links.html -B api.github.com/", "api.github.com", "api.github.com/"],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(
+        `off-world network: a bash call in ${SESSION} reaches ${host} (${named}), no host of the run's world (127.0.0.1, localhost, ::1)`
+      );
+    });
+
+  for (const command of [
+    `curl -sS -D headers.txt -o report.json ${whoami}`,
+    `curl -sSo report.json ${whoami}`,
+    `curl -sS ${whoami} > report.json`,
+    `wget -a fetch.log -O page.html ${whoami}`,
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+/** Rule 13's reason for a bash call that reaches `host`, named `named`, held to the run's world. */
+const offWorld = (host: string, named: string, via = "") =>
+  `off-world network: a bash call in ${SESSION} reaches ${host} (${named})${via}, no host of the run's world (127.0.0.1, localhost, ::1)`;
+
+// Catches: an address in scp form with no user (`host:path`, which git, jj, scp, rsync and sftp
+// read as a remote host when no slash comes before its first colon) read as no reach where one
+// of them takes an address; and that form read anywhere else, where `HEAD:docs/cli.md`,
+// `main@origin:docs/cli.md` and `docs/cli.md:12` are a revision and a path, or a file and a line,
+// and a review body or a commit message that names a command after a `;` or a bracket is text.
+describe("health: rule 13, off-world network, a remote in scp form with no user", () => {
+  const remote = "github.com:cybermonklabs/legion.git";
+  for (const command of [
+    `git clone ${remote} src`,
+    `git -C ws remote add upstream ${remote}`,
+    `jj git clone ${remote} src`,
+    `scp notes.md ${remote}`,
+    `rsync -az ./ ${remote}`,
+    `sftp ${remote}`,
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(offWorld("github.com", remote));
+    });
+
+  for (const command of [
+    "git show HEAD:docs/cli.md",
+    "jj file show main@origin:docs/cli.md",
+    "grep -n greet docs/cli.md:12",
+    "git push origin HEAD:main",
+    "git clone localhost:legion.git src",
+    "scp ./notes:v1.md docs/cli.md:12 backup/",
+    `gh pr comment 1001 --body "Checked; git clone ${remote} still works"`,
+    'git commit -m "Fix the typo (ssh keys are unchanged)"',
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+// Catches: a command a wrapper runs read as the wrapper's words, so `sudo git clone …` or
+// `env GIT_SSH_COMMAND=… git fetch …` reaches GitHub unread; and a wrapper read as a reach of its
+// own, or the words of one that runs nothing (`command -v`, `sudo -l`) read as a command.
+describe("health: rule 13, off-world network, a command a wrapper runs", () => {
+  const remote = "git@github.com:cybermonklabs/legion.git";
+  for (const [command, named, via] of [
+    [`sudo -u ada -E git clone ${remote} src`, remote, ""],
+    [`env -i GIT_SSH_COMMAND='ssh -i key' git fetch ${remote}`, remote, ""],
+    [`timeout -s KILL 30 git ls-remote ${remote}`, remote, ""],
+    [
+      "nice -n 10 curl -sS api.github.com/repos/cybermonklabs/legion",
+      "api.github.com/repos/cybermonklabs/legion",
+      "",
+    ],
+    ["nohup ssh git@github.com &", "git@github.com", ""],
+    [`echo main | xargs -n1 git clone ${remote}`, remote, ""],
+    [`command git clone ${remote}`, remote, ""],
+    ["exec ssh -T git@github.com", "git@github.com", ""],
+    [`time git fetch ${remote}`, remote, ""],
+    [`sh -c 'git clone ${remote} src'`, remote, " in the program sh -c runs"],
+    ["bash -lc 'cd ws && ssh -T git@github.com'", "git@github.com", " in the program bash -c runs"],
+    [`sudo env FOO=1 timeout 5 git clone ${remote}`, remote, ""],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(
+        offWorld(named.startsWith("api.") ? "api.github.com" : "github.com", named, via)
+      );
+    });
+
+  for (const command of [
+    "env FOO=1 git status",
+    "timeout 30 bun test",
+    "sudo -u ada git log --oneline",
+    "nice -n 10 bun test",
+    "nohup bun run serve.ts &",
+    "git ls-files | xargs -I{} ssh {}",
+    "command -v ssh",
+    "sudo -l ssh git@github.com",
+    "exec bun test",
+    "time bun test",
+    "bash -c 'git show HEAD:docs/cli.md'",
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+// Catches: the host ssh, scp, sftp, rsync, nc, ncat or telnet connects to read as no reach: an
+// operand that takes a host by the tool's own grammar, or an option that names one (`-J`,
+// `-o ProxyJump`, `-o HostName`, a proxy); and the words of those tools that name no host (an
+// option's value, a local path, a listener's port, an ssh alias `HostName` points at the
+// loopback) read as one.
+describe("health: rule 13, off-world network, ssh, scp, sftp, rsync, nc, ncat and telnet", () => {
+  for (const [command, host, named] of [
+    ["ssh -i key -p 22 git@github.com", "github.com", "git@github.com"],
+    ["ssh -J bastion.example.com localhost", "bastion.example.com", "bastion.example.com"],
+    [
+      "ssh -o ProxyJump=bastion.example.com 127.0.0.1",
+      "bastion.example.com",
+      "ProxyJump=bastion.example.com",
+    ],
+    ["ssh -o 'HostName github.com' localhost", "github.com", "HostName github.com"],
+    ["scp -P 22 notes.md git@github.com:notes.md", "github.com", "git@github.com:notes.md"],
+    [
+      "scp -J bastion.example.com notes.md localhost:notes.md",
+      "bastion.example.com",
+      "bastion.example.com",
+    ],
+    ["sftp -b batch git@github.com", "github.com", "git@github.com"],
+    ["rsync -avz --exclude .git ./ git@github.com:legion/", "github.com", "git@github.com:legion/"],
+    ["rsync -av github.com::legion/ ./mirror/", "github.com", "github.com::legion/"],
+    [
+      "rsync -e 'ssh -J bastion.example.com' ./ localhost:backup/",
+      "bastion.example.com",
+      "bastion.example.com",
+    ],
+    ["nc -zv github.com 22", "github.com", "github.com"],
+    ["nc -x proxy.example.com:1080 localhost 4100", "proxy.example.com", "proxy.example.com:1080"],
+    [
+      "ncat --proxy proxy.example.com:3128 127.0.0.1 4100",
+      "proxy.example.com",
+      "proxy.example.com:3128",
+    ],
+    ["telnet github.com 22", "github.com", "github.com"],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(offWorld(host, named));
+    });
+
+  for (const command of [
+    "ssh -p 2222 -i key localhost",
+    "ssh -o HostName=127.0.0.1 github",
+    "ssh -G github.com",
+    "ssh-keygen -t ed25519 -f key",
+    "scp notes.md backup/notes.md",
+    "sftp localhost",
+    "rsync -e ssh -av ./ localhost:backup/",
+    "rsync -av ./src/ ./dst/",
+    "nc -lvp 4100",
+    "nc -U /tmp/agent.sock",
+    "ncat -l 127.0.0.1 4100",
+    "telnet 127.0.0.1 4100",
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+// Catches: a host a `gh` names (`--hostname`, `-R HOST/OWNER/REPO`, GH_HOST, set before it or on
+// it) other than github.com, which the run's stand-in plays, and the loopback read as in the
+// world; github.com read as off it; and a gh other than the run's own stand-in (<run>/bin/gh,
+// which a bare `gh` resolves to on the pane's PATH) read as the world's, whatever it names.
+describe("health: rule 13, off-world network, the host a gh names, and a gh that is not the run's", () => {
+  const served = (host: string, named: string) =>
+    `off-world network: a bash call in ${SESSION} reaches ${host} (${named}), no host the run's gh serves (github.com, 127.0.0.1, localhost, ::1)`;
+  const other = (named: string) =>
+    `off-world network: a bash call in ${SESSION} reaches github.com (${named}), a gh that is not the run's own stand-in (${RUN}/bin/gh), and no world of this rig serves another`;
+  for (const [command, reason] of [
+    ["gh api --hostname ghe.example.com user", served("ghe.example.com", "ghe.example.com")],
+    [
+      "gh pr view 1001 -R ghe.example.com/example/widgets",
+      served("ghe.example.com", "ghe.example.com/example/widgets"),
+    ],
+    [
+      "gh pr view 1001 --repo=ghe.example.com/example/widgets",
+      served("ghe.example.com", "ghe.example.com/example/widgets"),
+    ],
+    [
+      "gh pr view 1001 -R https://ghe.example.com/example/widgets",
+      served("ghe.example.com", "https://ghe.example.com/example/widgets"),
+    ],
+    [
+      "GH_HOST=ghe.example.com gh pr view 1001",
+      served("ghe.example.com", "GH_HOST=ghe.example.com"),
+    ],
+    [
+      "env GH_HOST=ghe.example.com gh api user",
+      served("ghe.example.com", "GH_HOST=ghe.example.com"),
+    ],
+    [
+      "export GH_HOST=ghe.example.com && gh api user",
+      served("ghe.example.com", "GH_HOST=ghe.example.com"),
+    ],
+    ["GH_HOST=ghe.example.com; gh api user", served("ghe.example.com", "GH_HOST=ghe.example.com")],
+    ["GH_HOST=ghe.example.com\ngh api user", served("ghe.example.com", "GH_HOST=ghe.example.com")],
+    ["/usr/bin/gh pr view 1", other("/usr/bin/gh")],
+    ["cd ws && /opt/legion/bin/gh pr view 1", other("/opt/legion/bin/gh")],
+    ["legion gh pr view 1", other("legion gh")],
+    ["./gh pr view 1", other("./gh")],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(reason);
+    });
+
+  for (const command of [
+    "gh pr view 1",
+    "gh api --hostname github.com repos/example/widgets/pulls/1001",
+    "gh pr view 1001 -R example/widgets",
+    "gh pr view 1001 -R github.com/example/widgets",
+    "gh pr view -R https://github.com/example/widgets 1001",
+    "GH_HOST=github.com gh api user",
+    "GH_HOST=127.0.0.1 gh api user",
+    `${RUN}/bin/gh pr view 1`,
+    "../bin/gh pr view 1",
+    "command -v /usr/bin/gh",
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
 });
 
 // Catches: a tool rule 13 names no reading for read as reaching nothing, so a URL handed to a

@@ -982,6 +982,39 @@ test("each call records the agent the run named, and none when it names one", ()
   expect(recorded.slice(1).map((call) => call.by)).toEqual(["implementer", undefined]);
 });
 
+// Catches: a call that names github.com, gh's own default host and the host the world plays,
+// refused where GitHub answers it as it answers the bare call (`gh api --hostname github.com
+// user` matched no route, since the world's routes name the bare call): `--hostname` before or
+// after the endpoint, and a `-R` of github.com's in its `HOST/OWNER/REPO` and URL forms. And the
+// record keeping the call as the world answered it, so its readers read one repository.
+test("a call that names github.com is answered as the bare call, wherever the flag stands", () => {
+  const { dir } = runDir({ fixture: true });
+  const user = answer(dir, ["api", "user"]);
+  expect(JSON.parse(user)).toEqual({ login: "widgets-reviewer[bot]" });
+  expect(answer(dir, ["api", "--hostname", "github.com", "user"])).toBe(user);
+  expect(answer(dir, ["api", "user", "--hostname=github.com"])).toBe(user);
+  const view = answer(dir, ["pr", "view", "1001", "--json", "number", "--jq", ".number"]);
+  expect(view).toBe("1001");
+  for (const repo of [
+    ["-R", "github.com/example/widgets"],
+    ["--repo=https://github.com/example/widgets"],
+  ])
+    expect(
+      answer(dir, ["pr", "view", "1001", ...repo, "--json", "number", "--jq", ".number"])
+    ).toBe(view);
+  expect(recordedCalls(dir).map((call) => call.argv)).toContainEqual([
+    "pr",
+    "view",
+    "1001",
+    "-R",
+    "example/widgets",
+    "--json",
+    "number",
+    "--jq",
+    ".number",
+  ]);
+});
+
 /** Every call line of the record under `dir`, the opening line left out. */
 const recordedCalls = (dir: string) =>
   readFileSync(path.join(dir, "calls.jsonl"), "utf8")
