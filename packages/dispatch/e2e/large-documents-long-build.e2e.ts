@@ -27,7 +27,12 @@ import { type Browser, expect, type Page, test } from "@playwright/test";
 import { getArtifactText } from "./api";
 import { documentEditor, documentTransport } from "./editor";
 import { documentDiagrams, documentNames, documentTitle, largeDocument } from "./large-documents";
-import { measureDocument, throttleTheCpu, watchTheDocument } from "./large-documents-page";
+import {
+  measureDocument,
+  theMomentThePageReached,
+  throttleTheCpu,
+  watchTheDocument,
+} from "./large-documents-page";
 import {
   blocksBuilt,
   drawnBlocks,
@@ -35,6 +40,7 @@ import {
   liveEditorRoot,
   namedEditor,
   seedDocument,
+  type TheirWordLanded,
   type TheOtherPersonsPen,
   theOtherPersonsPen,
   topLevelBlocks,
@@ -115,7 +121,8 @@ const firstBlockTimeoutMs = 30_000;
 
 /** How long the second and third rows wait for the editor to open once its first block is in,
  *  which is the end of its build; the third row's build over the whole drawn document waits
- *  `theDrawnBuildTimeoutMs` instead. */
+ *  `theDrawnBuildTimeoutMs` instead, and the second row's wait for its word to land in the
+ *  editor shares this one's deadline rather than adding one of its own. */
 const buildTimeoutMs = 60_000;
 
 /** How long the third row waits for the editor to open over the whole drawn document. */
@@ -225,15 +232,26 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
 
 /**
  * Records the first animation frame in which the editor's own first block holds `word`, with
- * how many blocks the editor held then and whether its build was over.
+ * how many blocks the editor held then and whether its build was over, and says so in that
+ * frame: what it answers is a wait for that word, which fails by name where the editor never
+ * held it inside `timeoutMs`.
  *
  * Only the first block is read, because that is the block the other person writes in and
  * reading the whole of a 406,000-character document every frame would be the thing slowing the
  * page down. The loop does not stop when the editor is named: a word that lands only once the
  * build is over is the failure this row is about, and the row says so rather than finding
- * nothing recorded.
+ * nothing recorded. It is said rather than read for the same reason: that frame comes after
+ * the editor is open, so a reading taken when the row heard the editor was open would find no
+ * word and fail as though it had never landed.
  */
-async function whenTheirWordLands(page: Page, word: string): Promise<void> {
+async function whenTheirWordLands(
+  page: Page,
+  word: string
+): Promise<(timeoutMs: number) => Promise<TheirWordLanded>> {
+  const landed = Promise.withResolvers<TheirWordLanded>();
+  await page.exposeFunction("__theirWordLanded", (where: TheirWordLanded) => {
+    landed.resolve(where);
+  });
   await page.addInitScript(
     ({ live, named, wanted }: { live: string; named: string; wanted: string }) => {
       const look = () => {
@@ -244,6 +262,7 @@ async function whenTheirWordLands(page: Page, word: string): Promise<void> {
             blocks: root.querySelectorAll("[data-block-id]").length,
             open: document.querySelector(named) !== null,
           };
+          window.__theirWordLanded?.(window.__theirWord);
           return;
         }
         requestAnimationFrame(look);
@@ -252,6 +271,12 @@ async function whenTheirWordLands(page: Page, word: string): Promise<void> {
     },
     { live: liveEditorRoot, named: namedEditor, wanted: word }
   );
+  return (timeoutMs) =>
+    theMomentThePageReached(
+      landed.promise,
+      timeoutMs,
+      "the editor never held the word the other person wrote"
+    );
 }
 
 // The larger document, as every row of this file: what this one needs of a build is that it outlast
@@ -286,7 +311,7 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
-    await whenTheirWordLands(page, word);
+    const theirWord = await whenTheirWordLands(page, word);
     await page.goto(path, { waitUntil: "commit" });
 
     // He writes one word into the document's first block, which Alice's first batch has
@@ -296,24 +321,28 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     await reached.firstBlock(firstBlockTimeoutMs);
     writer.write(word);
 
-    const openedMs = await reached.editorOpened(buildTimeoutMs);
+    // The end of her build, and her page's word on where his landed, inside one deadline: the
+    // frame that records the word is an animation frame of her page, and it can come after the
+    // moment this row hears her editor is open - always, for a word that lands only once the
+    // build is over, which is the failure this row is about.
+    const endBy = Date.now() + buildTimeoutMs;
+    const openedMs = await reached.editorOpened(endBy - Date.now());
+    const landed = await theirWord(endBy - Date.now());
     const whole = await blocksBuilt(page);
-    const landed = await page.evaluate(() => window.__theirWord);
     console.log(
       `R11 their edit during the build · the word reached the editor with ` +
-        `${landed?.blocks ?? 0} of ${whole} blocks built, build ` +
-        `${landed?.open === true ? "over" : "running"}, editor open at ${Math.round(openedMs)} ms.`
+        `${landed.blocks} of ${whole} blocks built, build ` +
+        `${landed.open ? "over" : "running"}, editor open at ${Math.round(openedMs)} ms.`
     );
 
-    expect(landed, "the editor never held the word the other person wrote").toBeDefined();
-    expect(landed?.blocks ?? 0).toBeGreaterThan(0);
+    expect(landed.blocks).toBeGreaterThan(0);
     expect(
-      landed?.open,
+      landed.open,
       "the word reached the editor only once its build was over: another person's edit waits " +
         "for the whole build before the reader sees it"
     ).toBe(false);
     expect(
-      landed?.blocks ?? 0,
+      landed.blocks,
       "the editor held the whole document when the word reached it, so nothing about this run " +
         "crossed a build"
     ).toBeLessThan(whole);

@@ -21,7 +21,7 @@
 import { expect, test } from "@playwright/test";
 
 import { documentNames, largeDocument } from "./large-documents";
-import { throttleTheCpu, watchTheDocument } from "./large-documents-page";
+import { readTheLongTasks, throttleTheCpu, watchTheDocument } from "./large-documents-page";
 import {
   builtAcross,
   handedToTheBuild,
@@ -50,7 +50,8 @@ import { asUser } from "./users";
  *  machine is the regression this guards, and the print is what says the machine was quiet. */
 const aDesktopBuildTaskAtMostMs = 500;
 
-/** How long the row below waits for the editor to open, counted from the navigation.
+/** How long the row below waits for the editor to open and for the page to say the swap that
+ *  ends its build, counted from the navigation: one deadline both waits share.
  *
  *  The opening is an announcement the page makes (`watchTheDocument`), and one that never comes
  *  is a promise that never settles: left to the row's own 900 s timeout, it would outlive the 4
@@ -63,7 +64,8 @@ const aDesktopBuildTaskAtMostMs = 500;
  *  the leg leaves: its other rows and everything of the step that is not a row took 116 s of
  *  the 240 (run 42316487530, the job's head in that file), so 124 s are this row's, the seeding
  *  among them. 90 s is half as long again as the slowest opening ever read, on a machine three
- *  others were sharing, and leaves the seeding 34 s. */
+ *  others were sharing, and leaves the seeding 34 s; the swap is a task after the opening, so
+ *  sharing the deadline moves none of that. */
 const editorOpensWithinMs = 90_000;
 
 // What cost a desktop width ten times a phone's longest task was not a batch. Traced per
@@ -101,17 +103,27 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
-    await whatTheBuildServes(page);
+    const herBuild = await whatTheBuildServes(page);
     await page.goto(path, { waitUntil: "commit" });
     // Both moments are announcements the page makes rather than readings this side takes, so
     // nothing of this run is on the thread the row is measuring (`large-documents-page.ts`).
-    const openedMs = await reached.editorOpened(editorOpensWithinMs);
+    // The second is the probe's own: the window this row reads is the one the probe closes, in
+    // the frame after the editor is named, and the editor's opening above is a timer of
+    // another recorder's that can come first. Nothing the probe recorded is read until it has
+    // said the swap that ends the build, a task after it closed that window; read on the
+    // opening alone, this row could find no end to its window and read its tasks against 0.
+    const endBy = Date.now() + editorOpensWithinMs;
+    const openedMs = await reached.editorOpened(endBy - Date.now());
+    await herBuild.swapped(endBy - Date.now());
 
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const began = ran.firstBatchMs ?? 0;
     const timers = handedToTheBuild((await page.evaluate(() => window.__servedTimers)) ?? [], ran);
     const [leastBuilt, mostBuilt] = builtAcross(timers);
-    const tasks = ((await page.evaluate(() => window.__largeDocumentLongTasks)) ?? []).filter(
+    // Every long task the page has had, the ones its observer had not yet delivered among
+    // them: the task the editor opens in ends just before the probe closes the window, and its
+    // entry is delivered a task later still (`readTheLongTasks`).
+    const tasks = (await readTheLongTasks(page)).tasks.filter(
       (task) => task.at >= began && task.at <= (ran.openedMs ?? 0)
     );
     const longestTask = tasks.reduce((worst, task) => Math.max(worst, task.ms), 0);

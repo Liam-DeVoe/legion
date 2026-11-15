@@ -158,8 +158,11 @@ export interface ServedWord {
  *  from inside that turn. A reader's build is over at the third of these, not the second.
  *
  *  `swapTurn` is the turn that third stamp was written in, and it is the only one of these the
- *  liveness reading uses. The three clock stamps are printed - where the swap's turn ended,
- *  how far past the window that was, and the margin - and held to nothing. */
+ *  liveness reading uses. The page says it, with `swappedMs`, in the task it writes them
+ *  (`TheSwap`), and until then neither is here: a record read before that holds no swap. The
+ *  three clock stamps are printed - where the swap's turn ended, how far past the window that
+ *  was, and the margin - and held to nothing; the last of them is a task later still, so a
+ *  record read once the swap is said may not hold it yet. */
 export interface TheBuildRan {
   firstBatchMs?: number;
   openedMs?: number;
@@ -170,7 +173,7 @@ export interface TheBuildRan {
 
 /** Where the editor was when another person's word first showed up in its first block: how
  *  many blocks it held, and whether its build was over by then. */
-interface TheirWordLanded {
+export interface TheirWordLanded {
   readonly blocks: number;
   readonly open: boolean;
 }
@@ -254,9 +257,17 @@ declare global {
      *  document answers nothing the run asks it until that build is over, which is the whole
      *  of what the row is arranging its window against. */
     __theBuildReached?: (built: number, itsStop: boolean) => void;
+    /** The swap that ends the build, as `whatTheBuildServes` says it in the task it stamps
+     *  `TheBuildRan`'s `swapTurn` and `swappedMs` in: that turn and that clock. Said rather
+     *  than left to a reading because the stamp comes tasks after the editor opens, and a
+     *  reading taken between the two holds no swap. */
+    __theBuildSwapped?: (turn: number, atMs: number) => void;
     /** Where the editor was when another person's word reached its first block
      *  (`whenTheirWordLands`). */
     __theirWord?: TheirWordLanded;
+    /** What the page says in the frame it records `__theirWord` in, so the row waits for that
+     *  frame rather than reading before it (`whenTheirWordLands`). */
+    __theirWordLanded?: (landed: TheirWordLanded) => void;
   }
 }
 
@@ -634,9 +645,10 @@ export const timerEveryMs = 250;
  *  carries none of them; a frame of one write is a few hundred bytes. */
 export const theirWordsInFramesUnderBytes = 16_384;
 
-/** What the probe below answers the row that arranges its own window: her page's own word
- *  about how far its build has got, said at each step of it, which is what that row writes
- *  and stops by. */
+/** What the probe below answers a row: her page's own word about how far its build has got,
+ *  said at each step of it, which is what the timer row writes and stops by, and its word
+ *  that the swap ending that build is over, which is when a row reads what the probe
+ *  recorded. */
 export interface TheBuildServed {
   /** The editor's own top-level block count as her page last said it, and `undefined` before
    *  it has said anything: what the row reads to know how many of his words her build has
@@ -656,6 +668,23 @@ export interface TheBuildServed {
    *  stops between two of its own keystrokes rather than waiting on a promise, so the word it
    *  is in the middle of is the last one it sends. */
   readonly stopped: () => number | undefined;
+  /** The swap that ends her build, as her page said it in the task it stamped it in: what a
+   *  row waits for before it reads anything the probe recorded. The build's window is closed
+   *  in the frame after her editor is named rather than when a row hears the editor is open,
+   *  every timer the probe handed over inside that window was handed over ahead of the swap's
+   *  own task, and the swap's stamp comes tasks after her editor opens, so a reading taken any
+   *  sooner can hold none of them. Settles once; fails, naming what never came, where she has
+   *  not said it inside `timeoutMs`. */
+  readonly swapped: (timeoutMs: number) => Promise<TheSwap>;
+}
+
+/** The swap that ends a build, as the page stamped it (`TheBuildRan`'s `swapTurn` and
+ *  `swappedMs`) and said it in the same task: the turn of its own loop the stamp was written
+ *  in, which the liveness row reads every word against, and `performance.now()` beside it,
+ *  which that row only prints. */
+export interface TheSwap {
+  readonly turn: number;
+  readonly atMs: number;
 }
 
 /**
@@ -705,7 +734,16 @@ export interface TheBuildServed {
  * `watchTheDocument` gives: a run that asked this page how far its build had got would be
  * answered when the build was over.
  *
- * Install before the navigation; read once the editor has opened.
+ * The swap that ends the build is said too, in the task the page stamps it in (`swapped`).
+ * That stamp is a task handed over in the frame after the one the editor was named in, so it
+ * comes tasks after the editor opens, and a run that read the page's records the moment it
+ * heard the editor was open could read them with no swap in them yet. CI's `iphone-alone`
+ * leg did, at `beef6c36` (run 43718779158): its trace's reading of `__theBuildRan` held the
+ * first batch and the opening and nothing else, the row took the missing turn for turn 0, and
+ * it failed six words the build had served before its editor even opened.
+ *
+ * Install before the navigation; read once the page has said its swap (`swapped`), because
+ * its records of the build are not whole before that (`TheBuildServed`).
  */
 export async function whatTheBuildServes(
   page: Page,
@@ -719,6 +757,10 @@ export async function whatTheBuildServes(
   let built: number | undefined;
   let stopped: number | undefined;
   let step = Promise.withResolvers<number>();
+  const swapped = Promise.withResolvers<TheSwap>();
+  await page.exposeFunction("__theBuildSwapped", (turn: number, atMs: number) => {
+    swapped.resolve({ atMs, turn });
+  });
   await page.exposeFunction("__theBuildReached", (said: number, itsStop: boolean) => {
     built = said;
     if (itsStop) {
@@ -857,6 +899,10 @@ export async function whatTheBuildServes(
             setTimeout(() => {
               ran.swapTurn = thisTurn();
               ran.swappedMs = performance.now();
+              // Said in the task it was stamped in, so the run reads the page's records once
+              // they hold the swap: the stamp comes tasks after the frame that named the
+              // editor, and a reading taken between the two holds no swap at all.
+              window.__theBuildSwapped?.(ran.swapTurn, ran.swappedMs);
               setTimeout(() => {
                 ran.freeTurnEndedMs = performance.now();
               }, 0);
@@ -901,6 +947,14 @@ export async function whatTheBuildServes(
           "named holding fewer"
       ),
     stopped: () => stopped,
+    swapped: (timeoutMs) =>
+      theMomentThePageReached(
+        swapped.promise,
+        timeoutMs,
+        "her page never said the swap that ends its build was over: the task it handed over " +
+          "in the frame after her editor was named never ran, so nothing it recorded of that " +
+          "build is whole enough to read"
+      ),
   };
 }
 

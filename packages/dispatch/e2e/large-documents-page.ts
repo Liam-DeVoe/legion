@@ -70,6 +70,10 @@ declare global {
      *  reads (dispatch://INFRA-341, R11). A browser's `longtask` entry is one of at least
      *  50 ms, which is the threshold the entry type itself is defined by. */
     __largeDocumentLongTasks?: { at: number; ms: number }[];
+    /** Moves the `longtask` entries the observer above holds but has not yet delivered into
+     *  the two records above, which a reading does before it reads them
+     *  (`readTheLongTasks`). */
+    __largeDocumentTakeLongTasks?: () => void;
     /** Whether the `longtask` observer above is watching this page: true once `observe` has
      *  returned, and absent where the browser took no such observer. A row whose claim is that
      *  no task was over its target reads this, since an observer that never attached records
@@ -501,15 +505,24 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
       });
       window.__largeDocumentLongestTask = 0;
       window.__largeDocumentLongTasks = [];
-      new PerformanceObserver((entries) => {
-        for (const entry of entries.getEntries()) {
+      const recordTheLongTasks = (entries: PerformanceEntryList) => {
+        for (const entry of entries) {
           window.__largeDocumentLongestTask = Math.max(
             window.__largeDocumentLongestTask ?? 0,
             entry.duration
           );
           window.__largeDocumentLongTasks?.push({ at: entry.startTime, ms: entry.duration });
         }
-      }).observe({ buffered: true, type: "longtask" });
+      };
+      const longTasks = new PerformanceObserver((entries) => {
+        recordTheLongTasks(entries.getEntries());
+      });
+      longTasks.observe({ buffered: true, type: "longtask" });
+      // What a reading calls first (`readTheLongTasks`): the entries the observer holds and
+      // has not yet delivered, which `takeRecords()` hands over here instead.
+      window.__largeDocumentTakeLongTasks = () => {
+        recordTheLongTasks(longTasks.takeRecords());
+      };
       // Written after `observe` has returned, so it is the page's own word that the entries
       // below were being collected rather than this side's assumption that they were.
       window.__largeDocumentLongTasksWatched = true;
@@ -701,6 +714,48 @@ export async function readTheOpening(page: Page): Promise<DocumentOpening> {
   });
 }
 
+/** Every `longtask` entry the page has recorded, as `readTheLongTasks` reads them: the longest
+ *  and each one, and the moment of the reading, before which every task they cover ended. */
+export interface TheLongTasks {
+  /** `performance.now()` when they were read. */
+  readonly atMs: number;
+  /** The longest of them, in milliseconds; 0 where there were none. */
+  readonly longestMs: number;
+  /** Each of them, by when it started and how long it held the thread. */
+  readonly tasks: readonly { readonly at: number; readonly ms: number }[];
+}
+
+/**
+ * Reads every `longtask` entry the recorder of `watchTheDocument` holds, once it has taken in
+ * the entries its observer had been handed but not yet delivered. A task's entry is handed to
+ * the observer as that task ends and delivered to its callback in a task of its own after
+ * that, so a reading taken the moment the page announces something can come before the entry
+ * of the task just behind it: measured in Chromium at 4x CPU throttling, in the frame after a
+ * 300 ms task the callback had delivered its entry in none of 20 runs, and `takeRecords()`
+ * returned it in all 20. The task the editor opens in is such a task - it publishes the
+ * margin's placements, and it is the one that held a desktop page for seconds before INFRA-341
+ * fixed it (`large-documents-desktop-build.e2e.ts`) - so a reading that skipped the flush
+ * could pass a guard on the one task it was there to catch.
+ *
+ * Fails, naming the miss, where the recorder never ran.
+ */
+export async function readTheLongTasks(page: Page): Promise<TheLongTasks> {
+  const read = await page.evaluate(() => {
+    const take = window.__largeDocumentTakeLongTasks;
+    if (take === undefined) return undefined;
+    take();
+    const longestMs = window.__largeDocumentLongestTask;
+    const tasks = window.__largeDocumentLongTasks;
+    return longestMs === undefined || tasks === undefined
+      ? undefined
+      : { atMs: performance.now(), longestMs, tasks };
+  });
+  if (read === undefined) {
+    throw new Error("the page lost its recorders: an init script never ran");
+  }
+  return read;
+}
+
 /** What a caller gives the measurement beyond the page and the path: how long each of its two
  *  waits may last. Each is a wait for something that never came, so a failure reads as the miss
  *  it is rather than as a hang; a build that draws at all is read against the target. */
@@ -767,18 +822,17 @@ export async function measureDocument(
     { cap: scrollStepsMax, stepMs: scrollStepMs }
   );
 
-  const longestTaskMs = await page.evaluate(() => window.__largeDocumentLongestTask);
-  const longTasks = await page.evaluate(() => window.__largeDocumentLongTasks);
+  const {
+    atMs: windowClosedMs,
+    longestMs: longestTaskMs,
+    tasks: longTasks,
+  } = await readTheLongTasks(page);
   const longTasksWatched = await page.evaluate(
     () => window.__largeDocumentLongTasksWatched === true
   );
-  const windowClosedMs = await page.evaluate(() => performance.now());
   const firstPaintedMs = await page.evaluate(() => window.__largeDocumentPaintedAt);
   const pageDrawnMs = await page.evaluate(() => window.__largeDocumentPageDrawnAt);
   const opening = await readTheOpening(page);
-  if (longestTaskMs === undefined || longTasks === undefined) {
-    throw new Error("the page lost its recorders: an init script never ran");
-  }
   return {
     editorOpenedMs,
     firstBlock: {
