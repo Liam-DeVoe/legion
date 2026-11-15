@@ -220,10 +220,14 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 // An untyped container's identity is its place in the tree and not what it holds, so an upload
 // that keeps one keeps its id though its contents changed. A list that gains, loses or alters an
 // item is still that list, and an id minted for it would assert a new list exists where none
-// does, reparenting every untouched sibling onto it. A changed block holding inline content is
-// other content and still takes a fresh id, and so does a container the alignment does not keep:
-// one of another kind in that place, one under another parent, and one live never held. A
-// reference keyed on the container it keeps still names a block the document holds.
+// does, reparenting every untouched sibling onto it. A typed block keeps the rule it had: its id
+// is the one its markdown names, so one whose contents changed keeps it and carries its unchanged
+// children's, and one naming another id is another block, of which nothing is carried. A changed
+// block holding inline content is other content and still takes a fresh id, and so does a
+// container the alignment does not keep: one of another kind in that place, one under another
+// parent, and one live never held. A reference keyed on the container it keeps still names a
+// block the document holds. docs' test of the same name holds the same rule through the document
+// upload path and the store: the parent tuples a one-item edit of a 1,980-item list appends.
 func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 	const listDocument = "Opening paragraph.\n\n- Alpha item\n- Beta item\n- Gamma item\n\nClosing paragraph.\n"
 
@@ -277,6 +281,43 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 					t.Errorf("the changed paragraph has live id %q, want a fresh one", id)
 				}
 			})
+		}
+	})
+
+	t.Run("a typed block keeps the id its markdown names", func(t *testing.T) {
+		const typedDocument = "Opening paragraph.\n\n" +
+			":::callout{#held kind=\"note\" title=\"\"}\nFirst inside.\n\nSecond inside.\n:::\n\n" +
+			"Closing paragraph.\n"
+		doc, frag, live, markdown := liveMarkdown(t, typedDocument)
+		liveCallout := live.Children[1]
+		if liveCallout.Type != "callout" || blockIDOfNode(t, liveCallout) != "held" || len(liveCallout.Children) != 2 {
+			t.Fatalf("block 1 of the live document is a %s with id %q and %d children, want the callout held of two paragraphs",
+				liveCallout.Type, blockIDOfNode(t, liveCallout), len(liveCallout.Children))
+		}
+		after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, "Second inside.", "Second inside, revised.", 1))
+		t.Logf("the upload editing inside the callout: diff update %d bytes", diff)
+		callout := after.Children[1]
+		if got := blockIDOfNode(t, callout); got != "held" {
+			t.Errorf("the callout whose contents changed has id %q, want %q, the id its markdown names", got, "held")
+		}
+		if got, want := blockIDOfNode(t, callout.Children[0]), blockIDOfNode(t, liveCallout.Children[0]); got != want {
+			t.Errorf("the callout's unchanged paragraph has id %q, want live's %q", got, want)
+		}
+		if id := blockIDOfNode(t, callout.Children[1]); slices.Contains(blockIDsOf(live), id) {
+			t.Errorf("the callout's changed paragraph has live id %q, want a fresh one", id)
+		}
+
+		doc, frag, live, markdown = liveMarkdown(t, typedDocument)
+		renamed, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, "{#held ", "{#renamed ", 1))
+		t.Logf("the upload naming the callout anew: diff update %d bytes", diff)
+		callout = renamed.Children[1]
+		if got := blockIDOfNode(t, callout); got != "renamed" {
+			t.Fatalf("the callout the upload names renamed has id %q", got)
+		}
+		for index, child := range callout.Children {
+			if id := blockIDOfNode(t, child); slices.Contains(blockIDsOf(live), id) {
+				t.Errorf("paragraph %d of the callout named anew has live id %q, want a fresh one: it is another block", index, id)
+			}
 		}
 	})
 

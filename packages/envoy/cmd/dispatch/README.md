@@ -916,7 +916,8 @@ What the two processes share, and what each keeps to itself:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
 
 - `server.started` names the build every live process serves, once each time that build changes.
-  A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
+  A process that finds every live process serving one stamped, non-empty commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, with `tuple_kinds` the relation kinds its build writes as tuples of the node and tuple store (`refs.TupleKinds`, the kinds `graph_edges`' tuple arm renders);
+  a process whose heartbeat lapsed is no live process, so the fleet it reads can agree on another build's commit, and it inserts nothing for that commit, which it would otherwise name with its own build's kinds;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
   Each process looks every 5 seconds, and an advisory lock keeps two from inserting or publishing at once.
   So a roll announces nothing until its last old process is gone, a restart of every process on one commit announces nothing, and a rollback to an earlier commit announces it again.
@@ -1640,6 +1641,8 @@ Its census answers `0` for the same reasons.
 Migration `0135_server_processes` creates two tables:
 `server_processes`, the registry of live server processes, and `server_build_announcements`, each build the fleet has announced as `server.started` (Running more than one process, above).
 It reads, locks and rewrites nothing that exists, and the release before it neither reads nor writes either table, so that release runs over the new schema unchanged and the census answers `0`.
+Migration `20261115051200_server_build_announcements_tuple_kinds` later adds `tuple_kinds` to `server_build_announcements`, a nullable `text[]` with no default: the relation kinds the announced build writes as tuples, from which the release that deletes an old arm of `graph_edges` reads whether the release a rollback would reach answers that arm's kinds from the store too.
+A row a build of an earlier release inserts names only `commit` and lists no kinds, which is true of it; the column rewrites no row, the release before it never reads it, and its census answers `0`.
 
 Migration `0136_dashboard_assets` creates `dashboard_builds`, `dashboard_assets` and `dashboard_build_assets`, where every server process publishes its dashboard build's assets at boot and from which it answers a page of another build that asks it for that build's chunks (`internal/dispatch/dashboard`).
 It creates tables and touches no row; its census answers `0`.
@@ -2384,7 +2387,9 @@ So `census --store` reads a difference on every backfilled block until that reco
 
 It is no repair.
 Its input is each row's own content: it never reads one side of a projection to write the other, so a row whose node is already written is left alone and a kind whose rows disagree with the store is for the census to report.
-It is safe to run again, since a row that already names its node is skipped, so a run interrupted anywhere carries on from where it stopped.
+It is safe to run again at any time, after a rollback as well: every pass walks only the rows that name no node, names their nodes in the transaction that writes their tuples, and reads no row that names one, its guards included.
+The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
+So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
 It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
 
 ### Erasing a node
@@ -2452,16 +2457,17 @@ A node the store does not hold is exit 2, naming it.
 
 Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
 The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
-It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`;
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`, the list `refs.TupleKinds` holds and the announcer writes into `server_build_announcements.tuple_kinds`;
 the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
 No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
-The arm answers no row for a node whose current `state` is `gone`, which is how it stays level with a projection row that is really deleted (a block a version no longer holds), and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row, so both arms lose it together.
 
-The switch is per row: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the store answers the facts of the rows that name a node.
+Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
 One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
-`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples for the rest, so a count and the list behind it cannot disagree.
-A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
-`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue, and reads the whole view and every backlink count over one seeded database before the backfill, with rows that name a node beside rows that name none, and again after it, row for row.
+The join is what keeps a rollback whole, since a build of the previous release retracts nothing in the store: a row it deletes leaves its tuple standing and answers from neither arm, and a row it deletes and writes again with no node answers once, from its old arm.
+The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from a live attribute node, so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
 
 ## Stored-order check
 

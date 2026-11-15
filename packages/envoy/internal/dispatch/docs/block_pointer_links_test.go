@@ -188,6 +188,11 @@ func pointerRowsOf(t *testing.T, database *store.Store, artifactID string) []poi
 // targets from the attribute node (block_pointer_targets), so a write of that node - a schema
 // change and its reinstall - lists the edges the new targets allow without re-indexing any
 // citing document.
+//
+// The attribute is read as pmdoc/schemanodes.Read installs it: through the current attribute_of
+// tuple alone and from a live attribute node. An attribute_of the store has since retracted, and
+// an attribute node it holds gone, each stop answering, so the link they limited is listed with no
+// limit, as the installed schema, which declares no such attribute, lists it.
 func TestATargetsChangeReachesStoredPointersAtOnce(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
@@ -203,6 +208,62 @@ func TestATargetsChangeReachesStoredPointersAtOnce(t *testing.T) {
 	// edge at r1 - a callout - is listed again at once, with no re-index of checks.md.
 	updatePointerTargets(t, database, "claim", "serves", []string{"requirement", "callout"})
 	requireLinksTo(t, database, "serves now allowing callouts, checks.md not re-indexed", "CORE-1/target#r1", "serves CORE-1/checks#c1")
+
+	updatePointerTargets(t, database, "claim", "serves", []string{"requirement"})
+	requirePointerTargets(t, database, "serves back at requirements alone", "CORE-1/checks#c1", "serves", []string{"requirement"})
+	requireLinksTo(t, database, "serves back at requirements alone", "CORE-1/target#r1")
+
+	stateAttributeOf(t, database, "claim", "serves", false)
+	requirePointerTargets(t, database, "the attribute_of retracted", "CORE-1/checks#c1", "serves", nil)
+	requireLinksTo(t, database, "the attribute_of retracted", "CORE-1/target#r1", "serves CORE-1/checks#c1")
+
+	stateAttributeOf(t, database, "claim", "serves", true)
+	requirePointerTargets(t, database, "the attribute_of asserted again", "CORE-1/checks#c1", "serves", []string{"requirement"})
+	requireLinksTo(t, database, "the attribute_of asserted again", "CORE-1/target#r1")
+
+	if _, err := database.Pool.Exec(context.Background(),
+		`update graph_nodes set state = 'gone' where kind = 'attribute' and id = 'claim/serves'`); err != nil {
+		t.Fatalf("end the claim/serves attribute: %v", err)
+	}
+	requirePointerTargets(t, database, "the attribute gone", "CORE-1/checks#c1", "serves", nil)
+	requireLinksTo(t, database, "the attribute gone", "CORE-1/target#r1", "serves CORE-1/checks#c1")
+}
+
+// stateAttributeOf appends an attribute_of tuple from typeName's attrName attribute to its
+// supertag, asserting or retracting it, as a schema change that adds or removes the attribute from
+// the type does.
+func stateAttributeOf(t *testing.T, database *store.Store, typeName, attrName string, asserted bool) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the attribute_of write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+		FromKind: "attribute", FromID: typeName + "/" + attrName, Kind: "attribute_of", ToKind: "supertag", ToID: typeName,
+		At: time.Now(), Who: model.Actor{Kind: "system", ID: "block-schema-seed"}, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+	}}); err != nil {
+		t.Fatalf("state the attribute_of of %s/%s %t: %v", typeName, attrName, asserted, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the attribute_of write: %v", err)
+	}
+}
+
+// requirePointerTargets fails unless block_pointer_targets answers want for the pointer attribute
+// of the block at nodeID: the targets graph_edges' tuple arm holds that block's links to, nil for
+// no limit.
+func requirePointerTargets(t *testing.T, database *store.Store, stage, nodeID, attribute string, want []string) {
+	t.Helper()
+	var targets []string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select block_pointer_targets($1, $2)`, nodeID, attribute).Scan(&targets); err != nil {
+		t.Fatalf("%s: read the targets of %s's %s: %v", stage, nodeID, attribute, err)
+	}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("%s: block_pointer_targets(%s, %s) = %#v, want %#v", stage, nodeID, attribute, targets, want)
+	}
 }
 
 // A browser's write is never refused: a settled browser tree holding a pointer to a block of a type

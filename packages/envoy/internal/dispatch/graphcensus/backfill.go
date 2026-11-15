@@ -91,6 +91,14 @@ type BackfillReport struct {
 // marks it - and the reconciliation states the part_of tuple and writes parent_block_id, which
 // is the one writer of that column.
 //
+// Each pass walks only the rows its marker does not mark, which for the three projected tables is
+// the node column pair the view's old arms test (migration 20261109215947), names their nodes on
+// them in the transaction that writes their tuples, and reads no marked row, its guards included
+// (blockNodeStands). So it can run again at any time over what is still unmarked - after a
+// rollback, when pods of the release before this one wrote rows with no node - and each run does
+// only the rows still owed: a second run over tables every row of which is marked writes no node,
+// no tuple and no marker (TestASecondBackfillWritesNothingOverMarkedRows).
+//
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
 // kind whose rows disagree with the store is for the census to report, not for this to paper
@@ -103,10 +111,11 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// that table (api's event-insert guard holds every other writer to it, because the broker
 	// takes the transaction id before the insert draws the event's id, which the safe horizon
 	// rests on), and the broker refuses an event that belongs to no issue, document, project or
-	// session, which a database-wide backfill belongs to none of. Two runs therefore state such
-	// a fact twice, since the repeat keys skip the sentinel, and nothing reads wrong for it: a
-	// current read takes the newest asserting tuple and the census counts nodes and projection
-	// rows rather than tuples.
+	// session, which a database-wide backfill belongs to none of. A run after another reads
+	// none of the rows that run marked, so it states none of their facts again; two runs at once
+	// can state such a fact twice, where both read one comment before either marks it, since the
+	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
+	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
 	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
 		backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles,
@@ -438,25 +447,35 @@ func markDocumentsOwed(ctx context.Context, database *store.Store, documents map
 }
 
 // blockRefRow is one block_refs row the backfill reads: the pair it holds, the block node it
-// is a link out of, and the row's own dates and sequence.
+// is a link out of, the row's own dates and sequence, and whether the store holds that block's
+// node in a state other than gone (blockNodeStands).
 type blockRefRow struct {
-	artifactID, blockID  string
-	address              string
-	kind, toKind, toID   string
-	createdAt            time.Time
-	sourceSeq            *int64
-	event                int64
-	blockNodeIsProjected bool
+	artifactID, blockID string
+	address             string
+	kind, toKind, toID  string
+	createdAt           time.Time
+	sourceSeq           *int64
+	event               int64
+	blockNodeStands     bool
 }
 
 // backfillBlockRefs states one tuple per block reference written before the store existed. A
 // block_refs row is one link out of a block and its node is that block's, so this writes no
-// node of its own: it runs after the blocks, and a row whose block carries no node - a block
-// past the address bound, or one with no document_blocks row at all - is skipped and counted. A
-// row whose far end is past the address bound is no tuple the store can key beside the block's
-// own address, as the live writer leaves it out too (refs' replaceBlockRefs), so this reads none
-// of those and the row keeps its null node columns for the old arm. A row a version write deleted
-// or wrote after its batch was read is not written (writeBlockRefBatch), and is counted nowhere.
+// node of its own: it runs after the blocks, and a row whose block has no node in the store, or
+// one the store holds gone, is skipped and counted. A row whose far end is past the address bound
+// is no tuple the store can key beside the block's own address, as the live writer leaves it out
+// too (refs' replaceBlockRefs), so this reads none of those and the row keeps its null node
+// columns for the old arm. A row a version write deleted or wrote after its batch was read is not
+// written (writeBlockRefBatch), and is counted nowhere.
+//
+// The guard reads the store and no document_blocks row (blockNodeStands), because the backfill
+// reads no row its marker marks, and the block's row is marked once the block pass has run: the
+// pass walks only the rows still owed, so it can run again at any time over what a rollback left
+// unmarked. The node is what the pointer row's foreign key needs, and its state is graph_edges'
+// own test of the tuple arm (migration 20261109215947): after this release drops a block, a build
+// of the release before it can restore the block with no node on its rows, and a pointer stamped
+// against the gone node would answer from neither arm, since the old arm skips a marked row and
+// the tuple arm skips a gone node.
 //
 // The row's own source_seq is the event that stamped it, which is both the cause of its tuple
 // and that tuple's legacy_source_seq; a row with none takes the store's sentinel as its cause
@@ -477,7 +496,7 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 		after = []any{last.address, last.kind, last.toKind, last.toID}
 		writable := make([]blockRefRow, 0, len(batch))
 		for _, row := range batch {
-			if !row.blockNodeIsProjected {
+			if !row.blockNodeStands {
 				done.Skipped++
 				continue
 			}
@@ -506,14 +525,15 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 }
 
 // readBlockRefRows reads one batch of the block references naming no node, by the key a row of
-// block_refs is keyed on past its artifact, so the walk never reads one row twice.
+// block_refs is keyed on past its artifact, so the walk never reads one row twice. Each row
+// carries whether its block's node stands (blockNodeStands), which is the guard
+// backfillBlockRefs skips a row by.
 func readBlockRefRows(ctx context.Context, database *store.Store, after []any) ([]blockRefRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select r.artifact_id::text, r.block_id, r.from_node, r.kind, r.to_kind, r.to_id,
 		       r.created_at, r.source_seq, coalesce(r.source_seq, $6),
-		       d.node_kind is not null and d.node_address = r.from_node
+		       `+blockNodeStands(`r`)+`
 		from block_refs r
-		left join document_blocks d on d.artifact_id = r.artifact_id and d.block_id = r.block_id
 		where r.node_kind is null and octet_length(r.from_node) <= `+addressBound+`
 		  and octet_length(r.to_id) <= `+addressBound+`
 		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
@@ -527,15 +547,23 @@ func readBlockRefRows(ctx context.Context, database *store.Store, after []any) (
 	var batch []blockRefRow
 	for rows.Next() {
 		var row blockRefRow
-		var projected *bool
 		if err := rows.Scan(&row.artifactID, &row.blockID, &row.address, &row.kind, &row.toKind,
-			&row.toID, &row.createdAt, &row.sourceSeq, &row.event, &projected); err != nil {
+			&row.toID, &row.createdAt, &row.sourceSeq, &row.event, &row.blockNodeStands); err != nil {
 			return nil, fmt.Errorf("read a block reference naming no node: %w", err)
 		}
-		row.blockNodeIsProjected = projected != nil && *projected
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()
+}
+
+// blockNodeStands is the pointer pass's guard over the block_refs row at alias: the store holds
+// the node of the block the row is a link out of, in a state other than gone. It is the test
+// graph_edges' tuple arm makes of that node, read off graph_nodes alone, so the pass stamps a
+// pointer only where the tuple arm will answer it (backfillBlockRefs).
+func blockNodeStands(alias string) string {
+	return `exists (select 1 from graph_nodes block
+		where block.kind = '` + refs.BlockNodeKind + `' and block.id = ` + alias + `.from_node
+			and block.state <> '` + graphstore.StateGone + `')`
 }
 
 // writeBlockRefBatch appends the tuples of the rows of one batch that are still there and still
@@ -613,11 +641,11 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 }
 
 // heldBlockRefRows reads again, under the locks lockBlockDocuments took, which rows of the batch
-// are still there, still name no node and are still links out of a block whose row names the
-// node they are links out of, locks each of them `for update` in key order, and answers them in
-// the batch's own order. The rest of a row is what the batch read: a version write keeps a
-// surviving row's dates and source_seq, and a row it inserts names its node (refs'
-// replaceBlockRefs), so a row that still names no node is one no version has written since.
+// are still there, still name no node and are still links out of a block whose node stands
+// (blockNodeStands), locks each of them `for update` in key order, and answers them in the
+// batch's own order. The rest of a row is what the batch read: a version write keeps a surviving
+// row's dates and source_seq, and a row it inserts names its node (refs' replaceBlockRefs), so a
+// row that still names no node is one no version has written since.
 func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]blockRefRow, error) {
 	artifacts := make([]string, 0, len(batch))
 	blockIDs := make([]string, 0, len(batch))
@@ -638,8 +666,7 @@ func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]bl
 			as p (artifact_id, block_id, kind, to_kind, to_id)
 			on r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
 			and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
-		join document_blocks d on d.artifact_id = r.artifact_id and d.block_id = r.block_id
-		where r.node_kind is null and d.node_kind is not null and d.node_address = r.from_node
+		where r.node_kind is null and `+blockNodeStands(`r`)+`
 		order by r.artifact_id, r.block_id, r.to_kind, r.to_id, r.kind
 		for update of r
 	`, artifacts, blockIDs, kinds, toKinds, toIDs)

@@ -97,7 +97,7 @@ func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:
 //
 // Both stored values are read in the same statement as the write, so the comparison is of one
 // snapshot: two writes racing over one node can state one value twice, which this store takes by
-// design (a second backfill run does the same). They cannot lose one, because the two writers of
+// design (two backfill runs at once do the same). They cannot lose one, because the two writers of
 // a node queue on its row here, and the pass that writes a block's node holds its document's
 // owner row before it reaches this.
 func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {

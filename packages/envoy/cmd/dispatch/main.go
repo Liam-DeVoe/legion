@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -900,12 +901,15 @@ func main() {
 	// server process comes to serve one build (startup.Announcer), and /healthz reports the latest
 	// announcement's commit as fleet_commit. It runs once this process is registered, below
 	// (joinRegistry, registry.go). A process without NATS announces into the database and leaves
-	// the publish to a process whose bus answers.
+	// the publish to a process whose bus answers. It announces only the commit it registers under,
+	// with the relation kinds this build writes as tuples, the list graph_edges' tuple arm renders.
 	var announcements startup.Publisher
 	if natsClient != nil {
 		announcements = natsClient
 	}
-	announcer := startup.New(startup.Deps{Pool: database.Pool, Publisher: announcements})
+	announcer := startup.New(startup.Deps{
+		Pool: database.Pool, Publisher: announcements, Commit: buildCommit, TupleKinds: refs.TupleKinds,
+	})
 
 	routesHandler, background := routes.New(appCtx)
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written

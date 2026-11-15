@@ -95,10 +95,29 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 		{value: "the block as the agent left it", far: "CORE/plan-v3", at: start.Add(2 * time.Minute),
 			who: model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, event: 13},
 	}
+	// The document the block is part of, so the block's document_blocks row has a row to key on.
+	// The log the steps are counted against is read after these rows are written.
+	var document string
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice')`); err != nil {
+		t.Fatalf("write project CORE: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		insert into artifacts (project_key, slug, name, kind, created_by)
+		values ('CORE', 'plan', 'plan.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text
+	`).Scan(&document); err != nil {
+		t.Fatalf("write the document CORE/plan: %v", err)
+	}
 
 	before := readTupleLog(t, ctx, pool)
 	for number, written := range steps {
-		writeStep(t, ctx, pool, nodeKind, nodeID, attribute, relation, written)
+		// The first step makes the block, and writes the document_blocks row that names its node
+		// in the same transaction, as refs.IndexBlocks does; the later steps write no row.
+		projectedIn := ""
+		if number == 0 {
+			projectedIn = document
+		}
+		writeStep(t, ctx, pool, nodeKind, nodeID, attribute, relation, written, projectedIn)
 		after := readTupleLog(t, ctx, pool)
 		// Two tuples per step, appended above every tuple already there, and every earlier row
 		// exactly as it was: an update or a delete moves the count, the highest sequence, or one
@@ -177,8 +196,9 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 	}
 
 	// A value is no node, so it is the far end of no edge: a literal a block holds is never an
-	// address in graph_edges. The view's tuple arm answers what the store holds of a block,
-	// whatever any projection row says, so the edges counted below are the arm's own.
+	// address in graph_edges. The view's tuple arm answers a block's in_document while the block's
+	// document_blocks row names its node, which the first step wrote, and the old arm over that
+	// table answers only a row that names none, so the edges counted below are the tuple arm's own.
 	// The arm is live: each far end the relation was stated to is one edge of the view, so the
 	// count of edges at a value below is read off an arm that answers this node's tuples, and a
 	// zero there is the value being kept out rather than the arm answering nothing.
@@ -208,8 +228,10 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 }
 
 // writeStep states one step's two facts in one transaction, and writes the node row the two
-// project to.
-func writeStep(t *testing.T, ctx context.Context, pool *store.Pool, nodeKind, nodeID, attribute, relation string, written step) {
+// project to. projectedIn, where it is not empty, is the document whose document_blocks row
+// naming the node the same transaction writes after the node, as the block index writes one; the
+// row's foreign key names the node, so it follows the node's write.
+func writeStep(t *testing.T, ctx context.Context, pool *store.Pool, nodeKind, nodeID, attribute, relation string, written step, projectedIn string) {
 	t.Helper()
 	node := Node{
 		Kind: nodeKind, ID: nodeID, Supertag: "block",
@@ -223,7 +245,26 @@ func writeStep(t *testing.T, ctx context.Context, pool *store.Pool, nodeKind, no
 		{FromKind: nodeKind, FromID: nodeID, Kind: relation, ToKind: "artifact", ToID: written.far,
 			At: written.at, Who: written.who, SourceEvent: written.event, Asserted: true},
 	}
-	writeInOneTransaction(t, ctx, pool, []Node{node}, tuples, fmt.Sprintf("the step written at %s", written.at))
+	what := fmt.Sprintf("the step written at %s", written.at)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin %s: %v", what, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := Write(ctx, tx, []Node{node}, tuples); err != nil {
+		t.Fatalf("write %s: %v", what, err)
+	}
+	if projectedIn != "" {
+		if _, err := tx.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
+			values ($1::uuid, 'b1', $2, 'paragraph', '', $3, 1, $4, $5, $2)
+		`, projectedIn, nodeID, written.value, written.at, nodeKind); err != nil {
+			t.Fatalf("write the document_blocks row of %s in %s: %v", nodeID, what, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit %s: %v", what, err)
+	}
 }
 
 // readTupleLog answers every tuple row the store holds, oldest first.

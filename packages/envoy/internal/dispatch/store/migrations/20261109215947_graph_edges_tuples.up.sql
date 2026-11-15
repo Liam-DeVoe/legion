@@ -1,7 +1,7 @@
 -- 20261109215947_graph_edges_tuples.up.sql
 --
--- The view reads the store. `graph_edges` gains one arm over the current tuples, and the four
--- arms whose relations the node and tuple store now writes learn when to stop.
+-- The view reads the store. `graph_edges` gains one arm over the current tuples, and each row of
+-- the four arms whose relations the node and tuple store now writes decides which arm answers it.
 --
 -- One arm answers every kind the store writes that is an edge today: for each
 -- (from_kind, from_id, kind, to_kind, to_id) the newest tuple, which is an edge only while that
@@ -19,23 +19,31 @@
 -- It renders a stated list and nothing else: a block's `in_document`, rendered as the `part_of`
 -- to its document the view has always answered; a block's `mentions` and its pointer kinds, the
 -- two kinds `block_refs` holds; and a comment's `anchored_to` and `owned_by`. That is what the
--- four arms it joins carry. Every other kind the store writes - `authored_by`, `delivered_to`,
--- `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` - is no arm
--- of this view today, and adding one would add edges and backlink counts to every reader of a
--- comment; the child that owns each of those kinds decides when it joins the view. A `part_of`
--- whose `from_kind` is `block` is left out for the same reason: the view has no block-to-block
--- row today, and a top-level block, whose parent is the document itself, would otherwise be
--- rendered twice, once from that tuple and once from `in_document`.
+-- four arms it joins carry, and it is the list `refs.TupleKinds` holds in Go, which the announcer
+-- writes into `server_build_announcements.tuple_kinds` (migration 20261115051200) so that the
+-- release which deletes an old arm can read whether the release a rollback would reach writes
+-- that arm's kinds as tuples too. Every other kind the store writes - `authored_by`,
+-- `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's
+-- `part_of` - is no arm of this view today, and adding one would add edges and backlink counts
+-- to every reader of a comment; the child that owns each of those kinds decides when it joins
+-- the view. A `part_of` whose `from_kind` is `block` is left out for the same reason: the view
+-- has no block-to-block row today, and a top-level block, whose parent is the document itself,
+-- would otherwise be rendered twice, once from that tuple and once from `in_document`.
 --
--- The switch is per row. Each of the four old arms answers only the rows of its own table
--- whose `node_kind` is null, which is a row no node of the store stands behind, and the tuple
--- arm answers what the store holds, which is the facts of the rows that name one. The two sets
--- are complementary because one transaction writes both sides of a row: the writer that states
--- a block's or a comment's tuples names that node on the row in the same transaction
--- (`refs.IndexBlocks`, api's comment write, and the backfill), and a write that leaves a row
--- naming no node states no tuple for it. So the view answers each row exactly once, at every
--- point of the backfill and not only at its end, and the four `comments` arms that thread a
--- reply are untouched: a later child writes those relations.
+-- Each row decides which arm answers it. Each of the four old arms answers only the rows of its
+-- own table whose `node_kind` is null, which is a row no store writer marked. The tuple arm
+-- answers an edge of those kinds only while the projection row that names it carries its node:
+-- the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for
+-- a pointer or a mention, and the `comments` row of the comment for `anchored_to` and
+-- `owned_by`. The two split the rows the old view read, exactly and at every moment, because one
+-- transaction writes both sides of a row: the writer that states a block's or a comment's tuples
+-- names that node on the row in the same transaction (`refs.IndexBlocks`, api's comment write,
+-- and the backfill), and a row this release writes with no node has no tuple behind it. So a row
+-- this release wrote goes to the tuple arm; a row the release before it wrote, during a roll or
+-- after a rollback, goes to its old arm; and a row either release deleted goes to neither. The
+-- four `comments` arms that thread a reply are untouched: a later child writes those relations,
+-- and `comments.node_kind` is no marker of theirs, since this release names a comment's node
+-- before its reply relations are tuples.
 --
 -- Per row and not per kind, because a row that names no node outlives the backfill of its kind
 -- in three ways, and a test over one row per kind would hide every one of them while it read
@@ -44,31 +52,36 @@
 -- `refs.MaxBlockNodeBytes`, which is no node of this store by design and whose row therefore
 -- keeps its null columns for good. Each of those rows keeps its answer from the old arm.
 --
--- The test costs each old arm nothing: it is a null test on a column of the row the arm has
--- already read, so no table, index or subquery is added to any of the four. The tuple arm's own
--- test is `edge.projects is not null`, which is the list of kinds it renders and nothing to do
--- with the backfill; a deployment that has not backfilled holds no tuple of those kinds, so the
--- arm's reads find none and answer none.
+-- The join is what keeps a rollback whole. A build of the release before this one deletes a row
+-- and appends no retraction, since this release retracts only what its own deletes return; the
+-- tuple stands, but no row names it, so neither arm answers it. That build may also delete a row
+-- and write it again with no node; the row then names none, so its old arm answers it once and
+-- the tuple arm not at all. While two releases write the projections and only one writes the
+-- store, the projection row is the one record both keep, so it alone can say an edge still
+-- stands. This is the one read of the tuples that consults a projection row, and the join lasts
+-- as long as an old arm over its kind does.
 --
--- A rollback that drops a row and writes it again leaves that row's tuples standing, since no
--- tuple is ever deleted, and the view answers it from both arms until the next write of the
--- document or the comment: the writer of this release then names the node on the row again, the
--- old arm goes quiet, and the store's newest tuple is the one the arm renders. That window is
--- the stale cost of a rollback, and it closes itself; a test over one row per kind closes
--- nothing, because it hides the rolled-back pod's rows for as long as the row reads true.
+-- The tests cost little. Each old arm's is a null test on a column of the row the arm has already
+-- read, so no table, index or subquery is added to any of the four. The tuple arm's join is one
+-- probe of its projection table's (node_kind, node_address) index (migrations 20261111043000,
+-- 20261111043100 and 20261111043200) for each edge the arm would answer, and `edge.projects`,
+-- which picks that table, is the list of kinds the arm renders; a deployment that has not
+-- backfilled holds no tuple of those kinds for the rows written before the store, so the arm
+-- finds none of them and answers none.
 --
--- Two rules the arm carries.
+-- Two more rules the arm carries.
 --
--- It answers no row for a node whose current `state` is `gone`, which keeps it level with the
--- old arms wherever a projection row is really deleted: a block a version no longer holds keeps
--- its node and its `in_document` tuple, since no tuple is ever deleted, and its row in
--- `document_blocks` is gone. The node row is the projection of the node's own tuples and a
+-- It answers no row for a node whose current `state` is `gone`. For this release's own writes the
+-- join already holds that, since the write that states a block gone deletes the row the join
+-- reads. The test stays because the backfill's pointer guard takes this same test of the node
+-- row (graphcensus' readBlockRefRows), and a guard that tested less than the arm would stamp a
+-- pointer neither arm answers. The node row is the projection of the node's own tuples and a
 -- restored block's is written `live` again, so the test is the row's, not the newest `state`
 -- tuple's. It is the source's state alone: a mention of a block a version dropped is listed by
 -- the old arm, whose `block_refs` row stands, so it is listed here too.
 --
 -- And a pointer a version dropped is retracted in the same statement that deletes its
--- `block_refs` row (`refs.replaceBlockRefs`), so the tuple arm and the old arm lose it together.
+-- `block_refs` row (`refs.replaceBlockRefs`), so the store and the row agree on it.
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short
 -- transaction, so a reference read waits behind it. The arm list re-stated is
@@ -91,19 +104,33 @@
 -- type the `attribute_of` tuple of migration 20261109051232 names every attribute the type
 -- declares, and the attribute's own node holds what it points at. The tuple is followed rather
 -- than the attribute id read, since the id's spelling is no reader's business.
+--
+-- It reads the schema as `pmdoc/schemanodes.Read` installs it: an `attribute_of` counts only
+-- while the newest tuple of its (from, kind, to) asserts, and only from an attribute node whose
+-- state is `live`. Read otherwise, an attribute a schema change retracted from a type, or ended,
+-- would still limit the type's links, which the installed schema no longer does. A valid schema
+-- declares one attribute of a name on a type (pmdoc's validateBlockSchema refuses a second), so
+-- the order only makes the answer one where the store breaks that.
 create function block_pointer_targets(from_node text, attribute_name text) returns text[] language sql stable as $$
   select case when attribute.attributes ? 'targets'
               then array(select jsonb_array_elements_text(attribute.attributes->'targets')) end
   from document_blocks source
   join graph_tuples held on held.kind = 'attribute_of' and held.to_kind = 'supertag'
-                        and held.to_id = source.type and held.asserted
+                        and held.to_id = source.type and held.from_kind = 'attribute' and held.asserted
   join graph_nodes attribute on attribute.kind = held.from_kind and attribute.id = held.from_id
+                            and attribute.state = 'live'
   where source.node_id = $1 and attribute.attributes->>'name' = $2
+    and not exists (select 1 from graph_tuples later
+                    where later.from_kind = held.from_kind and later.from_id = held.from_id
+                      and later.kind = held.kind and later.to_kind = held.to_kind
+                      and later.to_id = held.to_id and later.seq > held.seq)
+  order by held.seq desc
   limit 1
 $$;
 
 -- graph_edges re-stated: every arm of 20261105014808, the four arms over the kinds this store
--- now writes stopping at their kind's cutover, and the one arm over the current tuples.
+-- now writes answering only the rows that carry no node, and the one arm over the current tuples,
+-- which answers an edge of those kinds only while the row that names it carries its node.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
@@ -223,4 +250,17 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   join graph_nodes node on node.kind = edge.from_kind and node.id = edge.from_id
   where edge.asserted and node.state <> 'gone' and edge.projects is not null
     and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
-         or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id));
+         or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id))
+    and case edge.projects
+          when 'block' then exists (
+            select 1 from document_blocks projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id)
+          when 'block_ref' then exists (
+            select 1 from block_refs projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+              and projected.kind = edge.stated and projected.to_kind = edge.to_kind
+              and projected.to_id = edge.to_id)
+          when 'comment' then exists (
+            select 1 from comments projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id)
+        end;

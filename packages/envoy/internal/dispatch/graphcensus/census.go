@@ -433,10 +433,10 @@ func readAddressedRoles(ctx context.Context, tx pgx.Tx) ([]string, error) {
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
 // the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
-// cannot date from a row's own event at that sentinel, so a second run appends a second tuple
-// stating what the store already holds. The current read takes the newest asserting tuple per
-// far end, which is that same fact, and this census counts nodes and projection rows rather
-// than tuples.
+// cannot date from a row's own event at that sentinel, so two runs at once that both read a row
+// before either names its node each append a tuple stating the same fact. The current read takes
+// the newest asserting tuple per far end, which is that same fact, and this census counts nodes
+// and projection rows rather than tuples.
 //
 // sizing adds the growth pass (SizingReport), which reads the same snapshot.
 func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreReport, error) {
