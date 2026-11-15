@@ -2770,13 +2770,16 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await after(where, "Enter on Apply over a custom range");
 
     // The search bar: Retry under a search that failed goes once the search it retries lands.
-    // The bar asks twice more before it says a search failed, so the search fails until then -
-    // and on until just before the press, so a search the bar asks again on its own meanwhile
-    // fails as well and leaves the failure, and its Retry, where they are.
+    // The bar sends two searches for the words typed (`useTieredSearch`): the keyword search
+    // (`keywords_only`), whose failure is the one shown with its Retry, and a slower one sent
+    // once typing rests, whose answer would take the bar's place. The slower search fails for the
+    // whole step, so nothing but Retry's own keyword search can take the failure away. The
+    // keyword search fails while the bar asks it twice more before it says it failed, and on
+    // until just before the press.
     where = `search bar at ${at}`;
     let failing = true;
     const failSearch = (route: Route) =>
-      failing
+      failing || !new URL(route.request().url()).searchParams.has("keywords_only")
         ? route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 })
         : route.fallback();
     await page.route(searchPath, failSearch);
