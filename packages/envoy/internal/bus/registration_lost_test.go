@@ -18,7 +18,7 @@ import (
 // whole context and the registration answered 503 after it.
 func TestARegistrationWriteLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	const sessionID = "ses_registration_write_lost"
-	relay := bus.StartUnansweredRelayOn(t, testnats.URL(t), "$KV."+bus.SessionBucket+"."+sessionID)
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$KV."+bus.SessionBucket+"."+sessionID)
 	client, err := bus.Connect([]string{relay.URL()})
 	if err != nil {
 		t.Fatalf("connect through the relay: %v", err)

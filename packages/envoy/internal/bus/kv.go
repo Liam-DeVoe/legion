@@ -727,7 +727,8 @@ func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) 
 
 // BoundedOnConnection is BoundedOn for a call that reaches its bucket through a handle it opens
 // itself, on conn, the connection the caller reads before the call (roles.Buckets opens its
-// handle inside the read it bounds). A connection no client owns is waited for as Bounded waits.
+// handle inside the read it bounds), or for any other JetStream call on conn (RequestOnConnection).
+// A connection no client owns is waited for as Bounded waits.
 func BoundedOnConnection[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)) (T, bool, error) {
 	watch, ok := watchOwnedConnection(conn)
 	if !ok {
@@ -743,9 +744,25 @@ func BoundedOnConnection[T any](ctx context.Context, conn *nats.Conn, call func(
 		return value, false, ended
 	}
 	if lostWithConnection(callCtx) {
-		return value, false, fmt.Errorf("bus: a KV call: %w", ErrRequestLostWithConnection)
+		return value, false, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
 	}
 	return value, false, err
+}
+
+// RequestOnConnection is BoundedOnConnection for request, a JetStream request on conn that waits
+// on the context it is handed (a nats.Context option of the legacy JetStream context): it answers
+// request's own answer, ctx's error when ctx ends first, and an error wrapping
+// ErrRequestLostWithConnection as soon as conn is lost (replaced, closed, or reconnected in place)
+// before the answer comes, so a caller that retries sends it again on the connection that came
+// back at once rather than at the request's deadline. The context request is handed ends when this
+// returns, so a request given up on stops waiting then rather than running on to its own deadline.
+// It takes no deadline of its own: a deadline ctx carries is request's bound, and a request on a
+// context without one waits the JetStream context's MaxWait, as it does without this.
+func RequestOnConnection[T any](ctx context.Context, conn *nats.Conn, request func(context.Context) (T, error)) (T, error) {
+	requestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	value, _, err := BoundedOnConnection(requestCtx, conn, func() (T, error) { return request(requestCtx) })
+	return value, err
 }
 
 // watchOwnedConnection watches conn through the client that serves with it (clientOwning), and

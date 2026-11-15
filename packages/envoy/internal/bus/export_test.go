@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // WithReconnectWaitTick runs tick at each pass of the client's wait for a reconnect
@@ -37,23 +39,10 @@ func WithBeforeRequestFlush(before func()) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.beforeRequestFlush = before })
 }
 
-// UnansweredRelay is unansweredRelay (kv_unanswered_test.go) for a test outside the package: a
-// relay that drops one send of its subject on a real connection to a real server.
-type UnansweredRelay = unansweredRelay
-
-// StartUnansweredRelayOn is startUnansweredRelayOn for a test outside the package.
-func StartUnansweredRelayOn(t *testing.T, target, subject string) *UnansweredRelay {
-	t.Helper()
-	return startUnansweredRelayOn(t, target, subject)
-}
-
-// URL is the relay's own URL, the one a client dials to go through it.
-func (r *unansweredRelay) URL() string { return r.url }
-
 // RequireLostWithTheConnection is requireLostWithTheConnection (request_lost_test.go) for a test
 // outside the package: call's request on conn is dropped by relay, the link is then cut, and call
 // must answer ErrRequestLostWithConnection at the reconnect.
-func RequireLostWithTheConnection(t *testing.T, relay *UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
+func RequireLostWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
 	t.Helper()
 	requireLostWithTheConnection(t, relay, conn, what, call)
 }

@@ -22,27 +22,27 @@ const lostRequestWait = 5 * time.Second
 const lostRequestAfterReconnect = 500 * time.Millisecond
 
 // awaitRelaySent waits until relay has counted want sends of its subject since it was armed.
-func awaitRelaySent(t *testing.T, relay *unansweredRelay, want int) {
+func awaitRelaySent(t *testing.T, relay *testnats.UnansweredRelay, want int) {
 	t.Helper()
 	deadline := time.Now().Add(lostRequestWait)
-	for relay.sent() < want {
+	for relay.Sent() < want {
 		if time.Now().After(deadline) {
-			t.Fatalf("the relay counted %d sends of %s, want %d", relay.sent(), relay.subject, want)
+			t.Fatalf("the relay counted %d sends of %s, want %d", relay.Sent(), relay.Subject(), want)
 		}
 		time.Sleep(time.Millisecond)
 	}
 }
 
 // awaitFlushedSinceDrop waits until the server's answer to the flush behind the request relay
-// dropped is in the client's socket (unansweredRelay.flushedSinceDrop), so a cut made after it
-// finds the publish confirmed and the call waiting on its reply rather than on its flush, which
-// nats.go would fail at the cut on its own.
-func awaitFlushedSinceDrop(t *testing.T, relay *unansweredRelay) {
+// dropped is in the client's socket (testnats.UnansweredRelay.FlushedSinceDrop), so a cut made
+// after it finds the publish confirmed and the call waiting on its reply rather than on its flush,
+// which nats.go would fail at the cut on its own.
+func awaitFlushedSinceDrop(t *testing.T, relay *testnats.UnansweredRelay) {
 	t.Helper()
 	deadline := time.Now().Add(lostRequestWait)
-	for !relay.flushedSinceDrop() {
+	for !relay.FlushedSinceDrop() {
 		if time.Now().After(deadline) {
-			t.Fatalf("the server did not answer the flush behind the dropped %s within %s", relay.subject, lostRequestWait)
+			t.Fatalf("the server did not answer the flush behind the dropped %s within %s", relay.Subject(), lostRequestWait)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -56,10 +56,10 @@ type lostAnswer struct {
 
 // cutAndAwaitReconnect cuts every link of relay once its dropped request is out, and returns when
 // conn has reconnected through it.
-func cutAndAwaitReconnect(t *testing.T, relay *unansweredRelay, conn *nats.Conn) time.Time {
+func cutAndAwaitReconnect(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn) time.Time {
 	t.Helper()
 	before := conn.Stats().Reconnects
-	relay.drop()
+	relay.Drop()
 	deadline := time.Now().Add(lostRequestWait)
 	for conn.Stats().Reconnects == before {
 		if time.Now().After(deadline) {
@@ -94,9 +94,9 @@ func requireLostAtTheReconnect(t *testing.T, what string, answers <-chan lostAns
 // request waits on nats.go's response subscription with no flush behind it - a KV read or write,
 // a JetStream publish - which nats.go fails at no cut, so the one thing that can end it early is
 // the connection watch.
-func requireLostWithTheConnection(t *testing.T, relay *unansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
+func requireLostWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
 	t.Helper()
-	relay.arm(1)
+	relay.Arm(1)
 	ctx, cancel := context.WithTimeout(context.Background(), lostRequestWait)
 	defer cancel()
 	answers := make(chan lostAnswer, 1)
@@ -127,15 +127,15 @@ func TestAConsumerCallLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	if !ok {
 		t.Fatalf("no consumer name for %s", session)
 	}
-	relay := startUnansweredRelayOn(t, uri, consumerAPI("INFO", name))
-	consumers, err := ConnectSessionConsumers([]string{relay.url}, 0)
+	relay := testnats.StartUnansweredRelayOn(t, uri, consumerAPI("INFO", name))
+	consumers, err := ConnectSessionConsumers([]string{relay.URL()}, 0)
 	if err != nil {
 		t.Fatalf("connect session consumers through the relay: %v", err)
 	}
 	t.Cleanup(consumers.Close)
 	conn := consumers.client.Connection()
 
-	relay.arm(1)
+	relay.Arm(1)
 	ctx, cancel := context.WithTimeout(context.Background(), lostRequestWait)
 	defer cancel()
 	answers := make(chan lostAnswer, 1)
@@ -161,7 +161,7 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 		bucket = "envoy_read_lost_with_connection"
 		key    = "ses_read_lost"
 	)
-	relay := startUnansweredRelayOn(t, testnats.URL(t), "$JS.API.DIRECT.GET.KV_"+bucket+".$KV."+bucket+"."+key)
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.DIRECT.GET.KV_"+bucket+".$KV."+bucket+"."+key)
 	conn, js := relayedJetStream(t, relay)
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 	kv, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})

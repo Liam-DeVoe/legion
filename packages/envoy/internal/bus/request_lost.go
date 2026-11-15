@@ -22,7 +22,9 @@ import (
 // as unanswered, and a caller that retries sends it again on the connection that came back, at
 // once rather than after a backoff: the failure says nothing about the request itself.
 // Client.requestConfirmed returns it (every session consumer call, the stream read behind them
-// and the stored-message reads), and so does a KV call BoundedOn waits for.
+// and the stored-message reads), and so does a KV call BoundedOn waits for and a JetStream
+// request RequestOnConnection makes (the stream's ensure on each connection event, and Dispatch's
+// delivery intake taking its durable over).
 var ErrRequestLostWithConnection = errors.New("bus: the request was lost with its NATS connection")
 
 // connWatch follows the connection one request, or one pull's requests (SessionPull), went out on,

@@ -41,8 +41,11 @@ const standbyLogEvery = 30 * time.Second
 // intakeHoldTTL on the database's clock after each renewal, is renewed every intakeHoldRenew, and
 // reports itself lost intakeHoldMargin before it lapses, so the holder stops delivering before any
 // standby can take it. A holder that dies is replaced within intakeHoldTTL plus one
-// durableBindInterval. The holder checks that the durable still delivers to it on the same
-// interval it renews (heldDurable.check).
+// durableBindInterval, a JetStream reply lost with the standby's connection during the take-over
+// included: each of the take-over's JetStream calls ends at that connection's loss and is sent
+// again on the connection that came back at once (onConnection), rather than at its deadline. The
+// holder checks that the durable still delivers to it on the same interval it renews
+// (heldDurable.check).
 const (
 	intakeHoldTTL    = 15 * time.Second
 	intakeHoldRenew  = 5 * time.Second
@@ -324,11 +327,40 @@ func (d *heldDurable) attempt(ctx context.Context) {
 	duty.Exclusive(ctx, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOver)
 }
 
-// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew.
+// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew and by the
+// connection it goes out on (onConnection).
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
 	lookup, cancel := context.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
-	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(lookup))
+	return onConnection(lookup, d.nats, func(call context.Context) (*natsgo.ConsumerInfo, error) {
+		return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(call))
+	})
+}
+
+// onConnection makes request, a JetStream request of the take-over on the client's connection,
+// ending it with bus.ErrRequestLostWithConnection as soon as that connection is lost before the
+// answer comes (bus.RequestOnConnection). nats.go fails no request its connection drops, so one
+// whose reply died with the old socket would otherwise wait out its whole deadline, and the
+// take-over with it, for an answer nothing will send. The caller sends such a request again at
+// once: the take-over's read of the durable (readDurable), and each step of finishTakeOver
+// (retryHeld).
+func onConnection[T any](ctx context.Context, client *bus.Client, request func(context.Context) (T, error)) (T, error) {
+	return bus.RequestOnConnection(ctx, client.Connection(), request)
+}
+
+// readDurable is the take-over's read of the durable's state, under its consumer lease. A read lost
+// with its connection (onConnection) is sent again at once on the connection that came back, while
+// this intake holds its hold: the loss says nothing about the durable.
+func (d *heldDurable) readDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
+	for {
+		info, err := onConnection(ctx, d.nats, func(call context.Context) (*natsgo.ConsumerInfo, error) {
+			return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(call))
+		})
+		if !errors.Is(err, bus.ErrRequestLostWithConnection) || !d.holds() {
+			return info, err
+		}
+		slog.Info("dispatch delivery: the NATS consumer read was lost with its connection; reading it again", "name", d.name)
+	}
 }
 
 // heldElsewhere is the standby line of an intake whose durable's hold another process holds live.
@@ -411,12 +443,11 @@ func (d *heldDurable) holds() bool {
 // end inside this one lease (finishTakeOver, which says what a lease given up with the durable
 // absent leaves behind).
 func (d *heldDurable) takeOver(ctx context.Context) {
-	js := d.nats.JS()
 	wanted := d.config()
 	name := wanted.Durable
 	create := wanted
 	deleteFirst := false
-	info, err := js.ConsumerInfo(bus.Stream, name, natsgo.Context(ctx))
+	info, err := d.readDurable(ctx)
 	switch {
 	case errors.Is(err, natsgo.ErrConsumerNotFound):
 		if d.recorded.start != 0 {
@@ -523,12 +554,14 @@ const (
 // stream's first message for the events durable and the next new message for the jobs durable
 // (TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles).
 func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst bool) {
-	js := d.nats.JS()
 	finish, cancel := context.WithTimeout(context.Background(), takeOverFinishWithin)
 	defer cancel()
 	if deleteFirst {
 		if d.retryHeld(finish, "delete NATS consumer to take it over", func(call context.Context) error {
-			if err := js.DeleteConsumer(bus.Stream, d.name, natsgo.Context(call)); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
+			_, err := onConnection(call, d.nats, func(request context.Context) (struct{}, error) {
+				return struct{}{}, d.nats.JS().DeleteConsumer(bus.Stream, d.name, natsgo.Context(request))
+			})
+			if err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 				return err
 			}
 			return nil
@@ -543,7 +576,9 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		return
 	}
 	if d.retryHeld(finish, "create NATS consumer", func(call context.Context) error {
-		_, err := createDurable(js, &create, natsgo.Context(call))
+		_, err := onConnection(call, d.nats, func(request context.Context) (*natsgo.ConsumerInfo, error) {
+			return createDurable(d.nats.JS(), &create, natsgo.Context(request))
+		})
 		return err
 	}, "subject", create.FilterSubject, "start_seq", create.OptStartSeq) != nil {
 		d.stopDeliveringWithin(intakeHoldRenew)
@@ -572,12 +607,15 @@ var errHoldNotHeld = errors.New("the intake no longer holds its hold")
 
 // retryHeld calls step until it succeeds, while this intake holds its hold and finish has not
 // ended, waiting takeOverFirstRetry after the first failed try and twice as long after each one
-// after it, up to takeOverLastRetry. Each try runs on a context that ends takeOverCallTimeout
-// after it starts, or at the hold's loss deadline if that comes first, so no step acts once
-// another process can hold the hold. A failed try is logged at WARN as doing what names, and the
-// failure it gives up on at ERROR by failedStep, so a caller writes no step's text a second time
-// and keeps only what it does next. It returns nil once step succeeds, and otherwise the last
-// try's error, or errHoldNotHeld. attributes are the caller's own on that ERROR line.
+// after it, up to takeOverLastRetry. A try lost with its connection
+// (bus.ErrRequestLostWithConnection) is tried again at once, on the connection that came back,
+// and leaves the wait where it was: the loss says nothing about the step. Each try runs on a
+// context that ends takeOverCallTimeout after it starts, or at the hold's loss deadline if that
+// comes first, so no step acts once another process can hold the hold. A failed try is logged at
+// WARN as doing what names, and the failure it gives up on at ERROR by failedStep, so a caller
+// writes no step's text a second time and keeps only what it does next. It returns nil once step
+// succeeds, and otherwise the last try's error, or errHoldNotHeld. attributes are the caller's
+// own on that ERROR line.
 func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(context.Context) error, attributes ...any) error {
 	wait := takeOverFirstRetry
 	for {
@@ -594,15 +632,21 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 		if err == nil {
 			return nil
 		}
-		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", wait, "error", err)
-		timer := time.NewTimer(wait)
+		retryIn := wait
+		if errors.Is(err, bus.ErrRequestLostWithConnection) {
+			retryIn = 0
+		}
+		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", retryIn, "error", err)
+		timer := time.NewTimer(retryIn)
 		select {
 		case <-finish.Done():
 			timer.Stop()
 			return d.failedStep(doing, err, attributes)
 		case <-timer.C:
 		}
-		wait = min(2*wait, takeOverLastRetry)
+		if retryIn > 0 {
+			wait = min(2*wait, takeOverLastRetry)
+		}
 	}
 }
 

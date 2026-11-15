@@ -21,7 +21,7 @@ const streamReadBehindALostOne = time.Second
 // notification stream it is armed for, starts session A's read of the stream's identity on it,
 // and returns once that read's request is out and dropped: a read whose answer will never come,
 // on a connection that stays up.
-func lostStreamRead(t *testing.T) (*SessionConsumers, *unansweredRelay) {
+func lostStreamRead(t *testing.T) (*SessionConsumers, *testnats.UnansweredRelay) {
 	t.Helper()
 	uri := testnats.URL(t)
 	owner, err := ConnectOwningStream([]string{uri})
@@ -29,14 +29,14 @@ func lostStreamRead(t *testing.T) (*SessionConsumers, *unansweredRelay) {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	relay := startUnansweredRelayOn(t, uri, "$JS.API.STREAM.INFO."+Stream)
-	consumers, err := ConnectSessionConsumers([]string{relay.url}, 0)
+	relay := testnats.StartUnansweredRelayOn(t, uri, "$JS.API.STREAM.INFO."+Stream)
+	consumers, err := ConnectSessionConsumers([]string{relay.URL()}, 0)
 	if err != nil {
 		t.Fatalf("connect session consumers through the relay: %v", err)
 	}
 	t.Cleanup(consumers.Close)
 
-	relay.arm(1)
+	relay.Arm(1)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _, _ = consumers.StreamID(ctx) }()
@@ -101,7 +101,7 @@ func TestABurstOfCreatesBehindALostStreamReadSharesOneRead(t *testing.T) {
 			t.Fatalf("create %d of the burst took %s, want within %s", i, took[i].Round(time.Millisecond), streamReadBehindALostOne)
 		}
 	}
-	if reads := relay.sent() - 1; reads != 1 {
+	if reads := relay.Sent() - 1; reads != 1 {
 		t.Fatalf("a burst of %d creates behind a lost stream read sent %d stream reads, want 1 shared by all of them", burst, reads)
 	}
 }

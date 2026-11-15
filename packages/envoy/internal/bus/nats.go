@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -657,15 +658,70 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // connection event, so a stream lost while the process runs is created again. It reads the
 // version off the connection nats.go hands it, so the ensure asks the server it writes to
 // whether a stream with no consumer cap is one that server caps (serverDefaultsAnUnsetCap).
+//
+// Each request of the ensure ends as soon as conn is lost under it (connectionBoundJetStream).
+// The hooks run one at a time and this one runs first, so a request whose answer died with a
+// connection that dropped again mid-ensure would otherwise hold every hook after it - the KV
+// rewatch, the listener's receive - for the JetStream context's whole 10 s wait.
 func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStream(js, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
+		err = c.ensureStream(connectionBoundJetStream{JetStreamContext: js, conn: conn}, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
 	}
 	return nil
+}
+
+// connectionBoundJetStream is a JetStream context on conn whose requests the stream's ensure makes
+// (ensureStreamWithConfig: the stream's read, create, update and purge, and the consumer reads and
+// updates of the role-lane migration) each end with ErrRequestLostWithConnection as soon as conn
+// is lost before the answer comes (RequestOnConnection), rather than waiting out MaxWait for an
+// answer the server dropped with the old socket. The ensure counts such a request as unanswered:
+// a read or a create is sent again at once on the connection that came back (sentAgain), and an
+// update is read back there (updateStream). Every other call, the role-lane migration's consumer
+// listing among them, is the JetStream context's own.
+type connectionBoundJetStream struct {
+	nats.JetStreamContext
+	conn *nats.Conn
+}
+
+func (js connectionBoundJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.StreamInfo(stream, append(slices.Clip(opts), nats.Context(ctx))...)
+	})
+}
+
+func (js connectionBoundJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.AddStream(cfg, append(slices.Clip(opts), nats.Context(ctx))...)
+	})
+}
+
+func (js connectionBoundJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.UpdateStream(cfg, append(slices.Clip(opts), nats.Context(ctx))...)
+	})
+}
+
+func (js connectionBoundJetStream) PurgeStream(name string, opts ...nats.JSOpt) error {
+	_, err := RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, js.JetStreamContext.PurgeStream(name, append(slices.Clip(opts), nats.Context(ctx))...)
+	})
+	return err
+}
+
+func (js connectionBoundJetStream) ConsumerInfo(stream, name string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.ConsumerInfo, error) {
+		return js.JetStreamContext.ConsumerInfo(stream, name, append(slices.Clip(opts), nats.Context(ctx))...)
+	})
+}
+
+func (js connectionBoundJetStream) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.ConsumerInfo, error) {
+		return js.JetStreamContext.UpdateConsumer(stream, cfg, append(slices.Clip(opts), nats.Context(ctx))...)
+	})
 }
 
 // readDeployedSubjects reads the deployed stream's subjects on conn within timeout and keeps them
