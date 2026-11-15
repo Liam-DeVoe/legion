@@ -72,10 +72,12 @@ import {
  *
  * **Where the slices cross.** A crossing is counted over the issue: the report finds every
  * issue whose cases sit in more than one of the fit, report and anchor slices and prints them.
- * A draw `draw.ts` makes now groups a case by its issue (`GROUP_KEY` there), so every case of
- * an issue lands in one slice. A draw that records no group key was made before that key was
- * recorded, and grouped an approval case by its lead document, so two cases of one issue could
- * reach two slices. The report reads the draw's own key and says which of the two it found.
+ * A draw `draw.ts` makes now groups a case by its issue tree (`GROUP_KEY` there), so every case
+ * of an issue and of the issues above and below it lands in one slice; one made before groups a
+ * case by its issue alone, and records the key `issue`. A draw that records no group key was
+ * made before any key was recorded, and grouped an approval case by its lead document, so two
+ * cases of one issue could reach two slices. The report reads the draw's own key and says which
+ * it found.
  * Where the crossing touches the fit slice, the fit case is dropped from the fit slice and
  * from nothing else: that slice only chooses a threshold and carries no reported number, while
  * the report and anchor slices carry every number. A crossing between the report and the

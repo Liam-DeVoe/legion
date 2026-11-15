@@ -56,6 +56,23 @@ export interface BacklogRoots {
 }
 
 /**
+ * The issue trees the draw grouped its cases by, as `draw.json` writes them: the parent of every
+ * issue the corpus names and of every issue above one, read from Dispatch at one time, so
+ * `--issue-trees <that draw.json>` groups the same cases the same way whatever Dispatch shows
+ * later. An issue with no parent is the root of its tree, and its entry is null.
+ */
+export interface IssueTrees {
+  /** When the parents were read from Dispatch, as the run that read them stamped it. */
+  readAt: string;
+  /** Where this run took them from: `dispatch`, or the file they were pinned from. */
+  source: string;
+  /** Each issue's parent by key, sorted by key; null for a root. */
+  parents: Record<string, string | null>;
+  /** The issues the corpus names that Dispatch answered 404 for, each the root of its own tree. */
+  missing: string[];
+}
+
+/**
  * What the never-decide rule was for one draw, what applying it cost, and what was checked of
  * the text it judged.
  */
@@ -138,10 +155,15 @@ export interface DrawRecord {
   /** How many groups there were under that key, where the draw recorded the key. */
   groupCount?: number;
   groups: Record<CaseKind, number>;
+  /** Every case answered at or after the cut, before any was left out. */
   postCutCases: number;
   documentsUnread: number;
   backlogLegionRootsRead: number;
   backlogLegionRoots: BacklogRoots;
+  /** How many issues the tree reading names, roots and parents together. */
+  issueTreesRead: number;
+  /** The trees the cases were grouped by, written whole so `--issue-trees` reproduces them. */
+  issueTrees: IssueTrees;
   rule: DrawRule;
   excluded: DrawExcluded;
 }

@@ -17,12 +17,18 @@ import {
   stringOf,
   UsageError,
 } from "./corpus-io";
-import { type DispatchConfig, dispatchConfig, readJson } from "./dispatch-read";
+import {
+  type DispatchConfig,
+  DispatchRefusedError,
+  dispatchConfig,
+  readJson,
+} from "./dispatch-read";
 import {
   type BacklogRoots,
   type DrawnSlices,
   type DrawRecord,
   drawPath,
+  type IssueTrees,
   rootFactsOf,
   rootReadingOf,
   SLICES,
@@ -46,17 +52,29 @@ import { replayCase } from "./replay";
  * fit, report, anchor and reserve (dispatch://INFRA-2897/artifact/plan-of-analysis-md@v2, "The
  * slices").
  *
- * A case's group is its issue, and a whole group goes into one slice, so two decisions of one
- * subject never land on opposite sides of a split: a document belongs to one issue, so this
- * grouping holds every case of a document together as well. A group whose size would take a
- * slice past its target goes to the next slice, which is why the targets are reached to within
- * one group. The draw is at random under a seed it prints, so the same seed over the same
- * corpus draws the same slices. `draw.json` records the key the groups were taken under and how
- * many groups there were, since a later reading of the slices turns on which key was used.
+ * A case's group is its issue tree: the root of its issue's chain of parents, as Dispatch
+ * answers it when the draw runs. A whole group goes into one slice, so two decisions of one
+ * subject never land on opposite sides of a split: a document belongs to one issue, and a child
+ * issue's design is read beside its parent's, so this grouping holds every case of a document,
+ * of an issue and of a tree together (dispatch://INFRA-3189, "Data sets": "an issue tree" is
+ * one of the things that can share information). A group whose size would take a slice past its
+ * target goes to the next slice, which is why the targets are reached to within one group. The
+ * draw is at random under a seed it prints, so the same seed over the same corpus and the same
+ * trees draws the same slices. `draw.json` records the key the groups were taken under, how many
+ * groups there were, and every parent it read, since a later reading of the slices turns on them.
  *
- * Four kinds of case never reach the draw. A question offering fewer than two options cannot be
- * judged as a choice, and a question whose answer names no option cannot be scored against what
- * the person chose, since set equality with an empty answer is nothing an arm could agree with.
+ * A group is one side of the cut whole, and the side is its first case's. A tree with a case
+ * answered before the cut is training, so its cases answered after the cut go to no slice: they
+ * are left out under `group-before-cut`, counted and named, because a case in a scored slice
+ * whose own issue or tree has decisions on the training side is measured on a subject the
+ * training already holds ("a group that spans the time cut goes whole to the set of its first
+ * case, so grouping wins", the same section). Nothing here moves a training case: the side of a
+ * case answered before the cut is the training side already.
+ *
+ * Four more kinds of case never reach the draw. A question offering fewer than two options
+ * cannot be judged as a choice, and a question whose answer names no option cannot be scored
+ * against what the person chose, since set equality with an empty answer is nothing an arm could
+ * agree with.
  * A case the never-decide rule holds is one the shipped skill would refuse, and a coverage
  * number counting it would be larger than anything the skill can deliver; the counts and the
  * kinds held are printed and written. And a case whose answer from the rule could not be read
@@ -68,13 +86,16 @@ import { replayCase } from "./replay";
  * read wrongly and not a case to pass over.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
- * version the corpus pins, so those are the same bytes on every run. The one live reading is
- * the list of roots carrying the `legion` label that stand on the backlog or in icebox, which
- * the never-decide rule needs and which Dispatch answers as it stands now: `draw.json` writes
- * that list, with the time it was read, beside its count. `--backlog-roots <file>` reads the
- * list from a file in the shape `draw.json` writes instead of from Dispatch, so a re-run that
- * must reproduce an earlier draw passes both `--seed` and `--backlog-roots <that draw's
- * draw.json>` and then turns on the corpus and the seed alone.
+ * version the corpus pins, so those are the same bytes on every run. Two readings are live, and
+ * Dispatch answers each as it stands now. One is the list of roots carrying the `legion` label
+ * that stand on the backlog or in icebox, which the never-decide rule needs: `draw.json` writes
+ * that list, with the time it was read, beside its count. The other is the parent of every
+ * issue the corpus names and of every issue above one, which the groups are taken over:
+ * `draw.json` writes those whole, with the time they were read. `--backlog-roots <file>` and
+ * `--issue-trees <file>` read each from a file in the shape `draw.json` writes instead of from
+ * Dispatch, so a re-run that must reproduce an earlier draw passes `--seed`, `--backlog-roots
+ * <that draw's draw.json>` and `--issue-trees <that draw's draw.json>` and then turns on the
+ * corpus and the seed alone.
  *
  * The rule itself is a model call per case. `--cache <dir>` keeps those answers between runs,
  * keyed on the prose of the definition among other things, so a redraw of a frozen definition
@@ -89,15 +110,16 @@ import { replayCase } from "./replay";
  */
 
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
-  [--seed <n>] [--backlog-roots <file>] [--cache <dir>]
+  [--seed <n>] [--backlog-roots <file>] [--issue-trees <file>] [--cache <dir>]
 
 Draws the post-cut cases of a corpus into the fit, report, anchor and reserve slices.
 
 Options:
   --corpus <dir>          Required. A directory holding corpus.jsonl and snapshot.json.
   --cut <date>            Required. An ISO 8601 time, for example 2026-11-05T00:00:00Z. A case
-                          answered at or after it is drawn; a case answered before it is
-                          training.
+                          answered at or after it is drawn, unless its issue tree holds a case
+                          answered before it; a case answered before it is training, and so is
+                          every case of its tree.
   --out <dir>             Required. Where slices.json, anchor-descriptors.json and draw.json
                           are written. An absolute path outside this repository's workspace.
   --seed <n>              The seed of the draw. With none, one is made and printed.
@@ -106,6 +128,10 @@ Options:
                           the one draw.json writes, so an earlier draw's draw.json names its
                           own list. With --seed, this makes a re-run reproduce that draw from
                           the corpus alone.
+  --issue-trees <file>    The parent of each issue the corpus names, read from this file rather
+                          than from Dispatch. The shape is the one draw.json writes, so an
+                          earlier draw's draw.json names its own trees. Every issue the corpus
+                          names must be in it.
   --cache <dir>           Where the never-decide rule's answers are kept between runs. Without
                           it every case is asked of the model again.
 
@@ -128,7 +154,7 @@ export const TARGETS: Readonly<Record<CaseKind, SliceTargets>> = {
 export const KINDS: readonly CaseKind[] = ["approval", "question"];
 
 /** What a case is grouped by, which `draw.json` records and a later reading of it reads. */
-export const GROUP_KEY = "issue";
+export const GROUP_KEY = "issue tree";
 
 /** How many option a question must offer to be judged as a choice at all. */
 const LEAST_OPTIONS = 2;
@@ -141,6 +167,12 @@ const RENDER_CONCURRENCY = 16;
 
 /** How many issues one page of the issue list asks for, which is that route's own maximum. */
 const ISSUE_PAGE = 250;
+
+/** How many issues are read at once when their parents are read, one issue per call. */
+const TREE_CONCURRENCY = 16;
+
+/** How many parents a chain is walked through before it is taken for a cycle. */
+const TREE_DEPTH = 64;
 
 /** How many case ids of each slice the command prints. */
 const IDS_SHOWN = 10;
@@ -183,6 +215,7 @@ interface Flags {
   out: string;
   seed: number | undefined;
   backlogRoots: string | undefined;
+  issueTrees: string | undefined;
   cache: string | undefined;
 }
 
@@ -210,10 +243,15 @@ export interface AnchorDescriptor {
 }
 
 /** Why a case the rule did not hold could still not be drawn. */
-export type UndrawableKind = "too-few-options" | "no-option-chosen" | "rule-unreadable";
+export type UndrawableKind =
+  | "group-before-cut"
+  | "too-few-options"
+  | "no-option-chosen"
+  | "rule-unreadable";
 
 /** The undrawable kinds, in the order they are counted and printed. */
 const UNDRAWABLE_KINDS: readonly UndrawableKind[] = [
+  "group-before-cut",
   "too-few-options",
   "no-option-chosen",
   "rule-unreadable",
@@ -221,6 +259,7 @@ const UNDRAWABLE_KINDS: readonly UndrawableKind[] = [
 
 /** What each undrawable kind is called where a count of it is printed. */
 const UNDRAWABLE_NAMES: Readonly<Record<UndrawableKind, string>> = {
+  "group-before-cut": "cases of trees from before the cut",
   "too-few-options": "questions with too few options",
   "no-option-chosen": "questions answered with no option",
   "rule-unreadable": "unreadable never-decide answers",
@@ -228,7 +267,8 @@ const UNDRAWABLE_NAMES: Readonly<Record<UndrawableKind, string>> = {
 
 /**
  * What the draw was given is not what it takes it for, so no draw over it would mean anything:
- * a corpus read wrongly, or an issue list answering a root that is no root.
+ * a corpus read wrongly, an issue list answering a root that is no root, or a chain of parents
+ * that comes back to an issue it already passed.
  */
 export class DrawError extends CannotRunError {
   override readonly name = "DrawError";
@@ -287,15 +327,89 @@ function shuffled<T>(items: readonly T[], seed: number): T[] {
   return order;
 }
 
+/** Each issue's parent by key, null for a root: what the groups are taken over. */
+export type IssueParents = Readonly<Record<string, string | null>>;
+
 /**
- * The group a case belongs to: its issue, whether it is an approval request or a question. A
- * document belongs to one issue, so this key holds together every case one document held
- * together and the cases of two documents of one issue besides. A case naming no issue is its
- * own group, since nothing else is known to share it.
+ * The root of an issue's tree: the last issue up its chain of parents. An issue `parents` does
+ * not name is the root of its own tree; the command reads every issue the corpus names and
+ * every issue above one, so that is only ever an issue Dispatch answered 404 for. A chain that
+ * comes back to an issue it passed, or runs past `TREE_DEPTH` parents, stops the draw: no group
+ * taken over it would mean anything.
  */
-function groupKeyOf(drawCase: DrawCase): string {
-  const row = drawCase.row;
-  return `${GROUP_KEY}:${row.issueKey ?? row.askId}`;
+export function treeRootOf(issueKey: string, parents: IssueParents): string {
+  const passed = new Set<string>([issueKey]);
+  let at = issueKey;
+  for (;;) {
+    const parent = Object.hasOwn(parents, at) ? (parents[at] ?? null) : null;
+    if (parent === null) return at;
+    if (passed.has(parent) || passed.size > TREE_DEPTH) {
+      throw new DrawError(
+        `the chain of parents of ${issueKey} comes back to ${parent} or runs past ` +
+          `${TREE_DEPTH} issues, so its tree has no root`
+      );
+    }
+    passed.add(parent);
+    at = parent;
+  }
+}
+
+/**
+ * The group a case belongs to: its issue tree, whether it is an approval request or a question.
+ * A document belongs to one issue and an issue to one tree, so this key holds together every
+ * case one document or one issue held together, and the cases of a parent and its children
+ * besides. A case naming no issue is its own group, since nothing else is known to share it.
+ */
+export function groupKeyOf(row: CaseRow, parents: IssueParents): string {
+  if (row.issueKey === null) return `ask:${row.askId}`;
+  return `${GROUP_KEY}:${treeRootOf(row.issueKey, parents)}`;
+}
+
+/** Which of two cases was answered first, by time and then by case id, so a tie has one answer. */
+function answeredBefore(one: CaseRow, other: CaseRow): boolean {
+  const [oneAt, otherAt] = [answeredTime(one), answeredTime(other)];
+  return oneAt < otherAt || (oneAt === otherAt && one.caseId < other.caseId);
+}
+
+/**
+ * The cases answered at or after the cut that the draw may take, and the ones it may not: a case
+ * whose group holds a case answered before the cut belongs to the training side with the rest of
+ * its group, so it reaches no slice and is named, with the earliest such case, as
+ * `group-before-cut`. `rows` is the whole corpus, both sides of the cut, because which side a
+ * group stands on is its first case's.
+ */
+export function splitAtCut(
+  rows: readonly CaseRow[],
+  cut: number,
+  parents: IssueParents
+): { post: CaseRow[]; beforeCut: ExcludedCase[] } {
+  const firstBefore = new Map<string, CaseRow>();
+  for (const row of rows) {
+    if (answeredTime(row) >= cut) continue;
+    const key = groupKeyOf(row, parents);
+    const known = firstBefore.get(key);
+    if (known === undefined || answeredBefore(row, known)) firstBefore.set(key, row);
+  }
+  const post: CaseRow[] = [];
+  const beforeCut: ExcludedCase[] = [];
+  for (const row of rows) {
+    if (answeredTime(row) < cut) continue;
+    const key = groupKeyOf(row, parents);
+    const first = firstBefore.get(key);
+    if (first === undefined) {
+      post.push(row);
+      continue;
+    }
+    beforeCut.push({
+      caseId: row.caseId,
+      kind: row.kind,
+      reason:
+        `its ${key} holds the case ${first.caseId} of ${first.issueKey}, answered at ` +
+        `${first.answeredAt}, before the cut, so the whole tree is training`,
+      undrawableKind: "group-before-cut",
+    });
+  }
+  return { post, beforeCut };
 }
 
 /** The slices and the counts each starts at. */
@@ -317,20 +431,26 @@ function emptyDraw(seed: number): Draw {
     held: [],
     heldByKind: {},
     undrawable: [],
-    undrawableByKind: { "too-few-options": 0, "no-option-chosen": 0, "rule-unreadable": 0 },
+    undrawableByKind: {
+      "group-before-cut": 0,
+      "too-few-options": 0,
+      "no-option-chosen": 0,
+      "rule-unreadable": 0,
+    },
     anchors: [],
   };
 }
 
 /**
  * The draw itself: the cases the rule holds and the questions no arm could be scored on are left
- * out, the rest are grouped, the groups are shuffled under `seed`, and each group goes into the
- * first slice its whole size still fits.
+ * out, the rest are grouped by their issue tree under `parents`, the groups are shuffled under
+ * `seed`, and each group goes into the first slice its whole size still fits. `cases` are the
+ * ones `splitAtCut` let through, so no group here has a case on the training side.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
  * read wrongly rather than a case to leave out.
  */
-export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
+export function drawSlices(cases: readonly DrawCase[], seed: number, parents: IssueParents): Draw {
   const draw = emptyDraw(seed);
   const drawable: DrawCase[] = [];
   const leaveOut = (row: CaseRow, undrawableKind: UndrawableKind, reason: string): void => {
@@ -392,7 +512,7 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
   for (const drawCase of [...drawable].sort((one, other) =>
     one.row.caseId < other.row.caseId ? -1 : 1
   )) {
-    const key = groupKeyOf(drawCase);
+    const key = groupKeyOf(drawCase.row, parents);
     const group = groups.get(key);
     if (group === undefined) {
       groups.set(key, {
@@ -525,6 +645,127 @@ export async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
   return { readAt: stringOf(held.readAt) ?? "unknown", source: path, issues };
 }
 
+/** The parents in key order, so what `draw.json` writes of one reading is the same bytes. */
+function sortedParents(
+  parents: Readonly<Record<string, string | null>>
+): Record<string, string | null> {
+  const sorted: Record<string, string | null> = {};
+  for (const key of Object.keys(parents).sort()) sorted[key] = parents[key] ?? null;
+  return sorted;
+}
+
+/**
+ * The parent of every issue in `keys` and of every issue above one, read now, one issue per call
+ * of `GET /api/v1/issues/<key>`, `TREE_CONCURRENCY` at a time, a level of parents per pass until
+ * every chain reaches a root. An issue Dispatch answers 404 for is no longer there to say whose
+ * child it was, so it is the root of its own tree and is listed under `missing`; any other
+ * refusal, and an answer naming another issue or a parent that is no key, stops the draw.
+ */
+async function readIssueTrees(
+  keys: readonly string[],
+  config: DispatchConfig
+): Promise<IssueTrees> {
+  const parents: Record<string, string | null> = {};
+  const missing: string[] = [];
+  let wanted = [...new Set(keys)];
+  while (wanted.length > 0) {
+    await pool(wanted, TREE_CONCURRENCY, async (key) => {
+      let answer: unknown;
+      try {
+        answer = await readJson<unknown>(`/api/v1/issues/${encodeURIComponent(key)}`, config);
+      } catch (error) {
+        if (!(error instanceof DispatchRefusedError) || error.status !== 404) throw error;
+        parents[key] = null;
+        missing.push(key);
+        return;
+      }
+      const issue = recordOf(answer);
+      const parent = issue?.parent ?? null;
+      if (
+        issue?.key !== key ||
+        (parent !== null && (typeof parent !== "string" || parent === ""))
+      ) {
+        throw new DrawError(
+          `Dispatch answered the issue ${key} with the key ${String(issue?.key)} and the parent ` +
+            `${JSON.stringify(parent)}, which is no issue and its parent's key`
+        );
+      }
+      parents[key] = parent;
+    });
+    wanted = [
+      ...new Set(
+        Object.values(parents).filter(
+          (parent): parent is string => parent !== null && !Object.hasOwn(parents, parent)
+        )
+      ),
+    ];
+  }
+  return {
+    readAt: new Date().toISOString(),
+    source: "dispatch",
+    parents: sortedParents(parents),
+    missing: missing.sort(),
+  };
+}
+
+/**
+ * The same trees, pinned: read from a file in the shape `draw.json` writes, which is either that
+ * whole file or the `issueTrees` object inside it. The reading time the file carries is kept,
+ * because it is when the parents were true; the source becomes the file. Every parent it names
+ * must be an issue it names, so every chain ends inside it, and every issue in `keys` must be
+ * there, since an issue it leaves out would be drawn as a tree of its own whatever its parent
+ * is. Each way it can fail is a usage error about `--issue-trees`, as with `--backlog-roots`.
+ */
+export async function pinnedIssueTrees(path: string, keys: readonly string[]): Promise<IssueTrees> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    throw new UsageError(`--issue-trees ${path} could not be read as JSON`);
+  }
+  const record = recordOf(parsed);
+  const held = recordOf(record?.issueTrees) ?? record;
+  const listed = recordOf(held?.parents);
+  if (held === null || listed === null) {
+    throw new UsageError(
+      `--issue-trees ${path} names no trees: it takes the shape draw.json writes, which is an ` +
+        "object with `parents` or a whole draw.json holding `issueTrees`"
+    );
+  }
+  const parents: Record<string, string | null> = {};
+  for (const [key, parent] of Object.entries(listed)) {
+    if (parent !== null && (typeof parent !== "string" || parent === "")) {
+      throw new UsageError(
+        `--issue-trees ${path} gives ${key} the parent ${JSON.stringify(parent)}, which is ` +
+          "neither an issue's key nor null"
+      );
+    }
+    parents[key] = parent;
+  }
+  for (const [key, parent] of Object.entries(parents)) {
+    if (parent !== null && !Object.hasOwn(parents, parent)) {
+      throw new UsageError(
+        `--issue-trees ${path} names ${parent} as the parent of ${key} and gives no parent of ` +
+          `${parent}, so the tree of ${key} does not end inside it`
+      );
+    }
+  }
+  const absent = keys.filter((key) => !Object.hasOwn(parents, key));
+  if (absent.length > 0) {
+    throw new UsageError(
+      `--issue-trees ${path} names no parent for ${absent.length} issue(s) the corpus names, ` +
+        `the first ${absent[0]}`
+    );
+  }
+  const missing = listOf(held.missing).filter((key): key is string => typeof key === "string");
+  return {
+    readAt: stringOf(held.readAt) ?? "unknown",
+    source: path,
+    parents: sortedParents(parents),
+    missing: missing.sort(),
+  };
+}
+
 /** One post-cut case rendered and put to the rule, which is what the draw is given. */
 async function drawCaseOf(
   row: CaseRow,
@@ -606,6 +847,7 @@ function readFlags(argv: readonly string[]): Flags {
     out?: string;
     seed?: string;
     "backlog-roots"?: string;
+    "issue-trees"?: string;
     cache?: string;
   };
   try {
@@ -617,6 +859,7 @@ function readFlags(argv: readonly string[]): Flags {
         out: { type: "string" },
         seed: { type: "string" },
         "backlog-roots": { type: "string" },
+        "issue-trees": { type: "string" },
         cache: { type: "string" },
       },
       strict: true,
@@ -643,6 +886,7 @@ function readFlags(argv: readonly string[]): Flags {
     out,
     seed,
     backlogRoots: values["backlog-roots"]?.trim() || undefined,
+    issueTrees: values["issue-trees"]?.trim() || undefined,
     cache: values.cache?.trim() || undefined,
   };
 }
@@ -688,6 +932,25 @@ async function draw(flags: Flags): Promise<number> {
       ? `                  from Dispatch at ${roots.readAt}`
       : `                  pinned from ${roots.source}, read at ${roots.readAt}`
   );
+  const issueKeys = [
+    ...new Set(corpus.rows.flatMap((row) => (row.issueKey === null ? [] : [row.issueKey]))),
+  ].sort();
+  const trees =
+    flags.issueTrees === undefined
+      ? await readIssueTrees(issueKeys, config)
+      : await pinnedIssueTrees(flags.issueTrees, issueKeys);
+  const treeCount = new Set(issueKeys.map((key) => treeRootOf(key, trees.parents))).size;
+  console.log(
+    `issue trees       ${treeCount} over the ${issueKeys.length} issues the corpus names, ` +
+      `${Object.keys(trees.parents).length} issues read, ${trees.missing.length} not found`
+  );
+  console.log(
+    trees.source === "dispatch"
+      ? `                  from Dispatch at ${trees.readAt}`
+      : `                  pinned from ${trees.source}, read at ${trees.readAt}`
+  );
+  const split = splitAtCut(corpus.rows, cut, trees.parents);
+  console.log(`of a tree with a case before the cut, so training  ${split.beforeCut.length}`);
   const definition = await neverDecideDefinition();
   const ruleOptions: NeverDecideOptions = {
     model: DEFAULT_NEVER_DECIDE_MODEL,
@@ -698,8 +961,12 @@ async function draw(flags: Flags): Promise<number> {
   console.log(
     `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
   );
-  const rendered = await drawCasesOf(post, issues, config, ruleOptions);
-  const drawn = drawSlices(rendered.cases, seed);
+  const rendered = await drawCasesOf(split.post, issues, config, ruleOptions);
+  const drawn = drawSlices(rendered.cases, seed, trees.parents);
+  // The cases of a tree on the training side were never rendered or put to the rule, so they
+  // join the undrawable ones here, first, under their own kind.
+  drawn.undrawable = [...split.beforeCut, ...drawn.undrawable];
+  drawn.undrawableByKind["group-before-cut"] = split.beforeCut.length;
   console.log("");
   console.log(countsTable(drawn));
   console.log("");
@@ -751,12 +1018,15 @@ async function draw(flags: Flags): Promise<number> {
     groups: drawn.groups,
     postCutCases: post.length,
     documentsUnread: rendered.unread,
-    // The one input of the draw that is not the corpus: the labelled roots on the backlog or in
-    // icebox, which the never-decide rule reads. The list is written whole, with the time it
-    // was read, so `--backlog-roots <this file>` draws these slices again whatever Dispatch
-    // shows later.
+    // The two inputs of the draw that are not the corpus. The labelled roots on the backlog or
+    // in icebox, which the never-decide rule reads, and the parent of every issue the corpus
+    // names, which the groups are taken over. Each is written whole, with the time it was read,
+    // so `--backlog-roots <this file> --issue-trees <this file>` draws these slices again
+    // whatever Dispatch shows later.
     backlogLegionRootsRead: roots.issues.length,
     backlogLegionRoots: roots,
+    issueTreesRead: Object.keys(trees.parents).length,
+    issueTrees: trees,
     // What the rule was, for this draw: the prose it applied, what applying it cost, and what
     // was checked of the text it was applied to. A change of one byte of that prose changes every
     // cache key, so a later draw over the same corpus and seed with another definition is a

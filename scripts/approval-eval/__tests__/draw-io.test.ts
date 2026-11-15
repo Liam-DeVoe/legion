@@ -87,6 +87,13 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
         },
       ],
     },
+    issueTreesRead: 1,
+    issueTrees: {
+      readAt: "2026-10-01T00:00:00.000Z",
+      source: "dispatch",
+      parents: { "INFRA-1": null },
+      missing: [],
+    },
     rule: {
       model: "anthropic/claude-opus-5-5",
       definitionSha256: "abc",
@@ -101,7 +108,12 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
       held: { total: 0, byKind: {}, cases: [] },
       undrawable: {
         total: 0,
-        byKind: { "too-few-options": 0, "no-option-chosen": 0, "rule-unreadable": 0 },
+        byKind: {
+          "group-before-cut": 0,
+          "too-few-options": 0,
+          "no-option-chosen": 0,
+          "rule-unreadable": 0,
+        },
         cases: [],
       },
     },

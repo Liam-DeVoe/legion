@@ -10,8 +10,11 @@ import {
   DrawError,
   drawSlices,
   pinnedBacklogRoots,
+  pinnedIssueTrees,
   renderingCheckOf,
+  splitAtCut,
   TARGETS,
+  treeRootOf,
 } from "../draw";
 import { drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
 import { type AskModel, type NeverDecideAnswer, neverDecide } from "../never-decide";
@@ -129,7 +132,7 @@ function placement(draw: Draw): Map<string, string> {
 
 describe("drawSlices", () => {
   test("puts every case of a group into one slice", () => {
-    const draw = drawSlices(corpus(), 7);
+    const draw = drawSlices(corpus(), 7, {});
     const where = placement(draw);
     const byGroup = new Map<string, Set<string>>();
     for (const [caseId, slice] of where) {
@@ -146,14 +149,14 @@ describe("drawSlices", () => {
 
   test("draws every case into exactly one slice", () => {
     const cases = corpus();
-    const draw = drawSlices(cases, 7);
+    const draw = drawSlices(cases, 7, {});
     const drawn = SLICES.flatMap((slice) => draw.slices[slice]);
     expect(new Set(drawn).size).toBe(drawn.length);
     expect(drawn.length).toBe(cases.length);
   });
 
   test("reaches each target to within one group", () => {
-    const draw = drawSlices(corpus(), 7);
+    const draw = drawSlices(corpus(), 7, {});
     for (const kind of ["approval", "question"] as const) {
       for (const slice of ["fit", "report", "anchor"] as const) {
         const reached = draw.counts[slice][kind];
@@ -164,15 +167,15 @@ describe("drawSlices", () => {
   });
 
   test("the same seed draws the same slices and another seed does not", () => {
-    const again = drawSlices(corpus(), 12345);
-    expect(drawSlices(corpus(), 12345).slices).toEqual(again.slices);
-    expect(drawSlices(corpus(), 12346).slices).not.toEqual(again.slices);
+    const again = drawSlices(corpus(), 12345, {});
+    expect(drawSlices(corpus(), 12345, {}).slices).toEqual(again.slices);
+    expect(drawSlices(corpus(), 12346, {}).slices).not.toEqual(again.slices);
   });
 
   test("the draw turns on the seed and not on the order the cases are held in", () => {
     const ordered = corpus();
-    const draw = drawSlices(ordered, 99);
-    expect(drawSlices([...ordered].reverse(), 99).slices).toEqual(draw.slices);
+    const draw = drawSlices(ordered, 99, {});
+    expect(drawSlices([...ordered].reverse(), 99, {}).slices).toEqual(draw.slices);
   });
 
   test("leaves a held case out of every slice and says which kind held it", () => {
@@ -186,7 +189,7 @@ describe("drawSlices", () => {
       reason: "The change list asks for the spool directory to be removed.",
       answer: "destructive-act\nThe change list asks for the spool directory to be removed.",
     });
-    const draw = drawSlices(cases, 7);
+    const draw = drawSlices(cases, 7, {});
     expect(placement(draw).has(held.row.caseId)).toBe(false);
     expect(draw.held.map((one) => one.caseId)).toEqual([held.row.caseId]);
     expect(draw.heldByKind).toEqual({ "destructive-act": 1 });
@@ -197,13 +200,14 @@ describe("drawSlices", () => {
     const cases = corpus();
     cases.push(drawCase(caseRow("q-none", "question", "ISSUE-none", 0)));
     cases.push(drawCase(caseRow("q-one", "question", "ISSUE-one", 1)));
-    const draw = drawSlices(cases, 7);
+    const draw = drawSlices(cases, 7, {});
     const where = placement(draw);
     expect(where.has("q-none")).toBe(false);
     expect(where.has("q-one")).toBe(false);
     expect(draw.undrawable.map((one) => one.caseId).sort()).toEqual(["q-none", "q-one"]);
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be judged as a choice/);
     expect(draw.undrawableByKind).toEqual({
+      "group-before-cut": 0,
       "too-few-options": 2,
       "no-option-chosen": 0,
       "rule-unreadable": 0,
@@ -213,12 +217,13 @@ describe("drawSlices", () => {
   test("leaves a question the person answered with no option out of every slice", () => {
     const cases = corpus();
     cases.push(drawCase(caseRow("q-empty", "question", "ISSUE-empty", 2, [])));
-    const draw = drawSlices(cases, 7);
+    const draw = drawSlices(cases, 7, {});
     expect(placement(draw).has("q-empty")).toBe(false);
     expect(draw.undrawable.map((one) => one.caseId)).toEqual(["q-empty"]);
     expect(draw.undrawable[0]?.undrawableKind).toBe("no-option-chosen");
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be scored by set equality/);
     expect(draw.undrawableByKind).toEqual({
+      "group-before-cut": 0,
       "too-few-options": 0,
       "no-option-chosen": 1,
       "rule-unreadable": 0,
@@ -228,12 +233,12 @@ describe("drawSlices", () => {
   test("refuses the whole draw over an approval case answered with no option", () => {
     const cases = corpus();
     cases.push(drawCase(caseRow("a-empty", "approval", "ISSUE-empty", 2, [])));
-    expect(() => drawSlices(cases, 7)).toThrow(DrawError);
-    expect(() => drawSlices(cases, 7)).toThrow(/a-empty/);
+    expect(() => drawSlices(cases, 7, {})).toThrow(DrawError);
+    expect(() => drawSlices(cases, 7, {})).toThrow(/a-empty/);
   });
 
   test("writes an anchor descriptor for every anchor case", () => {
-    const draw = drawSlices(corpus(), 7);
+    const draw = drawSlices(corpus(), 7, {});
     expect(draw.anchors.map((one) => one.caseId).sort()).toEqual([...draw.slices.anchor].sort());
     for (const anchor of draw.anchors) {
       expect(anchor.sha256).toBe(`sha-of-${anchor.caseId}`);
@@ -260,8 +265,8 @@ describe("drawSlices", () => {
         },
       }),
     ];
-    const draw = drawSlices(cases, 3);
-    expect(draw.groupKey).toBe("issue");
+    const draw = drawSlices(cases, 3, {});
+    expect(draw.groupKey).toBe("issue tree");
     expect(draw.groupCount).toBe(1);
     expect(draw.groups).toEqual({ approval: 1, question: 0 });
     const where = placement(draw);
@@ -273,7 +278,7 @@ describe("drawSlices", () => {
       drawCase(caseRow("a-1", "approval", "ISSUE-7")),
       drawCase(caseRow("q-1", "question", "ISSUE-7")),
     ];
-    const draw = drawSlices(cases, 3);
+    const draw = drawSlices(cases, 3, {});
     expect(draw.groupCount).toBe(1);
     expect(draw.groups).toEqual({ approval: 1, question: 1 });
     const where = placement(draw);
@@ -285,8 +290,128 @@ describe("drawSlices", () => {
       drawCase({ ...caseRow("a-1", "approval", "ISSUE-7"), issueKey: null }),
       drawCase({ ...caseRow("a-2", "approval", "ISSUE-7"), issueKey: null }),
     ];
-    const draw = drawSlices(cases, 3);
+    const draw = drawSlices(cases, 3, {});
     expect(draw.groupCount).toBe(2);
+  });
+
+  test("the cases of a parent and of its child are one group, so they land in one slice", () => {
+    const cases = [
+      drawCase(caseRow("a-1", "approval", "ISSUE-7")),
+      drawCase(caseRow("a-2", "approval", "ISSUE-8")),
+      drawCase(caseRow("q-1", "question", "ISSUE-9")),
+    ];
+    const parents = { "ISSUE-7": null, "ISSUE-8": "ISSUE-7", "ISSUE-9": "ISSUE-8" };
+    const draw = drawSlices(cases, 3, parents);
+    expect(draw.groupCount).toBe(1);
+    expect(draw.groups).toEqual({ approval: 1, question: 1 });
+    const where = placement(draw);
+    expect(where.get("a-2")).toBe(where.get("a-1"));
+    expect(where.get("q-1")).toBe(where.get("a-1"));
+    expect(drawSlices(cases, 3, {}).groupCount).toBe(3);
+  });
+});
+
+describe("the side of the cut a group stands on", () => {
+  const cut = Date.parse("2026-11-05T00:00:00Z");
+  const answered = (row: CaseRow, at: string): CaseRow => ({ ...row, answeredAt: at });
+
+  test("a tree with a case before the cut keeps every later case of it out of the draw", () => {
+    const rows = [
+      answered(caseRow("a-root-old", "approval", "ROOT-1"), "2026-11-04T10:00:00Z"),
+      answered(caseRow("a-root-new", "approval", "ROOT-1"), "2026-11-06T10:00:00Z"),
+      answered(caseRow("a-child", "approval", "CHILD-1"), "2026-11-06T11:00:00Z"),
+      answered(caseRow("q-grandchild", "question", "GRANDCHILD-1"), "2026-11-07T11:00:00Z"),
+      answered(caseRow("a-new-tree", "approval", "ROOT-2"), "2026-11-06T12:00:00Z"),
+      answered(caseRow("a-new-child", "approval", "CHILD-2"), "2026-11-05T00:00:00Z"),
+    ];
+    const parents = {
+      "ROOT-1": null,
+      "CHILD-1": "ROOT-1",
+      "GRANDCHILD-1": "CHILD-1",
+      "ROOT-2": null,
+      "CHILD-2": "ROOT-2",
+    };
+    const split = splitAtCut(rows, cut, parents);
+    expect(split.post.map((row) => row.caseId)).toEqual(["a-new-tree", "a-new-child"]);
+    expect(split.beforeCut.map((one) => one.caseId)).toEqual([
+      "a-root-new",
+      "a-child",
+      "q-grandchild",
+    ]);
+    for (const one of split.beforeCut) {
+      expect(one.undrawableKind).toBe("group-before-cut");
+      expect(one.reason).toMatch(/issue tree:ROOT-1 holds the case a-root-old of ROOT-1/);
+    }
+  });
+
+  test("grouped by issue alone, the child's case would have been drawn", () => {
+    const rows = [
+      answered(caseRow("a-root-old", "approval", "ROOT-1"), "2026-11-04T10:00:00Z"),
+      answered(caseRow("a-child", "approval", "CHILD-1"), "2026-11-06T11:00:00Z"),
+    ];
+    expect(splitAtCut(rows, cut, {}).post.map((row) => row.caseId)).toEqual(["a-child"]);
+    expect(splitAtCut(rows, cut, { "ROOT-1": null, "CHILD-1": "ROOT-1" }).post).toEqual([]);
+  });
+
+  test("the earliest case before the cut is the one named, whatever order the corpus holds", () => {
+    const rows = [
+      answered(caseRow("a-later", "approval", "ROOT-1"), "2026-11-03T10:00:00Z"),
+      answered(caseRow("a-earlier", "approval", "ROOT-1"), "2026-11-01T10:00:00Z"),
+      answered(caseRow("a-new", "approval", "ROOT-1"), "2026-11-06T10:00:00Z"),
+    ];
+    const [one] = splitAtCut(rows, cut, {}).beforeCut;
+    expect(one?.reason).toMatch(/holds the case a-earlier of ROOT-1/);
+  });
+
+  test("a chain of parents that comes back on itself stops the draw", () => {
+    const parents = { "ISSUE-1": "ISSUE-2", "ISSUE-2": "ISSUE-1" };
+    expect(() => treeRootOf("ISSUE-1", parents)).toThrow(DrawError);
+    expect(() => treeRootOf("ISSUE-1", parents)).toThrow(/comes back to ISSUE-1/);
+    expect(treeRootOf("ISSUE-3", parents)).toBe("ISSUE-3");
+  });
+});
+
+describe("the trees a draw is given from a file", () => {
+  const scratches: string[] = [];
+  afterEach(async () => {
+    for (const scratch of scratches.splice(0)) await rm(scratch, { recursive: true, force: true });
+  });
+  const fixture = async (value: unknown): Promise<string> => {
+    const scratch = await mkdtemp(join(tmpdir(), "issue-trees-"));
+    scratches.push(scratch);
+    const path = join(scratch, "draw.json");
+    await writeFile(path, JSON.stringify(value), "utf8");
+    return path;
+  };
+  const trees = {
+    readAt: "2026-11-15T07:00:00.000Z",
+    source: "dispatch",
+    parents: { "CHILD-1": "ROOT-1", "ROOT-1": null },
+    missing: [],
+  };
+
+  test("reads the trees out of a whole draw.json and keeps the time they were read", async () => {
+    const path = await fixture({ seed: 7, issueTrees: trees });
+    const read = await pinnedIssueTrees(path, ["CHILD-1"]);
+    expect(read).toEqual({ ...trees, source: path });
+  });
+
+  test("refuses a file that leaves out an issue the corpus names", async () => {
+    const path = await fixture(trees);
+    await expect(pinnedIssueTrees(path, ["CHILD-1", "OTHER-9"])).rejects.toThrow(UsageError);
+    await expect(pinnedIssueTrees(path, ["CHILD-1", "OTHER-9"])).rejects.toThrow(/OTHER-9/);
+  });
+
+  test("refuses a file whose parent has no entry of its own", async () => {
+    const path = await fixture({ ...trees, parents: { "CHILD-1": "ROOT-1" } });
+    await expect(pinnedIssueTrees(path, ["CHILD-1"])).rejects.toThrow(
+      /names ROOT-1 as the parent of CHILD-1/
+    );
+  });
+
+  test("refuses a parent that is no key", async () => {
+    const path = await fixture({ ...trees, parents: { "CHILD-1": 7, "ROOT-1": null } });
+    await expect(pinnedIssueTrees(path, ["CHILD-1"])).rejects.toThrow(/neither an issue's key/);
   });
 });
 
