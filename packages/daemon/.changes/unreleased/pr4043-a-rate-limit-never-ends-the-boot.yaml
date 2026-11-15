@@ -10,5 +10,6 @@ body: |-
   mapping applies the same rule without waiting. A 404 still refuses the boot, and a 5xx is still
   retried.
 
-  A 403 whose body says `API rate limit exceeded` is read as GitHub's rate limit whatever its
-  headers say, waited a minute when no header names a wait.
+  Every GitHub REST call of the daemon reads a 403 whose body says `API rate limit exceeded` as
+  GitHub's rate limit whatever its headers say, waited a minute when no header names a wait: a
+  boot mint retries it, the review reads hold for it and the outbox defers the rows it would spend.
