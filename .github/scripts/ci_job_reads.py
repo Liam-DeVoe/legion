@@ -164,6 +164,8 @@ def install_omp(job):
     return reads(
         (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp")),
         (".omp-pin", ".github/actions/install-omp/action.yml:16 pin=$(<.omp-pin)"),
+        (".github/scripts/omp-digest.sh", ".github/actions/install-omp/action.yml:22 runs it on mise where's directory"),
+        (".omp-pin.sha256", ".github/actions/install-omp/action.yml:22 hands it to omp-digest.sh, whose :30 reads it"),
     )
 
 

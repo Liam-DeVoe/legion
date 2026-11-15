@@ -21,7 +21,8 @@ Every Legion agent process under `runtime: kubernetes` — architect, planner, i
 It carries:
 
 - the pinned OMP fork build the daemon's default `omp_invocation` names
-  — resolved at build time with the same `mise x github:cybermonklabs/oh-my-pi@<pin>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
+  — fetched at build time with `mise install github:cybermonklabs/oh-my-pi@<pin>`, the same tool spec a tmux host's `mise x` resolves, from the single pin source `.omp-pin`;
+  checked, before anything runs it, against the sha256 of `bin/omp` that `.omp-pin.sha256` records (`.github/scripts/omp-digest.sh`), so a commit that moves the pin moves that digest with it;
   installed at `/opt/omp/bin/omp` (`LEGION_OMP_PATH`);
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
@@ -719,7 +720,7 @@ A reopen within about a minute of the close can race that closed run: `.github/w
 The files the image builds from are every context source `worker.Dockerfile` copies:
 the root manifest, lockfile, patches and each root workspace's `package.json` (the frozen install);
 the packages it copies whole — the Dockerfile (`packages/daemon/docker/**`), the two plugins and what they bundle (`packages/pi-envoy/**`, `packages/pi-legion/**`, `packages/pi-shared/**`, `packages/envoy-client/**`, `packages/contracts/**`), the skills (`skills/**`) and the prepack that stages them (`scripts/pi-plugin-prepack.sh`);
-the OMP pin (`.omp-pin`); the whole Go module the image compiles `legion` from (`packages/daemon/**`) and its build inputs;
+the OMP pin, its digest and the script that checks it (`.omp-pin`, `.omp-pin.sha256`, `.github/scripts/omp-digest.sh`); the whole Go module the image compiles `legion` from (`packages/daemon/**`) and its build inputs;
 the context's `.dockerignore`; and the workflows (`worker-image.yaml`, and `ci.yaml`, which calls it on a pull request).
 What a pod executes is part of the image's behaviour
 — the command a Sandbox pod runs, the launch probes `legion probe-image` runs in the image's final step and in the Go daemon's probe Sandbox, and every package they import

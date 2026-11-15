@@ -743,9 +743,12 @@ jobs:
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
             # Oh My Pi, which .github/actions/install-omp installs at the version .omp-pin names,
-            # through the mise .github/actions/install-jj leaves.
+            # through the mise .github/actions/install-jj leaves, and holds to the digest
+            # .omp-pin.sha256 records with .github/scripts/omp-digest.sh.
             omp_install: &omp_install
               - '.omp-pin'
+              - '.omp-pin.sha256'
+              - '.github/scripts/omp-digest.sh'
               - '.github/actions/install-omp/**'
               - *jj_install
             # What the test job's two Go steps read together — the plain step, which tests every
@@ -1920,7 +1923,8 @@ jobs:
             # build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
             # binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
             # top-level directories but infra is named; the scripts that write the image's
-            # third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
+            # third-party notices; the Oh My Pi pin, its digest and the script that checks it; and
+            # the context's .dockerignore. Then a `!`
             # pattern for each .dockerignore line that drops part of those packages, of
             # packages/envoy or of skills/, which the step's some-with-excludes reads as an
             # exclusion, so a pull request touching only files the build does not read builds no
@@ -1971,6 +1975,8 @@ jobs:
               - 'packages/envoy/sessiontiming/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
+              - '.omp-pin.sha256'
+              - '.github/scripts/omp-digest.sh'
               - '.bun-version'
               - '.dockerignore'
               - 'scripts/pi-plugin-prepack.sh'
