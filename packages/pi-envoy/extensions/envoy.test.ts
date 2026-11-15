@@ -1863,36 +1863,28 @@ async function settle(): Promise<void> {
 
 // Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
 // (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows; the wait is measured on the monotonic
-// clock, which `setSystemTime` leaves alone.
-// The deadline is a hang guard rather than a budget: what can hang here is a condition no
-// listener, relay or resubscribe path ever makes true, which would spin this loop forever.
-// 60_000 sits above the per-test limit of every row in this file but those that carry 120_000 —
-// the live-stack freeze row, the two `session_shutdown` hang guards and the live stack's own
-// `beforeAll` — so a stuck row reddens at the runner's limit, which names the test, and never
-// here. The warning at
-// 2_000 keeps the diagnosis the old deadline gave — once per call, not once per poll — while the
-// polling goes on, and from then on each poll also yields a real millisecond: `settle()` alone is
-// 25 `setImmediate` round trips and no delay, so a condition that never holds would spin a core
-// for the rest of the guard, beside the rows still running, long after the runner failed this
-// one at its own limit. The pacing starts only once the wait is already pathological, so a
+// machine runs it later than any fixed sleep allows.
+// The poll carries no deadline of its own: what can hang here is a condition no listener, relay
+// or resubscribe path ever makes true, and the row's own per-test limit is what ends that, naming
+// the test. Once the row has ended, at its limit included, the file's `afterEach` advances
+// `rowGeneration` and the poll stops, rather than running on into the rows after it, as
+// `refreshed` below does. The warning at 2_000 names what the row waits for, once per call, and
+// from then on each poll also yields a real millisecond: `settle()` alone is 25 `setImmediate`
+// round trips and no delay, so a condition that never holds would spin a core beside whatever
+// else runs on the host. The pacing starts only once the wait is already pathological, so a
 // healthy wait is untouched. That pacing is also why this helper is for real-timer scopes only:
 // under `jest.useFakeTimers()` a `Bun.sleep` never resolves (measured on bun 1.4.4: a row
 // awaiting `Bun.sleep(5)` there timed out, where real timers resolve it in 14 ms), so from the
-// first warning on the loop would stop polling and the throw below would be unreachable. No
-// caller is in such a scope: the file's fake-timer scopes are `onTestClock`, the store-beat row
-// and the session_shutdown budget row, and none of them calls this.
-// The base's `timeoutMs` parameter is gone with the deadline it fed: a caller waiting on a real
-// child process now waits under the same guard as every other, which is above its per-test limit
-// rather than below it, so the runner's limit names the row instead of this helper throwing
-// first.
+// first warning on the loop would stop polling. No caller is in such a scope:
+// `jest.useFakeTimers()` is called only in `onTestClock` and the store-beat row, and neither
+// calls this.
 async function until(condition: () => boolean, what: string): Promise<void> {
+  const generation = rowGeneration;
   const start = performance.now();
   let warned = false;
   while (!condition()) {
-    const waited = performance.now() - start;
-    if (waited > 60_000) throw new Error(`timed out waiting for ${what}`);
-    if (!warned && waited > 2_000) {
+    if (generation !== rowGeneration) throw new Error(`stopped waiting for ${what}: the row ended`);
+    if (!warned && performance.now() - start > 2_000) {
       warned = true;
       console.warn(`still waiting for ${what} after 2 s`);
     }
@@ -19937,17 +19929,18 @@ console.log(JSON.stringify(args));
     // that waits the drain out reaches neither of these, because `onTestClock` fails it above.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(natsState.drainStarted).toBe(true);
-    // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
-    // waits for a drain that never returns. The row's own cost, read from bun's junit reporter on
-    // this two-CPU pod: 1_265 / 1_281 / 1_285 ms (min/median/max over 5 idle runs), and
-    // 2_104 / 9_888 / 22_970 ms over the 60 runs of three campaigns under 96 busy loops, 48 per
-    // CPU. Six times that worst is 137_819 ms, past the 120_000 a guard may take here, so this
-    // takes that ceiling: 5.2 times the worst of those runs, where the 30_000 it replaces sat
-    // inside the loaded cost itself and failed a correct run at 30_297.51 ms. It stays well
-    // inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml), so a drain
-    // that never returns reddens with this test named instead of cancelling the job, which
-    // names nothing.
-  }, 120_000);
+    // A hang guard rather than a budget: the handler runs on the test's clock, and `onTestClock`
+    // fails it at once when it does not end, so what can still hang on real time is the module's
+    // import and `session_start`, ahead of `onTestClock`. The row's own cost as it stands, read
+    // from bun's junit reporter on this two-CPU pod: 63.57 / 66.97 / 198.97 ms (min/median/max
+    // over 5 idle runs), and 707.61 / 1_699.56 / 4_438.23 ms over 20 runs under 96 busy loops, 48
+    // per CPU, this row's acceptance rung. Six times that worst is 26_629 ms, rounded up to 30_000.
+    // The 120_000 this replaces was sized when the row still waited out the handler's real 1 s
+    // deadline, at a worst of 22_970 ms over 60 runs at that rung; the test's clock took that wait
+    // out of the row. It stays well inside the pi-envoy job's `timeout-minutes: 10`
+    // (.github/workflows/ci.yaml), so a hang reddens with this test named instead of cancelling
+    // the job, which names nothing.
+  }, 30_000);
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
@@ -21490,7 +21483,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   // These deadlines stay, unlike the rest of the file's: they are hang guards against a live
   // NATS server that never answers, and they cannot decide a healthy run. The deadlines passed
   // below sit inside the rows' own limits and inside the `envoy-session-stall` CI job's
-  // `timeout-minutes: 15`, and these rows run only under `LEGION_E2E_ENVOY_STACK=1`.
+  // `timeout-minutes: 20`, and these rows run only under `LEGION_E2E_ENVOY_STACK=1`.
   async function waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number,
