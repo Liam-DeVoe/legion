@@ -57,6 +57,7 @@ import {
 import {
   type AdvancesListing,
   answeredWhole,
+  type DonePage,
   type DoneRead,
   type IssueListing,
   useIssueTableItems,
@@ -724,19 +725,31 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   );
 
   // Each tab's count, from the data the page holds: the open listing (and the board) for every
-  // view but Done, whose count is the server's total of its first page, read once the view has
-  // been opened in the page (the same read Done itself makes as it opens). A view that reads no
-  // open listing (Done) counts Open by the server's total of a one-row open page, and the Legion
+  // view but Done, whose count is the server's total of its own page read - the last page this
+  // page read of every done issue, with no Closed window, which every page of answers with the
+  // same total. Kept once Done has read one, so the tab still counts while another view is open,
+  // and the same query as Done's own, so no second read is made. A view that reads no open
+  // listing (Done) counts Open by the server's total of a one-row open page, and the Legion
   // queue by the board alone.
-  const [doneOpened, setDoneOpened] = useState(builtIn.id === "done");
-  if (builtIn.id === "done" && !doneOpened) setDoneOpened(true);
+  const ownDonePage =
+    done?.page !== undefined && done.closed_since === undefined && done.closed_before === undefined
+      ? done.page
+      : undefined;
+  const [donePageRead, setDonePageRead] = useState<DonePage | undefined>(ownDonePage);
+  if (
+    ownDonePage !== undefined &&
+    (donePageRead?.sort !== ownDonePage.sort ||
+      donePageRead.limit !== ownDonePage.limit ||
+      donePageRead.offset !== ownDonePage.offset)
+  )
+    setDonePageRead(ownDonePage);
   const doneCount = useQuery({
     ...projectDonePageQuery(
       project ?? "",
       {},
-      { sort: "-closed_at", limit: defaultView.pageSize, offset: 0 }
+      donePageRead ?? { sort: "-closed_at", limit: defaultView.pageSize, offset: 0 }
     ),
-    enabled: doneOpened && project !== undefined,
+    enabled: donePageRead !== undefined && project !== undefined,
   });
   const openCount = useQuery({
     ...projectOpenCountQuery(project ?? ""),
