@@ -163,9 +163,9 @@ def install_jj(job):
 def install_omp(job):
     return reads(
         (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp")),
-        (".omp-pin", ".github/actions/install-omp/action.yml:16 pin=$(<.omp-pin)"),
-        (".github/scripts/omp-digest.sh", ".github/actions/install-omp/action.yml:22 runs it on mise where's directory"),
-        (".omp-pin.sha256", ".github/actions/install-omp/action.yml:22 hands it to omp-digest.sh, whose :30 reads it"),
+        (".omp-pin", ".github/actions/install-omp/action.yml:18 pin=$(<.omp-pin)"),
+        (".github/scripts/omp-digest.sh", ".github/actions/install-omp/action.yml:23 runs it on mise where's directory"),
+        (".omp-pin.sha256", ".github/actions/install-omp/action.yml:23 hands it to omp-digest.sh, whose :42 reads it"),
     )
 
 
@@ -897,6 +897,8 @@ GATES = [
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:101-104 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Stage 1 live proof')}: stage1-skeleton.sh sources lib/rig.sh (with port-file.sh, held-port.py) "
                            f"and runs built-from.sh; {at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
+        (".github/scripts/omp-digest.sh", "scripts/e2e/lib/install-plugin-profile.test.ts:40-43 copies it into the fake checkout, "
+                                          "where lib/pinned-omp.sh runs it"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:9 (tsc -p scripts/dispatch)"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
@@ -1102,7 +1104,9 @@ GATES = [
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:147"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:148"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:13,129,1009; rig.sh:239 sources scripts/e2e/lib/rig.sh"),
-        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1004-1006 copies .omp-pin"),
+        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1199-1202 copies .omp-pin"),
+        (".github/scripts/omp-digest.sh", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:366-369 and rig-isolation.test.ts:77-80 "
+                                          "copy it into a label's checkout, where scripts/e2e/lib/pinned-omp.sh runs it"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:27)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")

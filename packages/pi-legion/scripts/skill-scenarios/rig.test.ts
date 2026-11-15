@@ -277,6 +277,7 @@ describe("a setup that fails after install_model_route", () => {
         "cmd_profile",
       ].map(fn),
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
+      "pinned_omp() { :; }",
       "install_superpowers() { fail 'the superpowers probe failed'; }",
       'work=$1; cmd_profile probe "$2"',
     ].join("\n");
@@ -353,6 +354,20 @@ function freshDir(name: string): string {
   const dir = path.join(work, `${name}-${++dirs}`);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+/** A label's checkout as pinned_omp reads it: an .omp-pin naming `omp@pin`, an .omp-pin.sha256
+ * recording `omp` as bin/omp's bytes, and the real .github/scripts/omp-digest.sh that checks it. */
+function pinCheckout(omp: string): string {
+  const co = freshDir("pin-checkout");
+  writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
+  const digest = new Bun.CryptoHasher("sha256").update(omp).digest("hex");
+  writeFileSync(path.join(co, ".omp-pin.sha256"), `${digest}  bin/omp\n`);
+  mkdirSync(path.join(co, ".github/scripts"), { recursive: true });
+  cpSync(
+    path.join(root, ".github/scripts/omp-digest.sh"),
+    path.join(co, ".github/scripts/omp-digest.sh")
+  );
+  return co;
 }
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
@@ -716,7 +731,9 @@ judge_ts() {
 });
 
 // cmd_profile's superpowers step, with a stand-in mise: it records the environment omp got and
-// writes a transcript whose one tool result is the text in result.txt beside it.
+// writes a transcript whose one tool result is the text in result.txt beside it. The label's
+// checkout records the stand-in install's bin/omp in its .omp-pin.sha256 (pinCheckout), and the
+// rig's own lib/pinned-omp.sh holds the install to it.
 describe("install_superpowers", () => {
   function setup(result: string) {
     const bin = freshDir("superpowers-bin");
@@ -739,8 +756,10 @@ describe("install_superpowers", () => {
     );
     // `mise where` names the pin's install, whose bin/omp the probe runs by path; any other call is
     // the probe's `mise x <pin> -- <omp> -p …`.
+    const omp = "#!/bin/sh\n";
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
-    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), omp, { mode: 0o755 });
+    const co = pinCheckout(omp);
     writeFileSync(
       path.join(bin, "mise"),
       `#!/usr/bin/env bash
@@ -756,8 +775,8 @@ echo done
     );
     const run = () =>
       bash(
-        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
-        [label],
+        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\nroot=$3\ninstall_superpowers "$1" skills-s1 "$2" omp@pin`,
+        [label, co, root],
         { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
     return { bin, label, run };
@@ -802,6 +821,18 @@ echo done
     const { code, stderr } = run();
     expect(code).toBe(1);
     expect(stderr).toContain("read no skill://writing-plans");
+    expect(existsSync(path.join(label, "superpowers"))).toBe(false);
+  });
+
+  // Catches: a probe that runs the label's pin before pinned_omp holds its install to the label's
+  // .omp-pin.sha256, here an install whose bin/omp is the recorded bytes with a kubectl beside it.
+  test("fails, running no omp, when the pin's install holds a file the digest does not name", () => {
+    const { bin, label, run } = setup("# Skill writing-plans\n\nbody");
+    writeFileSync(path.join(bin, "pin", "bin", "kubectl"), "#!/bin/sh\n", { mode: 0o755 });
+    const { code, stderr } = run();
+    expect(code).toBe(1);
+    expect(stderr).toContain("bin/kubectl: a regular file");
+    expect(existsSync(path.join(bin, "argv.txt"))).toBe(false);
     expect(existsSync(path.join(label, "superpowers"))).toBe(false);
   });
 });
@@ -1215,7 +1246,8 @@ describe("require_superpowers", () => {
 });
 
 // launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// does, and a stand-in mise that prints the omp command line it was given, on a label whose
+// checkout records the stand-in install's bin/omp in its .omp-pin.sha256 (pinCheckout).
 describe("launch", () => {
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
   // once, and extra omp arguments placed anywhere but after the prompt.
@@ -1228,6 +1260,7 @@ describe("launch", () => {
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
     writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    const co = pinCheckout("#!/bin/sh\n");
     writeFileSync(
       path.join(bin, "mise"),
       `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
@@ -1237,8 +1270,8 @@ describe("launch", () => {
 tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
-      [run],
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 co=$2 root=$3 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      [run, co, root],
       { PATH: `${bin}:${childEnv.PATH}` }
     );
     expect(result.code).toBe(0);

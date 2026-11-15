@@ -21,7 +21,9 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 //   - tmux: runs the pane's command at once;
 //   - mise: answers `mise where <pin>` with a pin whose bin/omp is the agent, which records the
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
-//     (a run names its pin's omp by path).
+//     (a run names its pin's omp by path). The checkout is the labels' too: its .omp-pin names that
+//     pin and its .omp-pin.sha256 records the agent's bytes, which lib/pinned-omp.sh checks with the
+//     real .github/scripts/omp-digest.sh before a run starts it.
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
 // must stop its server when it ends.
 setDefaultTimeout(120_000);
@@ -52,7 +54,8 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh and the e2e helpers it sources or runs, the pin its labels run with the
+// digest that holds the pin's install, and the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
@@ -65,10 +68,16 @@ stagings.push(() => {
     "loopback-dsn.py",
     "port-file.sh",
     "held-port.py",
+    "pinned-omp.sh",
   ]) {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
   }
+  mkdirSync(path.join(co, ".github/scripts"), { recursive: true });
+  copyFileSync(
+    path.join(root, ".github/scripts/omp-digest.sh"),
+    path.join(co, ".github/scripts/omp-digest.sh")
+  );
   mkdirSync(stub);
 });
 put(
@@ -161,14 +170,16 @@ put(
   ].join("\n"),
   0o755
 );
+const agent = [
+  "#!/usr/bin/env bash",
+  'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
+  "",
+].join("\n");
+put(path.join(bin, "pin", "bin", "omp"), agent, 0o755);
+put(path.join(co, ".omp-pin"), "omp@stub\n");
 put(
-  path.join(bin, "pin", "bin", "omp"),
-  [
-    "#!/usr/bin/env bash",
-    'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
-    "",
-  ].join("\n"),
-  0o755
+  path.join(co, ".omp-pin.sha256"),
+  `${new Bun.CryptoHasher("sha256").update(agent).digest("hex")}  bin/omp\n`
 );
 
 // The work directory: the label's profile, and the batch's services file and Dispatch token.
