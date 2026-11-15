@@ -545,7 +545,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), with the two keys contract 111 added gone, each issue of a live
 			// tree's `treeMovedAt` and `quietHours` (withoutQuietTime), and with every root's
-			// `treeRuns` gone, the key contract 134 added beside the gated steps of a root on
+			// `treeRuns` gone, the key contract 138 added beside the gated steps of a root on
 			// an ancestor's basis, which go with `gatedSteps` itself for a caller this far back
 			// (withoutGateBasis). Every row that reaches here is below all of them, so those
 			// seventeen strips take their keys whatever the row is.

@@ -1085,7 +1085,7 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. waitingOnIssueContract and
 // gateBasisContract stand above it, and the first one's strip takes a word of the line's `kind`
-// and no key, so a caller in a pod at 111 through 133 is served the measure and neither
+// and no key, so a caller in a pod at 111 through 137 is served the measure and neither
 // `treeRuns` nor the gated steps of an issue a step of which stands on a basis.
 const quietTimeContract = 111
 
@@ -1096,12 +1096,13 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. gateBasisContract stands above it, so a caller in a pod at 132 or 133 is served the
-// word and neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis.
+// optional. gateBasisContract stands above it, so a caller in a pod at 132 through 137 is served
+// the word and neither `treeRuns` nor the gated steps of an issue a step of which stands on a
+// basis.
 const waitingOnIssueContract = 132
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 134,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 138,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
 // gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
 // root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
@@ -1113,7 +1114,7 @@ const waitingOnIssueContract = 132
 // `approved` names a person's approval no person gave. The issue keeps every other key, and its
 // `designGate` among them. It is the highest of the eighteen bands, this daemon's own contract,
 // so the only caller served the basis and `treeRuns` is one at it.
-const gateBasisContract = 134
+const gateBasisContract = 138
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

@@ -128,11 +128,11 @@ var (
 // time; a pod from 94 to 97 the two entry numbers too, and still no held list and no quiet time;
 // a pod from 98 to 110 the held list too, and still no tree quiet time; a pod from 111 to 131 the
 // quiet time too, and still no root's `treeRuns` and no gated steps of a root whose step stands on
-// a basis; a pod at 132 or 133 the same — the fixture stands no member of the line of the one kind
-// 132 added, so 132's strip finds nothing here (waiting_on_issue_test.go reads it); a pod below 46
-// none of the eighteen; and a pod at 134, this daemon's declared contract, a pod whose claims
-// record no contract and a caller in no pod — the operator's `legion state`, whose memory line
-// reads the draws, whose queue line reads the wakes and whose tool-call line reads the step
+// a basis; a pod from 132 to 137 the same — the fixture stands no member of the line of the one
+// kind 132 added, so 132's strip finds nothing here (waiting_on_issue_test.go reads it); a pod
+// below 46 none of the eighteen; and a pod at 138, this daemon's declared contract, a pod whose
+// claims record no contract and a caller in no pod — the operator's `legion state`, whose memory
+// line reads the draws, whose queue line reads the wakes and whose tool-call line reads the step
 // records — are served all of them, the basis and every root's `treeRuns` with the rest.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
@@ -287,7 +287,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// tree quiet time is served too, and every root's `treeRuns` and the gated steps of a root
 		// on a basis are held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		// The band at 132 and 133, from waitingOnIssueContract to below gateBasisContract, the
+		// The band from 132 to 137, from waitingOnIssueContract to below gateBasisContract, the
 		// last under the declared contract: this fixture stands nothing waitingOnIssueContract
 		// holds back, so it is served what the band below it is, and still no basis.
 		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},

@@ -1670,7 +1670,7 @@ package api
 // declares. Read the base's own number and every open pull request again at every forward merge
 // rather than from this line.)
 //
-// 134: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 138: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -1709,7 +1709,7 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 134 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 138 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
 // below 132 is served every member of the waiting line of the kind 132 added without its `kind`,
 // the entry of 132 above (withoutWaitingOnIssue), and so on down the bands that entry lists; the
@@ -1717,7 +1717,7 @@ package api
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 134
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 138
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
@@ -1729,7 +1729,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 134 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 138 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -1751,7 +1751,13 @@ package api
 // in at d24093cef77a, which landed #3793's INFRA-3146 at 123. It was renumbered 126 → 134 at the
 // forward merge of 2026-11-15 that brought main in at ff69e078a4ab, which carries #3715's
 // INFRA-3036 at 132, the entry right above; the open pull requests held 133 (#3937) and nothing
-// above it, so 134 is the lowest number above main's and above every number another open head
-// declares. Read the base's own number and every open head again at the next forward merge
-// rather than from this line.)
-const DaemonAPIVersion = 134
+// above it, so 134 was the lowest number above main's and above every number another open head
+// declared. That read was a GraphQL read of each open head's file, and it missed most heads: the
+// blob text it gives of this file is cut before the const line. A REST raw read of each open
+// head's file at 2026-11-15T02:46Z gave, above main's 132, 133 (#3711 and #3937), 134 (#4021,
+// which declares 134 too), 135 (#3659), 136 (#3575 and #3730) and 137 (#3712), and no open head
+// declares above 137, so this change moved 134 → 138, the lowest free number: the lowest above
+// main's and above every number another open head declares. Read the base's own number and every
+// open head again, by a REST raw read of each head's file, at the next forward merge rather than
+// from this line.)
+const DaemonAPIVersion = 138
