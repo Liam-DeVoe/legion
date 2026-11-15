@@ -132,7 +132,7 @@ export function MentionField({
    *  a host says so at the box rather than leaving it to a refusal (the decline note's). */
   readonly maxLength?: number;
   /** Told when the reader leaves the box: a host that saves what was written as it is left (a
-   *  priority's description, `InPlaceField`). A pick is no leaving, since a row of the list
+   *  priority's description, `PriorityDescription`). A pick is no leaving, since a row of the list
    *  keeps the focus here while it is clicked. */
   readonly onBlur?: () => void;
   readonly onChange: (change: MentionFieldChange) => void;

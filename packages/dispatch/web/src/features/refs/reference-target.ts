@@ -261,7 +261,10 @@ export function summarySpec(
  *  never name two artifacts (`renameArtifact`), and only a document, never a file or an image, is
  *  found by its name. One rule for every list that answers it - an issue summary's documents, an
  *  issue's artifacts - so a link drawn from a reference and the page it opens find the same
- *  artifact. Undefined until the list is read, and once it is read without it. */
+ *  artifact. The name is the document read's alone: the block read and the reference graph
+ *  resolve only the slug, so a block named through the name answers not-found and reads as its
+ *  words, and a reference written through the name is no backlink of the document. The picker
+ *  writes only the slug. Undefined until the list is read, and once it is read without it. */
 export function artifactAtAddress<T extends Pick<Artifact, "kind" | "name" | "slug">>(
   artifacts: readonly T[] | null | undefined,
   address: string

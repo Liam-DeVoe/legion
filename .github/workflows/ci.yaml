@@ -1388,19 +1388,22 @@ jobs:
             # spec shares, this file). That job gates nothing, so a change this list misses loses
             # a preview and no check, and the full lane the merge queue runs through the
             # dispatch_browser filter above, which does name every read, runs every one of these
-            # rows. It names the reference framework itself and no more: over the 200 newest
-            # pull-request runs of 2026-11-13, a list that also named the six feature directories
-            # mounting the field and the shared harness selected about half of them (about 300
-            # runs and 6,000 runner-minutes a day), so the four shard machines start for a pull
-            # request that changes the references and not for every dashboard change.
+            # rows. It names the reference framework, the shared field, and the one file of each
+            # covered box of the writing list, whose change can take a box's picker away, and no
+            # more: over the 200 newest pull-request runs of 2026-11-13, a list that also named
+            # the six feature directories mounting the field and the shared harness selected about
+            # half of them (about 300 runs and 6,000 runner-minutes a day), so the four shard
+            # machines start for a pull request that changes the references or a box that holds
+            # the picker, and not for every dashboard change.
             # For the same reason .github/scripts/ci_job_reads.py lists it in EXCLUDED rather
             # than as a gate.
             dispatch_references:
               # The workflow that holds the lane's steps.
               - '.github/workflows/dispatch-browser.yaml'
               # The eleven spec files, and the helpers only they share: the reference surfaces'
-              # own helpers and the search helpers. check-ci-filters.sh (rule 17) fails on a spec
-              # file the lane's `lane_files` in dispatch-browser.yaml runs that this list misses.
+              # own helpers, the search helpers and the writing list's walk. check-ci-filters.sh
+              # (rule 17) fails on a spec file the lane's `lane_files` in dispatch-browser.yaml
+              # runs that this list misses.
               - 'packages/dispatch/e2e/bare-references.e2e.ts'
               - 'packages/dispatch/e2e/btw.e2e.ts'
               - 'packages/dispatch/e2e/mention-composer.e2e.ts'
@@ -1414,6 +1417,7 @@ jobs:
               - 'packages/dispatch/e2e/search.e2e.ts'
               - 'packages/dispatch/e2e/reference-surfaces.ts'
               - 'packages/dispatch/e2e/search.ts'
+              - 'packages/dispatch/e2e/writing-boxes.ts'
               # The reference framework: the picker, the reader and the renderers.
               - 'packages/dispatch/web/src/features/refs/**'
               # The shared field, and the file of every covered row of the writing list, which

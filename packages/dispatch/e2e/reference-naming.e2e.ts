@@ -7,6 +7,8 @@ import {
   createIssueArtifact,
   createProject,
   editArtifact,
+  getArtifactBlocks,
+  getArtifactText,
   getIssueArtifactText,
   patchIssue,
   userHeaders,
@@ -218,10 +220,14 @@ test("a document its issue does not hold, a component of a project with no archi
 // to a slug-shaped name opens at `artifact/<its name>`. The reference written so names it: it
 // links and reads as that name, in a comment and in the document editor alike, and its link opens
 // the page at that name, which finds the document as the read route does (`artifactAtAddress`)
-// rather than answering that the issue holds no such artifact.
+// rather than answering that the issue holds no such artifact. The name is the document read's
+// alone: a block of the document named through it is read by the block read and recorded by the
+// reference graph, which each resolve only the slug, so that reference names no block they hold
+// and reads as its words with no link, as any reference whose target does not answer does, while
+// the same block named through the slug links. The picker writes only the slug.
 // SLOW(>=2s): four page loads, each waiting for the reference to draw the document's name or for
 // the document it opens to draw.
-test("a document's address written with its current name, which is not its slug, links, reads as that name and opens the document, in a comment as in a document", async ({
+test("a document's address written with its current name, which is not its slug, links, reads as that name and opens the document, in a comment as in a document, and a block named through it reads as its words", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -243,7 +249,16 @@ test("a document's address written with its current name, which is not its slug,
   expect((await getIssueArtifactText(target.key, renamed)).markdown).toContain("warms first");
 
   const address = `dispatch://${target.key}/artifact/${renamed}`;
-  const body = `The notes are ${address} now.\n`;
+  const { markdown } = await getArtifactText(uploaded.artifact.id);
+  const line = (await getArtifactBlocks(uploaded.artifact.id)).find((block) =>
+    markdown.slice(block.from, block.to).startsWith("The cache warms first.")
+  );
+  if (line === undefined) {
+    throw new Error("setup: the document holds no block for its first line");
+  }
+  const blockByName = `${address}#b-${line.id}`;
+  const blockBySlug = `dispatch://${target.key}/artifact/notes-md#b-${line.id}`;
+  const body = `The notes are ${address} now. Their first line is ${blockByName}, which ${blockBySlug} names too.\n`;
   await editArtifact(
     host.primary_artifact_id,
     { ops: [{ after: "end", markdown: body, op: "insert" }] },
@@ -257,6 +272,11 @@ test("a document's address written with its current name, which is not its slug,
     const expectDocumentName = async (scope: Locator) => {
       await expect(scope.getByRole("link", { exact: true, name: renamed })).toHaveCount(1);
       await expect(scope.getByRole("link", { exact: true, name: address })).toHaveCount(0);
+      // The block named through the slug is a link; the same block named through the name is
+      // its words, with no link at all.
+      await expect(scope.getByRole("link", { name: /The cache warms first/ })).toHaveCount(1);
+      await expect(scope).toContainText(blockByName);
+      await expect(scope.getByRole("link", { name: blockByName })).toHaveCount(0);
     };
     // The link's page is the document's: the Artifacts tab open on it, its name as the heading
     // and its text drawn.

@@ -135,6 +135,21 @@ test("the plain-text projection reads the first line alone where it is asked to"
       <PlainText firstLine markdown={"\n- First item\n  and its next line\n- Second item"}>
         {(text) => <span data-testid="list">{text ?? ""}</span>}
       </PlainText>
+      <PlainText
+        firstLine
+        markdown={"![Diagram](https://example.com/a.png)\nThe priority keeps one build."}
+      >
+        {(text) => <span data-testid="image">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText firstLine markdown={"\\\nAfter a hard break\nand more"}>
+        {(text) => <span data-testid="break">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText firstLine markdown={"| Name | Owner |\n| --- | --- |\n| Fleet | Ops |"}>
+        {(text) => <span data-testid="table">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText firstLine markdown={"```\n\nfirst code\nsecond\n```"}>
+        {(text) => <span data-testid="code">{text ?? ""}</span>}
+      </PlainText>
     </>
   );
   try {
@@ -143,6 +158,14 @@ test("the plain-text projection reads the first line alone where it is asked to"
     );
     await waitFor(() => expect(view.getByTestId("heading").textContent).toBe("The plan"));
     await waitFor(() => expect(view.getByTestId("list").textContent).toBe("First item"));
+    // A line that holds no words - an image alone, a hard break - is passed over, a table's
+    // first row reads whole, and a code block's first line is its first line that holds words.
+    await waitFor(() =>
+      expect(view.getByTestId("image").textContent).toBe("The priority keeps one build.")
+    );
+    await waitFor(() => expect(view.getByTestId("break").textContent).toBe("After a hard break"));
+    await waitFor(() => expect(view.getByTestId("table").textContent).toBe("Name Owner"));
+    await waitFor(() => expect(view.getByTestId("code").textContent).toBe("first code"));
     await waitFor(() =>
       expect(view.getByTestId("whole").textContent).toBe(
         "Tied to CORE-1 Fix the thing here. A list after it"

@@ -57,11 +57,12 @@ const WRITING_CONSTRUCTS: readonly Construct[] = [
   { name: "a mount of the shared field", pattern: /<MentionField\b|<MentionComposer\b/ },
 ];
 
-/** What a covered box is made of: a box with the picker is the shared field or one of the two
- *  editors that host it, never a plain textarea. */
-const PICKER_CONSTRUCTS: readonly Construct[] = WRITING_CONSTRUCTS.filter(
-  (construct) => !construct.pattern.test("<textarea")
-);
+/** The two editors that host the picker their own way: a box made of one picks its row beside
+ *  the mount rather than on it (the document body's picker, the live conversation's triggers). */
+const EDITOR_CONSTRUCT = /(?<!function )\bcreateProofEditor\(|<ComposerPrimitive\.Input\b/;
+
+/** The opening of a mount of the shared field, whose own tag picks the box's row. */
+const SHARED_FIELD_MOUNT = /<(?:MentionField|MentionComposer)\b/g;
 
 /** What a reading surface is made of: a mount of the one renderer, as a body or as a line or
  *  two of one, and a mount of a reference card - the cards under a body that is nothing but
@@ -218,12 +219,57 @@ function writesWord(file: string, word: string): boolean {
   return TEXT_BY_FILE.get(file)?.includes(word) === true;
 }
 
-/** Whether `file` names `word` as a string of its code, its comments blanked: how a box picks
- *  its row (`dispatchWritingBox("<box>", ...)`), which a pointer in a comment cannot stand in
- *  for. */
-function namesInCode(file: string, word: string): boolean {
+/** The opening tag of each mount of the shared field in `code`: from `<MentionField` or
+ *  `<MentionComposer` to the `>` that ends the tag, a `>` inside a `{...}` value or a string
+ *  being no end. */
+function sharedFieldTags(code: string): string[] {
+  const tags: string[] = [];
+  for (const match of code.matchAll(SHARED_FIELD_MOUNT)) {
+    let depth = 0;
+    let quote = "";
+    let at = match.index;
+    for (; at < code.length; at += 1) {
+      const char = code[at];
+      if (quote !== "") {
+        quote = char === quote ? "" : quote;
+      } else if (char === '"' || char === "'" || char === "`") {
+        quote = char;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+      } else if (char === ">" && depth === 0) {
+        break;
+      }
+    }
+    tags.push(code.slice(match.index, at + 1));
+  }
+  return tags;
+}
+
+/** Whether `file` picks `box` in its code, its comments blanked, in one of the two forms a box
+ *  picks its row by: a shared-field mount whose own tag says `box="<box>"`, or
+ *  `writing={dispatchWritingBox("<box>", ...)}` either written there or held in a constant the
+ *  tag names; or, where `editor` is set, `dispatchWritingBox("<box>", ...)` anywhere, since an
+ *  editor hosts the picker beside its mount. Any other string - a mutation key, a test id - is
+ *  no pick, and a mount picking another row stands in for nothing. */
+function picksBox(file: string, box: string, editor: boolean): boolean {
   const code = LINES_BY_FILE.get(file)?.join("\n") ?? "";
-  return code.includes(`"${word}"`) || code.includes(`'${word}'`) || code.includes(`\`${word}\``);
+  const call = `dispatchWritingBox("${box}"`;
+  if (editor && code.includes(call)) {
+    return true;
+  }
+  const held = new Set(
+    [...code.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*dispatchWritingBox\(\s*"([^"]+)"/g)]
+      .filter((match) => match[2] === box)
+      .map((match) => match[1])
+  );
+  return sharedFieldTags(code).some((tag) => {
+    const named = /\bwriting=\{\s*([A-Za-z_$][\w$]*)\s*\}/.exec(tag)?.[1];
+    return (
+      tag.includes(`box="${box}"`) || tag.includes(call) || (named !== undefined && held.has(named))
+    );
+  });
 }
 
 /** One place the walk found a construct. */
@@ -345,16 +391,17 @@ describe("every row of the writing list is a box the dashboard still draws", () 
       label
     );
     if (row.covered) {
-      // A covered box takes the picker: a file of it mounts the shared field or an editor that
-      // hosts it, and a file of it picks the row in its code (the document body's editor is
-      // mounted in one file and its picker picks the row in another). A comment naming the
-      // row, beside a box that lost its picker, is neither.
-      const mounted = row.files.some((file) => holdsAny(file, PICKER_CONSTRUCTS));
-      const picked = row.files.some((file) => namesInCode(file, row.box));
+      // A covered box takes the picker: a mount of the shared field in a file of it picks the
+      // row on its own tag, or a file of it mounts an editor that hosts the picker and a file of
+      // it picks the row beside it (the document body's editor is mounted in one file and its
+      // picker picks the row in another). A comment naming the row, a string that is no pick,
+      // and a mount picking another row are none of these.
+      const editor = row.files.some((file) =>
+        LINES_BY_FILE.get(file)?.some((line) => EDITOR_CONSTRUCT.test(line))
+      );
+      const picked = row.files.some((file) => picksBox(file, row.box, editor));
       expect(
-        mounted && picked
-          ? label
-          : `no file of ${label} ${mounted ? "picks its row in code" : "mounts the shared field or an editor"}: ${row.files.join(", ")}`
+        picked ? label : `no mount in a file of ${label} picks its row: ${row.files.join(", ")}`
       ).toBe(label);
     }
   });

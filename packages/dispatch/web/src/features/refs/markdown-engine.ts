@@ -600,8 +600,9 @@ export interface MarkdownHeadline {
  * that leaves it out reads every reference as its short form, which is what a title drawn over
  * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
  *
- * `firstLine` projects the text's first line alone: the first block that holds any words (a
- * paragraph, a heading, a list's first item), cut at its first line break (`firstLineOf`), for a
+ * `firstLine` projects the text's first line alone: the first line that holds any words (of a
+ * paragraph, a heading, a list item, a code block, or a table's whole row), the lines before it
+ * that hold none - an image alone, a break - passed over (`firstLineOf`), for a
  * place that shows the opening line of a text and no more of it. A text read from `markdown` is
  * parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first line
  * is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a space,
@@ -660,33 +661,50 @@ export function useMarkdownHeadline(
   return headline;
 }
 
-/** `document` up to the end of its first line: the first textblock that holds any words, cut at
- *  its first hard break, or at its first newline where it is code, whose text keeps its lines. */
+/** `document` cut to its first line that holds words. Each textblock's lines end at its hard
+ *  breaks, and a code block's at its newlines, whose text keeps its lines; a line holding nothing
+ *  but an image or a break holds no words for the projection, which draws neither, so the next
+ *  line is read. A table's row is one line, its cells read in a row, so a header row is its
+ *  header and not its first cell. Nothing at all where no line holds words. */
 function firstLineOf(document: ProseMirrorNode): ProseMirrorNode {
-  let end: number | undefined;
+  let line: { readonly from: number; readonly to: number } | undefined;
+  const holdsWords = (from: number, to: number): boolean =>
+    document.textBetween(from, to, " ").trim() !== "";
   document.descendants((node, position) => {
-    if (end !== undefined) {
+    if (line !== undefined) {
+      return false;
+    }
+    if (node.type.name === "table_row" || node.type.name === "table_header_row") {
+      if (holdsWords(position, position + node.nodeSize)) {
+        line = { from: position, to: position + node.nodeSize };
+      }
       return false;
     }
     if (!node.isTextblock) {
       return true;
     }
-    if (node.textContent.trim() === "") {
-      return false;
-    }
     const contentStart = position + 1;
-    end = contentStart + node.content.size;
-    node.forEach((child, offset) => {
-      if (end !== contentStart + node.content.size) {
-        return;
+    let from = contentStart;
+    const end = (to: number): void => {
+      if (line === undefined && holdsWords(from, to)) {
+        line = { from, to };
       }
+    };
+    node.forEach((child, offset) => {
+      const at = contentStart + offset;
       if (child.type.name === "hardbreak") {
-        end = contentStart + offset;
-      } else if (child.isText && (child.text ?? "").includes("\n")) {
-        end = contentStart + offset + (child.text ?? "").indexOf("\n");
+        end(at);
+        from = at + child.nodeSize;
+      } else if (child.isText) {
+        const text = child.text ?? "";
+        for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+          end(at + index);
+          from = at + index + 1;
+        }
       }
     });
+    end(contentStart + node.content.size);
     return false;
   });
-  return document.cut(0, end ?? 0);
+  return line === undefined ? document.cut(0, 0) : document.cut(line.from, line.to);
 }
