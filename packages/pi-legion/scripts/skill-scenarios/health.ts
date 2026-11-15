@@ -410,21 +410,21 @@ function otherRunReach(run: Run): string | undefined {
   return undefined;
 }
 
-/** A run's world as rig.sh declares it (world_paths, read through `rig.sh world`, the one
+/** A run's namespace as rig.sh declares it (world_paths, read through `rig.sh world`, the one
  * declaration its namespace mounts too): what the namespace hides behind an empty tmpfs
  * (`cover`), the credentials it hides the same way (`credentials`), and what it shows again
- * (`rw`, `ro`). */
-interface World {
+ * (`rw`, `ro`). It is not gh-call.ts's `World`, the run's world.json. */
+interface RunNamespace {
   readonly covers: readonly string[];
   readonly credentials: readonly string[];
   readonly shown: readonly string[];
 }
 
-const worlds = new Map<string, World>();
+const namespaces = new Map<string, RunNamespace>();
 
-/** The run's world, from `rig.sh world <label> <run dir>`, read once per run. */
-function worldOf(run: Run): World {
-  const known = worlds.get(run.dir);
+/** The run's namespace, from `rig.sh world <label> <run dir>`, read once per run. */
+function namespaceOf(run: Run): RunNamespace {
+  const known = namespaces.get(run.dir);
   if (known !== undefined) return known;
   const made = Bun.spawnSync(
     ["bash", path.join(import.meta.dir, "rig.sh"), "world", run.label, run.dir],
@@ -443,7 +443,7 @@ function worldOf(run: Run): World {
     else if (kind === "credentials") world.credentials.push(where);
     else if (kind === "rw" || kind === "ro") world.shown.push(where);
   }
-  worlds.set(run.dir, world);
+  namespaces.set(run.dir, world);
   return world;
 }
 
@@ -455,7 +455,7 @@ function worldOf(run: Run): World {
  * outside it. A run from before the namespace is held to the same world. What it cannot see is
  * what rule 8 cannot: a reach that names no path. */
 function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
-  const world = worldOf(run);
+  const world = namespaceOf(run);
   const hidden = [
     ...world.covers,
     ...runs.flatMap((one) => {
@@ -508,7 +508,7 @@ function otherProcess(run: Run): string | undefined {
  * its world (/var/run/legion, /var/run/secrets, by either name), whatever the run then did with
  * it. */
 function credentialReach(run: Run): string | undefined {
-  const { credentials } = worldOf(run);
+  const { credentials } = namespaceOf(run);
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
       const under = credentials.find((dir) => inside(target, dir));
