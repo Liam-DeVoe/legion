@@ -492,7 +492,14 @@ var Classes = []Row{
 	{Field: "Config.OmpInvocation", Path: "omp_invocation", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Config.OmpLaunchPrefix", Path: "omp_launch_prefix", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Config.RoleConfigFiles", Path: "role_config_files", Class: ClassLaunch, Holder: HolderRuntime},
-	{Field: "Config.WorkerBackends", Path: "worker_backends", Class: ClassLaunch, Holder: HolderLaunchSpecs},
+	// `worker_backends` is read by two things, so its row names two holders: the launch specs,
+	// which carry a role's backend into its spec, and the runtime, which holds the launcher that
+	// backend is spawned by (internal/daemon's paneLaunchers under tmux: a pane of a backend the
+	// runtime holds no launcher for is refused). The operator is told the launch specs were
+	// rebuilt, and the runtime is built again with them, so a role moved onto a harness reaches
+	// it at its next launch.
+	{Field: "Config.WorkerBackends", Path: "worker_backends", Class: ClassLaunch, Holder: HolderLaunchSpecs,
+		Also: []string{HolderRuntime}},
 	{Field: "Config.InstructionsPath", Path: "instructions", Class: ClassLaunch, Holder: HolderLaunchSpecs},
 	// The provider credentials themselves. One `provider_keys` entry is `<NAME>: <source>`: its
 	// name and its source land in three fields of one entry, so the three share the entry's path.

@@ -291,8 +291,12 @@ makes the same refusals:
   into a directory outside the checkout, and point `LEGION_CLAUDE_PLUGIN_DIR` at `<dir>`. The
   build leaves the checkout's tracked files as they are, so its next `git pull` fast-forwards.
 
-A missing one refuses the boot, naming every gap in one line. The three are tmux's alone: a pod
-resolves nothing. Its bun and its claude-envoy root are the worker image's, at fixed paths
+A missing one refuses the boot, naming every gap in one line. A role moved onto Claude Code under
+a running daemon is resolved the same way, when the runtime is built again for the change
+(`worker_backends` builds the runtime as well as the launch specs): a missing one there keeps the
+runtime the daemon has, and the settings route answers the change `failed` with that line, as it
+answers any rebuild that failed. The three are tmux's alone: a pod resolves nothing. Its bun and
+its claude-envoy root are the worker image's, at fixed paths
 (`/usr/local/bin/bun`, `/opt/legion/claude-envoy`), which the runtime treats as image-owned so no
 operator mount can hide them. Its `claude` is not the image's: the image carries Claude Code's pin,
 `/opt/legion/claude-code`, and no Claude Code, since its licence grants no redistribution and the
@@ -331,10 +335,13 @@ not know which harness a process runs. A harness is four pieces in the daemon:
   resumes.
 
 Boot resolves a launch for each harness `worker_backends` uses (`legion start --check-config` makes
-the same refusals), and the tmux runtime refuses a launch on a harness it has no launcher for. A
-pane is its recorded process only while its root process's command line, `sh -c` on the whole pane
-command, holds a configured harness's marker: `omp` for Oh My Pi, ` claude-bridge -- ` for Claude
-Code. A daemon with no `worker_backends` has Oh My Pi's launcher alone and checks for `omp` alone.
+the same refusals), and every later build of the tmux runtime resolves its own again from the
+configuration it is built from once `omp_invocation`, `omp_launch_prefix` or `worker_backends` has
+moved, so a change of any of them reaches the next pane. The tmux runtime refuses a launch on a
+harness it has no launcher for. A pane is its recorded process only while its root process's
+command line, `sh -c` on the whole pane command, holds a configured harness's marker: `omp` for
+Oh My Pi, ` claude-bridge -- ` for Claude Code. A daemon with no `worker_backends` has Oh My Pi's
+launcher alone and checks for `omp` alone.
 
 ## The `runtime.tmux` block
 
@@ -652,6 +659,7 @@ What a change of one key needs is its class, which the table below gives for eve
   A credential file rotated in place changes no setting, so the watcher's wake reads the files again and builds again each holder whose files moved: `api-server` reads `operator_token_file`, `dispatch-client` `dispatch_token_file`, `envoy-publisher` `envoy_token_file`, `nats` `nats_nkey_seed_file` and `nats_daemon_nkey_seed_file`, `launch-specs` `envoy_token_file`, `nats_nkey_seed_file` and `instructions`, and `runtime` `dispatch_token_file`, under `runtime: tmux` every `provider_keys` file (`file:/abs/path`), and under `runtime: kubernetes` `runtime.kubernetes.kubeconfig`.
 
 - **`launch`** — a pod's or a pane's own launch reads the value, so it reaches a role at that role's next launch; the route answers `next-launch` and names the holder the launch reads the value from.
+  Where a second holder carries the value into the launch, it is built again too, as for a `rebuild` key: a change of `worker_backends` builds the runtime beside the launch specs the table names, since the specs carry a role's backend into its launch and, under `runtime: tmux`, the runtime holds the launcher that backend is started by.
   Under `runtime: kubernetes` each issue pod records the launch settings its own launch read, in its `legion.dev/launch-settings` annotation, so a pod launched on the old value is brought onto the new one by an update round, once every worker in it has pushed and answered.
 
 - **`fixed`** — nothing changes it under a running daemon: the route refuses the path by name, with the reason [the list below](#why-a-fixed-key-is-refused) gives, and the daemon keeps the value it booted on.

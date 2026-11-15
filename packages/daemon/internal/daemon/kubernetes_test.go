@@ -411,6 +411,56 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	}
 }
 
+// `advertise_host` is a launch key the runtime holds: the address every pod's shim dials is the
+// one each build of the runtime is handed (openSupervision's buildRuntime, shimAddress), which the
+// Sandbox runtime writes into every pod it creates as the launcher's and the shim's `--connect`
+// (sandboxRuntime's Options.StreamURL, runtime/sandbox's connectFlag). So the route answers a
+// change of it next-launch naming the runtime (config.Classes' row), and the runtime built for it
+// hands the next pod the new host at the listener's own port. Computed once at boot and captured
+// by every build instead, each pod launched after the change dialled the host the daemon booted
+// on. The change reaches the daemon's rebuilder as an apply hands it the applied rows
+// (rebuilder.observe, under the settings holder's lock), over the boot's configuration with that
+// one key moved: a Kubernetes file a holder could re-read names no loopback address, and this
+// daemon's Dispatch, NATS and API listen on nothing else.
+func TestAChangedAdvertiseHostReachesTheNextPodsConnect(t *testing.T) {
+	cfg := workflowConfig(t, workflowNATS(t))
+	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-a.legion.svc"
+	cfg.Port = holdPortOn(t, "0.0.0.0")
+	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
+	record := &built{}
+	o := fakeRuntime(fake.NewRuntime(), record)
+	o.workflowTokens = &workflowTokenRecorder{}
+	var rebuild *rebuilder
+	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
+	d := startDaemonWithin(t, cfg, o, quietLogger(), 30*time.Second)
+	handed := func() string {
+		record.mu.Lock()
+		defer record.mu.Unlock()
+		return record.address
+	}
+	booted := handed()
+	port, ok := strings.CutPrefix(booted, "tcp://legion-daemon-a.legion.svc:")
+	if !ok || port == "" || port == "0" {
+		t.Fatalf("the boot's runtime hands every pod's shim %q, want the booted advertise_host at the listener's port", booted)
+	}
+	if rebuild == nil {
+		t.Fatal("the daemon handed the test no rebuild observer")
+	}
+	change := changeOfPath(t, "advertise_host")
+	if change.Outcome != config.OutcomeNextLaunch || change.Holder != config.HolderRuntime {
+		t.Fatalf("the class table answers advertise_host %+v, want next-launch naming the runtime", change)
+	}
+
+	moved := *d.live.Snapshot()
+	moved.AdvertiseHost = "legion-daemon-b.legion.svc"
+	d.live.WhileSettled(func(*config.Config) { rebuild.observe(&moved, []config.Change{change}) })
+
+	if want, got := "tcp://legion-daemon-b.legion.svc:"+port, handed(); got != want {
+		t.Fatalf("the runtime built for the change hands every pod's shim %q, want %q: the new advertise_host at the listener's own port", got, want)
+	}
+}
+
 // prepare refuses what the cluster would refuse only later: a kubeconfig with no current context
 // when runtime.kubernetes.context names none, or a context the kubeconfig does not have.
 func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *testing.T) {

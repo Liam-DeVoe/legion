@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 )
 
-// launchReads is what boot reads to launch panes on one harness: the pane's Launcher, the log line
-// that names what boot resolved, and, for Oh My Pi, the invocation its boot gate runs too.
+// launchReads is what a resolution reads to launch panes on one harness: the pane's Launcher, the
+// log line that names what was resolved, and, for Oh My Pi, the invocation boot's gate runs too.
 type launchReads struct {
 	launcher   tmux.Launcher
 	log        func(*slog.Logger)
@@ -26,7 +26,8 @@ type launchReads struct {
 // (lookup, and getenv for the OMP invocation), writing nothing.
 type launchResolver func(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string) (launchReads, error)
 
-// launchResolvers is each harness's boot resolution, by the backend it launches (runtime.Backends).
+// launchResolvers is each harness's resolution, by the backend it launches (runtime.Backends): at
+// boot (readBoot), and at every build of the tmux runtime whose launch keys moved (paneLaunchers).
 var launchResolvers = map[runtime.Backend]launchResolver{
 	runtime.BackendOmp:    resolveOmp,
 	runtime.BackendClaude: resolveClaude,
@@ -51,6 +52,97 @@ func resolveLaunchers(cfg config.Config, lookup func(string) (string, bool), get
 		reads[backend] = read
 	}
 	return reads, nil
+}
+
+// paneLaunchers are the tmux runtime's launchers as its builds keep them (prepareTmux's
+// runtimeFor): each build's are the launches of the configuration that build is given
+// (resolveLaunchers), so a change of `omp_invocation`, `omp_launch_prefix` or `worker_backends`
+// reaches the next pane the runtime built for it opens, a role moved onto a backend no earlier
+// build launched among them. The boot's resolution (readBoot) is the first one held, and a build
+// whose launch keys have not moved since the resolution held takes that one again rather than
+// reading the host once more: the runtime is built again for every change of a row it holds, a
+// rotated credential file among them, and resolving an Oh My Pi that mise installs runs `mise
+// where`.
+//
+// A resolution reads the host, so it can fail where the host holds nothing the configuration now
+// names: a mise tool not installed, no `claude` or bun, no built claude-envoy plugin. That is the
+// build's error and nothing of it is held. The boot refuses to start on it, as readBoot already
+// has; a rebuild keeps the runtime the daemon has, whose panes go on launching as they did, and
+// the rebuilder logs the failure and the settings route answers the change failed, as for any
+// rebuild that fails (runtimeHolder.rebuild, rebuilder.rebuild). Leaving the daemon with no
+// runtime instead would stop every launch over a key no pane running now reads, and the next
+// build resolves again whatever the keys are then.
+//
+// Builds never overlap (providerKeyFiles), so it takes no lock of its own.
+type paneLaunchers struct {
+	lookup func(string) (string, bool)
+	getenv func(string) string
+	log    *slog.Logger
+	// keys are what launchers was resolved from.
+	keys      launchKeys
+	launchers map[runtime.Backend]tmux.Launcher
+}
+
+// launchKeys are what of a configuration its launches are resolved from: the backends its roles
+// run on (config.Config.Backends), and Oh My Pi's invocation and launch prefix (resolveOmp).
+// Claude Code's is resolved from the daemon's environment alone (resolveClaude).
+type launchKeys struct {
+	backends   []runtime.Backend
+	invocation string
+	prefix     []string
+}
+
+func launchKeysOf(cfg config.Config) launchKeys {
+	return launchKeys{backends: cfg.Backends(), invocation: cfg.OmpInvocation, prefix: cfg.OmpLaunchPrefix}
+}
+
+func (k launchKeys) equal(other launchKeys) bool {
+	return k.invocation == other.invocation && slices.Equal(k.backends, other.backends) && slices.Equal(k.prefix, other.prefix)
+}
+
+// newPaneLaunchers holds booted, the launches boot resolved for cfg (readBoot), as the resolution
+// the next build of the same launch keys takes; lookup and getenv are the daemon's environment
+// every later resolution reads, as readBoot read it.
+func newPaneLaunchers(cfg config.Config, booted map[runtime.Backend]launchReads, lookup func(string) (string, bool), getenv func(string) string, log *slog.Logger) *paneLaunchers {
+	return &paneLaunchers{lookup: lookup, getenv: getenv, log: log, keys: launchKeysOf(cfg), launchers: launchersOf(booted)}
+}
+
+// resolve answers cfg's launchers: the ones held when cfg's launch keys are the ones they were
+// resolved from, else a resolution of cfg's own, logged as boot logs its own, which it then
+// holds.
+func (l *paneLaunchers) resolve(cfg config.Config) (map[runtime.Backend]tmux.Launcher, error) {
+	keys := launchKeysOf(cfg)
+	if keys.equal(l.keys) {
+		return l.launchers, nil
+	}
+	reads, err := resolveLaunchers(cfg, l.lookup, l.getenv, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, backend := range keys.backends {
+		reads[backend].log(l.log)
+	}
+	l.keys, l.launchers = keys, launchersOf(reads)
+	return l.launchers, nil
+}
+
+// launchersOf is each resolved launch's Launcher, by backend.
+func launchersOf(reads map[runtime.Backend]launchReads) map[runtime.Backend]tmux.Launcher {
+	launchers := make(map[runtime.Backend]tmux.Launcher, len(reads))
+	for backend, read := range reads {
+		launchers[backend] = read.launcher
+	}
+	return launchers
+}
+
+// invocationEnvironment is o.getenv, or the process's own environment when a test replaced none:
+// what the OMP invocation is resolved against (resolveOmp), by boot and by every build of the tmux
+// runtime that resolves it again (paneLaunchers).
+func (o overrides) invocationEnvironment() func(string) string {
+	if o.getenv == nil {
+		return os.Getenv
+	}
+	return o.getenv
 }
 
 // resolveOmp is the OMP invocation every pane and the boot gate run, whose one command is `mise

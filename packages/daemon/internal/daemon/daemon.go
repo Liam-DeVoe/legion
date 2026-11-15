@@ -188,6 +188,13 @@ type overrides struct {
 	// Secret carries and the addresses every pod is told among it, which no runtime built over
 	// a cluster answers a caller.
 	buildSandbox func(sandboxReads) runtimeFactory
+	// buildTmux stands in for the construction of the tmux runtime (tmuxRuntime): it is handed
+	// the Options each build of the runtime read from the configuration it was given — the
+	// launchers among them, with the provider key directory and the Dispatch token file the build
+	// wrote (prepareTmux's runtimeFor) — and answers the factory that build runs. nil, in
+	// production, builds the real runtime. It is how a test reads the launchers a rebuild holds,
+	// and so the command a pane it opens would run, on a machine with no tmux to open one on.
+	buildTmux func(tmux.Options) runtimeFactory
 	// workflowTokens replaces the GitHub App token manager in a workflow integration test. The
 	// production daemon always mints through appauth.New.
 	workflowTokens appauth.Tokens
@@ -837,14 +844,17 @@ type plan struct {
 	// (prompts.RoleReferences), which the gate on either runtime resolves beside the plugin's own.
 	roleReferences promptrefs.Names
 	// stream is the worker stream's address: the listener binds it, and every agent's shim dials
-	// it, or advertise_host at its port when the file sets one (shimAddress).
+	// it, or the advertise_host of the configuration each build of the runtime is given, at its
+	// port, when that configuration sets one (shimAddress, openSupervision's buildRuntime).
 	stream string
 	// runtimeFor is the factory this daemon's runtime is built with, for the configuration it is
 	// built from: the boot's own build and every rebuild call it (config.HolderRuntime), so the
-	// two can never build different things. Everything it is built from but the configuration —
-	// the launchers, the provider key directory, the cluster client's own reads — is resolved at
-	// boot and read again where the configuration names it. A test that hands the daemon its
-	// runtime answers that one for every configuration.
+	// two can never build different things. What it is built from is read from that
+	// configuration — the launchers each harness is started by under tmux (paneLaunchers), the
+	// provider key directory, the cluster client — each resolved again where the configuration
+	// moved what it is resolved from; only what no setting names, the gh boot resolved among it,
+	// is the boot's. A test that hands the daemon its runtime answers that one for every
+	// configuration.
 	runtimeFor func(cfg config.Config) (runtimeFactory, error)
 	// gate is the plugin gate, run once the store is open and before the schema is migrated
 	// (pluginGate), on no boot budget; nil under a runtime with no host Oh My Pi, and for a
@@ -913,13 +923,9 @@ type runtimeFactory func(ctx context.Context, listener *stream.Listener, address
 // then what writes or runs something: the state directory, the instructions copy, and what the
 // runtime needs) — all before the plugin gate runs and before any agent can launch.
 func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
-	getenv := o.getenv
-	if getenv == nil {
-		getenv = os.Getenv
-	}
 	// A test that replaced the runtime runs no host Oh My Pi, so boot resolves no OMP invocation.
 	hostOMP := o.runtime == nil
-	reads, err := readBoot(cfg, environLookup(o.environment()), getenv, hostOMP, log)
+	reads, err := readBoot(cfg, environLookup(o.environment()), o.invocationEnvironment(), hostOMP, log)
 	if err != nil {
 		return plan{}, err
 	}
@@ -993,23 +999,21 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 // invocation readBoot resolved, the provider keys resolved from secretsd or their files into the
 // directory every pane's shim reads (providerKeyFiles), and the runtime's build, which writes the
 // Dispatch bearer where every pane reads it (writePaneDispatchToken) and the provider keys again
-// when they have moved. The worker stream is a unix socket under the state directory (decision 2
-// — no configuration key). The runtime gets a Launcher for each backend readBoot resolved
-// (tmuxReads.launches); the gate and the model-fallback read are Oh My Pi's, since the architect
-// runs on it alone (runtime.Backends).
+// when they have moved, and resolves a Launcher for each backend its configuration's roles run on
+// (paneLaunchers), the boot's own build taking the ones readBoot resolved (tmuxReads.launches).
+// The worker stream is a unix socket under the state directory (decision 2 — no configuration
+// key). The gate and the model-fallback read are Oh My Pi's, since the architect runs on it alone
+// (runtime.Backends), and are the boot's: neither runs again.
 func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxReads, p *plan) error {
 	invocation := reads.launches[runtime.BackendOmp].invocation
 	p.gate = o.gate
 	p.stream = "unix://" + filepath.Join(cfg.StateDir, streamSocket)
-	launchers := map[runtime.Backend]tmux.Launcher{}
-	for _, backend := range cfg.Backends() {
-		read, ok := reads.launches[backend]
-		if !ok {
-			continue
-		}
-		launchers[backend] = read.launcher
-		if o.runtime == nil {
-			read.log(log)
+	launchers := newPaneLaunchers(cfg, reads.launches, environLookup(o.environment()), o.invocationEnvironment(), log)
+	if o.runtime == nil {
+		for _, backend := range cfg.Backends() {
+			if read, ok := reads.launches[backend]; ok {
+				read.log(log)
+			}
 		}
 	}
 	// Last of the refusals: resolving a human-tier key may cost a YubiKey tap, which a
@@ -1055,13 +1059,15 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxRea
 			return state
 		}
 	}
-	// Everything but the configuration — the launchers and the gh boot resolved — is this
-	// boot's; the rest is read again from the configuration each build is given, the boot's own
-	// included. The Dispatch bearer and the provider keys are among the rest: each build reads
-	// the bearer from the file the configuration names and writes it again where every pane
-	// reads it, and writes the provider keys again where they have moved (providerKeyFiles), so a
-	// change of `dispatch_token_file` or `provider_keys`, or a rotation of a file either names in
-	// place, reaches the next pane (config.Classes' rows, runtimeHolder.credentials). A
+	// Everything but the configuration — the gh boot resolved — is this boot's; the rest is read
+	// again from the configuration each build is given, the boot's own included. The Dispatch
+	// bearer, the provider keys and the launchers are among the rest: each build reads the bearer
+	// from the file the configuration names and writes it again where every pane reads it, writes
+	// the provider keys again where they have moved (providerKeyFiles), and resolves a launcher
+	// for every backend the configuration's roles run on where `omp_invocation`,
+	// `omp_launch_prefix` or `worker_backends` has moved (paneLaunchers). So a change of
+	// `dispatch_token_file`, `provider_keys` or a launch key, or a rotation in place of a file the
+	// first two name, reaches the next pane (config.Classes' rows, runtimeHolder.credentials). A
 	// configuration that is not this runtime's is refused rather than built from (ownRuntime), as
 	// the Sandbox build refuses one (readSandbox). A test that handed the daemon its runtime has
 	// every build answer that one, since nothing of it comes from the configuration, once the
@@ -1081,7 +1087,15 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxRea
 		if o.runtime != nil {
 			return o.runtime, nil
 		}
-		return tmuxRuntime(c, p.project, launchers, keyDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, log), nil
+		resolved, err := launchers.resolve(c)
+		if err != nil {
+			return nil, err
+		}
+		opts := tmuxOptions(c, p.project, resolved, keyDir, dispatchTokenFile, log)
+		if o.buildTmux != nil {
+			return o.buildTmux(opts), nil
+		}
+		return tmuxRuntime(opts, c.RepositoryRenames, p.tools["gh"], p.repositories.Accepted, log), nil
 	}
 	return nil
 }
@@ -1246,22 +1260,20 @@ func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bo
 	}
 }
 
-// tmuxRuntime builds the tmux runtime over the worker stream: the listener is its connection
-// directory, and the listener's address is the `--connect` every pane's shim is started with;
-// providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
-// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
-// controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
-// owner its launch recorded, both built over
-// repos (the project's mapping's served repositories), with gh, the real gh boot resolved
-// (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
-// works (claimRepository over the workflow's repository), which a pane adopted after a restart
-// holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
-// hold no gh files. The private server's environment is scrubbed before anything is launched on
-// it.
-func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
+// tmuxRuntime builds the tmux runtime over the worker stream from opts, the Options one build
+// read from its configuration (tmuxOptions): the listener is its connection directory, and the
+// listener's address is the `--connect` every pane's shim is started with. The workflow's App
+// tokens, when the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential)
+// and the controller pane's own (appauth.ControllerCredential), which its refresh asks by the
+// default owner its launch recorded, both built over repos (the project's mapping's served
+// repositories) and the build's renames, with gh, the real gh boot resolved (daemonTools), the
+// one each pane's `legion gh` runs, and the repository each claim's issue works
+// (claimRepository over the workflow's repository), which a pane adopted after a restart holds
+// its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes hold no
+// gh files. The private server's environment is scrubbed before anything is launched on it.
+func tmuxRuntime(opts tmux.Options, renames ghrepo.Renames, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Tokens,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
 			// The one record of what the mints found GitHub refuses, shared by both credentials
@@ -1270,8 +1282,8 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// directory left out of one pane's bundle is left out of the next pane's by the
 			// mint, not by this record.
 			left := appauth.NewLeftOut()
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, log), gh
-			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, left, log)
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, renames, left, log), gh
+			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, renames, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 		}
 		rt, err := tmux.New(opts)
@@ -1649,18 +1661,20 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	dial, err := shimAddress(listener.Addr(), cfg.AdvertiseHost)
-	if err != nil {
-		cancel()
-		endDrain()
-		return nil, err
-	}
 	// buildRuntime is the one way this daemon's runtime is built, the boot's build and every
-	// rebuild alike: the factory for the configuration it is given, over this same listener and
-	// address, on a context of the runtime's own. That context is supervision's lifetime cut
-	// short by the stop the build answers, so the holder can end the informers, the caches and
-	// the credential refresher of a runtime it replaces (runtimeHolder.rebuild).
+	// rebuild alike: the factory for the configuration it is given, over this same listener, on a
+	// context of the runtime's own. The address every shim of that runtime dials is read from the
+	// same configuration (shimAddress: `advertise_host` at the listener's port), since the
+	// listener is bound once and the host pods reach it at is a launch key the runtime holds
+	// (config.Classes' row): read once here, every pod launched after a change of it would dial
+	// the host the daemon booted on. That context is supervision's lifetime cut short by the stop
+	// the build answers, so the holder can end the informers, the caches and the credential
+	// refresher of a runtime it replaces (runtimeHolder.rebuild).
 	buildRuntime := func(c config.Config) (runtime.Runtime, context.CancelFunc, error) {
+		dial, err := shimAddress(listener.Addr(), c.AdvertiseHost)
+		if err != nil {
+			return nil, nil, err
+		}
 		factory, err := p.runtimeFor(c)
 		if err != nil {
 			return nil, nil, err
@@ -1679,8 +1693,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, fmt.Errorf("build the %s runtime: %w", cfg.Runtime.Name, err)
 	}
-	// The runtime behind its holder: a `runtime.*` change builds the runtime again over this same
-	// listener and address and swaps it, and every reader — the machines, the supervision, the
+	// The runtime behind its holder: a change of a key the runtime holds builds the runtime again
+	// over this same listener and swaps it, and every reader — the machines, the supervision, the
 	// API's tree releaser — holds the holder.
 	rt := newRuntimeHolder(built, stopBuilt, log, buildRuntime)
 	// The launch specs behind theirs: everything a launch reads that the claim does not carry,
