@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import type { DeliveryPR } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { OVERSCAN_ROWS, ROW_HEIGHT_PX, scrollTopToShowRow, visibleRowRange } from "./lib/prList";
 import { PRList } from "./PRList";
 
@@ -166,10 +167,13 @@ test("arrowing past the last rendered row renders and focuses the next, and Home
     const drawn = drawnRows().length;
     expect(drawn).toBeLessThan(200);
     const rows = () => [...document.querySelectorAll<HTMLElement>("[data-pr-row]")];
-    // The rows are reached by the keys rather than by Tab, as every row of the application's
-    // one table is: the first arrow press takes the list's first row, whatever held focus.
+    // No row is a Tab stop, as no row of the application's one table is: a row takes the focus
+    // from a press on it, and the arrows walk the rows from the row that holds it.
     expect(rows().filter((row) => row.tabIndex === 0).length).toBe(0);
+    act(() => rows()[0]?.focus());
+    expect(document.activeElement).toBe(rows()[0] as HTMLElement);
     await user.keyboard("{ArrowDown}");
+    await user.keyboard("{ArrowUp}");
     expect(document.activeElement).toBe(rows()[0] as HTMLElement);
 
     for (let i = 0; i < drawn; i += 1) {
@@ -220,6 +224,84 @@ test("a deployed row's 'deployed' opens its deploy run, and the row's own click 
     await user.click(screen.getByRole("button", { name: "Open deploy run #500" }));
     expect(runs).toEqual([500]);
     expect(opened).toEqual([]);
+  } finally {
+    cleanup();
+    restore();
+  }
+});
+
+/** Presses `keys` (user-event's spelling) where the focus is, and answers whether the page took
+ *  the press: a key nothing prevents is the browser's, which scrolls the page with an arrow. The
+ *  listener that reads it is added to the window after the keymap's own, so it sees what the
+ *  keymap did. */
+async function taken(user: UserEvent, keys: string): Promise<boolean> {
+  let prevented = false;
+  const read = (event: KeyboardEvent) => {
+    prevented = event.defaultPrevented;
+  };
+  window.addEventListener("keydown", read);
+  try {
+    await user.keyboard(keys);
+  } finally {
+    window.removeEventListener("keydown", read);
+  }
+  return prevented;
+}
+
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zE): the arrows were the list's while
+// it held any row, so with the focus on the page's body, a header or a control outside the list
+// they moved the focus into it and the page no longer scrolled. A row that holds the focus is the
+// only place they are the list's, as before the shared table.
+test("Up and Down are the list's only while a row holds the focus, and the page's everywhere else", async () => {
+  const user = userEvent.setup();
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
+  try {
+    renderList(prs(3));
+    const rows = () => [...document.querySelectorAll<HTMLElement>("[data-pr-row]")];
+    // The page's body, then a header's sort button: neither key is taken, and no row is focused.
+    expect(document.activeElement).toBe(document.body);
+    expect(await taken(user, "{ArrowDown}")).toBe(false);
+    expect(await taken(user, "{ArrowUp}")).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+    const header = screen.getByRole("button", { name: /^Merged/ });
+    act(() => header.focus());
+    expect(await taken(user, "{ArrowDown}")).toBe(false);
+    expect(await taken(user, "{ArrowUp}")).toBe(false);
+    expect(document.activeElement).toBe(header);
+
+    // A row's own link, which Tab reaches: the focus is in a row, so the arrows walk the rows.
+    act(() => rows()[0]?.querySelector("a")?.focus());
+    expect(await taken(user, "{ArrowDown}")).toBe(true);
+    expect(document.activeElement).toBe(rows()[1] as HTMLElement);
+    expect(await taken(user, "{ArrowUp}")).toBe(true);
+    expect(document.activeElement).toBe(rows()[0] as HTMLElement);
+  } finally {
+    cleanup();
+    restore();
+  }
+});
+
+// The same thread: `x` was registered for this list and listed in the shortcut help as "Select
+// or deselect the focused row", though the list selects nothing, so the key did nothing.
+test("the list registers no select key, so the shortcut help lists no x for it", async () => {
+  const user = userEvent.setup();
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
+  try {
+    renderList(prs(3));
+    expect(
+      appKeymap
+        .describe()
+        .filter((entry) => entry.scope === "delivery")
+        .map((entry) => [entry.id, entry.keys])
+    ).toEqual([
+      ["delivery-next", ["ArrowDown"]],
+      ["delivery-previous", ["ArrowUp"]],
+      ["delivery-open", ["o"]],
+      ["delivery-open-enter", ["Enter"]],
+    ]);
+    // And on a focused row, `x` is the browser's.
+    act(() => document.querySelector<HTMLElement>("[data-pr-row]")?.focus());
+    expect(await taken(user, "x")).toBe(false);
   } finally {
     cleanup();
     restore();

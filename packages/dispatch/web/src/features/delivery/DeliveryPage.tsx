@@ -62,14 +62,23 @@ import {
   type WindowChoice,
 } from "./lib/window";
 import { MeasuresPanel } from "./MeasuresPanel";
-import { COLUMN_FACETS, PRList } from "./PRList";
+import {
+  COLUMN_FACETS,
+  type ColumnFacet,
+  columnFacetValue,
+  columnHeader,
+  FIXED_FACET_VALUES,
+  PRList,
+  SORTABLE_COLUMNS,
+} from "./PRList";
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
 import { SourceFreshness } from "./SourceFreshness";
 import { Timeline, type TimelineSelection } from "./Timeline";
 import { WindowControl } from "./WindowControl";
 
-/** A facet the page's one filter panel holds: the four that are no column of the list. */
-type PanelFacet = Exclude<FacetKey, (typeof COLUMN_FACETS)[number]>;
+/** A facet the page's one filter panel holds in both views: the four that are no column of the
+ *  list. */
+type PanelFacet = Exclude<FacetKey, ColumnFacet>;
 
 /** How long the search waits after the last keystroke before the server is asked again. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -126,14 +135,16 @@ const DEFAULT_SORT: SortingState = [{ id: "merged", desc: true }];
  *  parameters rather than taking that whole grammar, which would rename them. */
 const SORT_PARAM = textParam();
 
-/** `?sort=`'s text as the sorted columns it names; the page's opening order while it names
- *  none. Takes the text rather than the parameters so a caller can memoize on it: the object
- *  the router hands out is new on every write of the address, the text only on a new sort. */
+/** `?sort=`'s text as the sorted columns it names, leaving out every id that is no sortable
+ *  column of the list (`SORTABLE_COLUMNS`), which the table could not draw a sort on; the page's
+ *  opening order while it names none of them. Takes the text rather than the parameters so a
+ *  caller can memoize on it: the object the router hands out is new on every write of the
+ *  address, the text only on a new sort. */
 function readSorting(sorted: string): SortingState {
   const columns = sorted
     .split(",")
-    .filter((part) => part !== "" && part !== "-")
-    .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }));
+    .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }))
+    .filter(({ id }) => SORTABLE_COLUMNS.includes(id));
   return columns.length === 0 ? DEFAULT_SORT : columns;
 }
 
@@ -337,8 +348,7 @@ function OwnColourPicker({
 }
 
 /** The four facets that are no column of the list, so the one trigger of the control row holds
- *  them (INFRA-3135, R3). The other five sit on the headers of the columns they narrow
- *  (`PRList`'s `COLUMN_FACETS`). */
+ *  them in both views (INFRA-3135, R3). */
 const PANEL_FACETS: { key: PanelFacet; label: string }[] = [
   { key: "repo", label: "Repository" },
   { key: "session", label: "Session" },
@@ -346,12 +356,20 @@ const PANEL_FACETS: { key: PanelFacet; label: string }[] = [
   { key: "component", label: "Component" },
 ];
 
+/** Every facet the page narrows by, in the order its panel lists them and its chips are drawn:
+ *  the four above, then the five that are columns of the list (`PRList`'s `COLUMN_FACETS`),
+ *  each named by its column's header. */
+const FACETS: { key: FacetKey; label: string }[] = [
+  ...PANEL_FACETS,
+  ...COLUMN_FACETS.map((key) => ({ key, label: columnHeader(key) })),
+];
+
 const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedOnCanvas}`;
 const facetTriggerClass = `flex h-7 w-full items-center justify-between rounded border px-2 text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
- *  with its count, sorted by count. A facet with no values in the window and nothing picked is
- *  not shown. */
+ *  with its count, in the order `values` gives. A facet with no values in the window and nothing
+ *  picked is not shown. */
 function Facet({
   label,
   values,
@@ -403,13 +421,18 @@ function Facet({
   );
 }
 
-/** Which of the panel's four facets has its popover open. */
-type OpenFacet = PanelFacet;
-
 /**
- * The one row the page's controls sit in: the search box, the one trigger over the four facets
- * that are no column of the list, and the chips of the values that are on (INFRA-3135, R1 and
- * R3). Every other facet is on its column's own header, where `ColumnFilter` draws it.
+ * The one row the page's controls sit in: the search box, the one trigger over the facets, and
+ * a chip for every value that is on (INFRA-3135, R1 and R3), so every facet can be set and taken
+ * off from this row in either view.
+ *
+ * The panel holds the four facets that are no column of the list. While the list is drawn
+ * (`columnsDrawn`, the List view) the other five sit on the headers of the columns they narrow,
+ * where `ColumnFilter` draws them; while it is not (the Timeline) no header is there to hold
+ * them, so the panel holds all nine. A chip is drawn for every facet that is on, whatever set it
+ * (the panel, a column's header or a link), and the trigger counts them all. A chip's press
+ * takes its value off the page's filters, which every column's filter state is read from, so it
+ * comes off the header too.
  *
  * Each facet is counted by Dispatch with every other facet applied and its own ignored, so the
  * counts here are the answer's, never the page's. Under Parent agent's old place, **Edit
@@ -417,22 +440,35 @@ type OpenFacet = PanelFacet;
  * facet is a column.
  */
 function DeliveryControls({
+  columnsDrawn,
   data,
   filters,
   onFilters,
 }: {
+  /** Whether the list is drawn, whose headers hold the five facets that are its columns. */
+  columnsDrawn: boolean;
   data: Pick<
     DeliveryTimelineWithMeasures,
-    "facet_counts" | "components" | "session_groups" | "session_titles" | "session_pr_counts"
+    | "facet_counts"
+    | "components"
+    | "issue_titles"
+    | "session_groups"
+    | "session_titles"
+    | "session_pr_counts"
   >;
   filters: Filters;
   onFilters: (next: Filters) => void;
 }): ReactNode {
   const [panelOpen, setPanelOpen] = useState(false);
-  const facetPanel = useNestedPanels<OpenFacet>(panelOpen);
+  const facetPanel = useNestedPanels<FacetKey>(panelOpen);
   const [editingGroups, setEditingGroups] = useState(false);
-  const countsOf = (key: PanelFacet) => data.facet_counts?.[FACET_PARAMS[key]] ?? {};
-  const byCount = (key: PanelFacet) => {
+  const countsOf = (key: FacetKey) => data.facet_counts?.[FACET_PARAMS[key]] ?? {};
+  // Rework and Deployed offer every verdict in their own order, as their headers do; every other
+  // facet offers what the window counts, busiest first.
+  const valuesOf = (key: FacetKey): readonly string[] => {
+    const column = COLUMN_FACETS.find((one) => one === key);
+    const fixed = column === undefined ? undefined : FIXED_FACET_VALUES[column];
+    if (fixed !== undefined) return fixed;
     const counts = countsOf(key);
     return Object.keys(counts).sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
   };
@@ -452,7 +488,15 @@ function DeliveryControls({
     }
     return counts;
   }, [data.components]);
-  const valueLabel = (key: PanelFacet, value: string): string => {
+  // A column facet's value reads as its header's filter reads it.
+  const valueLabel = (key: FacetKey, value: string): string => {
+    const column = COLUMN_FACETS.find((one) => one === key);
+    if (column !== undefined) {
+      return columnFacetValue(column, value, {
+        issueTitles: data.issue_titles ?? {},
+        sessionGroups: data.session_groups ?? [],
+      });
+    }
     const placeholder = PLACEHOLDER_LABELS[value];
     if (placeholder !== undefined) return placeholder;
     if (key === "component") {
@@ -463,13 +507,14 @@ function DeliveryControls({
     }
     return value;
   };
-  const chosen = PANEL_FACETS.flatMap(({ key, label }) =>
+  const chosen = FACETS.flatMap(({ key, label }) =>
     filters[key].map((value) => ({
       key: `${key}:${value}`,
       label: `${label}: ${valueLabel(key, value)}`,
       remove: () => onFilters({ ...filters, [key]: filters[key].filter((one) => one !== value) }),
     }))
   );
+  const inPanel = columnsDrawn ? PANEL_FACETS : FACETS;
   return (
     <ControlRow
       chips={filterChips(chosen, "compact")}
@@ -495,7 +540,7 @@ function DeliveryControls({
         >
           {() => (
             <>
-              {PANEL_FACETS.map(({ key, label }) => (
+              {inPanel.map(({ key, label }) => (
                 <Facet
                   {...facetPanel(key)}
                   counts={countsOf(key)}
@@ -504,7 +549,7 @@ function DeliveryControls({
                   onChange={(next) => onFilters({ ...filters, [key]: next })}
                   selected={filters[key]}
                   valueLabel={(value) => valueLabel(key, value)}
-                  values={byCount(key)}
+                  values={valuesOf(key)}
                 />
               ))}
               <button
@@ -803,7 +848,12 @@ export function DeliveryPage(): ReactNode {
                 </span>
               </div>
 
-              <DeliveryControls data={data} filters={state.filters} onFilters={setFilters} />
+              <DeliveryControls
+                columnsDrawn={state.view.mode === "list"}
+                data={data}
+                filters={state.filters}
+                onFilters={setFilters}
+              />
 
               <div className="flex min-h-0 flex-1 flex-col gap-4 xl:flex-row">
                 <div className="flex h-[75dvh] min-h-[28rem] min-w-0 flex-col xl:h-auto xl:flex-1">

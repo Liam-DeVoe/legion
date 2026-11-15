@@ -51,10 +51,10 @@ import {
   type PRListRow,
 } from "./lib/prList";
 
-/** The facets that are columns of this table, so each is filtered on its own header rather than
- *  from the page's panel (INFRA-3135, R2). The page maps them to and from the column filters and
- *  keeps writing its own parameters: the table filters nothing itself, because what it draws is
- *  the answer Dispatch already filtered (`serverFiltered` below). */
+/** The facets that are columns of this table, so in the List view each is filtered on its own
+ *  header rather than from the page's panel (INFRA-3135, R2). The page maps them to and from the
+ *  column filters and keeps writing its own parameters: the table filters nothing itself,
+ *  because what it draws is the answer Dispatch already filtered (`serverFiltered` below). */
 export const COLUMN_FACETS = [
   "issue",
   "parentAgent",
@@ -62,6 +62,42 @@ export const COLUMN_FACETS = [
   "rework",
   "deployed",
 ] as const satisfies readonly FacetKey[];
+
+export type ColumnFacet = (typeof COLUMN_FACETS)[number];
+
+/** The values a column facet offers whatever the window holds, in its own order: every verdict
+ *  a pull request can have. The other three list what the window counts, busiest first. */
+export const FIXED_FACET_VALUES: Partial<Record<ColumnFacet, readonly string[]>> = {
+  deployed: ["deployed", "waiting", "not_tracked"] satisfies DeployedFacet[],
+  rework: ["value", "rework"] satisfies ReworkFacet[],
+};
+
+/** What a column facet's value reads as - the issue's title, a session group's name, a
+ *  placeholder in words - on its header's filter and wherever else the page names it. */
+export function columnFacetValue(
+  key: ColumnFacet,
+  value: string,
+  {
+    issueTitles,
+    sessionGroups,
+  }: {
+    readonly issueTitles: Readonly<Record<string, string>>;
+    readonly sessionGroups: readonly DeliverySessionGroup[];
+  }
+): string {
+  switch (key) {
+    case "issue":
+      return PLACEHOLDER_LABELS[value] ?? `${value} \u2014 ${issueTitles[value] ?? ""}`;
+    case "parentAgent":
+      return PLACEHOLDER_LABELS[value] ?? parentAgentLabel(value, sessionGroups);
+    case "author":
+      return PLACEHOLDER_LABELS[value] ?? value;
+    case "rework":
+      return REWORK_LABELS[value as ReworkFacet] ?? value;
+    case "deployed":
+      return DEPLOYED_LABELS[value as DeployedFacet] ?? value;
+  }
+}
 
 /** The attribute each drawn row carries, which the keys, the anchor and the box's height read,
  *  and the one inside it that opening the row follows. */
@@ -86,9 +122,10 @@ type ColumnId =
 
 /** Every column, in the order the table opens with, at the width its longest usual content
  *  takes at `text-xs`: "deployed Sep 26, 10:48 PM", "ACME-1028 · No priority", a parent agent's
- *  title, and a sortable header's label with its arrow and its filter. Title takes the rest. */
-const COLUMNS: { id: ColumnId; label: string; size: number; min: number }[] = [
-  { id: "color", label: "", size: 24, min: 24 },
+ *  title, and a sortable header's label with its arrow and its filter. Title takes the rest.
+ *  Every column but the colour dot sorts. */
+const COLUMNS: { id: ColumnId; label: string; size: number; min: number; sortable?: false }[] = [
+  { id: "color", label: "", size: 24, min: 24, sortable: false },
   { id: "merged", label: "Merged", size: 112, min: 96 },
   { id: "pr", label: "PR", size: 96, min: 80 },
   { id: "title", label: "Title", size: 320, min: 128 },
@@ -101,6 +138,17 @@ const COLUMNS: { id: ColumnId; label: string; size: number; min: number }[] = [
   { id: "rework", label: "Rework", size: 96, min: 80 },
 ];
 
+/** The columns the list can be sorted by, which `?sort=` may name: an id that is none of them
+ *  is no sort the table can draw. */
+export const SORTABLE_COLUMNS: readonly string[] = COLUMNS.filter(
+  (column) => column.sortable !== false
+).map((column) => column.id);
+
+/** A column facet's header, which names the facet wherever else the page draws it. */
+export function columnHeader(key: ColumnFacet): string {
+  return COLUMNS.find((column) => column.id === key)?.label ?? key;
+}
+
 /** What the layout is read and stored for: every column the table has, the attribute its rows
  *  carry, and how wide and how narrow each column is drawn. */
 const PR_LAYOUT_COLUMNS: LayoutColumns = {
@@ -111,14 +159,17 @@ const PR_LAYOUT_COLUMNS: LayoutColumns = {
 };
 
 /** This list's own words, which the table core reads and never invents. The keys are the ones
- *  the list has always answered: arrow up and down walk the rows, and Enter opens the focused
- *  one. They are registered in this list's own `delivery` scope, which the list pushes while it
- *  is drawn - the List view alone - so no key of this table is answered on a page that does not
- *  draw it, and Enter only while a row itself has focus. Home and End are the caller's, below:
- *  the core's keymap names a next, a previous, an open and a select, and has no slot for them. */
+ *  the list has always answered, and only while a row holds the focus (`moveFrom: "row"`):
+ *  arrow up and down walk the rows, and Enter opens the focused one. Anywhere else on the page
+ *  the arrows are the page's, which scrolls. They are registered in this list's own `delivery`
+ *  scope, which the list pushes while it is drawn - the List view alone - so no key of this
+ *  table is answered on a page that does not draw it. The list selects nothing, so it names no
+ *  select key. Home and End are the row's own, below: the core's keymap names a next, a
+ *  previous and an open, and has no slot for them. */
 const PR_TABLE_NAMES: DataTableNames = {
   groupAttribute: "data-pr-group",
   keymap: {
+    moveFrom: "row",
     next: { id: "delivery-next", keys: "ArrowDown", label: "Next pull request" },
     open: { id: "delivery-open", keys: "o", label: "Open the pull request's details" },
     openOnEnter: {
@@ -128,7 +179,6 @@ const PR_TABLE_NAMES: DataTableNames = {
     },
     previous: { id: "delivery-previous", keys: "ArrowUp", label: "Previous pull request" },
     scope: "delivery",
-    select: { id: "delivery-select", keys: "x", label: "Select or deselect the focused row" },
   },
   linkAttribute: PR_OPEN_ATTRIBUTE,
   rowAttribute: PR_ROW_ATTRIBUTE,
@@ -242,10 +292,8 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
   const live = useRef(inputs);
   live.current = inputs;
   return useMemo(() => {
-    const show = (value: string, label: string) => PLACEHOLDER_LABELS[value] ?? label;
     const renderings: Record<ColumnId, Partial<ColumnDef<PRListRow>>> = {
       color: {
-        enableSorting: false,
         cell: ({ row }) => (
           <span
             aria-hidden="true"
@@ -311,9 +359,6 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
         accessorFn: (row) => row.issueSort,
         sortingFn: byIssue,
         sortUndefined: "last",
-        meta: {
-          show: (value) => show(value, `${value} \u2014 ${live.current.issueTitles[value] ?? ""}`),
-        },
         cell: ({ row }) => (
           <span
             className={`truncate ${row.original.issueSort === undefined ? textMutedOnSurface : ""}`}
@@ -326,9 +371,6 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
         accessorFn: (row) => row.parentAgentSort,
         sortingFn: byText,
         sortUndefined: "last",
-        meta: {
-          show: (value) => show(value, parentAgentLabel(value, live.current.sessionGroups)),
-        },
         cell: ({ row }) => (
           <span
             className={`truncate ${row.original.parentAgentSort === undefined ? textMutedOnSurface : ""}`}
@@ -341,7 +383,6 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
       author: {
         accessorFn: (row) => row.pr.author,
         sortingFn: byText,
-        meta: { show: (value) => show(value, value) },
         cell: ({ row }) => <span className="truncate">{row.original.pr.author}</span>,
       },
       size: {
@@ -360,11 +401,6 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
         accessorFn: (row) => row.deployedMs,
         sortingFn: byNumber,
         sortUndefined: "last",
-        meta: {
-          always: ["deployed", "waiting", "not_tracked"] satisfies DeployedFacet[],
-          order: ["deployed", "waiting", "not_tracked"],
-          show: (value) => DEPLOYED_LABELS[value as DeployedFacet] ?? value,
-        },
         cell: ({ row }) => <Deployed onSelectRun={live.current.onSelectRun} row={row.original} />,
       },
       leadTime: {
@@ -381,29 +417,34 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
       rework: {
         accessorFn: (row) => Number(row.pr.rework),
         sortingFn: byNumber,
-        meta: {
-          always: ["value", "rework"] satisfies ReworkFacet[],
-          order: ["value", "rework"],
-          show: (value) => REWORK_LABELS[value as ReworkFacet] ?? value,
-        },
         cell: ({ row }) =>
           row.original.pr.rework ? <span className={inlineWarningText}>rework</span> : null,
       },
     };
-    return COLUMNS.map(({ id, label, min, size }) => {
-      const facet = (COLUMN_FACETS as readonly string[]).includes(id);
+    return COLUMNS.map(({ id, label, min, size, sortable }) => {
+      const facet = COLUMN_FACETS.find((key) => key === id);
+      const fixed = facet === undefined ? undefined : FIXED_FACET_VALUES[facet];
       return {
         ...renderings[id],
         header: label,
         id,
         minSize: min,
         size,
+        enableSorting: sortable !== false,
         // The list has always offered both directions of a column from its first press, and
         // never no sort at all: the page puts a removed sort back (`DeliveryPage`).
         sortDescFirst: false,
-        enableColumnFilter: facet,
+        enableColumnFilter: facet !== undefined,
         enableGrouping: false,
-        ...(facet ? { filterFn: serverFiltered } : {}),
+        ...(facet === undefined
+          ? {}
+          : {
+              filterFn: serverFiltered,
+              meta: {
+                show: (value: string) => columnFacetValue(facet, value, live.current),
+                ...(fixed === undefined ? {} : { always: fixed, order: fixed }),
+              },
+            }),
       };
     });
     // No dependency, deliberately: every value a cell reads comes from `live` at draw time, and
@@ -414,9 +455,11 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
 /**
  * The filtered pull requests as the application's one table (`components/DataTable.tsx`),
  * coloured by the same facet as the timeline; only the rows the box holds are drawn. A row
- * opens the DrillDown, and a deployed row's "deployed" opens its deploy run's. The rows are one
- * keyboard stop: arrow up and down move between them, Home and End jump to the ends, and Enter
- * opens the focused row.
+ * opens the DrillDown, and a deployed row's "deployed" opens its deploy run's. No row is a Tab
+ * stop (each is `tabIndex={-1}`): a row takes the focus from a press on it, and Tab reaches the
+ * links inside a row. While a row holds the focus, arrow up and down move between the rows,
+ * Home and End jump to the ends, and Enter on the row opens it; with the focus anywhere else
+ * those keys are the page's own, and the arrows scroll it.
  *
  * Nothing here narrows or counts anything itself: Dispatch answers with the filtered rows and
  * with every facet's counts, and the page hands both in, so a header's filter writes the page's

@@ -20,11 +20,18 @@ export interface RowKeymap {
   readonly scope: KeymapScope;
   readonly next: RowKeyBinding;
   readonly previous: RowKeyBinding;
+  /** Where next and previous are answered: anywhere on the page while the table holds a row
+   *  (`page`, the default), for keys nothing else on the page answers, such as `j` and `k`; or
+   *  only while the focus is in a row (`row`), for keys the page answers itself everywhere
+   *  else, such as the arrows, which scroll it. */
+  readonly moveFrom?: "page" | "row";
   /** Opens the row in hand; the one binding of the five the palette lists. */
   readonly open: RowKeyBinding;
   /** Opens the row in hand from Enter, which only a focused row answers. */
   readonly openOnEnter: RowKeyBinding;
-  readonly select: RowKeyBinding;
+  /** Marks the row in hand. A table that selects nothing names none, and no key is registered
+   *  for it, so the shortcut help lists no key that does nothing. */
+  readonly select?: RowKeyBinding;
 }
 
 /** Focuses the row whose id is `key`, or the element `selector` names inside it. */
@@ -33,8 +40,8 @@ export type FocusRow = (key: string, selector?: string) => HTMLElement | null;
 /**
  * The keys a reader walks the table's rows with, under the ids and words the caller gives, the
  * same ids and palette rows the list they replace had: two keys move between rows, two open the
- * row in hand, one selects it. A row the virtualizer has not drawn yet is scrolled to first and
- * focused when it lands.
+ * row in hand, and, in a table that selects, one marks it. A row the virtualizer has not drawn
+ * yet is scrolled to first and focused when it lands.
  *
  * It hands back that same way to a row (`FocusRow`), for whatever else has to put the focus on
  * one: the row now where it is drawn, and once it lands where it is not.
@@ -110,18 +117,25 @@ export function useRowKeymap<TData>({
   });
   const openFocusedRow = () =>
     focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`)?.click();
+  // Where the moving keys apply (`RowKeymap.moveFrom`): a row must hold the focus for keys the
+  // page answers itself everywhere else, and the table need only hold a row for the others.
+  const canMove =
+    keymap.moveFrom === "row"
+      ? () => focusedRow() !== null
+      : () => displayRows.some(({ row }) => !row.getIsGrouped());
+  const { select } = keymap;
   useKeymap(keymap.scope, [
     {
       ...keymap.next,
       palette: false,
       run: () => moveFocus(1),
-      when: () => displayRows.some(({ row }) => !row.getIsGrouped()),
+      when: canMove,
     },
     {
       ...keymap.previous,
       palette: false,
       run: () => moveFocus(-1),
-      when: () => displayRows.some(({ row }) => !row.getIsGrouped()),
+      when: canMove,
     },
     {
       ...keymap.open,
@@ -134,20 +148,24 @@ export function useRowKeymap<TData>({
       run: openFocusedRow,
       when: () => document.activeElement?.matches(`[${rowAttribute}]`) === true,
     },
-    {
-      // Selecting walks the list with the row in hand, as the moving keys do, so it is no
-      // palette row.
-      ...keymap.select,
-      palette: false,
-      run: () => {
-        const key = focusedRow()?.getAttribute(rowAttribute);
-        const row = key === null || key === undefined ? undefined : rowsById[key];
-        if (row === undefined) return;
-        if (!row.getIsSelected()) onMark?.(row.id);
-        row.toggleSelected();
-      },
-      when: () => focusedRow() !== null,
-    },
+    ...(select === undefined
+      ? []
+      : [
+          {
+            // Selecting walks the list with the row in hand, as the moving keys do, so it is no
+            // palette row.
+            ...select,
+            palette: false,
+            run: () => {
+              const key = focusedRow()?.getAttribute(rowAttribute);
+              const row = key === null || key === undefined ? undefined : rowsById[key];
+              if (row === undefined) return;
+              if (!row.getIsSelected()) onMark?.(row.id);
+              row.toggleSelected();
+            },
+            when: () => focusedRow() !== null,
+          },
+        ]),
   ]);
   return focusRow;
 }

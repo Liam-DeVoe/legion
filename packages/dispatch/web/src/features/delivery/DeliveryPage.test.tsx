@@ -1110,3 +1110,176 @@ test("a link naming a sort opens the list in that order, and the facets it names
   // And the column's own filter says what the address asked the server for.
   expect(screen.getByRole("button", { name: "Filter Author: 1 picked" })).toBeDefined();
 });
+
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zM): a `?sort=` naming no sortable
+// column was kept, TanStack dropped the sort it could not draw, and the list fell back to the
+// answer's own order, oldest merge first.
+test("a sort naming no column of the list opens it newest merge first, and a column it names keeps its order", async () => {
+  const older: DeliveryPR = {
+    ...listedPR,
+    author: "aardvark",
+    id: "acme/widgets#2",
+    merged_at: "2024-06-01T00:30:00Z",
+    number: 2,
+    title: "feat: an older widget",
+    url: "https://github.com/acme/widgets/pull/2",
+  };
+  const titles = async () =>
+    (await screen.findAllByRole("row"))
+      .slice(1)
+      .map((row) => (row instanceof HTMLTableRowElement ? row.cells[3]?.textContent : undefined));
+
+  // An id no column has, and a column's header in place of its id: both are dropped, and the
+  // answer, which lists the older merge first, is drawn in the page's opening order.
+  renderPage(`${DELIVERY_URL}&sort=foo,-Merged`);
+  await answered({ ...emptyTimeline, prs: [older, listedPR] });
+  expect(await titles()).toEqual(["feat: a waiting widget", "feat: an older widget"]);
+  expect(screen.getByRole("columnheader", { name: /^Merged/ })).toHaveAttribute(
+    "aria-sort",
+    "descending"
+  );
+  cleanup();
+  restoreLayout?.();
+
+  // Beside an unknown id, the column the address names still orders the list.
+  renderPage(`${DELIVERY_URL}&sort=foo,-author`);
+  await answered({ ...emptyTimeline, prs: [older, listedPR] });
+  expect(await titles()).toEqual(["feat: a waiting widget", "feat: an older widget"]);
+  expect(screen.getByRole("columnheader", { name: /^Author/ })).toHaveAttribute(
+    "aria-sort",
+    "descending"
+  );
+});
+
+/** The page on the Timeline, the view it opens on, over the window `DELIVERY_URL` names. */
+const TIMELINE_URL = "/delivery?from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
+
+/** The nine facets as the page names them, in the order its panel lists them. */
+const NINE_FACETS = [
+  "Repository",
+  "Session",
+  "Priority",
+  "Component",
+  "Issue",
+  "Parent agent",
+  "Author",
+  "Rework",
+  "Deployed",
+];
+
+/** A window whose answer counts a value of every facet, so the panel draws each of them. */
+const everyFacet: DeliveryTimelineWithMeasures = {
+  ...emptyTimeline,
+  components: { "ACME/api": { parent: null, title: "Public API" } },
+  facet_counts: {
+    author: { octocat: 1 },
+    component: { "ACME/api": 1 },
+    deployed: { waiting: 1 },
+    issue: { "ACME-1": 1 },
+    parent_agent: { __no_session__: 1 },
+    priority: { P0: 1 },
+    repo: { "acme/widgets": 1 },
+    rework: { value: 1 },
+    session: { s1: 1 },
+  },
+  issue_titles: { "ACME-1": "Ship widgets" },
+  prs: [listedPR],
+};
+
+/** The trigger and every chip of the page's control row, by the name each is read out as. */
+function rowControls(): string[] {
+  return screen
+    .getAllByRole("button", { name: /^(Filter(?: · \d+)?|Remove .* filter)$/ })
+    .map((button) => button.getAttribute("aria-label") ?? button.textContent ?? "");
+}
+
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zB): the row's panel held only the four
+// facets that are no column of the list, and the list is drawn in the List view alone, so on the
+// Timeline, the view the page opens on, the other five could be neither set nor taken off.
+test("on the Timeline the row's panel holds all nine facets, and a value picked there draws its chip", async () => {
+  const user = userEvent.setup();
+  const restoreCanvas = stubCanvasContext();
+  try {
+    renderPage(TIMELINE_URL);
+    const socket = await answered(everyFacet);
+    await screen.findByRole("img", { name: /^Delivery timeline/ });
+    await openFilterPanel(user);
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    expect(
+      within(panel)
+        .getAllByRole("button", { name: /^[^:]+: Any / })
+        .map((trigger) => trigger.getAttribute("aria-label")?.split(":")[0])
+    ).toEqual(NINE_FACETS);
+
+    await user.click(within(panel).getByRole("button", { name: /^Author: / }));
+    await user.click(
+      within(screen.getByRole("listbox", { name: "Author options" })).getByRole("option", {
+        name: /^octocat/,
+      })
+    );
+    await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "author=octocat" });
+    expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
+  } finally {
+    cleanup();
+    restoreCanvas();
+  }
+});
+
+// The same thread: `/delivery?author=x`, or a facet set in the List and carried back to the
+// Timeline, narrowed the chart while the row showed no count, no chip and no way to take it off.
+test("on the Timeline a link's facets each draw a chip, counted on the trigger, and a chip's press takes its value off", async () => {
+  const user = userEvent.setup();
+  const restoreCanvas = stubCanvasContext();
+  try {
+    renderPage(`${TIMELINE_URL}&author=octocat&deployed=waiting&issue=ACME-1`);
+    await answered(everyFacet);
+    await screen.findByRole("img", { name: /^Delivery timeline/ });
+    expect(rowControls()).toEqual([
+      "Filter · 3",
+      "Remove Issue: ACME-1 \u2014 Ship widgets filter",
+      "Remove Author: octocat filter",
+      "Remove Deployed: waiting filter",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Remove Author: octocat filter" }));
+    await waitFor(() => expect(currentSearch().has("author")).toBe(false));
+    expect(currentSearch().getAll("deployed")).toEqual(["waiting"]);
+    expect(rowControls()).toEqual([
+      "Filter · 2",
+      "Remove Issue: ACME-1 \u2014 Ship widgets filter",
+      "Remove Deployed: waiting filter",
+    ]);
+  } finally {
+    cleanup();
+    restoreCanvas();
+  }
+});
+
+// The same thread, in the List: a value picked on a column's header narrowed the list while the
+// row drew no chip for it, and the trigger did not count it.
+test("in the List a value picked on a column's header draws its chip in the row, and the chip's press takes it off the header", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  await user.click(await screen.findByRole("button", { name: "Filter Author" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Author options" })).getByRole("option", {
+      name: /^octocat/,
+    })
+  );
+  await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "author=octocat" });
+  await user.keyboard("{Escape}");
+  expect(screen.getByRole("button", { name: "Filter Author: 1 picked" })).toBeDefined();
+  expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
+
+  await user.click(screen.getByRole("button", { name: "Remove Author: octocat filter" }));
+  await waitFor(() => expect(currentSearch().has("author")).toBe(false));
+  expect(screen.getByRole("button", { name: "Filter Author" })).toBeDefined();
+  expect(rowControls()).toEqual(["Filter · 0"]);
+  // In the List the five stay on their headers: the panel holds the four that are no column.
+  await openFilterPanel(user);
+  expect(
+    within(screen.getByRole("dialog", { name: "Filter" }))
+      .getAllByRole("button", { name: /^[^:]+: Any / })
+      .map((trigger) => trigger.getAttribute("aria-label")?.split(":")[0])
+  ).toEqual(NINE_FACETS.slice(0, 4));
+});
