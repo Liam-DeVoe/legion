@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  `agent-secrets secret create` says what a failed create left in the store, and deletes nothing it
+  cannot prove is its own and empty. On Google Cloud it labels the secret it makes
+  `agent-secrets-create` with a random value of its own, which stays on the secret; every delete
+  first reads the secret back, checks that label and that the secret holds no version, and carries
+  the read's `etag`. Where `CreateSecret` fails with an answer that does not say the store did not
+  act (`Unavailable`, `DeadlineExceeded`, ...), it reads the secret back and touches only one that
+  carries its own label value; a read that finds none says a create the store has not finished may
+  still land, and names `agent-secrets secret show NAME`. Where the add of the value fails that way,
+  it never deletes the secret, since the add may still land, and says what the list of versions
+  showed. Before it asks for the value it asks IAM whether the sign-in may add one
+  (`secretmanager.versions.add`), and where it may not, deletes the empty secret and stops. On
+  Google Cloud it reads the value for ten minutes at most, the time the broker waits for it, then
+  deletes the empty secret and exits 1; on AWS, where it makes nothing first, the read has no
+  limit. Each `gcloud auth print-access-token` that refreshes a gcloud login's
+  token has the 60-second store-call deadline of its own. On AWS, a `CreateSecret` the SDK tried
+  once and that was refused before Secrets Manager acted (a name taken, access denied, a request, a
+  parameter or a limit refused) says nothing was stored; any other failure, and any create the SDK
+  tried more than once, says the store may hold the secret, with its value, or not, and names
+  `agent-secrets secret show NAME`. Every command the create prints for settling what it left signs
+  in as the create did: `--profile` on AWS, the Google sign-in's `GOOGLE_APPLICATION_CREDENTIALS` or
+  `CLOUDSDK_CORE_ACCOUNT`, and for gcloud the matching `CLOUDSDK_CORE_ACCOUNT` or
+  `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, followed by the identity's name. `secret create` and
+  `secret set` also print one line when the value starts or ends with a space, which they store as
+  given, never trimmed; the line names the secret and never the value.

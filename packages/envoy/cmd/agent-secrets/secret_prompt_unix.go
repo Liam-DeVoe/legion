@@ -53,7 +53,11 @@ var (
 // and a paste that begins there through its closing mark.
 // prompt runs once the reader holds the terminal with echo off, to show the label:
 // a prompt started in the background shows nothing until fg gives it the terminal.
+// It holds promptBusy from its start to its very end, an end by a signal included, so
+// create's own watch on the signals (watchCreateSignals) leaves a signal to the prompt.
 func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error) {
+	promptBusy.Lock()
+	defer promptBusy.Unlock()
 	if err := disableCoreDumps(); err != nil {
 		return nil, err
 	}
@@ -100,7 +104,7 @@ func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error
 			}
 		}
 		if tty.death != 0 {
-			endByPromptSignal(tty.death)
+			endBySignal(tty.death)
 		}
 	}()
 	// The settings the reader restores are read only once its group holds the terminal: a
@@ -147,10 +151,21 @@ func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error
 	for {
 		// Outside a paste the read blocks until input; an open paste bounds each read at
 		// maxPasteDrain, so it is the quiet since the last input that gives a still-arriving
-		// paste up, not the time since it began.
+		// paste up, not the time since it began. A create's value deadline (valueDeadline) bounds
+		// every read, in a paste or not: at it the prompt gives up, through the same restore as
+		// any other end.
 		tty.wait = -1
 		if r.inPaste {
 			tty.wait = int(maxPasteDrain.Milliseconds())
+		}
+		if !valueDeadline.IsZero() {
+			left := time.Until(valueDeadline)
+			if left <= 0 {
+				return nil, errValueTimedOut
+			}
+			if ms := int(left.Milliseconds()) + 1; tty.wait < 0 || ms < tty.wait {
+				tty.wait = ms
+			}
 		}
 		began := time.Now()
 		n, err := tty.read(buf)
@@ -164,6 +179,9 @@ func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error
 			tty.stopped = false
 		}
 		if n == 0 {
+			if !valueDeadline.IsZero() && !time.Now().Before(valueDeadline) {
+				return nil, errValueTimedOut
+			}
 			if r.inPaste && time.Since(began) >= maxPasteDrain {
 				// The paste fell quiet for the whole bound without closing, so the signal
 				// keys pressed since were pasted text: give it up rather than read it forever.
@@ -646,16 +664,29 @@ func (r *promptReader) feed(b []byte) (bool, syscall.Signal) {
 			r.line = r.line[:0]
 		case c < 0x20 || c == 0x7f:
 			if r.err == nil {
-				r.err = promptControlByteError(c)
+				r.err = promptControlByteError{c: c, textBefore: len(r.line) > 0}
 				r.line = nil
+			} else {
+				r.textAfterRefusal()
 			}
 		default:
 			if r.err == nil {
 				r.line = append(r.line, c)
+			} else {
+				r.textAfterRefusal()
 			}
 		}
 	}
 	return r.ended && !r.inPaste, 0
+}
+
+// textAfterRefusal notes that the value went on past the control byte it refused, so that byte
+// came before the value's end rather than at it.
+func (r *promptReader) textAfterRefusal() {
+	if refused, ok := r.err.(promptControlByteError); ok {
+		refused.textAfter = true
+		r.err = refused
+	}
 }
 
 // eraseWord removes trailing blanks, then the preceding word, by rune as canonical terminal
@@ -900,26 +931,25 @@ func promptStopSignal(sig os.Signal) bool {
 	return sig == syscall.SIGTSTP
 }
 
-// endByPromptSignal runs on the reader, after the watcher has stopped and the
-// terminal has been restored. The fallback exit is only for a failed re-raise.
-func endByPromptSignal(sig syscall.Signal) {
-	signal.Reset(sig)
-	if sig == syscall.SIGQUIT {
+// raiseSignal ends the process by sig at its kernel default, and reports that it sent it: SIGQUIT
+// at the kernel's action rather than Go's goroutine dump, core dumps disabled first, since the
+// process may hold a cloud credential, and a value it read. endBySignal exits with sig's shell
+// status should the process outlive it.
+func raiseSignal(sig os.Signal) bool {
+	s, ok := sig.(syscall.Signal)
+	if !ok {
+		return false
+	}
+	if s == syscall.SIGQUIT {
+		if err := disableCoreDumps(); err != nil {
+			fmt.Fprintf(os.Stderr, "agent-secrets: %v\n", err)
+			os.Exit(1)
+		}
 		if err := quitWithoutCore(); err != nil {
 			fmt.Fprintf(os.Stderr, "agent-secrets: %v\n", err)
 			os.Exit(1)
 		}
 	}
-	_ = syscall.Kill(os.Getpid(), sig)
-	time.Sleep(time.Second)
-	switch sig {
-	case syscall.SIGHUP:
-		os.Exit(exitHangup)
-	case syscall.SIGTERM:
-		os.Exit(exitTerminated)
-	case syscall.SIGQUIT:
-		os.Exit(exitQuit)
-	default:
-		os.Exit(exitInterrupted)
-	}
+	_ = syscall.Kill(os.Getpid(), s)
+	return true
 }

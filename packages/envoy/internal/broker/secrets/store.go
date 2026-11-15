@@ -84,4 +84,18 @@ type Listing struct {
 	// (policy.Current), so a write of a new value is decoded at the next load and an unchanged one
 	// is read at no load.
 	Version string
+	// Created is when the store created the secret, and the zero time where its answer named none.
+	// The policy reads it for an Unfilled secret alone: one created less than
+	// policy.PendingValueWindow ago is a create still waiting for its value.
+	Created time.Time
+	// Unfilled is whether the secret carries CreateLabel and holds no version at all: a secret
+	// `agent-secrets secret create` made before its value and has not given one. A secret with any
+	// version (a disabled one included), or without the label, is not.
+	Unfilled bool
 }
+
+// CreateLabel is the label (on Secret Manager; a tag on Secrets Manager) `agent-secrets secret
+// create` puts on a secret it makes before its value, set to a random value of that create's own.
+// The broker reads only whether a secret carries it, never its value, and never as a tag the
+// policy weighs: on Secret Manager it is a label, which no listing's Tags carries.
+const CreateLabel = "agent-secrets-create"

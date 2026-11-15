@@ -126,6 +126,33 @@ func awaitEchoOff(t *testing.T, terminal int) {
 	}
 }
 
+// TestPromptEndsAtTheValueDeadline: a prompt that reads a create's value (valueDeadline set) and
+// gets nothing gives up at the deadline, with errValueTimedOut and no line, and gives the terminal
+// back with echo on, as any other end of the prompt does.
+func TestPromptEndsAtTheValueDeadline(t *testing.T) {
+	_, terminal := openPTY(t) // openPTY's cleanup holds the controller open for the whole test
+	restore := valueDeadline
+	valueDeadline = time.Now().Add(500 * time.Millisecond)
+	t.Cleanup(func() { valueDeadline = restore })
+	answer := make(chan promptRead, 1)
+	go func() {
+		line, err := readHidden(terminal, nil, nil)
+		answer <- promptRead{line, err}
+	}()
+	awaitEchoOff(t, terminal)
+	select {
+	case got := <-answer:
+		if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
+			t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompt was still reading 10s on, past its 500ms deadline")
+	}
+	if lflag(t, terminal)&unix.ECHO == 0 {
+		t.Fatal("the prompt left echo off at its deadline")
+	}
+}
+
 // unread is how many bytes the terminal holds unread, which the shell would read once the form
 // exits: with canonical mode turned off, so a last line without a newline counts too.
 func unread(t *testing.T, fd int) int {
@@ -304,6 +331,24 @@ func TestPromptWordEraseAndControlBytes(t *testing.T) {
 	_, _, got = typeAtPrompt(t, "value\x01\r")
 	if got.err == nil || !strings.Contains(got.err.Error(), "the control byte 0x01 cannot be typed at the prompt") {
 		t.Fatalf("control byte: readHidden = %q, %v; want refusal naming 0x01", got.line, got.err)
+	}
+}
+
+// TestPromptNamesATabAPasteEndsWith: a key pasted at a real terminal with a Tab after it, as a copy
+// out of a web page's table often carries, is refused, neither stored nor trimmed, with a refusal
+// that names the Tab, says it is at the end of the value, and says that a paste often adds one
+// there; the terminal is left with nothing unread.
+func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
+	_, terminal, got := typeAtPromptInWrites(t, 50*time.Millisecond, "\x1b[200~sk-live-key\t\x1b[201~", "\r")
+	var refused promptControlByteError
+	if got.line != nil || !errors.As(got.err, &refused) || refused.c != '\t' || !refused.textBefore || refused.textAfter {
+		t.Fatalf("readHidden = %q, %v; want no line and a refusal of the Tab at the value's end", got.line, got.err)
+	}
+	if text := got.err.Error(); !strings.Contains(text, "0x09") || !strings.Contains(text, "Tab") || !strings.Contains(text, "end of the value") || !strings.Contains(text, "paste") {
+		t.Fatalf("refusal %q; want it to name 0x09, the Tab, the value's end and the paste", text)
+	}
+	if n := unread(t, terminal); n != 0 {
+		t.Fatalf("the terminal holds %d bytes unread, want none", n)
 	}
 }
 

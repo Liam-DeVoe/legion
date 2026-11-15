@@ -207,6 +207,12 @@ var disableCoreDumps = sync.OnceValue(preventCoreDumps)
 // unbracketed line through a bounded quiet window.
 var readHidden = readHiddenAtTerminal
 
+// onSignalDeath, while set, runs once just before a hang-up, an interrupt, a quit or a termination
+// ends the form by that signal (endBySignal). Create sets it from the moment the store made the
+// secret until that secret holds its value or the discard has run (pendingCreate.interrupted), so
+// a signal in that stretch deletes the empty secret rather than leaving it; nil otherwise.
+var onSignalDeath func()
+
 // errMoreThanOneLine is readHidden's answer when more input followed the first line at the prompt,
 // as a paste of a value of more than one line does: the prompt reads one line, and the rest would
 // reach the shell once the form exits.
@@ -225,6 +231,21 @@ var errValueCutShort = errors.New("the terminal hung up before the value ended")
 // how much. The entire entry must be refused, even when the reader had already received a prefix.
 var errPromptStopped = errors.New("the terminal stopped while reading the value")
 
+// errValueTimedOut is readSecretValue's answer, from either arm, when no whole value came before
+// valueDeadline.
+var errValueTimedOut = errors.New("no value came in time")
+
+// valueReadWindow is how long `secret create` reads the value of the secret it made before it
+// gives up and discards that secret: policy.PendingValueWindow, the time the broker holds such a
+// secret as waiting for its value (pending-value), so the create ends its read when the broker
+// stops waiting. Tests shorten it. valueDeadline, while a create reads, is the moment that read
+// ends, counted from before the store made the secret, so it never outlasts the broker's window;
+// the zero time, for every other form, sets no bound.
+var (
+	valueReadWindow = policy.PendingValueWindow
+	valueDeadline   time.Time
+)
+
 // errNoForeground is readHidden's answer when its process group is orphaned while it waits in the
 // background (the shell that started it has gone): no shell can ever hand it the terminal, so it
 // refuses before showing anything rather than waiting forever.
@@ -234,15 +255,61 @@ var errNoForeground = errors.New("no shell can bring the value prompt to the for
 // (secret_prompt_other.go): the value must be piped in.
 var errNoValuePrompt = errors.New("no value prompt is available on this platform")
 
-// promptControlByteError is an unhandled control byte typed at the prompt. Its byte lets the form
-// turn the reader error into a usage error that names the invisible input.
-type promptControlByteError byte
-
-func (e promptControlByteError) Error() string {
-	return fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt", byte(e))
+// promptControlByteError is an unhandled control byte typed or pasted at the prompt: c, the first
+// one the line held, and whether the value held text before it (textBefore) and after it
+// (textAfter), which say where it came. Its parts let the form turn the reader error into a usage
+// error that names the invisible input and where it is, so a person can tell a Tab a paste added
+// at an end from one inside the value.
+type promptControlByteError struct {
+	c                     byte
+	textBefore, textAfter bool
 }
 
-func (e promptControlByteError) ControlByte() byte { return byte(e) }
+// Error names the byte by its number and its name, and where it came, with the note, for a Tab at
+// one end, that a paste often adds one there.
+func (e promptControlByteError) Error() string {
+	name := e.name()
+	article := "a"
+	if strings.ContainsRune("AEIOU", rune(name[0])) {
+		article = "an"
+	}
+	where := "inside the value"
+	switch {
+	case !e.textBefore && !e.textAfter:
+		where = "as the whole value"
+	case !e.textAfter:
+		where = "at the end of the value"
+	case !e.textBefore:
+		where = "at the start of the value"
+	}
+	note := ""
+	if e.c == '\t' && e.textBefore != e.textAfter {
+		note = ", where a paste often adds one"
+	}
+	return fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt: %s %s %s%s", e.c, article, name, where, note)
+}
+
+// name is what a person calls the byte: the key that sends it where it has a name of its own, and
+// the Ctrl- chord that types it otherwise.
+func (e promptControlByteError) name() string {
+	switch e.c {
+	case 0x00:
+		return "NUL"
+	case '\b':
+		return "Backspace"
+	case '\t':
+		return "Tab"
+	case '\v':
+		return "vertical tab"
+	case '\f':
+		return "form feed"
+	case 0x1b:
+		return "Escape"
+	case 0x7f:
+		return "Delete"
+	}
+	return "Ctrl-" + string(rune('@'+e.c))
+}
 
 // shellUnsafe is any character outside the set a POSIX shell reads literally in a bare word.
 var shellUnsafe = regexp.MustCompile(`[^A-Za-z0-9_./:@-]`)
@@ -313,16 +380,22 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 		if errors.Is(err, errNoForeground) || errors.Is(err, errNoValuePrompt) {
 			return "", usageErr{fmt.Errorf("%w; pipe the value in: %s < FILE", err, pipeTo)}
 		}
-		var control interface{ ControlByte() byte }
+		var control promptControlByteError
 		if errors.As(err, &control) {
-			return "", usageErr{fmt.Errorf("the control byte 0x%02x cannot be typed at the prompt; pipe the value in: %s < FILE", control.ControlByte(), pipeTo)}
+			return "", usageErr{fmt.Errorf("%w. Nothing was stored, and the value was not trimmed: enter it again without the %s, or, if the %s is part of it, pipe the value in: %s < FILE", control, control.name(), control.name(), pipeTo)}
+		}
+		if errors.Is(err, errValueTimedOut) {
+			return "", valueTimedOut(pipeTo)
 		}
 		if err != nil {
 			return "", fmt.Errorf("read the value at the terminal: %w", err)
 		}
 		value, empty = string(line), "no value was entered at the prompt"
 	} else {
-		data, err := io.ReadAll(secretStdin)
+		data, err := readAllBy(secretStdin, valueDeadline)
+		if errors.Is(err, errValueTimedOut) {
+			return "", valueTimedOut(pipeTo)
+		}
 		if err != nil {
 			return "", fmt.Errorf("read the value from standard input: %w", err)
 		}
@@ -339,6 +412,64 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 		return "", usageErr{errors.New(empty)}
 	}
 	return stored, nil
+}
+
+// valueTimedOut is the error a create's read of its value ends with at valueDeadline: nothing was
+// stored, how long the read lasted, and the command to run again. It is no usage error: the
+// command was right, and the person or the pipe was too slow.
+func valueTimedOut(pipeTo string) error {
+	window := valueReadWindow.String()
+	if valueReadWindow >= time.Minute && valueReadWindow%time.Minute == 0 {
+		window = fmt.Sprintf("%d minutes", valueReadWindow/time.Minute)
+	}
+	return fmt.Errorf("nothing was stored: %w, within %s of the create, as long as the broker holds a new secret waiting for its value, so the create gave up; run %s again", errValueTimedOut, window, pipeTo)
+}
+
+// readAllBy reads all of r, or answers errValueTimedOut at deadline when r has not ended by then;
+// the zero deadline reads with no bound. A read it gives up on stays blocked, which costs nothing:
+// the form ends at once.
+func readAllBy(r io.Reader, deadline time.Time) ([]byte, error) {
+	if deadline.IsZero() {
+		return io.ReadAll(r)
+	}
+	type read struct {
+		data []byte
+		err  error
+	}
+	done := make(chan read, 1)
+	go func() {
+		data, err := io.ReadAll(r)
+		done <- read{data, err}
+	}()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case got := <-done:
+		return got.data, got.err
+	case <-timer.C:
+		return nil, errValueTimedOut
+	}
+}
+
+// noteEdgeSpaces prints, once a form has stored value as name's value, one line on stderr when
+// value starts or ends with a space: a space can be part of a secret, so the form stores the value
+// as given, neither trimmed nor refused, but one at an end is more often a paste's or a typing
+// slip than the secret's own, and nothing else shows it. The line names the secret and the end,
+// never the value.
+func noteEdgeSpaces(stderr io.Writer, form, name, value string) {
+	starts, ends := strings.HasPrefix(value, " "), strings.HasSuffix(value, " ")
+	var where string
+	switch {
+	case starts && ends:
+		where = "starts and ends"
+	case starts:
+		where = "starts"
+	case ends:
+		where = "ends"
+	default:
+		return
+	}
+	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s %s with a space; it was stored as given, the space included\n", form, name, where)
 }
 
 // checkValueFor refuses value, which a secret of kind (a policy.Kinds entry) holds or is about to
@@ -429,8 +560,9 @@ type secretBackend interface {
 
 	list(ctx context.Context) ([]secretView, error)
 	show(ctx context.Context, slug string) (secretView, error)
-	// create makes the secret holding value with tags, which always hold owner and tier.
-	create(ctx context.Context, slug string, tags map[string]string, value string) error
+	// prepareCreate builds the create's state without writing. begin makes the value-free store
+	// call, where the backend has one, after the form has installed its signal cleanup.
+	prepareCreate(slug string, tags map[string]string) newSecret
 	set(ctx context.Context, slug, value string) error
 	// currentTags answers the secret's tags as one read holds them (AWS tags, or Secret Manager
 	// annotations with that read's etag), from which retag builds the tags the secret will hold once
@@ -465,6 +597,26 @@ type secretBackend interface {
 	// clients need no release). A short CLI process would reclaim it on exit regardless, but a
 	// test building many backends in one process leaks goroutines without it.
 	close() error
+}
+
+// newSecret is a prepared secret create. begin makes any value-free store call before the value
+// is read; on failure it answers what its recovery left, so the form can reread after a deletion.
+// store writes the first value. discard, called when no value will be stored, checks creation
+// identity and versions before deleting an empty GCP secret; AWS makes nothing until store and
+// discards nothing. Its error names what stays and the command that clears or settles it, and is
+// nil when nothing stays. Each store call of begin, store and discard runs under
+// storeCallDeadline. unsettled names, for a form that ends without waiting on the call in flight,
+// what the store may be left holding and the command that clears or settles it; a second signal
+// calls it while begin, store or discard may be running, so it reads only what is safe then.
+// madeBeforeValue reports whether begin makes a secret that waits in the store for its value (GCP),
+// which the broker holds as pending for policy.PendingValueWindow, so the form's read of the value
+// ends with that window; AWS makes nothing before the value, and its read has no bound.
+type newSecret interface {
+	begin(ctx context.Context) (discardOutcome, error)
+	store(ctx context.Context, value string) error
+	discard(ctx context.Context) (discardOutcome, error)
+	unsettled() string
+	madeBeforeValue() bool
 }
 
 // secretSession is one secret form's connection: the broker and the backend (requireAccount)
@@ -566,7 +718,7 @@ func openSecretBackend(ctx context.Context, profile string, settings Settings) (
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st}, nil
+		return &awsBackend{settings: settings, sm: sm, st: st, profile: profile}, nil
 	case secrets.StoreGCP:
 		if profile != "" {
 			return nil, usageErr{fmt.Errorf("--profile names an AWS profile; this broker's store is %s, which signs in with CLOUDSDK_AUTH_ACCESS_TOKEN, your Application Default Credentials or your gcloud login, not --profile", settings.Store)}
@@ -931,17 +1083,39 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if *defaultGrant != "" {
 		command = append(command, "--default-grant", *defaultGrant)
 	}
+	// Install cleanup before the first store call: a signal can arrive after the store has
+	// created the empty secret but before its answer reaches the form.
+	pending := &pendingCreate{s: s, form: form, name: name, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
+	endStretch := pending.watch()
+	defer endStretch()
+	// Where begin makes a secret that waits for its value (madeBeforeValue), the value is read until
+	// valueReadWindow after the store is asked to make it: the broker holds it as waiting for that
+	// long from its making, so the create gives up, and discards it, no later than the broker stops
+	// waiting. Where begin makes nothing (AWS), nothing waits, and the read has no bound.
+	asked := time.Now()
+	if err := pending.begin(); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
+	if pending.created.madeBeforeValue() {
+		valueDeadline = asked.Add(valueReadWindow)
+		defer func() { valueDeadline = time.Time{} }()
+	}
 	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, stderr)
 	if err == nil && policy.ValidKind(*kind) {
 		err = checkValueFor(*kind, *shape, value)
 	}
+	if err == nil {
+		err = pending.store(value)
+	}
+	if err != nil {
+		err = pending.abandon(err)
+	}
+	endStretch()
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	if err := s.backend.create(s.ctx, slug, tags, value); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
 	fmt.Fprintf(stdout, "created %s in %s (owner=%s, tier=%s)\n", name, s.storeName(), ownerValue, *tier)
+	noteEdgeSpaces(stderr, form, name, value)
 	return rereadAfter(s, stdout, stderr, form, name, true, nil)
 }
 
@@ -990,6 +1164,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	fmt.Fprintf(stdout, "set a new value of %s in %s\n", name, s.storeName())
+	noteEdgeSpaces(stderr, form, name, value)
 	return rereadAfter(s, stdout, stderr, form, name, true, nil)
 }
 

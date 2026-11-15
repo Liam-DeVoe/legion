@@ -227,6 +227,20 @@ func TestPromptJobHelper(t *testing.T) {
 	if os.Getenv("AGENT_SECRETS_JOB_FAIL_DISCARD") != "" {
 		discardInput = func(int) error { return errors.New("TIOCFLUSH failed") }
 	}
+	if hook := os.Getenv("AGENT_SECRETS_JOB_DEATH_HOOK"); hook != "" {
+		// What create sets while the secret it made is empty (onSignalDeath, onSecondSignal),
+		// reduced to lines the test can see on the terminal, with create's own watch on the
+		// signals running beside the prompt's, as it does in a create. AGENT_SECRETS_JOB_DEATH_HOOK
+		// =hang makes the cleanup wait an hour, as one waiting on a store call that never answers.
+		onSignalDeath = func() {
+			fmt.Println("DEATH_HOOK_RAN")
+			if hook == "hang" {
+				time.Sleep(time.Hour)
+			}
+		}
+		onSecondSignal = func(sig os.Signal) { fmt.Println("SECOND_SIGNAL_LINE", sig) }
+		defer watchCreateSignals()()
+	}
 	reference := os.Getenv("AGENT_SECRETS_JOB_REFERENCE")
 	if reference == "" {
 		// Started in the foreground: bash has already handed it the terminal.
@@ -824,6 +838,68 @@ func TestPromptJobKeyAfterAPasteInOneWriteActs(t *testing.T) {
 		s.wait("MATCH=false EMPTY=true")
 		s.noShellValue("pastevalue")
 	})
+}
+
+// A signal that ends the prompt runs onSignalDeath first, which create sets while the secret it
+// made is empty: Ctrl-C and Ctrl-\ at the prompt, and a termination sent to the process, each run
+// it once, after the terminal is restored - the restore's bracketed-paste-off mark reaches the
+// terminal before the cleanup's line - and the shell still reports the signal's own status.
+// Create's own watch on the signals runs beside the prompt's (watchCreateSignals) and leaves a
+// signal that comes during the prompt to the prompt, so the cleanup runs once, and only once the
+// prompt has restored the terminal.
+func TestPromptJobSignalRunsTheDeathCleanupFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name, key string
+		sig       syscall.Signal
+		status    string
+	}{{"ctrl-c", "\x03", 0, "130"}, {"ctrl-backslash", "\x1c", 0, "131"}, {"sigterm", "", syscall.SIGTERM, "143"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newPromptShell(t)
+			s.env = "AGENT_SECRETS_JOB_DEATH_HOOK=1 "
+			s.start(false, false)
+			if tc.sig != 0 {
+				if err := syscall.Kill(s.pid, tc.sig); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				s.send(tc.key)
+			}
+			s.wait("DEATH_HOOK_RAN")
+			s.wait("PROMPT$ ")
+			s.send("echo STATUS_$?\r")
+			s.wait("STATUS_" + tc.status)
+			out := s.out.String()
+			if n := strings.Count(out, "DEATH_HOOK_RAN"); n != 1 || strings.Contains(out, "RETURNED") {
+				t.Fatalf("the cleanup ran %d times, terminal %q; want once, and the process ended by its signal", n, out)
+			}
+			if restored := strings.Index(out, string(bracketedPasteOff)); restored < 0 || restored > strings.Index(out, "DEATH_HOOK_RAN") {
+				t.Fatalf("terminal %q: want the prompt's restore before the cleanup ran", out)
+			}
+		})
+	}
+}
+
+// A second signal while the cleanup a signal at the prompt ran is still waiting - a store call in
+// flight that does not answer - ends the process at once, by that second signal, once the prompt
+// has restored the terminal, and prints create's line for it first: Ctrl-C at the prompt, then a
+// termination, and the shell reports the termination's status.
+func TestPromptJobSecondSignalEndsAWaitingCleanupAtOnce(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEATH_HOOK=hang "
+	s.start(false, false)
+	s.send("\x03")
+	s.wait("DEATH_HOOK_RAN")
+	if err := syscall.Kill(s.pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	s.wait("SECOND_SIGNAL_LINE terminated")
+	s.wait("PROMPT$ ")
+	s.send("echo STATUS_$?\r")
+	s.wait("STATUS_143")
+	out := s.out.String()
+	if restored := strings.Index(out, string(bracketedPasteOff)); restored < 0 || restored > strings.Index(out, "SECOND_SIGNAL_LINE") || strings.Contains(out, "RETURNED") {
+		t.Fatalf("terminal %q: want the prompt's restore before the second signal's line, and the process ended by that signal", out)
+	}
 }
 
 // A prompt started with & whose shell then exits has no shell to bring it forward, though the

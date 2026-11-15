@@ -687,6 +687,12 @@ func ParseKindSource(source string) (kind, storeSource string, minted bool, err 
 // prefix, or the one that does was refused.
 var ErrUnknownSecret = errors.New("no agent secret has this name")
 
+// ErrPendingValue is a name whose secret exists and waits for its first value
+// (ReasonPendingValue): `agent-secrets secret create` made it and its owner has not yet stored the
+// value. Unlike ErrUnknownSecret it is not final, so a request for it is refused with this, naming
+// the secret, never as unknown.
+var ErrPendingValue = errors.New("exists and awaits its first value; ask again after its owner stores it")
+
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
 // the one that does is scheduled for deletion. It is not a refusal, so it is never in
 // Set.Refused nor written as RefusedMessage: a reread of a name nobody created adds no
@@ -842,6 +848,10 @@ type Set struct {
 	// it with the set before to write the state-change lines, and broker_unservable_secrets
 	// (NewUnservableSecrets) reads it at each scrape.
 	Refused map[string]Refusal
+	// Pending is every secret under the prefix waiting for its value (ReasonPendingValue), keyed
+	// as Refused is. It is served to nobody and refused for nothing: it is in neither Version nor
+	// broker_unservable_secrets, and Current writes PendingMessage for an id that enters it.
+	Pending map[string]Refusal
 	// versions is the version of each served kind secret's value as the load or reread that read
 	// it listed it (secrets.Listing.Version), keyed by Name. It is in neither Secret nor Version,
 	// so a write of a new value moves no Version and ends no grant: Current decodes the value of
@@ -862,12 +872,17 @@ type Refusal struct {
 	// Owner is the secret's owner tag as the store holds it, and "" for ReasonOwnerTagMissing and
 	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows.
 	Owner string
+	// Created is, for a Set.Pending entry (ReasonPendingValue), when the store created the secret,
+	// so a caller can tell the wait has ended (Current.PendingValue) without a reload; it is the
+	// zero time in every refusal.
+	Created time.Time
 }
 
-// setOf is NewSet(secrets) carrying refused and versions, which NewSet's Version leaves out.
-func setOf(secrets map[string]Secret, refused map[string]Refusal, versions map[string]string) *Set {
+// setOf is NewSet(secrets) carrying refused, pending and versions, which NewSet's Version leaves
+// out.
+func setOf(secrets map[string]Secret, refused, pending map[string]Refusal, versions map[string]string) *Set {
 	set := NewSet(secrets)
-	set.Refused, set.versions = refused, versions
+	set.Refused, set.Pending, set.versions = refused, pending, versions
 	return set
 }
 
