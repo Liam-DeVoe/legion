@@ -3,13 +3,21 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The landing composes its answer out of the loaders the per-resource routes call, so each part
@@ -88,7 +96,8 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 		{"page.issue.issue", landing.Issue["issue"], "/api/v1/issues/" + issue.Key},
 		{"page.issue.user_state", landing.Issue["user_state"], "/api/v1/me/state"},
 		{"page.issue.comments", landing.Issue["comments"], "/api/v1/issues/" + issue.Key + "/comments"},
-		{"page.issue.asks", landing.Issue["asks"], "/api/v1/issues/" + issue.Key + "/asks?state=all&thread=1"},
+		// With no thread: the reader the dashboard seeds this part for asks for none.
+		{"page.issue.asks", landing.Issue["asks"], "/api/v1/issues/" + issue.Key + "/asks?state=all"},
 		{"page.issue.subscribers", landing.Issue["subscribers"], "/api/v1/issues/" + issue.Key + "/subscribers"},
 		{"page.issue.decisions", landing.Issue["decisions"], "/api/v1/issues/" + issue.Key + "/decisions"},
 		{"page.issue.coverage", landing.Issue["coverage"], "/api/v1/issues/" + issue.Key + "/coverage"},
@@ -242,6 +251,342 @@ func TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell(t *testing.T) {
 	assertSameJSON(t, "shell.projects", landing.Shell["projects"], readRouteBody(t, handler, "/api/v1/projects"))
 }
 
+// landingServiceTestLimit is where a test ends the request of a landing it holds to
+// landingServiceBound. It is below the listener's and the broker's own five-second windows, so a
+// landing that waits on a silent service fails its test on time rather than reaching the client's
+// window, or hanging the package where a client honoured no window at all.
+const landingServiceTestLimit = 4 * time.Second
+
+// landingServiceTestMargin is how far past landingServiceBound a landing may answer and still
+// pass: the database parts it reads beside the silent ones, and the document page's own document,
+// which the page reads before it can ask the listener for that document's subscribers. It is
+// under the second by which routeRosterTimeout outlasts the bound, so a landing whose agents part
+// waited the roster's shared fetch out rather than the bound still fails here.
+const landingServiceTestMargin = 500 * time.Millisecond
+
+// The two lines the landing writes for a part it left out, written out here rather than taken
+// from the code under test: a part whose read failed, and a part whose service did not answer
+// within landingServiceBound.
+const (
+	landingPartWarning = "dispatch: the landing left a part out"
+	landingLateWarning = "dispatch: the landing left a part out: its service did not answer within the bound"
+)
+
+// A cold page draws nothing but its skeleton until the landing answers, so a service outside the
+// database that accepts the connection and never answers must cost the landing no more than
+// landingServiceBound. The part that service answers is left null, which the page reads from its
+// own route once it has drawn, and every database part is answered beside it. Both stand-ins here
+// hold every request for as long as the test runs, so a landing that waited on the listener or the
+// broker for the client's own window would answer far past the bound; the request itself ends at
+// landingServiceTestLimit, so such a landing fails here on its time rather than hanging.
+//
+// Each part left null is named in the log exactly once, so an operator sees which service is slow,
+// and the broker's part and the subscribers are named as late. The agents part is held only to
+// being named once: the roster's shared fetch stores the listener's silence once its own bound
+// (routeRosterTimeout) passes, and a landing that starts after that reads the stored silence as
+// the failure it is rather than waiting out landingServiceBound.
+func TestLandingDoesNotWaitOnASilentListenerOrBroker(t *testing.T) {
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	listenerURL, _ := silentService(t)
+	brokerURL, _ := silentService(t)
+	handler := newLandingServicesHandler(t, listenerURL, brokerURL)
+	createTestProject(t, handler, "LAND")
+	issue := createSpecIssue(t, handler, "LAND", "# Spec\n\nThe landing reads this document.\n")
+	document := createProjectDocument(t, handler, "LAND", "rollout.md", "# Rollout\n\nThe document page reads this.\n")
+
+	// readSilently reads one landing and holds it to the bound, to the shell's two silent parts,
+	// to one warning for each silent part (subscribers names the page's own, empty for a page
+	// with none), and to the shell's database parts.
+	readSilently := func(t *testing.T, target, subscribers string) landingBody {
+		t.Helper()
+		mark := len(records.Records())
+		ctx, cancel := context.WithTimeout(t.Context(), landingServiceTestLimit)
+		defer cancel()
+		started := time.Now()
+		response := serveLanding(ctx, handler, target)
+		took := time.Since(started)
+		landing := landingFrom(t, target, response)
+		t.Logf("GET %s answered in %v", target, took.Round(time.Millisecond))
+		if took > landingServiceBound+landingServiceTestMargin {
+			t.Errorf("GET %s answered after %v, want within %v: the bound of %v and a margin of %v",
+				target, took.Round(time.Millisecond), landingServiceBound+landingServiceTestMargin,
+				landingServiceBound, landingServiceTestMargin)
+		}
+		for _, part := range []struct {
+			part string
+			body json.RawMessage
+		}{
+			{"shell.agents", landing.Shell["agents"]},
+			{"shell.credential_requests", landing.Shell["credential_requests"]},
+		} {
+			if string(part.body) != "null" {
+				t.Errorf("GET %s: %s = %s, want null from a service that never answered", target, part.part, part.body)
+			}
+		}
+		named, late := landingWarnings(records.Records()[mark:])
+		want := map[string]int{"shell.agents": 1, "shell.credential_requests": 1}
+		if subscribers != "" {
+			want[subscribers] = 1
+		}
+		if !maps.Equal(named, want) {
+			t.Errorf("GET %s: the warnings name %v, want each silent part once and no database part: %v", target, named, want)
+		}
+		for part := range want {
+			if part != "shell.agents" && late[part] != 1 {
+				t.Errorf("GET %s: %s is named late %d times, want once", target, part, late[part])
+			}
+		}
+		for _, part := range []struct {
+			part  string
+			body  json.RawMessage
+			route string
+		}{
+			{"shell.inbox", landing.Shell["inbox"], "/api/v1/inbox"},
+			{"shell.projects", landing.Shell["projects"], "/api/v1/projects"},
+			{"shell.priority_summary", landing.Shell["priority_summary"], "/api/v1/priorities?summary=true"},
+		} {
+			assertSameJSON(t, part.part, part.body, readRouteBody(t, handler, part.route))
+		}
+		return landing
+	}
+
+	t.Run("the issue page", func(t *testing.T) {
+		landing := readSilently(t, "/api/v1/landing?page=issue&key="+issue.Key, "issue.subscribers")
+		if string(landing.Issue["subscribers"]) != "null" {
+			t.Errorf("page.issue.subscribers = %s, want null from a listener that never answered", landing.Issue["subscribers"])
+		}
+		spec := landing.issueDocument(t)
+		for _, part := range []struct {
+			part  string
+			body  json.RawMessage
+			route string
+		}{
+			{"page.issue.issue", landing.Issue["issue"], "/api/v1/issues/" + issue.Key},
+			{"page.issue.comments", landing.Issue["comments"], "/api/v1/issues/" + issue.Key + "/comments"},
+			{"page.issue.decisions", landing.Issue["decisions"], "/api/v1/issues/" + issue.Key + "/decisions"},
+			{"page.issue.document.text", spec["text"], "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text"},
+		} {
+			assertSameJSON(t, part.part, part.body, readRouteBody(t, handler, part.route))
+		}
+	})
+
+	t.Run("the document page", func(t *testing.T) {
+		page := readSilently(t, "/api/v1/landing?page=document&project=LAND&slug="+document.Slug, "document.subscribers").
+			partOf(t, "document")
+		if string(page["subscribers"]) != "null" {
+			t.Errorf("page.document.subscribers = %s, want null from a listener that never answered", page["subscribers"])
+		}
+		for _, part := range []struct {
+			part  string
+			body  json.RawMessage
+			route string
+		}{
+			{"page.document.artifact", page["artifact"], "/api/v1/projects/LAND/artifacts/" + document.Slug},
+			{"page.document.text", page["text"], "/api/v1/artifacts/" + document.ID + "/text"},
+			{"page.document.blocks", page["blocks"], "/api/v1/artifacts/" + document.ID + "/blocks"},
+			{"page.document.asks", page["asks"], "/api/v1/artifacts/" + document.ID + "/asks?state=all"},
+			{"page.document.comments", page["comments"], "/api/v1/artifacts/" + document.ID + "/comments"},
+		} {
+			assertSameJSON(t, part.part, part.body, readRouteBody(t, handler, part.route))
+		}
+	})
+
+	t.Run("the shell alone", func(t *testing.T) {
+		inbox := readSilently(t, "/api/v1/landing?page=inbox", "").partOf(t, "inbox")
+		assertSameJSONExcept(t, "page.inbox.threads", inbox["threads"],
+			readRouteBody(t, handler, "/api/v1/me/replies?kind=reply,agent&state=inbox"), "as_of")
+	})
+}
+
+// A part whose route would answer a not-found - an issue key that is no issue, a slug that is no
+// document of the project, a slug that names a file, which has no text and no blocks - is left
+// null and written to no log: the routes the landing stands in for answer each of these as the
+// caller's own miss and log none of them, and a warn line an operator reads must be a read that
+// failed. A part that did fail is still named, which the last case proves with a listener that
+// refuses its interests list.
+func TestLandingWarnsOfNoPartANotFoundAnswerLeftOut(t *testing.T) {
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	listenerURL, listener := newFakeListener(t, nil, nil)
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listenerURL})
+	createTestProject(t, handler, "LAND")
+	uploaded := multipartRequest(t, handler, "/api/v1/projects/LAND/artifacts", map[string]string{"name": "diagram.png"},
+		"diagram.png", "image/png", pngBytes("diagram"), "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload project image: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	image := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact
+
+	for _, landing := range []struct {
+		name   string
+		target string
+		page   string
+		// null is the page's members the not-found leaves null.
+		null []string
+	}{
+		{"an issue key that is no issue", "/api/v1/landing?page=issue&key=LAND-404", "issue", []string{"issue"}},
+		{"a slug that is no document", "/api/v1/landing?page=document&project=LAND&slug=no-such-document", "document", []string{"artifact"}},
+		{"a slug that names a file", "/api/v1/landing?page=document&project=LAND&slug=" + image.Slug, "document", []string{"text", "blocks"}},
+	} {
+		t.Run(landing.name, func(t *testing.T) {
+			mark := len(records.Records())
+			page := readLanding(t, handler, landing.target).partOf(t, landing.page)
+			for _, member := range landing.null {
+				if string(page[member]) != "null" {
+					t.Errorf("GET %s: page.%s.%s = %s, want null", landing.target, landing.page, member, page[member])
+				}
+			}
+			if named, _ := landingWarnings(records.Records()[mark:]); len(named) > 0 {
+				t.Errorf("GET %s warned of %v, want no warning: the route behind each such part answers its not-found and logs nothing",
+					landing.target, named)
+			}
+		})
+	}
+
+	t.Run("a listener that refuses", func(t *testing.T) {
+		listener.mu.Lock()
+		listener.refuseList = func(w http.ResponseWriter, _ string) bool {
+			w.WriteHeader(http.StatusInternalServerError)
+			return true
+		}
+		listener.mu.Unlock()
+		mark := len(records.Records())
+		landing := readLanding(t, handler, "/api/v1/landing?page=issue&key=LAND-404")
+		if string(landing.Issue["subscribers"]) != "null" {
+			t.Errorf("page.issue.subscribers = %s, want null from a listener that refused", landing.Issue["subscribers"])
+		}
+		if named, _ := landingWarnings(records.Records()[mark:]); named["issue.subscribers"] != 1 {
+			t.Errorf("the warnings name %v, want issue.subscribers once: a refused read is a failure the operator must see", named)
+		}
+	})
+}
+
+// A landing whose own request ends - the page navigated away, the tab closed - leaves every part it
+// had not read null and writes no warning for any of them: nothing failed but the caller's wait,
+// the head read above the parts already skips a request that ended (getLanding), and so do the
+// routes the parts stand in for. The listener here holds every read, and the request is cancelled
+// the moment a read reaches it, so every part read after that meets the request's end.
+func TestLandingWarnsOfNoPartACancelledRequestLeftOut(t *testing.T) {
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	listenerURL, reached := silentService(t)
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listenerURL})
+	createTestProject(t, handler, "LAND")
+	issue := createSpecIssue(t, handler, "LAND", "# Spec\n\nA landing nobody waits for.\n")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// cancelled closes before the cancel, so a landing that ended on the cancel always finds it
+	// closed, and one that ended without a read reaching the listener never does.
+	cancelled := make(chan struct{})
+	go func() {
+		select {
+		case <-reached:
+			close(cancelled)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	mark := len(records.Records())
+	target := "/api/v1/landing?page=issue&key=" + issue.Key
+	response := serveLanding(ctx, handler, target)
+	select {
+	case <-cancelled:
+	default:
+		t.Fatalf("GET %s never reached the listener, so its request was never cancelled: status=%d", target, response.Code)
+	}
+	landingFrom(t, target, response)
+	if named, _ := landingWarnings(records.Records()[mark:]); len(named) > 0 {
+		t.Errorf("GET %s, cancelled while it read, warned of %v, want no warning", target, named)
+	}
+}
+
+// silentService stands in for a listener or a broker that accepts every connection and never
+// answers: each request is held until its caller gives up on it or the test ends. It answers its
+// URL and a channel that receives the path of each request it holds, for a test that acts the
+// moment a read reaches the service; a test that does not read it loses nothing.
+func silentService(t *testing.T) (string, <-chan string) {
+	t.Helper()
+	reached := make(chan string, 64)
+	ended := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case reached <- r.URL.Path:
+		default:
+		}
+		select {
+		case <-r.Context().Done():
+		case <-ended:
+		}
+	}))
+	t.Cleanup(server.Close)
+	// Registered after Close, so it runs before it: Close waits out every request it holds.
+	t.Cleanup(func() { close(ended) })
+	return server.URL, reached
+}
+
+// newLandingServicesHandler mounts the real routes with the listener client pointed at listenerURL
+// and the secrets broker's at brokerURL, each at the client's own five-second window. newTestServer
+// configures no broker, on purpose (newCredentialTestHandler says why), so this builds its
+// dependencies itself as that helper does, with the listener beside the broker.
+func newLandingServicesHandler(t *testing.T, listenerURL, brokerURL string) http.Handler {
+	t.Helper()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	// The documents never settle during the test, so every version it reads is one its own
+	// requests wrote.
+	documentService := docs.New(docs.Deps{Store: database, Events: broker, ServerURL: testServerURL, Settle: time.Hour})
+	t.Cleanup(func() {
+		if err := documentService.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	seedPeople(t, database, "alice", "bob")
+	deps, err := NewDeps(DepsInput{
+		Store:                  database,
+		Identity:               headerIdentity(database),
+		AgentTokens:            sharedAgentTokens(t, "agent-token"),
+		ServerURL:              testServerURL,
+		Docs:                   documentService,
+		Events:                 broker,
+		EnvoyURL:               listenerURL,
+		ListenerTakeoverWindow: testTakeoverWindow,
+		AgentSecretsURL:        brokerURL,
+		AgentSecretsTokenFile:  accountTokenFile(t, credentialTestAccountToken),
+	})
+	if err != nil {
+		t.Fatalf("new API dependencies: %v", err)
+	}
+	mux := http.NewServeMux()
+	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	return mux
+}
+
+// landingWarnings counts the parts the landing's warnings in records name: named counts every
+// warning of a part left out, and late those among them that name a service that did not answer
+// within landingServiceBound.
+func landingWarnings(records []slog.Record) (named, late map[string]int) {
+	named, late = map[string]int{}, map[string]int{}
+	for _, record := range records {
+		if record.Message != landingPartWarning && record.Message != landingLateWarning {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "part" {
+				named[attr.Value.String()]++
+				if record.Message == landingLateWarning {
+					late[attr.Value.String()]++
+				}
+			}
+			return true
+		})
+	}
+	return named, late
+}
+
 // addArchitectureSource makes repo a source of project's architecture model, as GET
 // /api/v1/projects/{key}/architecture-sources answers it and the landing carries it.
 //
@@ -303,7 +648,21 @@ func (b landingBody) issueDocument(t *testing.T) map[string]json.RawMessage {
 // readLanding reads one landing as alice and fails unless it answered 200.
 func readLanding(t *testing.T, handler http.Handler, target string) landingBody {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+	return landingFrom(t, target, dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"))
+}
+
+// serveLanding reads one landing as alice under ctx, for a test that ends the request itself.
+func serveLanding(ctx context.Context, handler http.Handler, target string) *httptest.ResponseRecorder {
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+// landingFrom is the landing response answered, decoded, and fails unless it is a 200.
+func landingFrom(t *testing.T, target string, response *httptest.ResponseRecorder) landingBody {
+	t.Helper()
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET %s: status=%d body=%s", target, response.Code, response.Body.String())
 	}

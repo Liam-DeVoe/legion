@@ -12,10 +12,19 @@
 // route would not. A part that a reader must change belongs to that route's own file, never to
 // this one.
 //
-// The parts run one after another, never together. A request holds one pooled connection at a
-// time (store.ErrNestedAcquire, which register's mark enforces), and two parts reading at once
-// would take two; the reads are also short, and the waves this route removes are the cost that
-// was paid in network round trips, not in query time.
+// The database parts run one after another, never together. A request holds one pooled
+// connection at a time (store.ErrNestedAcquire, which register's mark enforces), and two parts
+// reading at once would take two; the reads are also short, and the waves this route removes are
+// the cost that was paid in network round trips, not in query time.
+//
+// The parts a service outside the database answers are the exception: the agents and the
+// subscribers, which the Envoy listener answers, and the credential requests, which the secrets
+// broker answers. Each starts before the first database part, runs beside them on a goroutine
+// and a connection mark of its own, and is left null when its service has not answered within
+// landingServiceBound (landingServicePart). Read in line with the rest, a listener or a broker
+// that accepted the connection and never answered held the whole landing for each client's own
+// window in turn, and with it the first paint of every cold page, where before the landing only
+// the one chip that service draws had waited (dispatch://INFRA-1109).
 package api
 
 import (
@@ -28,9 +37,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The four pages a landing answers, by the ?page= value that names each. A value that is none of
@@ -47,14 +60,33 @@ const (
 // landingPages is those four in the order a refusal names them.
 var landingPages = []string{landingPageIssue, landingPageBoard, landingPageInbox, landingPageDocument}
 
+// landingServiceBound is how long the landing waits on a service outside the database - the Envoy
+// listener behind the agents and the subscribers, the secrets broker behind the credential
+// requests - before it leaves that service's part null.
+//
+// The dashboard draws nothing but its skeleton until the landing answers, so the bound is what one
+// silent service costs every cold page. A part left null costs far less: the page reads it from
+// the route it stands in for once it has drawn, and that read waits on the service under the
+// client's own window (envoy.defaultTimeout and agentsecrets.defaultTimeout, five seconds each)
+// while it holds the one chip that part draws and nothing else, which is how every page read the
+// part before the landing existed. So the bound trades a late page against a late chip, and it is
+// short. Read in line with the database parts, a listener and a broker that accept a connection
+// and never answer held the landing for the broker's window, then the roster fetch's
+// (routeRosterTimeout, two seconds), then the listener's window again for the subscribers. One
+// second is below routeRosterTimeout, so the agents part never waits a roster fetch out. It is no
+// shorter because the bound must be one a healthy service does not meet: a part a healthy service
+// misses is null on every landing, which buys back the read the landing exists to save and writes
+// a warning about a service that was answering.
+const landingServiceBound = time.Second
+
 // landingResponse is the body GET /api/v1/landing answers: the viewer, the shell every page
 // draws, and the page the caller opened.
 //
 // Every part but the viewer is answered null when it could not be read - an issue key that is
-// no issue, a slug that is no document, a listener or a broker that did not answer, a read that
-// failed - rather than refusing the whole landing. No GET route of this server is
-// project-scoped (project_scope.go), so no null here says anything about what the caller may
-// see. The dashboard reads anything the landing left
+// no issue, a slug that is no document, a listener or a broker that did not answer within
+// landingServiceBound, a read that failed - rather than refusing the whole landing. No GET route
+// of this server is project-scoped (project_scope.go), so no null here says anything about what
+// the caller may see. The dashboard reads anything the landing left
 // null from the per-resource route it stands in for, so a null costs the page one wave and never
 // draws a wrong page. The viewer is the one part that is not optional: a caller with no identity
 // is answered the 401 the `me` routes answer, which the dashboard already reads as signed out,
@@ -93,12 +125,14 @@ type landingShell struct {
 	UnreadReplies *int `json:"unread_replies"`
 	// CredentialRequests is GET /api/v1/credential-requests?approver=me. It is null both when a
 	// deployment has no secrets broker, which is that route's own answer, and when the read
-	// failed: the page draws no Needs-you badge either way.
+	// failed or the broker did not answer within landingServiceBound: the page draws no
+	// Needs-you badge either way.
 	CredentialRequests *wire.PendingResponse `json:"credential_requests"`
 	// PrioritySummary is GET /api/v1/priorities?summary=true with no project: the two fault
 	// counts the navigation rail's Priorities entry adds, and no row of either list.
 	PrioritySummary *model.Priorities `json:"priority_summary"`
-	// Agents is GET /api/v1/agents: the live sessions, null when the listener did not answer.
+	// Agents is GET /api/v1/agents: the live sessions, null when the listener did not answer
+	// within landingServiceBound or the read failed.
 	Agents []agentResponse `json:"agents"`
 }
 
@@ -120,10 +154,14 @@ type landingIssuePage struct {
 	UserState userState `json:"user_state"`
 	// Comments is GET /api/v1/issues/{key}/comments.
 	Comments []shapedComment `json:"comments"`
-	// Asks is GET /api/v1/issues/{key}/asks?state=all&thread=1: every ask of the issue with the
-	// thread its card draws.
+	// Asks is GET /api/v1/issues/{key}/asks?state=all, with no thread: every ask of the issue
+	// with its newest reply. The page seeds this part for the reader that draws the asks
+	// themselves (listIssueAsks in web/src/api/client.ts, which ProofDocument reads), and that
+	// reader asks for no thread: the list is unpaged, so only a reader that draws the threads asks
+	// for them (listIssueAskThreads), and it reads them from the route.
 	Asks []issueAskRow `json:"asks"`
-	// Subscribers is GET /api/v1/issues/{key}/subscribers.
+	// Subscribers is GET /api/v1/issues/{key}/subscribers; null when the listener did not answer
+	// within landingServiceBound.
 	Subscribers []subscriber `json:"subscribers"`
 	// Decisions is GET /api/v1/issues/{key}/decisions.
 	Decisions *issueDecisions `json:"decisions"`
@@ -190,7 +228,8 @@ type landingDocumentPage struct {
 	Blocks []model.ArtifactBlock `json:"blocks"`
 	// Asks is GET /api/v1/artifacts/{id}/asks?state=all.
 	Asks []shapedAsk `json:"asks"`
-	// Subscribers is GET /api/v1/artifacts/{id}/subscribers.
+	// Subscribers is GET /api/v1/artifacts/{id}/subscribers; null when the listener did not
+	// answer within landingServiceBound.
 	Subscribers []subscriber `json:"subscribers"`
 	// Comments is GET /api/v1/artifacts/{id}/comments.
 	Comments []shapedComment `json:"comments"`
@@ -282,28 +321,55 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 			"the event log's head could not be read")
 		return
 	}
+	ctx := r.Context()
 	trees := wantsDisplayTrees(r)
+	// The parts a service answers are on their way before the first database part is read and
+	// are taken after the last, so a slow service costs the landing landingServiceBound beside
+	// the database reads rather than after them.
+	services := s.startLandingServices(ctx, caller, read)
 	answer := landingResponse{
 		Viewer: landingViewer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: caller.ID},
-		Shell:  s.landingShell(r.Context(), caller, trees),
+		Shell:  s.landingShell(ctx, caller, trees),
 	}
 	switch read.page {
 	case landingPageIssue:
-		answer.Page.Issue = s.landingIssuePage(r.Context(), caller, read.key, trees)
+		answer.Page.Issue = s.landingIssuePage(ctx, caller, read.key, trees)
+		answer.Page.Issue.Subscribers = services.issueSubscribers.wait()
 	case landingPageBoard:
-		answer.Page.Board = s.landingBoardPage(r.Context(), caller, read.project, trees)
+		answer.Page.Board = s.landingBoardPage(ctx, caller, read.project, trees)
 	case landingPageInbox:
-		answer.Page.Inbox = s.landingInboxPage(r.Context(), caller)
+		answer.Page.Inbox = s.landingInboxPage(ctx, caller)
 	case landingPageDocument:
-		answer.Page.Document = s.landingDocumentPage(r.Context(), read.project, read.slug, trees)
+		answer.Page.Document = s.landingDocumentPage(ctx, read.project, read.slug, trees)
 	}
+	answer.Shell.Agents = services.agents.wait()
+	answer.Shell.CredentialRequests = services.credentialRequests.wait()
 	WriteJSON(w, http.StatusOK, answer)
 }
 
 // landingPart keeps one part's failure out of the rest of the answer: the part is left at its
 // zero value, which the response encodes as null, and the dashboard reads that part from the
-// route it stands in for. The failure is logged with the part's name, so an operator reading the
-// log sees which read failed on a landing that answered 200.
+// route it stands in for.
+//
+// A failure is logged with the part's name, so an operator reading the log sees which read failed
+// on a landing that answered 200. Two kinds of null are no failure and are not logged, since the
+// routes the landing stands in for log neither, and a warn line an operator reads must be a read
+// that went wrong:
+//
+//   - A not-found (landingNotFound): an issue key that is no issue, a slug that is no document of
+//     the project, a slug that names a file, which has no text and no blocks. Each is the
+//     caller's own miss, which the route answers 404 or 400 NOT_DOCUMENT and writes no line for;
+//     logged, every visit to an issue that was never filed or a document since renamed wrote one.
+//   - A part read once the request's own context had ended (ctx is the request's): the page went
+//     away, and every part not yet read fails on that alone. The head read above the parts skips
+//     such a request for the same reason (getLanding). Logged, one closed tab wrote a line for
+//     each part the landing had not reached: TestLandingWarnsOfNoPartACancelledRequestLeftOut,
+//     run against the handler before this change, read eight of them from one issue landing
+//     cancelled at its first listener read.
+//
+// Every other failure is logged: a service's refusal, a query that failed, a broker answer that
+// did not decode. A part whose service did not answer within landingServiceBound is logged once,
+// as late, by landingServicePart.wait rather than here, so a slow service reads as slow.
 //
 // Every name below is prefixed with the arm of the answer it belongs to - `shell.`, `issue.`,
 // `board.`, `inbox.`, and `document.` for a project document's page - and nothing else is. That
@@ -318,31 +384,167 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 // zero value a failure returns is the nil the response encodes as null, which is why each caller
 // assigns what this answers straight into its field: on an error the field is set to the nil it
 // already held.
-func landingPart[T any](name string, value T, err error) T {
+func landingPart[T any](ctx context.Context, name string, value T, err error) T {
 	if err == nil {
 		return value
 	}
-	slog.Warn("dispatch: the landing left a part out", "part", name, "error", err)
+	if ctx.Err() == nil && !landingNotFound(err) {
+		slog.Warn("dispatch: the landing left a part out", "part", name, "error", err)
+	}
 	var none T
 	return none
 }
 
-// landingShell reads what every page draws.
+// landingNotFound is whether err is a part's not-found: what the route the part stands in for
+// answers 404 or 400 NOT_DOCUMENT for, which no route logs (writeHandlerError logs an apiError
+// only when it is a 500). The loaders report one in three ways, and each is taken here: readIssue
+// answers pgx.ErrNoRows for an issue key that is no issue, which writeHandlerError answers 404
+// NOT_FOUND; loadArtifactByDocumentReference answers a 404 ARTIFACT_NOT_FOUND apiError for a slug
+// that is no document; and loadArtifactText and loadArtifactBlocks answer a 400 NOT_DOCUMENT
+// apiError for an artifact that is a file. A 404 apiError is taken whatever its code, since the
+// code only names what was missing.
+func landingNotFound(err error) bool {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true
+	}
+	var refused *apiError
+	return errors.As(err, &refused) && (refused.status == http.StatusNotFound || refused.code == "NOT_DOCUMENT")
+}
+
+// landingServicePart is one part a service outside the database answers, read on a goroutine of
+// its own while the landing reads its database parts, and ended at landingServiceBound.
+//
+// The bound is a deadline on the context the read itself runs on, so it stops the outbound call
+// rather than only the landing's wait for it: the listener client (envoy.Client.get) and the
+// broker client (agentsecrets.Client.do) each build their request with
+// http.NewRequestWithContext and send it with http.Client.Do, and net/http abandons a request
+// whose context has ended and answers that context's error, whether it was dialling, sending,
+// waiting for the answer or reading its body; and the roster read behind the agents
+// (readRouteRoster) stops waiting on the shared listener fetch once its context ends. So the read
+// has returned by the bound, and wait, which blocks on the read rather than on a timer of its
+// own, has answered by then too and leaves no goroutine writing into a part while the response
+// encodes it. TestLandingDoesNotWaitOnASilentListenerOrBroker holds both services silent for the
+// whole test and reads each landing back within the bound and its margin.
+//
+// The read's context carries a connection mark of its own (store.ForConcurrentRead). The agents
+// read takes the roster row, the open-ask counts and the last activity from the database beside
+// the listener; on the request's one mark, its open cursor would have the pool refuse the database
+// part read beside it, or have that part's refuse it (store.ErrNestedAcquire).
+type landingServicePart[T any] struct {
+	name string
+	// request is the request's own context: its end is the caller going away, which is no
+	// failure of the part.
+	request context.Context
+	// done closes once the read has returned and value, err and late hold what it answered.
+	done  chan struct{}
+	value T
+	err   error
+	// late is whether the bound ended the read: it failed once the bound's deadline had passed.
+	late bool
+}
+
+// startLandingServicePart starts read under landingServiceBound and answers the part wait takes
+// its answer from. ctx is the request's, and must hold no pooled connection, which is how every
+// caller starts one: before the first database part, or between two of them.
+func startLandingServicePart[T any](ctx context.Context, name string, read func(context.Context) (T, error)) *landingServicePart[T] {
+	part := &landingServicePart[T]{name: name, request: ctx, done: make(chan struct{})}
+	marked, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		// A caller that held a connection here is a bug, not a slow service: the part is left out
+		// and logged as any read that failed.
+		part.err = err
+		close(part.done)
+		return part
+	}
+	go func() {
+		defer close(part.done)
+		bounded, cancel := context.WithTimeout(marked, landingServiceBound)
+		defer cancel()
+		part.value, part.err = read(bounded)
+		part.late = part.err != nil && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	}()
+	return part
+}
+
+// wait answers the part once its read has returned, at landingServiceBound at the latest, and
+// null for a read that failed. A read the bound ended is logged once, naming the part and the
+// bound, so an operator sees which service is slow on a landing that answered 200 without it;
+// a request that had already ended is logged as nothing, as landingPart logs it, and every other
+// failure goes through landingPart. A part never started - a service this deployment does not
+// have, or a page that reads nothing from it - is nil, and answers null at once.
+func (p *landingServicePart[T]) wait() T {
+	var none T
+	if p == nil {
+		return none
+	}
+	<-p.done
+	if p.late && p.request.Err() == nil {
+		slog.Warn("dispatch: the landing left a part out: its service did not answer within the bound",
+			"part", p.name, "bound", landingServiceBound)
+		return none
+	}
+	return landingPart(p.request, p.name, p.value, p.err)
+}
+
+// landingServices is the landing's parts a service outside the database answers that it can ask
+// for before it has read anything, each on its way while the database parts are read. A nil
+// member is a part not started, which wait answers null.
+type landingServices struct {
+	agents             *landingServicePart[[]agentResponse]
+	credentialRequests *landingServicePart[*wire.PendingResponse]
+	issueSubscribers   *landingServicePart[[]subscriber]
+}
+
+// startLandingServices starts the shell's agents and credential requests, and the issue page's
+// subscribers, which need only the key the request names. The document page's subscribers need
+// the document the page reads first, so landingDocumentPage starts them itself.
+func (s *server) startLandingServices(ctx context.Context, caller model.Actor, read landingRequest) landingServices {
+	var started landingServices
+	// The agents and the subscribers are the listener's to answer, and loadSubscribers refuses
+	// with ENVOY_UNAVAILABLE where there is no listener configured. On such a deployment that
+	// refusal is not a failed read but the shape of the deployment, so neither is read at all:
+	// without this guard every issue landing of a listener-less deployment wrote a warn line for a
+	// part that could never be answered (dispatch://INFRA-1109). The parts stay null either way,
+	// and the page reads their routes itself, which answer that same refusal.
+	if s.deps.Envoy != nil {
+		started.agents = startLandingServicePart(ctx, "shell.agents", func(ctx context.Context) ([]agentResponse, error) {
+			agents, _, err := s.loadAgents(ctx)
+			return agents, err
+		})
+		if read.page == landingPageIssue {
+			started.issueSubscribers = startLandingServicePart(ctx, "issue.subscribers", func(ctx context.Context) ([]subscriber, error) {
+				return s.loadSubscribers(ctx, issueSubscriberBase(read.key))
+			})
+		}
+	}
+	// A deployment with no broker answers null, which is GET /api/v1/credential-requests' own
+	// answer there.
+	if s.deps.AgentSecrets != nil {
+		started.credentialRequests = startLandingServicePart(ctx, "shell.credential_requests",
+			func(ctx context.Context) (*wire.PendingResponse, error) {
+				return s.landingCredentialRequests(ctx, caller)
+			})
+	}
+	return started
+}
+
+// landingShell reads what every page draws from the database. The agents and the credential
+// requests, which a service answers, are startLandingServices' to read.
 func (s *server) landingShell(ctx context.Context, caller model.Actor, trees bool) landingShell {
 	var shell landingShell
 
 	// The inbox as the dashboard reads it on every page: no project and no assignee narrowing.
 	inbox, err := s.loadInbox(ctx, caller, "", "", "", trees)
-	shell.Inbox = landingPart("shell.inbox", inbox, err)
+	shell.Inbox = landingPart(ctx, "shell.inbox", inbox, err)
 
 	pinned, _, err := s.loadIssueListing(ctx, issueListRead{pinnedBy: caller.ID})
-	shell.PinnedIssues = landingPart("shell.pinned_issues", pinned, err)
+	shell.PinnedIssues = landingPart(ctx, "shell.pinned_issues", pinned, err)
 
 	projects, err := s.loadProjects(ctx)
-	shell.Projects = landingPart("shell.projects", projects, err)
+	shell.Projects = landingPart(ctx, "shell.projects", projects, err)
 
 	states, err := s.loadUserAgentStates(ctx, caller.ID, nil)
-	shell.AgentStates = landingPart("shell.agent_states", states, err)
+	shell.AgentStates = landingPart(ctx, "shell.agent_states", states, err)
 
 	// The badge's own read: one row of the unread state, whose total is every unread thread of
 	// both kinds. The row itself is thrown away, as the page throws it away.
@@ -350,20 +552,13 @@ func (s *server) landingShell(ctx context.Context, caller model.Actor, trees boo
 	replies, err := s.loadMyReplies(ctx, caller, myRepliesRead{
 		wantReply: true, wantAgent: true, state: myRepliesStateUnread, limit: &one,
 	})
-	shell.UnreadReplies = landingPart("shell.unread_replies", &replies.Total, err)
-
-	shell.CredentialRequests = s.landingCredentialRequests(ctx, caller)
+	shell.UnreadReplies = landingPart(ctx, "shell.unread_replies", &replies.Total, err)
 
 	// The rail's own read: the two fault counts over every project, as the rail asks for them.
 	// The narrowing is the empty list rather than nil, as the route passes it: a nil slice is
 	// sent as NULL, which the project filter reads as no project at all rather than every one.
 	priorities, err := s.readPriorities(ctx, []string{}, true)
-	shell.PrioritySummary = landingPart("shell.priority_summary", &priorities, err)
-
-	if s.deps.Envoy != nil {
-		agents, _, err := s.loadAgents(ctx)
-		shell.Agents = landingPart("shell.agents", agents, err)
-	}
+	shell.PrioritySummary = landingPart(ctx, "shell.priority_summary", &priorities, err)
 	return shell
 }
 
@@ -371,21 +566,18 @@ func (s *server) landingShell(ctx context.Context, caller model.Actor, trees boo
 // same broker client that route relays. That route hands the broker's bytes on unparsed; the
 // landing carries a modelled part instead, so the bytes are read here into the shape the broker
 // declares (wire.PendingResponse) and the answer carries no unparsed JSON. A deployment with no
-// broker answers null there and null here.
-func (s *server) landingCredentialRequests(ctx context.Context, caller model.Actor) *wire.PendingResponse {
-	if s.deps.AgentSecrets == nil {
-		return nil
-	}
+// broker answers null there and null here, since startLandingServices reads this only where there
+// is a broker.
+func (s *server) landingCredentialRequests(ctx context.Context, caller model.Actor) (*wire.PendingResponse, error) {
 	body, err := s.deps.AgentSecrets.Pending(ctx, model.CanonicalLogin(caller.ID))
 	if err != nil {
-		return landingPart[*wire.PendingResponse]("shell.credential_requests", nil, err)
+		return nil, err
 	}
 	var pending wire.PendingResponse
 	if err := json.Unmarshal(body, &pending); err != nil {
-		return landingPart[*wire.PendingResponse]("shell.credential_requests", nil,
-			fmt.Errorf("decode the broker's pending list: %w", err))
+		return nil, fmt.Errorf("decode the broker's pending list: %w", err)
 	}
-	return &pending
+	return &pending, nil
 }
 
 // landingIssuePage reads what the issue page draws, each part through landingPart of its own,
@@ -393,58 +585,49 @@ func (s *server) landingCredentialRequests(ctx context.Context, caller model.Act
 // issue null and with it the parts read through it - its document, its coverage and its
 // project's architecture sources; every other part is read by the key alone and is answered as
 // its own route answers that key (landing_test.go,
-// TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell).
+// TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell). Its subscribers, which the listener
+// answers, are read beside it (startLandingServices) and set into it by getLanding.
 func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key string, trees bool) *landingIssuePage {
 	page := &landingIssuePage{}
 
 	read, err := s.loadIssueDetail(ctx, key, trees)
-	page.Issue = landingPart("issue.detail", &read, err)
+	page.Issue = landingPart(ctx, "issue.detail", &read, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
-	page.UserState = landingPart("issue.user_state", state, err)
+	page.UserState = landingPart(ctx, "issue.user_state", state, err)
 
 	// Shaped as the comments route shapes them, over a reader of their own.
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, issueOwner(key), "")
 	reader := s.readDisplayTrees(ctx, trees)
-	page.Comments = shapedComments(landingPart("issue.comments", comments, err), reader)
+	page.Comments = shapedComments(landingPart(ctx, "issue.comments", comments, err), reader)
 	reader.resolve()
 
-	asks, err := s.loadIssueAskRows(ctx, issueOwner(key), "all", true, trees)
-	page.Asks = landingPart("issue.asks", asks, err)
-
-	// The subscribers are the listener's to answer, and loadSubscribers refuses with
-	// ENVOY_UNAVAILABLE where there is no listener configured. On such a deployment that refusal
-	// is not a failed read but the shape of the deployment, so it is not read at all: the guard
-	// is the one the shell above puts on its own listener part, and without it every issue
-	// landing of a listener-less deployment wrote a warn line for a part that could never be
-	// answered (dispatch://INFRA-1109). The part stays null either way, and the page reads the
-	// subscribers route itself, which answers that same refusal.
-	if s.deps.Envoy != nil {
-		subscribers, err := s.loadSubscribers(ctx, issueSubscriberBase(key))
-		page.Subscribers = landingPart("issue.subscribers", subscribers, err)
-	}
+	// With no thread, as the reader the page seeds this part for asks for it: the list is
+	// unpaged, so a thread read here is read for every ask of the issue and drawn by no one.
+	asks, err := s.loadIssueAskRows(ctx, issueOwner(key), "all", false, trees)
+	page.Asks = landingPart(ctx, "issue.asks", asks, err)
 
 	decisions, err := s.loadIssueDecisions(ctx, key, trees)
-	page.Decisions = landingPart("issue.decisions", &decisions, err)
+	page.Decisions = landingPart(ctx, "issue.decisions", &decisions, err)
 
 	// Every repository mapping there is, which is what the repository control reads whatever the
 	// issue is: it needs no issue and is read even for a key that is none.
 	repos, err := s.loadRepoProjects(ctx)
-	page.RepoProjects = landingPart("issue.repo_projects", repos, err)
+	page.RepoProjects = landingPart(ctx, "issue.repo_projects", repos, err)
 
 	if page.Issue != nil {
 		// The coverage route answers 404 for an issue nobody has, so the landing reads it only
 		// for an issue it has already read; a key that is no issue leaves this part null and the
 		// page reads that 404 from the route itself.
 		coverage, err := s.issueCoverage(ctx, s.deps.Store.Pool, key)
-		page.Coverage = landingPart("issue.coverage", &coverage, err)
+		page.Coverage = landingPart(ctx, "issue.coverage", &coverage, err)
 
 		// The sources of the issue's own project. The project is in the issue read above, so the
 		// landing takes it from there rather than having the caller name it: a caller who named
 		// it could name a project that is not this issue's, and the page would seed the
 		// components line with another project's model.
 		sources, err := s.loadProjectArchitectureSources(ctx, page.Issue.Project)
-		page.ArchitectureSources = landingPart("issue.architecture_sources", sources, err)
+		page.ArchitectureSources = landingPart(ctx, "issue.architecture_sources", sources, err)
 
 		page.Document = s.landingIssueDocument(ctx, caller, page.Issue, trees)
 	}
@@ -487,13 +670,13 @@ func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, i
 
 	// No blocks beside the text: the document's blocks are a part of their own, below.
 	text, err := s.loadArtifactText(ctx, artifact.Artifact, false, trees)
-	document.Text = landingPart("issue.document.text", &text, err)
+	document.Text = landingPart(ctx, "issue.document.text", &text, err)
 
 	blocks, err := s.loadArtifactBlocks(ctx, artifact.Artifact)
-	document.Blocks = landingPart("issue.document.blocks", blocks, err)
+	document.Blocks = landingPart(ctx, "issue.document.blocks", blocks, err)
 
 	mark, err := s.loadDocumentRead(ctx, caller.ID, artifact.ID)
-	document.Read = landingPart("issue.document.read", &mark, err)
+	document.Read = landingPart(ctx, "issue.document.read", &mark, err)
 	return document
 }
 
@@ -502,16 +685,16 @@ func (s *server) landingBoardPage(ctx context.Context, caller model.Actor, proje
 	page := &landingBoardPage{}
 
 	issues, _, err := s.loadIssueListing(ctx, issueListRead{project: project, open: true})
-	page.Issues = landingPart("board.issues", issues, err)
+	page.Issues = landingPart(ctx, "board.issues", issues, err)
 
 	inbox, err := s.loadInbox(ctx, caller, project, "", "", trees)
-	page.Inbox = landingPart("board.inbox", inbox, err)
+	page.Inbox = landingPart(ctx, "board.inbox", inbox, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
-	page.UserState = landingPart("board.user_state", state, err)
+	page.UserState = landingPart(ctx, "board.user_state", state, err)
 
 	sources, err := s.loadProjectArchitectureSources(ctx, project)
-	page.ArchitectureSources = landingPart("board.architecture_sources", sources, err)
+	page.ArchitectureSources = landingPart(ctx, "board.architecture_sources", sources, err)
 	return page
 }
 
@@ -522,7 +705,7 @@ func (s *server) landingInboxPage(ctx context.Context, caller model.Actor) *land
 		wantReply: true, wantAgent: true, state: myRepliesStateInbox,
 	})
 	page := &landingInboxPage{}
-	page.Threads = landingPart("inbox.threads", &threads, err)
+	page.Threads = landingPart(ctx, "inbox.threads", &threads, err)
 	return page
 }
 
@@ -531,13 +714,24 @@ func (s *server) landingInboxPage(ctx context.Context, caller model.Actor) *land
 // page reads the document itself, which is the refusal it already draws.
 //
 // The document, its asks and its comments are shaped as their own routes shape them, over one
-// reader for the page, so the three are one read of the stored trees.
+// reader for the page, so the three are one read of the stored trees. The subscribers, which the
+// listener answers, are read beside the database parts (landingServicePart), started here rather
+// than with the shell's because they name the document this reads first.
 func (s *server) landingDocumentPage(ctx context.Context, project, slug string, trees bool) *landingDocumentPage {
 	page := &landingDocumentPage{}
 
 	artifact, err := s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, artifactTarget{Project: project}, slug)
-	if landingPart("document.artifact", &artifact, err) == nil {
+	if landingPart(ctx, "document.artifact", &artifact, err) == nil {
 		return page
+	}
+	// Guarded as the issue page's subscribers are, for the reason given there
+	// (startLandingServices): a deployment with no listener has nothing to answer this part with,
+	// and reading it anyway wrote a warn line on every document landing (dispatch://INFRA-1109).
+	var subscribers *landingServicePart[[]subscriber]
+	if s.deps.Envoy != nil {
+		subscribers = startLandingServicePart(ctx, "document.subscribers", func(ctx context.Context) ([]subscriber, error) {
+			return s.loadSubscribers(ctx, documentSubscriberBase(artifact.Project, artifact.Slug))
+		})
 	}
 	reader := s.readDisplayTrees(ctx, trees)
 	page.Artifact = &artifactRead{Artifact: artifact}
@@ -545,24 +739,17 @@ func (s *server) landingDocumentPage(ctx context.Context, project, slug string, 
 
 	// No blocks beside the text: the page's blocks are a part of their own, below.
 	text, err := s.loadArtifactText(ctx, artifact, false, trees)
-	page.Text = landingPart("document.text", &text, err)
+	page.Text = landingPart(ctx, "document.text", &text, err)
 
 	blocks, err := s.loadArtifactBlocks(ctx, artifact)
-	page.Blocks = landingPart("document.blocks", blocks, err)
+	page.Blocks = landingPart(ctx, "document.blocks", blocks, err)
 
 	asks, _, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "all")
-	page.Asks = shapedAsks(landingPart("document.asks", asks, err), reader)
-
-	// Guarded as the issue page's subscribers are, for the reason given there: a deployment with
-	// no listener has nothing to answer this part with, and reading it anyway wrote a warn line
-	// on every document landing (dispatch://INFRA-1109).
-	if s.deps.Envoy != nil {
-		subscribers, err := s.loadSubscribers(ctx, documentSubscriberBase(artifact.Project, artifact.Slug))
-		page.Subscribers = landingPart("document.subscribers", subscribers, err)
-	}
+	page.Asks = shapedAsks(landingPart(ctx, "document.asks", asks, err), reader)
 
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "")
-	page.Comments = shapedComments(landingPart("document.comments", comments, err), reader)
+	page.Comments = shapedComments(landingPart(ctx, "document.comments", comments, err), reader)
 	reader.resolve()
+	page.Subscribers = subscribers.wait()
 	return page
 }
