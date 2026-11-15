@@ -217,6 +217,34 @@ func TestAWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 	}
 }
 
+// TestADeliveryReadRefusesARepeatedWindowKey: the delivery routes read their window through the
+// parser the eval routes do (parseDeliveryWindow), and the eval routes refuse a key they take one
+// value of when a query names it twice (C9 of the review of 2fdcf77f). A delivery read answered
+// ?from=A&from=B as the window from A, so the window a reader sent and the one its answer folds
+// differ with nothing to say so; it refuses that query 400 INVALID_QUERY, as the eval reads do.
+func TestADeliveryReadRefusesARepeatedWindowKey(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	seedMeasuresSettings(t, database)
+	for _, window := range []url.Values{
+		{"from": {"2026-11-01T00:00:00Z", "2026-10-01T00:00:00Z"}, "to": {"2026-11-14T00:00:00Z"}},
+		{"from": {"2026-11-01T00:00:00Z"}, "to": {"2026-11-14T00:00:00Z", "2026-11-10T00:00:00Z"}},
+	} {
+		for _, path := range []string{
+			"/api/v1/delivery/measures?",
+			"/api/v1/delivery/pipeline?",
+			"/api/v1/delivery/timeline?",
+		} {
+			target := path + window.Encode()
+			response := evalRequest(t, handler, http.MethodGet, target, nil, "")
+			var refusal evalRefusal
+			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" {
+				t.Errorf("GET %s: status %d, body %.120s; want 400 INVALID_QUERY", target, response.Code, response.Body.String())
+			}
+		}
+	}
+}
+
 // TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField: a series' min_n is a whole number the
 // register write takes on pr-ci's job series (R5), the one series a read ranks by one, and the
 // store holds it as a 32-bit integer. A min_n past 2,147,483,647 is refused with a stable {code,
