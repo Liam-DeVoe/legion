@@ -43,7 +43,7 @@ func (r *racingTagWrites) first() {
 // loginWithOwnersLeft is a google-login secret that still holds the github-owners tag a github-app
 // kind left on it, as retagging a GitHub App secret to a Google login leaves it.
 func loginWithOwnersLeft(name string) map[string]string {
-	tags := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "stored-value").Tags
+	tags := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)).Tags
 	tags[policy.TagGitHubOwners] = "ada"
 	return tags
 }
@@ -60,7 +60,7 @@ func loginWithOwnersLeft(name string) map[string]string {
 // the secret forms are reached through (awsClients or the gcp* ones, secretStdin).
 func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
-		secret := policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "stored-value")
+		secret := policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 		secret.Tags = loginWithOwnersLeft("APP_KEY")
 		local := secrets.NewLocal(secret)
 		startSecretBroker(t, servedBy(local))
@@ -95,6 +95,7 @@ func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) 
 		fake.secrets[id] = &fakeSecret{
 			secret:      &secretmanagerpb.Secret{Name: id, Annotations: loginWithOwnersLeft("APP_KEY"), Etag: "1"},
 			versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+			payloads:    [][]byte{[]byte(policytest.KindValue(policy.KindGoogleLogin))},
 			etagCounter: 1,
 		}
 		fake.race = func(entry *fakeSecret) {
@@ -153,9 +154,9 @@ func TestARetagExitsOneWhileTheBrokerServesTheOldKind(t *testing.T) {
 		{"removal read", "", []string{"--kind", "none"}, 0, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := secrets.NewLocal(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.KindValue(policy.KindGoogleLogin)))
 			if row.args[1] == "none" {
-				local = secrets.NewLocal(policytest.KindSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "v1"))
+				local = secrets.NewLocal(policytest.KindSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)))
 			}
 			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Kind: row.served} })
 			useAWS(t, local, testAccount, adaSignIn)
