@@ -176,7 +176,7 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 	done.Owed = owed
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from document_blocks
-		where node_kind is null and octet_length(node_id) <= `+blockBound).Scan(&done.Remaining); err != nil {
+		where node_kind is null and octet_length(node_id) <= `+addressBound).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the blocks still naming no node: %w", err)
 	}
 	done.Complete = done.Remaining == 0
@@ -198,7 +198,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 			       a.ref_key, a.issue_key, a.project_key
 			from document_blocks d
 			join artifacts a on a.id = d.artifact_id
-			where d.node_kind is null and octet_length(d.node_id) <= `+blockBound+`
+			where d.node_kind is null and octet_length(d.node_id) <= `+addressBound+`
 			  and d.node_id > $1
 			order by d.node_id
 			limit $2
@@ -477,9 +477,11 @@ type blockRefRow struct {
 // backfillBlockRefs states one tuple per block reference written before the store existed. A
 // block_refs row is one link out of a block and its node is that block's, so this writes no
 // node of its own: it runs after the blocks, and a row whose block carries no node - a block
-// past the address bound, or one with no document_blocks row at all - is skipped and counted.
-// A row a version write deleted or wrote after its batch was read is not written
-// (writeBlockRefBatch), and is counted nowhere.
+// past the address bound, or one with no document_blocks row at all - is skipped and counted. A
+// row whose far end is past the address bound is no tuple the store can key beside the block's
+// own address, as the live writer leaves it out too (refs' replaceBlockRefs), so this reads none
+// of those and the row keeps its null node columns for the old arm. A row a version write deleted
+// or wrote after its batch was read is not written (writeBlockRefBatch), and is counted nowhere.
 //
 // The row's own source_seq is the event that stamped it, which is both the cause of its tuple
 // and that tuple's legacy_source_seq; a row with none takes the store's sentinel as its cause
@@ -520,7 +522,8 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 	}
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from block_refs
-		where node_kind is null and octet_length(from_node) <= `+blockBound).Scan(&done.Remaining); err != nil {
+		where node_kind is null and octet_length(from_node) <= `+addressBound+`
+		  and octet_length(to_id) <= `+addressBound).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the block references still naming no node: %w", err)
 	}
 	done.Complete = done.Remaining == 0
@@ -536,7 +539,8 @@ func readBlockRefRows(ctx context.Context, database *store.Store, after []any) (
 		       d.node_kind is not null and d.node_address = r.from_node
 		from block_refs r
 		left join document_blocks d on d.artifact_id = r.artifact_id and d.block_id = r.block_id
-		where r.node_kind is null and octet_length(r.from_node) <= `+blockBound+`
+		where r.node_kind is null and octet_length(r.from_node) <= `+addressBound+`
+		  and octet_length(r.to_id) <= `+addressBound+`
 		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
 		order by r.from_node, r.kind, r.to_kind, r.to_id
 		limit $5
@@ -727,8 +731,14 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 			break
 		}
 	}
-	if err := database.Pool.QueryRow(ctx,
-		`select count(*) from comments where node_kind is null`).Scan(&done.Remaining); err != nil {
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from comments c
+		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
+		left join artifacts owner on owner.id = c.artifact_id
+		where c.node_kind is null
+		  and (anchor.ref_key is null or octet_length(anchor.ref_key) <= `+addressBound+`)
+		  and (owner.ref_key is null or octet_length(owner.ref_key) <= `+addressBound+`)
+	`).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the comments still naming no node: %w", err)
 	}
 	done.Complete = done.Remaining == 0
@@ -751,6 +761,8 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
 		left join artifacts owner on owner.id = c.artifact_id
 		where c.node_kind is null and c.id > $1::uuid
+		  and (anchor.ref_key is null or octet_length(anchor.ref_key) <= `+addressBound+`)
+		  and (owner.ref_key is null or octet_length(owner.ref_key) <= `+addressBound+`)
 		order by c.id
 		limit $2
 	`, after, backfillBatch, graphstore.NoEvent)
@@ -810,6 +822,9 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		}
 		nodes = append(nodes, node)
 		states := func(kind, toKind, toID string) {
+			// A comment any of whose relation ends is past the store's address bound is left whole
+			// out of the store, so readCommentRows never reads it and this batch never writes one:
+			// a far end past the bound does not reach here (api's commentStored, outbox's rule).
 			if toID == "" {
 				return
 			}
@@ -904,19 +919,24 @@ func backfillRoles(ctx context.Context, database *store.Store) (KindBackfill, er
 	return done, nil
 }
 
-// readRoleRows reads every role addressedRoles names whose node or page the store does not hold,
-// in name order.
+// readRoleRows reads every role addressedRoles names whose node or page the store does not hold
+// and whose address fits the store's bound, in name order. A role name past the bound is no node
+// of the store, and the page of a role whose name leaves no room for the `role/` prefix is past
+// the bound too: each is owed only where its own address fits, so a role the writers leave out on
+// purpose is neither written here nor counted as remaining (outbox.deliveredGraph).
 func readRoleRows(ctx context.Context, database *store.Store) ([]roleRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select addressed.name, coalesce(addressed.event, $1), coalesce(e.created_at, now()),
-		       role.id is null, page.id is null
+		       role.id is null and octet_length(addressed.name) <= $4,
+		       page.id is null and octet_length($2::text || '/' || addressed.name) <= $4
 		from (`+addressedRoles+`) addressed
 		left join events e on e.id = addressed.event
 		left join graph_nodes role on role.kind = $2::text and role.id = addressed.name
 		left join graph_nodes page on page.kind = $3::text and page.id = $2::text || '/' || addressed.name
-		where role.id is null or page.id is null
+		where (role.id is null and octet_length(addressed.name) <= $4)
+		   or (page.id is null and octet_length($2::text || '/' || addressed.name) <= $4)
 		order by addressed.name
-	`, graphstore.NoEvent, graphstore.KindRole, graphstore.KindPage)
+	`, graphstore.NoEvent, graphstore.KindRole, graphstore.KindPage, graphstore.MaxAddressBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read the roles the store holds no node of: %w", err)
 	}
@@ -947,11 +967,17 @@ func writeRoleBatch(ctx context.Context, database *store.Store, batch []roleRow)
 		if row.needsPage {
 			nodes = append(nodes, graphstore.PageNode(page, backfillActor, row.at, row.event))
 		}
-		claims = append(claims, graphstore.Claim{
-			FromKind: graphstore.KindPage, FromID: page, Kind: graphstore.TuplePartOf,
-			ToKind: graphstore.KindRole, ToID: row.name,
-			At: row.at, Who: backfillActor, SourceEvent: row.event,
-		})
+		// The part_of claim keys the page and the role at once, so it is appended only where the
+		// page's address fits (and so the role's, which the page contains): a role whose page is
+		// past the bound has no page node, and a claim naming it would key an address the store
+		// cannot hold.
+		if graphstore.AddressFits(page) {
+			claims = append(claims, graphstore.Claim{
+				FromKind: graphstore.KindPage, FromID: page, Kind: graphstore.TuplePartOf,
+				ToKind: graphstore.KindRole, ToID: row.name,
+				At: row.at, Who: backfillActor, SourceEvent: row.event,
+			})
+		}
 	}
 	arms, params, err := graphstore.WriteArms(1, nodes, nil, claims)
 	if err != nil {

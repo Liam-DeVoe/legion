@@ -2333,7 +2333,7 @@ The kinds are:
 
 - `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
   A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is the live block nodes its rows name, and every row of a block is held, as the set of links that block's rows name, against every link its node states now other than its `in_document` and `part_of`, so a link with no tuple and a tuple with no row are both read.
-  A block whose address is past the store's key bound (`refs.MaxBlockNodeBytes`) is no node of the store by design, and both sides leave those rows out.
+  A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
 - `person`, `session`, `role` and a role's page, which no table projects.
   Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
@@ -2342,6 +2342,9 @@ The kinds are:
   The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
   The census reads that row side once a run, in one scan of `events`, and binds the names into every statement that reads the role and page rows; `backfill-graph-store` reads the same definition.
   A session's own page is no part of this census.
+
+  An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
+  The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
 
 It passes only when it checked more than zero rows and found zero differences in both directions:
 a census over a database whose projections are empty proves nothing, and passing it would read as green on a fresh database or on a read that reached the wrong one.

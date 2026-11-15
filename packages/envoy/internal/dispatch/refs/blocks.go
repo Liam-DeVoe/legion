@@ -110,26 +110,30 @@ func (w BlockIndexWrite) Caused(ctx context.Context, tx pgx.Tx, event int64) err
 // '#' and the block's id.
 func blockNodeAddress(refKey, blockID string) string { return refKey + "#" + blockID }
 
-// MaxBlockNodeBytes bounds a block's address in the store. graph_nodes keys a node by
-// (kind, id) in a B-tree, and graph_tuples_once, the repeat key of a relation, keys the
-// addresses of both of its ends at once, so two block addresses and their kinds have to fit
-// the roughly 2,704 bytes a B-tree entry holds. A block's address holds its document's
-// ref_key, which nothing short of that key's own unique index bounds (migration 0121
-// hash-indexes document_blocks.node_id for the same reason), so a long-named document's
-// blocks can pass that on their own. Half the bound every reference target takes leaves both
-// ends and their kinds well inside it.
+// MaxBlockNodeBytes bounds a block's address in the store, which is one address of the store:
+// graph_nodes keys a node by (kind, id) in a B-tree, and graph_tuples_once, the repeat key of a
+// relation, keys both of its ends at once, so a block's address and the far end of every tuple
+// out of it have to fit the roughly 2,704 bytes a B-tree entry holds. A block's address is one
+// of two ends, and its far end is not a second block address but a reference target of up to
+// text.MaxTargetBytes (a mention's far end) or another node's address: the store bounds each end
+// at graphstore.MaxAddressBytes, so two ends, the two kinds and the source_event and asserted the
+// key also carries stay well under the entry bound. A block's address holds its document's
+// ref_key, which nothing short of that key's own unique index bounds (migration 0121 hash-indexes
+// document_blocks.node_id for the same reason), so a long-named document's blocks can pass the
+// bound on their own.
 //
-// It is exported because the census of the store against its projections and the backfill of
-// the rows written before the store existed (internal/dispatch/graphcensus) read the same
-// bound: a block past it carries no node here, so a census holding such a row to one would
-// report a difference this writer made on purpose.
-const MaxBlockNodeBytes = text.MaxTargetBytes / 2
+// It is the store's one address bound and is defined there (graphstore.MaxAddressBytes): the
+// census of the store against its projections and the backfill of the rows written before the
+// store existed (internal/dispatch/graphcensus) read the same bound, and a block past it carries
+// no node here, so a census holding such a row to one would report a difference this writer made
+// on purpose.
+const MaxBlockNodeBytes = graphstore.MaxAddressBytes
 
-// blockNodeFits is whether a block's address is inside that bound. A block past it is no node
-// of the store, as a block whose id is past text.MaxBlockIDBytes is no graph node: its row
-// carries no node address, nothing is stated about it, and a block it holds reaches the
-// nearest block above it that is a node, or the document.
-func blockNodeFits(address string) bool { return len(address) <= MaxBlockNodeBytes }
+// blockNodeFits is whether a block's address is inside that bound (graphstore.AddressFits). A
+// block past it is no node of the store, as a block whose id is past text.MaxBlockIDBytes is no
+// graph node: its row carries no node address, nothing is stated about it, and a block it holds
+// reaches the nearest block above it that is a node, or the document.
+func blockNodeFits(address string) bool { return graphstore.AddressFits(address) }
 
 // blockIDFits is whether the address a block's id would take is inside that bound, read off
 // the two lengths that make the address rather than off the address itself: a pass over a
@@ -1268,7 +1272,12 @@ func replaceBlockRefs(
 	for _, row := range dropped {
 		moved = append(moved, Target{Kind: row.toKind, ID: row.toID})
 		address := blockNodeAddress(refKey, row.blockID)
-		if !blockNodeFits(address) {
+		// A mention's or a pointer's far end is a reference target, which the block's row holds
+		// up to text.MaxTargetBytes but the store keys whole beside the block's own address: a
+		// tuple whose far end is past graphstore.MaxAddressBytes was never written, so its
+		// retraction is not written either, and the row kept its null node columns (the insert
+		// below), which the old block_refs arm answers.
+		if !blockNodeFits(address) || !graphstore.AddressFits(row.toID) {
 			continue
 		}
 		// The row is gone, so no source_seq is ever written for it and the retraction carries
@@ -1287,8 +1296,8 @@ func replaceBlockRefs(
 	written, err := scanBlockRefRows(tx.Query(ctx, `
 		insert into block_refs (artifact_id, block_id, from_node, node_kind, node_address, to_kind, to_id, kind, to_types, created_version, created_at, source_seq)
 		select $1::uuid, p.block_id, a.ref_key || '#' || p.block_id,
-		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 then $10 end,
-		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 then a.ref_key || '#' || p.block_id end,
+		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 and octet_length(p.to_id) <= $11 then $10 end,
+		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 and octet_length(p.to_id) <= $11 then a.ref_key || '#' || p.block_id end,
 		       p.to_kind, p.to_id, p.kind, string_to_array(p.to_types, ' '), $6,
 		       coalesce(case when $8 then r.created_at end, $7), case when $8 then r.source_seq end
 		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $9::text[]) as p (block_id, kind, to_kind, to_id, to_types)
@@ -1304,7 +1313,7 @@ func replaceBlockRefs(
 	}
 	for _, row := range written {
 		moved = append(moved, Target{Kind: row.toKind, ID: row.toID})
-		if !row.inserted || !blockIDFits(refKey, row.blockID) {
+		if !row.inserted || !blockIDFits(refKey, row.blockID) || !graphstore.AddressFits(row.toID) {
 			continue
 		}
 		address := blockNodeAddress(refKey, row.blockID)

@@ -145,6 +145,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	runBackfill(t, databaseURL)
 	waitForTheBlockIndex(t, ctx, databaseURL)
 	addressTheRole(t, now, seeded.issue)
+	addressALongRole(t, now)
 	deleteABlockThroughThisBuild(t, ctx, now, databaseURL)
 
 	// ───── the two comparisons, apart ─────
@@ -182,6 +183,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	requireTheCensusWritesNothing(t, ctx, databaseURL, func(readOnly string) {
 		report := runStoreCensus(t, readOnly)
 		requireEveryKindCarriesAPopulation(t, report)
+		requireTheLongRoleIsCountedPastTheBound(t, report)
 	})
 
 	// ───── the old read beside the new read ─────
@@ -611,6 +613,26 @@ func addressTheRole(t *testing.T, server *dispatchProcess, issue string) {
 	server.call(t, http.MethodPatch, "/api/v1/issues/"+issue,
 		`{"route":"role:`+censusRole+`"}`, http.StatusOK)
 	server.mention(t, issue, "A comment on the routed issue, so the role is a destination.")
+}
+
+// censusLongRole is a role name past the store's address bound: roleRoutePattern bounds no length,
+// so the shared agent bearer can route an issue to one, and a role of 1,400 bytes once failed the
+// outbox's record with "index row size ... exceeds btree ... 2704" and stopped the issue's stream
+// for good.
+var censusLongRole = strings.Repeat("r", 1400)
+
+// addressALongRole routes a fresh issue to a role whose name is past the store's address bound and
+// comments on it, through this build. The publisher meets the role as a destination and leaves its
+// node, its page and the tuples out (outbox.deliveredGraph), so the record commits and the stream
+// drains. The census then names the role in issues.route and the issue's events (addressedRoles),
+// counts it as an address past the bound, and reads no difference for it.
+func addressALongRole(t *testing.T, server *dispatchProcess) {
+	t.Helper()
+	issue, _ := createCensusIssue(t, server, "CENSUS", "The issue routed to a role past the bound",
+		"# Long role\n\nAn issue routed to a role whose name is past the store's address bound.\n")
+	server.call(t, http.MethodPatch, "/api/v1/issues/"+issue,
+		`{"route":"role:`+censusLongRole+`"}`, http.StatusOK)
+	server.mention(t, issue, "A comment on the long-role issue, so the role is a destination.")
 }
 
 // deleteABlockThroughThisBuild writes a document of its own through this build and then removes
@@ -1108,10 +1130,11 @@ func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []p
 
 // kindCensus is one kind's line of the census report.
 type kindCensus struct {
-	kind             string
-	nodes, rows      int64
-	rowsWithoutANode int64
-	nodesWithoutARow int64
+	kind               string
+	nodes, rows        int64
+	rowsWithoutANode   int64
+	nodesWithoutARow   int64
+	addressesPastBound int64
 }
 
 // runStoreCensus runs `envoy-dispatch census --store` on this build and answers what it printed,
@@ -1130,11 +1153,12 @@ func runStoreCensus(t *testing.T, databaseURL string) []kindCensus {
 			continue
 		}
 		read = append(read, kindCensus{
-			kind:             fields["kind"],
-			nodes:            censusCount(t, fields["nodes"]),
-			rows:             censusCount(t, fields["rows"]),
-			rowsWithoutANode: censusCount(t, fields["rows_without_a_node"]),
-			nodesWithoutARow: censusCount(t, fields["nodes_without_a_row"]),
+			kind:               fields["kind"],
+			nodes:              censusCount(t, fields["nodes"]),
+			rows:               censusCount(t, fields["rows"]),
+			rowsWithoutANode:   censusCount(t, fields["rows_without_a_node"]),
+			nodesWithoutARow:   censusCount(t, fields["nodes_without_a_row"]),
+			addressesPastBound: censusCount(t, fields["addresses_past_bound"]),
 		})
 	}
 	if len(read) == 0 {
@@ -1200,6 +1224,25 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	for _, kind := range report {
 		if !slices.Contains(censusKinds, kind.kind) {
 			t.Errorf("the census checked kind %s, which this test's list does not hold", kind.kind)
+		}
+	}
+}
+
+// requireTheLongRoleIsCountedPastTheBound holds the census to counting the role addressALongRole
+// addressed as an address past the store's bound, and to a page past it too (role/<name> is longer
+// still): the census counts each such address as a class of its own, not as a difference, which
+// requireEveryKindCarriesAPopulation already held both directions to zero over the same report.
+func requireTheLongRoleIsCountedPastTheBound(t *testing.T, report []kindCensus) {
+	t.Helper()
+	for _, want := range []string{"role", "page"} {
+		for _, kind := range report {
+			if kind.kind != want {
+				continue
+			}
+			if kind.addressesPastBound < 1 {
+				t.Errorf("the census counted %d %s address(es) past the bound, want at least the one addressALongRole addressed",
+					kind.addressesPastBound, want)
+			}
 		}
 	}
 }

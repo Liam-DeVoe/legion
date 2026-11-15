@@ -1070,6 +1070,24 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 		write.claims = append(write.claims,
 			partOf(graphstore.KindPage, page, graphstore.KindSession, session, at, cause))
 	}
+	// A role name carries no length bound (model's roleRoutePattern), and the shared agent bearer
+	// can route an issue to one: a role of 1,400 bytes once failed graph_tuples_once with
+	// "index row size ... exceeds ... 2704" and the issue's outbox never drained again. The record
+	// goes on without it. Every node, page and tuple whose address is past the store's bound is
+	// left out here, so the record still commits and the stream drains; the role's row keeps
+	// answering from the old arm, and the census counts the address as a class of its own rather
+	// than a difference (graphcensus). A role whose name fits but whose page (role/<name>) does
+	// not keeps its node and loses its page, each address held to the bound on its own.
+	write.nodes = slices.DeleteFunc(write.nodes, func(n graphstore.Node) bool {
+		return !graphstore.AddressFits(n.ID)
+	})
+	write.tuples = slices.DeleteFunc(write.tuples, func(t graphstore.Tuple) bool {
+		return !graphstore.AddressFits(t.FromID) ||
+			(t.ToKind != graphstore.KindValue && !graphstore.AddressFits(t.ToID))
+	})
+	write.claims = slices.DeleteFunc(write.claims, func(c graphstore.Claim) bool {
+		return !graphstore.AddressFits(c.FromID) || (c.ToID != "" && !graphstore.AddressFits(c.ToID))
+	})
 	return write
 }
 

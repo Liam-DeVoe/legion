@@ -45,6 +45,12 @@ type projection struct {
 	// addressed says rows reads the roles addressedRoles names as $1, which the census reads once
 	// for the run (readAddressedRoles) rather than once in every statement that reads the rows.
 	addressed bool
+	// pastBound counts the addresses this kind's row side names that are past the store's bound
+	// (graphstore.MaxAddressBytes), which the writers left unprojected on purpose: it is a full
+	// `select count(*)`, reads $1 where addressed, and is empty for a kind no address of which can
+	// pass the bound. The census reports the count as a class of its own and excludes those
+	// addresses from both comparisons, so a row no store entry answers by design is no difference.
+	pastBound string
 }
 
 // KindReport is one kind's census: how many rows and how many live nodes it read, and what the
@@ -56,6 +62,9 @@ type KindReport struct {
 	// Reported slices the first reportedDifferences of them, each as its cause and its row.
 	RowDifferences, NodeDifferences int64
 	ReportedRows, ReportedNodes     []Difference
+	// PastBound is how many addresses this kind's row side named that are past the store's bound,
+	// each a class of its own and no difference (projection.pastBound).
+	PastBound int64
 }
 
 // Difference is one disagreement: why it is one, and the row or node it was found at.
@@ -110,10 +119,12 @@ func (r *StoreReport) Refused() bool {
 // states now under the same tuple kinds (currentLinks): the two agree exactly when the store
 // states each link the row names and no other.
 //
-// A block's address is its document's ref_key, '#' and its block id, and a block whose address
-// is past refs.MaxBlockNodeBytes is deliberately no node of the store: its row carries no node
-// address and nothing is stated about it. Both block sides leave those rows out, so the census
-// reports no difference the writers made on purpose.
+// An address past the store's bound (graphstore.MaxAddressBytes) is deliberately no part of the
+// store: a block whose address is longer carries no node, a role name of 1,400 bytes is no node
+// and no page, a comment anchored to a document whose ref_key is longer states no such tuple, and
+// a session named past it is no node either. Each row side leaves those addresses out and counts
+// them as a class of its own (pastBound), so the census reports no difference the writers made on
+// purpose, in both directions.
 var projections = []projection{{
 	name:     "comment",
 	nodeKind: "comment",
@@ -126,15 +137,27 @@ var projections = []projection{{
 		       md5(c.created_at::text || '|' || c.author::text || '|' || ` + statedLinks(
 		`'`+tupleAnchoredTo+`>artifact:' || anchor.ref_key`,
 		`'`+tupleOwnedBy+`>artifact:' || owner.ref_key`,
-		`'`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor,
+		`case when c.author->>'kind' <> '`+graphstore.KindSession+`'
+		           or octet_length(coalesce(c.author->>'id', '')) <= `+addressBound+`
+		      then '`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor+` end`,
 	) + `)
 		from comments c
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
-		left join artifacts owner on owner.id = c.artifact_id`,
+		left join artifacts owner on owner.id = c.artifact_id
+		where (anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
+		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`,
 	nodes: `
 		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(commentNodeKind,
 		`t.kind in ('`+tupleAnchoredTo+`', '`+tupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
 		from graph_nodes n where n.kind = 'comment'`,
+	pastBound: `
+		select count(*) from comments c
+		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
+		left join artifacts owner on owner.id = c.artifact_id
+		where octet_length(coalesce(anchor.ref_key, '')) > ` + addressBound + `
+		   or octet_length(coalesce(owner.ref_key, '')) > ` + addressBound + `
+		   or (c.author->>'kind' = '` + graphstore.KindSession + `'
+		       and octet_length(coalesce(c.author->>'id', '')) > ` + addressBound + `)`,
 }, {
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
@@ -151,11 +174,13 @@ var projections = []projection{{
 	) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
-		where octet_length(d.node_id) <= ` + blockBound,
+		where octet_length(d.node_id) <= ` + addressBound,
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
 		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
+	pastBound: `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
@@ -172,16 +197,19 @@ var projections = []projection{{
 			       string_agg(b.kind || '>' || b.to_kind || ':' || b.to_id, ','
 			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
 			from block_refs b
-			where octet_length(b.from_node) <= ` + blockBound + `
+			where octet_length(b.from_node) <= ` + addressBound + ` and octet_length(b.to_id) <= ` + addressBound + `
 			group by b.from_node
 		) named on named.from_node = r.from_node
-		where octet_length(r.from_node) <= ` + blockBound,
+		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound,
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
 		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `'
 		  and exists (select 1 from block_refs r where r.node_kind = n.kind and r.node_address = n.id)`,
+	pastBound: `
+		select count(*) from block_refs r
+		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
@@ -199,9 +227,11 @@ var projections = []projection{{
 	note:     "no table projects a session, so the row side is the sessions those tables name as authors and as reached",
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
-		from (` + recordedSessions + `) s`,
+		from (` + recordedSessions + `) s where octet_length(s.id) <= ` + addressBound,
 	nodes: `
 		select n.id, '' from graph_nodes n where n.kind = '` + graphstore.KindSession + `'`,
+	pastBound: `
+		select count(*) from (` + recordedSessions + `) s where octet_length(s.id) > ` + addressBound,
 }, {
 	name:     graphstore.KindRole,
 	nodeKind: graphstore.KindRole,
@@ -210,10 +240,12 @@ var projections = []projection{{
 		" an issue event's route, a message event's target or a new comment's mention ever named",
 	rows: `
 		select 'role ' || r.name, '` + graphstore.KindRole + `', r.name, ''
-		from unnest($1::text[]) r (name)`,
+		from unnest($1::text[]) r (name) where octet_length(r.name) <= ` + addressBound,
 	addressed: true,
 	nodes: `
 		select n.id, '' from graph_nodes n where n.kind = '` + graphstore.KindRole + `'`,
+	pastBound: `
+		select count(*) from unnest($1::text[]) r (name) where octet_length(r.name) > ` + addressBound,
 }, {
 	name:     graphstore.KindPage,
 	nodeKind: graphstore.KindPage,
@@ -223,17 +255,21 @@ var projections = []projection{{
 	rows: `
 		select 'page ' || '` + graphstore.KindRole + `/' || r.name, '` + graphstore.KindPage + `',
 		       '` + graphstore.KindRole + `/' || r.name, ''
-		from unnest($1::text[]) r (name)`,
+		from unnest($1::text[]) r (name)
+		where octet_length('` + graphstore.KindRole + `/' || r.name) <= ` + addressBound,
 	addressed: true,
 	nodes: `
 		select n.id, '' from graph_nodes n
 		where n.kind = '` + graphstore.KindPage + `' and n.id like '` + graphstore.KindRole + `/%'`,
+	pastBound: `
+		select count(*) from unnest($1::text[]) r (name)
+		where octet_length('` + graphstore.KindRole + `/' || r.name) > ` + addressBound,
 }}
 
-// blockBound is refs.MaxBlockNodeBytes as a statement spells it. It is written into the text
-// rather than bound as a parameter because each side is spliced into a statement of its own and
-// one shared constant keeps the two sides reading the same bound.
-var blockBound = strconv.Itoa(refs.MaxBlockNodeBytes)
+// addressBound is the store's address bound (graphstore.MaxAddressBytes) as a statement spells
+// it. It is written into the text rather than bound as a parameter because each side is spliced
+// into a statement of its own and one shared constant keeps the two sides reading the same bound.
+var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
 
 // statedLinks is the links a projection row states, as one value its digest can carry: links are
 // SQL expressions over the row, each answering one link written kind>to_kind:to_id, or null where
@@ -465,12 +501,19 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 // statement it was on its own, so each is planned and streamed exactly as before.
 func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note}
+	// pastBound is a scalar `select count(*)`, so it is read directly rather than wrapped in a
+	// count of its own row; a kind no address of which can pass the bound reads zero.
+	pastBound := held.pastBound
+	if pastBound == "" {
+		pastBound = "select 0"
+	}
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows (row_label, node_kind, node_address, digest)),
 		(select count(*) from (`+liveNodes(held)+`) nodes (id, digest)),
 		(select count(*) from (`+rowDifferences(held)+`) rows_found),
-		(select count(*) from (`+nodeDifferences(held)+`) nodes_found)`, args...,
-	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences); err != nil {
+		(select count(*) from (`+nodeDifferences(held)+`) nodes_found),
+		(`+pastBound+`)`, args...,
+	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences, &kind.PastBound); err != nil {
 		return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
 	}
 	var err error
@@ -557,9 +600,10 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 // database.
 func (r *StoreReport) Write(w io.Writer) {
 	for _, kind := range r.Kinds {
-		fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s\n",
+		fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s addresses_past_bound=%s\n",
 			kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
-			pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences))
+			pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences),
+			pgmigrate.Thousands(kind.PastBound))
 		fmt.Fprintf(w, "census: store kind=%s checks %s\n", kind.Kind, kind.Note)
 		writeDifferences(w, kind.Kind, kind.RowDifferences, kind.ReportedRows)
 		writeDifferences(w, kind.Kind, kind.NodeDifferences, kind.ReportedNodes)

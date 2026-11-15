@@ -1220,12 +1220,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	nodeKind, nodeAddress := stored.rowNode()
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
 		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		returning `+commentColumns+`
 	`, rowID, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn,
-		block.nodeID(), thread.Answers, commentNodeKind, rowID, createdAt))
+		block.nodeID(), thread.Answers, nodeKind, nodeAddress, createdAt))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1285,9 +1286,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// Who wrote the reply, as the node and tuple store holds it: a session answering a mention
 	// is the first write that records that session, so its node is made here (graphstore.Authored).
-	if err := graphstore.Authored(r.Context(), tx, commentNodeKind, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// A reply left out of the store has no node to author, so this is skipped with the rest.
+	if !stored.unprojected {
+		if err := graphstore.Authored(r.Context(), tx, commentNodeKind, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

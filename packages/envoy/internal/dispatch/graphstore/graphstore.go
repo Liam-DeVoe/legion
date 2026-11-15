@@ -37,6 +37,26 @@ const KindValue = "value"
 // sentinel is appended unconditionally, since there is no event to state a fact twice.
 const NoEvent int64 = 0
 
+// MaxAddressBytes bounds one address of the store: a node's id, and each end of a tuple that is
+// an address rather than a value. graph_nodes keys a node by (kind, id) and graph_tuples_once,
+// the repeat key of a relation, keys both of its ends at once (20261109013400_graph_store.up.sql),
+// and a btree key is bounded at about 2,704 bytes on an 8 KiB page. Two ends of 1,024 bytes, the
+// two kinds beside them and the source_event and asserted the key also carries stay well under
+// that bound, so a relation whose both ends fit is always writable. A value is no address: its
+// far end carries no such bound, because the value repeat key digests it with md5 and no read
+// index keys it.
+//
+// A writer that meets an address past this bound writes no node and no tuple for it and stamps
+// nothing on the row it projects, and the write it is part of goes on: the old view arm keeps
+// answering that row, and no stream stops on it (a role name of 1,400 bytes once stopped an
+// issue's outbox for good). The census counts each such address as a class of its own, not as a
+// difference (internal/dispatch/graphcensus).
+const MaxAddressBytes = 1024
+
+// AddressFits is whether address is inside that bound, the one question every writer of this
+// store asks of each node id and each relation end before it writes it.
+func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
+
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the
 // row's first write left them.

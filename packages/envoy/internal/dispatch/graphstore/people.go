@@ -122,7 +122,11 @@ func AuthorOf(actor model.Actor) (kind, id string, ok bool) {
 // writeCommentBatch).
 func AuthorFacts(kind, id string, actor model.Actor, at time.Time, event int64) (node Node, tuples []Tuple, named bool) {
 	authorKind, authorID, ok := AuthorOf(actor)
-	if !ok {
+	// A session id carries no length bound (R14), so a comment whose author is a session past
+	// the store's address bound names an author the store cannot key beside the thing: its node
+	// is not written, nor the authored_by tuple nor any alias, and named is false. The comment
+	// keeps its own row, which the old comments arm answers (api's commentStoreWrite).
+	if !ok || !AddressFits(authorID) {
 		return Node{}, nil, false
 	}
 	tuples = []Tuple{{
@@ -187,7 +191,11 @@ const DeliverySent = "sent"
 // repeat appends nothing because the node row is already there.
 func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) error {
 	session = strings.TrimSpace(session)
-	if state != DeliverySent || session == "" {
+	// A session id carries no length bound, and a session past the store's address bound is no
+	// node the store can key: the attempt's settle records no node for it, as the comment path
+	// records none for a session author past the bound (AuthorFacts). The census leaves such a
+	// session out of both sides (graphcensus's recordedSessions).
+	if state != DeliverySent || session == "" || !AddressFits(session) {
 		return nil
 	}
 	arms, params, err := WriteArms(1, []Node{SessionNode(session, who, at, NoEvent)}, nil, nil)
@@ -237,7 +245,11 @@ func aliases(authorKind, authorID string, actor model.Actor, at time.Time, event
 		return nil
 	}
 	var tuples []Tuple
-	if actor.Act != nil && actor.Act.Session != "" {
+	// The proved session's own id has no length bound, so an alias whose session end is past the
+	// store's address bound is not written: the session is no node of the store either, and a
+	// delivery to it reaches its person by no alias (api's personNodesQuery). The author remains
+	// a named person, so its node and its authored_by tuple still stand.
+	if actor.Act != nil && actor.Act.Session != "" && AddressFits(actor.Act.Session) {
 		tuples = append(tuples, alias(actor.Act.Session, authorID))
 	}
 	if actor.ID != "" && actor.ID != authorID {

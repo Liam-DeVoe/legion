@@ -803,12 +803,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	var comment model.Comment
+	nodeKind, nodeAddress := stored.rowNode()
 	if err := tx.QueryRow(r.Context(), `
 		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
-		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, commentNodeKind, rowID, createdAt).Scan(&comment.CreatedAt); err != nil {
+		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, nodeKind, nodeAddress, createdAt).Scan(&comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1001,10 +1002,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	// Who wrote it, as the node and tuple store holds it: the author's node and the comment's
-	// authored_by tuple, beside the stamp and under the event that caused both.
-	if err := graphstore.Authored(r.Context(), tx, commentNodeKind, comment.ID, actor, comment.CreatedAt, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// authored_by tuple, beside the stamp and under the event that caused both. A comment left out
+	// of the store has no node to author, so this is skipped with the rest of its write.
+	if !stored.unprojected {
+		if err := graphstore.Authored(r.Context(), tx, commentNodeKind, comment.ID, actor, comment.CreatedAt, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	events = append(events, event)
 	var advice *writeAdvice
@@ -1086,6 +1090,11 @@ const (
 type commentStoreWrite struct {
 	node   graphstore.Node
 	tuples []graphstore.Tuple
+	// unprojected is a comment any of whose relation ends is past the store's address bound: it
+	// has no node and no tuples, and its row's node columns stay null, so the old comments arm of
+	// graph_edges answers every one of its edges rather than the tuple arm answering it without
+	// the edge the bound would drop (R22).
+	unprojected bool
 }
 
 // commentStored is what the comment rowID states: its node, project-visible and live, made by
@@ -1114,23 +1123,37 @@ func commentStored(
 	if err != nil {
 		return commentStoreWrite{}, err
 	}
+	anchorAddress, ownerAddress := "", ""
+	if anchor != nil {
+		anchorAddress = addresses[anchor.ArtifactID]
+	}
+	if ownerArtifactID != nil {
+		ownerAddress = addresses[*ownerArtifactID]
+	}
+	// A comment any of whose relation ends is past the store's address bound is left whole out of
+	// the store. An artifact's ref_key is bounded only by its own key's index (api/artifacts.go)
+	// and can be longer than a tuple key holds beside the comment's address, so a node with one of
+	// its two edges and the other dropped would be a comment the tuple arm answers short an edge
+	// the old arm gave. Instead no node, no tuple and no stamp are written, and the old comments
+	// arm answers both of its edges (graph_edges). The census counts it in the past-bound class.
+	if (anchorAddress != "" && !graphstore.AddressFits(anchorAddress)) ||
+		(ownerAddress != "" && !graphstore.AddressFits(ownerAddress)) {
+		return commentStoreWrite{unprojected: true}, nil
+	}
 	write := commentStoreWrite{node: graphstore.Node{
 		Kind: commentNodeKind, ID: rowID, Supertag: commentSupertag,
 		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}}
-	if anchor != nil {
-		write.states(tupleAnchoredTo, "artifact", addresses[anchor.ArtifactID])
-	}
-	if ownerArtifactID != nil {
-		write.states(tupleOwnedBy, "artifact", addresses[*ownerArtifactID])
-	}
+	write.states(tupleAnchoredTo, "artifact", anchorAddress)
+	write.states(tupleOwnedBy, "artifact", ownerAddress)
 	return write, nil
 }
 
 // states adds one fact about the comment, dated and attributed as its node is. A relation whose
-// far end has no address - an anchor naming an artifact no row answers, which graph_edges'
-// own join drops - is stated by neither.
+// far end has no address - an anchor naming an artifact no row answers, which graph_edges' own
+// join drops - is stated by neither. A far end past the store's address bound does not reach
+// here: commentStored leaves such a comment whole out of the store (unprojected).
 func (w *commentStoreWrite) states(kind, toKind, toID string) {
 	if toID == "" {
 		return
@@ -1142,11 +1165,25 @@ func (w *commentStoreWrite) states(kind, toKind, toID string) {
 	})
 }
 
+// rowNode is the node columns a comment's row names: the comment kind and the comment's own id,
+// or null and null for a comment left out of the store (unprojected), whose row the old comments
+// arm answers.
+func (w commentStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
+	if w.unprojected {
+		return nil, nil
+	}
+	kind := w.node.Kind
+	return &kind, &w.node.ID
+}
+
 // writeNode writes the comment's node, which the row that projects it names, and keeps the two
 // base attributes that write states with the facts this writer already holds. It appends
 // nothing: every fact of this write carries the event that caused it, and on the request path
 // that event is appended after the row, so all of them are appended by caused.
 func (w *commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
+	if w.unprojected {
+		return nil
+	}
 	base, err := graphstore.WriteStating(ctx, tx, []graphstore.Node{w.node}, w.tuples)
 	if err != nil {
 		return fmt.Errorf("write the node of comment %s: %w", w.node.ID, err)
@@ -1167,6 +1204,9 @@ func (w *commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
 // supertag, the visibility, the state or the attributes of the row moved and none of them has,
 // and the node would keep the sentinel its first write gave it.
 func (w commentStoreWrite) caused(ctx context.Context, tx pgx.Tx, event int64) error {
+	if w.unprojected {
+		return nil
+	}
 	if err := graphstore.Caused(ctx, tx, []graphstore.Node{w.node}, event); err != nil {
 		return fmt.Errorf("record what stored comment %s: %w", w.node.ID, err)
 	}
