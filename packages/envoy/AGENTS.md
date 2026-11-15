@@ -5920,7 +5920,7 @@ A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer 
 `agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
 `login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
 `DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
-The released `agent-secrets` at `legion-envoy-v29.54.0` also waits 30 s, so it gets the answer too.
+A released `agent-secrets` from before this answer also waits 30 s for `enroll --helper` and `unenroll --helper` (every release from `legion-envoy-v29.54.0` to `legion-envoy-v30.20.0`, read on 2026-11-15, `v30.18.1` among them, which the operator's dotfiles pinned that day), so it gets the answer too.
 
 Each broker-call answer says whether the broker's outcome is known, by one rule (`requestReach.settle`, `broker.go`), which reads a trace on the op's request (`traceReach`).
 A 4xx is known, because the broker decides each refusal before it writes anything.
@@ -5961,12 +5961,13 @@ Every other op gives back its place in that wait once its request is read, so a 
 `unregister` answers at once with the session retired: `retire` fires the bounded revoke of an unnamed session's enrollments on goroutines of their own, as every sibling path fires it, and the revoke logs its own failure.
 
 This leaves three limits.
-A helper from before these answers still closes a broker-call op's connection after 5 s, until it restarts on a release that has them (the operator's dotfiles pin `legion-envoy-v29.54.0`).
+A helper from before these answers gives itself 5 s to write a broker-call op's answer but waits for the broker with no limit, until it restarts on a release that has them (the operator's dotfiles pinned `legion-envoy-v30.18.1` on 2026-11-15, which does not).
+When the broker answers after those 5 s, that helper cannot write the answer and closes the connection without one, and when the broker takes longer than the client's own wait, the client times out first.
 Against such a helper, a new `enroll --helper` or `unenroll --helper` prints its `ErrNoReply` message, so it says that the outcome is unknown.
 But that helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.
 A `machine login` from before `BrokerCallWait` waits 10 s for the `login` answer, the dial included, so against a broker slower than about 8 s it can close before the helper answers.
 If the broker answers within the bound, the helper records the login as pending, and the next `machine login` shows its code.
-An `enroll --helper` attempt can now take up to about 23 s (a dial of up to 2 s and the answer at 21 s), not 5 s.
+An `enroll --helper` attempt now ends by about 23 s (a dial of up to 2 s and the answer at 21 s); against a helper from before these answers it lasted as long as the broker took, up to the client's 30 s.
 A broker slower than the 20 s bound still leaves a launcher with no enrollment id, and a launcher's close revokes only an id that it recorded.
 So such an enrollment ends with its lease, unless the launcher runs the same enroll again.
 The same enroll answers the first enrollment only under the same launcher credential: under another (a person's sign-in revoked between two attempts) it makes a second enrollment, and the first one ends with its lease.

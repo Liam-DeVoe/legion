@@ -92,9 +92,9 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 }
 
 // hangUpHelper listens at a socket of its own and, for each connection, reads the request line
-// and hangs up with no answer, as a helper from before the broker-call bound did when its 5 s
-// deadline passed while its broker call went on. silentHelperAt is another fake: it keeps the
-// connection open.
+// and hangs up with no answer, as a helper from before the broker-call bound did when the broker
+// answered after its 5 s deadline: its write of the answer failed, and it closed the connection
+// without one. silentHelperAt is another fake: it keeps the connection open.
 func hangUpHelper(t *testing.T) string {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")

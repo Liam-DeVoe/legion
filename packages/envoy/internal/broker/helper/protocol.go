@@ -307,7 +307,8 @@ func MigrateStateFile(from, to string) error {
 // enroll-session-key or unenroll-session-key, the three ops whose answer is the outcome of a
 // broker call the helper makes while the client waits. It is the timeout a client gives Call, so
 // the dial is inside it. 30 s is what `agent-secrets enroll` and `agent-secrets unenroll` already
-// waited, and what the released agent-secrets at legion-envoy-v29.54.0 still waits.
+// waited, and what every released agent-secrets from before this wait still waits for those two
+// (legion-envoy-v29.54.0 to v30.20.0, read on 2026-11-15).
 const BrokerCallWait = 30 * time.Second
 
 // DefaultBrokerCallBound is how long the helper lets one broker-call op run before it answers
@@ -316,10 +317,12 @@ const BrokerCallWait = 30 * time.Second
 // the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
 // for its read and its write: the op's requests end with its context at the bound, and the helper
 // answers at the bound plus 1 s whatever the op is doing. 2 s + 20 s + 5 s is 27 s, under 30 s.
-// The released agent-secrets at legion-envoy-v29.54.0, which sjawhar/dotfiles pins, also waits
-// 30 s, so it gets this helper's answer and not an empty reply. A healthy broker answers in a
-// fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
-// and 8 s.
+// A released agent-secrets from before this bound also waits 30 s for enroll and unenroll
+// (legion-envoy-v29.54.0 to v30.20.0, read on 2026-11-15, v30.18.1 among them, which
+// sjawhar/dotfiles pinned that day), so it gets this helper's answer and not an empty reply. Its
+// machine login waits 10 s, so a broker slower than about 8 s can still outlast it. A healthy
+// broker answers in a fraction of a second (DefaultFirstConfirmBound); the slow answers that
+// were measured took 5 s and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
 
 // ErrNoReply is in every Call error that comes after the helper was sent the whole request: the
