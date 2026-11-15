@@ -125,7 +125,7 @@ var (
 // quiet time; a pod from 87 to 93 the cause too, and still neither entry number, nor the held
 // list, nor the quiet time; a pod from 94 to 97 the two entry numbers too, and still no held list
 // and no quiet time; a pod from 98 to 110 the held list too, and still no tree quiet time; a pod
-// below 46 none of them; and a pod at 111, a pod at 133, this daemon's declared contract — the
+// below 46 none of them; and a pod at 111, a pod at 135, this daemon's declared contract — the
 // fixture stands no member of the line of the one kind 132 added, so 132's strip finds nothing
 // here (waiting_on_issue_test.go reads it) — a pod whose claims record no contract and a caller
 // in no pod — the operator's `legion state`, whose memory line reads the draws, whose queue line
@@ -269,22 +269,22 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band at 85 and 86, from whyAndLineFieldsContract to below leakCheckCauseContract:
 		// each issue's answer and the line's own fields are served too, and the claim views'
 		// `leakCheckCause`, the two entry numbers, the held list, the tree quiet time and the keys
-		// contract 133 added to a claim view are held back.
+		// contract 135 added to a claim view are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, contract: whyAndLineFieldsContract},
 		// The band from 87 to 93, from leakCheckCauseContract to below phaseEntriesContract: the
 		// claim views' `leakCheckCause` is served too, and the two entry numbers, the held list,
-		// the tree quiet time and the keys contract 133 added to a claim view are held back.
+		// the tree quiet time and the keys contract 135 added to a claim view are held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, contract: leakCheckCauseContract},
 		// The band from 94 to 97, from phaseEntriesContract to below heldContract: the two entry
 		// numbers are served too, and the held list, the tree quiet time and the keys contract
-		// 133 added to a claim view are held back.
+		// 135 added to a claim view are held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, contract: phaseEntriesContract},
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list is
-		// served too, and the tree quiet time and the keys contract 133 added to a claim view are
+		// served too, and the tree quiet time and the keys contract 135 added to a claim view are
 		// held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, contract: heldContract},
-		// The band from 111 to 132, from quietTimeContract to below this daemon's own: the tree
-		// quiet time is served too, and the keys contract 133 added to a claim view are what such
+		// The band from 111 to 134, from quietTimeContract to below this daemon's own: the tree
+		// quiet time is served too, and the keys contract 135 added to a claim view are what such
 		// a caller is still without. This fixture stands nothing the strip of 132 holds back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: DaemonAPIVersion},
@@ -467,7 +467,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(view, "step")
 					}
 					// A caller below shapedAnswersContract is served no claim view carrying the
-					// two keys contract 133 added to one, which is every band of this table but
+					// two keys contract 135 added to one, which is every band of this table but
 					// the last three rows.
 					if tc.contract < shapedAnswersContract {
 						for _, key := range roundReportKeys {
