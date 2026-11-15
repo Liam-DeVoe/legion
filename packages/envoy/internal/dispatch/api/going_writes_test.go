@@ -1302,7 +1302,8 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 }
 
 // TestGoingWriteOfAnUploadWithoutForceNeverWritesOverADocumentMadeAsItRuns (review round 6,
-// finding 3): an upload without force is sent as a create alone (expect_new), decided by its route
+// finding 3): an upload without force is sent as a create alone (goingCondition.ExpectNew, on the
+// request's context), decided by its route
 // under the owner's lock, so a document of its name another writer makes between the bar's read
 // before the upload and the upload is never written over: the route refuses it, 409
 // DOCUMENT_EXISTS, the bar answers that refusal, and bob's document keeps its one version.

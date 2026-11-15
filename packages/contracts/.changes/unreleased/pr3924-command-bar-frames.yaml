@@ -20,7 +20,8 @@ body: |-
   `ClaimedIssue` carries `claim_changed` and `previous_claim`, and `ApprovalRequestResponse`
   carries `opened`. A `GoingOffer` carries `withheld`, why each invocation the answer wrote was
   not offered (an upload under a name its owner already holds), and `fixtures/going/proposal.json`
-  holds one. `JsonArtifactUpload` takes `expect_new`, which the multipart upload takes as a field.
+  holds one. No request shape gains a condition member: the command bar's compare-and-sets ride
+  on the server's own in-process requests, never in a body.
   `PATCH /api/v1/issues/{key}` answers `IssueUpdated`, the issue with `previous` (each field the
   update names as it found it) and, for a rank, `rank_place`; `PATCH /api/v1/asks/{id}` answers
   `AskEdited` and `POST /api/v1/comments/{id}/resolve` `ResolvedComment`, each with `previous`;

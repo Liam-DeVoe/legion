@@ -662,7 +662,7 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"DELETE /api/v1/issues/{key}/claim": {
-		Status: http.StatusOK, Response: claimAnswer{}, Request: releaseClaimInput{},
+		Status: http.StatusOK, Response: claimAnswer{}, Request: actorInput{},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
@@ -818,7 +818,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: resolvedComment{}, Request: actorInput{}, OptionalRequest: true},
-	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}, Request: reopenCommentInput{}, OptionalRequest: true},
+	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/comments/{id}/deliveries": {

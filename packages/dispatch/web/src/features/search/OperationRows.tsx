@@ -261,7 +261,9 @@ export interface GoingOperations {
  * rest, which only text someone stored asked for, are a row the person picks. Below the threshold
  * the two best actions are rows of their own, and neither runs until the person picks it. A new
  * issue and a send to the agent on the issue go through the bar's own two offers, which always
- * ask.
+ * ask. An invocation the proposal withheld beside others of its action it offered - an upload
+ * over a document its owner holds - is in no row and no line, so the panel says why, in
+ * Dispatch's words, for as long as the proposal stands.
  *
  * A submit before the proposal arrives says it is preparing and runs when the proposal lands; one
  * with no run yet asks at once. An invocation missing one argument asks for it first, and with
@@ -499,8 +501,16 @@ export function useGoingOperations({
         };
 
   const stageShown = stage !== undefined && stage.kind !== "idle";
+  // Why the proposal withheld some invocations of an action it still offered others of, in
+  // Dispatch's own words: the rows and the lines show only what was offered, so nothing else says
+  // why an invocation the answer wrote is missing from them.
+  const withheldBeside = (proposal?.offers ?? []).flatMap((offer) =>
+    offer.offered ? (offer.withheld ?? []) : []
+  );
   const panel =
-    !stageShown && (turn === undefined || turn.lines.length === 0) ? null : (
+    !stageShown &&
+    (turn === undefined || turn.lines.length === 0) &&
+    withheldBeside.length === 0 ? null : (
       <section
         aria-label="Operation"
         className={`max-h-[30vh] shrink-0 overflow-y-auto border-t px-3 py-2 text-sm ${borderDefault}`}
@@ -544,6 +554,11 @@ export function useGoingOperations({
             runs={runIndexes(offerOf(proposal, stage.action), "confirmed")}
           />
         ) : null}
+        {withheldBeside.length === 0 ? null : (
+          <p className={barNoteClassName} data-testid="going-operation-withheld" role="status">
+            {withheldBeside.join(" ")}
+          </p>
+        )}
         {turn === undefined || turn.lines.length === 0 ? null : (
           <TurnLines
             onUndo={() => void undoGoingTurn(writes, turn.runId, turn.words)}

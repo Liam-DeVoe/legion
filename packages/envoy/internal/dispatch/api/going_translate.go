@@ -64,14 +64,16 @@ func (c goingCallInput) resumes(specs ...goingSend) []goingWriteRequest {
 type goingTranslator func(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error)
 
 // goingCall is what a translation makes of a call: the value of each placeholder of the row's
-// path, the query, the body - JSON, a multipart upload, or none - and any write that must land
-// before the row's own.
+// path, the query, the body - JSON, a multipart upload, or none - any write that must land before
+// the row's own, and the compare-and-set the row's own request carries to its route on its
+// context (going_conditions.go), nil for none.
 type goingCall struct {
-	path  map[string]string
-	query url.Values
-	body  map[string]any
-	form  *goingUpload
-	first []goingSend
+	path      map[string]string
+	query     url.Values
+	body      map[string]any
+	form      *goingUpload
+	first     []goingSend
+	condition *goingCondition
 }
 
 // goingUpload is a multipart body: its fields, and the one file part, named `file`.
@@ -84,7 +86,8 @@ type goingUpload struct {
 
 // goingSend is one request a call sends, whole. stable is what its digest is taken of where the
 // body itself differs between two sends of the same request - a multipart upload, whose boundary
-// is drawn at random - nil where the body is its own (digest).
+// is drawn at random - nil where the body is its own (digest). condition is the compare-and-set
+// the request carries to its route on its context (build), nil for none.
 type goingSend struct {
 	method      string
 	path        string
@@ -92,18 +95,28 @@ type goingSend struct {
 	contentType string
 	body        []byte
 	stable      []byte
+	condition   *goingCondition
 }
 
-// digest is the hex SHA-256 of what the request sends, which a landing records
-// (goingWriteRequest.BodySHA256) so a later attempt resumes only after the very request it sends:
-// a close's reason of other words is another request.
+// digest is the hex SHA-256 of what the request sends, its condition included, which a landing
+// records (goingWriteRequest.BodySHA256) so a later attempt resumes only after the very request it
+// sends: a close's reason of other words is another request, and so is an upload that is a create
+// alone beside one that is not.
 func (s goingSend) digest() string {
 	content := s.body
 	if s.stable != nil {
 		content = s.stable
 	}
-	sum := sha256.Sum256(content)
-	return hex.EncodeToString(sum[:])
+	hash := sha256.New()
+	hash.Write(content)
+	if s.condition != nil {
+		// A request with no condition digests as its body alone, as every request did before
+		// conditions left the body.
+		condition, _ := json.Marshal(s.condition)
+		hash.Write([]byte{0})
+		hash.Write(condition)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // goingUntranslatable is a call a row's route cannot be sent, named by why: GoingCaller answers
@@ -240,8 +253,17 @@ const (
 	codeGoingSessionAmbiguous = "GOING_SESSION_AMBIGUOUS"
 )
 
-// build is the request, against base.
+// build is the request, against base. Its condition rides on its context
+// (withGoingCondition), which reaches a route only through the server's own table called
+// in-process: a request against another server's base would arrive unconditioned, so one that
+// carries a condition is refused for it rather than built.
 func (r goingSend) build(ctx context.Context, base string) (*http.Request, error) {
+	if r.condition != nil {
+		if base != "" {
+			return nil, fmt.Errorf("%s %s carries a condition, which reaches its route only in-process, and not against %s", r.method, r.path, base)
+		}
+		ctx = withGoingCondition(ctx, *r.condition)
+	}
 	target := base + r.path
 	if len(r.query) > 0 {
 		target += "?" + r.query.Encode()
@@ -269,9 +291,10 @@ func goingJSONRequest(method, path string, body any) (goingSend, error) {
 	return goingSend{method: method, path: path, contentType: "application/json", body: encoded}, nil
 }
 
-// requests is every request the call sends: the writes that land first, then the row's own.
+// requests is every request the call sends: the writes that land first, then the row's own, which
+// carries the call's condition.
 func (c goingCall) requests(route GoingRoute) ([]goingSend, error) {
-	own := goingSend{method: route.Method, path: goingPath(route.Pattern, c.path), query: c.query}
+	own := goingSend{method: route.Method, path: goingPath(route.Pattern, c.path), query: c.query, condition: c.condition}
 	switch {
 	case c.form != nil:
 		body, contentType, err := c.form.encode()
@@ -779,12 +802,12 @@ func goingUploadContent(arguments map[string]any) (string, error) {
 
 // goingTranslateUpload uploads the content as a document of the issue or the project, as the
 // JSON form of the route takes it. `force` is no field of the route's: an upload without it is
-// sent as a create alone (expect_new), so a document of its name the owner holds by the time the
-// upload takes the owner's lock - one another writer made after the write's read before - is the
-// route's to refuse, 409 DOCUMENT_EXISTS, and the writes route refuses such an upload before it is
-// sent where its read before found one, however the write came to run (goingUploadForceRefusal),
-// as the dispatch command does. An upload with force sends no condition, and writes that
-// document's next version.
+// sent as a create alone (goingUploadCondition), so a document of its name the owner holds by the
+// time the upload takes the owner's lock - one another writer made after the write's read before -
+// is the route's to refuse, 409 DOCUMENT_EXISTS, and the writes route refuses such an upload
+// before it is sent where its read before found one, however the write came to run
+// (goingUploadForceRefusal), as the dispatch command does. An upload with force carries no
+// condition, and writes that document's next version.
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {
@@ -792,16 +815,22 @@ func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput)
 	}
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = content
-	if call.arguments["force"] != true {
-		body["expect_new"] = true
+	return goingCall{path: call.path, body: body, condition: goingUploadCondition(call.arguments)}, nil
+}
+
+// goingUploadCondition is the condition an upload carries to its route on its context
+// (going_conditions.go): without force, a create alone (ExpectNew); with it, none.
+func goingUploadCondition(arguments map[string]any) *goingCondition {
+	if arguments["force"] == true {
+		return nil
 	}
-	return goingCall{path: call.path, body: body}, nil
+	return &goingCondition{ExpectNew: true}
 }
 
 // goingTranslateAgentUpload uploads the content as a file of the session's conversation, which
 // takes a multipart upload alone: the file part named as the call names it, typed by its
 // extension, and plain text where the extension says nothing. An upload without force is sent as
-// a create alone, as goingTranslateUpload sends one (expect_new, a field of the form).
+// a create alone, as goingTranslateUpload sends one (goingUploadCondition).
 func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {
@@ -816,12 +845,9 @@ func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallI
 	if summary := goingText(call.arguments, "summary"); summary != "" {
 		fields["summary"] = summary
 	}
-	if call.arguments["force"] != true {
-		fields["expect_new"] = "true"
-	}
 	return goingCall{path: call.path, form: &goingUpload{
 		fields: fields, filename: name, contentType: contentType, content: []byte(content),
-	}}, nil
+	}, condition: goingUploadCondition(call.arguments)}, nil
 }
 
 // goingTranslateHandoff records the handoff as the session the caller acts as, which the route

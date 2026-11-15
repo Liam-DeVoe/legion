@@ -79,11 +79,11 @@ type artifactUploadInput struct {
 	// already names a document or gives the slug of one Dispatch makes itself. A multipart
 	// upload always carries its bytes, so it never sets this.
 	blank bool
-	// expectSHA256 is a JSON upload's expect_sha256 (jsonArtifactUpload.ExpectSHA256), "" for
-	// none.
+	// expectSHA256 and expectNew are the upload's condition, as the command bar's in-process
+	// caller carries it on the request's context (goingCondition.ExpectSHA256, ExpectNew): the
+	// content the document must hold, "" for none, and whether the upload is a create alone.
 	expectSHA256 string
-	// expectNew is an upload's expect_new (jsonArtifactUpload.ExpectNew), JSON or multipart.
-	expectNew bool
+	expectNew    bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -137,19 +137,7 @@ type jsonArtifactUpload struct {
 	Content *string         `json:"content"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
-	// ExpectSHA256 makes the upload conditional: the hex SHA-256 of the markdown the document of
-	// the name must hold when the upload takes its lock, or it is refused, 409 DOCUMENT_CHANGED,
-	// with nothing written; an upload that would make a new document is refused the same, since
-	// there is no document holding it. A write back undoing an edit puts the content back so
-	// only while the document still holds what that edit left.
-	ExpectSHA256 string `json:"expect_sha256"`
-	// ExpectNew makes the upload a create alone: where the owner already holds an artifact of the
-	// name (or whose slug the name is) when the upload takes the owner's lock, it is refused, 409
-	// DOCUMENT_EXISTS, with nothing written. It is the mirror of ExpectSHA256, and the two together
-	// are 400 ARTIFACT_INPUT. A caller that means to make a new document, never write the next
-	// version of one another writer made meanwhile, sends it.
-	ExpectNew bool         `json:"expect_new"`
-	Actor     *model.Actor `json:"actor"`
+	Actor   *model.Actor    `json:"actor"`
 }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +240,20 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	if !ok {
 		return
 	}
+	// The upload's condition, which the command bar's in-process caller carries on the request's
+	// context (going_conditions.go): a write back of a document's content expects that content,
+	// and an upload without force is a create alone.
+	condition := goingConditionOf(r)
+	input.expectSHA256, input.expectNew = strings.TrimSpace(condition.ExpectSHA256), condition.ExpectNew
+	if input.expectNew && input.expectSHA256 != "" {
+		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
+			"a create alone asks for a document the owner does not hold and an expected content for one it does: the condition names one of them")
+		return
+	}
+	if refusal := condition.writeBackRefusal(input.expectNew || input.expectSHA256 != "", "content it expects the document to hold"); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	actor, ok := s.requireActor(w, r, input.supplied)
 	if !ok {
 		return
@@ -297,7 +299,8 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
-// jsonArtifactUpload does not declare and logs it at debug with the route; it keeps its own size
+// jsonArtifactUpload does not declare and logs it at debug with the route, and refuses it by name
+// in a request the command bar sends in-process (judgeUndeclaredMembers); it keeps its own size
 // refusal for the artifact cap.
 func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
 	var body jsonArtifactUpload
@@ -320,17 +323,14 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		s.writeHandlerError(w, refusal)
 		return artifactUploadInput{}, false
 	}
-	logUndeclaredMembers(r, &body, read.Bytes())
+	if refusal := judgeUndeclaredMembers(r, &body, read.Bytes()); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return artifactUploadInput{}, false
+	}
 	// `primary` stays declared, though no upload may set it, so that it is refused by name rather
 	// than ignored: an upload never makes a document the issue's primary one.
 	if body.Primary != nil {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
-		return artifactUploadInput{}, false
-	}
-	expectSHA256 := strings.TrimSpace(body.ExpectSHA256)
-	if body.ExpectNew && expectSHA256 != "" {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
-			"expect_new asks for a document the owner does not hold and expect_sha256 for one it does: send one of them")
 		return artifactUploadInput{}, false
 	}
 	blank := body.Content == nil || strings.TrimSpace(*body.Content) == ""
@@ -339,14 +339,12 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		content = []byte(*body.Content)
 	}
 	return artifactUploadInput{
-		name:         strings.TrimSpace(body.Name),
-		content:      content,
-		contentType:  "text/markdown; charset=utf-8",
-		summary:      strings.TrimSpace(body.Summary),
-		supplied:     body.Actor,
-		blank:        blank,
-		expectSHA256: expectSHA256,
-		expectNew:    body.ExpectNew,
+		name:        strings.TrimSpace(body.Name),
+		content:     content,
+		contentType: "text/markdown; charset=utf-8",
+		summary:     strings.TrimSpace(body.Summary),
+		supplied:    body.Actor,
+		blank:       blank,
 	}, true
 }
 
@@ -402,18 +400,15 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	// expect_new is a field of its own in a multipart body, "true" or "false" as strconv reads a
-	// boolean; anything else is no condition a caller could have meant.
-	var expectNew bool
-	if raw, sent := r.MultipartForm.Value["expect_new"]; sent {
-		parsed, err := strconv.ParseBool(strings.TrimSpace(raw[0]))
-		if err != nil || len(raw) != 1 {
-			writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "expect_new must be true or false, once")
+	// A field or part the upload does not read is ignored, as decodeJSON ignores a member, and
+	// refused by name in a request the command bar sends in-process, whose sender is this build.
+	if goingServedInProcess(r.Context()) {
+		if refusal := refuseUndeclared(undeclaredUploadFields(r.MultipartForm)); refusal != nil {
+			s.writeHandlerError(w, refusal)
 			return artifactUploadInput{}, false
 		}
-		expectNew = parsed
 	}
+	name := strings.TrimSpace(r.FormValue("name"))
 	file, header, err := r.FormFile("file")
 	if len(r.MultipartForm.Value["content"]) > 0 {
 		if err == nil {
@@ -445,8 +440,28 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType: contentType,
 		summary:     strings.TrimSpace(r.FormValue("summary")),
 		supplied:    supplied,
-		expectNew:   expectNew,
 	}, true
+}
+
+// undeclaredUploadFields is the fields and parts of a multipart upload that the upload neither
+// reads nor refuses by name, sorted: every name but those openAPIMultipartSchema declares and
+// `primary` and `content`, each of which the upload refuses by name.
+func undeclaredUploadFields(form *multipart.Form) []string {
+	declared, _ := openAPIMultipartSchema["properties"].(map[string]any)
+	var undeclared []string
+	note := func(name string) {
+		if _, reads := declared[name]; !reads && name != "primary" && name != "content" && !slices.Contains(undeclared, name) {
+			undeclared = append(undeclared, name)
+		}
+	}
+	for name := range form.Value {
+		note(name)
+	}
+	for name := range form.File {
+		note(name)
+	}
+	slices.Sort(undeclared)
+	return undeclared
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
@@ -547,7 +562,7 @@ func (s *server) storeArtifact(
 	if errors.Is(err, pgx.ErrNoRows) {
 		if input.expectSHA256 != "" {
 			s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
-				"no document is named %q, so none holds the content expect_sha256 names, and nothing was written", input.name))
+				"no document is named %q, so none holds the content the upload expected, and nothing was written", input.name))
 			return
 		}
 		created = true
@@ -590,10 +605,10 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	} else if input.expectNew {
-		// Decided after the owner's lock above, as expect_sha256 is: an artifact of the name made
-		// by another writer before this upload took that lock is never written over.
+		// Decided after the owner's lock above, as the expected content is: an artifact of the
+		// name made by another writer before this upload took that lock is never written over.
 		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_EXISTS",
-			"%s already holds %s (slug %s), which expect_new asks this upload not to write the next version of, so nothing was written",
+			"%s already holds %s (slug %s), and this upload makes a new document alone, so nothing was written",
 			artifactOwnerText(target), artifact.Name, artifact.Slug))
 		return
 	} else if artifact.Kind != kind {

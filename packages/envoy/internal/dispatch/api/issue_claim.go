@@ -174,8 +174,9 @@ func (s *server) writeClaimError(w http.ResponseWriter, err error) {
 const codeClaimHolderChanged = "CLAIM_HOLDER_CHANGED"
 
 // claimHolderChanged is a conditional claim write refused under the issue's row lock: a release
-// that expects a holder another holder or nobody replaced (expect_holder), or a claim that expects
-// nobody to hold the issue while someone does (expect_unclaimed). claim is the claim as it
+// that expects a holder another holder or nobody replaced (goingCondition.ExpectHolder), or a
+// claim that expects nobody to hold the issue while someone does (goingCondition.ExpectUnclaimed),
+// each the command bar's in-process condition on the request's context. claim is the claim as it
 // stands, nil for none. The condition is decided in the claim's own transaction, so another
 // writer's claim is never released or taken over by a caller that only meant to put back its own.
 type claimHolderChanged struct {
@@ -673,20 +674,25 @@ func (s *server) claimCycle(
 		ClaimChanged: changed, PreviousClaim: applied.previous})
 }
 
-// claimIssueInput is the body of POST /api/v1/issues/{key}/claim. ExpectUnclaimed makes the claim
-// conditional: it is refused, 409 CLAIM_HOLDER_CHANGED, where anyone - the caller too - holds the
-// issue when the claim takes its lock.
+// claimIssueInput is the body of POST /api/v1/issues/{key}/claim.
 type claimIssueInput struct {
-	Actor           *model.Actor `json:"actor"`
-	Force           bool         `json:"force"`
-	ExpectUnclaimed bool         `json:"expect_unclaimed"`
+	Actor *model.Actor `json:"actor"`
+	Force bool         `json:"force"`
 }
 
-// claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue.
+// claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue. The
+// command bar's undo of a release makes the claim conditional (goingCondition.ExpectUnclaimed, on
+// the request's context): it is refused, 409 CLAIM_HOLDER_CHANGED, where anyone - the caller too -
+// holds the issue when the claim takes its lock.
 func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	var input claimIssueInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	condition := goingConditionOf(r)
+	if refusal := condition.writeBackRefusal(condition.ExpectUnclaimed, "expectation that nobody holds the issue"); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -705,7 +711,7 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 		if before.ClosedAt != nil {
 			return claimChange{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
 		}
-		if input.ExpectUnclaimed && before.Claim != nil {
+		if condition.ExpectUnclaimed && before.Claim != nil {
 			return claimChange{}, &claimHolderChanged{key: key, claim: before.Claim}
 		}
 		if blocked := claimBlockedBy(before.Claim, actor, rule, judged, time.Now()); blocked != nil {
@@ -734,14 +740,6 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// releaseClaimInput is the optional body of DELETE /api/v1/issues/{key}/claim: the session a
-// bearer acts for, and ExpectHolder, which makes the release conditional: it is refused, 409
-// CLAIM_HOLDER_CHANGED, unless that holder holds the issue when the release takes its lock.
-type releaseClaimInput struct {
-	Actor        *model.Actor `json:"actor"`
-	ExpectHolder *model.Actor `json:"expect_holder"`
-}
-
 // answerContendedClaim ends the bounded cycle: the holder changed twice while this request
 // ran, so no verdict was applied. It is never ISSUE_CLAIMED — nothing on this path established
 // that the holder is running, and naming a live title would mean another listener call — so it
@@ -766,21 +764,19 @@ func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, ke
 
 // releaseIssueClaim is DELETE /api/v1/issues/{key}/claim: the holder gives the issue up, a
 // human releases anyone's claim, or anyone clears a claim whose session is gone. Releasing
-// never moves the status — the work stays where it got to.
+// never moves the status — the work stays where it got to. The command bar's undo of a claim
+// makes the release conditional (goingCondition.ExpectHolder, on the request's context): it is
+// refused, 409 CLAIM_HOLDER_CHANGED, unless that holder holds the issue when the release takes
+// its lock.
 func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	var input releaseClaimInput
-	if human {
-		// A person's release takes no body but the condition.
-		if !s.decodeOptionalJSON(w, r, &input) {
-			return
-		}
-	} else {
+	if !human {
 		// A bearer names its own session in the body, as it does on every other write.
+		var input actorInput
 		if err := decodeJSON(r, &input); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -791,6 +787,12 @@ func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	condition := goingConditionOf(r)
+	expected := condition.ExpectHolder
+	if refusal := condition.writeBackRefusal(expected != nil && expected.Kind != "" && expected.ID != "", "holder it expects to hold the claim"); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	key := r.PathValue("key")
 	// Releasing a claim is the person's to do, whichever credential of theirs makes it, and this
 	// route has no force to point a refused caller at. The scope is read from the request's own
@@ -798,7 +800,7 @@ func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 	// session it acts for.
 	rule := personRule{override: s.callerHoldsScope(r, model.ScopePerson)}
 	s.claimCycle(w, r, key, actor, rule, func(before model.Issue, judged judgement) (claimChange, error) {
-		if input.ExpectHolder != nil && (before.Claim == nil || !before.Claim.Actor.SameAs(*input.ExpectHolder)) {
+		if expected != nil && (before.Claim == nil || !before.Claim.Actor.SameAs(*expected)) {
 			return claimChange{}, &claimHolderChanged{key: key, claim: before.Claim}
 		}
 		if before.Claim == nil {

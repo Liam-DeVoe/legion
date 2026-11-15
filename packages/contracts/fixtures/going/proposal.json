@@ -62,7 +62,7 @@
       "invocations": [],
       "offered": false,
       "withheld": [
-        "dispatch_artifact under \"notes.md\" is not offered: issue DEMO-12 already holds a document of that name, and an upload would write its next version over the text it holds, which the bar offers only with force under a name your own words write. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force."
+        "dispatch_artifact under \"notes.md\" is not offered: issue DEMO-12 already holds notes.md (slug notes-md), and an upload would write its next version over the text it holds, which the bar offers only with force where your own words name that document. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force."
       ]
     }
   ]

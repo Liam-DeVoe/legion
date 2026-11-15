@@ -76,7 +76,9 @@ func (s *server) goingDoer(r *http.Request) GoingDoer {
 // the write reached a final outcome (recordGoingRunWrite). In its place a request that carries a
 // landing (goingLandings.on) takes the step that records it landed, in its route's own
 // transaction (goingLanding.step), for as long as the route runs: a delivery the route detached
-// commits after it, and is no landing of the request's.
+// commits after it, and is no landing of the request's. The request is marked as served
+// in-process (goingServedInProcess), so its route refuses a member of its body it does not
+// declare rather than ignoring it (judgeUndeclaredMembers): sender and route are one build.
 func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 	carried := goingCredentialHeaders
 	if d.identityHeader != "" {
@@ -92,6 +94,7 @@ func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 	request.RemoteAddr = d.caller.RemoteAddr
 	ctx := context.WithValue(request.Context(), resolvedCallerKey{}, nil)
 	ctx = context.WithValue(ctx, requestKeyClaimKey{}, nil)
+	ctx = context.WithValue(ctx, goingInProcessKey{}, true)
 	ctx = store.WithoutBeforeCommit(ctx)
 	if landing, carries := ctx.Value(goingLandingKey{}).(goingLanding); carries {
 		running := &atomic.Bool{}
@@ -102,6 +105,16 @@ func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 	answer := &recordedAnswer{header: http.Header{}}
 	d.handler.ServeHTTP(answer, request.WithContext(ctx))
 	return answer.response(request), nil
+}
+
+// goingInProcessKey marks the context of a request goingInProcess.Do serves.
+type goingInProcessKey struct{}
+
+// goingServedInProcess reports whether ctx is that of a request the command bar sent through
+// the route table in-process (goingInProcess.Do), which nothing off the network can mark.
+func goingServedInProcess(ctx context.Context) bool {
+	marked, _ := ctx.Value(goingInProcessKey{}).(bool)
+	return marked
 }
 
 // recordedAnswer is what a handler answers, kept whole: an in-process route's answer to a going

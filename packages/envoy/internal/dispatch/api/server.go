@@ -1474,8 +1474,10 @@ type actorInput struct {
 // whose loss would change what a request does therefore ships as a new route, never as a member.
 // The ignored top-level members are logged at debug with the route (logUndeclaredMembers); the
 // test hooks, which no other build calls, refuse them instead (decodeJSONTestHook, and
-// refuseUndeclaredMembers for a hook that reads its body itself). A string the body holds
-// anywhere that carries U+0000 is refused, naming where it stands (unstorableJSON).
+// refuseUndeclaredMembers for a hook that reads its body itself), and so does a request the
+// command bar sends in-process (goingInProcess.Do), whose sender is always this same build
+// (judgeUndeclaredMembers). A string the body holds anywhere that carries U+0000 is refused,
+// naming where it stands (unstorableJSON).
 func decodeJSON(r *http.Request, value any) error {
 	return decodeJSONWithin(r, value, maxJSONRequestBytes, errJSONTooLarge)
 }
@@ -1486,6 +1488,19 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	body, err := readJSONBody(r, value, limit, tooLarge)
 	if err != nil {
 		return err
+	}
+	return judgeUndeclaredMembers(r, value, body)
+}
+
+// judgeUndeclaredMembers is what a route does with the top-level members of body that value does
+// not declare. A request the command bar sends in-process (goingInProcess.Do) refuses them by name
+// (refuseUndeclaredMembers): the bar and the route are one build, so such a member is a
+// translation or an undo naming a member under a name the route does not take, which would
+// otherwise be dropped and the write made without it. Every other request logs them and goes on
+// (logUndeclaredMembers), as decodeJSON says.
+func judgeUndeclaredMembers(r *http.Request, value any, body []byte) error {
+	if goingServedInProcess(r.Context()) {
+		return refuseUndeclaredMembers(value, body)
 	}
 	logUndeclaredMembers(r, value, body)
 	return nil
@@ -1504,11 +1519,18 @@ func decodeJSONTestHook(r *http.Request, value any) error {
 }
 
 // refuseUndeclaredMembers is decodeJSONTestHook's refusal on its own, for a test hook that reads
-// its body itself and decodes it after: it answers the error naming the top-level members of body
-// that value's type does not declare, and nil when it declares them all.
+// its body itself and decodes it after, and judgeUndeclaredMembers' for a request the command bar
+// sends in-process: it answers the error naming the top-level members of body that value's type
+// does not declare, and nil when it declares them all.
 func refuseUndeclaredMembers(value any, body []byte) error {
-	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
+	return refuseUndeclared(undeclaredMembers(value, body))
+}
+
+// refuseUndeclared is the refusal of the members or fields undeclared a body names that its route
+// does not take, each by name, nil for none.
+func refuseUndeclared(undeclared []string) error {
+	if len(undeclared) > 0 {
+		return errorf(http.StatusBadRequest, "INVALID_JSON", "this route does not take: %s", strings.Join(undeclared, ", "))
 	}
 	return nil
 }

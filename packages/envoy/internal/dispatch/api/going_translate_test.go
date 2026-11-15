@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -178,10 +179,11 @@ func goingGuardHeld(action string, args map[string]any) goingObservation {
 }
 
 // goingGuardWrite is what a write of action through route makes of call, approved as approved:
-// the requests its translation builds, serialised - each request's method, path, query and body
-// (its boundary-independent form for a multipart upload) - and the refusal the write meets before
-// it sends them (goingSendRefusal), against the read before goingGuardHeld makes, so two calls
-// make the same write exactly where they build the same requests and meet the same refusal.
+// the requests its translation builds, serialised - each request's method, path, query, body (its
+// boundary-independent form for a multipart upload) and the condition it carries on its context
+// (goingSend.condition) - and the refusal the write meets before it sends them (goingSendRefusal),
+// against the read before goingGuardHeld makes, so two calls make the same write exactly where
+// they build the same requests and meet the same refusal.
 func goingGuardWrite(action string, route GoingRoute, args map[string]any, values map[string]string, session, approved string) (string, error) {
 	reader := goingReader{doer: goingResolvingDoer{}, base: ""}
 	call, err := route.translate(context.Background(), reader, goingCallInput{arguments: args, path: values, session: session})
@@ -208,6 +210,15 @@ func goingGuardWrite(action string, route GoingRoute, args map[string]any, value
 		}
 		built.Write(body)
 		built.WriteByte('\n')
+		if send.condition != nil {
+			condition, err := json.Marshal(send.condition)
+			if err != nil {
+				return "", err
+			}
+			built.WriteString("condition: ")
+			built.Write(condition)
+			built.WriteByte('\n')
+		}
 	}
 	prepared := goingPrepared{action: action, route: route, arguments: args, call: call}
 	if refused := goingSendRefusal(approved, prepared, goingGuardHeld(action, args), ""); refused != nil {

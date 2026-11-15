@@ -63,7 +63,9 @@ func TestTheGoingFrameFixturesAreWhatTheServerWrites(t *testing.T) {
 			{Action: "dispatch_comment", Offered: false, Invocations: []goingInvocation{}},
 			{Action: "dispatch_artifact", Offered: false, Invocations: []goingInvocation{}, Withheld: []string{
 				goingUploadWithheld("dispatch_artifact", map[string]any{"issue": "DEMO-12", "name": "notes.md"}, "", "save this as notes",
-					func(artifactTarget, string) (bool, bool) { return true, true }),
+					func(artifactTarget, string) (*goingHeldDocument, bool) {
+						return &goingHeldDocument{Name: "notes.md", Slug: "notes-md"}, true
+					}),
 			}},
 		}},
 		"block_chart.json": goingFixtureBlock(t, going.BlockChart, "Events by week",

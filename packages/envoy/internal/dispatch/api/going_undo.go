@@ -420,12 +420,13 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 
 // send makes request index of an undo through route, one of the routes the catalogue declares
 // for the undos (goingIssuePatchRoute and the rest), its placeholders filled from values,
-// in-process as the caller, and answers how it went. The request landed where it was answered
-// 2xx, or where its route's transaction committed, as the record it wrote there says
-// (goingLandings.landed), whatever its answer's status: a write back that committed and then
-// answered 5xx is undone and never made a second time. One whose landing could not be read back
-// is codeGoingLandingUnread.
-func (u goingUndoer) send(ctx context.Context, index int, route string, values map[string]string, body any) goingWriteOutcome {
+// in-process as the caller, carrying condition to its route on the request's context
+// (going_conditions.go), nil for a request that writes nothing back, and answers how it went. The
+// request landed where it was answered 2xx, or where its route's transaction committed, as the
+// record it wrote there says (goingLandings.landed), whatever its answer's status: a write back
+// that committed and then answered 5xx is undone and never made a second time. One whose landing
+// could not be read back is codeGoingLandingUnread.
+func (u goingUndoer) send(ctx context.Context, index int, route string, values map[string]string, body any, condition *goingCondition) goingWriteOutcome {
 	method, pattern, _ := strings.Cut(route, " ")
 	path := goingPath(pattern, values)
 	spec := goingSend{method: method, path: path}
@@ -436,6 +437,7 @@ func (u goingUndoer) send(ctx context.Context, index int, route string, values m
 		}
 		spec = encoded
 	}
+	spec.condition = condition
 	request, err := spec.build(u.landings.on(ctx, index, spec), "")
 	if err != nil {
 		return goingFailed(err)
@@ -497,8 +499,8 @@ const goingRank = "rank"
 // own compare-and-set (advances_revision, refuseAdvancesRevision): a second writer who changed the
 // relation since moved its revision, so the write back is refused, 409 ADVANCES_REVISION, and
 // nothing is written. Every other field the update expects to hold what the write left
-// (updateIssueInput.Expect), its rank the rank string, so a change another writer makes after the
-// read is refused by the update itself.
+// (goingCondition.Expect, which the write back carries on the request's context), its rank the
+// rank string, so a change another writer makes after the read is refused by the update itself.
 func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.issueFields(ctx, write.Target, fields)
@@ -543,8 +545,8 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 			return goingWriteBackValue(field, before), "", nil
 		}
 	}
-	bodyOf := func(restored map[string]json.RawMessage) map[string]any {
-		body, expect := map[string]any{}, map[string]any{}
+	conditionOf := func(restored map[string]json.RawMessage) (map[string]any, goingCondition) {
+		body, expect := map[string]any{}, map[string]json.RawMessage{}
 		for field, after := range restored {
 			switch field {
 			case goingAdvances:
@@ -555,7 +557,7 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 			case goingRank:
 				var place issueRankPlace
 				if json.Unmarshal(after, &place) == nil {
-					expect[field] = place.Rank
+					expect[field], _ = json.Marshal(place.Rank)
 				} else {
 					expect[field] = goingJSONOrNullRaw(after)
 				}
@@ -563,13 +565,10 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 				expect[field] = goingJSONOrNullRaw(after)
 			}
 		}
-		if len(expect) > 0 {
-			body["expect"] = expect
-		}
-		return body
+		return body, goingCondition{Expect: expect}
 	}
 	changed := func(code string) bool { return code == "ISSUE_CHANGED" || code == codeAdvancesRevision }
-	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf, bodyOf, changed)
+	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf, conditionOf, changed)
 }
 
 // rankRestore is how a write back puts an issue at the place it held: between the two neighbours
@@ -662,7 +661,7 @@ func goingJSONOrNullRaw(raw json.RawMessage) json.RawMessage {
 
 // askFields writes back each part of the ask the edit changed that still holds what the edit
 // left, and names each one another writer changed since; the edit expects each part it writes
-// back to hold what the edit left (editAskInput.Expect).
+// back to hold what the edit left (goingCondition.Expect, on the request's context).
 func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.askFields(ctx, write.Target, fields)
@@ -675,33 +674,34 @@ func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, g
 		}
 		return goingJSONOrNullRaw(before), "", nil
 	}
-	bodyOf := func(restored map[string]json.RawMessage) map[string]any {
-		expect := map[string]any{}
+	conditionOf := func(restored map[string]json.RawMessage) (map[string]any, goingCondition) {
+		expect := map[string]json.RawMessage{}
 		for field, after := range restored {
 			expect[field] = goingJSONOrNullRaw(after)
 		}
-		return map[string]any{"expect": expect}
+		return nil, goingCondition{Expect: expect}
 	}
 	changed := func(code string) bool { return code == "ASK_CHANGED" }
-	return u.writeBack(ctx, write, read, goingAskEditRoute, map[string]string{"id": write.Target}, restoreOf, bodyOf, changed)
+	return u.writeBack(ctx, write, read, goingAskEditRoute, map[string]string{"id": write.Target}, restoreOf, conditionOf, changed)
 }
 
 // writeBack is a write back of the fields one write changed, by one PATCH through route, its
 // placeholders filled from values: restoreOf says, from what each field holds now, held before
 // the write and was left by it, the value the PATCH writes back, or why the field is left as it
 // is - another writer changed it since - or fails, which fails the whole write back before
-// anything is sent. bodyOf adds the body keys the PATCH guards the write back with, from the
-// fields restored and what the write left them: the expect map most fields ride (the route's
-// expect), and a precondition token a field carries instead (advances_revision), each decided
-// under the lock the route takes, so a field another writer changes between the read and the PATCH
-// is never written over. A refusal whose code `changed` names is that race - the route wrote
-// nothing back, the field is the field changed - and every other refusal leaves the fields with it.
-// Every field's own outcome is answered beside the write's.
+// anything is sent. conditionOf says what guards the write back, from the fields restored and
+// what the write left them: the condition most fields ride on the request's context (Expect,
+// going_conditions.go), which the PATCH carries marked as a write back, and the body keys of a
+// precondition token a field carries instead (advances_revision), each decided under the lock the
+// route takes, so a field another writer changes between the read and the PATCH is never written
+// over. A refusal whose code `changed` names is that race - the route wrote nothing back, the
+// field is the field changed - and every other refusal leaves the fields with it. Every field's
+// own outcome is answered beside the write's.
 func (u goingUndoer) writeBack(
 	ctx context.Context, write goingRunWrite, read func([]string) (map[string]any, error),
 	route string, values map[string]string,
 	restoreOf func(field string, held, before, after json.RawMessage) (any, string, error),
-	bodyOf func(restored map[string]json.RawMessage) map[string]any, changed func(code string) bool,
+	conditionOf func(restored map[string]json.RawMessage) (map[string]any, goingCondition), changed func(code string) bool,
 ) (any, goingWriteOutcome, []goingUndoField) {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -731,8 +731,10 @@ func (u goingUndoer) writeBack(
 		outcomes = append(outcomes, goingUndoField{Field: field, OK: true})
 	}
 	if len(restore) > 0 {
-		maps.Copy(restore, bodyOf(restoredAfter))
-		if outcome := u.send(ctx, 0, route, values, restore); !outcome.OK {
+		tokens, condition := conditionOf(restoredAfter)
+		maps.Copy(restore, tokens)
+		condition.WriteBack = true
+		if outcome := u.send(ctx, 0, route, values, restore, &condition); !outcome.OK {
 			if changed(outcome.Code) {
 				// Another writer changed a field after the read: the route wrote nothing back.
 				outcome = goingChanged([]string{outcome.Message}, nil)
@@ -760,8 +762,9 @@ func (u goingUndoer) writeBack(
 
 // document writes the content the document held before the edit back over it, as a further
 // version uploaded under the document's own name to its owner's route, where its content is still
-// what the edit left: the upload expects it (jsonArtifactUpload.ExpectSHA256), decided under the
-// document's own lock, so an edit another writer makes after the read is never written over. What
+// what the edit left: the upload expects it (goingCondition.ExpectSHA256, on the request's
+// context), decided under the document's own lock, so an edit another writer makes after the read
+// is never written over. What
 // the edit left is the content read after it whose token is the one the edit's route answered it
 // left, and what it replaced the content read before it whose token is the one the route answered
 // it found (documentEdited): a write whose reads were not is recorded unread, and never reaches
@@ -791,8 +794,7 @@ func (u goingUndoer) document(ctx context.Context, write goingRunWrite) (any, go
 	}
 	outcome := u.send(ctx, 0, route, values, map[string]any{
 		"name": artifact.Name, "content": before.Content, "summary": u.reason,
-		"expect_sha256": docs.MarkdownSHA256(after.Content),
-	})
+	}, &goingCondition{WriteBack: true, ExpectSHA256: docs.MarkdownSHA256(after.Content)})
 	if read, _, err := u.observer.documentValue(ctx, artifact.ID); err == nil {
 		now = read
 	}
@@ -847,17 +849,17 @@ func goingHolderText(holder *goingHolder) string {
 // claim undoes a claim by releasing it and a release by taking the claim back, each decided by
 // the claim route in its own transaction, never from a read another writer may have overtaken. A
 // claim is released only while the holder it left - as its route answered it, in the claim's own
-// transaction - still holds it (releaseClaimInput.ExpectHolder); a release is taken back only for
+// transaction - still holds it (goingCondition.ExpectHolder); a release is taken back only for
 // the holder it released - as its route answered it, previous_claim - and only where the claim
 // the undo makes would be recorded as that very holder (claimsAs) and nobody holds the issue
-// (claimIssueInput.ExpectUnclaimed). A release of another's claim - a session's the person
-// released, another person's, or the person's own undone through a credential bound to a
-// session - is refused, 409 GOING_UNDO_NOT_CALLERS_CLAIM, settled, with nothing written: the bar
-// cannot claim for that holder, and claiming as the caller would give the caller a claim it never
-// held. Either route refusing its condition, 409 CLAIM_HOLDER_CHANGED, is the claim changed by
-// another writer since, and nothing is undone. A claim or a release its route answered changed
-// nothing (goingRunWrite.Unchanged) - a claim of an issue its caller already held, a release of
-// one nobody held - is undone by nothing.
+// (goingCondition.ExpectUnclaimed), each condition carried on the request's context. A release
+// of another's claim - a session's the person released, another person's, or the person's own
+// undone through a credential bound to a session - is refused, 409 GOING_UNDO_NOT_CALLERS_CLAIM,
+// settled, with nothing written: the bar cannot claim for that holder, and claiming as the caller
+// would give the caller a claim it never held. Either route refusing its condition, 409
+// CLAIM_HOLDER_CHANGED, is the claim changed by another writer since, and nothing is undone. A
+// claim or a release its route answered changed nothing (goingRunWrite.Unchanged) - a claim of an
+// issue its caller already held, a release of one nobody held - is undone by nothing.
 func (u goingUndoer) claim(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var before, after *goingHolder
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -883,7 +885,9 @@ func (u goingUndoer) claim(ctx context.Context, write goingRunWrite) (any, going
 		return now(), goingWriteOutcome{OK: true, Status: http.StatusOK,
 			Message: "the claim route answered that this write changed nothing - the claim already stood as it asked - so there is nothing to undo"}
 	case after != nil:
-		outcome := u.send(ctx, 0, goingReleaseRoute, values, map[string]any{"expect_holder": after})
+		// The body is empty: a bearer's release reads its actor from one, and a person's none.
+		outcome := u.send(ctx, 0, goingReleaseRoute, values, map[string]any{},
+			&goingCondition{WriteBack: true, ExpectHolder: &model.Actor{Kind: after.Kind, ID: after.ID}})
 		return now(), changed(outcome)
 	case before == nil:
 		return now(), goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "nobody held the claim before this release, so there is nothing to take back"}
@@ -893,7 +897,7 @@ func (u goingUndoer) claim(ctx context.Context, write goingRunWrite) (any, going
 			"this release released the claim of %s, which the bar cannot claim for them: its claim would be recorded as %s, which never held it, so nothing was taken back",
 			goingHolderText(before), goingHolderText(&claimant))}
 	}
-	outcome := u.send(ctx, 0, goingClaimRoute, values, map[string]any{"expect_unclaimed": true})
+	outcome := u.send(ctx, 0, goingClaimRoute, values, map[string]any{}, &goingCondition{WriteBack: true, ExpectUnclaimed: true})
 	return now(), changed(outcome)
 }
 
@@ -919,7 +923,7 @@ func (u goingUndoer) follow(ctx context.Context, write goingRunWrite) (any, goin
 	if before.Following {
 		route = goingFollowRoute
 	}
-	outcome := u.send(ctx, 0, route, map[string]string{"id": write.Target, "session_id": after.Session}, nil)
+	outcome := u.send(ctx, 0, route, map[string]string{"id": write.Target, "session_id": after.Session}, nil, nil)
 	if outcome.OK {
 		now.Following = before.Following
 	}
@@ -935,9 +939,10 @@ type goingCommentResolution struct {
 }
 
 // comment undoes a resolve by reopening the thread, while it still holds the resolution the turn
-// left: the reopen expects that resolution's moment (reopenCommentInput.ExpectResolvedAt), decided
-// under the comment's lock, so a thread another writer reopened and resolved again after the
-// undo's read keeps their resolution, the route's 409 COMMENT_CHANGED being the thread changed.
+// left: the reopen expects that resolution's moment (goingCondition.ExpectResolvedAt, on the
+// request's context), decided under the comment's lock, so a thread another writer reopened and
+// resolved again after the undo's read keeps their resolution, the route's 409 COMMENT_CHANGED
+// being the thread changed.
 func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var before, after goingCommentResolution
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -956,7 +961,9 @@ func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goi
 	case after.ResolvedAt == nil || now.ResolvedAt == nil || *now.ResolvedAt != *after.ResolvedAt:
 		return now, goingChanged([]string{"the thread was resolved again since this write, by another write"}, nil)
 	}
-	outcome := u.send(ctx, 0, goingCommentReopenRoute, map[string]string{"id": write.Target}, map[string]any{"expect_resolved_at": *after.ResolvedAt})
+	resolvedAt := *after.ResolvedAt
+	outcome := u.send(ctx, 0, goingCommentReopenRoute, map[string]string{"id": write.Target}, nil,
+		&goingCondition{WriteBack: true, ExpectResolvedAt: &resolvedAt})
 	if read, err := u.observer.commentResolved(ctx, write.Target); err == nil {
 		now, _ = read.value.(goingCommentResolution)
 	}
@@ -1002,7 +1009,7 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 	if current.value != "open" {
 		return current.value, goingChanged([]string{fmt.Sprintf("the ask is %v now, so it is no longer open to retract", current.value)}, nil)
 	}
-	outcome := u.send(ctx, 0, goingAskResolveRoute, map[string]string{"id": ask}, map[string]any{"kind": "retracted", "reason": u.reason})
+	outcome := u.send(ctx, 0, goingAskResolveRoute, map[string]string{"id": ask}, map[string]any{"kind": "retracted", "reason": u.reason}, nil)
 	if outcome.OK {
 		return "resolved", outcome
 	}
@@ -1014,8 +1021,9 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 // each request went. That status is the one the write recorded in its value after (the created
 // issue's key and status, observe); an issue someone moved since is refused, 409
 // GOING_UNDO_CHANGED, before anything is posted, and the close expects that status too
-// (updateIssueInput.Expect), decided under the issue's lock, so a move made after the undo's read
-// is never closed over either: that refusal, 409 ISSUE_CHANGED, is the issue changed, and settles.
+// (goingCondition.Expect, on the request's context), decided under the issue's lock, so a move
+// made after the undo's read is never closed over either: that refusal, 409 ISSUE_CHANGED, is
+// the issue changed, and settles.
 // Where an earlier undo of the write posted the reason (landed) and its close was refused, the
 // reason is not posted again: the undo resumes at the close. A close refused after the reason
 // landed is answered naming the reason that stands (goingRefusal.after), as a write's refused line
@@ -1055,7 +1063,7 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	values := map[string]string{"key": write.Target}
 	reason := goingUndoRequest(goingIssueMessageRoute, values)
 	if len(landed) == 0 || landed[0].Method != reason.Method || landed[0].Path != reason.Path {
-		reason.Outcome = u.send(ctx, 0, goingIssueMessageRoute, values, map[string]any{"body": u.reason})
+		reason.Outcome = u.send(ctx, 0, goingIssueMessageRoute, values, map[string]any{"body": u.reason}, nil)
 	} else {
 		reason = landed[0]
 	}
@@ -1064,9 +1072,9 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 		return issue.Status, reason.Outcome, requests
 	}
 	closing := goingUndoRequest(goingIssuePatchRoute, values)
-	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{
-		"status": "done", "expect": map[string]any{"status": left},
-	})
+	expected, _ := json.Marshal(left)
+	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{"status": "done"},
+		&goingCondition{WriteBack: true, Expect: map[string]json.RawMessage{"status": expected}})
 	requests = append(requests, closing)
 	if closing.Outcome.OK {
 		return "done", closing.Outcome, requests

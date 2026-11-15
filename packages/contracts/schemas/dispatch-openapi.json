@@ -150,7 +150,7 @@
     },
     "/api/v1/agents/{session_id}/artifacts": {
       "post": {
-        "description": "Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (\u003c\u003e\"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. The multipart field expect_new makes the upload a create alone, as on an issue upload (409 DOCUMENT_EXISTS). The answer's previous_version is, as an issue upload's, the version the upload wrote its next version over (null where it made the artifact).",
+        "description": "Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (\u003c\u003e\"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. The command bar's upload without force is a create alone, as on an issue upload, by an in-process condition on the request's context (409 DOCUMENT_EXISTS). The answer's previous_version is, as an issue upload's, the version the upload wrote its next version over (null where it made the artifact).",
         "operationId": "postApiV1AgentsBySessionIdArtifacts",
         "parameters": [
           {
@@ -182,14 +182,6 @@
                 "properties": {
                   "actor": {
                     "description": "the acting session as one JSON object, as the JSON body's `actor` field",
-                    "type": "string"
-                  },
-                  "expect_new": {
-                    "description": "true makes the upload a create alone, as the JSON body's expect_new does: a name the owner already holds when the upload takes its lock is 409 DOCUMENT_EXISTS, nothing written",
-                    "enum": [
-                      "true",
-                      "false"
-                    ],
                     "type": "string"
                   },
                   "file": {
@@ -2431,7 +2423,7 @@
         "x-auth": "any"
       },
       "patch": {
-        "description": "Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. expect {part: value} makes the edit conditional on the parts it names (question, options, multiple, urgency), each holding that value, an option as {label, description?}, when the edit takes the ask's lock: 409 ASK_CHANGED naming what each other part holds now, nothing written. The answer is the ask as the edit left it, with previous beside it: each part the edit names as the ask held it when the edit took its lock, spelled as expect takes it.",
+        "description": "Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. The command bar's undo makes a write back conditional by an in-process condition on the request's context, never a body member: each part it writes (question, options, multiple, urgency) must hold, when the edit takes the ask's lock, the value the turn left, an option as {label, description?}, else 409 ASK_CHANGED naming what each other part holds now, nothing written; a write back carrying no such condition is 500 GOING_CONDITION_MISSING, nothing written. The answer is the ask as the edit left it, with previous beside it: each part the edit names as the ask held it when the edit took its lock, spelled as the edit writes it.",
         "operationId": "patchApiV1AsksById",
         "parameters": [
           {
@@ -3463,7 +3455,7 @@
     },
     "/api/v1/comments/{id}/reopen": {
       "post": {
-        "description": "Reopen a resolved comment thread. {expect_resolved_at} makes the reopen conditional on the thread still holding the resolution of that moment, as the comment's read answers resolved_at, when the reopen takes the comment's lock: 409 COMMENT_CHANGED otherwise, nothing written; with no body it reopens whatever resolution the thread holds.",
+        "description": "Reopen a resolved comment thread, whatever resolution it holds. The command bar's undo of a resolve makes the reopen conditional by an in-process condition on the request's context, never a body member: the thread must still hold the resolution the turn left, as the comment's read answers resolved_at, when the reopen takes the comment's lock, else 409 COMMENT_CHANGED, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition).",
         "operationId": "postApiV1CommentsByIdReopen",
         "parameters": [
           {
@@ -3487,7 +3479,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ReopenCommentInput"
+                "$ref": "#/components/schemas/ActorInput"
               }
             }
           }
@@ -4979,7 +4971,7 @@
     },
     "/api/v1/going/runs/{id}/undo": {
       "post": {
-        "description": "Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo the catalogue row it went through states, as the write's record keeps it, and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released - none where the claim route answered claim_changed false, the claim already standing as asked - a release taken back only where the holder the claim route answered it released is the one the undo's own claim is recorded as, the session the caller's credential proved or else the person, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the approval route answered opened false, having renewed an ask already open); close_created posts reason, or a default, on an issue the turn created and then closes it - none for a create its route answered 200 with the issue Dispatch already held for the external reference it named, which the turn did not make and which is neither posted on nor closed; trace records the write undone and erases nothing. The value before and the value the turn left that an undo compares and puts back are the ones the write's own route answered its transaction found and left (an update's previous and the issue it answers, an ask edit's previous, a resolve's previous, a claim's previous_claim and claim, a document edit's previous_token and token), never a read on either side of the write. Every undo that puts a value back has the route it writes through decide, under that write's own lock, that the item still holds what the turn left: a claim is released only while the holder it left holds it (expect_holder), a release taken back only while nobody holds the issue (expect_unclaimed), an issue's fields and rank and an ask's text are written back with expect, a document's content with expect_sha256, a created issue is closed only while its status is still the one the turn left it in, as the write recorded it (read before the reason is posted, and sent as expect), and a thread reopened only while it holds the resolution the turn left (expect_resolved_at). A field another writer changed since the write, before the undo's read or between that read and its write, is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of any other holder's claim - a session's the person released, another person's - is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder and settled, with nothing written, since the bar cannot claim for them; a write whose action the catalogue no longer holds, or whose record names no undo, is refused 409 GOING_UNDO_UNKNOWN, since its undo is unknown, and one whose row states an undo this server has no way to run is refused 501 GOING_UNDO_UNSERVED; a write whose value after was never read (after_unread) is refused 409 GOING_UNDO_AFTER_UNREAD by every undo but a trace, with nothing undone, since what it left is unknown; and a write that landed over a value another writer left after the read before it, which its route answers no value of (before_unread: a document edit whose previous_token is not the token its read before read), is refused 409 GOING_UNDO_BEFORE_UNREAD by every undo but a trace, with nothing undone, since what it replaced is unknown. Answers 200 {lines: [{write_id, action, item, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, fields one per field of the item the write changed, each recorded on the run's undos; an undo that was ok or refused with a verdict a retry would repeat settles its write, so a later undo of the run does not try it again, while one that failed on the server, or was refused 401, 408, 429 or CLAIM_CONTENDED by a route that did not commit, leaves it undoable. Each request an undo sends records its landing on the run in its route's own transaction, at its own index and by its own method, path and body's SHA-256, as a write's does, so one that committed and then answered 5xx is undone and never made again. A close_created undo records how each of its two requests went (requests on the run's undo): where its reason landed and its close was refused, its line names the reason it left posted, and the next undo of that write, under whatever key, resumes at the close and posts no second reason; a resumed close that committed is recorded done whatever it answered. The undo claims every write it undoes on the run, pending, holding the requests any earlier undo of it landed, before it undoes any, holding no lock and only while the run's undos are the ones it read, so a second undo of the run while one is under way is 429 GOING_UNDO_IN_PROGRESS with a Retry-After, whose retry reads what the first did; an undo made whose record failed keeps its claim, so the next undo of the run is that 429 too while any request can still be making it, and after that its write's line is 409 GOING_UNDO_UNSETTLED, since that undo may have been made, and it is never undone a second time. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in.",
+        "description": "Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo the catalogue row it went through states, as the write's record keeps it, and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released - none where the claim route answered claim_changed false, the claim already standing as asked - a release taken back only where the holder the claim route answered it released is the one the undo's own claim is recorded as, the session the caller's credential proved or else the person, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the approval route answered opened false, having renewed an ask already open); close_created posts reason, or a default, on an issue the turn created and then closes it - none for a create its route answered 200 with the issue Dispatch already held for the external reference it named, which the turn did not make and which is neither posted on nor closed; trace records the write undone and erases nothing. The value before and the value the turn left that an undo compares and puts back are the ones the write's own route answered its transaction found and left (an update's previous and the issue it answers, an ask edit's previous, a resolve's previous, a claim's previous_claim and claim, a document edit's previous_token and token), never a read on either side of the write. Every undo that puts a value back has the route it writes through decide, under that write's own lock, that the item still holds what the turn left, by an in-process condition the undo carries on the request's context, never a body member: a claim is released only while the holder it left holds it, a release taken back only while nobody holds the issue, an issue's fields and rank, an ask's text and a document's content written back only while each holds what the turn left, a created issue closed only while its status is still the one the turn left it in, as the write recorded it (read before the reason is posted, and the close's condition), and a thread reopened only while it holds the resolution the turn left; each such request is marked as a write back, and a route refuses one carrying no condition it decides 500 GOING_CONDITION_MISSING, writing nothing. A field another writer changed since the write, before the undo's read or between that read and its write, is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of any other holder's claim - a session's the person released, another person's - is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder and settled, with nothing written, since the bar cannot claim for them; a write whose action the catalogue no longer holds, or whose record names no undo, is refused 409 GOING_UNDO_UNKNOWN, since its undo is unknown, and one whose row states an undo this server has no way to run is refused 501 GOING_UNDO_UNSERVED; a write whose value after was never read (after_unread) is refused 409 GOING_UNDO_AFTER_UNREAD by every undo but a trace, with nothing undone, since what it left is unknown; and a write that landed over a value another writer left after the read before it, which its route answers no value of (before_unread: a document edit whose previous_token is not the token its read before read), is refused 409 GOING_UNDO_BEFORE_UNREAD by every undo but a trace, with nothing undone, since what it replaced is unknown. Answers 200 {lines: [{write_id, action, item, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, fields one per field of the item the write changed, each recorded on the run's undos; an undo that was ok or refused with a verdict a retry would repeat settles its write, so a later undo of the run does not try it again, while one that failed on the server, or was refused 401, 408, 429 or CLAIM_CONTENDED by a route that did not commit, leaves it undoable. Each request an undo sends records its landing on the run in its route's own transaction, at its own index and by its own method, path and the SHA-256 of its body and of the condition it carries, as a write's does, so one that committed and then answered 5xx is undone and never made again. A close_created undo records how each of its two requests went (requests on the run's undo): where its reason landed and its close was refused, its line names the reason it left posted, and the next undo of that write, under whatever key, resumes at the close and posts no second reason; a resumed close that committed is recorded done whatever it answered. The undo claims every write it undoes on the run, pending, holding the requests any earlier undo of it landed, before it undoes any, holding no lock and only while the run's undos are the ones it read, so a second undo of the run while one is under way is 429 GOING_UNDO_IN_PROGRESS with a Retry-After, whose retry reads what the first did; an undo made whose record failed keeps its claim, so the next undo of the run is that 429 too while any request can still be making it, and after that its write's line is 409 GOING_UNDO_UNSETTLED, since that undo may have been made, and it is never undone a second time. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in.",
         "operationId": "postApiV1GoingRunsByIdUndo",
         "parameters": [
           {
@@ -5039,7 +5031,7 @@
     },
     "/api/v1/going/runs/{id}/writes": {
       "post": {
-        "description": "Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it, the same way, an upload's at the document its name finds under the owner its route writes to, at its version then, where the owner holds one, and recorded over by what the write's route answered its own transaction found and left, where it answers them: an update's previous and the issue it left (rank_place beside a rank), an ask edit's previous and the ask it left, a resolve's previous and the comment it left, a claim's previous_claim and claim, an upload's previous_version, a follow's change as its own transaction committed one, and for a document edit the content read before and after it held to the previous_token and token the edit answered - a read after of another token is recorded after_unread, and a read before of another token before_unread, its before null, since the route answers no content of what it replaced. A create its route answered 200 - the issue Dispatch already held for the external reference it named, not one it made (201) - is recorded unchanged, its outcome.message saying so, and its undo closes nothing. Answers 200 {write_id, action, item, fields, before, now, outcome {ok, status, code, message}, delivery?} and records the write on the run, fields the names of the item's fields it changed, with the undo the row it went through states, sends, how many requests its call sends, recorded before any is sent, and requests [{method, path, body_sha256, outcome, made?, inherited?}], how each request the write sent went (a reasoned close posts its reason, then closes), inherited a request an earlier write of the invocation landed that this one resumes after; a write that landed and whose value after could not be read, or whose route's answer does not say what it found or whether it changed the claim, says so in outcome.message and is recorded after_unread; a dispatch_send_to_agent carries delivery {state, error}, the state and error of the message's last delivery, since its route answers 201 when the delivery failed too. A request of the write has landed when its route's transaction committed, which the request records on the run in that same transaction, at its own index and by its own method, path and body's SHA-256, whatever status its answer then carried, and a request another of the write is sent after adds to that record the status it was answered and the item it made: a route that committed and then answered 5xx, or whose answer was lost, landed and is never sent again, and a write whose every request landed went through, recorded after_unread where its last answer was no 2xx, and answered status 200 where an earlier attempt landed it and ended before its answer was read. A write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and recorded with that outcome; one refused after a request of it landed is answered the route's status and code in the shared error shape, its message naming each request that landed and stands, once. A write of several requests is one write to its Idempotency-Key: no request of it marks the key committed, and its record does once the write reached a final outcome; a refusal the key keeps an answer for (a 4xx but 401, 408 and 429) is the write's final answer, which a repeat under the key is replayed however much of the write landed, and one answered 5xx, 401, 408 or 429 by a route that did not commit leaves the key open. Every later write of the invocation that runs, under the same key or a new one, resumes after the requests the invocation's writes record as landed that it sends first, the same method, path and body, and sends none of them again, its claim landing only while the run's latest write of the invocation is the one it read them from; a press that changes a close's reason posts its own, and no landing of another request counts as its own. Each invocation of a run is written once: the write claims its invocation on the run, pending, before it reads or sends anything, holding no lock; a request for an invocation whose write went through writes nothing and answers 200 with that write's line as the run recorded it, one for an invocation another request is writing is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, whose retry answers that write's line, and one for an invocation claimed longer ago than any request can still run and record what it did, and never recorded, resumes that write after the requests its record names as landed where it sends them first - one with other arguments never rewrites them: that write is recorded as it stands, gone through and answered as its line where every request it sends landed, else refused 409 GOING_WRITE_UNSETTLED naming what it landed itself and none it inherited, and the request runs as a write of its own - or, where its record names none, is 409 GOING_WRITE_UNSETTLED, since its request may have run, and is never written again; an invocation whose write was refused may be written again. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer, an upload it withheld among them (the proposal offers an upload under a name its owner holds a document of only with force under a name the person's own words write, and its offer's withheld says why of every other); 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_NOT_AUTOMATIC for auto on an invocation the proposal did not mark automatic - one naming an item that is not the page's and that no reference in the words names (an issue key, a project key typed in upper case, an id, a dispatch:// reference; a document's name only under an owner so named), setting a route or an assignee the words do not name and the issue does not hold, uploading under a name its owner already holds a document of, which would write that document's next version, where the words do not write the name, or carrying an argument the catalogue does not class - for auto with arguments replacing the invocation's own, and for an upload sent auto whose name the owner its route writes to holds a document of when the write runs, or whose route names no owner the write can read, where the words do not write the name, with nothing written; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send, and, however the write came to run, for an upload with content to store and no force under a name the owner its route writes to holds a document of when the write runs (or may hold, where its route names no owner the write can read), in the dispatch command's words, with nothing written. An upload without force is sent with expect_new, so a document of its name another writer makes after that read is its route's 409 DOCUMENT_EXISTS, answered as the route answered it, with nothing written. One write per request.",
+        "description": "Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request, and a body member or multipart field its route does not declare is refused 400 INVALID_JSON naming it; the value before is read just before it, the same way, an upload's at the document its name finds under the owner its route writes to, at its version then, where the owner holds one, and recorded over by what the write's route answered its own transaction found and left, where it answers them: an update's previous and the issue it left (rank_place beside a rank), an ask edit's previous and the ask it left, a resolve's previous and the comment it left, a claim's previous_claim and claim, an upload's previous_version, a follow's change as its own transaction committed one, and for a document edit the content read before and after it held to the previous_token and token the edit answered - a read after of another token is recorded after_unread, and a read before of another token before_unread, its before null, since the route answers no content of what it replaced. A create its route answered 200 - the issue Dispatch already held for the external reference it named, not one it made (201) - is recorded unchanged, its outcome.message saying so, and its undo closes nothing. Answers 200 {write_id, action, item, fields, before, now, outcome {ok, status, code, message}, delivery?} and records the write on the run, fields the names of the item's fields it changed, with the undo the row it went through states, sends, how many requests its call sends, recorded before any is sent, and requests [{method, path, body_sha256, outcome, made?, inherited?}], how each request the write sent went (a reasoned close posts its reason, then closes), inherited a request an earlier write of the invocation landed that this one resumes after; a write that landed and whose value after could not be read, or whose route's answer does not say what it found or whether it changed the claim, says so in outcome.message and is recorded after_unread; a dispatch_send_to_agent carries delivery {state, error}, the state and error of the message's last delivery, since its route answers 201 when the delivery failed too. A request of the write has landed when its route's transaction committed, which the request records on the run in that same transaction, at its own index and by its own method, path and the SHA-256 of its body and of the condition it carries, whatever status its answer then carried, and a request another of the write is sent after adds to that record the status it was answered and the item it made: a route that committed and then answered 5xx, or whose answer was lost, landed and is never sent again, and a write whose every request landed went through, recorded after_unread where its last answer was no 2xx, and answered status 200 where an earlier attempt landed it and ended before its answer was read. A write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and recorded with that outcome; one refused after a request of it landed is answered the route's status and code in the shared error shape, its message naming each request that landed and stands, once. A write of several requests is one write to its Idempotency-Key: no request of it marks the key committed, and its record does once the write reached a final outcome; a refusal the key keeps an answer for (a 4xx but 401, 408 and 429) is the write's final answer, which a repeat under the key is replayed however much of the write landed, and one answered 5xx, 401, 408 or 429 by a route that did not commit leaves the key open. Every later write of the invocation that runs, under the same key or a new one, resumes after the requests the invocation's writes record as landed that it sends first, the same method, path, body and condition, and sends none of them again, its claim landing only while the run's latest write of the invocation is the one it read them from; a press that changes a close's reason posts its own, and no landing of another request counts as its own. Each invocation of a run is written once: the write claims its invocation on the run, pending, before it reads or sends anything, holding no lock; a request for an invocation whose write went through writes nothing and answers 200 with that write's line as the run recorded it, one for an invocation another request is writing is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, whose retry answers that write's line, and one for an invocation claimed longer ago than any request can still run and record what it did, and never recorded, resumes that write after the requests its record names as landed where it sends them first - one with other arguments never rewrites them: that write is recorded as it stands, gone through and answered as its line where every request it sends landed, else refused 409 GOING_WRITE_UNSETTLED naming what it landed itself and none it inherited, and the request runs as a write of its own - or, where its record names none, is 409 GOING_WRITE_UNSETTLED, since its request may have run, and is never written again; an invocation whose write was refused may be written again. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer, an upload it withheld among them (the proposal offers an upload under a name its owner holds a document of only with force where the person's own words name that document - its name, its slug or its name without the extension - and its offer's withheld says why of every other); 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_NOT_AUTOMATIC for auto on an invocation the proposal did not mark automatic - one naming an item that is not the page's and that no reference in the words names (an issue key, a project key typed in upper case, an id, a dispatch:// reference; a document's name only under an owner so named), setting a route or an assignee the words do not name and the issue does not hold, uploading under a name its owner already holds a document of, which would write that document's next version, where the words do not write the name, or carrying an argument the catalogue does not class - for auto with arguments replacing the invocation's own, and for an upload sent auto whose name the owner its route writes to holds a document of when the write runs, or whose route names no owner the write can read, where the words do not write the name, with nothing written; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send, and, however the write came to run, for an upload with content to store and no force under a name the owner its route writes to holds a document of when the write runs (or may hold, where its route names no owner the write can read), in the dispatch command's words, with nothing written. An upload without force carries a create alone to its route as an in-process condition on the request's context, never a body member, so a document of its name another writer makes after that read is its route's 409 DOCUMENT_EXISTS, answered as the route answered it, with nothing written. One write per request.",
         "operationId": "postApiV1GoingRunsByIdWrites",
         "parameters": [
           {
@@ -5543,7 +5535,7 @@
         "x-auth": "any"
       },
       "patch": {
-        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. expect {field: value} makes it conditional on the fields it names (status, title, labels, priority, assignee, route, parent, blocked_by, components, repo, external_links, rank), each holding that value as the issue's read answers it (rank its rank string), compared under the issue's lock: 409 ISSUE_CHANGED naming what each other field holds now, nothing written. The answer is the issue as the update left it, with previous beside it: each field the update names as the issue held it when the update took its lock, as the issue's read answers it (advances_revision beside advances), and rank as the place the issue held, {rank, after, before}, the issues just before and just after it in its project's rank order (null at an end); a write that names a rank answers rank_place too, the place it left the issue in, in the same shape.",
+        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. The command bar's undo makes a write back conditional by an in-process condition on the request's context, never a body member: each field it writes must hold, under the issue's lock, the value the turn left, as the issue's read answers it (rank its rank string), else 409 ISSUE_CHANGED naming what each other field holds now, nothing written; a write back carrying no such condition is 500 GOING_CONDITION_MISSING, nothing written. The answer is the issue as the update left it, with previous beside it: each field the update names as the issue held it when the update took its lock, as the issue's read answers it (advances_revision beside advances), and rank as the place the issue held, {rank, after, before}, the issues just before and just after it in its project's rank order (null at an end); a write that names a rank answers rank_place too, the place it left the issue in, in the same shape.",
         "operationId": "patchApiV1IssuesByKey",
         "parameters": [
           {
@@ -5661,7 +5653,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A JSON upload's expect_sha256 makes it conditional: the document of the name must hold markdown of that hex SHA-256 when the upload takes its lock, else 409 DOCUMENT_CHANGED with nothing written (a name no document has is refused the same). expect_new (a JSON field, or a multipart field true or false) makes the upload a create alone: a name the owner already holds when the upload takes the owner's lock is 409 DOCUMENT_EXISTS with nothing written; with expect_sha256 it is 400 ARTIFACT_INPUT. The answer is {artifact, version, previous_version}: previous_version is the number of the newest version the upload wrote its next version over, as the upload found it under the owner's lock (0 for an artifact that held none yet), and null where the upload made the artifact.",
+        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. The command bar's in-process caller makes an upload conditional by a condition on the request's context, never a body member: its undo's write back expects the markdown the turn left, else 409 DOCUMENT_CHANGED with nothing written (a name no document has is refused the same), and its upload without force is a create alone, a name the owner already holds when the upload takes the owner's lock being 409 DOCUMENT_EXISTS with nothing written; a write back carrying neither is 500 GOING_CONDITION_MISSING, nothing written. The answer is {artifact, version, previous_version}: previous_version is the number of the newest version the upload wrote its next version over, as the upload found it under the owner's lock (0 for an artifact that held none yet), and null where the upload made the artifact.",
         "operationId": "postApiV1IssuesByKeyArtifacts",
         "parameters": [
           {
@@ -5693,14 +5685,6 @@
                 "properties": {
                   "actor": {
                     "description": "the acting session as one JSON object, as the JSON body's `actor` field",
-                    "type": "string"
-                  },
-                  "expect_new": {
-                    "description": "true makes the upload a create alone, as the JSON body's expect_new does: a name the owner already holds when the upload takes its lock is 409 DOCUMENT_EXISTS, nothing written",
-                    "enum": [
-                      "true",
-                      "false"
-                    ],
                     "type": "string"
                   },
                   "file": {
@@ -6304,7 +6288,7 @@
     },
     "/api/v1/issues/{key}/claim": {
       "post": {
-        "description": "Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where the claim already stood as asked (the caller already holds it, and keeps the time work started), so the request changed nothing; previous_claim is the claim that stood when the claim took the issue's lock, null for none. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. {expect_unclaimed: true} makes the claim conditional on nobody - the caller included - holding the issue when it takes the lock: 409 CLAIM_HOLDER_CHANGED carrying the claim otherwise, nothing written. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry.",
+        "description": "Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where the claim already stood as asked (the caller already holds it, and keeps the time work started), so the request changed nothing; previous_claim is the claim that stood when the claim took the issue's lock, null for none. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. The command bar's undo of a release makes the claim conditional by an in-process condition on the request's context, never a body member: nobody - the caller included - may hold the issue when it takes the lock, else 409 CLAIM_HOLDER_CHANGED carrying the claim, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry.",
         "operationId": "postApiV1IssuesByKeyClaim",
         "parameters": [
           {
@@ -6370,7 +6354,7 @@
         "x-write-scope": "project"
       },
       "delete": {
-        "description": "Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where nobody held the claim, so the request changed nothing; previous_claim is the claim the release found when it took the issue's lock, the one it released, null for none. {expect_holder: actor} makes the release conditional on that holder holding the issue when it takes the lock: 409 CLAIM_HOLDER_CHANGED carrying the claim otherwise, nothing written. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked.",
+        "description": "Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where nobody held the claim, so the request changed nothing; previous_claim is the claim the release found when it took the issue's lock, the one it released, null for none. The command bar's undo of a claim makes the release conditional by an in-process condition on the request's context, never a body member: the holder the turn left must hold the issue when the release takes the lock, else 409 CLAIM_HOLDER_CHANGED carrying the claim, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked.",
         "operationId": "deleteApiV1IssuesByKeyClaim",
         "parameters": [
           {
@@ -6394,7 +6378,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ReleaseClaimInput"
+                "$ref": "#/components/schemas/ActorInput"
               }
             }
           },
@@ -10098,7 +10082,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are, and a JSON upload's expect_sha256 makes it conditional on the document's markdown as an issue upload's does (409 DOCUMENT_CHANGED), and expect_new makes it a create alone (409 DOCUMENT_EXISTS). The answer's previous_version is, as an issue upload's, the version the upload wrote its next version over (null where it made the artifact).",
+        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are, and the command bar's in-process conditions hold as on an issue upload (409 DOCUMENT_CHANGED, 409 DOCUMENT_EXISTS). The answer's previous_version is, as an issue upload's, the version the upload wrote its next version over (null where it made the artifact).",
         "operationId": "postApiV1ProjectsByKeyArtifacts",
         "parameters": [
           {
@@ -10130,14 +10114,6 @@
                 "properties": {
                   "actor": {
                     "description": "the acting session as one JSON object, as the JSON body's `actor` field",
-                    "type": "string"
-                  },
-                  "expect_new": {
-                    "description": "true makes the upload a create alone, as the JSON body's expect_new does: a name the owner already holds when the upload takes its lock is 409 DOCUMENT_EXISTS, nothing written",
-                    "enum": [
-                      "true",
-                      "false"
-                    ],
                     "type": "string"
                   },
                   "file": {
@@ -15956,9 +15932,6 @@
               }
             ]
           },
-          "expect_unclaimed": {
-            "type": "boolean"
-          },
           "force": {
             "type": "boolean"
           }
@@ -19724,13 +19697,6 @@
               {
                 "type": "null"
               }
-            ]
-          },
-          "expect": {
-            "additionalProperties": {},
-            "type": [
-              "object",
-              "null"
             ]
           },
           "multiple": {
@@ -23907,12 +23873,6 @@
               "string"
             ]
           },
-          "expect_new": {
-            "type": "boolean"
-          },
-          "expect_sha256": {
-            "type": "string"
-          },
           "name": {
             "type": "string"
           },
@@ -26190,31 +26150,6 @@
         ],
         "type": "object"
       },
-      "ReleaseClaimInput": {
-        "properties": {
-          "actor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "expect_holder": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object"
-      },
       "RenameArtifactInput": {
         "properties": {
           "name": {
@@ -26224,27 +26159,6 @@
         "required": [
           "name"
         ],
-        "type": "object"
-      },
-      "ReopenCommentInput": {
-        "properties": {
-          "actor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "expect_resolved_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
         "type": "object"
       },
       "ReplyBlock": {
@@ -27726,13 +27640,6 @@
               {
                 "type": "null"
               }
-            ]
-          },
-          "expect": {
-            "additionalProperties": {},
-            "type": [
-              "object",
-              "null"
             ]
           },
           "expected_sequence": {

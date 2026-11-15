@@ -345,35 +345,33 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
 }
 
-// editAskInput is the body of PATCH /api/v1/asks/{id}. Expect makes the edit conditional on the
-// parts it names - question, options, multiple, urgency - each of which must hold, when the edit
-// takes the ask's lock, the value given, as an edit writes it (askFieldValue), or the edit is
-// refused whole, 409 ASK_CHANGED, naming what each changed part holds now.
+// editAskInput is the body of PATCH /api/v1/asks/{id}.
 type editAskInput struct {
-	Question *string                    `json:"question"`
-	Options  *[]model.AskOption         `json:"options"`
-	Multiple *bool                      `json:"multiple"`
-	Urgency  *string                    `json:"urgency"`
-	Expect   map[string]json.RawMessage `json:"expect"`
-	Actor    *model.Actor               `json:"actor"`
+	Question *string            `json:"question"`
+	Options  *[]model.AskOption `json:"options"`
+	Multiple *bool              `json:"multiple"`
+	Urgency  *string            `json:"urgency"`
+	Actor    *model.Actor       `json:"actor"`
 }
 
-// askExpectationRefusal is the refusal of an edit whose expect names a part the ask, as the
-// edit's transaction read it under the ask's lock, no longer holds as expected, nil where it holds
-// every one: a write back undoing another edit puts its words back only while the ask still
-// holds what that edit left, decided under the lock the edit itself takes.
+// askExpectationRefusal is the refusal of an edit whose condition (goingCondition.Expect, on the
+// request's context of the command bar's in-process undo) names a part - question, options,
+// multiple, urgency - the ask, as the edit's transaction read it under the ask's lock, no longer
+// holds as an edit writes it (askFieldValue), nil where it holds every one: a write back undoing
+// another edit puts its words back only while the ask still holds what that edit left, decided
+// under the lock the edit itself takes.
 func askExpectationRefusal(ask model.Ask, expect map[string]json.RawMessage) error {
 	var changed []string
 	for _, field := range slices.Sorted(maps.Keys(expect)) {
 		if !slices.Contains(goingAskFields, field) {
-			return errorf(http.StatusBadRequest, "INVALID_ASK", "expect names %q, which is no part of an ask an edit writes", field)
+			return errorf(http.StatusBadRequest, "INVALID_ASK", "the condition names %q, which is no part of an ask an edit writes", field)
 		}
 		if now := goingJSONOrNull(askFieldValue(ask, field)); !goingSameJSON(now, expect[field]) {
 			changed = append(changed, fmt.Sprintf("%s holds %s", field, now))
 		}
 	}
 	if len(changed) > 0 {
-		return errorf(http.StatusConflict, "ASK_CHANGED", "the ask no longer holds what expect names: %s", strings.Join(changed, "; "))
+		return errorf(http.StatusConflict, "ASK_CHANGED", "the ask no longer holds what the edit expected: %s", strings.Join(changed, "; "))
 	}
 	return nil
 }
@@ -412,6 +410,12 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Question == nil && input.Options == nil && input.Multiple == nil && input.Urgency == nil {
 		writeError(w, "INVALID_ASK", http.StatusBadRequest, "ask edit requires at least one field")
+		return
+	}
+	// The command bar's undo conditions every part its write back writes (going_conditions.go).
+	condition := goingConditionOf(r)
+	if refusal := condition.writeBackRefusal(condition.expects(askPartsNamed(input)), "expected value for every part it writes"); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	// A block ask's text is written into its document, where text reaches the parser with line
@@ -526,7 +530,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		actor = *asThePerson
 	}
 
-	if refusal := askExpectationRefusal(ask, input.Expect); refusal != nil {
+	if refusal := askExpectationRefusal(ask, condition.Expect); refusal != nil {
 		s.writeHandlerError(w, refusal)
 		return
 	}

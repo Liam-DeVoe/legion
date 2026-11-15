@@ -15,8 +15,9 @@ body: |-
   An offered write runs at once only where every item it names is the page's or named in the
   person's own words; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for
   `auto`). An upload under the name of a document its owner already holds is offered only with
-  `force` under a name the person's own words write: every other is withheld, and the proposal's
-  offer says why in `withheld`. A write of an upload without `force` under a name
+  `force` where the person's own words name that document (its name, its slug or its name
+  without the extension): every other is withheld, and the proposal's offer says why in
+  `withheld`. A write of an upload without `force` under a name
   the store holds when it runs is refused, however it came to run: `400 GOING_ARGUMENTS` in the
   `dispatch artifact` command's words where its read before finds the document, and the route's
   `409 DOCUMENT_EXISTS` for one made after that read. Each write is
@@ -39,13 +40,19 @@ body: |-
   answer `previous_token` beside `token`; and the upload routes answer `previous_version`. A
   create naming an external issue Dispatch already holds answers that issue `200`, not the `201`
   of a create it made, as it did before: the bar records it as a write that made nothing, and its
-  undo closes nothing. The conditions the undo writes back with are `expect` on
-  `PATCH /api/v1/issues/{key}` (`409 ISSUE_CHANGED`) and `PATCH /api/v1/asks/{id}`
-  (`409 ASK_CHANGED`), `expect_holder` on the release and `expect_unclaimed` on the claim
-  (`409 CLAIM_HOLDER_CHANGED`), `expect_resolved_at` on the reopen (`409 COMMENT_CHANGED`) and
-  `expect_sha256` on an upload (`409 DOCUMENT_CHANGED`). An upload also takes `expect_new`, a
-  create alone (`409 DOCUMENT_EXISTS` where the owner holds the name when the upload takes its
-  lock), which the bar sends on every upload without `force`.
+  undo closes nothing. The conditions the undo writes back with are the bar's in-process
+  conditions: its in-process caller carries each to the route on the request's context, never in
+  a body, so no other client can send one and a body naming `expect`, `expect_sha256`,
+  `expect_new`, `expect_holder`, `expect_unclaimed` or `expect_resolved_at` is answered as one
+  naming nothing. Each route decides its condition under its own lock: the issue update
+  (`409 ISSUE_CHANGED`), the ask edit (`409 ASK_CHANGED`), the release and the claim
+  (`409 CLAIM_HOLDER_CHANGED`), the reopen (`409 COMMENT_CHANGED`) and an upload
+  (`409 DOCUMENT_CHANGED`), and the bar's upload without `force` is a create alone
+  (`409 DOCUMENT_EXISTS` where the owner holds the name when the upload takes its lock). A
+  request of the undo is marked as a write back, and a route refuses one carrying no condition it
+  decides `500 GOING_CONDITION_MISSING`, with nothing written. A request the bar sends in-process
+  refuses a body member or multipart field its route does not declare, `400 INVALID_JSON`
+  naming it.
   `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
   `GET /api/v1/me/going-runs` lists the person's runs of the last 30 days,
   `POST /api/v1/going/requests/{id}/cancel` stops a run, and

@@ -64,30 +64,32 @@ func (s *server) rejectComment(w http.ResponseWriter, r *http.Request) {
 	s.commentAction(w, r, "reject")
 }
 
-// reopenCommentInput is the optional body of POST /api/v1/comments/{id}/reopen: the acting session
-// the body names, where the caller's credential proved none (actSessionFromBody), as the person
-// routes take it, and ExpectResolvedAt, which makes the reopen conditional: the thread must still
-// hold the resolution of that moment, as the comment's read answers resolved_at, when the reopen
-// takes the comment's lock, or it is refused, 409 COMMENT_CHANGED, with nothing written. A caller
-// that sends no condition reopens whatever resolution the thread holds.
-type reopenCommentInput struct {
-	ExpectResolvedAt *string      `json:"expect_resolved_at"`
-	Actor            *model.Actor `json:"actor"`
-}
-
 // codeCommentChanged is the refusal of a reopen whose condition the thread no longer meets.
 const codeCommentChanged = "COMMENT_CHANGED"
 
+// reopenComment is POST /api/v1/comments/{id}/reopen. Its optional body names the acting session
+// where the caller's credential proved none (actSessionFromBody), as the person routes take it.
+// The command bar's undo makes the reopen conditional (goingCondition.ExpectResolvedAt, on the
+// request's context): the thread must still hold the resolution of that moment, as the
+// comment's read answers resolved_at, when the reopen takes the comment's lock, or it is refused,
+// 409 COMMENT_CHANGED, with nothing written. Every other caller reopens whatever resolution the
+// thread holds.
 func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	var input reopenCommentInput
+	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
 	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+		return
+	}
+	condition := goingConditionOf(r)
+	expected := condition.ExpectResolvedAt
+	if refusal := condition.writeBackRefusal(expected != nil && strings.TrimSpace(*expected) != "", "resolution it expects the thread to hold"); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -107,13 +109,13 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reopen the thread root")
 		return
 	}
-	if input.ExpectResolvedAt != nil && (!comment.Resolved || comment.ResolvedAt == nil || *comment.ResolvedAt != *input.ExpectResolvedAt) {
+	if expected != nil && (!comment.Resolved || comment.ResolvedAt == nil || *comment.ResolvedAt != *expected) {
 		held := "open"
 		if comment.Resolved && comment.ResolvedAt != nil {
 			held = "resolved at " + *comment.ResolvedAt
 		}
 		writeError(w, codeCommentChanged, http.StatusConflict, fmt.Sprintf(
-			"the thread is %s now, not the resolution of %s the reopen expected, so nothing was written", held, *input.ExpectResolvedAt))
+			"the thread is %s now, not the resolution of %s the reopen expected, so nothing was written", held, *expected))
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)

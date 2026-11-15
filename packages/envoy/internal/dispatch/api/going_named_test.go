@@ -6,8 +6,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/going"
@@ -40,14 +42,20 @@ func goingAutomaticOf(t *testing.T, words string, onPage bool, action string, ar
 }
 
 // goingDocumentsHeld is a store whose owners hold the documents named, each as its owner's key,
-// a slash and the document's name or slug, and which answers every read.
+// a slash and the document's name, found by that name or its slug, and which answers every read.
 func goingDocumentsHeld(documents ...string) goingDocumentHeld {
-	return func(owner artifactTarget, name string) (bool, bool) {
+	return func(owner artifactTarget, name string) (*goingHeldDocument, bool) {
 		key := owner.Project
 		if owner.IssueKey != nil {
 			key = *owner.IssueKey
 		}
-		return slices.Contains(documents, key+"/"+name), true
+		for _, document := range documents {
+			held, holds := strings.CutPrefix(document, key+"/")
+			if holds && (held == name || artifactSlug(held) == name) {
+				return &goingHeldDocument{Name: held, Slug: artifactSlug(held)}, true
+			}
+		}
+		return nil, true
 	}
 }
 
@@ -196,7 +204,7 @@ func TestGoingAutomaticHoldsAnUploadsNameToTheWordsWhereItsOwnerHoldsThatDocumen
 		}
 		return arguments
 	}
-	unread := func(artifactTarget, string) (bool, bool) { return false, false }
+	unread := func(artifactTarget, string) (*goingHeldDocument, bool) { return nil, false }
 	for _, tc := range []struct {
 		name, words, document string
 		force                 bool
@@ -231,6 +239,101 @@ func TestGoingAutomaticHoldsAnUploadsNameToTheWordsWhereItsOwnerHoldsThatDocumen
 			}
 			if got := goingAutomaticOf(t, tc.words, true, "dispatch_artifact", upload(tc.document, tc.force), holds); got != tc.automatic {
 				t.Fatalf("%q uploading as %q (force %v) is automatic=%v, want %v", tc.words, tc.document, tc.force, got, tc.automatic)
+			}
+		})
+	}
+}
+
+// TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored (deep review round 5,
+// finding D): an upload with force under the name of a document the issue holds is offered where
+// the person's words name that document as the store holds it - its name, its slug, or its name
+// without the extension - whichever of them the answer wrote as the upload's name, and withheld,
+// saying why, where the words name another document or none, or the upload carries no force. The
+// words "overwrite the notes" ask for notes.md as plainly as "overwrite notes.md" do.
+func TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored(t *testing.T) {
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "DEMO", "An issue holding notes", "The spec says hello.\n").Key
+	uploadDocument(t, handler, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue, "spec.md", "# Spec\n\nThe first rule.\n")
+	holds := served.goingHoldsBy(context.Background())
+	for _, tc := range []struct {
+		name, words, upload string
+		force, offered      bool
+	}{
+		{"the name without its extension", "overwrite the notes with this text", "notes.md", true, true},
+		{"the slug", "replace notes-md with this", "notes.md", true, true},
+		{"another document's name without its extension", "replace the spec with this", "spec.md", true, true},
+		{"the name itself", "replace notes.md with this text", "notes.md", true, true},
+		{"the stored name, where the answer wrote the slug", "overwrite notes.md with this text", "notes-md", true, true},
+		{"a longer name the stem runs on into", "replace the notes-old with this", "notes.md", true, false},
+		{"no document at all", "save this as a doc", "notes.md", true, false},
+		{"the stem, without force", "overwrite the notes with this text", "notes.md", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			arguments := map[string]any{"issue": issue, "name": tc.upload, "content": "# Notes\n\nNew words.\n"}
+			if tc.force {
+				arguments["force"] = true
+			}
+			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {arguments}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := goingBrowserStart(t)
+			start.words = tc.words
+			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+				&going.Final{Answer: "Done.", Arguments: string(written)}, start, holds)
+			if len(proposal.Offers) != 1 {
+				t.Fatalf("%q uploading as %q proposed %+v, want one offer", tc.words, tc.upload, proposal)
+			}
+			offer := proposal.Offers[0]
+			offered := offer.Offered && len(offer.Invocations) == 1 && len(offer.Withheld) == 0
+			withheld := !offer.Offered && len(offer.Invocations) == 0 && len(offer.Withheld) == 1
+			if (tc.offered && !offered) || (!tc.offered && !withheld) {
+				t.Fatalf("%q uploading as %q (force %v) proposed %+v, want offered=%v", tc.words, tc.upload, tc.force, offer, tc.offered)
+			}
+		})
+	}
+}
+
+// TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt (deep review round 5,
+// finding D): an upload with force the proposal offers because the words name the held document
+// by its slug or by its name without the extension is one the person can run: picked as the bar
+// picks an offer (approved person), the write is made, the document's next version written, and
+// no check the write makes when it runs refuses it for the words not writing its exact name.
+func TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "An issue holding notes", "The spec.\n").Key
+	uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
+	holds := rig.served.goingHoldsBy(context.Background())
+	for index, words := range []string{"overwrite the notes with this text", "replace notes-md with this"} {
+		t.Run(words, func(t *testing.T) {
+			arguments := map[string]any{"issue": issue, "name": "notes.md", "content": "# Notes\n\nNew words.\n", "force": true}
+			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {arguments}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := goingBrowserStart(t)
+			start.words = words
+			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+				&going.Final{Answer: "Done.", Arguments: string(written)}, start, holds)
+			if len(proposal.Offers) != 1 || !proposal.Offers[0].Offered || len(proposal.Offers[0].Invocations) != 1 {
+				t.Fatalf("%q proposed %+v, want the upload offered", words, proposal)
+			}
+			run := rig.recorded(t, "alice", true, "dispatch_artifact", words, proposal)
+			line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
+			if !line.Outcome.OK {
+				t.Fatalf("the picked upload under %q answered %+v, want it made", words, line)
+			}
+			var versions int
+			if err := rig.database.Pool.QueryRow(context.Background(), `
+				select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+				where a.issue_key = $1 and a.name = 'notes.md'`, issue).Scan(&versions); err != nil {
+				t.Fatal(err)
+			}
+			if versions != index+2 {
+				t.Fatalf("notes.md holds %d versions after the picked upload under %q, want %d", versions, words, index+2)
 			}
 		})
 	}

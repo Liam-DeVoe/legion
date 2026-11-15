@@ -323,6 +323,53 @@ test("an upload the proposal withheld runs nothing, and the bar says why in Disp
   }
 });
 
+test("an upload the proposal withheld beside one it offered says why, before the submit and after it", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  const reason =
+    'dispatch_artifact under "spec.md" is not offered: issue LEGION-3 already holds spec.md (slug spec-md).';
+  try {
+    await ask(user, "astrolabe");
+    stream(
+      decision(true, ["dispatch_artifact"]),
+      {
+        data: {
+          offers: [
+            {
+              action: "dispatch_artifact",
+              invocations: [
+                {
+                  arguments: { content: "# Extra\n", issue: "LEGION-3", name: "extra.md" },
+                  automatic: true,
+                  missing: null,
+                  target_argument: "issue",
+                },
+              ],
+              offered: true,
+              withheld: [reason],
+            },
+          ],
+        },
+        event: "proposal",
+      },
+      ended
+    );
+    await screen.findByRole("option", { name: /^Run artifact on LEGION-3/ });
+    expect(await screen.findByTestId("going-operation-withheld")).toHaveTextContent(reason);
+
+    await submit(user);
+
+    await waitFor(() =>
+      expect(sent()).toEqual([{ approved: "auto", invocation: 0, offer: "dispatch_artifact" }])
+    );
+    await screen.findByTestId("going-write-line");
+    // The upload that ran has its line; the one withheld still says why it is not among them.
+    expect(screen.getByTestId("going-operation-withheld")).toHaveTextContent(reason);
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("below the threshold the two best are offered, a submit runs neither, and a pick runs that one as the person's", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"unicode"
 
@@ -110,9 +111,23 @@ var goingUploadNames = map[string]string{"dispatch_artifact": "name"}
 // for an issue it could not read.
 type goingHeld func(issue string) (map[string]string, bool)
 
-// goingDocumentHeld reports whether owner holds a document whose name or slug name is, as an
-// upload finds one, and false for a read that failed.
-type goingDocumentHeld func(owner artifactTarget, name string) (held, read bool)
+// goingDocumentHeld reads whether owner holds a document whose name or slug name is, as an
+// upload finds one: that document's name and slug as the store holds them, nil for none, and
+// false for a read that failed.
+type goingDocumentHeld func(owner artifactTarget, name string) (held *goingHeldDocument, read bool)
+
+// goingHeldDocument is a document an upload's owner holds, by its name and its slug as stored.
+type goingHeldDocument struct {
+	Name, Slug string
+}
+
+// namedBy reports whether the typed words name the document (goingWordsName): its name, its slug,
+// or its name without the extension - "the notes" names notes.md, "the spec" spec.md - whichever
+// of them the answer wrote as the upload's name.
+func (d goingHeldDocument) namedBy(words string) bool {
+	stem := strings.TrimSuffix(d.Name, path.Ext(d.Name))
+	return goingWordsName(words, d.Name) || goingWordsName(words, d.Slug) || goingWordsName(words, stem)
+}
 
 // goingHolds is what the store holds now that a proposal's invocations are marked automatic
 // against: what each issue holds of its hand-overs (issue), and whether an upload's owner holds
@@ -159,19 +174,19 @@ func (s *server) goingHeldBy(ctx context.Context) goingHeld {
 
 // goingDocumentHeldBy reads from the store whether an owner holds a document of a name, by the
 // lookup the upload itself makes (lookupArtifactByNameOrSlug), each time it is asked. A read that
-// fails is logged and answered false, so the upload runs at once only where the words write its
+// fails is logged and answered unread, so the upload runs at once only where the words write its
 // name.
 func (s *server) goingDocumentHeldBy(ctx context.Context) goingDocumentHeld {
-	return func(owner artifactTarget, name string) (bool, bool) {
-		_, err := lookupArtifactByNameOrSlug(ctx, s.deps.Store.Pool, owner, name)
+	return func(owner artifactTarget, name string) (*goingHeldDocument, bool) {
+		artifact, err := lookupArtifactByNameOrSlug(ctx, s.deps.Store.Pool, owner, name)
 		switch {
 		case err == nil:
-			return true, true
+			return &goingHeldDocument{Name: artifact.Name, Slug: artifact.Slug}, true
 		case errors.Is(err, pgx.ErrNoRows):
-			return false, true
+			return nil, true
 		}
 		slog.Warn("dispatch going: read whether an upload's owner holds a document of its name", "name", name, "error", err)
-		return false, false
+		return nil, false
 	}
 }
 
@@ -376,7 +391,7 @@ func (n goingNamed) uploads(name string, arguments map[string]any, session strin
 		return false
 	}
 	held, read := document(owner, name)
-	return read && !held
+	return read && held == nil
 }
 
 // goingUploadOwner is the owner an upload's arguments reach, as its rows are tried in order: the
@@ -471,11 +486,15 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 // which would write that document's next version over the text it holds. Without force every
 // write of it is refused (goingUploadForceRefusal), and the bar has no control that sets force;
 // with force, a pick would replace the document whole, which nothing the bar shows says before the
-// person picks it, unless the person's own words write the document's name - they asked for that
-// document themselves. So it is offered only with force and a name the words write, and otherwise
-// withheld, the person changing the document with an edit or uploading with the dispatch command.
-// An owner the proposal could not read is offered, and held to the write's own checks when it runs
-// (goingSendRefusal, expect_new).
+// person picks it, unless the person's own words name that document - by its name, its slug or its
+// name without the extension, as the store holds them (goingHeldDocument.namedBy) - since they
+// asked for that document themselves. So it is offered only with force and words naming the
+// document, and otherwise withheld, the person changing the document with an edit or uploading
+// with the dispatch command. An owner the proposal could not read is offered, and held to the
+// write's own checks when it runs (goingSendRefusal, goingUploadCondition). A pick of an offer the
+// words name the document of by its slug or its name without the extension is made: no check
+// when the write runs holds the words to the exact name, and goingUploadsOver holds only a write
+// sent at once.
 func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
 	argument, uploads := goingUploadNames[action]
 	if !uploads || document == nil {
@@ -486,14 +505,15 @@ func goingUploadWithheld(action string, arguments map[string]any, session string
 		return ""
 	}
 	name := strings.TrimSpace(goingText(arguments, argument))
-	if held, read := document(owner, name); !read || !held {
+	held, read := document(owner, name)
+	if !read || held == nil {
 		return ""
 	}
-	if arguments["force"] == true && goingWordsName(words, name) {
+	if arguments["force"] == true && held.namedBy(words) {
 		return ""
 	}
-	return fmt.Sprintf("%s under %q is not offered: %s already holds a document of that name, and an upload would write its next version over the text it holds, which the bar offers only with force under a name your own words write. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
-		action, name, artifactOwnerText(owner))
+	return fmt.Sprintf("%s under %q is not offered: %s already holds %s (slug %s), and an upload would write its next version over the text it holds, which the bar offers only with force where your own words name that document. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
+		action, name, artifactOwnerText(owner), held.Name, held.Slug)
 }
 
 // goingActorText names an actor as the dispatch command names a document's author: its kind and
