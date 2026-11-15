@@ -422,9 +422,10 @@ test("a row that polls with whether or eventually states a rowLimit of the short
   expect(realRefused.filter((refusal) => polling.includes(refusal.limit))).toEqual([]);
 });
 
-// Bun applies a file's own `setDefaultTimeout` to every row and hook of the file, so a `rowLimit`
-// there is the limit of each waiting row that states none, and a number there is not. The file
-// is planted in a scratch directory because the fixture's own `setDefaultTimeout` is a number.
+// Bun applies a file's own `setDefaultTimeout` to every row and hook registered after the call,
+// so a `rowLimit` there is the limit of each waiting row after it that states none, and a number
+// there is not. The file is planted in a scratch directory, its row after the call, because the
+// fixture's own `setDefaultTimeout` is a number.
 // The refusal of a row under no `rowLimit` names the clock that stops it and what the scan read -
 // the bound the row waits for and `rowLimit` of it - and claims no order of clocks, whatever the
 // file writes: a number below the bound, above it, at `rowLimit` of it, an expression, a `0`,
@@ -466,10 +467,19 @@ test("a file's own rowLimit states the limit of each waiting row that states non
 
     const zero = refusedUnder("0");
     expect(zero.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+    expect(zero[0].why).toBe(
+      `${file}:3 the file's own setDefaultTimeout writes 0, which sets no clock for the rows ` +
+        "registered after it, which is no call of `rowLimit` and has no reason on the line above " +
+        "it: call `rowLimit(...)` naming the bounded children every row of the file waits for, so " +
+        "the limit is read from their bounds and moves when they move; or, where every row of the " +
+        "file drives a process rather than waiting for one, give the limit a line of its own and " +
+        "write the sentence that says what it drives and why that long is enough as a comment on " +
+        "the line directly above it."
+    );
     expect(zero[1].why).toBe(
       `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
-        "setDefaultTimeout on line 3 writes 0, which sets no clock at all, not even the lane's " +
-        `\`--timeout\`${reads}${remedy}`
+        "setDefaultTimeout on line 3 writes 0, which sets no clock, not even the lane's " +
+        `\`--timeout\`, for the rows registered after it${reads}${remedy}`
     );
 
     const none = refusedUnder(undefined);
@@ -582,14 +592,19 @@ test("a rowLimit below the bound of what its row waits for is refused", () => {
 
   const refused = refusedLimits([planted(99), planted(122), planted(129), planted(135)]);
   expect(refused.map((refusal) => refusal.limit.line)).toEqual([122, 129]);
-  expect(refused[0].why).toStartWith(
+  // Whole, so a claim of which clock fires first cannot come back after the needed total.
+  const needs =
+    'the row needs `rowLimit("listing")`, 330000 ms, at the least. Name in `rowLimit(...)` ' +
+    "every bounded child and every poll the row waits for, so the limit is read from their bounds.";
+  expect(refused[0].why).toBe(
     `${fixture}:122 the row "a row that calls a listing under the short bound" stops at ` +
       'boundedBy("short"), 90000 ms, and waits for `listing`, under the `listing` bound of ' +
-      '300000 ms: the row needs `rowLimit("listing")`, 330000 ms, at the least'
+      `300000 ms: ${needs}`
   );
-  expect(refused[1].why).toStartWith(
+  expect(refused[1].why).toBe(
     `${fixture}:129 the row "a row whose runBounded names a bound its rowLimit falls short of" ` +
-      'stops at boundedBy("short"), 90000 ms, and waits for `runBounded`, under the `listing` bound'
+      'stops at boundedBy("short"), 90000 ms, and waits for `runBounded`, under the `listing` ' +
+      `bound of 300000 ms: ${needs}`
   );
 });
 
@@ -627,10 +642,12 @@ test("a file's own rowLimit is held to the bound of each waiting row it stands f
     expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual([
       `${short}:6`,
     ]);
-    expect(refused[0].why).toStartWith(
+    expect(refused[0].why).toBe(
       `${short}:6 the row "awaits" states no limit of its own, so the file's own ` +
         'setDefaultTimeout on line 5 stops it at rowLimit("short"), 90000 ms, and waits for ' +
-        "`lane` (which waits for `listing`), under the `listing` bound of 300000 ms"
+        "`lane` (which waits for `listing`), under the `listing` bound of 300000 ms: the row " +
+        'needs `rowLimit("listing")`, 330000 ms, at the least. Name in `rowLimit(...)` every ' +
+        "bounded child and every poll the row waits for, so the limit is read from their bounds."
     );
   } finally {
     rmSync(root, { force: true, recursive: true });

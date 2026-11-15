@@ -105,7 +105,7 @@
  * that one. The name an assignment writes to is written there rather than read, so the hook that
  * assigns `lane` waits for the `listing` it calls and not for `lane`. Such a row states a limit:
  * its own, or the file's through `setDefaultTimeout` or `jest.setTimeout`, which Bun applies to
- * every row and hook of the file. A row that states none runs under the lane's
+ * every row and hook registered after the call. A row that states none runs under the lane's
  * `--timeout 60000`, which ties with the `short` bound and falls below every other one, so the
  * row's clock fires first and the failure names no child. The limit it states is a call of
  * `rowLimit` naming the children it waits for, never a number under a reason, because the
@@ -150,7 +150,10 @@
  * own by its bare name: a row that declares a name of its own - `const helper = ...` - where
  * `helper` also names a waiting function of the file, and calls it, is read as waiting for what
  * the file's `helper` reaches, and is refused where it states no `rowLimit`. No test file of
- * this directory writes either shape.
+ * this directory writes either shape. The scan also does not read the order of a file's limit
+ * and its rows: a `setDefaultTimeout` or `jest.setTimeout` written after a top-level row or hook
+ * does not cover that row, since Bun applies it only to what is registered after the call, yet
+ * the scan reads the row as covered by it. No test file of this directory writes either call.
  *
  * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
  * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
@@ -1133,18 +1136,24 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
   );
 }
 
+/** Whether a limit as written is `0`, which Bun 1.4.4 reads as no clock at all, the lane's
+ *  `--timeout` included, for the row it stands for or the rows registered after the call. */
+function setsNoClock(text: string): boolean {
+  return /^0+$/.test(text.replaceAll("_", ""));
+}
+
 /** Why `limit`, a row or hook that waits for bounded children and states no limit of its own, is
  *  refused, or nothing where its file's own `rowLimit` covers it. That limit is the row's where
  *  the file states one, and the largest of them is read where it states more than one; one whose
  *  total the scan cannot read covers the row as stated. Where the file states its limit only
  *  otherwise - `setDefaultTimeout(90_000)` - the refusal names that limit as what stops the row,
- *  and the lane's `--timeout` where the file states none; a written `0` is named as setting no
- *  clock at all, since Bun 1.4.4 then lets the row run past the lane's `--timeout`. Where the
- *  scan reads the bound the row waits for, the refusal names it and `rowLimit` of it, which the
- *  row must state instead. It says nothing of which clock fires first: the scan reads the
- *  largest bound among what the row waits for, not their sum (WHAT A ROWLIMIT COVERS), and
- *  nothing of how long the row spends before it starts a child, so no order it stated would hold
- *  for every row. */
+ *  and the lane's `--timeout` where the file states none; where every limit the file writes is
+ *  `0`, it is named as setting no clock, not even the lane's `--timeout`, for the rows registered
+ *  after it. Where the scan reads the bound the row waits for, the refusal names it and
+ *  `rowLimit` of it, which the row must state instead. It says nothing of which clock fires
+ *  first: the scan reads the largest bound among what the row waits for, not their sum (WHAT A
+ *  ROWLIMIT COVERS), and nothing of how long the row spends before it starts a child, so no
+ *  order it stated would hold for every row. */
 function unstatedRefusal(
   limit: WallClockLimit,
   limits: readonly WallClockLimit[]
@@ -1162,16 +1171,16 @@ function unstatedRefusal(
     );
     const where = otherwise.map((other) => `${other.title} on line ${other.line}`).join(" or ");
     const written = otherwise.map((other) => other.stated?.text ?? "");
-    // Bun 1.4.4 reads `setDefaultTimeout(0)` as no clock at all, the lane's `--timeout` included.
-    const zero =
-      written.length > 0 && written.every((text) => /^0+$/.test(text.replaceAll("_", "")));
+    // Bun 1.4.4 reads `setDefaultTimeout(0)` as no clock, the lane's `--timeout` included, for the
+    // rows registered after the call; the scan reads no order, so the refusal says that much.
+    const zero = written.length > 0 && written.every(setsNoClock);
     let clock = `the file's own ${where} stops it at ${written.join(" or ")}`;
     if (otherwise.length === 0) {
       clock = "the lane's `--timeout` stops it";
     } else if (zero) {
       clock =
-        `the file's own ${where} writes 0, which sets no clock at all, not even the lane's ` +
-        "`--timeout`";
+        `the file's own ${where} writes 0, which sets no clock, not even the lane's ` +
+        "`--timeout`, for the rows registered after it";
     }
     const reads =
       limit.bound === undefined
@@ -1209,7 +1218,10 @@ export function refusedLimits(limits: readonly WallClockLimit[]): RefusedLimit[]
       if (why !== undefined) refused.push({ limit, why });
       continue;
     }
-    const at = `${limit.file}:${limit.line} ${statedBy(limit)} stops at ${stated.text}`;
+    const after = limit.kind === "file" ? " for the rows registered after it" : "";
+    const at = setsNoClock(stated.text)
+      ? `${limit.file}:${limit.line} ${statedBy(limit)} writes 0, which sets no clock${after}`
+      : `${limit.file}:${limit.line} ${statedBy(limit)} stops at ${stated.text}`;
     const waits = limit.waitsFor.join(" and ");
     if (stated.fromBounds) {
       const short = shortOfBound(limit, stated.total);

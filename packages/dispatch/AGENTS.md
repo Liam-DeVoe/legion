@@ -2110,7 +2110,8 @@ itself, through a function of its own file, or by referring to a name the file
 binds or assigns to such a call (`const lane = retained(listing(...))` at module
 load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
 row), unless it states its limit as a `rowLimit`
-call, its own or the file's `setDefaultTimeout`: without one the lane's
+call, its own or the file's `setDefaultTimeout`, which Bun applies to the rows and
+hooks registered after the call: without one the lane's
 `--timeout 60000` stops it, which ties with the `short` bound. It reads those
 exports from an import declaration or from a name bound to an `import()`
 or `require` of their module. Where it reads the bound of what a row waits for
@@ -2136,7 +2137,10 @@ that refers to `code` and states no `rowLimit` is refused although `code` is a
 number. A call is matched to a waiting function of the file by its bare name, so
 a row that declares a name of its own that a waiting function of the file also
 bears (`const helper = ...`) and calls it is refused the same way. No test file
-under `e2e/__tests__/` writes either shape.
+under `e2e/__tests__/` writes either shape. The guard does not read the order of
+a file's limit and its rows: a `setDefaultTimeout` or `jest.setTimeout` written
+after a top-level row or hook does not cover that row, yet the guard reads the
+row as covered. No test file under `e2e/__tests__/` writes either call.
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls, one limit of every shape the rule answers.
