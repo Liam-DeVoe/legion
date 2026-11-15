@@ -49,26 +49,23 @@ export function DocumentPage(): ReactNode {
     },
   });
   const agentText = useAgentText();
+  // The press carries the document it unsubscribes from: the page stays mounted as the reader
+  // moves to another document, and the Retry of a stopped unsubscribe is of the document that
+  // press named, not of the one the page shows by then.
   const unsubscribe = useKeyedWrite({
-    label: (sessionId: string) =>
+    label: ({ sessionId }: { artifactId: string; sessionId: string }) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
     // An unsubscribe made again after one that landed finds the session no longer subscribed
     // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
     method: "DELETE",
-    write: async (sessionId: string, bounds) => {
-      if (artifact.data === undefined) {
-        throw new Error("Document unsubscribe requires an artifact.");
-      }
+    write: async ({ artifactId, sessionId }, bounds) => {
       await removedEvenIfGone(
-        api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds),
+        api.unsubscribeArtifactSession(artifactId, sessionId, bounds),
         isSubscriberNotFound
       );
     },
-    onSuccess: () => {
-      if (artifact.data !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: ["subscribers", artifact.data.id] });
-      }
-    },
+    onSuccess: (_result, { artifactId }) =>
+      void queryClient.invalidateQueries({ queryKey: ["subscribers", artifactId] }),
   });
   const query = new URLSearchParams(location.search);
   const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
@@ -131,7 +128,9 @@ export function DocumentPage(): ReactNode {
         version={version}
       >
         <SubscribedAgents
-          onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
+          onUnsubscribe={(sessionId) =>
+            unsubscribe.mutate({ artifactId: owner.artifactId, sessionId })
+          }
           ownerLabel={`${artifact.data.project}/${artifact.data.slug}`}
           subscribers={subscribers.isError ? [] : (subscribers.data ?? [])}
         />

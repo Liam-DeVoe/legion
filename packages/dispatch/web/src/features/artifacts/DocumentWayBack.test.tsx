@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -438,6 +438,66 @@ test("Remove after a stopped removal that landed takes the not-found as done", a
     expect(screen.queryByRole("alert")).toBeNull();
     // The removal landed, so the page read the document list again, which no longer holds it.
     expect(screen.queryByRole("heading", { name: "Lauch notes" })).toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    deleteArtifact.mockRestore();
+    realClock();
+  }
+});
+
+// The header stays as the reader moves to another document of the issue, and the stopped removal
+// stays with it. Remove is still that removal's Retry, so it removes the document the stopped
+// press was of, and the words beside it name that document, not the one the header draws by then.
+test("Remove after a stopped removal removes that press's document, whichever the header draws", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  let stored: Artifact[] = [document()];
+  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
+    Promise.resolve(stored)
+  );
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+  );
+  const view = renderPage(documentPath);
+  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await stopTheLateWrite(view.queryClient);
+    const stoppedKey = deleteArtifact.mock.calls[0]?.[1]?.key;
+    const stopped = deleteArtifact.mock.calls.length;
+
+    // The issue's list now leads with another document, which the header draws in its place.
+    stored = [
+      document({
+        id: "artifact-2",
+        name: "Release notes",
+        ref_key: "CORE-1/release-notes",
+        slug: "release-notes",
+      }),
+      document(),
+    ];
+    await act(() => view.queryClient.invalidateQueries({ queryKey: ["artifacts", "CORE-1"] }));
+    await screen.findByRole("heading", { name: "Release notes" });
+    const shown = screen.getByRole("alert").textContent;
+
+    deleteArtifact.mockResolvedValue(undefined);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await tick(1_000);
+
+    expect(deleteArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const again = deleteArtifact.mock.calls.at(-1);
+    expect(again?.[0]).toBe("artifact-1");
+    expect(again?.[1]?.key).toBe(stoppedKey);
+    expect(shown).toBe(
+      stoppedWriteNote("the removal of “Lauch notes”", "made", {
+        again: "Remove",
+        method: "DELETE",
+        stopped: new SendStoppedError(),
+      })
+    );
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

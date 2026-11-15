@@ -203,25 +203,25 @@ export function RemoveDocument({
   const submitGuard = useSubmitGuard();
   const remove = useKeyedWrite({
     inline: true,
-    // The document's name is what the press is of, as the indicator names it; the route takes
-    // its id.
-    label: (name: string) => `Remove ${name}`,
+    // The press is of the document Remove was pressed on: the indicator names it, the route
+    // takes its id, and the Retry removes that document, whichever one the host shows by then.
+    label: ({ name }: Artifact) => `Remove ${name}`,
     // A removal made again after one that landed finds no document (`404 ARTIFACT_NOT_FOUND`),
     // which is the removal done (`removedEvenIfGone`): it lands as a `204` does (`onSuccess`), and
     // no refusal is shown.
     method: "DELETE",
-    write: (_name: string, bounds) =>
-      removedEvenIfGone(api.deleteArtifact(artifact.id, bounds), isArtifactNotFound),
+    write: ({ id }, bounds) =>
+      removedEvenIfGone(api.deleteArtifact(id, bounds), isArtifactNotFound),
     onSettled: () => submitGuard.release(),
-    onSuccess: () => {
-      refreshArtifact(queryClient, artifact);
+    onSuccess: (_result, removed) => {
+      refreshArtifact(queryClient, removed);
       onRemoved?.();
     },
   });
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`).
   const problem = remove.isError
     ? endedStopped(remove)
-      ? stoppedWriteNote(`the removal of “${artifact.name}”`, "made", {
+      ? stoppedWriteNote(`the removal of “${(remove.variables ?? artifact).name}”`, "made", {
           again: "Remove",
           method: remove.method,
           stopped: remove.error,
@@ -238,7 +238,7 @@ export function RemoveDocument({
         // is about (`retry`). Where the reader stopped that removal and it had landed, the Retry
         // finds no document, which `write` takes for the removal done.
         onPress={() =>
-          submitGuard.guard(() => (remove.isError ? remove.retry() : remove.mutate(artifact.name)))
+          submitGuard.guard(() => (remove.isError ? remove.retry() : remove.mutate(artifact)))
         }
         refusal={refusal}
       >

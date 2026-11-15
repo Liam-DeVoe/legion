@@ -34,6 +34,15 @@ interface Snapshot {
 export const projectListsKey = ["issues", "project"] as const;
 export const inboxKey = inboxQuery().queryKey;
 
+/** One save of a field: the issue it is of and the value it sets. The control that makes it can
+ *  outlive that issue - the reading column's head is the same control for each ask the reader
+ *  moves to - so the save carries its issue, and its request, its Retry and what the page shows
+ *  of it are of that issue, not of the one the control is drawn for by then. */
+interface FieldSave<Value> {
+  readonly issue: string;
+  readonly value: Value;
+}
+
 /**
  * The optimistic write engine behind every single-field issue write (priority, assignee). The
  * caller supplies `patch`, the request body for a value, and `show`, which lands the value in
@@ -47,23 +56,23 @@ export function useIssueFieldWrite<Value>(
   issueKey: string,
   field: {
     patch: (value: Value) => UpdateIssueInput;
-    show: (value: Value) => void;
-    /** What the shell's indicator names one save of this field. */
-    label: (value: Value) => string;
-    /** What the field is in the sentence a save the reader stopped says (`stoppedWriteNote`):
-     *  `the priority of KEY`. */
-    what: string;
+    /** Lands `value` in every cache that shows `issue`, the issue the save is of. */
+    show: (value: Value, issue: string) => void;
+    /** What the shell's indicator names one save of this field of `issue`. */
+    label: (value: Value, issue: string) => string;
+    /** What the field of `issue` is in the sentence a save the reader stopped says
+     *  (`stoppedWriteNote`): `the priority of KEY`. */
+    what: (issue: string) => string;
   }
 ): IssueFieldWrite<Value> {
   const queryClient = useQueryClient();
   const guard = useSubmitGuard();
   // A pick made during a save, with the cache as it stood before the pick was shown: the base
   // the chained request rolls back to, so its failure never lands on the pick that failed.
-  const queued = useRef<{ value: Value; snapshot: Snapshot } | null>(null);
+  const queued = useRef<{ save: FieldSave<Value>; snapshot: Snapshot } | null>(null);
   const chainedSnapshot = useRef<Snapshot | null>(null);
-  const detailKey = ["issue", issueKey] as const;
-  const takeSnapshot = (): Snapshot => ({
-    details: queryClient.getQueryData<IssueDetails>(detailKey),
+  const takeSnapshot = (issue: string): Snapshot => ({
+    details: queryClient.getQueryData<IssueDetails>(["issue", issue]),
     inbox: queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey }),
     lists: queryClient.getQueriesData<IssueSummary[]>({ queryKey: projectListsKey }),
   });
@@ -73,26 +82,26 @@ export function useIssueFieldWrite<Value>(
   // never lands after a newer one.
   const mutation = useKeyedWrite({
     inline: true,
-    label: (value: Value) => field.label(value),
-    target: () => `issue:${issueKey}`,
-    request: (value: Value) => issuePatchRequest(issueKey, field.patch(value)),
-    onMutate: async (value): Promise<Snapshot> => {
+    label: ({ issue, value }: FieldSave<Value>) => field.label(value, issue),
+    target: ({ issue }) => `issue:${issue}`,
+    request: ({ issue, value }: FieldSave<Value>) => issuePatchRequest(issue, field.patch(value)),
+    onMutate: async ({ issue, value }): Promise<Snapshot> => {
       await Promise.all(
-        [detailKey, projectListsKey, inboxKey].map((queryKey) =>
+        [["issue", issue], projectListsKey, inboxKey].map((queryKey) =>
           queryClient.cancelQueries({ queryKey })
         )
       );
-      const snapshot = chainedSnapshot.current ?? takeSnapshot();
+      const snapshot = chainedSnapshot.current ?? takeSnapshot(issue);
       chainedSnapshot.current = null;
-      field.show(value);
+      field.show(value, issue);
       return snapshot;
     },
-    onError: (_error, _value, snapshot) => {
+    onError: (_error, { issue }, snapshot) => {
       if (snapshot === undefined) {
         return;
       }
       if (snapshot.details !== undefined) {
-        queryClient.setQueryData<IssueDetails>(detailKey, snapshot.details);
+        queryClient.setQueryData<IssueDetails>(["issue", issue], snapshot.details);
       }
       for (const [key, data] of snapshot.lists) {
         queryClient.setQueryData(key, data);
@@ -111,26 +120,27 @@ export function useIssueFieldWrite<Value>(
         mergeIssue(queryClient, next);
       }
     },
-    onSettled: () => {
+    onSettled: (_next, _error, { issue }) => {
       guard.release();
       const next = queued.current;
       if (next !== null) {
         queued.current = null;
         chainedSnapshot.current = next.snapshot;
-        guard.guard(() => mutation.mutate(next.value));
+        guard.guard(() => mutation.mutate(next.save));
         return;
       }
       // Another write to the same issue (a status change from the header) may have settled in
       // between; refetching the detail makes it server-authoritative rather than trusting the
       // arrival order of the two responses or a pre-write snapshot.
-      void queryClient.invalidateQueries({ queryKey: detailKey });
+      void queryClient.invalidateQueries({ queryKey: ["issue", issue] });
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
   });
   // A save the reader stopped may have been made, and Retry makes that very press again
-  // (`retryLast`): the error's own words are a composer's, of a message.
-  const stopped = stoppedNote(mutation, field.what, "saved");
+  // (`retryLast`): the error's own words are a composer's, of a message, and name the issue that
+  // press was of.
+  const stopped = stoppedNote(mutation, field.what(mutation.variables?.issue ?? issueKey), "saved");
   return {
     error: stopped ?? mutation.error?.message,
     failed: mutation.isError,
@@ -140,11 +150,12 @@ export function useIssueFieldWrite<Value>(
     },
     stopped,
     submit: (value) => {
-      if (guard.guard(() => mutation.mutate(value))) {
+      const save = { issue: issueKey, value };
+      if (guard.guard(() => mutation.mutate(save))) {
         return;
       }
-      queued.current = { value, snapshot: queued.current?.snapshot ?? takeSnapshot() };
-      field.show(value);
+      queued.current = { save, snapshot: queued.current?.snapshot ?? takeSnapshot(issueKey) };
+      field.show(value, issueKey);
     },
   };
 }

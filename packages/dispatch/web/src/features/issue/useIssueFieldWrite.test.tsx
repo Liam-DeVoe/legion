@@ -7,6 +7,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { NetworkError } from "../../api/client";
 import type { Issue } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /** The assignee field of CORE-1 over one app's queue, with alice signed in: the field every
@@ -95,6 +96,47 @@ test("the control's Retry after a stopped save goes under that save's key", asyn
     expect(patchIssue.mock.calls.at(-1)?.[2]?.key).toBe(stoppedKey);
     expect(held.assignee).toBe("alice");
     expect(hook.result.current.failed).toBe(false);
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    realClock();
+  }
+});
+
+// The control can outlive the issue it saved to: the reading column's head is one control for
+// each ask the reader moves to. Its Retry is still of the stopped save, so it goes to that save's
+// issue under its key, and the words beside it name that issue. Sent to the issue the control
+// is drawn for by then, it would be other bytes under the stopped save's key.
+test("a Retry after the control moved to another issue is of the stopped save's issue", async () => {
+  jest.useFakeTimers();
+  const { held, patchIssue } = dispatchHoldingAssignee();
+  let issueKey = "CORE-1";
+  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey));
+
+  try {
+    act(() => hook.result.current.submit("alice"));
+    await stopTheLateWrite(client);
+    const stoppedKey = patchIssue.mock.calls[0]?.[2]?.key;
+    const stopped = patchIssue.mock.calls.length;
+
+    issueKey = "CORE-2";
+    hook.rerender();
+    const shown = hook.result.current.error;
+    held.answering = true;
+    act(() => hook.result.current.retry());
+    await tick(1_000);
+
+    expect(patchIssue).toHaveBeenCalledTimes(stopped + 1);
+    const again = patchIssue.mock.calls.at(-1);
+    expect(again?.[0]).toBe("CORE-1");
+    expect(again?.[1]).toEqual({ assignee: "alice" });
+    expect(again?.[2]?.key).toBe(stoppedKey);
+    expect(shown).toBe(
+      stoppedWriteNote("the assignee of CORE-1", "saved", {
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
   } finally {
     hook.unmount();
     patchIssue.mockRestore();

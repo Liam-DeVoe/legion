@@ -11,19 +11,19 @@ import { type IssueFieldWrite, projectListsKey, useIssueFieldWrite } from "./use
  */
 export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
   const queryClient = useQueryClient();
-  const show = (repo: string | null) => {
+  const show = (repo: string | null, key: string) => {
     const fields = repo === null ? { repo } : { repo, resolved_repo: repo };
-    queryClient.setQueryData<IssueDetails>(["issue", issueKey], (current) =>
+    queryClient.setQueryData<IssueDetails>(["issue", key], (current) =>
       current === undefined ? undefined : { ...current, ...fields }
     );
     queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, ...fields } : issue))
+      current?.map((issue) => (issue.key === key ? { ...issue, ...fields } : issue))
     );
   };
   return useIssueFieldWrite<string | null>(issueKey, {
-    label: (repo) => `${issueKey} on ${repo ?? "its project's repository"}`,
+    label: (repo, key) => `${key} on ${repo ?? "its project's repository"}`,
     patch: (repo) => ({ repo }),
     show,
-    what: `the repository of ${issueKey}`,
+    what: (key) => `the repository of ${key}`,
   });
 }

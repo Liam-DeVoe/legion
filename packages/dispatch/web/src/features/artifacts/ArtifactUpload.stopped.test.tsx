@@ -1,4 +1,5 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,7 +11,14 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { appendToDraft, DraftUploadStatus, useDraftUpload } from "./ArtifactUpload";
+import {
+  ArtifactDropZone,
+  ArtifactUploadRow,
+  appendToDraft,
+  DraftUploadStatus,
+  useArtifactUpload,
+  useDraftUpload,
+} from "./ArtifactUpload";
 import { renderHarness, renderWith, UPLOADED } from "./artifact-upload-fixture";
 
 // One press, one key: what a press sends when it is attempted again, stopped by the reader and
@@ -188,6 +196,111 @@ test("pressing Upload again after a stopped press sends that press's base under 
     await tick(1_000);
 
     expectTheStoppedPressAgain(uploadArtifact, ownerArtifactText, stopped);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// The summary is part of the body the key covers, as the base is. Pressing Upload again after a
+// stopped press is that press made again under its key, so it sends the summary that press
+// sent: an edit made since would be other bytes under the same key, and Dispatch answers the key
+// with what the stopped press did there, so the edited words would be dropped while the row
+// said the upload is stored at most once.
+test("pressing Upload again after a stopped press sends that press's summary, not the field's", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.type(screen.getByLabelText("Summary (optional)"), "First draft");
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.clear(screen.getByLabelText("Summary (optional)"));
+    await user.type(screen.getByLabelText("Summary (optional)"), "Second thoughts");
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, stopped + 1);
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(first?.[1].summary).toBe("First draft");
+    expect(again?.[2].key).toBe(first?.[2].key);
+    expect(again?.[1]).toEqual(first?.[1]);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+/** A document's repair row, which uploads every file under the document's own name (`name`):
+ *  the document's page passes the name it reads, so a rename moves it under a row that stays. */
+function NamedHarness({ name }: { name: string }): ReactNode {
+  const upload = useArtifactUpload({ issue: "CORE-1" }, { name });
+  return (
+    <ArtifactDropZone upload={upload}>
+      <ArtifactUploadRow upload={upload} />
+    </ArtifactDropZone>
+  );
+}
+
+// The name an upload goes under is in the body as well. A document renamed while its stopped
+// upload waits gives the row a new name, and the press made again still sends the name that
+// press sent: under its key, the new one would be other bytes.
+test("pressing Upload again after a stopped press sends the name that press sent, not the new one", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderWith(<NamedHarness name="Launch notes" />);
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <NamedHarness name="Release notes" />
+      </QueryClientProvider>
+    );
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, stopped + 1);
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(first?.[1].name).toBe("Launch notes");
+    expect(again?.[2].key).toBe(first?.[2].key);
+    expect(again?.[1]).toEqual(first?.[1]);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

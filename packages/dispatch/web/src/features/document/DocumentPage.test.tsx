@@ -2,10 +2,11 @@ import { afterAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import type { ReactNode } from "react";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -55,7 +56,9 @@ const artifact: Artifact = {
   ],
 };
 
-function renderDocumentPage() {
+/** The document page at `design-notes`, with `beside` drawn next to its routes: a way to another
+ *  address, for a case that moves the page while it stays mounted. */
+function renderDocumentPage(beside: ReactNode = null) {
   const runtime = fakeDocumentRuntime({ text: "# Design notes" });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -66,6 +69,7 @@ function renderDocumentPage() {
       <QueryClientProvider client={queryClient}>
         <DocumentRuntime.Provider value={runtime.runtime}>
           <MarginProvider>
+            {beside}
             <Routes>
               <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
             </Routes>
@@ -335,5 +339,87 @@ test("an unsubscribe answered SUBSCRIBER_NOT_FOUND is the unsubscribe done, not 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     page.restore();
+  }
+});
+
+// The page stays mounted as the reader follows a link to another document, and a stopped
+// unsubscribe's refusal stays on it. Its Retry is still that unsubscribe, so it takes the
+// session off the document it was pressed on, not off the one the page shows by then.
+test("an unsubscribe's Retry on another document's page is of the document it was pressed on", async () => {
+  const other: Artifact = {
+    ...artifact,
+    id: "artifact-2",
+    name: "Release notes",
+    ref_key: "CORE/release-notes",
+    slug: "release-notes",
+  };
+  const unsubscribeArtifactSession = spyOn(api, "unsubscribeArtifactSession").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed"))
+  );
+  const mocks = [
+    spyOn(api, "getProjectArtifact").mockImplementation(async (_project, slug) =>
+      slug === other.slug ? other : artifact
+    ),
+    spyOn(api, "getArtifact").mockImplementation(async (id) =>
+      id === other.id ? other : artifact
+    ),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      token: "sha256:design-notes",
+    }),
+    spyOn(api, "getArtifactSubscribers").mockResolvedValue([
+      {
+        last_seen: 1,
+        live: true,
+        removable: true,
+        session_id: "0123456789abcdef",
+        title: "Planner (live)",
+        topics: [],
+      },
+    ]),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+    unsubscribeArtifactSession,
+  ];
+  const { queryClient, runtime, view } = renderDocumentPage(
+    <Link to="/projects/CORE/documents/release-notes">Release notes</Link>
+  );
+
+  try {
+    await screen.findByTestId("artifact-header");
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    const subscribed = await screen.findByRole("region", { name: "Subscribed agents" });
+    await userEvent
+      .setup()
+      .click(await within(subscribed).findByRole("button", { name: "Unsubscribe" }));
+    const confirm = within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "Confirm",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(confirm);
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = unsubscribeArtifactSession.mock.calls[0]?.[2]?.key;
+    const stopped = unsubscribeArtifactSession.mock.calls.length;
+
+    await user.click(screen.getByRole("link", { name: "Release notes" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("artifact-header")).toHaveTextContent("Release notes")
+    );
+    unsubscribeArtifactSession.mockResolvedValue(undefined);
+    await user.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expect(unsubscribeArtifactSession).toHaveBeenCalledTimes(stopped + 1);
+    const again = unsubscribeArtifactSession.mock.calls.at(-1);
+    expect(again?.[0]).toBe("artifact-1");
+    expect(again?.[1]).toBe("0123456789abcdef");
+    expect(again?.[2]?.key).toBe(stoppedKey);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    for (const mock of mocks) mock.mockRestore();
   }
 });

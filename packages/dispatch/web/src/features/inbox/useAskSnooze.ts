@@ -26,11 +26,21 @@ export interface AskSnoozeWrite {
   submit: (until: string | null) => void;
 }
 
+/** One press of a row's snooze: the ask it is of, and the moment, or `null` to bring it back. */
+interface AskSnoozePress {
+  readonly askId: string;
+  readonly until: string | null;
+}
+
 /**
  * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once,
  * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
  * refuses, and the list refetches once the save settles - the same shape as the issue field
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ *
+ * Each press carries the ask it is of. The reading column's head keeps its control as the reader
+ * moves to another ask, so a Retry of a press the reader stopped is of that press's ask, not of
+ * the one the control is drawn for by then.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
@@ -38,22 +48,22 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   // The row says why its snooze was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
     // A snooze is a `PUT`, and bringing the row back a `DELETE`.
-    method: (until: string | null) => (until === null ? "DELETE" : "PUT"),
-    write: (until: string | null, bounds) =>
+    method: ({ until }: AskSnoozePress) => (until === null ? "DELETE" : "PUT"),
+    write: ({ askId: ask, until }: AskSnoozePress, bounds) =>
       until === null
-        ? api.unsnoozeAsk(askId, bounds)
-        : api.snoozeAsk(askId, until, bounds).then(() => undefined),
+        ? api.unsnoozeAsk(ask, bounds)
+        : api.snoozeAsk(ask, until, bounds).then(() => undefined),
     inline: true,
-    label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
-    onMutate: async (until) => {
+    label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
+    onMutate: async ({ askId: ask, until }) => {
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
+        current?.map((row) => (row.id === ask ? { ...row, snoozed_until: until } : row))
       );
       return previous;
     },
-    onError: (_error, _until, previous) => {
+    onError: (_error, _press, previous) => {
       for (const [key, data] of previous ?? []) {
         queryClient.setQueryData(key, data);
       }
@@ -68,14 +78,14 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     error:
       stoppedNote(
         mutation,
-        mutation.variables === null ? "the un-snooze" : "the snooze",
+        mutation.variables?.until === null ? "the un-snooze" : "the snooze",
         "saved"
       ) ?? mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
-    pendingUntil: mutation.isPending ? mutation.variables : undefined,
+    pendingUntil: mutation.isPending ? mutation.variables?.until : undefined,
     retry: mutation.retry,
-    submit: (until) => mutation.mutate(until),
+    submit: (until) => mutation.mutate({ askId, until }),
   };
 }
 

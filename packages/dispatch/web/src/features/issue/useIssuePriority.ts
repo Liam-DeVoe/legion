@@ -25,23 +25,22 @@ export interface IssuePriorityWrite {
  */
 export function useIssuePriority(issueKey: string): IssuePriorityWrite {
   const queryClient = useQueryClient();
-  const detailKey = ["issue", issueKey] as const;
-  const showPriority = (priority: IssuePriority | null) => {
-    queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
+  const showPriority = (priority: IssuePriority | null, key: string) => {
+    queryClient.setQueryData<IssueDetails>(["issue", key], (current) =>
       current === undefined ? undefined : { ...current, priority }
     );
     queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, priority } : issue))
+      current?.map((issue) => (issue.key === key ? { ...issue, priority } : issue))
     );
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => (row.issue_key === issueKey ? { ...row, priority } : row))
+      current?.map((row) => (row.issue_key === key ? { ...row, priority } : row))
     );
   };
   const write = useIssueFieldWrite<IssuePriority | null>(issueKey, {
-    label: (priority) => `${issueKey} set to ${priority === null ? "no priority" : `P${priority}`}`,
+    label: (priority, key) => `${key} set to ${priority === null ? "no priority" : `P${priority}`}`,
     patch: (priority) => ({ priority }),
     show: showPriority,
-    what: `the priority of ${issueKey}`,
+    what: (key) => `the priority of ${key}`,
   });
   return {
     failed: write.failed,

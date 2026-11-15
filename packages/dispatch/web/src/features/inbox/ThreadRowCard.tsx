@@ -38,25 +38,28 @@ import { ThreadTitle } from "./ThreadTitle";
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
-  const read = inboxThreadRow(thread);
-  const session = read.kind === "agent" ? read.session.id : undefined;
-  const markRead = useKeyedWrite<UserAgentState | undefined>({
+  // The press carries the row as it stood when Mark read was pressed: its newest reply and its
+  // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
+  // that press marked.
+  const markRead = useKeyedWrite<UserAgentState | undefined, MyReplyRow>({
     label: () => "Thread marked read",
     // Either mark is a `PUT`.
     method: "PUT",
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not
     // shown. Every other row carries a thread mark, which this moves to its newest write.
-    write: async (_variables, bounds) => {
+    write: async (pressed, bounds) => {
+      const read = inboxThreadRow(pressed);
       if (read.kind === "agent") {
         return api.putAgentState(read.session.id, { read_replies: read.unread_reply_ids }, bounds);
       }
-      await api.markThreadRead(thread.thread_id, thread.reply.created_at, bounds);
+      await api.markThreadRead(pressed.thread_id, pressed.reply.created_at, bounds);
       return undefined;
     },
-    onSuccess: (state) => {
-      if (state !== null && state !== undefined && session !== undefined) {
-        storeAgentState(queryClient, session, state);
+    onSuccess: (state, pressed) => {
+      const read = inboxThreadRow(pressed);
+      if (state !== null && state !== undefined && read.kind === "agent") {
+        storeAgentState(queryClient, read.session.id, state);
       }
       return queryClient.invalidateQueries({ queryKey: myRepliesKey });
     },
@@ -89,7 +92,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
           disabled={markRead.isPending}
-          onClick={() => markRead.mutate()}
+          onClick={() => markRead.mutate(thread)}
           type="button"
         >
           {markRead.isPending ? "Marking read…" : "Mark read"}

@@ -37,18 +37,17 @@ export interface IssueAssigneeWrite {
  */
 export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
   const queryClient = useQueryClient();
-  const detailKey = ["issue", issueKey] as const;
-  const showAssignee = (assignee: string | null) => {
-    queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
+  const showAssignee = (assignee: string | null, key: string) => {
+    queryClient.setQueryData<IssueDetails>(["issue", key], (current) =>
       current === undefined ? undefined : { ...current, assignee }
     );
     queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, assignee } : issue))
+      current?.map((issue) => (issue.key === key ? { ...issue, assignee } : issue))
     );
     // Every row the update moves is of this issue, so of its project: the person a row nobody
     // handed on waits on now is the new assignee, else that project's default where the client
     // holds the defaults read, looked up once.
-    const project = issueProject(issueKey);
+    const project = issueProject(key);
     const person =
       assignee ??
       queryClient
@@ -56,7 +55,7 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
         ?.find((entry) => entry.project === project)?.assignee;
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
       current?.map((row) => {
-        if (row.issue_key !== issueKey || row.issue === undefined) return row;
+        if (row.issue_key !== key || row.issue === undefined) return row;
         const moved = { ...row, issue: { ...row.issue, assignee } };
         if (row.asked_of !== null && row.asked_of !== undefined) return moved;
         return person === undefined ? moved : { ...moved, waiting_on_person: person };
@@ -64,9 +63,9 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
     );
   };
   return useIssueFieldWrite<string | null>(issueKey, {
-    label: (assignee) => `${issueKey} assigned to ${assignee ?? "nobody"}`,
+    label: (assignee, key) => `${key} assigned to ${assignee ?? "nobody"}`,
     patch: (assignee) => ({ assignee }),
     show: showAssignee,
-    what: `the assignee of ${issueKey}`,
+    what: (key) => `the assignee of ${key}`,
   });
 }

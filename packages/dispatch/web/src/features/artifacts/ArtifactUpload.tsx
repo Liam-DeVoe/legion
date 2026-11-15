@@ -475,6 +475,16 @@ export interface ArtifactUpload {
   summary: string;
 }
 
+/** What one press of Upload sends, every field of its body the row could change after it: the
+ *  key covers the whole body, so the press made again under that key sends these as they were
+ *  when it was made, not what the summary field or the document's name says by then. */
+interface UploadPress {
+  base: UploadBase;
+  file: File;
+  name: string | undefined;
+  summary: string | undefined;
+}
+
 /**
  * The one artifact upload: a picked or dropped file either uploads at once (`immediate`, the
  * project Documents list) or is staged until `confirm` (the Artifacts tab's row, whose summary
@@ -507,15 +517,10 @@ export function useArtifactUpload(
   // One press per answer: `confirm` reads the base before it mutates, so a second click within
   // that read would be a second upload, which `isPending` is too late to hold.
   const pressGuard = useSubmitGuard();
-  const upload = useKeyedWrite<UploadResult, { base: UploadBase; file: File }>({
+  const upload = useKeyedWrite<UploadResult, UploadPress>({
     method: "POST",
-    write: ({ base, file }, bounds) =>
-      uploadFile(
-        owner,
-        file,
-        { base, name, summary: summary.trim() === "" ? undefined : summary.trim() },
-        bounds
-      ),
+    write: ({ base, file, name, summary }, bounds) =>
+      uploadFile(owner, file, { base, name, summary }, bounds),
     file: ({ file }) => file,
     inline: true,
     label: ({ file }) => `Upload of ${file.name || "a file"}`,
@@ -531,8 +536,12 @@ export function useArtifactUpload(
       }
     },
   });
+  /** A press of `file` with what the row holds now: the document name it goes under and the
+   *  summary in the field. Both ride in the press, so the press made again sends them as they
+   *  were, however the field or the document's name has changed since. */
   const send = async (file: File, base: UploadBase | Promise<UploadBase>): Promise<void> => {
-    upload.mutate({ base: await base, file });
+    const said = summary.trim();
+    upload.mutate({ base: await base, file, name, summary: said === "" ? undefined : said });
   };
   const receive = (file: File | undefined) => {
     if (file === undefined || refusal !== null) {
@@ -565,10 +574,10 @@ export function useArtifactUpload(
         // the whole body, the `precondition` field included (`bodyDigest` in the server's
         // `api/request_keys.go`). So a press of the staged file a stopped press sent is this
         // row's Retry of that press: it takes the handle the hook gives for the press that sent
-        // that very file and makes that press again as it stands (`again`), base and all, where a
-        // `mutate` would be a press of its own under a key of its own. A press of another file
-        // finds no such press and is one of its own: it takes the base read when that file was
-        // chosen, or reads the token the document is at now.
+        // that very file and makes that press again as it stands (`again`), its base and its
+        // summary as it sent them, where a `mutate` would be a press of its own under a key of
+        // its own. A press of another file finds no such press and is one of its own: it takes
+        // the base read when that file was chosen, or reads the token the document is at now.
         const stopped = upload.stopped((variables) => variables.file === file);
         const chosen = chosenBase.current;
         chosenBase.current = undefined;
@@ -599,7 +608,8 @@ export function useArtifactUpload(
     madeUnanswered:
       upload.unanswered === undefined
         ? null
-        : (name ?? (upload.unanswered.variables.file.name || "the file")),
+        : (upload.unanswered.variables.name ??
+          (upload.unanswered.variables.file.name || "the file")),
     method: upload.method,
     openPicker: () => {
       if (refusal === null) fileInputRef.current?.click();
