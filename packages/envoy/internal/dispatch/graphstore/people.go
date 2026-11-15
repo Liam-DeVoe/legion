@@ -220,19 +220,19 @@ const DeliverySent = "sent"
 // read one rule and a reader of either finds the other.
 //
 // It writes the node alone (SessionRecorded). The settle appends its receipt after this, so the
-// node is made at the sentinel and answered: the settle moves it onto the receipt once that is
-// appended (graphstore.Caused), as a comment's node learns the event that stored it. A resend of
-// one attempt, and a second attempt reaching the same session, finds the node there and answers
-// none, so the settle moves nothing another write made.
-func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) ([]Node, error) {
+// node is made at the sentinel and answered as a write held for its cause (Uncaused): the settle
+// moves it onto the receipt once that is appended, as a comment's node learns the event that
+// stored it. A resend of one attempt, and a second attempt reaching the same session, finds the
+// node there and answers none, so the settle moves nothing another write made.
+func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) (Uncaused, error) {
 	if state != DeliverySent {
-		return nil, nil
+		return Uncaused{}, nil
 	}
 	made, err := SessionRecorded(ctx, tx, strings.TrimSpace(session), who, at, NoEvent)
 	if err != nil {
-		return nil, fmt.Errorf("record the session %s a delivery reached: %w", session, err)
+		return Uncaused{}, fmt.Errorf("record the session %s a delivery reached: %w", session, err)
 	}
-	return made, nil
+	return Uncaused{Nodes: made}, nil
 }
 
 // SessionRecorded writes the node of a session a write records, inside that write's transaction,

@@ -95,7 +95,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	}
 	// The seed records no event of a document's version, so what the index stated in the node
 	// and tuple store carries the sentinel, the cause of a write no event recorded.
-	if err := blockWrite.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, blockWrite, graphstore.NoEvent); err != nil {
 		return fmt.Errorf("record what the block index stated: %w", err)
 	}
 	// The version write records the blocks and leaves their windows to the block-index tick's

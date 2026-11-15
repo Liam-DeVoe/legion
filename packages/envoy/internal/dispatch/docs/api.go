@@ -11,15 +11,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // API is the live document operation surface used by Dispatch's HTTP handlers.
 type API interface {
 	SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
 	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
-	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, refs.BlockIndexWrite, error)
+	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
 	InjectUnknownElementForTest(ctx context.Context, artifactID string) error
@@ -62,12 +62,12 @@ type API interface {
 // Blocks is what the version's block index stated in the node and tuple store. The index runs
 // before the event that records the version exists, and no tuple may be updated afterwards, so
 // the facts travel here and the caller appends them under that event, in the same transaction
-// (refs.BlockIndexWrite.Caused).
+// (graphstore.Caused).
 type VersionResult struct {
 	Version model.Version
 	Wrote   bool
 	Changes model.ReferenceChanges
-	Blocks  refs.BlockIndexWrite
+	Blocks  graphstore.Uncaused
 }
 
 // EditOutcome is what one batch of document edit operations did. Changed compares the document's

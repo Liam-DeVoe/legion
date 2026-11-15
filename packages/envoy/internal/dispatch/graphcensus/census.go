@@ -159,8 +159,8 @@ var projections = []projection{{
 	rows: `
 		select 'comment ' || c.id::text, c.node_kind, c.node_address,
 		       md5(c.created_at::text || '|' || c.author::text || '|' || ` + statedLinks(
-		`'`+tupleAnchoredTo+`>artifact:' || anchor.ref_key`,
-		`'`+tupleOwnedBy+`>artifact:' || owner.ref_key`,
+		`'`+graphstore.TupleAnchoredTo+`>artifact:' || anchor.ref_key`,
+		`'`+graphstore.TupleOwnedBy+`>artifact:' || owner.ref_key`,
 		`case when c.author->>'kind' <> '`+graphstore.KindSession+`'
 		           or octet_length(coalesce(c.author->>'id', '')) <= `+addressBound+`
 		      then '`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor+` end`,
@@ -171,8 +171,8 @@ var projections = []projection{{
 		where (anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
 		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`,
 	nodes: `
-		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(commentNodeKind,
-		`t.kind in ('`+tupleAnchoredTo+`', '`+tupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
+		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(graphstore.KindComment,
+		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
 		from graph_nodes n where n.kind = 'comment'`,
 	pastBound: `
 		select count(*) from comments c
@@ -316,10 +316,10 @@ func statedLinks(links ...string) string {
 // currentLinks is every link the node n of kind fromKind states now under the tuple kinds the
 // predicate kinds selects (written over t.kind), read as a statement reads a current relation:
 // the newest tuple per (kind, far end), kept while that newest one asserts
-// (graphstore.CurrentOut). Each is written kind>to_kind:to_id, as statedLinks writes a row's, and
-// they are joined in order, so a node that states none reads the empty string. A link whose
-// newest tuple is a retraction is absent here exactly as a tuple never written is. The read walks
-// graph_tuples_current, whose columns are the ones the distinct on and the order by name.
+// (graphstore.CurrentTupleRead). Each is written kind>to_kind:to_id, as statedLinks writes a
+// row's, and they are joined in order, so a node that states none reads the empty string. A link
+// whose newest tuple is a retraction is absent here exactly as a tuple never written is. The read
+// walks graph_tuples_current, whose columns are the ones the distinct on and the order by name.
 //
 // A block's part_of is one of these links, so a block that states no parent at all and a block
 // the document holds directly read differently: the first has no part_of link and the second
@@ -327,12 +327,10 @@ func statedLinks(links ...string) string {
 func currentLinks(fromKind, kinds string) string {
 	return `(select coalesce(string_agg(held.link, ',' order by held.link), '')
 	 from (
-		select distinct on (t.kind, t.to_kind, t.to_id)
-		       t.kind || '>' || t.to_kind || ':' || t.to_id as link, t.asserted
-		from graph_tuples t
-		where t.from_kind = '` + fromKind + `' and t.from_id = n.id
-		  and t.to_kind <> '` + graphstore.KindValue + `' and ` + kinds + `
-		order by t.kind, t.to_kind, t.to_id, t.seq desc
+		` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`,
+		`t.kind || '>' || t.to_kind || ':' || t.to_id as link, t.asserted`,
+		`t.from_kind = '`+fromKind+`' and t.from_id = n.id
+		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 	 ) held where held.asserted)`
 }
 

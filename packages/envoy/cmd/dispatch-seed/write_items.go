@@ -324,7 +324,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if hasAnswers {
 				arguments = append(arguments, answers)
 			}
-			arguments = append(arguments, commentNodeKind, comment.ID)
+			arguments = append(arguments, graphstore.KindComment, comment.ID)
 			if _, err := tx.Exec(ctx, insert, arguments...); err != nil {
 				return fmt.Errorf("comment %s: %w", comment.ID, err)
 			}
@@ -358,19 +358,12 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 	})
 }
 
-// commentNodeKind is what the node and tuple store calls a comment, and commentSupertag the
-// supertag every one of them carries (migration 20261109051232), as the server's own comment
-// write states them (api's commentStoreWrite). A comment's address there is its row's own id.
-const (
-	commentNodeKind = "comment"
-	commentSupertag = "comment"
-)
-
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each
-// comment's node - project-visible, live, made by the seed's author at the row's own time -
-// the two base attributes every node carries, who wrote the comment, and the artifact the
-// comment is anchored to and the artifact that owns it, each stated only where the comment has
-// one. All of it is drawn from the plan alone, so the batch can state it before it writes a row.
+// comment's node - project-visible, live, made by the seed's author at the row's own time - and
+// the artifact the comment is anchored to and the artifact that owns it, each stated only where
+// the comment has one (graphstore.CommentFacts), and who wrote the comment. The node write states
+// the two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
+// alone, so the batch can state it before it writes a row.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
 // graphstore.Authored writes for a comment of the server's: the comment's authored_by tuple and
@@ -387,34 +380,23 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 	var authors []graphstore.Node
 	for index := from; index < to; index++ {
 		comment := r.plan.comments[index]
-		node := graphstore.Node{
-			Kind: commentNodeKind, ID: comment.ID, Supertag: commentSupertag,
-			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
-			MadeAt: comment.CreatedAt, MadeBy: seedAuthor, SourceEvent: graphstore.NoEvent,
+		// A seeded comment is anchored only to the document it belongs to, which is the
+		// document whose address its row's artifact_id names.
+		anchor, owner := "", ""
+		if comment.Document >= 0 {
+			owner = r.plan.documents[comment.Document].RefKey
+			if comment.Anchored {
+				anchor = owner
+			}
 		}
+		var node graphstore.Node
+		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner)
 		nodes = append(nodes, node)
-		states := func(kind, toKind, toID string) {
-			tuples = append(tuples, graphstore.Tuple{
-				FromKind: node.Kind, FromID: node.ID, Kind: kind, ToKind: toKind, ToID: toID,
-				At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-			})
-		}
-		states("visibility", graphstore.KindValue, graphstore.VisibilityProject)
-		states("state", graphstore.KindValue, graphstore.StateLive)
-		made, facts, _ := graphstore.AuthorFacts(commentNodeKind, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
 			authors = made
 		}
 		tuples = append(tuples, facts...)
-		if comment.Document >= 0 {
-			// A seeded comment is anchored only to the document it belongs to, which is the
-			// document whose address its row's artifact_id names.
-			address := r.plan.documents[comment.Document].RefKey
-			if comment.Anchored {
-				states("anchored_to", "artifact", address)
-			}
-			states("owned_by", "artifact", address)
-		}
 	}
 	nodes = append(nodes, authors...)
 	return nodes, tuples

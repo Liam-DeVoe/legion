@@ -28,13 +28,14 @@ const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
 // package goes through, the same seven docs' register of the tree's passes scans for
-// (storeWriterCall), and the session writer beside them: Write, WriteStating and Caused in a
+// (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms spliced into a caller's statement, Authored, Reached and
 // SessionRecorded, which run WriteArms for the writers that record an author, a reached session
-// and a session an ask names, and EraseNode, the erase's delete of a node and its tuples. A write
-// that holds a statement of its own instead is found by rawStoreWrite, and none outside this
-// package may hold one.
-var storeWriteFunctions = []string{"Write", "WriteStating", "WriteArms", "Caused", "Authored", "Reached", "SessionRecorded", "EraseNode"}
+// and a session an ask names, and EraseNode, the erase's delete of a node and its tuples. Each is
+// a function of the package, never a method, so a call of one is named by the package and found
+// here wherever it is made. A write that holds a statement of its own instead is found by
+// rawStoreWrite, and none outside this package may hold one.
+var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "Caused", "Authored", "Reached", "SessionRecorded", "EraseNode"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -49,10 +50,24 @@ var rawStoreWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+
 // fails here until it joins this list.
 var storeWriteCallSites = []string{
 	// The follow of an ask, which records the following session's node in the caller's
-	// transaction, and the move of that node onto the event its caller appends after it
-	// (asks' TestAFollowTakesTheStoreLockOrder).
-	"asks/followers.go#Caused",
+	// transaction, and each site that moves that node onto the event it appends after the follow
+	// through Caused: the follower route, an ask's create, the comment path and a delivery's
+	// reply below, and a settlement's asks (asks' TestAFollowTakesTheStoreLockOrder proves both
+	// steps).
 	"asks/followers.go#Follow",
+	"api/ask_followers.go#changeAskFollower",
+	"api/asks.go#createAskFor",
+	"docs/ask_blocks.go#causeFollows",
+	// The block index's cause: each site that appends what a version's index pass stated under
+	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
+	// proves the step): an upload, a version write's event, an issue's spec, the block-index tick,
+	// a settlement's version and the seed's documents.
+	"api/artifacts.go#commitArtifactVersionEvent",
+	"api/artifacts.go#storeArtifact",
+	"api/issue_create.go#createIssue",
+	"cmd/dispatch-seed/write_docs.go#writeDocument",
+	"docs/block_index.go#indexOwedDocument",
+	"docs/settlement.go#commitVersion",
 	// The comment path: the comment's node before the comments row that names it, then its
 	// tuples and its cause under the event appended after both, and who wrote it.
 	"api/comment_create.go#caused",
@@ -81,20 +96,17 @@ var storeWriteCallSites = []string{
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
 	"grapherase/erase.go#apply",
-	// This package's own writers that run another of them: Write is WriteStating and the
-	// append of what it states, Authored and SessionRecorded are arms of one statement, and
-	// Reached is SessionRecorded for an attempt that was sent.
+	// This package's own writers that run another of them: Authored and SessionRecorded are
+	// arms of one statement, and Reached is SessionRecorded for an attempt that was sent.
 	"graphstore/people.go#Authored",
 	"graphstore/people.go#Reached",
 	"graphstore/people.go#SessionRecorded",
-	"graphstore/write.go#Write",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",
 	"outbox/publisher.go#recordBatch",
-	// The block index: its nodes inside the revision fence, and its tuples and their cause
-	// under the event that recorded the version.
-	"refs/blocks.go#Caused",
+	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
+	// event that recorded the version (the sites of Caused above).
 	"refs/blocks.go#IndexBlocks",
 }
 

@@ -99,7 +99,7 @@ func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
 	single := storetest.SingleConnection(t, database)
 	at := time.Now()
 	node := graphstore.SessionNode(reached, graphWriter, at, created)
-	tuple := deliveredTo(commentNodeKind, comment, graphstore.KindSession, reached, at, created)
+	tuple := deliveredTo(graphstore.KindComment, comment, graphstore.KindSession, reached, at, created)
 
 	nodeHold := &lockstep.Hold{
 		Name: "the reached session's node row", Step: lockstep.StepNode, Taken: true,
@@ -126,7 +126,7 @@ func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
 	}()
 	lockstep.Follow(t, database, "recordFallbackCopies", uint32(pid), done, []*lockstep.Hold{nodeHold, tupleHold})
 
-	requireTuple(t, database, commentNodeKind, comment, graphstore.TupleDeliveredTo, graphstore.KindSession, reached, true)
+	requireTuple(t, database, graphstore.KindComment, comment, graphstore.TupleDeliveredTo, graphstore.KindSession, reached, true)
 	for _, check := range []struct {
 		session    string
 		nodes, ins int

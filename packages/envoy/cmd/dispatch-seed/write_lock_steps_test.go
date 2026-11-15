@@ -353,7 +353,7 @@ func (f *seedLockFixture) requireWritten(t *testing.T, nodes ...graphstore.Node)
 			select 1 from graph_tuples t
 			where t.from_kind = c.node_kind and t.from_id = c.node_address
 			  and t.kind = $3 and t.to_kind = $4 and t.to_id = $5)
-	`, ids, commentNodeKind, graphstore.TupleAuthoredBy, graphstore.KindPerson, f.author).Scan(&written); err != nil {
+	`, ids, graphstore.KindComment, graphstore.TupleAuthoredBy, graphstore.KindPerson, f.author).Scan(&written); err != nil {
 		t.Fatalf("read back what the batch wrote: %v", err)
 	}
 	if written != len(nodes) {

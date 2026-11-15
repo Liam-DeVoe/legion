@@ -1933,7 +1933,7 @@ func fallbackDelivered(records []fallbackRecord, at time.Time) graphWrite {
 			continue
 		}
 		write.tuples = append(write.tuples,
-			deliveredTo(commentNodeKind, record.held.commentID, toKind, toID, at, record.held.eventID))
+			deliveredTo(graphstore.KindComment, record.held.commentID, toKind, toID, at, record.held.eventID))
 		if _, made := sessions[toID]; toKind == graphstore.KindSession && !made {
 			sessions[toID] = struct{}{}
 			write.nodes = append(write.nodes, graphstore.SessionNode(toID, graphWriter, at, record.held.eventID))

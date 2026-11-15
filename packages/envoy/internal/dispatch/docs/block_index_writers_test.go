@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -86,7 +87,7 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	`, payload).Scan(&event); err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
-	if err := write.Caused(ctx, tx, event); err != nil {
+	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -451,11 +452,23 @@ var indexPasses = map[string]string{
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
 	// A follow of an ask writes the follower row and the following session's node in one
-	// statement (graphstore.WriteArms), and Caused moves the node that follow made onto the event
-	// its caller appended after it. Neither reads a row of either side: the follow writes the
-	// session its caller names, and Caused the node the follow answered.
-	"asks/followers.go#Follow": "the ask and the session its caller names",
-	"asks/followers.go#Caused": "the node its follow made and the event its caller appended after the follow",
+	// statement (graphstore.WriteArms), and each caller that appended an event after the follow
+	// moves the node that follow made onto it (graphstore.Caused). Neither reads a row of either
+	// side: the follow writes the session its caller names, and the cause the node the follow
+	// answered.
+	"asks/followers.go#Follow":               "the ask and the session its caller names",
+	"api/ask_followers.go#changeAskFollower": "the follow request and the event it appended after the follow",
+	"api/asks.go#createAskFor":               "the ask the create request opens and the event it appended after the follow",
+	"docs/ask_blocks.go#causeFollows":        "the follows a settlement made and the ask.opened events it appended after them",
+	// The block index's cause: what a version's index pass stated, appended under the event
+	// that recorded the version once it is appended (graphstore.Caused), which reads no
+	// projection and mends nothing.
+	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated and the event the upload appended",
+	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
+	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated and the issue's own event",
+	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated",
+	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
+	"docs/settlement.go#commitVersion":              "the facts the settled version's index pass stated and the event that recorded it",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
@@ -497,23 +510,28 @@ var indexPasses = map[string]string{
 	"graphstore/arms.go#tupleInsert":       "the tuples its caller states",
 	// EraseNode is the erase's delete of a node and every tuple on both sides of it: it reads
 	// nothing, and deletes the node its one caller names.
-	"graphstore/erase.go#EraseNode":  "the node its caller names",
-	"graphstore/write.go#writeNodes": "the nodes its caller states",
-	// Caused is the second half of one write rather than a second look at it: the nodes its
+	"graphstore/erase.go#EraseNode": "the node its caller names",
+	// A node write's two statements (writeNodes): the insert of the nodes the store lacks, which
+	// locks the ones it holds, and the move of the ones it holds. The move reads each row it
+	// moves, in the snapshot taken once the insert holds them all, to say which base attributes
+	// the write moved: it reads the store's own row to state what it writes into that row, never
+	// a projection to mend the store or the store to mend a projection.
+	"graphstore/write.go#insertNodes": "the nodes its caller states",
+	"graphstore/write.go#moveNodes":   "the nodes its caller states and the rows of them it moves",
+	// causeNodes is the second half of one write rather than a second look at it: the nodes its
 	// caller has just written take the id of the event that recorded them, which is known only
-	// once that event is appended. It reads no projection and mends nothing.
-	"graphstore/write.go#Caused": "the nodes its caller stated and the event that recorded the write",
+	// once that event is appended (graphstore.Caused). It reads no projection and mends nothing.
+	"graphstore/write.go#causeNodes": "the nodes its caller stated and the event that recorded the write",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
-	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
-	"refs/blocks.go#Caused":                   "the facts the version's index pass stated and the event that recorded the version",
-	"refs/blocks.go#IndexBlocks":              "the version's render",
-	"refs/blocks.go#reconcileBlockParents":    "the version's render",
-	"refs/blocks.go#replaceBlockRefs":         "the version's render",
-	"refs/refs.go#Stamp":                      "the event that recorded the write",
+	"outbox/mentions.go#recordFallbackCopies":   "the fallback copies the pass published and the topic each reached",
+	"refs/blocks.go#IndexBlocks":                "the version's render",
+	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
+	"refs/blocks.go#replaceBlockRefs":           "the version's render",
+	"refs/refs.go#Stamp":                        "the event that recorded the write",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the
@@ -523,7 +541,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // storeWriterCall matches one call of the store's writer from outside its package: a pass that
 // writes the store through graphstore holds no statement of its own, and a scan of SQL alone
 // would never see it.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteStating|Caused|Authored|Reached|WriteArms|EraseNode)\(`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|EraseNode)\(`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

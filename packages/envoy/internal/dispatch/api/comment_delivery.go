@@ -448,7 +448,7 @@ func (s *server) completeCommentDelivery(
 	sent.Duplicate, sent.EnvelopeID = duplicate, envelopeID
 	// The session the settle records, where this settle made its node: the node is made before
 	// the receipt exists and moves onto it once it is appended (caused below).
-	var reached []graphstore.Node
+	var reached graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
@@ -1285,7 +1285,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := refs.Stamp(r.Context(), tx, commentNodeKind, reply.ID, event.ID); err != nil {
+	if err := refs.Stamp(r.Context(), tx, graphstore.KindComment, reply.ID, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1295,7 +1295,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := followed.Caused(r.Context(), tx, event.ID); err != nil {
+	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1303,7 +1303,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// is the first write that records that session, so its node is made here (graphstore.Authored).
 	// A reply left out of the store has no node to author, so this is skipped with the rest.
 	if !stored.unprojected {
-		if err := graphstore.Authored(r.Context(), tx, commentNodeKind, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
+		if err := graphstore.Authored(r.Context(), tx, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

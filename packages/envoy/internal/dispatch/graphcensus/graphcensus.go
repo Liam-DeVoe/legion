@@ -1,7 +1,10 @@
-// Package graphcensus holds the two operator passes over the node and tuple store: the census,
-// which reads the store against the tables that project it and refuses when the two disagree,
-// and the backfill, which writes the nodes and tuples of the rows written before the store
-// existed.
+// Package graphcensus holds the three operator passes over the node and tuple store: the
+// census, which reads the store against the tables that project it and refuses when the two
+// disagree; the sizing (`envoy-dispatch census --store --sizing`, readSizing), which reads in
+// the census's own snapshot how fast the store grows - the write rate by kind, the tuples and
+// nodes each write states, where graph_tuples and graph_nodes reach in a year against
+// pgmigrate.CensusTableLimit - and what the block-index reconciliation still owes; and the
+// backfill, which writes the nodes and tuples of the rows written before the store existed.
 //
 // A node is a thing Dispatch holds and a tuple is one fact stated about it
 // (store/migrations/20261109013400_graph_store.up.sql); every table Dispatch reads today stays
@@ -11,8 +14,8 @@
 // is answered from the store the moment it names its node, and the census is how anyone knows
 // every row of a kind does and that what the store holds for them is still right.
 //
-// The census writes nothing and reads one read-only snapshot. The backfill writes through
-// graphstore, the one package in the tree that writes graph_nodes and graph_tuples.
+// The census and the sizing write nothing and read one read-only snapshot. The backfill writes
+// through graphstore, the one package in the tree that writes graph_nodes and graph_tuples.
 package graphcensus
 
 import (

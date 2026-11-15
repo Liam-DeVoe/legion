@@ -43,17 +43,17 @@ var (
 // causedWriter is the writer of every version of the lock order test.
 var causedWriter = model.Actor{Kind: "user", ID: "alice"}
 
-// TestCausedTakesTheStoreLockOrder holds BlockIndexWrite.Caused, the step of a block index pass
-// that runs after its caller's event, to the lock order written on api/inbox_read.go's
+// TestCausedTakesTheStoreLockOrder holds graphstore.Uncaused.Caused, the step of a block index
+// pass that runs after its caller's event, to the lock order written on api/inbox_read.go's
 // markInboxReadThreads, against a real Postgres. The pass runs as a request runs it: the
 // document's owner row, then IndexBlocks - the revision fence, the block nodes in ascending
 // (kind, id) and the projection rows that name them - then the version's event, then Caused.
-// Caused moves the event onto the nodes the pass wrote (graphstore.Caused) and appends the
+// Caused moves the event onto the nodes the pass wrote (graphstore's caused) and appends the
 // pass's tuples under it.
 //
 // The stamp is an update of graph_nodes rows after the project of the event, so the one way it
 // could break the order is to take a node row there that the pass had not already taken in its
-// node step. graphstore.Caused orders nothing itself - its update takes the rows in the order it
+// node step. graphstore's caused orders nothing itself - its update takes the rows in the order it
 // is given them - so it keeps invariant 4 only because every row it stamps is already the
 // pass's. The test shows it takes none of its own: when the event is appended, another
 // transaction can take none of the rows Caused stamps, because the pass holds them all, and a
@@ -159,7 +159,7 @@ func newCausedDocument(t *testing.T, database *store.Store, name, slug string) (
 	if err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
-	if err := write.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
 		t.Fatalf("append what version 1 stated: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -192,7 +192,7 @@ type causedPass struct {
 	conn  *pgxpool.Conn
 	tx    pgx.Tx
 	pid   uint32
-	write BlockIndexWrite
+	write graphstore.Uncaused
 	event int64
 	// finished is closed once a Caused run in the background has returned, and is nil until
 	// one starts.
@@ -248,7 +248,7 @@ func (p *causedPass) causeInBackground(ctx context.Context) chan error {
 	p.finished = make(chan struct{})
 	go func() {
 		defer close(p.finished)
-		err := p.write.Caused(ctx, p.tx, p.event)
+		err := graphstore.Caused(ctx, p.tx, p.write, p.event)
 		if err == nil {
 			err = p.tx.Commit(ctx)
 		}

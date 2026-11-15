@@ -20,9 +20,10 @@ var followLockAt = time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
 
 const followLockEvent = int64(9410001)
 
-// TestAFollowTakesTheStoreLockOrder holds Follow and Followed.Caused, the two store write call
-// sites of this package that graphstore's TestEveryStoreWriteCallSiteIsListed lists, to the lock
-// order written on api/inbox_read.go's markInboxReadThreads, against a real Postgres. The owner
+// TestAFollowTakesTheStoreLockOrder holds Follow and the move of the node it made onto its
+// caller's event (graphstore.Caused), the follow's two steps of the store, whose call sites
+// graphstore's TestEveryStoreWriteCallSiteIsListed lists, to the lock order written on
+// api/inbox_read.go's markInboxReadThreads, against a real Postgres. The owner
 // row comes before the follow and the event after it, both in the caller's transaction, and each
 // caller proves them where it is. What the follow takes itself is the follower row, which no
 // foreign key ties to the store, and the session's node row, in one statement: the store's node
@@ -52,7 +53,7 @@ func TestAFollowTakesTheStoreLockOrder(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return followed.Caused(ctx, tx, followLockEvent)
+			return graphstore.Caused(ctx, tx, followed.Uncaused, followLockEvent)
 		})
 		if queued := lockstep.Follow(t, database, "Follow", pid, done, []*lockstep.Hold{hold}); len(queued) != 1 {
 			t.Fatalf("the follow queued behind %s, want the session's node row", lockstep.HoldNames(queued))
@@ -79,7 +80,7 @@ func TestAFollowTakesTheStoreLockOrder(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return followed.Caused(ctx, tx, followLockEvent)
+			return graphstore.Caused(ctx, tx, followed.Uncaused, followLockEvent)
 		})
 		deadline := time.Now().Add(lockstep.Wait)
 		for answered := false; !answered; {

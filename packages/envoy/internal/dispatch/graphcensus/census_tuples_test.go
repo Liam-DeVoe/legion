@@ -83,7 +83,7 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 		at:   func(seeded agreeingStore) string { return "comment " + seeded.comment },
 		lose: func(t *testing.T, database *store.Store, seeded agreeingStore) {
 			appendTuple(t, database, graphstore.Tuple{
-				FromKind: commentNodeKind, FromID: seeded.comment, Kind: tupleOwnedBy,
+				FromKind: graphstore.KindComment, FromID: seeded.comment, Kind: graphstore.TupleOwnedBy,
 				ToKind: "artifact", ToID: seeded.document.refKey, Asserted: false,
 			})
 		},
@@ -93,7 +93,7 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 		at:   func(seeded agreeingStore) string { return "comment " + seeded.comment },
 		lose: func(t *testing.T, database *store.Store, seeded agreeingStore) {
 			appendTuple(t, database, graphstore.Tuple{
-				FromKind: commentNodeKind, FromID: seeded.comment, Kind: tupleAnchoredTo,
+				FromKind: graphstore.KindComment, FromID: seeded.comment, Kind: graphstore.TupleAnchoredTo,
 				ToKind: "artifact", ToID: seeded.document.refKey, Asserted: false,
 			})
 		},
@@ -103,7 +103,7 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 		at:   func(seeded agreeingStore) string { return "comment " + seeded.comment },
 		lose: func(t *testing.T, database *store.Store, seeded agreeingStore) {
 			appendTuple(t, database, graphstore.Tuple{
-				FromKind: commentNodeKind, FromID: seeded.comment, Kind: graphstore.TupleAuthoredBy,
+				FromKind: graphstore.KindComment, FromID: seeded.comment, Kind: graphstore.TupleAuthoredBy,
 				ToKind: graphstore.KindPerson, ToID: "alice", Asserted: false,
 			})
 		},

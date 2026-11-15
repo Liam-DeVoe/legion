@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -93,7 +94,7 @@ func TestTheSizingReportsTheOwedDocumentsAndTheAgeOfTheOldest(t *testing.T) {
 		t.Errorf("the sizing prints no owed count; want the line\n\t%s\ngot\n%s", count, printed)
 	}
 	age := fmt.Sprintf("census: sizing backlog oldest_owed_at=%s oldest_owed_age_seconds=%.2f against=%s",
-		backlogTime(clock.Add(-ages[0])), ages[0].Seconds(), backlogTime(clock))
+		refs.OwedTimeText(clock.Add(-ages[0])), ages[0].Seconds(), refs.OwedTimeText(clock))
 	if !strings.Contains(printed, age+"\n") {
 		t.Errorf("the sizing prints no age for the oldest owed document; want the line\n\t%s\ngot\n%s", age, printed)
 	}

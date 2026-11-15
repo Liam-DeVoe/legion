@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -56,16 +57,16 @@ const deferBlockIndexBlocks = 2000
 //
 // Its second result is what the block index stated in the node and tuple store, which the
 // caller appends under the event it goes on to record for this version
-// (refs.BlockIndexWrite.Caused), in this same transaction.
-func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, refs.BlockIndexWrite, error) {
+// (graphstore.Caused), in this same transaction.
+func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
-		return model.ReferenceChanges{}, refs.BlockIndexWrite{}, errUnjoined
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, errUnjoined
 	}
 	var versionAt time.Time
 	if err := tx.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1 and number = $2`,
 		artifactID, version).Scan(&versionAt); err != nil {
-		return model.ReferenceChanges{}, refs.BlockIndexWrite{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
 	}
 	rendered := ledgerFrom(ctx).writtenRendering(artifactID)
 	if rendered.tree != nil && rendered.markdown != markdown {
@@ -94,10 +95,10 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // or one whose blocks the write deferred (deferBlockIndexBlocks) - is indexUnrenderedVersion,
 // which indexes no blocks: migration 0122's trigger left the document owed when the version's row
 // was inserted, for the block-index reconciliation, which reads the document itself.
-func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, refs.BlockIndexWrite, error) {
+func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
-		return changes, refs.BlockIndexWrite{}, err
+		return changes, graphstore.Uncaused{}, err
 	}
 	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
 }
@@ -122,17 +123,17 @@ func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 // (refs.ReplaceDocumentCounted), since a node is counted once for each block citing it.
 //
 // Its second result is what the pass states in the node and tuple store, which the caller
-// appends under that same event (refs.BlockIndexWrite.Caused): the pass writes the block nodes
+// appends under that same event (graphstore.Caused): the pass writes the block nodes
 // itself, because the foreign key on the projection rows needs them, and holds its tuples back
 // because on the request path the event does not exist yet.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, refs.BlockIndexWrite, error) {
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	located := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL).Mentions(markdown)
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
 	moved, _, write, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
 	if err != nil {
-		return model.ReferenceChanges{}, refs.BlockIndexWrite{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
 	return changes, write, err

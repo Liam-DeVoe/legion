@@ -284,15 +284,18 @@ func TupleKinds() []string {
 }
 
 // currentTuple is the test that the row alias names is the fact the store holds now: the newest
-// tuple of its (from, kind, to), kept only while that newest one asserts, which is how the
-// store reads a current relation (graphstore.CurrentOut) and how the view's own tuple arm reads
-// one. The probe for a later tuple is keyed on graph_tuples_current, whose columns are exactly
-// the five it names and then the sequence.
+// tuple of its (from, kind, to), kept only while that newest one asserts, which is how the store
+// reads a current relation (graphstore.CurrentTupleRead) and how the view's own tuple arm reads
+// one. The read of the newest binds all five columns of the relation, so it is one range of
+// graph_tuples_current, whose columns are exactly those five and then the sequence; the row is
+// a relation, never a value, and the read says so, which is the predicate that index is partial
+// on.
 func currentTuple(alias string) string {
-	return alias + `.asserted and not exists (select 1 from graph_tuples later
-		where later.from_kind = ` + alias + `.from_kind and later.from_id = ` + alias + `.from_id
-			and later.kind = ` + alias + `.kind and later.to_kind = ` + alias + `.to_kind
-			and later.to_id = ` + alias + `.to_id and later.seq > ` + alias + `.seq)`
+	return alias + `.asserted and ` + alias + `.seq = (select newest.seq from (` +
+		graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.seq`,
+			`t.from_kind = `+alias+`.from_kind and t.from_id = `+alias+`.from_id
+			and t.kind = `+alias+`.kind and t.to_kind = `+alias+`.to_kind
+			and t.to_id = `+alias+`.to_id and t.to_kind <> '`+graphstore.KindValue+`'`) + `) newest)`
 }
 
 // liveVisibleNode is the two tests a tuple arm makes of the node an edge comes from, answered

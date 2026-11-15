@@ -158,7 +158,7 @@ func requireStatedBy(t *testing.T, what string, tuple graphstore.Tuple, cause ve
 // writer states and not only for tuples a test writes by hand. One block of a document is
 // written through the real version write path four times: the request that creates the document
 // (api's storeArtifact, IndexDocumentReferences), then three named versions (NamedVersion, the
-// version's event, refs.BlockIndexWrite.Caused). The block index states the block's state
+// version's event, graphstore.Caused). The block index states the block's state
 // attribute three times - live, gone when a version drops it, live when the next brings it
 // back - and its part_of relation three times - the document asserted, then retracted, and the
 // block that comes to hold it asserted. graphstore.History reads both.

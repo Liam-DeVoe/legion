@@ -591,7 +591,7 @@ func (s *server) storeArtifact(
 	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
 	// the event this upload appends below: that event is the cause every node and tuple of the
 	// pass carries, and no tuple may be updated once appended.
-	var indexedBlocks refs.BlockIndexWrite
+	var indexedBlocks graphstore.Uncaused
 	var movedEvents []model.Event
 	if kind == "doc" {
 		if created {
@@ -716,7 +716,7 @@ func (s *server) storeArtifact(
 		blockCause = event.ID
 		published = append(published, event)
 	}
-	if err := indexedBlocks.Caused(r.Context(), tx, blockCause); err != nil {
+	if err := graphstore.Caused(r.Context(), tx, indexedBlocks, blockCause); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1099,7 +1099,7 @@ func (s *server) commitArtifactVersionEvent(
 	if err := refs.Stamp(ctx, tx, "artifact", artifactID, event.ID); err != nil {
 		return model.Event{}, err
 	}
-	if err := written.Blocks.Caused(ctx, tx, event.ID); err != nil {
+	if err := graphstore.Caused(ctx, tx, written.Blocks, event.ID); err != nil {
 		return model.Event{}, err
 	}
 	return event, nil

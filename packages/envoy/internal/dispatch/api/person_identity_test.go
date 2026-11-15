@@ -221,7 +221,7 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 			t.Errorf("the store holds no %s node %s (err %v)", kind, id, err)
 		}
 	}
-	delivered := rig.currentOut(t, commentNodeKind, byTwin, graphstore.TupleDeliveredTo)
+	delivered := rig.currentOut(t, graphstore.KindComment, byTwin, graphstore.TupleDeliveredTo)
 	if len(delivered) == 0 {
 		t.Fatalf("the twin's comment on an issue routed to the role was delivered nowhere, so the role's delivery proves nothing")
 	}

@@ -398,7 +398,7 @@ func requireADeletedBlockStaysGone(t *testing.T, database *store.Store, artifact
 		if !won {
 			t.Fatalf("the index of version %d lost the fence, so it wrote nothing", version)
 		}
-		if err := written.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+		if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
 			t.Fatalf("append what version %d stated: %v", version, err)
 		}
 		if err := tx.Commit(ctx); err != nil {

@@ -180,11 +180,11 @@ func storeKinds() []StoreKind {
 		Driver: "comments.created_at, each naming an author the store can key",
 		count:  `(select count(*) from sized_comments where authored)`,
 	}, {
-		Name: tupleAnchoredTo, MovedBy: movedHere, Tuples: 1,
+		Name: graphstore.TupleAnchoredTo, MovedBy: movedHere, Tuples: 1,
 		Driver: "comments.created_at, each anchored to a document the store can key",
 		count:  `(select count(*) from sized_comments where anchored)`,
 	}, {
-		Name: tupleOwnedBy, MovedBy: movedHere, Tuples: 1,
+		Name: graphstore.TupleOwnedBy, MovedBy: movedHere, Tuples: 1,
 		Driver: "comments.created_at, each owned by a document the store can key",
 		count:  `(select count(*) from sized_comments where owned)`,
 	}, {
@@ -802,7 +802,7 @@ func (s *SizingReport) Write(w io.Writer) {
 	fmt.Fprintf(w, "census: sizing backlog owed_documents=%d dated_by=%s\n",
 		s.Backlog.Documents, backlogDatedBy)
 	fmt.Fprintf(w, "census: sizing backlog oldest_owed_at=%s oldest_owed_age_seconds=%.2f against=%s\n",
-		backlogTime(s.Backlog.OldestOwedAt), s.Backlog.Age().Seconds(), backlogTime(s.Backlog.ClockAt))
+		refs.OwedTimeText(s.Backlog.OldestOwedAt), s.Backlog.Age().Seconds(), refs.OwedTimeText(s.Backlog.ClockAt))
 	for _, refusal := range s.Refusals {
 		fmt.Fprintf(w, "census: sizing refusal: %s\n", refusal)
 	}
@@ -823,13 +823,3 @@ func bytesText(n int64) string {
 // what the age is measured from (blockIndexBacklogQuery).
 const backlogDatedBy = "the created_at of the latest markdown version each owed document holds," +
 	" the write that owed it the index, or the document's own created_at where it holds no version"
-
-// backlogTime writes a timestamp as the backlog lines print it: UTC to the nanosecond, so two
-// runs over one unchanged database print one byte sequence, and `none` where there is no such
-// time, which a zero value would otherwise print as a date in the year 1.
-func backlogTime(at time.Time) string {
-	if at.IsZero() {
-		return "none"
-	}
-	return at.UTC().Format(time.RFC3339Nano)
-}

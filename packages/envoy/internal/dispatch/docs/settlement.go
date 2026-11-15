@@ -10,6 +10,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -774,8 +775,8 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		}
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only now
-		// (refs.BlockIndexWrite.Caused). st.published's last entry is the event just appended.
-		if err := result.blocks.Caused(ctx, tx, st.published[len(st.published)-1].ID); err != nil {
+		// (graphstore.Caused). st.published's last entry is the event just appended.
+		if err := graphstore.Caused(ctx, tx, result.blocks, st.published[len(st.published)-1].ID); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}

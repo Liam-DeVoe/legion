@@ -588,10 +588,8 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	}
 	rows, err := tx.Query(ctx, `
 		select t.from_kind, t.from_id, t.kind from (
-			select distinct on (t.from_kind, t.from_id, t.kind) t.from_kind, t.from_id, t.kind, t.asserted
-			from graph_tuples t
-			where t.to_kind = $1 and t.to_id = $2 and not (t.from_kind = $1 and t.from_id = $2)
-			order by t.from_kind, t.from_id, t.kind, t.seq desc
+			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,
+		`t.to_kind = $1 and t.to_id = $2 and not (t.from_kind = $1 and t.from_id = $2)`)+`
 		) t
 		join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state = $3
 		where t.asserted and (`+strings.Join(projected, " or ")+`)

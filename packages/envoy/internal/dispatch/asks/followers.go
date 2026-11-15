@@ -26,27 +26,20 @@ type Queryer interface {
 }
 
 // Followed is what one follow wrote: whether the follower row is new, and the session's node
-// where this follow made it.
+// where this follow made it, held for the event its caller appends after the follow
+// (graphstore.Uncaused). A caller that follows before its event exists passes
+// graphstore.NoEvent to Follow and hands Uncaused to graphstore.Caused once it holds the event,
+// in the same transaction, as a comment's node learns the event that stored it. Only a node
+// this follow made at the sentinel moves, so a session another write recorded keeps that
+// write's cause, and a caller that appends no event calls nothing and leaves its node at the
+// sentinel.
 type Followed struct {
 	// Added is whether the session did not follow the ask before; following twice changes
 	// nothing.
 	Added bool
-	// made is the session's node, made by this follow at the cause it was given. It is empty
-	// where the store held the node already, and Caused moves nothing then.
-	made []graphstore.Node
-}
-
-// Caused moves the session node this follow made onto event, the event its caller appended after
-// the follow. A caller that follows before its event exists passes graphstore.NoEvent to Follow
-// and calls this once it holds the event, in the same transaction, as a comment's node learns the
-// event that stored it. Only a node this follow made at the sentinel moves (graphstore.Caused), so
-// a session another write recorded keeps that write's cause, and a caller that appends no event
-// calls nothing and leaves its node at the sentinel.
-func (f Followed) Caused(ctx context.Context, tx pgx.Tx, event int64) error {
-	if err := graphstore.Caused(ctx, tx, f.made, event); err != nil {
-		return fmt.Errorf("record what caused a follower's node: %w", err)
-	}
-	return nil
+	// Uncaused holds the session's node, made by this follow at the cause it was given. It holds
+	// none where the store held the node already, and graphstore.Caused moves nothing then.
+	Uncaused graphstore.Uncaused
 }
 
 // Follow records that sessionID follows askID, in the caller's transaction, and writes the
@@ -59,9 +52,10 @@ func (f Followed) Caused(ctx context.Context, tx pgx.Tx, event int64) error {
 //
 // The node is made by who, the actor of the write, at at, and caused by event. A caller whose
 // event is appended after the follow passes graphstore.NoEvent and moves the node onto that event
-// once it is appended (Followed.Caused). The node is written whether or not the follower row is
-// new, because a row written before the store existed carries no node, and the first follow of
-// this build that names the session is then the first write that records it in the store.
+// once it is appended (graphstore.Caused over Followed.Uncaused). The node is written whether or
+// not the follower row is new, because a row written before the store existed carries no node,
+// and the first follow of this build that names the session is then the first write that
+// records it in the store.
 //
 // The follower row and the node are one statement: the store's node arm (graphstore.WriteArms)
 // spliced into the follower insert, so a follow costs the round trip it cost before the store
@@ -97,7 +91,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	}
 	followed := Followed{Added: added == 1}
 	if made == 1 {
-		followed.made = nodes
+		followed.Uncaused.Nodes = nodes
 	}
 	return followed, nil
 }

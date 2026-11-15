@@ -88,7 +88,7 @@ func (r *settlementReconciliation) causeFollows(ctx context.Context, tx pgx.Tx, 
 		if !found {
 			return fmt.Errorf("settlement opened ask %s and appended no ask.opened for it", follow.ask)
 		}
-		if err := follow.followed.Caused(ctx, tx, event); err != nil {
+		if err := graphstore.Caused(ctx, tx, follow.followed.Uncaused, event); err != nil {
 			return err
 		}
 	}

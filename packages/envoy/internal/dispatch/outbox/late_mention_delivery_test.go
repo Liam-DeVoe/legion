@@ -45,7 +45,7 @@ func TestAMentionThatSettlesAfterItsCommentsBatchIsRecordedWhenItSettles(t *test
 	outbox := holding(t, Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker})
 	outbox.scan(ctx, unfenced{})
 	requirePublished(t, database, created, true)
-	if delivered := history(t, database, commentNodeKind, commentID, graphstore.TupleDeliveredTo); len(delivered) != 0 {
+	if delivered := history(t, database, graphstore.KindComment, commentID, graphstore.TupleDeliveredTo); len(delivered) != 0 {
 		t.Fatalf("the comment's batch, which read both attempts pending, recorded the deliveries %+v; a pending attempt delivered nothing", delivered)
 	}
 	requireNoNode(t, database, graphstore.KindPage, graphstore.SessionPageID(reached))
@@ -149,7 +149,7 @@ func TestALateMentionOfASessionThatClaimedARoleGivesItNoPageOfItsOwn(t *testing.
 	seedMentionDelivery(t, database, commentID, holder, "pending")
 	outbox.scan(ctx, unfenced{})
 	requirePublished(t, database, created, true)
-	if delivered := history(t, database, commentNodeKind, commentID, graphstore.TupleDeliveredTo); len(delivered) != 0 {
+	if delivered := history(t, database, graphstore.KindComment, commentID, graphstore.TupleDeliveredTo); len(delivered) != 0 {
 		t.Fatalf("the comment's batch, which read the attempt pending, recorded the deliveries %+v", delivered)
 	}
 
@@ -242,7 +242,7 @@ func requireMentionRecorded(t *testing.T, database *store.Store, commentID, sess
 // by the outbox and caused by the receipt cause.
 func requireDeliveredOnce(t *testing.T, database *store.Store, commentID, session string, cause int64) {
 	t.Helper()
-	delivered := history(t, database, commentNodeKind, commentID, graphstore.TupleDeliveredTo)
+	delivered := history(t, database, graphstore.KindComment, commentID, graphstore.TupleDeliveredTo)
 	if len(delivered) != 1 || delivered[0].ToKind != graphstore.KindSession || delivered[0].ToID != session ||
 		!delivered[0].Asserted || delivered[0].SourceEvent != cause || !delivered[0].Who.SameAs(graphWriter) {
 		t.Fatalf("the comment's deliveries read %+v, want one delivered_to tuple into session %s caused by event %d",

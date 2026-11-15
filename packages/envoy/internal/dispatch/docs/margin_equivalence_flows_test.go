@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -280,6 +280,6 @@ func (r *flowRun) accept() error {
 // two flows must agree on.
 func comparableVersion(result VersionResult) VersionResult {
 	result.Version.CreatedAt = time.Time{}
-	result.Blocks = refs.BlockIndexWrite{}
+	result.Blocks = graphstore.Uncaused{}
 	return result
 }

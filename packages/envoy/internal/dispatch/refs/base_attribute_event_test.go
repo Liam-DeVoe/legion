@@ -72,14 +72,14 @@ func TestTwoValuesOfOneBaseAttributeUnderOneEventAreBothHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index the version that drops the block: %v", err)
 	}
-	if err := dropped.Caused(ctx, tx, dropping.event); err != nil {
+	if err := graphstore.Caused(ctx, tx, dropped, dropping.event); err != nil {
 		t.Fatalf("append what the version that drops the block stated: %v", err)
 	}
 	_, _, restored, err := IndexBlocks(ctx, tx, document.artifact, 3, restoring.at, whole.markdown, whole.blocks, nil, nil)
 	if err != nil {
 		t.Fatalf("index the version that restores the block: %v", err)
 	}
-	if err := restored.Caused(ctx, tx, dropping.event); err != nil {
+	if err := graphstore.Caused(ctx, tx, restored, dropping.event); err != nil {
 		t.Fatalf("append what the version that restores the block stated: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

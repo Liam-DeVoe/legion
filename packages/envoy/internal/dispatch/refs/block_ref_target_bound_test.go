@@ -62,7 +62,7 @@ func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	}
 	// The event that caused the write appends its tuples. On the old code the mention tuple went in
 	// here and failed with "index row size ... exceeds btree ... 2704"; now it is left out.
-	if err := write.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
 		t.Fatalf("append what the version stated: %v", err)
 	}
 

@@ -133,16 +133,6 @@ func (tick BlockIndexTick) OldestOwedDocumentAge(now time.Time) time.Duration {
 	return now.Sub(tick.OldestOwedDocumentAt)
 }
 
-// oldestOwedText writes the oldest owed document's own timestamp for a log line: UTC to the
-// nanosecond, and `none` where nothing is owed, which a zero time would otherwise print as a
-// date in the year 1.
-func oldestOwedText(at time.Time) string {
-	if at.IsZero() {
-		return "none"
-	}
-	return at.UTC().Format(time.RFC3339Nano)
-}
-
 // RunBlockIndexReconciliation indexes what no block-aware version write indexed: every document
 // owed a block index (document_block_versions.version null) - each one at migration 0121, each
 // version any build writes (migration 0122's trigger) that its own writer did not index, and each
@@ -203,7 +193,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 			"retired", tick.Retired, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
-			"oldest_owed_at", oldestOwedText(tick.OldestOwedDocumentAt),
+			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
 			"oldest_owed_age_seconds", tick.OldestOwedDocumentAge(time.Now()).Seconds())
 		*logged = tick
 	}
@@ -1064,7 +1054,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	// The event that recorded this version is read before the index pass: it is the cause every
 	// node and tuple of the pass carries, and on this path it already exists, while on the
 	// request path it does not and the pass's facts travel to the caller instead
-	// (refs.BlockIndexWrite). A version no event recorded leaves the sentinel, and the rows the
+	// (graphstore.Uncaused). A version no event recorded leaves the sentinel, and the rows the
 	// pass writes keep no source_seq either.
 	eventID, err := versionEventID(ctx, tx, owner, document.id, version)
 	if err != nil {
@@ -1074,7 +1064,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	if err := write.Caused(ctx, tx, eventID); err != nil {
+	if err := graphstore.Caused(ctx, tx, write, eventID); err != nil {
 		return false, false, err
 	}
 	if err := stampVersionEvent(ctx, tx, document.id, version, versionAt, eventID); err != nil {

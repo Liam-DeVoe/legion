@@ -29,23 +29,6 @@ const backfillBatch = 200
 // row holds.
 var backfillActor = model.Actor{Kind: "system", ID: "dispatch-backfill-graph-store"}
 
-// commentNodeKind is what the node and tuple store calls a comment, and commentSupertag the
-// supertag every one of them carries (migration 20261109051232), as the server's own comment
-// write states them (api's commentStoreWrite). A comment's address there is its row's own id.
-const (
-	commentNodeKind = "comment"
-	commentSupertag = "comment"
-)
-
-// The relations a comment holds beside the two base attributes, as api's commentStored states
-// them: the artifact its anchor names and the artifact it belongs to.
-const (
-	tupleAnchoredTo = "anchored_to"
-	tupleOwnedBy    = "owned_by"
-	tupleVisibility = "visibility"
-	tupleState      = "state"
-)
-
 // KindBackfill is what the run did for one kind.
 type KindBackfill struct {
 	Kind string
@@ -702,11 +685,12 @@ type commentRow struct {
 }
 
 // backfillComments writes a node and the facts its row is the projection of for every comment
-// written before the store existed: the two base attributes every node carries, the artifact
-// it is anchored to and the artifact that owns it where it has them (api's commentStored), and
-// who wrote it, as graphstore.Authored states that (graphstore.AuthorFacts).
+// written before the store existed: the artifact it is anchored to and the artifact that owns it
+// where it has them (graphstore.CommentFacts, as api's commentStored states them), the two base
+// attributes graphstore.Write states for every node it makes, and who wrote it, as
+// graphstore.Authored states that (graphstore.AuthorFacts).
 func backfillComments(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: commentNodeKind}
+	done := KindBackfill{Kind: graphstore.KindComment}
 	after := "00000000-0000-0000-0000-000000000000"
 	for {
 		batch, err := readCommentRows(ctx, database, after)
@@ -785,7 +769,10 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // writeCommentBatch writes one batch's comment nodes, the facts each row projects and who wrote
 // each, in one transaction, and answers the nodes and the tuples it stated, as the upper bound
 // the report states: an author's node another write already made moves nothing, and a tuple
-// stated again under its event appends nothing.
+// stated again under its event appends nothing. The count is the batch's own tuples and the two
+// base attributes graphstore.Write states for each comment node its insert makes, which the
+// batch does not state itself: every comment here is new, since a row that already names its
+// node is never read.
 //
 // Every node of the batch goes in its one store write, the comments' and their authors', so the
 // transaction takes every node row in ascending (kind, id) before it appends its first tuple, and
@@ -812,32 +799,16 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 	addresses := make([]string, 0, len(batch))
 	written := map[[2]string]struct{}{}
 	for _, row := range batch {
-		node := graphstore.Node{
-			Kind: commentNodeKind, ID: row.id, Supertag: commentSupertag,
-			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
-			MadeAt: row.createdAt, MadeBy: row.author, SourceEvent: row.event,
-		}
+		// A comment any of whose relation ends is past the store's address bound is left whole
+		// out of the store, so readCommentRows never reads it and this batch never writes one:
+		// a far end past the bound does not reach here (api's commentStored, outbox's rule).
+		var node graphstore.Node
+		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
 		nodes = append(nodes, node)
-		states := func(kind, toKind, toID string) {
-			// A comment any of whose relation ends is past the store's address bound is left whole
-			// out of the store, so readCommentRows never reads it and this batch never writes one:
-			// a far end past the bound does not reach here (api's commentStored, outbox's rule).
-			if toID == "" {
-				return
-			}
-			tuples = append(tuples, graphstore.Tuple{
-				FromKind: node.Kind, FromID: node.ID, Kind: kind, ToKind: toKind, ToID: toID,
-				At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-			})
-		}
-		states(tupleVisibility, graphstore.KindValue, graphstore.VisibilityProject)
-		states(tupleState, graphstore.KindValue, graphstore.StateLive)
-		states(tupleAnchoredTo, "artifact", row.anchor)
-		states(tupleOwnedBy, "artifact", row.owner)
 		// One write writes a node once, so an author several comments of the batch name is made
 		// by the first of them, and so is the owner a proved session names; each comment still
 		// states its own authored_by and aliases.
-		if authors, facts, named := graphstore.AuthorFacts(commentNodeKind, row.id, row.author, row.createdAt, row.event); named {
+		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, row.id, row.author, row.createdAt, row.event); named {
 			for _, author := range authors {
 				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
 					written[[2]string{author.Kind, author.ID}] = struct{}{}
@@ -857,13 +828,13 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		set node_kind = $3, node_address = p.address
 		from unnest($1::text[], $2::text[]) as p (id, address)
 		where c.id = p.id::uuid
-	`, ids, addresses, commentNodeKind); err != nil {
+	`, ids, addresses, graphstore.KindComment); err != nil {
 		return 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
-	return int64(len(nodes)), int64(len(tuples)), nil
+	return int64(len(nodes)), int64(len(tuples)) + 2*int64(len(batch)), nil
 }
 
 // roleRow is one role the store census holds to a node (addressedRoles) whose node or page the

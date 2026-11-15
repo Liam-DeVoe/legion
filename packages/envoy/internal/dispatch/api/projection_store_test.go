@@ -93,11 +93,11 @@ var rowWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|delete\s+from)\s+(blo
 var nodeColumnWrite = regexp.MustCompile(`(?is)\bupdate\s+(block_refs|comments|document_blocks)\b[^;]*?\bset\b[^;]*?\bnode_(?:kind|address)\b`)
 
 // The store's own writers, as a call names them. Everything that writes graph_nodes and
-// graph_tuples goes through one of the four (internal/dispatch/graphstore). WriteStating is
+// graph_tuples goes through one of the four (internal/dispatch/graphstore). WriteUncaused is
 // Write split at the seam between writing the node row and appending the facts under it, for a
 // writer whose event is appended after the row it writes; it writes the same node rows.
 var storeWriters = []string{
-	"func:graphstore.Write", "func:graphstore.WriteStating",
+	"func:graphstore.Write", "func:graphstore.WriteUncaused",
 	"func:graphstore.WriteArms", "func:graphstore.Authored",
 }
 
@@ -603,7 +603,7 @@ func requireTheForeignKeyRefusesInsideTheStatement(t *testing.T, ctx context.Con
 	_, err = tx.Exec(ctx, `
 		insert into comments (issue_key, author, body, node_kind, node_address)
 		values ($1, '{"kind":"user","id":"alice"}', 'A row whose node was never written.', $2, gen_random_uuid()::text)
-	`, run.issue, commentNodeKind)
+	`, run.issue, graphstore.KindComment)
 	var refused *pgconn.PgError
 	if !errors.As(err, &refused) || refused.Code != "23503" {
 		t.Fatalf("the insert of a row naming no node answered %v, want the foreign key's 23503", err)
@@ -841,7 +841,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			if _, err := tx.Exec(ctx, `
 				insert into comments (id, issue_key, author, body, node_kind, node_address)
 				values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A watched remark.', $3, $1)
-			`, commentID, run.issue, commentNodeKind); err != nil {
+			`, commentID, run.issue, graphstore.KindComment); err != nil {
 				return err
 			}
 			return stored.caused(ctx, tx, graphstore.NoEvent)
@@ -866,7 +866,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			if !won {
 				return fmt.Errorf("the pass at version %d lost the fence, so it wrote nothing to watch", blockVersion)
 			}
-			return written.Caused(ctx, tx, graphstore.NoEvent)
+			return graphstore.Caused(ctx, tx, written, graphstore.NoEvent)
 		},
 		left: func(ctx context.Context) ([]string, error) {
 			return readStrings(ctx, run.database.Pool, `
@@ -1071,18 +1071,18 @@ func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *
 		t.Logf("%s: %d rows, each with its node and the facts its own transaction stated", table, written)
 	}
 	for _, comment := range run.comments {
-		node, found, err := graphstore.ReadNode(ctx, run.database.Pool, commentNodeKind, comment)
+		node, found, err := graphstore.ReadNode(ctx, run.database.Pool, graphstore.KindComment, comment)
 		if err != nil || !found {
 			t.Fatalf("read the node of comment %s: found %v, %v", comment, found, err)
 		}
-		if node.Supertag != commentSupertag || node.State != graphstore.StateLive || node.SourceEvent == graphstore.NoEvent {
+		if node.Supertag != graphstore.KindComment || node.State != graphstore.StateLive || node.SourceEvent == graphstore.NoEvent {
 			t.Errorf("the node of comment %s is %+v, want the comment supertag, live, and caused by the event that stored it", comment, node)
 		}
 		for attribute, want := range map[string]string{
-			tupleVisibility: graphstore.VisibilityProject,
-			tupleState:      graphstore.StateLive,
+			graphstore.AttributeVisibility: graphstore.VisibilityProject,
+			graphstore.AttributeState:      graphstore.StateLive,
 		} {
-			value, held, err := graphstore.CurrentValue(ctx, run.database.Pool, commentNodeKind, comment, attribute)
+			value, held, err := graphstore.CurrentValue(ctx, run.database.Pool, graphstore.KindComment, comment, attribute)
 			if err != nil {
 				t.Fatalf("read the %s of comment %s: %v", attribute, comment, err)
 			}
@@ -1094,11 +1094,11 @@ func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *
 	// The two relations, each on the comment that has one: the anchored comment points at the
 	// document its anchor names, and the project document's comment at the document it
 	// belongs to.
-	anchored := run.relations(t, ctx, tupleAnchoredTo)
+	anchored := run.relations(t, ctx, graphstore.TupleAnchoredTo)
 	if len(anchored) != 1 || anchored[0] != run.specRef {
 		t.Errorf("the run's anchored_to tuples point at %v, want the spec alone", anchored)
 	}
-	owned := run.relations(t, ctx, tupleOwnedBy)
+	owned := run.relations(t, ctx, graphstore.TupleOwnedBy)
 	if len(owned) != 1 || !strings.HasPrefix(owned[0], run.project+"/") {
 		t.Errorf("the run's owned_by tuples point at %v, want the project document alone", owned)
 	}
@@ -1111,7 +1111,7 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 		select to_id from graph_tuples
 		where from_kind = $1 and kind = $2 and to_kind = 'artifact' and asserted
 		order by to_id
-	`, commentNodeKind, kind)
+	`, graphstore.KindComment, kind)
 	if err != nil {
 		t.Fatalf("read the %s tuples of the run's comments: %v", kind, err)
 	}
@@ -1156,7 +1156,7 @@ func requireTwoWritersOverOneNodeCommitInTurn(t *testing.T, ctx context.Context,
 	held := run.comments[0]
 	node := func(state string) []graphstore.Node {
 		return []graphstore.Node{{
-			Kind: commentNodeKind, ID: held, Supertag: commentSupertag,
+			Kind: graphstore.KindComment, ID: held, Supertag: graphstore.KindComment,
 			Visibility: graphstore.VisibilityProject, State: state,
 			MadeAt: time.Now().UTC(), MadeBy: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent,
 		}}
@@ -1227,7 +1227,7 @@ func projectionCensus(ctx context.Context, database *store.Store) (int, error) {
 		select count(*) from graph_nodes node
 		where node.kind = $1 and not exists (
 			select 1 from comments row where row.node_kind = node.kind and row.node_address = node.id)
-	`, commentNodeKind).Scan(&unprojected); err != nil {
+	`, graphstore.KindComment).Scan(&unprojected); err != nil {
 		return 0, fmt.Errorf("count the comment nodes no row projects: %w", err)
 	}
 	return total + unprojected, nil

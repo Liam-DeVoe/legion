@@ -20,6 +20,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -2176,11 +2177,11 @@ func contentChangedSinceVersion(ctx context.Context, tx pgx.Tx, artifactID strin
 // moved: the caller that appends the version event names them, so a reader holding those
 // nodes' batched backlink counts refreshes exactly their rows. blocks is what the version's
 // block index stated in the node and tuple store, which that same caller appends under the
-// event it appends (refs.BlockIndexWrite.Caused).
+// event it appends (graphstore.Caused).
 type versionWriteResult struct {
 	version model.Version
 	changes model.ReferenceChanges
-	blocks  refs.BlockIndexWrite
+	blocks  graphstore.Uncaused
 }
 
 // renderedTree is a document tree with its canonical markdown and each identified block's byte

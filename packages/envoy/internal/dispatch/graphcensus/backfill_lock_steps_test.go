@@ -181,7 +181,7 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 	now := time.Now()
 	commentNode := func(id string) graphstore.Node {
 		return graphstore.Node{
-			Kind: commentNodeKind, ID: id, Supertag: commentSupertag,
+			Kind: graphstore.KindComment, ID: id, Supertag: graphstore.KindComment,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 			MadeAt: now, MadeBy: backfillActor, SourceEvent: graphstore.NoEvent,
 		}
@@ -201,8 +201,8 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		`select 1 from issues where key = $1 for update`, "CENS-1")
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CENS's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CENS")
-	firstComment := nodeHold("comment c1's node row", commentNodeKind, c1.id, commentNode(c1.id))
-	secondComment := nodeHold("comment c2's node row", commentNodeKind, c2.id, commentNode(c2.id))
+	firstComment := nodeHold("comment c1's node row", graphstore.KindComment, c1.id, commentNode(c1.id))
+	secondComment := nodeHold("comment c2's node row", graphstore.KindComment, c2.id, commentNode(c2.id))
 	amyNode := nodeHold("person amy's node row", graphstore.KindPerson, "amy",
 		graphstore.PersonNode("amy", backfillActor, now, graphstore.NoEvent))
 	zedNode := nodeHold("person zed's node row", graphstore.KindPerson, "zed",
@@ -213,14 +213,14 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		Name: "comment c1's state tuple", Step: lockstep.StepTuple, Taken: true,
 		Statement: "insert into graph_tuples (",
 	}, nil, []graphstore.Tuple{{
-		FromKind: commentNodeKind, FromID: c1.id, Kind: tupleState, ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
+		FromKind: graphstore.KindComment, FromID: c1.id, Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
 		At: now, Who: c1.by, SourceEvent: c1.event, Asserted: true,
 	}})
 	amyAuthored := holdWrite(t, database, &lockstep.Hold{
 		Name: "comment c3's authored_by tuple", Step: lockstep.StepTuple, Taken: true,
 		Statement: "insert into graph_tuples (",
 	}, nil, []graphstore.Tuple{{
-		FromKind: commentNodeKind, FromID: c3.id, Kind: graphstore.TupleAuthoredBy, ToKind: graphstore.KindPerson, ToID: "amy",
+		FromKind: graphstore.KindComment, FromID: c3.id, Kind: graphstore.TupleAuthoredBy, ToKind: graphstore.KindPerson, ToID: "amy",
 		At: now, Who: c3.by, SourceEvent: c3.event, Asserted: true,
 	}})
 	row := lockstep.HoldRow(t, database, &lockstep.Hold{
@@ -241,16 +241,16 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 			        where from_kind = $2 and from_id = c.id::text and kind = $3 and to_kind = $4 and to_id = $5
 			          and source_event = $6 and asserted)
 			from comments c where c.id = $1::uuid
-		`, seeded.id, commentNodeKind, graphstore.TupleAuthoredBy, authorKind, authorID, seeded.event).Scan(
+		`, seeded.id, graphstore.KindComment, graphstore.TupleAuthoredBy, authorKind, authorID, seeded.event).Scan(
 			&nodeKind, &nodeAddress, &authored); err != nil {
 			t.Fatalf("read comment %s back: %v", seeded.id, err)
 		}
-		if nodeKind == nil || *nodeKind != commentNodeKind || nodeAddress == nil || *nodeAddress != seeded.id || authored != 1 {
+		if nodeKind == nil || *nodeKind != graphstore.KindComment || nodeAddress == nil || *nodeAddress != seeded.id || authored != 1 {
 			t.Errorf("comment %s names (%v, %v) and has %d authored_by tuple(s) to %s %s, want (%s, %s) and one: the run the test followed is not one that committed",
-				seeded.id, nodeKind, nodeAddress, authored, authorKind, authorID, commentNodeKind, seeded.id)
+				seeded.id, nodeKind, nodeAddress, authored, authorKind, authorID, graphstore.KindComment, seeded.id)
 		}
 	}
-	if done := reportedKind(t, report, commentNodeKind); done.Rows != 3 || !done.Complete {
+	if done := reportedKind(t, report, graphstore.KindComment); done.Rows != 3 || !done.Complete {
 		t.Errorf("the backfill reports %#v for comments, want 3 rows and the cutover complete", done)
 	}
 }

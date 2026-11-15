@@ -53,7 +53,7 @@ func TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound(t *testing.T) {
 
 	// The comment is left whole out of the store: no node, its row names none, and the old comments
 	// arm of graph_edges answers its owned_by edge once.
-	if _, held, err := graphstore.ReadNode(ctx, database.Pool, commentNodeKind, commentID); err != nil || held {
+	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, commentID); err != nil || held {
 		t.Fatalf("the store holds the comment's node %t (err %v), want none", held, err)
 	}
 	var nodeKind *string
@@ -66,7 +66,7 @@ func TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound(t *testing.T) {
 	var owned int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3
-	`, commentNodeKind, commentID, tupleOwnedBy).Scan(&owned); err != nil {
+	`, graphstore.KindComment, commentID, graphstore.TupleOwnedBy).Scan(&owned); err != nil {
 		t.Fatalf("count the comment's owned_by tuples: %v", err)
 	}
 	if owned != 0 {
@@ -75,7 +75,7 @@ func TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound(t *testing.T) {
 	var edges int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from graph_edges where from_kind = $1 and from_id = $2 and kind = $3 and to_id = $4
-	`, commentNodeKind, commentID, tupleOwnedBy, refKey).Scan(&edges); err != nil {
+	`, graphstore.KindComment, commentID, graphstore.TupleOwnedBy, refKey).Scan(&edges); err != nil {
 		t.Fatalf("count the comment's owned_by edges: %v", err)
 	}
 	if edges != 1 {

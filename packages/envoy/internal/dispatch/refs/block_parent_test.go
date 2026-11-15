@@ -133,7 +133,7 @@ func (d parentDocument) indexVersion(t *testing.T, number int, doc blockDoc, rec
 	if err != nil {
 		t.Fatalf("index version %d: %v", number, err)
 	}
-	if err := write.Caused(ctx, tx, record.event); err != nil {
+	if err := graphstore.Caused(ctx, tx, write, record.event); err != nil {
 		t.Fatalf("append what version %d stated: %v", number, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -474,7 +474,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("index the version that rolls back: %v", err)
 		}
-		if err := write.Caused(ctx, tx, rolledBack.event); err != nil {
+		if err := graphstore.Caused(ctx, tx, write, rolledBack.event); err != nil {
 			t.Fatalf("append what the rolled-back pass stated: %v", err)
 		}
 		// Finding nothing after the rollback proves the rollback undid the work only if the

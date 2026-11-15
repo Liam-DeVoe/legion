@@ -149,7 +149,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		requireCommitted(t, done, "Reached of a new session")
 
 		requirePeopleRows(t, database, node, 1, Tuple{
-			FromKind: node.Kind, FromID: node.ID, Kind: attributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
+			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
 			SourceEvent: NoEvent, Asserted: true,
 		}, 1)
 	})
@@ -159,8 +159,8 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		node := SessionNode("reached-attributes", who, peopleLockAt, NoEvent)
 		holder, release := beginHolder(t, ctx, database)
 		for _, attribute := range []struct{ kind, value string }{
-			{attributeVisibility, node.Visibility},
-			{attributeState, node.State},
+			{AttributeVisibility, node.Visibility},
+			{AttributeState, node.State},
 		} {
 			insertTupleRow(t, ctx, holder, Tuple{
 				FromKind: node.Kind, FromID: node.ID, Kind: attribute.kind, ToKind: KindValue, ToID: attribute.value,
@@ -177,7 +177,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		release()
 
 		requirePeopleRows(t, database, node, 1, Tuple{
-			FromKind: node.Kind, FromID: node.ID, Kind: attributeState, ToKind: KindValue, ToID: StateLive,
+			FromKind: node.Kind, FromID: node.ID, Kind: AttributeState, ToKind: KindValue, ToID: StateLive,
 			SourceEvent: NoEvent, Asserted: true,
 		}, 1)
 	})
@@ -202,7 +202,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 
 		// The second attempt reaching the session appends nothing: the node was already there.
 		requirePeopleRows(t, database, node, 1, Tuple{
-			FromKind: node.Kind, FromID: node.ID, Kind: attributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
+			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
 			SourceEvent: NoEvent, Asserted: true,
 		}, 1)
 	})

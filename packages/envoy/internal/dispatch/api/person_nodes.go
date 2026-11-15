@@ -50,8 +50,7 @@ type personNodes struct {
 // Both arms read the tuples whose far end is the person's node or a session of theirs, which is
 // the inbound read graph_tuples_inbound serves, and each keeps the newest tuple per far end
 // while that newest one asserts - the current-tuple rule graphstore.CurrentIn and
-// graphstore.CurrentOut read a node by, written here as the `distinct on` the index's own column
-// order walks, so the planner sorts nothing.
+// graphstore.CurrentOut read a node by, spliced here as graphstore.CurrentTupleRead.
 //
 //   - authored: the authored_by tuples into the person. A thing a session wrote stays that
 //     session's, so it is on no person's page: a session is nobody's until a credential proves
@@ -71,32 +70,25 @@ var personNodesQuery = `
 	with authored as (
 		select current.from_kind, current.from_id, '` + graphstore.TupleAuthoredBy + `'::text as relation
 		from (
-			select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
-			from graph_tuples t
-			where t.to_kind = '` + graphstore.KindPerson + `' and t.to_id = $1
-			  and t.kind = '` + graphstore.TupleAuthoredBy + `'
-			order by t.from_kind, t.from_id, t.seq desc
+			` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+	`t.to_kind = '`+graphstore.KindPerson+`' and t.to_id = $1
+			  and t.kind = '`+graphstore.TupleAuthoredBy+`'`) + `
 		) current
 		where current.asserted
 	), aliases as (
 		select current.session
 		from (
-			select distinct on (t.from_id) t.from_id as session, t.asserted
-			from graph_tuples t
-			where t.to_kind = '` + graphstore.KindPerson + `' and t.to_id = $1
-			  and t.kind = '` + graphstore.TupleAliasOf + `' and t.from_kind = '` + graphstore.KindSession + `'
-			order by t.from_id, t.seq desc
+			` + graphstore.CurrentTupleRead(`t.from_id`, `t.from_id as session, t.asserted`,
+	`t.to_kind = '`+graphstore.KindPerson+`' and t.to_id = $1
+			  and t.kind = '`+graphstore.TupleAliasOf+`' and t.from_kind = '`+graphstore.KindSession+`'`) + `
 		) current
 		where current.asserted
 	), received as (
 		select current.from_kind, current.from_id, '` + graphstore.TupleDeliveredTo + `'::text as relation
 		from (
-			select distinct on (t.from_kind, t.from_id, t.to_id) t.from_kind, t.from_id, t.asserted
-			from aliases
-			join graph_tuples t
-			  on t.to_kind = '` + graphstore.KindSession + `' and t.to_id = aliases.session
-			 and t.kind = '` + graphstore.TupleDeliveredTo + `'
-			order by t.from_kind, t.from_id, t.to_id, t.seq desc
+			` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.to_id`, `t.from_kind, t.from_id, t.asserted`,
+	`t.to_kind = '`+graphstore.KindSession+`' and t.to_id in (select session from aliases)
+			  and t.kind = '`+graphstore.TupleDeliveredTo+`'`) + `
 		) current
 		where current.asserted
 	), related as (

@@ -146,9 +146,9 @@ graph_node_attributes as (
 }
 
 // claimArms append what each claim changed. The far ends a node holds now are read the way
-// CurrentOut reads them - the newest tuple per far end, kept while it asserts - so the read goes
-// through graph_tuples_current, and the insert states a retraction of every far end the claim is
-// no longer at before the assertion of the one it is at, in the order the caller gave its claims.
+// CurrentOut reads them (CurrentTupleRead), so the read goes through graph_tuples_current, and
+// the insert states a retraction of every far end the claim is no longer at before the assertion
+// of the one it is at, in the order the caller gave its claims.
 // A claim with no far end (ToID empty) retracts what the node holds and asserts nothing in its
 // place, which is a role read unclaimed. where is the condition its insert reads its rows under,
 // as tupleInsert takes it.
@@ -175,11 +175,9 @@ graph_claims_held as (
 	select claim.position, held.to_kind, held.to_id
 	from graph_claims claim
 	join lateral (
-		select distinct on (held.to_kind, held.to_id) held.to_kind, held.to_id, held.asserted
-		from graph_tuples held
-		where held.from_kind = claim.from_kind and held.from_id = claim.from_id
-			and held.kind = claim.kind and held.to_kind <> '` + KindValue + `'
-		order by held.to_kind, held.to_id, held.seq desc
+		` + CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = claim.from_kind and t.from_id = claim.from_id
+			and t.kind = claim.kind and t.to_kind <> '`+KindValue+`'`) + `
 	) held on held.asserted
 ),
 graph_claims_stated (` + tupleWriteColumns + `, position, step) as (

@@ -49,7 +49,10 @@ import (
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	seedStoreOwnNodes(t, ctx, database)
+	if SeedStoreThroughItsWriters == nil {
+		t.Fatal("no seed of the store's own node kinds is registered: visibility_census_seed_test.go sets SeedStoreThroughItsWriters")
+	}
+	SeedStoreThroughItsWriters(t, ctx, database)
 
 	resolved := storeNodeKinds(t, ctx, database)
 	declared := VisibilityKinds()
@@ -184,34 +187,17 @@ var readsWithoutAViewer = map[string]string{
 	"SourceText":       serverWork,
 }
 
-// seedStoreOwnNodes writes one node of each kind the store holds of people and agents. A
-// database nobody has written to holds none of them - a person's node is made by the write that
-// first records them (graphstore.Authored) and a role's and a page's by the publisher's record -
-// so the census would otherwise read a store that resolves four kinds fewer than a running
-// deployment's. They are made here through the store's own constructors and its own writer, the
-// way those writes make them.
-func seedStoreOwnNodes(t *testing.T, ctx context.Context, database *store.Store) {
-	t.Helper()
-	at := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
-	who := model.Actor{Kind: "user", ID: "alice"}
-	nodes := []graphstore.Node{
-		graphstore.PersonNode("alice", who, at, graphstore.NoEvent),
-		graphstore.SessionNode("census-session", who, at, graphstore.NoEvent),
-		graphstore.RoleNode("census-role", who, at, graphstore.NoEvent),
-		graphstore.PageNode(graphstore.RolePageID("census-role"), who, at, graphstore.NoEvent),
-	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the census seed: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
-		t.Fatalf("seed the store's own node kinds: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the census seed: %v", err)
-	}
-}
+// SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
+// the writers of that store make them. A database nobody has written to holds none of them, so
+// the census would otherwise read a store that resolves four kinds fewer than a running
+// deployment's. It names no kind: it writes the rows that address people and agents and runs the
+// writer that states the store from those rows, and the census reads which kinds that made from
+// `graph_nodes` (R10).
+//
+// It is set by the external test package (visibility_census_seed_test.go) rather than written
+// here, because that writer, graphcensus's backfill, imports this package, which a test of this
+// package cannot import back.
+var SeedStoreThroughItsWriters func(t *testing.T, ctx context.Context, database *store.Store)
 
 // viewNodeKind matches a node kind the graph_edges view states as a literal, as the catalogue
 // prints the view back: each arm names its from_kind and its to_kind, and an arm whose kind is a
@@ -438,7 +424,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}
-	if err := write.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
 		t.Fatalf("append what the linked document's index stated: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

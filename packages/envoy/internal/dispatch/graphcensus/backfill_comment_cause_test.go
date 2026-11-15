@@ -81,7 +81,7 @@ func TestTheBackfillCausesACommentByTheEventThatStoredIt(t *testing.T) {
 func requireCommentCause(t *testing.T, database *store.Store, comment string, cause int64) {
 	t.Helper()
 	ctx := context.Background()
-	node, found, err := graphstore.ReadNode(ctx, database.Pool, commentNodeKind, comment)
+	node, found, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, comment)
 	if err != nil || !found {
 		t.Fatalf("read the node of comment %s: found %t, %v", comment, found, err)
 	}
@@ -90,7 +90,7 @@ func requireCommentCause(t *testing.T, database *store.Store, comment string, ca
 	}
 	rows, err := database.Pool.Query(ctx, `
 		select kind, source_event from graph_tuples where from_kind = $1 and from_id = $2 order by seq
-	`, commentNodeKind, comment)
+	`, graphstore.KindComment, comment)
 	if err != nil {
 		t.Fatalf("read the tuples of comment %s: %v", comment, err)
 	}
@@ -110,7 +110,7 @@ func requireCommentCause(t *testing.T, database *store.Store, comment string, ca
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the tuples of comment %s: %v", comment, err)
 	}
-	for _, kind := range []string{tupleVisibility, tupleState, graphstore.TupleAuthoredBy} {
+	for _, kind := range []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.TupleAuthoredBy} {
 		if !kinds[kind] {
 			t.Fatalf("comment %s holds no %s tuple; its tuples are %v", comment, kind, kinds)
 		}
@@ -211,7 +211,7 @@ func addedByAuthored(t *testing.T, database *store.Store, id string, author mode
 	`).Scan(&nodes, &lastSeq); err != nil {
 		t.Fatalf("read the store before Authored: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, commentNodeKind, id, author, at, event); err != nil {
+	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, id, author, at, event); err != nil {
 		t.Fatalf("run Authored over comment %s: %v", id, err)
 	}
 	rows, err := tx.Query(ctx, `

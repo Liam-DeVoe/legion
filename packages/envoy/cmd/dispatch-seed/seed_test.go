@@ -589,7 +589,7 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 	// kind, which must have checked rows and read no difference in either direction.
 	var commentKind graphcensus.KindReport
 	for _, kind := range report.Kinds {
-		if kind.Kind == commentNodeKind {
+		if kind.Kind == graphstore.KindComment {
 			commentKind = kind
 		}
 	}
@@ -623,7 +623,7 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 	authors := map[[2]string]struct{}{}
 	wrong := []string{}
 	for _, comment := range comments {
-		held, err := graphstore.CurrentOut(ctx, database.Pool, commentNodeKind, comment.id,
+		held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, comment.id,
 			[]string{graphstore.TupleAuthoredBy})
 		if err != nil {
 			t.Fatalf("read who wrote comment %s: %v", comment.id, err)
@@ -685,7 +685,7 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 		Scan(&lastSeq, &nodesBefore); err != nil {
 		t.Fatalf("read the store before Authored: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, commentNodeKind, sample.id, sample.author, sample.createdAt,
+	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
 		graphstore.NoEvent); err != nil {
 		t.Fatalf("state the author of comment %s through Authored: %v", sample.id, err)
 	}
@@ -703,7 +703,7 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 		t.Fatalf("read what Authored appended: %v", err)
 	}
 	kind, id, _ := graphstore.AuthorOf(sample.author)
-	want := []string{commentNodeKind + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
+	want := []string{graphstore.KindComment + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
 	if nodesAfter != nodesBefore || !slices.Equal(appended, want) {
 		t.Errorf("Authored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
 			" states less of its author than Authored does", sample.id, nodesAfter-nodesBefore, appended, want)

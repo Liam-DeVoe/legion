@@ -128,7 +128,7 @@ func TestASecondBackfillWritesNothingOverMarkedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backfill the store: %v", err)
 	}
-	for _, kind := range []string{refs.BlockNodeKind, "block_ref", commentNodeKind, graphstore.KindRole} {
+	for _, kind := range []string{refs.BlockNodeKind, "block_ref", graphstore.KindComment, graphstore.KindRole} {
 		if done := reportedKind(t, first, kind); done.Rows == 0 || !done.Complete {
 			t.Fatalf("the first run reports %#v for %s, want rows written and none remaining: the corpus holds no row of it to run over again", done, kind)
 		}

@@ -24,10 +24,10 @@ import (
 // This is the whole of the write for a caller that has its cause in hand, or none at all: a
 // backfill, a seed, a publisher. A caller whose event is appended after the node row - the
 // comment path and the block index, whose projection rows carry a foreign key into graph_nodes
-// and must therefore follow the node - takes WriteStating instead, so that the base attributes
+// and must therefore follow the node - takes WriteUncaused instead, so that the base attributes
 // are appended under that event rather than under the sentinel.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
-	base, err := WriteStating(ctx, tx, nodes, tuples)
+	base, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
 		return err
 	}
@@ -37,33 +37,105 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	return appendTuples(ctx, tx, append(base, tuples...))
 }
 
-// WriteStating writes every node and answers the base attributes the write states, appending
-// none of them: Write split at the one seam a caller needs, which is between writing the row and
-// appending the facts under it.
+// Uncaused is a write of this store whose cause did not exist while it ran, held by its writer
+// until it does. Such a writer orders itself node row, projection row, event, tuples: the node
+// first because the projection row's foreign key names it, the event after both because it
+// records what the request did, and the tuples last because each one holds the event that
+// caused it and no tuple may be updated to learn it afterwards. So its nodes go in at the
+// sentinel, and Caused, once the event is appended in the same transaction, moves them onto it
+// and appends every fact of the write under it.
 //
-// It exists for the writer whose event does not exist while it runs. Such a writer orders itself
-// node row, projection row, event, tuples: the node first because the projection row's foreign
-// key names it, the event after both because it records what the request did, and the tuples
-// last because each one holds the event that caused it and no tuple may be updated to learn it
-// afterwards. The base attributes are facts of that same write, so they go in that last step
-// with the caller's own tuples, under the same event, in one Write(ctx, tx, nil, tuples).
+// It is the one shape of that write for every writer it applies to: a comment's request (api's
+// commentStoreWrite), a version's block index (refs.IndexBlocks), a follow of an ask
+// (asks.Followed) and the settle of a delivery attempt (Reached). A writer with nothing to state
+// holds the zero Uncaused, for which Caused writes nothing.
+type Uncaused struct {
+	// Nodes are the nodes the write made or wrote at the sentinel. Caused moves each that is
+	// still at the sentinel onto the event, so a node an earlier write caused keeps its cause.
+	Nodes []Node
+	// Tuples are the facts the write states, each appended under the event by Caused: the base
+	// attributes its node write stated (WriteUncaused) and the writer's own.
+	Tuples []UncausedTuple
+}
+
+// UncausedTuple is one fact an Uncaused write holds for its cause. LegacyFromCause marks a fact
+// whose projection row takes the cause's own id as its source_seq: a block_refs row the block
+// index inserts outside a first indexing is written with none, and refs.Stamp or docs'
+// stampVersionEvent fills it with that event in the same transaction, so the tuple's
+// legacy_source_seq is that event's id, which the writer cannot read back once the tuple is
+// appended. A fact no row dates that way keeps the legacy_source_seq its writer gave it.
+type UncausedTuple struct {
+	Tuple
+	LegacyFromCause bool
+}
+
+// WriteUncaused writes every node now, before the event that causes the write exists, and
+// answers the write held for that event: the nodes, and the base attributes this node write
+// states after the writer's own facts, stated, none of which it appends. The base attributes
+// are facts of that same write, so they go in with the caller's own under the same event, which
+// is what keeps a block a version stated gone carrying the event that deleted it. stated is read
+// for one more thing besides: a base attribute the caller states itself is not stated twice.
+func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) (Uncaused, error) {
+	base, err := writeNodes(ctx, tx, nodes, stated)
+	if err != nil {
+		return Uncaused{}, err
+	}
+	write := Uncaused{Nodes: nodes}
+	if len(stated)+len(base) > 0 {
+		write.Tuples = make([]UncausedTuple, 0, len(stated)+len(base))
+	}
+	for _, tuple := range stated {
+		write.Tuples = append(write.Tuples, UncausedTuple{Tuple: tuple})
+	}
+	for _, tuple := range base {
+		write.Tuples = append(write.Tuples, UncausedTuple{Tuple: tuple})
+	}
+	return write, nil
+}
+
+// Caused appends what write stated under event, the event that caused it, and moves the nodes it
+// wrote onto that event: a node row is the projection of its tuples and may be written again,
+// while a tuple may not be updated, which is why the tuples waited for this call rather than
+// being stamped after it. event is NoEvent where no event recorded the write, and such a tuple
+// carries the sentinel and no legacy_source_seq, as its row carries no source_seq either.
 //
-// stated is what the caller states itself, read for the one thing writeNodes needs it for: a
-// base attribute the caller states is not stated twice.
-func WriteStating(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
-	return writeNodes(ctx, tx, nodes, stated)
+// It is a function of this package and not a method of Uncaused, so every call of it outside the
+// package is a call of the store's writer by its package's name, which the register of this
+// store's writers finds and holds to its lock steps (TestEveryStoreWriteCallSiteIsListed).
+//
+// The nodes are not written again: causeNodes moves the event onto the rows already written, in
+// one statement over their addresses. Writing them again would pay a second node write per node
+// for one column, and the upsert's own guard would refuse it, since nothing else about the node
+// moved.
+func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
+	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
+		return err
+	}
+	if len(write.Tuples) == 0 {
+		return nil
+	}
+	tuples := make([]Tuple, len(write.Tuples))
+	for index, held := range write.Tuples {
+		tuple := held.Tuple
+		tuple.SourceEvent = event
+		if held.LegacyFromCause && tuple.LegacySourceSeq == nil && event != NoEvent {
+			tuple.LegacySourceSeq = &event
+		}
+		tuples[index] = tuple
+	}
+	return appendTuples(ctx, tx, tuples)
 }
 
 // The two base attributes, as the kind of the tuple that states each spells it. graph_nodes
 // carries a column for each, which is that attribute's projection, and nodeArm states the same
 // two for a node the publisher's record makes.
 const (
-	attributeVisibility = "visibility"
-	attributeState      = "state"
+	AttributeVisibility = "visibility"
+	AttributeState      = "state"
 )
 
 // baseAttributes is the set BaseAttributes answers and IsBaseAttribute reads, held once.
-var baseAttributes = [...]string{attributeVisibility, attributeState}
+var baseAttributes = [...]string{AttributeVisibility, AttributeState}
 
 // BaseAttributes is the tuple kind of every base attribute, a fresh slice for each caller. No
 // other attribute's values may be stored under one of these kinds: a value tuple of one of them
@@ -76,30 +148,41 @@ func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
 // without building the list.
 func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
-// writeNodes is one statement, whose rows arrive in ascending (kind, id): a write touching
-// several nodes takes its row locks in that order, so two such writes cannot each hold the row
-// the other waits for. The upsert moves supertag, visibility, state, attributes and
-// source_event, and leaves made_at and made_by as the row's own first write left them - the row
-// is the projection of its tuples and may be written again, and a later write that learns the
-// event id has to be able to move source_event.
+// writeNodes is two statements, each of whose rows arrive in ascending (kind, id): a write
+// touching several nodes takes its row locks in that order, so two such writes cannot each hold
+// the row the other waits for. The first inserts every node the store does not hold and locks
+// every node it does, at the level an update of that row takes, changing nothing in it; the
+// second moves supertag, visibility, state, attributes and source_event on each row whose
+// columns differ, and leaves made_at and made_by as the row's own first write left them - the
+// row is the projection of its tuples and may be written again, and a later write that learns
+// the event id has to be able to move source_event.
 //
 // It answers the base attributes this write states as tuples, one attribute at a time. A node
-// the insert made (xmax = 0) is stated `visibility` and `state`, which is the node carrying both
-// from its first write. A node that was already there is stated `visibility` where this write
-// moved its stored visibility, and `state` where this write moved its stored state, each on its
-// own: a write that moves one of the two states that one, and a node written again with neither
-// moved is stated neither, so a re-index of a document nothing moved appends nothing. The two
-// are read and compared separately because they move separately - a node hidden from a project
-// keeps its state, and a deleted block keeps its visibility - and a row whose column moved while
-// the log said nothing would be a row no appended fact explains, which nothing may mend later,
-// since no tuple is ever updated. Each tuple carries the time, the writer and the cause of the
-// node write that states it.
+// the insert made is stated `visibility` and `state`, which is the node carrying both from its
+// first write. A node that was already there is stated `visibility` where this write moved its
+// stored visibility, and `state` where this write moved its stored state, each on its own: a
+// write that moves one of the two states that one, and a node written again with neither moved
+// is stated neither, so a re-index of a document nothing moved appends nothing. The two are read
+// and compared separately because they move separately - a node hidden from a project keeps its
+// state, and a deleted block keeps its visibility - and a row whose column moved while the log
+// said nothing would be a row no appended fact explains, which nothing may mend later, since no
+// tuple is ever updated. Each tuple carries the time, the writer and the cause of the node write
+// that states it.
 //
-// Both stored values are read in the same statement as the write, so the comparison is of one
-// snapshot: two writes racing over one node can state one value twice, which this store takes by
-// design (two backfill runs at once do the same). They cannot lose one, because the two writers of
-// a node queue on its row here, and the pass that writes a block's node holds its document's
-// owner row before it reaches this.
+// Both stored values are read from the row this write updates. The second statement reads them,
+// and under READ COMMITTED it reads a snapshot of its own, taken once the first holds every row
+// the write touches: what it compares against is the newest committed version of each row, and
+// no other writer can move one until this transaction ends. Read in the snapshot of a statement
+// that then waited on a row, they would be the row as it stood before the writer it waited on,
+// while the write goes over the version that writer committed: one writer states a node gone, a
+// second waits on its row and moves it back to live, compares live with live and states nothing,
+// and the row says live while its newest state tuple says gone. Locking the rows already there
+// in a statement of their own before inserting the new ones would read fresh values too, but it
+// takes the rows out of ascending (kind, id) wherever a new node sorts before one already there.
+// Two writes racing over a node the store does not hold yet are one case of the same: the
+// second's insert waits on the first's, then finds the row there and locks it, and its second
+// statement compares against what the first committed. The pass that writes a block's node holds
+// its document's owner row before it reaches this.
 func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
 	if len(nodes) == 0 {
 		return nil, nil
@@ -108,85 +191,166 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	if err != nil {
 		return nil, err
 	}
-	// QueryExecModeDescribeExec rather than the pool's default, because this statement must
-	// be planned with its parameters in hand. Its rows come from one unnest, which the
-	// planner estimates at ten rows when it has no values; on the sixth execution of a
-	// connection PostgreSQL swaps the custom plan for the generic one, and that ten-row
-	// estimate turns the join of stored against incoming into a nested loop that rescans
-	// incoming once per node written. Measured on this pod's PostgreSQL 18.6 over a
-	// 1,999-block document version, which writes 3,998 node rows: 3,009 ms on the generic
-	// plan against 193 ms on the custom one, and quadratic in the block count rather than
-	// linear. An unnamed statement is planned with its values every time, so the plan cache
-	// never holds one.
-	rows, err := tx.Query(ctx, `
-		with incoming as (
-			select `+nodeColumns+`, ordinality
-			from unnest(`+nodeArrays(1)+`)
-				with ordinality as node(`+nodeColumns+`, ordinality)
-		),
+	// marks holds, by each node's position, the base attributes this write states for it: both
+	// for a node the insert made, each one that moved for a node already there. It is made by
+	// the first node that states one, so a write that states none - a re-index of a document
+	// nothing moved - makes none.
+	var marks []byte
+	mark := func(position int64, attributes byte) {
+		if marks == nil {
+			marks = make([]byte, len(nodes))
+		}
+		marks[position-1] |= attributes
+	}
+	made, err := insertNodes(ctx, tx, args, func(position int64) { mark(position, markVisibility|markState) })
+	if err != nil {
+		return nil, err
+	}
+	if made < len(nodes) {
+		if err := moveNodes(ctx, tx, args, mark); err != nil {
+			return nil, err
+		}
+	}
+	if marks == nil {
+		return nil, nil
+	}
+	own := statedAttributes(stated)
+	// Two attributes per node at most, so the slice made here at that size grows none.
+	base := make([]Tuple, 0, 2*len(nodes))
+	for index, marked := range marks {
+		node := nodes[index]
+		if marked&markVisibility != 0 {
+			base = statesAttribute(base, own, node, AttributeVisibility, node.Visibility)
+		}
+		if marked&markState != 0 {
+			base = statesAttribute(base, own, node, AttributeState, node.State)
+		}
+	}
+	return base, nil
+}
+
+// The base attributes a node write states for one node, as writeNodes marks them.
+const (
+	markVisibility byte = 1 << iota
+	markState
+)
+
+// incomingNodes is the common table expression both of writeNodes' statements read the nodes
+// through, each with its position in the caller's list, from the arrays bound at $1.
+var incomingNodes = `with incoming as (
+			select ` + nodeColumns + `, ordinality
+			from unnest(` + nodeArrays(1) + `)
+				with ordinality as node(` + nodeColumns + `, ordinality)
+		)`
+
+// insertNodes is writeNodes' first statement: it inserts every node the store does not hold and
+// locks every node it does, all in ascending (kind, id), and calls made with the position of
+// each node it inserted, answering how many. A conflicting row is locked whether or not the
+// update's condition holds, and the condition is false, so a row already there is locked at the
+// level an update takes and changed in nothing, which is the lock the second statement's update
+// would take anyway.
+//
+// QueryExecModeDescribeExec rather than the pool's default, here and in moveNodes, because these
+// statements must be planned with their parameters in hand. Their rows come from one unnest,
+// which the planner estimates at ten rows when it has no values; on the sixth execution of a
+// connection PostgreSQL swaps the custom plan for the generic one, and that ten-row estimate
+// turns the join of the stored rows against the incoming ones into a nested loop that rescans
+// the incoming ones once per node written. Measured on this pod's PostgreSQL 18.6 over a
+// 1,999-block document version, which writes 3,998 node rows: 3,009 ms on the generic plan
+// against 193 ms on the custom one, and quadratic in the block count rather than linear. An
+// unnamed statement is planned with its values every time, so the plan cache never holds one.
+func insertNodes(ctx context.Context, tx pgx.Tx, args []any, made func(position int64)) (int, error) {
+	rows, err := tx.Query(ctx, incomingNodes+`,
+		inserted as (
+			insert into graph_nodes (`+nodeColumns+`)
+			select `+nodeColumns+` from incoming
+			order by kind, id
+			on conflict (kind, id) do update set source_event = graph_nodes.source_event
+			where false
+			returning kind, id
+		)
+		select incoming.ordinality
+		from inserted
+		join incoming on incoming.kind = inserted.kind and incoming.id = inserted.id
+	`, append([]any{pgx.QueryExecModeDescribeExec}, args...)...)
+	if err != nil {
+		return 0, fmt.Errorf("write graph nodes: %w", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var position int64
+		if err := rows.Scan(&position); err != nil {
+			return 0, fmt.Errorf("write graph nodes: %w", err)
+		}
+		made(position)
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("write graph nodes: %w", err)
+	}
+	return count, nil
+}
+
+// moveNodes is writeNodes' second statement: it moves every node already there whose supertag,
+// visibility, state or attributes this write changes, and calls moved with the position of each
+// and the base attributes it moved, comparing against the row as its own snapshot holds it,
+// which is the row insertNodes locked. A node insertNodes made holds what this write states, so
+// it moves nothing here.
+func moveNodes(ctx context.Context, tx pgx.Tx, args []any, moved func(position int64, attributes byte)) error {
+	rows, err := tx.Query(ctx, incomingNodes+`,
 		stored as (
 			select held.kind, held.id, held.visibility, held.state
 			from graph_nodes held
 			join incoming on incoming.kind = held.kind and incoming.id = held.id
 		),
 		written as (
-			insert into graph_nodes (`+nodeColumns+`)
-			select `+nodeColumns+` from incoming order by kind, id
-			on conflict (kind, id) do update set
-				supertag = excluded.supertag,
-				visibility = excluded.visibility,
-				state = excluded.state,
-				attributes = excluded.attributes,
-				source_event = excluded.source_event
-			where graph_nodes.supertag is distinct from excluded.supertag
-			   or graph_nodes.visibility is distinct from excluded.visibility
-			   or graph_nodes.state is distinct from excluded.state
-			   or graph_nodes.attributes is distinct from excluded.attributes
-			returning kind, id, visibility, state, xmax = 0 as made
+			update graph_nodes set
+				supertag = incoming.supertag,
+				visibility = incoming.visibility,
+				state = incoming.state,
+				attributes = incoming.attributes,
+				source_event = incoming.source_event
+			from incoming
+			where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id
+			  and (graph_nodes.supertag is distinct from incoming.supertag
+			       or graph_nodes.visibility is distinct from incoming.visibility
+			       or graph_nodes.state is distinct from incoming.state
+			       or graph_nodes.attributes is distinct from incoming.attributes)
+			returning graph_nodes.kind, graph_nodes.id, graph_nodes.visibility, graph_nodes.state
 		)
-		select incoming.ordinality, written.made,
+		select incoming.ordinality,
 			stored.visibility is distinct from written.visibility,
 			stored.state is distinct from written.state
 		from written
 		join incoming on incoming.kind = written.kind and incoming.id = written.id
-		left join stored on stored.kind = written.kind and stored.id = written.id
-		order by incoming.ordinality
+		join stored on stored.kind = written.kind and stored.id = written.id
 	`, append([]any{pgx.QueryExecModeDescribeExec}, args...)...)
 	if err != nil {
-		return nil, fmt.Errorf("write graph nodes: %w", err)
+		return fmt.Errorf("write graph nodes: %w", err)
 	}
 	defer rows.Close()
-	var base []Tuple
-	var own map[baseAttribute]struct{}
 	for rows.Next() {
 		var position int64
-		var made, movedVisibility, movedState bool
-		if err := rows.Scan(&position, &made, &movedVisibility, &movedState); err != nil {
-			return nil, fmt.Errorf("write graph nodes: %w", err)
+		var movedVisibility, movedState bool
+		if err := rows.Scan(&position, &movedVisibility, &movedState); err != nil {
+			return fmt.Errorf("write graph nodes: %w", err)
 		}
-		if !made && !movedVisibility && !movedState {
-			continue
+		var attributes byte
+		if movedVisibility {
+			attributes |= markVisibility
 		}
-		if own == nil {
-			own = statedAttributes(stated)
-			// Two attributes per node at most. The slice is made at that size by the
-			// first node that states one, so a write that states none - a re-index of a
-			// document nothing moved - makes none, and one that states thousands grows
-			// none.
-			base = make([]Tuple, 0, 2*len(nodes))
+		if movedState {
+			attributes |= markState
 		}
-		node := nodes[position-1]
-		if made || movedVisibility {
-			base = statesAttribute(base, own, node, attributeVisibility, node.Visibility)
-		}
-		if made || movedState {
-			base = statesAttribute(base, own, node, attributeState, node.State)
+		if attributes != 0 {
+			moved(position, attributes)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("write graph nodes: %w", err)
+		return fmt.Errorf("write graph nodes: %w", err)
 	}
-	return base, nil
+	return nil
 }
 
 // baseAttribute is one base attribute of one node, the key a write is read by to see whether it
@@ -194,8 +358,8 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 type baseAttribute struct{ kind, id, attribute string }
 
 // statedAttributes are the base attributes the write states itself, read off the tuples it
-// handed in. The comment path and the backfill state both of them beside the event that caused
-// the write, and that statement is theirs to keep: one write states one fact once.
+// handed in. No writer of this tree states one today - each leaves them to the node write - but
+// a writer that did would keep that statement: one write states one fact once.
 func statedAttributes(tuples []Tuple) map[baseAttribute]struct{} {
 	stated := make(map[baseAttribute]struct{}, len(tuples))
 	for _, tuple := range tuples {
@@ -258,14 +422,14 @@ func encodeAttributes(attributes map[string]any) ([]byte, error) {
 	return json.Marshal(attributes)
 }
 
-// Caused moves the cause onto the nodes a writer stated before its event existed. A request
-// writes a node before the row whose foreign key names it, and its event is appended after
-// both, so the node is written with the sentinel and learns its cause here. It is one statement
-// over the addresses the writer holds, not a second node write: writing those rows again would
-// double the cost of every pass for one column, and the upsert's own guard would refuse it
-// anyway, since nothing else about the node moved. Only a node still at the sentinel takes the
-// event, so a node an earlier version already caused keeps the cause it had.
-func Caused(ctx context.Context, tx pgx.Tx, nodes []Node, event int64) error {
+// causeNodes moves the cause onto the nodes a writer stated before its event existed (Caused).
+// A request writes a node before the row whose foreign key names it, and its event is appended
+// after both, so the node is written with the sentinel and learns its cause here. It is one
+// statement over the addresses the writer holds, not a second node write: writing those rows
+// again would double the cost of every pass for one column, and the upsert's own guard would
+// refuse it anyway, since nothing else about the node moved. Only a node still at the sentinel
+// takes the event, so a node an earlier version already caused keeps the cause it had.
+func causeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, event int64) error {
 	if len(nodes) == 0 || event == NoEvent {
 		return nil
 	}

@@ -76,7 +76,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 
 	// The comment has no node, and its row names none, so the old comments arm of graph_edges
 	// answers its owned_by edge once rather than the tuple arm answering it short the edge.
-	if _, held, err := graphstore.ReadNode(ctx, database.Pool, commentNodeKind, commentID); err != nil || held {
+	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, commentID); err != nil || held {
 		t.Fatalf("the store holds the comment's node %t (err %v), want none", held, err)
 	}
 	var nodeKindCol *string
@@ -86,8 +86,8 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	if nodeKindCol != nil {
 		t.Fatalf("the comment row names node %q, want null columns so the old arm answers it", *nodeKindCol)
 	}
-	requireNoFarEndTuple(t, database, commentNodeKind, commentID, tupleOwnedBy)
-	requireGraphEdge(t, database, commentNodeKind, commentID, tupleOwnedBy, refKey)
+	requireNoFarEndTuple(t, database, graphstore.KindComment, commentID, graphstore.TupleOwnedBy)
+	requireGraphEdge(t, database, graphstore.KindComment, commentID, graphstore.TupleOwnedBy, refKey)
 }
 
 // TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode is dispatch://INFRA-1149's R2 at
@@ -119,7 +119,7 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 	if _, err := tx.Exec(ctx, `
 		insert into comments (id, issue_key, author, body, node_kind, node_address)
 		values ($1::uuid, $2, $3, 'A remark by a very long session.', $4, $1)
-	`, commentID, issue.Key, `{"kind":"session","id":"`+pastSession+`"}`, commentNodeKind); err != nil {
+	`, commentID, issue.Key, `{"kind":"session","id":"`+pastSession+`"}`, graphstore.KindComment); err != nil {
 		t.Fatalf("insert the comment row: %v", err)
 	}
 	if err := stored.caused(ctx, tx, graphstore.NoEvent); err != nil {
@@ -127,7 +127,7 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 	}
 	// On the old code the session node's primary key and the authored_by tuple failed with "index
 	// row size ... exceeds btree ... 2704"; now AuthorFacts leaves them out and the write commits.
-	if err := graphstore.Authored(ctx, tx, commentNodeKind, commentID, author, time.Now().UTC(), graphstore.NoEvent); err != nil {
+	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, commentID, author, time.Now().UTC(), graphstore.NoEvent); err != nil {
 		t.Fatalf("record who wrote the comment: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -135,13 +135,13 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 	}
 
 	// The comment's node is written; the over-bound session is no node and no authored_by tuple.
-	if _, held, err := graphstore.ReadNode(ctx, database.Pool, commentNodeKind, commentID); err != nil || !held {
+	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, commentID); err != nil || !held {
 		t.Fatalf("the store holds the comment's node %t (err %v), want it", held, err)
 	}
 	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, pastSession); err != nil || held {
 		t.Fatalf("the store holds the over-bound session node %t (err %v), want none", held, err)
 	}
-	requireNoFarEndTuple(t, database, commentNodeKind, commentID, graphstore.TupleAuthoredBy)
+	requireNoFarEndTuple(t, database, graphstore.KindComment, commentID, graphstore.TupleAuthoredBy)
 }
 
 // requireNoFarEndTuple fails unless the store holds no tuple of kind out of the node.

@@ -16,19 +16,41 @@ import (
 // tupleColumns is what every tuple read answers, in the order scanTuples takes them.
 const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted`
 
+// CurrentTupleRead is the one reading of the log a relation as it stands now is answered by: the
+// newest tuple of each relation the read keeps, which a `where asserted` over its answer then
+// cuts to the relations that stand, so a relation whose newest tuple retracts it is absent rather
+// than answered as ended. It is SQL text rather than a read, because most of its readers splice
+// it into a statement of their own - the census's links of every node, a person's page, the
+// claims the publisher's record restates, the parents a block index compares, the backlink
+// counts' test of one tuple and the erase's blockers - and the rule written out in each of them
+// was several readings to keep in step, as prioritystore.AdvancesTupleRead's own store found.
+//
+// It reads graph_tuples as t. relation is the columns of t that tell one relation from another
+// among the rows narrow keeps - the relation's key, (from_kind, from_id, kind, to_kind, to_id),
+// less the columns narrow binds to one value - written in the order of the index the read walks:
+// graph_tuples_current's for a read out of a node and graph_tuples_inbound's for one into it,
+// whose last column is the seq the order by ends at, so the planner takes the newest row of each
+// relation off the index and sorts nothing. columns is what each row answers, t.asserted among
+// it for the cut. narrow is the predicate that bounds the read, written inside the `where` so it
+// cuts the rows the `distinct on` sorts rather than its answer. The caller writes all three from
+// its own text and never from a value a request carried.
+func CurrentTupleRead(relation, columns, narrow string) string {
+	return `select distinct on (` + relation + `) ` + columns + `
+			from graph_tuples t
+			where ` + narrow + `
+			order by ` + relation + `, t.seq desc`
+}
+
 // CurrentOut answers, for each (kind, to_kind, to_id) out of one node, the newest tuple, and
-// answers it only while that newest one asserts: a relation whose last word is a retraction is
-// absent rather than answered as ended. An empty kinds means every kind. The statement reads
-// through graph_tuples_current, whose column order is the one the distinct on walks, so the
-// planner takes it as an index scan and sorts nothing.
+// answers it only while that newest one asserts (CurrentTupleRead). An empty kinds means every
+// kind. The statement reads through graph_tuples_current, whose column order is the one the
+// distinct on walks, so the planner takes it as an index scan and sorts nothing.
 func CurrentOut(ctx context.Context, q Queryer, fromKind, fromID string, kinds []string) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
-			select distinct on (kind, to_kind, to_id) `+tupleColumns+`
-			from graph_tuples
-			where from_kind = $1 and from_id = $2 and to_kind <> '`+KindValue+`'
-				and ($3::text[] is null or kind = any($3::text[]))
-			order by kind, to_kind, to_id, seq desc
+			`+CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, tupleColumns,
+		`t.from_kind = $1 and t.from_id = $2 and t.to_kind <> '`+KindValue+`'
+				and ($3::text[] is null or t.kind = any($3::text[]))`)+`
 		) newest
 		where asserted
 		order by kind, to_kind, to_id
@@ -40,16 +62,14 @@ func CurrentOut(ctx context.Context, q Queryer, fromKind, fromID string, kinds [
 }
 
 // CurrentIn answers, for each (kind, from_kind, from_id) into one node, the newest tuple, while
-// that newest one asserts. It reads through graph_tuples_inbound, which is graph_tuples_current
-// with the ends swapped. A value is no node, so nothing points into one.
+// that newest one asserts (CurrentTupleRead). It reads through graph_tuples_inbound, which is
+// graph_tuples_current with the ends swapped. A value is no node, so nothing points into one.
 func CurrentIn(ctx context.Context, q Queryer, toKind, toID string, kinds []string) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
-			select distinct on (kind, from_kind, from_id) `+tupleColumns+`
-			from graph_tuples
-			where to_kind = $1 and to_id = $2 and to_kind <> '`+KindValue+`'
-				and ($3::text[] is null or kind = any($3::text[]))
-			order by kind, from_kind, from_id, seq desc
+			`+CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, tupleColumns,
+		`t.to_kind = $1 and t.to_id = $2 and t.to_kind <> '`+KindValue+`'
+				and ($3::text[] is null or t.kind = any($3::text[]))`)+`
 		) newest
 		where asserted
 		order by kind, from_kind, from_id

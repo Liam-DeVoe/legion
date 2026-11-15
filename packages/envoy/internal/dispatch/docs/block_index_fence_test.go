@@ -170,7 +170,7 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
 	event := appendDocumentEvent(t, ctx, tx, "artifact.version", payload)
-	if err := result.Blocks.Caused(ctx, tx, event); err != nil {
+	if err := graphstore.Caused(ctx, tx, result.Blocks, event); err != nil {
 		t.Fatalf("append what the version's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -327,7 +327,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run the stale pass: %v", err)
 	}
-	if err := write.Caused(ctx, staleTx, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, staleTx, write, graphstore.NoEvent); err != nil {
 		t.Fatalf("append what the stale pass stated: %v", err)
 	}
 	if err := staleTx.Commit(ctx); err != nil {
@@ -366,7 +366,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run the control pass: %v", err)
 	}
-	if err := write.Caused(ctx, controlTx, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, controlTx, write, graphstore.NoEvent); err != nil {
 		t.Fatalf("append what the control pass stated: %v", err)
 	}
 	if err := controlTx.Commit(ctx); err != nil {
@@ -527,7 +527,7 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 			if err != nil {
 				return err
 			}
-			if err := write.Caused(ctx, tx, event); err != nil {
+			if err := graphstore.Caused(ctx, tx, write, event); err != nil {
 				return fmt.Errorf("append what the index stated: %w", err)
 			}
 			return ledger.Commit(ctx)

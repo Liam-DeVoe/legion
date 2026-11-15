@@ -663,7 +663,7 @@ func (s *server) completeMessageDelivery(
 	}, pending.resolved.title)
 	// The session the settle records, where this settle made its node: the node is made before
 	// the receipt exists and moves onto it once it is appended (caused below).
-	var reached []graphstore.Node
+	var reached graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
 			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `

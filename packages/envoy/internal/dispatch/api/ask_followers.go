@@ -197,7 +197,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := followed.Caused(r.Context(), tx, event.ID); err != nil {
+	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

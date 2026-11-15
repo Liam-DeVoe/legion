@@ -672,7 +672,7 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		Visibility: visibility, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}, {
-		Kind: commentNodeKind, ID: fixture.privateComment, Supertag: commentSupertag,
+		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment,
 		Visibility: visibility, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}}, nil); err != nil {
@@ -683,11 +683,11 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	if _, err := tx.Exec(ctx, `
 		insert into comments (id, issue_key, author, body, node_kind, node_address)
 		values ($1::uuid, $2, '{"kind":"user","id":"alice"}', $3, $4, $1)
-	`, fixture.privateComment, fixture.issue, "A private remark about "+privateNodePhrase+".", commentNodeKind); err != nil {
+	`, fixture.privateComment, fixture.issue, "A private remark about "+privateNodePhrase+".", graphstore.KindComment); err != nil {
 		t.Fatalf("write the private comment's row: %v", err)
 	}
 	// Who wrote each: the author's own person node, which the person page reads.
-	for _, written := range []struct{ kind, id string }{{"block", fixture.private}, {commentNodeKind, fixture.privateComment}} {
+	for _, written := range []struct{ kind, id string }{{"block", fixture.private}, {graphstore.KindComment, fixture.privateComment}} {
 		if err := graphstore.Authored(ctx, tx, written.kind, written.id, author, at, graphstore.NoEvent); err != nil {
 			t.Fatalf("record who wrote the private %s: %v", written.kind, err)
 		}

@@ -154,7 +154,7 @@ const (
 	// settle takes through LockOwners before anything else (settleDeliveryAttempt).
 	eventOwnerStatement = "select last_seq, project_key, pg_current_xact_id() from issues where key = $1 for no key update"
 	// nodeWriteStatement is graphstore's node write (writeNodes), which writeNode runs through
-	// graphstore.WriteStating.
+	// graphstore.WriteUncaused.
 	nodeWriteStatement = "with incoming as ("
 	// armsStatement is graphstore.WriteArms spliced into a statement of its own, as Authored and
 	// Reached run it: the node arm and the tuple arms after it, in one statement.
