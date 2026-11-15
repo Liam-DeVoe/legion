@@ -926,6 +926,11 @@ A deployment that sets the member makes these four things true in Google Cloud:
   GKE's Workload Identity prerequisites say to enable it ([Authenticate to Google Cloud APIs from GKE workloads](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)).
   A workload's `GenerateAccessToken` calls count against the quota of that project, unless the Kubernetes ServiceAccount names another quota project ([Use quota from a different project with Workload Identity Federation for GKE](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity#quota-project)).
 
+Use an account that has no other purpose.
+Every process that has the pods' cloud identity can impersonate the account with any scope: every role in every pod of the deployment, and a `kubectl exec` shell in such a pod.
+So each of them can do all that the account's roles let it do in Google Cloud, not only sign in to the session database.
+Give the account the two Cloud SQL roles above and no other role.
+
 Set the member in the same change that turns `cloudsql-iam` on.
 A pod keeps the session flags it was created with for its whole life.
 A role launched again into an issue pod whose update round is still open keeps that pod's flags.
@@ -3446,7 +3451,7 @@ Every role can write the whole issue volume, and the roles share the pod's netwo
 - the session transcripts: under `postgres` they are rows, and the database's URL is in the providers mount the container holds for the pod rather than for a role, so every role of the issue reaches them there.
   Under `cloudsql-iam` each generation's connection is private to its role (the socket is in that role's private directory), but every role signs in as the pod's one IAM login, whose rights reach every session row, so any role that opens a connection of its own reads and writes a sibling's transcript as well ([Session store](#session-store)).
   With `impersonate_service_account`, that login is the service account's.
-  The pod's identity can impersonate that account, so every role can sign in as it.
+  The pod's identity can impersonate that account, so every role can sign in as it, and can use every other role that the account holds ([Selecting the store](#selecting-the-store)).
 
 The issue's roles trust one another's writes to the volume as they did when each ran in a container of its own.
 The namespaces keep a role's tokens and private files out of a sibling's own reads, and no further.
@@ -3885,7 +3890,7 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
   It reads the rest as their owner: each running generation's `<role>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each role's `<role>/agent-secrets/` key directory and each role's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
   It reads each agent's environment through `/proc/<pid>/environ` too, and whatever the operator's `runtime.kubernetes.pod.volume_mounts` mount.
   Where the pods' ServiceAccount is federated to a cloud identity, it can act as that identity, as every role can.
-  Under `cloudsql-iam` with `impersonate_service_account`, that identity can also impersonate the service account, so the shell and every role can sign in to the session database as it.
+  Under `cloudsql-iam` with `impersonate_service_account`, that identity can also impersonate the service account, so the shell and every role can act as that account: they can sign in to the session database as it, and use every other role that it holds.
 
 - **The clone's configuration is every role's to write.**
   The clone's `.git/config`, its hooks, a legacy jj configuration file and the workspace's `.jj/repo` pointer are on the issue's disk, which every role writes ([Trust model](#trust-model-the-provisioning-token)), and the shell's git is given none of the overrides a role's git is.

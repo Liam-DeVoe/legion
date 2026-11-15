@@ -57,10 +57,13 @@ const (
 // Admin API calls, and the other gives the login token in the ephemeral-certificate exchange. With
 // no account, both are the pod's own credentials. The real connector and the real
 // impersonation library run against fakes of the pod's credentials, of the IAM Service Account
-// Credentials API and of the Cloud SQL Admin API, so the test sees which token reaches which call.
-// The instance has no private address, so each dial ends with the connector's refusal, which shows
-// that the private-IP option still applies. Every request stays on loopback or in an in-process
-// transport. The test sets an environment variable, so it is not parallel.
+// Credentials API and of the Cloud SQL Admin API, so the test sees which token reaches which Admin
+// API call. The impersonation library takes the test's own IAM Credentials client
+// (option.WithHTTPClient) and uses it as it is, so the credential that the generateAccessToken call
+// itself carries is not under test: the fake pod credentials sign only the calls of the row with no
+// account. The instance has no private address, so each dial ends with the connector's refusal,
+// which shows that the private-IP option still applies. Every request stays on loopback or in an
+// in-process transport. The test sets an environment variable, so it is not parallel.
 func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 	usePodCredentials(t)
 	const noPrivateIP = `instance does not have IP of type "PRIVATE"`
