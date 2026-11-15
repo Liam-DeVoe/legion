@@ -23,10 +23,33 @@ import (
 // fake broker: which failures are known and which unknown, the bound and its timer, the stop, and
 // unregister, whose revoke goes on after its answer.
 
+// settleCause opens the cause of every unknown outcome requestReach.settle marked
+// (mayHaveReachedCause). The answer brokerCall's timer gives says "did not end in" instead.
+const settleCause = "the request may have reached the broker, but the helper did not get its result ("
+
+// wantSettled fails the row unless resp, the answer to what, is code saying the outcome is unknown
+// with settle's cause, given within before (elapsed is the time the call took): an answer from
+// brokerCall's timer, which comes at the bound plus 1 s and says the operation did not end, fails,
+// though it says that the outcome is unknown as well. The cause and the time are checked apart, so
+// a failing row reports each that is wrong.
+func wantSettled(t *testing.T, what string, resp Response, code string, elapsed, before time.Duration) {
+	t.Helper()
+	if resp.OK || resp.Code != code || !strings.Contains(resp.Error, "the outcome is unknown") {
+		t.Fatalf("%s: %+v; want %s saying the outcome is unknown", what, resp, code)
+	}
+	if !strings.Contains(resp.Error, settleCause) || strings.Contains(resp.Error, "did not end in") {
+		t.Errorf("%s: error %q; want settle's cause %q, not the timer's \"did not end in\"", what, resp.Error, settleCause)
+	}
+	if elapsed >= before {
+		t.Errorf("%s: answered after %s; want settle's answer, within %s", what, elapsed, before)
+	}
+}
+
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
-// the broker got it (a 503, which a front door can send after the broker acted) has an unknown
-// outcome, and one that never reached the broker (a refused dial) is a known failure. Each case
-// answers one code; each unknown answer says that the outcome is unknown, and no known one does.
+// the broker got it (a 503, which a front door can send after the broker acted, or a 2xx the
+// helper cannot read, which the broker answered and so may have acted on) has an unknown outcome,
+// and one that never reached the broker (a refused dial) is a known failure. Each case answers
+// one code; each unknown answer says that the outcome is unknown, and no known one does.
 func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 	enroll := Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}
 	unenroll := Request{Op: "unenroll-session-key", EnrollmentID: "enr-1"}
@@ -36,16 +59,19 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 		req  Request
 		// refuse points the helper at a broker URL that refuses the dial.
 		refuse bool
-		// fail sets the fake's 503, under its lock.
+		// fail sets the fake's failure (a 503, or a 2xx with none of what the helper needs), under
+		// its lock.
 		fail    func(f *fakeBroker)
 		code    string
 		unknown bool
 	}{
 		{name: "a 503 on the enrollment is unknown", req: enroll, fail: func(f *fakeBroker) { f.failFirst = 1 }, code: CodeEnrollUnknown, unknown: true},
+		{name: "a 200 with no enrollment_id on the enrollment is unknown", req: enroll, fail: func(f *fakeBroker) { f.enrollEmpty2xx = true }, code: CodeEnrollUnknown, unknown: true},
 		{name: "a refused dial on the enrollment is a known failure", req: enroll, refuse: true, code: CodeEnrollFailed},
 		{name: "a 503 on the revoke is unknown", req: unenroll, fail: func(f *fakeBroker) { f.revokeFailFirst = 1 }, code: CodeUnenrollUnknown, unknown: true},
 		{name: "a refused dial on the revoke is a known failure", req: unenroll, refuse: true, code: CodeUnenrollFailed},
 		{name: "a 503 on the device authorization is unknown", req: login, fail: func(f *fakeBroker) { f.deviceAuthFail = 1 }, code: CodeLoginFailed, unknown: true},
+		{name: "a 200 with no device_code or user_code on the device authorization is unknown", req: login, fail: func(f *fakeBroker) { f.deviceAuthEmpty2xx = true }, code: CodeLoginFailed, unknown: true},
 		{name: "a refused dial on the device authorization is a known failure", req: login, refuse: true, code: CodeLoginFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,7 +157,8 @@ func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.
 
 // TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown: the broker holds the device
 // authorization until the request ends. The op's bound ends that request, which the broker sees,
-// and login answers LOGIN_FAILED saying the outcome is unknown, at about the bound.
+// and login answers LOGIN_FAILED saying the outcome is unknown, with settle's cause, at the bound
+// and before the bound plus 1 s, where brokerCall's timer would answer.
 func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testing.T) {
 	r := newRig(t, "")
 	// A helper that left the request running would hold the fake's handler until its Close, which
@@ -149,10 +176,8 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	if resp.OK || resp.Code != CodeLoginFailed || !strings.Contains(resp.Error, "the outcome is unknown") {
-		t.Fatalf("login past its bound: %+v; want %s saying the outcome is unknown", resp, CodeLoginFailed)
-	}
-	if elapsed < bound || elapsed >= 4*time.Second {
+	wantSettled(t, "login past its bound", resp, CodeLoginFailed, elapsed, bound+time.Second)
+	if elapsed < bound {
 		t.Fatalf("login past its bound answered after %s; want about the %s bound", elapsed, bound)
 	}
 	ended := func() bool {
@@ -243,16 +268,14 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
 	const wait = 6 * time.Second
 	r := startRig(t, "")
-	gate, open := testGate(t)
+	gate, _ := testGate(t) // its cleanup opens the gate; the rig's cleanup ends the register's wait
 	r.fake.mu.Lock()
 	r.fake.enrollGate = gate
 	r.fake.mu.Unlock()
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
 
-	answered := make(chan struct{})
 	go func() {
-		defer close(answered)
 		_, _ = Call(r.sock, Request{Op: "register", WaitSeconds: int(wait / time.Second)}, wait+10*time.Second)
 	}()
 	// The broker holds the session's enrollment, so the register is in its wait.
@@ -269,12 +292,6 @@ func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
 		t.Logf("Serve returned %s after its context ended, with a register still in its %s wait", time.Since(stopped), wait)
 	case <-time.After(wait / 2):
 		t.Fatalf("Serve did not return within %s of its context ending: the register still in its %s wait held the stop", wait/2, wait)
-	}
-	open()
-	select {
-	case <-answered:
-	case <-time.After(wait + 10*time.Second):
-		t.Log("the register's client was still waiting when the row ended")
 	}
 }
 
@@ -318,42 +335,5 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 	testwait.Holds(5*time.Second, testwait.Poll, revoked)
 	if _, deletes, _ := r.fake.snapshot(); len(deletes) != 1 || deletes[0] != reg.EnrollmentID {
 		t.Fatalf("the revoke after unregister deleted %v once the broker let it; want %s", deletes, reg.EnrollmentID)
-	}
-}
-
-// TestA2xxAnswerTheHelperCannotReadIsUnknown: a 2xx the broker answers but the helper cannot read
-// is an unknown outcome, since the broker answered it and may have acted. An enroll answered 200
-// with no enrollment_id makes enroll-session-key answer ENROLL_OUTCOME_UNKNOWN; a device
-// authorization answered 200 with no device_code or user_code makes login answer LOGIN_FAILED. Each
-// answer's error says the outcome is unknown.
-func TestA2xxAnswerTheHelperCannotReadIsUnknown(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		set   func(f *fakeBroker)
-		req   Request
-		login bool
-		code  string
-	}{
-		{name: "an enroll answered 200 with no enrollment_id", set: func(f *fakeBroker) { f.enrollEmpty2xx = true },
-			req: Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, login: true, code: CodeEnrollUnknown},
-		{name: "a device authorization answered 200 with no device_code or user_code", set: func(f *fakeBroker) { f.deviceAuthEmpty2xx = true },
-			req: Request{Op: "login"}, login: false, code: CodeLoginFailed},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t, "")
-			if tc.login {
-				r.login(t)
-			}
-			r.fake.mu.Lock()
-			tc.set(r.fake)
-			r.fake.mu.Unlock()
-			resp, err := Call(r.sock, tc.req, BrokerCallWait)
-			if err != nil {
-				t.Fatalf("%s: %v", tc.req.Op, err)
-			}
-			if resp.OK || resp.Code != tc.code || !strings.Contains(resp.Error, "the outcome is unknown") {
-				t.Fatalf("%s: %+v; want %s saying the outcome is unknown", tc.req.Op, resp, tc.code)
-			}
-		})
 	}
 }

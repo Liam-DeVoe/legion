@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -78,8 +77,10 @@ func wantHTTP2(t *testing.T, proto <-chan string) {
 // clause: the stand-in reads the body and never answers, so when the op's bound ends the request,
 // WroteRequest has not fired and the broker has not answered — `sent` is false, only GotConn
 // fired, and the context ended. Nothing but that clause makes the outcome unknown, so
-// enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN. With the clause removed (mutation C,
-// `false && ended`), the row answers ENROLL_FAILED.
+// enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN with settle's cause, before the bound plus
+// 1 s, where brokerCall's timer would answer. With the clause removed (mutation C,
+// `false && ended`), the row answers ENROLL_FAILED; with the op's context left running past the
+// bound, the timer answers instead, at the bound plus 1 s and with its own cause.
 func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 	r := newRig(t, "")
 	r.login(t) // log in against the ordinary fake first, then point the Broker at the stand-in
@@ -89,24 +90,27 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 		// resets the stream; never answer.
 		_, _ = io.Copy(io.Discard, req.Body)
 	})
-	r.srv.BrokerCallBound = time.Second
+	const bound = time.Second
+	r.srv.BrokerCallBound = bound
 
+	start := time.Now()
 	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, BrokerCallWait)
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("enroll-session-key: %v", err)
 	}
 	wantHTTP2(t, proto)
-	if resp.OK || resp.Code != CodeEnrollUnknown || !strings.Contains(resp.Error, "the outcome is unknown") {
-		t.Fatalf("enroll whose body is still being written at the bound: %+v; want %s saying the outcome is unknown", resp, CodeEnrollUnknown)
-	}
+	wantSettled(t, "enroll whose body is still being written at the bound", resp, CodeEnrollUnknown, elapsed, bound+time.Second)
 }
 
 // TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown holds settle through
 // GotFirstResponseByte alone: the stand-in answers 200 at once, without reading the body, with a
 // body that is not JSON. WroteRequest never fires (the request body never ends) and the context
 // does not end, so GotFirstResponseByte is the only fact that says the request was sent, and the
-// failure is a decode error. enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN. With
-// traceReach's GotFirstResponseByte line removed, the row answers ENROLL_FAILED.
+// failure is a decode error. enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN with settle's
+// cause, before the bound: an answer at the bound or later could be the `connected && ended`
+// clause's or brokerCall's timer's, not GotFirstResponseByte's. With traceReach's
+// GotFirstResponseByte line removed, the row answers ENROLL_FAILED.
 func TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown(t *testing.T) {
 	r := newRig(t, "")
 	r.login(t)
@@ -116,14 +120,15 @@ func TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown(t *testing.T) 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("{"))
 	})
-	r.srv.BrokerCallBound = 5 * time.Second
+	const bound = 5 * time.Second
+	r.srv.BrokerCallBound = bound
 
+	start := time.Now()
 	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, BrokerCallWait)
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("enroll-session-key: %v", err)
 	}
 	wantHTTP2(t, proto)
-	if resp.OK || resp.Code != CodeEnrollUnknown || !strings.Contains(resp.Error, "the outcome is unknown") {
-		t.Fatalf("enroll whose answer begins before its body is written: %+v; want %s saying the outcome is unknown", resp, CodeEnrollUnknown)
-	}
+	wantSettled(t, "enroll whose answer begins before its body is written", resp, CodeEnrollUnknown, elapsed, bound)
 }

@@ -5,6 +5,7 @@ package helper
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -167,26 +168,28 @@ func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 
 // TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow: the broker makes
 // the enrollment, and its answer would reach the helper 5 s later, past the op's 2 s bound. The
-// bound ends the op, which answers ENROLL_OUTCOME_UNKNOWN, while the broker holds the row. The
-// same enroll again (the same key and runtime id), answered at once, gets that row: the broker
-// answers the same key under the same credential and runtime id with its live enrollment, and
-// makes no second one.
+// bound ends the op, which answers ENROLL_OUTCOME_UNKNOWN with settle's cause, before the bound
+// plus 1 s where brokerCall's timer would answer, while the broker holds the row. The same enroll
+// again (the same key and runtime id), answered at once, gets that row: the broker answers the
+// same key under the same credential and runtime id with its live enrollment, and makes no second
+// one.
 func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow(t *testing.T) {
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 5 * time.Second}
 	cr := heldContractRig(t, held)
-	cr.srv.BrokerCallBound = 2 * time.Second
+	const bound = 2 * time.Second
+	cr.srv.BrokerCallBound = bound
 	runtimeID := "past-bound-box-" + t.Name()
 	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)}
 
 	held.holds.Store(1)
+	start := time.Now()
 	first := callBroker(t, cr, req)
+	elapsed := time.Since(start)
 	rows := enrollmentsOf(t, cr, runtimeID)
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1; answer %+v, the broker's rows %+v", n, first, rows)
 	}
-	if first.OK || first.Code != CodeEnrollUnknown || !strings.Contains(first.Error, "the outcome is unknown") {
-		t.Fatalf("enroll-session-key past its bound: %+v; want %s saying the outcome is unknown (the broker's rows %+v)", first, CodeEnrollUnknown, rows)
-	}
+	wantSettled(t, fmt.Sprintf("enroll-session-key past its bound (the broker's rows %+v)", rows), first, CodeEnrollUnknown, elapsed, bound+time.Second)
 	live := liveIDs(rows)
 	if len(live) != 1 {
 		t.Fatalf("the broker's rows for %s after the enroll past the bound: %+v; want the one live row it made", runtimeID, rows)
