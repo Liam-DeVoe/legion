@@ -84,7 +84,8 @@ func newGoingWritesRigServing(t *testing.T, serving func(*store.Store) *store.St
 		cookie: identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
 		header: headerIdentity(database),
 	}
-	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: listener.URL})
+	app, githubAPIBase := goingFixtureArchitectureGitHub(t)
+	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: listener.URL, app: app, githubAPIBase: githubAPIBase})
 	return goingWritesRig{
 		mux: mux, network: EnforceCookieOrigin(testServerURL, mux), served: served,
 		database: database, sessions: sessions, sent: &sent,
@@ -335,8 +336,9 @@ func newGoingRowFixtures(t *testing.T, rig goingWritesRig) goingRowFixtures {
 	t.Helper()
 	var f goingRowFixtures
 	f.issue = createInteractionIssue(t, rig.mux, "DEMO", "The first issue", "The spec says hello to everyone.\n").Key
-	// One architecture source for the project's sync to import: with no GitHub App the import
-	// fails, which the route answers as the source's last_error on its 200.
+	// One architecture source the project's sync imports. The rig wires a GitHub stand-in where
+	// acme/arch is readable (goingFixtureArchitectureGitHub), so both the every-source and the
+	// one-source sync answer 200.
 	if _, err := rig.database.Pool.Exec(context.Background(), `
 		insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
 		values ('DEMO', 1, 'acme/arch', 'main', 1, '{"kind":"system","id":"test"}')`); err != nil {
@@ -439,6 +441,9 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 		},
 		"dispatch_project POST /api/v1/projects":                                           {arguments: map[string]any{"key": "NEWP", "name": "A new project"}},
 		"dispatch_architecture_sync POST /api/v1/projects/{key}/architecture-sources/sync": {arguments: map[string]any{"project": "DEMO"}},
+		"dispatch_architecture_sync POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {
+			arguments: map[string]any{"project": "DEMO", "repo": "acme/arch"},
+		},
 		"dispatch_handoff_write POST /api/v1/issues/{key}/handoffs/{phase}": {
 			arguments: map[string]any{"issue": f.issue, "phase": "plan", "body": `{"summary":"planned"}`}, bearer: true,
 		},

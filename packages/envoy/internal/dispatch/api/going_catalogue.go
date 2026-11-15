@@ -370,12 +370,24 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Translate: goingArgumentsAsBody,
 		Undo:      goingTrace,
 	}},
-	"dispatch_architecture_sync": {{
-		Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/architecture-sources/sync",
-		Path: map[string]string{"key": "project"}, Relations: []string{"depends_on", "affects"},
-		Translate: goingTranslateNoBody,
-		Undo:      goingTrace,
-	}},
+	// A sync names one source by its repository, else every source of the project. The one-source
+	// row is first, so a call carrying `repo` fills it and one without falls through to the
+	// every-source row.
+	"dispatch_architecture_sync": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
+			Path:      map[string]string{"key": "project", "owner": "repo", "repo": "repo"},
+			Relations: []string{"depends_on", "affects"},
+			Translate: goingTranslateArchitectureSyncRepo,
+			Undo:      goingTrace,
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/architecture-sources/sync",
+			Path: map[string]string{"key": "project"}, Relations: []string{"depends_on", "affects"},
+			Translate: goingTranslateNoBody,
+			Undo:      goingTrace,
+		},
+	},
 	"dispatch_handoff_write": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/handoffs/{phase}",
 		Path:      map[string]string{"key": "issue", "phase": "phase"},

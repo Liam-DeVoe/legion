@@ -399,11 +399,24 @@ func goingArgumentsAsBody(_ context.Context, _ goingReader, call goingCallInput)
 }
 
 // goingTranslateNoBody sends no body: a comment's resolve, a follow and its unfollow, and an
-// architecture sync take everything from their path and the caller's credential. An
-// architecture sync's `repo` is not sent: the row imports every source of the project, the named
-// one among them.
+// architecture sync of every source take everything from their path and the caller's credential.
+// This is the every-source sync row, chosen when the call names no `repo`; a sync that names one
+// takes the one-source row (goingTranslateArchitectureSyncRepo).
 func goingTranslateNoBody(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path}, nil
+}
+
+// goingTranslateArchitectureSyncRepo imports one architecture source, named by its owner/name
+// repository as the sync route's path takes it (one {owner} and one {repo} segment). It splits the
+// `repo` argument on the first slash, the way the server reads a repository elsewhere
+// (strings.Cut), and refuses a value that is not owner/name before any request; the project fills
+// {key}. The row that chose it bound both path segments to `repo`, so the split is read here.
+func goingTranslateArchitectureSyncRepo(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	owner, name, found := strings.Cut(goingText(call.arguments, "repo"), "/")
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
+		return goingCall{}, goingUntranslatable("repo names one source repository as owner/name")
+	}
+	return goingCall{path: map[string]string{"key": call.path["key"], "owner": owner, "repo": name}}, nil
 }
 
 // goingTranslateClaim sends a claim, and its release, an empty JSON body: both routes decode one,

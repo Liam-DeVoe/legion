@@ -29,22 +29,27 @@ const (
 	goingNamesItem     = "item"
 	goingNamesDocument = "document"
 	goingNamesSession  = "session"
+	goingNamesRepo     = "repo"
 )
 
 // goingItemArguments are the arguments that name an item of Dispatch's an invocation acts on,
 // links to or moves beside, by the kind of item each names: an issue (every issue argument the
 // search lists, the issues one waits on and the two a rank moves it between), the project, an
 // ask, a comment, a message, a result or a priority an issue advances by its id, a document by
-// its id, slug or file name under its owner, and the session a message goes to. A priority id is
-// a slug (priorityIDPattern), so the words name one only where it is spelled as an id written
-// short (goingNamesItem, goingIDOf); a priority whose id is ordinary words the words never name,
-// so an update stating it is an offer the person picks.
+// its id, slug or file name under its owner, the session a message goes to, and the repository a
+// source sync names or an issue points at. A priority id is a slug (priorityIDPattern), so the
+// words name one only where it is spelled as an id written short (goingNamesItem, goingIDOf); a
+// priority whose id is ordinary words the words never name, so an update stating it is an offer the
+// person picks. A repository is `owner/name`, which the words name only by writing it whole
+// (goingNamesRepo), so an automatic sync or an issue's repository runs only where the person typed
+// the repository.
 var goingItemArguments = func() map[string]string {
 	named := map[string]string{
 		"project":    goingNamesProject,
 		"session":    goingNamesSession,
 		"retract":    goingNamesItem,
 		"advances":   goingNamesItem,
+		"repo":       goingNamesRepo,
 		"blocked_by": goingNamesIssue,
 		"before":     goingNamesIssue,
 		"after":      goingNamesIssue,
@@ -87,7 +92,7 @@ var goingContentArguments = map[string]bool{
 	"name": true, "negative_control": true, "observed": true, "occurrence": true, "ops": true,
 	"options": true, "path": true, "phase": true, "precondition": true, "priority": true,
 	"question": true, "quote": true, "reason": true,
-	"ref": true, "release": true, "replace_with": true, "repo": true, "role": true, "run": true,
+	"ref": true, "release": true, "replace_with": true, "role": true, "run": true,
 	"screenshots": true, "skipped": true, "spec": true, "status": true, "summary": true,
 	"surface": true, "title": true, "turn": true, "urgency": true, "verdict": true, "version": true,
 }
@@ -302,7 +307,9 @@ func goingNamedBy(words, serverURL string) goingNamed {
 // is named in the words. A document's slug or file name is named only where its owner - the
 // invocation's issue, else its project - is the chip's or named in the words too, and the words
 // name the document under that owner by reference or write its name as a word (goingWordsName):
-// a slug alone is an ordinary word any document of any owner may carry.
+// a slug alone is an ordinary word any document of any owner may carry. A repository is named only
+// where the words write its whole `owner/name` (goingWordsName), since it has no reference of its
+// own and a bare owner or name is an ordinary word.
 func (n goingNamed) names(kind, item string, arguments map[string]any, chip *goingContext) bool {
 	switch kind {
 	case goingNamesIssue:
@@ -314,6 +321,8 @@ func (n goingNamed) names(kind, item string, arguments map[string]any, chip *goi
 		return isID && n.ids[id]
 	case goingNamesSession:
 		return n.tokens[item]
+	case goingNamesRepo:
+		return goingWordsName(n.words, item)
 	case goingNamesDocument:
 		if goingIsUUID(item) {
 			id, _ := goingIDOf(item)

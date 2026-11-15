@@ -51,9 +51,6 @@ var goingTranslatorConsumes = map[string]map[string]string{
 	// force is the dispatch CLI's own check of what the owner already holds under the name, made
 	// before the upload; the bar makes it at write time, so the upload itself does not send it.
 	"dispatch_artifact": {"force": "the CLI's own duplicate check, not sent by the upload"},
-	// repo would sync one source, but the bar imports every source of the project (POST
-	// .../architecture-sources/sync takes no single repo), so a repo is not offered as a filter.
-	"dispatch_architecture_sync": {"repo": "the bar imports every source; the sync route takes no single repo"},
 }
 
 func goingRouteKey(r GoingRoute) string { return r.Method + " " + r.Pattern }
@@ -78,6 +75,8 @@ func goingGuardValue(field contracts.ToolField, n int) any {
 		return "guard-slug-" + strconv.Itoa(n)
 	case "session":
 		return goingGuardUUID(n)
+	case "repo":
+		return "guardowner/guardname-" + strconv.Itoa(n)
 	}
 	switch field.Kind {
 	case contracts.ToolFieldNumber:
@@ -119,6 +118,8 @@ func goingGuardBase(entry GoingAction, route GoingRoute) (map[string]any, string
 			args[arg] = "guard-slug-base"
 		case "session":
 			args[arg] = goingGuardUUID(0)
+		case "repo":
+			args[arg] = "guardowner/guardname-base"
 		default:
 			args[arg] = "guardz-path-" + arg
 		}
@@ -262,5 +263,44 @@ func TestEveryTranslatorForwardsOrConsumesEveryArgument(t *testing.T) {
 			t.Errorf("%s drops argument %q: no row's translator forwards it to the request, and goingTranslatorConsumes names no reason",
 				action.Action, field.Name)
 		}
+	}
+}
+
+// TestGoingArchitectureSyncRoutesOneSourceByRepo: a sync that names a repo takes the one-source
+// route, its repository split into the {owner} and {repo} path segments, and a sync that names none
+// takes the every-source route. Before the one-source row existed, a repo was dropped and both
+// calls took the every-source route.
+func TestGoingArchitectureSyncRoutesOneSourceByRepo(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, ok := catalogue.Lookup("dispatch_architecture_sync")
+	if !ok {
+		t.Fatal("the catalogue holds no dispatch_architecture_sync")
+	}
+	built := func(args map[string]any) string {
+		route, values, ok := chooseGoingRoute(action, args, "")
+		if !ok {
+			t.Fatalf("%v routes to no sync row", args)
+		}
+		call, err := route.translate(context.Background(), goingReader{doer: goingResolvingDoer{}}, goingCallInput{arguments: args, path: values})
+		if err != nil {
+			t.Fatalf("translate %v: %v", args, err)
+		}
+		sends, err := call.requests(route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last := sends[len(sends)-1]
+		return last.method + " " + last.path
+	}
+	if got, want := built(map[string]any{"project": "CORE", "repo": "acme/arch"}),
+		"POST /api/v1/projects/CORE/architecture-sources/acme/arch/sync"; got != want {
+		t.Errorf("a sync of acme/arch built %q, want the one-source route %q", got, want)
+	}
+	if got, want := built(map[string]any{"project": "CORE"}),
+		"POST /api/v1/projects/CORE/architecture-sources/sync"; got != want {
+		t.Errorf("a sync with no repo built %q, want the every-source route %q", got, want)
 	}
 }
