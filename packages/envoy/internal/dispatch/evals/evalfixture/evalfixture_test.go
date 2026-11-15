@@ -138,6 +138,27 @@ func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 		before.From.Format(time.DateOnly), before.To.Format(time.DateOnly), after.From.Format(time.DateOnly), after.To.Format(time.DateOnly))
 }
 
+// TestTheLegionModeLeavesEveryIssueWritableThroughTheAPI: the fixture loads a history into the
+// database a running server reads, and the checks of dispatch://INFRA-2916 then write to its issues
+// through the API (a status change, a reparent). An event the API writes takes the issue's next
+// sequence (issues.last_seq + 1), and events_issue_key_seq_key holds one event to each, so a
+// fixture that writes events 1..n and leaves last_seq at 0 makes the next API write of every such
+// issue answer 500 on that key. Every issue with events holds last_seq at its highest event seq.
+func TestTheLegionModeLeavesEveryIssueWritableThroughTheAPI(t *testing.T) {
+	database := storetest.Open(t)
+	if _, err := evalfixture.WriteLegion(t.Context(), database.Pool, "LEGK", 240, now); err != nil {
+		t.Fatalf("write the Legion history: %v", err)
+	}
+	withEvents := count(t, database, `select count(distinct issue_key) from events where issue_key like 'LEGK-%'`)
+	behind := count(t, database, `
+		select count(*) from issues i
+		where i.project_key = 'LEGK'
+			and i.last_seq < (select coalesce(max(e.seq), 0) from events e where e.issue_key = i.key)`)
+	if withEvents == 0 || behind != 0 {
+		t.Errorf("%d of the %d issues with events hold a last_seq below their highest event seq, want none", behind, withEvents)
+	}
+}
+
 // TestWindowsOfRefusesAFirstFinishedDayThatStartsAtTheFirstObservationOrAfter: the window before
 // the first observation starts at the midnight of the first finished issue's day, so a history
 // whose first issue finished on a day after its first observation, or on the day of an observation
