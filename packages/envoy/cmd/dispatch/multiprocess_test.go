@@ -943,9 +943,6 @@ type outboxLine struct {
 	text      string
 }
 
-// logAttribute is one key=value of a slog text line, its value quoted or bare.
-var logAttribute = regexp.MustCompile(`(\w+)=("(?:[^"\\]|\\.)*"|\S*)`)
-
 // outboxLines is every line the process's outbox has logged, in order.
 func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 	t.Helper()

@@ -563,8 +563,9 @@ func main() {
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain) and the
-	//     task progress reconciliation (retrying, briefly, rows another writer held).
+	//     it once this process has registered, and repeats only its identity steps while another
+	//     identity's rows remain) and the task progress reconciliation (retrying, briefly, rows
+	//     another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -738,9 +739,10 @@ func main() {
 			outboxPublisher.Run(ctx)
 		}()
 	}
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so main always starts it, once this
+	// process has registered (below): the server's embedding queue keeps coverage itself, so a
+	// later deploy that gives meaning search a place to embed needs no other wiring change and no
+	// person-run step to cover existing content.
 	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
 	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
 	// pacing only its calls - never a live search request's own query embedding, which always
@@ -748,10 +750,7 @@ func main() {
 	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
 	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
 	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
+	// embedqueue.Run's own nil check depends on.
 	var backgroundEmbedder embed.Embedder
 	if embedder != nil {
 		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
@@ -783,7 +782,6 @@ func main() {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
 
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in
@@ -1044,6 +1042,18 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The embedding queue starts only now, with this process's row live, and never before: it
+	// embeds and drops only while its embedder's identity is the active one, which every process
+	// decides from the live registry rows and, when no live row carries an identity, takes as its
+	// own (embedqueue, active.go). A process that looked before it registered is in no live row,
+	// so two processes booting at once with different embedders and no live carrier would each
+	// find its own identity active and drop the other's vectors - and one the registration then
+	// refused would exit having dropped them. Registered, every process that looks is a live
+	// carrier of its own identity, so all of them keep the identity a live process carries or
+	// take the same earliest-started carrier's. Nothing written while this process waited for
+	// admission is missed: the queue's first scan, at start, reads every pending row, and a
+	// notification that arrived meanwhile waits in the wake's buffer of one (pglisten.Hub.Wake).
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool.

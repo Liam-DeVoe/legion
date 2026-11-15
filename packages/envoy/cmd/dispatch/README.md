@@ -458,7 +458,8 @@ Turning the store off takes a restore before the release that unsets the setting
 a server without it serves a row still holding bytes and answers `503 FILE_STORE_UNAVAILABLE` for every row written while the bucket was set, an upload's as much as a cleared one's;
 and an image from before the store serves a cleared row as an empty `200` under the file's own `ETag`, which a browser then caches.
 While that release rolls, the processes that still have the bucket keep each new upload's bytes in its row too, since each new process registers that it has none.
-Restore first, then roll the release out.
+Restore first, then roll the release out, and run `backfill-files --restore` again once every process without the bucket has registered:
+a process with the bucket keeps an upload's bytes in its row only while a live process has none, and a new process counts only once it has registered, so an upload made in the window before then keeps its bytes in the bucket alone, and a process without the bucket answers `503 FILE_STORE_UNAVAILABLE` for that file until the second restore writes the bytes into its row.
 
 ```bash
 envoy-dispatch backfill-files                 # move every row still holding bytes; prints each one and a total; exit 1 if any failed
@@ -2956,7 +2957,7 @@ So a write holds its issue row for its own rows alone, and a comment's and a doc
 A window holds at most 1,200 characters of block text, a heading starts a new one, and its text is the context that gives those blocks their meaning - the document's title and the heading above, the issue's title for a comment or a message, the question for an ask's part - and then the blocks themselves, so a passage at the end of a long document carries a vector of its own.
 The block-index tick (Background loops, above) writes the windows of every owner whose blocks a write recorded since it last windowed it, gives windows to every owner that holds blocks and no window of them, and, once an owner's window carries a vector of its current text, deletes that owner's whole-text embeddings row.
 An issue's text is its title and its spec, the latest version of its primary document (its title alone while that is blank), and a new version of the spec queues the issue again through `0140`'s trigger on `artifact_versions`, so meaning search, and the related-item check below, find an issue with a terse title by what its spec says.
-The server also runs a coverage pass (`embedqueue.Cover`) once when it starts, so a deployment runs nothing by hand to embed what it already holds:
+The server also runs a coverage pass (`embedqueue.Cover`) once when it starts, as soon as its process has registered (below), so a deployment runs nothing by hand to embed what it already holds:
 the pass adds a row for every searchable issue that has none (one written before the trigger existed, or with it off, as a restore or a replication writes), points a row whose issue's text changed with the trigger off at the current text, takes every vector another identity made out of the index and queues its item again, gives a row that died under another identity this identity's attempts once, and settles a dead row whose text has nothing to embed (empty or only white space) with no vector, as the queue settles a pending one.
 The window kinds take those last three steps alone: which windows exist is the block index's to say, so a row the pass invented would be embedded for ever at a text no reader can reach.
 The two steps that act on another identity's rows wait until the configured embedder has answered:
@@ -2978,6 +2979,8 @@ One embedder identity is active at a time, the one row of `embedder_active` (mig
 Each process registers its embedder's identity in `server_processes` (`embedder_identity`), and the active identity stays active while any live process carries it, so a restart or a roll of the processes that carry it keeps it.
 When no live process carries it, the identity of the earliest-started live process that carries one becomes active (a compare-and-set, logged at INFO with both identities);
 with none, the identity of the process that looks, and with no row yet, the first process to look records its own.
+A process's embedding queue, and so its coverage pass, starts only once the process has registered, so every process that looks carries its own identity in a live row, and two processes that start at once with different embedders keep the identity a live process carries or both take the earliest-started one's.
+A process that looked before it registered would be in no live row, so two of them starting at once with different embedders, while no live process carried an identity, would each find its own active and drop the other's vectors.
 Only a process whose identity is active drops other identities' vectors, re-admits rows dead under another identity, embeds queue rows and reserves tokens;
 any other process leaves every row as it is, and its coverage pass logs `identityStepsSkipped=true` with the `activeIdentity`.
 Its meaning search embeds the query with its own identity and finds no vector of it, so it answers with its text matches only, not degraded and not an error, and its coverage route counts for its own identity.
