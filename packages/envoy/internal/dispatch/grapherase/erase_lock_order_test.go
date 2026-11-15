@@ -49,9 +49,12 @@ func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 		erasure *Erasure
 		err     error
 	}
+	// The run without --confirm takes no lock, so it reads past the held node row and prints the
+	// digest the confirmed run is given.
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
 	answered := make(chan answer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, true, time.Millisecond)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
 		answered <- answer{erasure, err}
 	}()
 

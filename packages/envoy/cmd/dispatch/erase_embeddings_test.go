@@ -14,38 +14,41 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
-	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// R5: once the erase has run, no column of any table holds the erased bytes, and the embedding
-// store is one of those tables. Its rows carry no foreign key to the rows their text was cut
-// from, so an erase that never names them leaves the text in embeddings.text_snapshot wherever
-// the block-index tick's window arm had written a window before the run - which graph-erase.sh
-// met as `public.embeddings.text_snapshot 2` on the runs where the arm came first.
+// R5: once the erases of every node that held the erased bytes have run, no column of any table
+// holds them, and the embedding store is one of those tables. Its rows carry no foreign key to
+// the rows their text was cut from, so an erase that never names them leaves the text in
+// embeddings.text_snapshot wherever the block-index tick's window arm had written a window before
+// the run - which graph-erase.sh met as `public.embeddings.text_snapshot 2` on the runs where the
+// arm came first.
 //
 // The order is forced rather than waited for. The test holds the block-index pass's own lease
 // (docs.BlockIndexLease) from before anything is written to the end, so no tick of the server's
 // window arm runs while it does, and it writes the windows itself through the writers that arm
 // calls for one owner (refs.WriteItemWindows for the comment, refs.WriteDocumentWindows for each
-// document that quotes it, as docs.Service.windowItem and windowDocument call them). It then
-// reads that the comment's windows, both documents' windows and the issue's own row - which the
-// spec's version wrote through migration 0140's trigger - hold the secret, and the search of
+// document that holds the secret, as docs.Service.windowItem and windowDocument call them). It
+// then reads that the comment's windows, both documents' windows and the issue's own row - which
+// the spec's version wrote through migration 0140's trigger - hold the secret, and the search of
 // every column of every table finds it in embeddings.text_snapshot before the erase, which is
 // what proves the same search can find it afterwards.
 //
-// The notes held the secret in their second version only, so their first version is left, and
-// with no tick to write their windows again they are still marked owed them when the test reads
-// them; the spec's only version held it, so the spec has nothing left to window. The issue's row
-// is written again from its title, the spec it stood on being gone.
+// Three nodes hold the secret, each its own text, and each is erased by a run of its own. The
+// comment's erase takes its windows and its window state and leaves the spec's and the notes'
+// windows and the issue's row, which derive from the documents, listing each. The spec's block's
+// erase takes the spec's windows and writes the issue's row again from its title, the spec it
+// stood on being gone. The notes' block's erase takes the notes' windows; the notes held the secret
+// in their second version only, so their first version is left, and with no tick to write their
+// windows again they are still marked owed them when the test reads them.
 func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	// No settlement runs during the test either: one that ran after the erase would write a
+	// No settlement runs during the test either: one that ran after an erase would write a
 	// version of the redacted live text, and that version's index marks the notes owed their
 	// windows whether or not the erase did.
 	server := startDispatchProcessWithSettleDelay(t, databaseURL, time.Hour)
@@ -68,13 +71,14 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 		writeDocumentWindowsNow(t, server, database, document)
 	}
 	commentOwner := refs.ItemComment.WindowOwnerKey(comment)
-	for _, held := range []struct{ what, kind, owner string }{
+	held := []struct{ what, kind, owner string }{
 		{"the comment's windows", refs.ItemComment.WindowKind(), commentOwner},
 		{"the spec's windows", refs.DocumentWindowKind, spec},
 		{"the notes' windows", refs.DocumentWindowKind, notes},
-	} {
-		if rows := windowsHolding(t, database, held.kind, held.owner, secret); rows == 0 {
-			t.Fatalf("before the erase none of %s holds the secret, so this test proves nothing of them", held.what)
+	}
+	for _, windows := range held {
+		if rows := windowsHolding(t, database, windows.kind, windows.owner, secret); rows == 0 {
+			t.Fatalf("before the erase none of %s holds the secret, so this test proves nothing of them", windows.what)
 		}
 	}
 	if rows := issueEmbeddingsHolding(t, database, issue, secret); rows != 1 {
@@ -83,30 +87,59 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 	if places, _ := columnsHolding(t, database, secret); !containsString(places, "public.embeddings.text_snapshot") {
 		t.Fatalf("before the erase the search of every column finds the secret in %v and not in public.embeddings.text_snapshot, so it would prove nothing there afterwards", places)
 	}
+	specBlock, notesBlock := blockHolding(t, database, spec, secret), blockHolding(t, database, notes, secret)
+	erase := func(kind, id string) string {
+		t.Helper()
+		erasure, err := confirmErase(ctx, databaseURL, kind, id, eraseTestWindow)
+		if err != nil {
+			t.Fatalf("erase %s:%s: %v", kind, id, err)
+		}
+		var report bytes.Buffer
+		erasure.Write(&report)
+		t.Logf("the erase of %s:%s reported:\n%s", kind, id, report.String())
+		if !erasure.Applied {
+			t.Fatalf("the erase of %s:%s removed nothing", kind, id)
+		}
+		return report.String()
+	}
 
-	erasure, err := grapherase.Erase(ctx, databaseURL, "comment", comment, true, eraseTestWindow)
-	if err != nil {
-		t.Fatalf("erase %s: %v", comment, err)
-	}
-	if !erasure.Applied {
-		t.Fatalf("the erase of %s removed nothing", comment)
-	}
-	var report bytes.Buffer
-	erasure.Write(&report)
-	t.Logf("the erase reported:\n%s", report.String())
-
-	places, searched := columnsHolding(t, database, secret)
-	if len(places) > 0 {
-		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
-	}
-	for _, line := range []string{"  rows: embeddings ", "  rows: embedding_window_states 1\n", "  redacted: embeddings 1\n"} {
-		if !strings.Contains(report.String(), line) {
-			t.Errorf("the report has no line %q:\n%s", line, report.String())
+	// The comment: its windows and their state go, and every other window and the issue's row
+	// stand, each on the listing as a row of another node.
+	report := erase("comment", comment)
+	for _, line := range []string{"  rows: embeddings ", "  rows: embedding_window_states 1\n"} {
+		if !strings.Contains(report, line) {
+			t.Errorf("the report has no line %q:\n%s", line, report)
 		}
 	}
+	var commentWindows, commentState int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from embeddings where kind = $1 and split_part(id, '#', 1) = $2),
+		       (select count(*) from embedding_window_states where kind = $1 and owner_key = $2)`,
+		refs.ItemComment.WindowKind(), commentOwner).Scan(&commentWindows, &commentState); err != nil {
+		t.Fatalf("read what the embedding store holds of the comment: %v", err)
+	}
+	if commentWindows != 0 || commentState != 0 {
+		t.Errorf("the embedding store holds %d window(s) and %d window state row(s) of the erased comment, want none",
+			commentWindows, commentState)
+	}
+	for _, windows := range held[1:] {
+		if rows := windowsHolding(t, database, windows.kind, windows.owner, secret); rows == 0 {
+			t.Errorf("the comment's erase took %s, which derive from their document", windows.what)
+		}
+		if !strings.Contains(report, "leave public.embeddings (kind, id)=("+refs.DocumentWindowKind+","+windows.owner+"#") {
+			t.Errorf("the comment's erase does not list %s as rows it left:\n%s", windows.what, report)
+		}
+	}
+	if !strings.Contains(report, "leave public.embeddings (kind, id)=(issue,"+issue+")") {
+		t.Errorf("the comment's erase does not list the issue's row as a row it left:\n%s", report)
+	}
 
-	// The issue keeps a row, written again from what it now holds and waiting for a vector of
-	// its own: no vector of the erased text stands for it.
+	// The spec's block: the issue keeps a row, written again from what it now holds and waiting
+	// for a vector of its own, so no vector of the erased text stands for it.
+	report = erase("block", specBlock)
+	if !strings.Contains(report, "  redacted: embeddings 1\n") {
+		t.Errorf("the report has no line %q:\n%s", "  redacted: embeddings 1\n", report)
+	}
 	var snapshot string
 	var vector bool
 	if err := database.Pool.QueryRow(ctx,
@@ -118,8 +151,9 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 			issue, snapshot, vector)
 	}
 
-	// The notes keep a version, so they are marked owed the windows the erase took from them;
-	// the comment's windows and their state are gone with it.
+	// The notes' block: the notes keep a version, so they are marked owed the windows the erase
+	// took from them.
+	erase("block", notesBlock)
 	var notesOwed bool
 	var notesWindows int
 	if err := database.Pool.QueryRow(ctx, `
@@ -132,16 +166,10 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 		t.Errorf("the notes keep version 1 and hold %d window(s) after the erase, owed their windows %t; want none held and the notes owed them, or meaning search has lost them for good",
 			notesWindows, notesOwed)
 	}
-	var commentWindows, commentState int
-	if err := database.Pool.QueryRow(ctx, `
-		select (select count(*) from embeddings where kind = $1 and split_part(id, '#', 1) = $2),
-		       (select count(*) from embedding_window_states where kind = $1 and owner_key = $2)`,
-		refs.ItemComment.WindowKind(), commentOwner).Scan(&commentWindows, &commentState); err != nil {
-		t.Fatalf("read what the embedding store holds of the comment: %v", err)
-	}
-	if commentWindows != 0 || commentState != 0 {
-		t.Errorf("the embedding store holds %d window(s) and %d window state row(s) of the erased comment, want none",
-			commentWindows, commentState)
+
+	places, searched := columnsHolding(t, database, secret)
+	if len(places) > 0 {
+		t.Errorf("after the erases the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
 	}
 }
 

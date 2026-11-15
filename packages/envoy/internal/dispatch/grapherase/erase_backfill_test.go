@@ -13,21 +13,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish is the deadlock the owner order spares a block
-// batch and an erase that share two documents of two issues. The erase is of a comment on issue
-// CORE-1's document whose text a version of issue ACME-1's document quotes, so it writes under both
-// owner rows and takes them in owner-key order, ACME-1's first (lockInStoreOrder); the batch
-// backfills a block of each document. Another transaction holds CORE-1's document's
-// document_block_versions row while the batch starts, so the batch stops there holding what it
-// took before it; the erase then starts and queues behind the batch. Once that row is let go both
-// have to finish.
+// TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish is a block batch and an erase that share an
+// owner row. The erase is of a comment on issue CORE-1's document, whose text a version of issue
+// ACME-1's document quotes; that version is ACME-1's document's text and not the comment's, so
+// the erase lists it and leaves it, and writes under CORE-1's row alone (lockInStoreOrder). The
+// batch backfills a block of each document, so it takes both documents' owner rows. Another
+// transaction holds CORE-1's document's document_block_versions row while the batch starts, so
+// the batch stops there holding what it took before it; the erase then starts and queues behind
+// the batch. Once that row is let go both have to finish.
 //
-// A batch that took the documents' rows document by document, in id order, would stop at that row
-// holding CORE-1's row alone; the erase would take ACME-1's row and wait for CORE-1's, and the
-// batch, let go, would wait for ACME-1's, each holding the row the other waits for, until Postgres
-// ended one of them with `deadlock detected`. Taking both owner rows first, in the erase's order
-// (graphcensus's lockBlockDocuments), the batch holds both while it waits, and the erase waits
-// behind it holding neither.
+// Taking both owner rows first, in owner-key order (graphcensus's lockBlockDocuments), the batch
+// holds both while it waits, and the erase waits behind it holding none of them, so neither holds
+// a row the other waits for.
 func TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()

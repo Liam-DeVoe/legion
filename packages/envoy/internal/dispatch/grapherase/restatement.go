@@ -90,28 +90,6 @@ type forgottenEmbeddings struct {
 	issues, documents []string
 }
 
-// The rows forgetEmbeddings deletes, as its statement and embeddedOwners' read of them both spell
-// them, over a row of embeddings named held and bound as embeddingArgs binds them: erasedBlocks is
-// the blocks whose windows go, nodeEmbeddings the node's own rows, and quotingEmbeddings the rows
-// of other issues and documents, which hold the erased text or stand on one of those blocks.
-const (
-	erasedBlocks = `
-		with erased_blocks (artifact_id, block_id) as (
-			select held.artifact_id, held.block_id from document_blocks held
-			where held.node_kind = $1 and held.node_address = $2
-			union
-			select quoted.artifact_id, quoted.block_id from document_block_texts quoted
-			where exists (select 1 from unnest($5::text[]) erased(text) where position(erased.text in quoted.text) > 0)
-		)`
-	nodeEmbeddings = `(held.kind = $1 and held.id = $2)
-		   or (held.kind = $3 and split_part(held.id, '#', 1) = $4)`
-	quotingEmbeddings = `(held.kind in ('issue', 'document', $6)
-		       and exists (select 1 from unnest($5::text[]) erased(text) where position(erased.text in held.text_snapshot) > 0))
-		   or (held.kind = $6 and exists (
-		       select 1 from erased_blocks block
-		       where split_part(held.id, '#', 1) = block.artifact_id::text and block.block_id = any(held.covers)))`
-)
-
 // itemWindows is the window kind and the owner key the windows of the node's blocks are written
 // under, for a comment, a message or an ask (refs.ItemKind.WindowKind, WindowOwnerKey), and empty
 // for any other node.
@@ -122,77 +100,48 @@ func (e *Erasure) itemWindows() (windowKind, ownerKey string) {
 	return "", ""
 }
 
-// embeddingArgs are the values erasedBlocks, nodeEmbeddings and quotingEmbeddings bind: the node,
-// its item's windows (itemWindows), the erased texts and the kind of a document's windows.
-func (e *Erasure) embeddingArgs(texts []string) []any {
-	windowKind, ownerKey := e.itemWindows()
-	return []any{e.Kind, e.ID, windowKind, ownerKey, texts, refs.DocumentWindowKind}
-}
-
-// forgetEmbeddings deletes every row of the embedding store that holds the erased bytes or
-// stands on a block whose text the run erases or rewrites, and answers what of it a later step
-// writes again. Nothing else of the erase reaches that store: embeddings carries no foreign key
-// to the rows its text was cut from, so no delete reaches it through one, and the text would
-// stand in text_snapshot, and in the vector the embedder made of it, for as long as the row did.
+// forgetEmbeddings deletes the rows of the embedding store that derive from the node
+// (readEmbeddings) and its item's window state, and answers what of it a later step writes
+// again. Nothing else of the erase reaches that store: embeddings carries no foreign key to the
+// rows its text was cut from, so no delete reaches it through one, and the text would stand in
+// text_snapshot, and in the vector the embedder made of it, for as long as the row did.
 //
-// The rows it deletes are:
+// It deletes the rows the read under the run's locks found and no others. A comment's windows
+// are written under the comment's own row (refs.WriteItemWindows) and a document's under its
+// owner row (refs.WriteDocumentWindows), both of which the run took before that read, so no
+// window of the node is written between the read and this delete.
 //
-//   - the node's own: its whole-text row, which an older build wrote under the node's kind and
-//     id, and for a comment, a message or an ask every window of its blocks, under the window
-//     kind and the owner key refs names them by (refs.ItemKind.WindowKind, WindowOwnerKey),
-//     with the row embedding_window_states keeps for those windows, whose state is the digest
-//     of the erased body;
-//   - every document window covering a block whose text the run erases (eraseBlockTexts) or
-//     rewrites (redactBlocks), found by its covers column, which names the blocks the window's
-//     text came from, so a block a window holds in pieces is reached as well as one it holds
-//     whole;
-//   - every document window, whole-text document row and issue row whose text holds one of the
-//     erased texts, the test redactBlocks and erasedVersions read by. An issue's row holds its
-//     title and its spec's latest version (issue_embedding_text, migration 0140).
-//
-// The last two are other issues' and documents' rows, and it deletes those of embedded alone: the
-// issues and documents the read under the run's locks found by the same tests (embeddedOwners),
-// whose owners the run took, so it writes no row of an owner it does not hold. The node's own
-// rows go whatever the read found, since the windows of its item are written under its item's row
-// and no owner row (refs.WriteItemWindows) and one written since the read holds the erased body.
-//
-// An item the run does not rewrite keeps its windows: another comment quoting the erased text is
-// somebody else's words, which the erase leaves as they are, and its windows written again would
-// hold the same bytes.
-//
-// It runs before anything goes, while the node's block rows and the block texts the run rewrites
-// still hold what finds them, as treeSums does.
-func (e *Erasure) forgetEmbeddings(ctx context.Context, tx pgx.Tx, texts, embedded []string) (forgottenEmbeddings, error) {
-	windowKind, ownerKey := e.itemWindows()
-	rows, err := tx.Query(ctx, erasedBlocks+`
-		delete from embeddings held
-		where `+nodeEmbeddings+`
-		   or ((`+quotingEmbeddings+`) and split_part(held.id, '#', 1) = any($7::text[]))
-		returning held.kind, held.id`, append(e.embeddingArgs(texts), embedded)...)
-	if err != nil {
-		return forgottenEmbeddings{}, fmt.Errorf("delete the embedding rows holding the text of %s:%s: %w", e.Kind, e.ID, err)
-	}
-	deleted, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
-		var held [2]string
-		err := row.Scan(&held[0], &held[1])
-		return held, err
-	})
-	if err != nil {
-		return forgottenEmbeddings{}, fmt.Errorf("delete the embedding rows holding the text of %s:%s: %w", e.Kind, e.ID, err)
-	}
+// It runs before anything goes, while the versions the issue row is written again from still
+// stand, as treeSums does.
+func (e *Erasure) forgetEmbeddings(ctx context.Context, tx pgx.Tx, read erasedRead) (forgottenEmbeddings, error) {
 	var forgotten forgottenEmbeddings
-	documents := map[string]struct{}{}
-	for _, held := range deleted {
-		switch held[0] {
-		case "issue":
-			forgotten.issues = append(forgotten.issues, held[1])
-		case refs.DocumentWindowKind:
-			owner, _, _ := strings.Cut(held[1], "#")
-			documents[owner] = struct{}{}
+	windowKind, ownerKey := e.itemWindows()
+	if len(read.embedded) > 0 {
+		kinds := make([]string, len(read.embedded))
+		ids := make([]string, len(read.embedded))
+		for index, held := range read.embedded {
+			kinds[index], ids[index] = held.kind, held.id
 		}
+		tag, err := tx.Exec(ctx, `
+			delete from embeddings held
+			using unnest($1::text[], $2::text[]) as doomed (kind, id)
+			where held.kind = doomed.kind and held.id = doomed.id`, kinds, ids)
+		if err != nil {
+			return forgottenEmbeddings{}, fmt.Errorf("delete the embedding rows of %s:%s: %w", e.Kind, e.ID, err)
+		}
+		documents := map[string]struct{}{}
+		for _, held := range read.embedded {
+			switch held.kind {
+			case "issue":
+				forgotten.issues = append(forgotten.issues, held.id)
+			case refs.DocumentWindowKind:
+				owner, _, _ := strings.Cut(held.id, "#")
+				documents[owner] = struct{}{}
+			}
+		}
+		forgotten.documents = slices.Sorted(maps.Keys(documents))
+		e.removed("embeddings", tag.RowsAffected()-int64(len(forgotten.issues)))
 	}
-	forgotten.documents = slices.Sorted(maps.Keys(documents))
-	e.removed("embeddings", int64(len(deleted)-len(forgotten.issues)))
 	if windowKind != "" {
 		tag, err := tx.Exec(ctx, `delete from embedding_window_states where kind = $1 and owner_key = $2`, windowKind, ownerKey)
 		if err != nil {
@@ -243,11 +192,15 @@ func (e *Erasure) restateEmbeddings(ctx context.Context, tx pgx.Tx, forgotten fo
 	return nil
 }
 
-// replaceLiveTexts writes each document's seed in place of its history (docs.ErasedLiveText's
-// Replace), in the order readDocuments read them, and counts what went: every stored update,
-// checkpoint and snapshot as removed, and the seed as the one row the run rewrote in their place.
+// replaceLiveTexts writes the seed of each document whose live state the run loaded in place of
+// its history (docs.ErasedLiveText's Replace), in the order readLiveTexts read them, and counts
+// what went: every stored update, checkpoint and snapshot as removed, and the seed as the one
+// row the run rewrote in their place.
 func (e *Erasure) replaceLiveTexts(ctx context.Context, tx pgx.Tx) error {
 	for _, document := range e.Documents {
+		if document.live == nil {
+			continue
+		}
 		replaced, err := document.live.Replace(ctx, tx)
 		if err != nil {
 			return fmt.Errorf("replace the live state of %s: %w", document.Document, err)
@@ -258,6 +211,51 @@ func (e *Erasure) replaceLiveTexts(ctx context.Context, tx pgx.Tx) error {
 		e.redacted("doc_updates", 1)
 	}
 	return nil
+}
+
+// treeSums is the key of the stored display tree of every whole text the run removes or rewrites:
+// the node's own texts, the markdown of each version it deletes, the text of each block holding
+// the node's block, each string of an event payload the redaction rewrites, and the live text of
+// its document. text_trees keys a tree by the SHA-256 of its text's UTF-8 bytes (pmdoc.TextSum,
+// migration 20261105121325) and holds the text's words in the tree, so each of those texts leaves
+// a row holding the erased bytes once its own row is gone. It is read before anything goes, while
+// the versions and the blocks still hold those texts.
+func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][]byte, error) {
+	if len(read.texts) == 0 {
+		return nil, nil
+	}
+	whole := append([]string(nil), read.texts...)
+	for _, event := range read.events {
+		whole = append(whole, event.originals...)
+	}
+	for _, document := range e.Documents {
+		if document.live != nil {
+			whole = append(whole, document.live.Text)
+		}
+	}
+	document, ancestors := "", read.ancestors
+	if read.document != nil {
+		document = read.document.artifact
+	}
+	rows, err := tx.Query(ctx, `
+		select sha256(convert_to(whole.text, 'UTF8')) from unnest($1::text[]) as whole (text)
+		union
+		select sha256(convert_to(v.markdown, 'UTF8')) from artifact_versions v
+		  join unnest($2::uuid[], $3::int[]) as doomed (artifact, number)
+		    on doomed.artifact = v.artifact_id and doomed.number = v.number
+		 where v.markdown is not null
+		union
+		select sha256(convert_to(t.text, 'UTF8')) from document_block_texts t
+		 where t.artifact_id = nullif($4, '')::uuid and t.block_id = any($5::text[]) and t.text is not null`,
+		whole, read.artifacts, read.numbers, document, ancestors)
+	if err != nil {
+		return nil, fmt.Errorf("read the display trees of the texts of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	sums, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		return nil, fmt.Errorf("read the display trees of the texts of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	return sums, nil
 }
 
 // forgetTrees deletes the stored display tree of every text treeSums named. A reader of a text no

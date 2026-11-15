@@ -15,8 +15,9 @@ type ErasedRows struct {
 	Rows  int64  `json:"rows"`
 }
 
-// ErasedVersion is one document version whose markdown held the erased text, named as a reader
-// addresses it. It carries no markdown: the record of an erase holds no erased text.
+// ErasedVersion is one version of the node's own document whose markdown held the erased text,
+// named as a reader addresses it. It carries no markdown: the record of an erase holds no erased
+// text.
 type ErasedVersion struct {
 	Document string `json:"document"`
 	Issue    string `json:"issue,omitempty"`
@@ -35,12 +36,21 @@ type ErasedReview struct {
 	State    string `json:"state"`
 }
 
-// ErasedDocument is one document whose live state the erase replaces, named as a reader addresses
-// it, with what replacing it costs. It carries no text.
+// ErasedDocument is the node's own document, whose stored history the erase replaces, named as a
+// reader addresses it, with what replacing it costs. It carries no text.
 type ErasedDocument struct {
 	Document string `json:"document"`
 	Issue    string `json:"issue,omitempty"`
 	Project  string `json:"project,omitempty"`
+	// Updates, Checkpoints and Snapshots are the rows of the history the one seed replaces, which
+	// a run reads without loading the document, so a run without --confirm lists them too.
+	Updates     int64 `json:"updates"`
+	Checkpoints int64 `json:"checkpoints"`
+	Snapshots   int64 `json:"snapshots"`
+	// Read is whether the run loaded the live state, which only a confirmed run does: loading it
+	// takes the document's owner row and its room lock (docs.ReadErasedLiveText), and a run
+	// without --confirm takes no lock. The fields below are read with it.
+	Read bool `json:"-"`
 	// Held is whether its live text held the erased text, which then reads as the marker. A
 	// document whose live text held none - a version of it held the text, and an edit took it
 	// out since - has its history replaced alone, since the items that edit deleted can still
@@ -50,11 +60,10 @@ type ErasedDocument struct {
 	// otherwise than the erased text is written - an escaped `*` or `_`, for one - so no marker
 	// can stand where they are. Such a document refuses the erase (Unredacted).
 	Left bool `json:"live_bytes_left"`
-	// Updates is how many stored updates its history held, all of which one seed replaces;
-	// AnchorMarks and MarginRecords are what goes with them (docs.ErasedLiveText).
-	Updates       int64 `json:"updates"`
-	AnchorMarks   int   `json:"anchor_marks"`
-	MarginRecords int   `json:"margin_records"`
+	// AnchorMarks and MarginRecords are what goes with the history (docs.ErasedLiveText).
+	AnchorMarks   int `json:"anchor_marks"`
+	MarginRecords int `json:"margin_records"`
+	artifact      string
 	live          *docs.ErasedLiveText
 }
 
@@ -67,8 +76,8 @@ type Operator struct {
 	Host         string `json:"host,omitempty"`
 }
 
-// Erasure is one run of `envoy-dispatch erase`: the node it addressed, everything that would
-// go with it, and - once Applied - everything that did.
+// Erasure is one run of `envoy-dispatch erase`: the node it addressed, every row it would
+// delete, rewrite, redact or leave (Listing), and - once Applied - what it did.
 type Erasure struct {
 	Kind     string `json:"kind"`
 	ID       string `json:"id"`
@@ -77,31 +86,39 @@ type Erasure struct {
 	// something whose far end it is.
 	Tuples  int64 `json:"tuples"`
 	Inbound int64 `json:"inbound_tuples"`
-	// Rows are the projection rows of the node and the rows that cannot exist without them.
+	// Rows are the rows the run deleted, by table.
 	Rows []ErasedRows `json:"rows"`
-	// RedactedRows are the rows the run rewrote where it may take no row away: a block of a
-	// document that quoted the erased text, whose row projects a block node of its own, the
-	// append-only event log, the one stored update each replaced history is seeded with, and the
-	// search vectors written again from the latest version left: a document's search row and its
-	// issue's own vector where the document is the issue's spec. Each that held the bytes holds
+	// RedactedRows are the rows that derive from the node and that the run rewrote where it may
+	// take no row away: an excerpt of a block holding it, the append-only event log, the one
+	// stored update its document's replaced history is seeded with, and the search vectors and
+	// embedding rows written again from the latest version left. Each that held the bytes holds
 	// the marker where they were.
 	RedactedRows []ErasedRows `json:"redacted"`
-	// Versions and Reviews are the document versions whose markdown holds the erased text and
-	// the approvals whose digest covered those bytes.
+	// Versions and Reviews are the versions of the node's own document whose markdown holds the
+	// erased text and the approvals whose digest covered those bytes.
 	Versions []ErasedVersion `json:"versions"`
 	Reviews  []ErasedReview  `json:"reviews"`
-	// Documents are the documents whose live state the erase replaces, and Recounted the
-	// projects whose term statistics it counted again.
+	// Documents is the node's own document when its stored history is replaced, and Recounted
+	// the projects whose term statistics the run counted again.
 	Documents []ErasedDocument `json:"documents"`
 	Recounted []string         `json:"recounted"`
-	// Blockers are the rows of other things that point at this node's projection and are not
-	// part of it: a reply to an erased comment, an ask handed back through it. Each refuses the
-	// run, because deleting them would remove somebody else's words and rewriting them would
-	// state something nobody said.
+	// Digest is the SHA-256 of Listing. A run without --confirm prints it, and a run with
+	// --confirm erases only when the listing it reads under its own locks has the digest it was
+	// given (Mismatch), so what an operator read is what goes.
+	Digest string `json:"digest"`
+	// Listing is every row the run would delete, rewrite, redact or leave, one line each, in the
+	// order Write prints them. It is not recorded: its last section names other nodes' rows, and
+	// the record of an erase is of what it removed.
+	Listing []string `json:"-"`
+	// Confirmed is the digest --confirm named, and empty for a run without it.
+	Confirmed string `json:"-"`
+	// Blockers are the rows of other nodes that state something about this node: a reply that
+	// points at an erased comment, a block another block sits in or cites, a comment its author
+	// is. Each refuses the run, because deleting them would remove somebody else's words, and
+	// leaving them would leave rows stating a fact about a node no longer there, which the store
+	// census reads as a difference. They are on the listing too.
 	Blockers []string `json:"-"`
-	// Applied is whether this run removed anything. A run with no --confirm reads everything
-	// above and rolls back, which is how the command refuses until it has listed what it would
-	// remove.
+	// Applied is whether this run removed anything.
 	Applied bool      `json:"-"`
 	RanBy   Operator  `json:"-"`
 	RanAt   time.Time `json:"-"`
@@ -113,6 +130,11 @@ type Erasure struct {
 	// they go with the process once the sweep has read them.
 	sums [][]byte
 }
+
+// Mismatch reports whether a confirmed run read a listing other than the one its --confirm
+// digest names: a row it would delete, rewrite, redact or leave changed since the run that
+// printed that digest, so it removes nothing.
+func (e *Erasure) Mismatch() bool { return e.Confirmed != "" && e.Confirmed != e.Digest }
 
 // Unredacted names every document whose live text holds the erased bytes where its markdown
 // spells them otherwise (ErasedDocument.Left). The erase refuses while one is listed: the seed of
@@ -153,41 +175,32 @@ func countedRows(counted []ErasedRows, table string, rows int64) []ErasedRows {
 	return append(counted, ErasedRows{Table: table, Rows: rows})
 }
 
-// Write prints what the run read and what it did, the versions, the reviews and the documents
-// whose live state it replaces named one per line, so an operator reads every one before
-// confirming. A document's line says what replacing its history costs, which is what the run
-// cannot give back: the edits before it, the anchors and margin records a seed does not carry,
-// and the keystrokes of an editor open on it that were not yet stored.
+// Write prints the listing with its digest, so an operator reads every row before confirming
+// it, and then what a confirmed run read and did: each document whose live state it loaded, and
+// once Applied every table it emptied or rewrote.
 func (e *Erasure) Write(w io.Writer) {
 	verb := "would remove"
-	if e.Applied {
+	switch {
+	case e.Applied:
 		verb = "removed"
+	case e.Confirmed != "":
+		verb = "refused to remove"
 	}
 	fmt.Fprintf(w, "erase %s:%s (supertag %s), %s by %s at %s\n",
 		e.Kind, e.ID, e.Supertag, verb, e.RanBy.DatabaseUser, e.RanAt.Format(time.RFC3339))
-	fmt.Fprintf(w, "  tuples: %d out of the node, %d into it\n", e.Tuples, e.Inbound)
-	if len(e.Rows) == 0 {
-		fmt.Fprintln(w, "  rows: none")
+	fmt.Fprintf(w, "  listing digest: %s\n", e.Digest)
+	for _, line := range e.Listing {
+		fmt.Fprintln(w, line)
 	}
-	for _, rows := range e.Rows {
-		fmt.Fprintf(w, "  rows: %s %d\n", rows.Table, rows.Rows)
+	if e.Mismatch() {
+		fmt.Fprintf(w, "  --confirm named %s, which is not this listing's digest %s\n", e.Confirmed, e.Digest)
 	}
-	for _, rows := range e.RedactedRows {
-		fmt.Fprintf(w, "  redacted: %s %d\n", rows.Table, rows.Rows)
-	}
-	fmt.Fprintf(w, "  versions holding the erased text: %d\n", len(e.Versions))
-	for _, version := range e.Versions {
-		fmt.Fprintf(w, "    %s version %d%s\n", version.Document, version.Version, versionOwner(version))
-	}
-	fmt.Fprintf(w, "  reviews over those bytes: %d\n", len(e.Reviews))
-	for _, review := range e.Reviews {
-		fmt.Fprintf(w, "    %s version %d %s (review %s)%s\n",
-			review.Document, review.Version, review.State, review.ID, reviewIssue(review))
-	}
-	fmt.Fprintf(w, "  live documents whose history is replaced: %d\n", len(e.Documents))
 	for _, document := range e.Documents {
+		if !document.Read {
+			continue
+		}
 		if document.Left {
-			fmt.Fprintf(w, "    %s%s: not redacted: its live text holds the erased bytes where its markdown spells "+
+			fmt.Fprintf(w, "  live document %s%s: not redacted: its live text holds the erased bytes where its markdown spells "+
 				"them otherwise than the erased text is written - an escaped * or _, for one - so no marker can stand "+
 				"where they are; the erase refuses until an edit takes them out of the document\n",
 				document.Document, owner(document.Issue, document.Project))
@@ -197,26 +210,22 @@ func (e *Erasure) Write(w io.Writer) {
 		if document.Held {
 			text = "its live text is redacted, the marker standing where the erased text was"
 		}
-		fmt.Fprintf(w, "    %s%s: %s; its %d stored update(s) are replaced by one; %d anchor mark(s) and "+
-			"%d margin record(s) go with them; an editor open on it reloads and loses what it has not stored\n",
-			document.Document, owner(document.Issue, document.Project), text, document.Updates,
-			document.AnchorMarks, document.MarginRecords)
+		fmt.Fprintf(w, "  live document %s%s: %s; %d anchor mark(s) and %d margin record(s) go with its history\n",
+			document.Document, owner(document.Issue, document.Project), text, document.AnchorMarks, document.MarginRecords)
+	}
+	if !e.Applied {
+		return
+	}
+	for _, rows := range e.Rows {
+		fmt.Fprintf(w, "  rows: %s %d\n", rows.Table, rows.Rows)
+	}
+	for _, rows := range e.RedactedRows {
+		fmt.Fprintf(w, "  redacted: %s %d\n", rows.Table, rows.Rows)
 	}
 	if len(e.Recounted) > 0 {
 		fmt.Fprintf(w, "  term statistics counted again: %s\n", strings.Join(e.Recounted, ", "))
 	}
-	if e.Applied {
-		fmt.Fprintf(w, "  text_trees swept after the commit: %d\n", e.Swept)
-	}
-	for _, blocker := range e.Blockers {
-		fmt.Fprintf(w, "  blocked: %s\n", blocker)
-	}
-}
-
-// versionOwner names the issue or the project a version's document belongs to, for the line
-// that lists it.
-func versionOwner(version ErasedVersion) string {
-	return owner(version.Issue, version.Project)
+	fmt.Fprintf(w, "  text_trees swept after the commit: %d\n", e.Swept)
 }
 
 // owner is " of " the issue a document belongs to, or else its project, for a line that names
@@ -229,11 +238,4 @@ func owner(issue, project string) string {
 		return " of " + project
 	}
 	return ""
-}
-
-func reviewIssue(review ErasedReview) string {
-	if review.Issue == "" {
-		return ""
-	}
-	return " of " + review.Issue
 }

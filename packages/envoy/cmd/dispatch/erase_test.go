@@ -22,15 +22,46 @@ import (
 // has read the commit, short enough for a run.
 const eraseTestWindow = 4 * time.Second
 
-// The erase reaches three stores the acceptance driver's run does not (graph-erase.sh writes the
-// secret into a document that is no issue's spec and whose live text still holds it), each held
-// against a control that finds what it looks for before the erase, so an assertion that finds
-// nothing after it is one that could have found something:
+// confirmErase is what an operator runs: the erase of kind:id without --confirm, which reads its
+// listing and removes nothing, then with the digest that run printed.
+func confirmErase(ctx context.Context, databaseURL, kind, id string, window time.Duration) (*grapherase.Erasure, error) {
+	listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+	}
+	if listing.Applied {
+		return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
+	}
+	return grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
+}
+
+// blockHolding is the node address of the block of document whose text, at the latest version
+// that recorded one holding text, holds it - a block a later version dropped included - as
+// ref_key, '#' and the block id (migration 0121), after reading that the store holds its node.
+func blockHolding(t *testing.T, database *store.Store, document, text string) string {
+	t.Helper()
+	var address string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select a.ref_key || '#' || t.block_id from document_block_texts t join artifacts a on a.id = t.artifact_id
+		where t.artifact_id = $1::uuid and position($2 in t.text) > 0
+		  and exists (select 1 from graph_nodes n where n.kind = 'block' and n.id = a.ref_key || '#' || t.block_id)
+		order by t.version desc limit 1`, document, text).Scan(&address); err != nil {
+		t.Fatalf("read the block node of %s whose text holds %q: %v", document, text, err)
+	}
+	return address
+}
+
+// The erase of a block reaches the stores of its own document the acceptance driver's run does
+// not (graph-erase.sh erases a block of a document that is no issue's spec and whose live text
+// still holds it), each held against a control that finds what it looks for before the erase, so
+// an assertion that finds nothing after it is one that could have found something:
 //
-//   - the issue's own search vector, which holds its spec's text: the spec's version holding the
-//     secret goes, and no issues.search holds the secret afterwards;
+//   - the issue's own search vector, which holds its spec's text: the spec's block holding the
+//     secret is erased, the spec's version holding it goes, and no issues.search holds the secret
+//     afterwards;
 //   - a document whose live text an edit took the secret out of while its stored history still
-//     holds the bytes: its history is replaced by one update, and no doc_updates row holds them;
+//     holds the bytes: the block the edit dropped is erased, its history is replaced by one
+//     update, and no doc_updates row holds them;
 //   - the display tree of an erased text stored inside the window after the commit, as a read
 //     that began before the commit stores one: the sweep after the window deletes it, and the
 //     report counts it.
@@ -50,7 +81,6 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if text := eraseDocumentText(t, server, notes); strings.Contains(text, secret) {
 		t.Fatalf("the edit left the secret in the live text of the notes: %q", text)
 	}
-	comment := writeEraseComment(t, server, issue, leak)
 
 	// The controls: each store holds the secret before the erase, read by the very statement
 	// that must read none of it afterwards.
@@ -60,66 +90,13 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if held := updatesHolding(t, database, notes, secret); held == 0 {
 		t.Fatalf("before the erase no stored update of the notes holds the secret's bytes, so the history check proves nothing")
 	}
-	var body string
-	if err := database.Pool.QueryRow(ctx, `select body from comments where id = $1`, comment).Scan(&body); err != nil {
-		t.Fatalf("read the comment's body: %v", err)
-	}
-	sum := sha256.Sum256([]byte(body))
+	specBlock, notesBlock := blockHolding(t, database, spec, secret), blockHolding(t, database, notes, secret)
 
-	type erased struct {
-		erasure *grapherase.Erasure
-		err     error
+	// The notes, whose live text holds none of it: the block the edit dropped is what held it.
+	erased, err := confirmErase(ctx, databaseURL, "block", notesBlock, time.Millisecond)
+	if err != nil || !erased.Applied {
+		t.Fatalf("erase %s: applied %t, %v", notesBlock, erased != nil && erased.Applied, err)
 	}
-	done := make(chan erased, 1)
-	go func() {
-		erasure, err := grapherase.Erase(ctx, databaseURL, "comment", comment, true, eraseTestWindow)
-		done <- erased{erasure, err}
-	}()
-	// The tree a read that began before the commit stores after it: planted the moment the
-	// commit is visible, which is inside the window the erase then waits out.
-	deadline := time.Now().Add(time.Minute)
-	for {
-		var records int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from graph_erasures where node_id = $1`, comment).Scan(&records); err != nil {
-			t.Fatalf("read whether the erase committed: %v", err)
-		}
-		if records == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the erase of %s never committed", comment)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if _, err := database.Pool.Exec(ctx, `
-		insert into text_trees (sum, mode, version, tree) values ($1, 0, 1, '\x7b7d')
-		on conflict do nothing`, sum[:]); err != nil {
-		t.Fatalf("plant the tree of the erased text inside the window: %v", err)
-	}
-	if planted := treesUnder(t, database, sum); planted != 1 {
-		t.Fatalf("the planted tree reads %d row(s), want 1, so the sweep check proves nothing", planted)
-	}
-	result := <-done
-	if result.err != nil {
-		t.Fatalf("erase %s: %v", comment, result.err)
-	}
-	erasure := result.erasure
-	if !erasure.Applied {
-		t.Fatalf("the erase of %s removed nothing", comment)
-	}
-	var report bytes.Buffer
-	erasure.Write(&report)
-	t.Logf("the erase reported:\n%s", report.String())
-
-	// The spec's issue.
-	if held := issuesHolding(t, database, secret); held != 0 {
-		t.Errorf("after the erase %d issue search vector(s) still hold the secret", held)
-	}
-	if !strings.Contains(report.String(), "  redacted: issues 1\n") {
-		t.Errorf("the report counts no rewritten issue vector:\n%s", report.String())
-	}
-
-	// The notes, whose live text held none of it.
 	if held := updatesHolding(t, database, notes, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the notes still hold the secret's bytes", held)
 	}
@@ -133,27 +110,65 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if text := eraseDocumentText(t, server, notes); !strings.Contains(text, "Nothing secret is left here.") {
 		t.Errorf("the notes no longer read their own text after the erase: %q", text)
 	}
-	var notesListed, specListed bool
-	for _, document := range erasure.Documents {
-		switch {
-		case strings.HasSuffix(document.Document, "/notes-md"):
-			notesListed = true
-			if document.Held || document.Left {
-				t.Errorf("the notes are listed as holding the text in their live text (held %v, left %v), want the history alone",
-					document.Held, document.Left)
-			}
-		case strings.HasSuffix(document.Document, "/spec"):
-			specListed = true
-			if !document.Held {
-				t.Errorf("the spec is listed as not holding the text in its live text")
-			}
-		}
-	}
-	if !notesListed || !specListed {
-		t.Errorf("the erase lists %+v, want the spec %s and the notes %s", erasure.Documents, spec, notes)
+	if len(erased.Documents) != 1 || !strings.HasSuffix(erased.Documents[0].Document, "/notes-md") ||
+		!erased.Documents[0].Read || erased.Documents[0].Held || erased.Documents[0].Left {
+		t.Errorf("the erase of the notes' block lists the documents %+v, want the notes alone, their live text holding none of the text", erased.Documents)
 	}
 
-	// The tree planted inside the window.
+	// The spec, with a tree a read that began before the commit stores after it: planted the
+	// moment the commit is visible, which is inside the window the erase then waits out.
+	sum := sha256.Sum256([]byte(leak))
+	type answer struct {
+		erasure *grapherase.Erasure
+		err     error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		erasure, err := confirmErase(ctx, databaseURL, "block", specBlock, eraseTestWindow)
+		done <- answer{erasure, err}
+	}()
+	deadline := time.Now().Add(time.Minute)
+	for {
+		var records int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from graph_erasures where node_id = $1`, specBlock).Scan(&records); err != nil {
+			t.Fatalf("read whether the erase committed: %v", err)
+		}
+		if records == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the erase of %s never committed", specBlock)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into text_trees (sum, mode, version, tree) values ($1, 0, 1, '\x7b7d')
+		on conflict do nothing`, sum[:]); err != nil {
+		t.Fatalf("plant the tree of the erased text inside the window: %v", err)
+	}
+	if planted := treesUnder(t, database, sum); planted != 1 {
+		t.Fatalf("the planted tree reads %d row(s), want 1, so the sweep check proves nothing", planted)
+	}
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("erase %s: %v", specBlock, result.err)
+	}
+	erasure := result.erasure
+	if !erasure.Applied {
+		t.Fatalf("the erase of %s removed nothing", specBlock)
+	}
+	var report bytes.Buffer
+	erasure.Write(&report)
+	t.Logf("the erase reported:\n%s", report.String())
+	if held := issuesHolding(t, database, secret); held != 0 {
+		t.Errorf("after the erase %d issue search vector(s) still hold the secret", held)
+	}
+	if !strings.Contains(report.String(), "  redacted: issues 1\n") {
+		t.Errorf("the report counts no rewritten issue vector:\n%s", report.String())
+	}
+	if len(erasure.Documents) != 1 || !strings.HasSuffix(erasure.Documents[0].Document, "/spec") || !erasure.Documents[0].Held {
+		t.Errorf("the erase of the spec's block lists the documents %+v, want the spec, its live text holding the text", erasure.Documents)
+	}
 	if planted := treesUnder(t, database, sum); planted != 0 {
 		t.Errorf("the tree stored inside the window after the commit is still there")
 	}
@@ -165,11 +180,12 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	}
 }
 
-// A document whose live markdown spells the erased text otherwise than the comment writes it -
-// here the comment's `2*3*` is literal asterisks in the document, which its markdown escapes -
-// is listed as not redacted, and the erase refuses it, removing nothing, rather than report
-// success over the bytes the seed of its history would keep. The control is the bytes
-// themselves: the document's stored history holds them before the erase and still after it.
+// A document whose live markdown spells the erased text otherwise than the block's recorded text
+// writes it - here the block's text is recorded with literal asterisks, as a build that recorded
+// a block's text unescaped would leave it, where the markdown escapes them - is listed as not
+// redacted, and the erase refuses it, removing nothing, rather than report success over the bytes
+// the seed of its history would keep. The control is the bytes themselves: the document's stored
+// history holds them before the erase and still after it.
 func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -179,20 +195,25 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERE","name":"Erase"}`, http.StatusCreated)
 
 	secret := "2*3*" + eraseTestSecret()
+	escaped := strings.ReplaceAll(secret, "*", `\*`)
 	issue, _ := createEraseIssue(t, server, "ERE", "A spec beside the notes", "# Spec\n\nNothing here.\n")
-	notes := uploadEraseDocument(t, server, issue, "notes.md",
-		"# Notes\n\n"+strings.ReplaceAll(secret, "*", `\*`)+"\n")
+	notes := uploadEraseDocument(t, server, issue, "notes.md", "# Notes\n\n"+escaped+"\n")
 	if text := eraseDocumentText(t, server, notes); strings.Contains(text, secret) {
-		t.Fatalf("the notes' markdown spells the text as the comment does, so this proves nothing: %q", text)
+		t.Fatalf("the notes' markdown spells the text as the block does, so this proves nothing: %q", text)
 	}
-	comment := writeEraseComment(t, server, issue, secret)
+	block := blockHolding(t, database, notes, escaped)
+	if tag, err := database.Pool.Exec(ctx, `
+		update document_block_texts set text = replace(text, $2, $3) where artifact_id = $1::uuid and position($2 in text) > 0`,
+		notes, escaped, secret); err != nil || tag.RowsAffected() == 0 {
+		t.Fatalf("record the block's text unescaped: %d rows, %v", tag.RowsAffected(), err)
+	}
 	if held := updatesHolding(t, database, notes, secret); held == 0 {
 		t.Fatalf("no stored update of the notes holds the text's bytes, so the refusal proves nothing")
 	}
 
-	erasure, err := grapherase.Erase(ctx, databaseURL, "comment", comment, true, eraseTestWindow)
+	erasure, err := confirmErase(ctx, databaseURL, "block", block, eraseTestWindow)
 	if err != nil {
-		t.Fatalf("erase %s: %v", comment, err)
+		t.Fatalf("erase %s: %v", block, err)
 	}
 	var report bytes.Buffer
 	erasure.Write(&report)
@@ -206,15 +227,60 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 	if !strings.Contains(report.String(), "/notes-md of "+issue+": not redacted: ") {
 		t.Errorf("the report lists no not-redacted line for the notes:\n%s", report.String())
 	}
-	var comments int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from comments where id = $1`, comment).Scan(&comments); err != nil {
-		t.Fatalf("count the comment: %v", err)
+	var nodes int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = 'block' and id = $1`, block).Scan(&nodes); err != nil {
+		t.Fatalf("count the block's node: %v", err)
 	}
-	if comments != 1 {
-		t.Errorf("the refused erase removed the comment")
+	if nodes != 1 {
+		t.Errorf("the refused erase removed the block's node")
 	}
 	if held := updatesHolding(t, database, notes, secret); held == 0 {
 		t.Errorf("the refused erase changed the notes' history")
+	}
+}
+
+// R5: a block's erase takes its whole text out of every row that derives from it, not the first
+// refs.BlockExcerptRunes runes its document_blocks excerpt holds. The block is a paragraph of more
+// than 480 runes whose secret stands after rune 480, so the excerpt holds none of the secret while
+// the document's stored history does (the controls). After the erase no stored update holds it,
+// the live text holds it nowhere, and the search of every column of every table finds it in no
+// row, none other holding those bytes.
+func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERX","name":"Erase"}`, http.StatusCreated)
+
+	secret := eraseTestSecret()
+	paragraph := strings.Repeat("word ", 100) + "and past the excerpt the passphrase is " + secret + "."
+	issue, _ := createEraseIssue(t, server, "ERX", "A long paragraph", "# Spec\n\nNothing here.\n")
+	document := uploadEraseDocument(t, server, issue, "long.md", "# Long\n\n"+paragraph+"\n")
+	block := blockHolding(t, database, document, secret)
+	var excerpt string
+	if err := database.Pool.QueryRow(ctx, `select excerpt from document_blocks where node_address = $1`, block).Scan(&excerpt); err != nil {
+		t.Fatalf("read the excerpt of %s: %v", block, err)
+	}
+	if strings.Contains(excerpt, secret) {
+		t.Fatalf("the excerpt of %s holds the secret, so this proves nothing past it", block)
+	}
+	if held := updatesHolding(t, database, document, secret); held == 0 {
+		t.Fatalf("no stored update of %s holds the secret, so the history check proves nothing", document)
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "block", block, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
+	}
+	if held := updatesHolding(t, database, document, secret); held != 0 {
+		t.Errorf("after the erase %d stored update(s) of %s still hold the secret past the excerpt", held, document)
+	}
+	if text := eraseDocumentText(t, server, document); strings.Contains(text, secret) || !strings.Contains(text, "# Long") {
+		t.Errorf("the live text after the erase reads %q, want its heading and no secret", text)
+	}
+	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
+		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
 	}
 }
 

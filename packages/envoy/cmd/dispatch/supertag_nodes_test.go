@@ -425,12 +425,13 @@ func namesAType(name string) bool {
 	return false
 }
 
-// requireTheEraseRefusesATypeNode runs `envoy-dispatch erase --node <kind>:<id> --confirm`
+// requireTheEraseRefusesATypeNode runs `envoy-dispatch erase --node <kind>:<id> --confirm <digest>`
 // through the command table the binary dispatches on (runSubcommand), for one supertag node and
 // one attribute node, and holds each to a refusal that names the node, with the node's row, the
-// tuples out of it and into it, and the erasures recorded of it all as they were. The erase is
-// the one path in this tree that deletes a node row, and its name holds none of the words
-// namesAType reads, so the route and command list above cannot see it: only running it can.
+// tuples out of it and into it, and the erasures recorded of it all as they were. The digest is
+// one no listing has, since the refusal comes before any listing is read. The erase is the one
+// path in this tree that deletes a node row, and its name holds none of the words namesAType
+// reads, so the route and command list above cannot see it: only running it can.
 func requireTheEraseRefusesATypeNode(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	databaseURL := pool.Config().ConnString()
@@ -444,7 +445,7 @@ func requireTheEraseRefusesATypeNode(t *testing.T, ctx context.Context, pool *st
 			t.Fatalf("the store holds %+v for %s, want its node and its tuples, so that a refusal to erase them proves something", before, address)
 		}
 		var stdout, stderr bytes.Buffer
-		code := runSubcommand(ctx, []string{"erase", "--node", address, "--confirm"},
+		code := runSubcommand(ctx, []string{"erase", "--node", address, "--confirm", strings.Repeat("0", 64)},
 			envGetter(map[string]string{"DATABASE_URL": databaseURL}), &stdout, &stderr)
 		if code == 0 || !strings.Contains(stderr.String(), "refuses "+address) {
 			t.Errorf("envoy-dispatch erase --node %s --confirm exited %d with stderr %q and stdout %q, want a refusal naming the type node: no command deletes one",

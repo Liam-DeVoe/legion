@@ -15,36 +15,36 @@ import (
 
 // eraseOwnerAttempts is how many tries lockInStoreOrder makes at reading which owner rows the
 // erase writes under and taking them and the node's row before it refuses. A try fails only when
-// a write lands between its read of those rows and its locks and moves the erased text, or the
-// node, under another owner; three in a row is a stream of such writes, which the operator stops
-// before running the erase again, rather than one the erase can outrun.
+// a write lands between its read of those rows and its locks and moves the node under another
+// owner; three in a row is a stream of such writes, which the operator stops before running the
+// erase again, rather than one the erase can outrun.
 const eraseOwnerAttempts = 3
 
-// lockInStoreOrder opens the erase's transaction and takes its locks in the store's lock order
-// (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write takes
-// the owner row first. Every owner row the erase writes under comes first - read says which they
-// are, statement by statement - then the node's row `for update`, then the node's own projection
-// rows (lockProjectionRows), and nothing the erase does after them takes an owner row it does not
+// lockInStoreOrder opens a confirmed erase's transaction and takes its locks in the store's lock
+// order (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write
+// takes the owner row first. Every owner row the erase writes under comes first (ownerRows says
+// which they are), then the node's row `for update`, then the node's own projection rows
+// (lockProjectionRows), and nothing the erase does after them takes an owner row it does not
 // already hold: docs.ReadErasedLiveText takes a document's owner row again and finds this
-// transaction holding it. A node no row projects and whose text nothing holds - a person, a
-// session, a role, a page - stands under no owner row, and the erase then starts at its node's
-// row, which the order allows: a writer may leave a step out.
+// transaction holding it. A node no row projects - a person, a session, a role, a page - stands
+// under no owner row, and the erase then starts at its node's row, which the order allows: a
+// writer may leave a step out.
+//
+// Those owner rows are the node's own and its own document's, never another node's: a row that
+// holds the erased bytes and derives from another node is listed and left as it is, so the run
+// writes nothing under that node's owner and takes no lock on it.
 //
 // The owner rows are taken each once, in the order of their owner keys (events.LockOwnerRows),
 // as events.lockOwners takes the owners of several events: "artifact:<id>" for a document no issue
-// owns, before "issue:<key>". That is the one order over every owner row, an issue whose own
-// comment is erased included, and the backfill's batches take their documents' owner rows in it
-// too (graphcensus's lockBlockDocuments). An order by document would put one issue at a different
-// place for each set of its documents, so two writers taking two sets of them could each hold the
-// owner the other waits for.
+// owns, before "issue:<key>". That is the one order over every owner row, and the backfill's
+// batches take their documents' owner rows in it too (graphcensus's lockBlockDocuments).
 //
-// Which owners those are is read before they are locked, so it is read again under them, and
-// the run goes on with that second read (read): every document it lists, deletes a version of or
-// replaces is one whose owner it holds. A write that, between the two reads, made a document
-// whose owner the run did not take hold the erased text, or moved the node under another owner,
-// could go on writing under that owner while the run does. The run then rolls back and starts
-// again rather than take that owner after the node's row, and after eraseOwnerAttempts it
-// refuses, naming each owner it found untaken, having removed nothing.
+// Which owners those are is read before they are locked, so it is read again under them with the
+// rest of the listing (read), and the run goes on with that second read. A write that, between
+// the two reads, moved the node under an owner the run did not take could go on writing under
+// that owner while the run does. The run then rolls back and starts again rather than take that
+// owner after the node's row, and after eraseOwnerAttempts it refuses, naming each owner it found
+// untaken, having removed nothing.
 func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
@@ -63,20 +63,20 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 			return nil, nil, erasedRead{}, err
 		}
 	}
-	return nil, nil, erasedRead{}, fmt.Errorf("the erase refuses %s:%s: on each of %d tries a write put the erased text or the node under an owner row the erase had not taken before it took the node's row (%s); nothing was removed, and the erase can be run again",
+	return nil, nil, erasedRead{}, fmt.Errorf("the erase refuses %s:%s: on each of %d tries a write put the node under an owner row the erase had not taken before it took the node's row (%s); nothing was removed, and the erase can be run again",
 		kind, id, eraseOwnerAttempts, strings.Join(untaken, "; "))
 }
 
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
-// under, takes them (events.LockOwnerRows), the node's row and the node's projection rows
-// (lockProjectionRows), reads again under those locks, and answers that second read with every
-// owner it names that the try did not take.
+// under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
+// node's row and the node's projection rows (lockProjectionRows), reads the whole listing under
+// those locks (read), and answers it with every owner it names that the try did not take.
 func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead, []string, error) {
-	before, err := e.read(ctx, tx)
+	before, err := e.ownerRows(ctx, tx)
 	if err != nil {
 		return erasedRead{}, nil, err
 	}
-	if err := events.LockOwnerRows(ctx, tx, before.owners); err != nil {
+	if err := events.LockOwnerRows(ctx, tx, before); err != nil {
 		return erasedRead{}, nil, err
 	}
 	if err := tx.QueryRow(ctx,
@@ -96,7 +96,7 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 	}
 	var untaken []string
 	for _, key := range slices.Sorted(maps.Keys(locked.owners)) {
-		if _, taken := before.owners[key]; !taken {
+		if _, taken := before[key]; !taken {
 			untaken = append(untaken, key+", the owner of "+locked.owners[key])
 		}
 	}

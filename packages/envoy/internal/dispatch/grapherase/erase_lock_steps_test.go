@@ -22,8 +22,8 @@ const ownerLockStatement = "select closed_at is null from issues where key = $1 
 
 // untouchedBeforeTheNode are the tables the erase reads nothing of before it holds the node's row:
 // the tuples, the record of the erase and the event log, which it reads and writes only once it
-// has read the node under its locks. It reads the embedding store before then, to learn the owner
-// rows of the rows of it that it deletes (embeddedOwners).
+// has read the node under its locks. Before then it reads the node's projection rows and its
+// document alone, to learn their owner rows (ownerRows).
 var untouchedBeforeTheNode = []string{"graph_tuples", "graph_erasures", "events"}
 
 // commentLockStatement is how the statement starts that takes the erased comment's own comments
@@ -36,37 +36,33 @@ const commentLockStatement = "select 1 from comments where node_kind = $1 and no
 // grapherase/erase.go#apply and leaves the proof of its lock steps to this package.
 //
 // The run erases the comment seedAgreeingStore writes on a document of issue CORE-1, whose text a
-// version of a document of a second issue, ACME-1, quotes. So it writes under two owner rows: the
-// comment's own, CORE-1's, and ACME-1's, which the version it deletes and the live state it reads
-// belong to. It takes them in the order of their owner keys (lockInStoreOrder), issue:ACME-1
-// before issue:CORE-1, the other way round from the comment's own owner first; then the comment's
-// node row; then its comments row, `for update`, before it reads under its locks or writes
-// anything (lockProjectionRows). It reads a document's live state through
-// docs.ReadErasedLiveText, which takes the document's owner row again after the node row and has
-// to find this transaction holding it already.
+// version of a document of a second issue, ACME-1, quotes. That version derives from ACME-1's
+// document and not from the comment, so the run lists it and leaves it whole, and it writes under
+// one owner row, the comment's own, CORE-1's: it never queues behind ACME-1's row, which is held
+// for the whole run. It takes CORE-1's row, then the comment's node row, then its comments row,
+// `for update`, before it reads under its locks or writes anything (lockProjectionRows).
 //
-// Each of those four rows is held in a transaction of its own while the real Erase runs on its
-// own connection (followTheErase). The test lets go of each hold the run queues behind, one at a
-// time, reads where the run waits and the tables it holds a lock on each time
+// Each of those rows is held in a transaction of its own while the real Erase runs on its own
+// connection (followTheErase), after the run without --confirm that printed its digest, which
+// waits on none of them. The test lets go of each hold the run queues behind, one at a time,
+// reads where the run waits and the tables it holds a lock on each time
 // (lockstep.RequireStoppedAt), and holds the order it queued in to the store's lock order
 // (lockstep.RequireTheStoreLockOrder): every owner row before the node row, the node row before
-// the projection row, and so no owner row after the node row. The owner rows themselves come in
-// ascending owner key (requireOwnersAscending). It then reads what the run removed, so the run it
-// followed is the one that committed.
+// the projection row, and so no owner row after the node row. It then reads what the run removed
+// and what it left, so the run it followed is the one that committed.
 func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedAgreeingStore(t, database)
 	quoting := seedQuotingDocument(t, database, "ACME")
 	quoteTheComment(t, database, quoting, seeded.comment)
 
-	// While the run waits at an owner row it has read the rows it erases, the documents that hold
-	// their text and the embedding rows that do, and no more: the node row comes next and
-	// everything it writes after that. While it waits at the node row it holds the owner rows and
-	// has still read nothing of the tuples or the event log.
+	// While the run waits at an owner row it has read the node's projection rows and its
+	// document, and no more: the node row comes next and everything it writes after that. While
+	// it waits at the node row it holds the owner row and has still read nothing of the tuples or
+	// the event log.
 	acme := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue ACME-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "ACME-1",
+		Name: "issue ACME-1's row", Step: lockstep.StepOwner, Kind: "issue", ID: "ACME-1",
 		Statement: ownerLockStatement,
-		Unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
 	}, `select 1 from issues where key = $1 for update`, "ACME-1")
 	core := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "CORE-1",
@@ -84,8 +80,8 @@ func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 		Unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from comments where id = $1::uuid for update`, seeded.comment)
 
-	erasure := followTheErase(t, database, seeded.comment, []*lockstep.Hold{acme, core, node, projection})
-	requireTheQuoteErased(t, database, erasure, seeded.comment, quoting)
+	erasure := followTheErase(t, database, commentNodeKind, seeded.comment, []*lockstep.Hold{acme, core, node, projection})
+	requireTheQuoteLeft(t, database, erasure, seeded.comment, quoting)
 }
 
 // TestTheEraseTakesTheCommentsRowBeforeItTouchesItsWindows holds the erase to taking the comment's
@@ -96,13 +92,12 @@ func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 //
 // The comment is indexed and windowed first, as the arm leaves it. A transaction stands for the
 // arm: it holds the comment's row `for no key update` while the erase starts, and the test reads
-// that the erase waits at the statement that takes that row, holding no lock on the embedding
-// store but the ACCESS SHARE its read before the owner rows takes (embeddedOwners), so it has
-// deleted no window and no window state. The holder then runs the arm's write of the comment's
-// windows and commits, and the erase goes on, removes the comment and its windows with it, and
-// commits. An erase that took the row only where it deletes it would wait there holding the rows it
-// deleted from the embedding store, which the arm's write then waits for: one of the two ends
-// `deadlock detected`.
+// that the erase waits at the statement that takes that row, holding no write's lock on the
+// embedding store, so it has deleted no window and no window state. The holder then runs the
+// arm's write of the comment's windows and commits, and the erase goes on, removes the comment
+// and its windows with it, and commits. An erase that took the row only where it deletes it would
+// wait there holding the rows it deleted from the embedding store, which the arm's write then
+// waits for: one of the two ends `deadlock detected`.
 func TestTheEraseTakesTheCommentsRowBeforeItTouchesItsWindows(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -329,87 +324,120 @@ func blockHeld(t *testing.T, database *store.Store, artifact, blockID, address s
 	return held
 }
 
-// TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode holds the erase to the owner
-// rows of what it writes beyond the documents it lists. The comment's text stands in no version, no
-// block text and no stored history of another document, so the erase lists no document and ends no
-// version. It stands in one block's excerpt alone in a document of issue ACME-1, which redactBlocks
-// rewrites, and in one embedding window alone of a document of issue BETA-1, which forgetEmbeddings
-// deletes. The version write and the block index tick write a block row under its document's owner,
-// and the window arm a document's windows (refs.WriteDocumentWindows), so the erase takes both
-// owner rows, with the comment's own, CORE-1's, before the comment's node row (erasedRead), in the
-// order of their keys: ACME-1, BETA-1, CORE-1.
+// TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode holds the erase of a block to
+// the owner rows of what it writes beyond the block's own rows, and to no owner row of what it
+// leaves. The erased block is seedAgreeingStore's inner block, of a document of issue CORE-1. Its
+// text stands in the excerpt of the outer block that holds it, which redactBlocks rewrites, and in
+// a window of its own document covering it, which forgetEmbeddings deletes: both derive from the
+// block, and both are written under CORE-1's row, which the erase takes before the block's node
+// row, as it takes the block's own document_blocks row after it.
 //
-// The block row in ACME-1's document is held too, as a projection row the erase writes after the
-// comment's own: the run queues behind it last, at the statement that rewrites its excerpt. The
-// test then reads that the excerpt holds the erase's marker and not the text, and that the window
-// is gone, so the run it followed is the one that wrote them.
+// The same text stands in a block's excerpt of a document of issue ACME-1 and in a window of a
+// document of issue BETA-1. Those derive from their own documents, not from the block: the erase
+// lists them and leaves them whole, and so never queues behind ACME-1's row, BETA-1's row or
+// ACME-1's quoting block row, all held for the whole run.
+//
+// The outer block's row is held too, as a projection row the erase writes after the block's own:
+// the run queues behind it last, at the statement that rewrites its excerpt. The test then reads
+// that the outer excerpt holds the erase's marker where the text was and that the window is gone,
+// so the run it followed is the one that wrote them, and that ACME-1's excerpt and BETA-1's
+// window are as they were, each on the listing.
 func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testing.T) {
 	database := storetest.Open(t)
+	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
+	const text = "Block inner."
+	if tag, err := database.Pool.Exec(ctx, `
+		update document_blocks set excerpt = 'Block outer holds ' || $2 where artifact_id = $1::uuid and block_id = 'outer'
+	`, seeded.document.artifactID, text); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write the outer block's excerpt around the inner block's text: %d rows, %v", tag.RowsAffected(), err)
+	}
+	quoteInAWindow(t, database, seeded.document.artifactID, "inner", text)
 	excerpted := seedQuotingDocument(t, database, "ACME")
 	windowed := seedQuotingDocument(t, database, "BETA")
-	quoteTheCommentInABlock(t, database, excerpted, seeded.comment)
-	quoteTheCommentInAWindow(t, database, windowed, seeded.comment)
+	quoteInABlock(t, database, excerpted, text)
+	quoteInAWindow(t, database, windowed.artifactID, "b1", text)
 
-	ownerHold := func(issue string) *lockstep.Hold {
-		return lockstep.HoldRow(t, database, &lockstep.Hold{
-			Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+	ownerHold := func(issue string, taken bool) *lockstep.Hold {
+		hold := &lockstep.Hold{
+			Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: taken, Kind: "issue", ID: issue,
 			Statement: ownerLockStatement,
-			Unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
-		}, `select 1 from issues where key = $1 for update`, issue)
+		}
+		if taken {
+			hold.Unlocked = append([]string{"graph_nodes"}, untouchedBeforeTheNode...)
+		}
+		return lockstep.HoldRow(t, database, hold, `select 1 from issues where key = $1 for update`, issue)
 	}
-	acme, beta, core := ownerHold("ACME-1"), ownerHold("BETA-1"), ownerHold("CORE-1")
+	acme, beta, core := ownerHold("ACME-1", false), ownerHold("BETA-1", false), ownerHold("CORE-1", true)
 	node := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "the comment's node row", Step: lockstep.StepNode, Taken: true, Kind: commentNodeKind, ID: seeded.comment,
+		Name: "the inner block's node row", Step: lockstep.StepNode, Taken: true, Kind: refs.BlockNodeKind, ID: seeded.inner,
 		Statement: "select supertag from graph_nodes where kind = $1 and id = $2 for update",
 		Unlocked:  untouchedBeforeTheNode,
-	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, commentNodeKind, seeded.comment)
-	comment := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "the comment's comments row", Step: lockstep.StepProjection, Taken: true, Names: node,
-		Statement: commentLockStatement,
+	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, refs.BlockNodeKind, seeded.inner)
+	inner := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the inner block's document_blocks row", Step: lockstep.StepProjection, Taken: true, Names: node,
+		Statement: blockLockStatement,
 		Unlocked:  untouchedBeforeTheNode,
-	}, `select 1 from comments where id = $1::uuid for update`, seeded.comment)
-	block := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "the block row of " + excerpted.refKey + " quoting the comment", Step: lockstep.StepProjection, Taken: true,
+	}, `select 1 from document_blocks where artifact_id = $1::uuid and block_id = 'inner' for update`, seeded.document.artifactID)
+	outer := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the outer block's row, whose excerpt quotes the inner block", Step: lockstep.StepProjection, Taken: true,
 		Statement: "update document_blocks held set excerpt =",
 		Unlocked:  []string{"graph_erasures"},
+	}, `select 1 from document_blocks where artifact_id = $1::uuid and block_id = 'outer' for update`, seeded.document.artifactID)
+	quote := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the block row of " + excerpted.refKey + " quoting the same text", Step: lockstep.StepProjection,
 	}, `select 1 from document_blocks where artifact_id = $1::uuid and block_id = 'quote' for update`, excerpted.artifactID)
 
-	erasure := followTheErase(t, database, seeded.comment, []*lockstep.Hold{acme, beta, core, node, comment, block})
+	erasure := followTheErase(t, database, refs.BlockNodeKind, seeded.inner, []*lockstep.Hold{acme, beta, core, node, inner, outer, quote})
 
 	if !erasure.Applied || len(erasure.Versions) != 0 || len(erasure.Documents) != 0 {
-		t.Errorf("the erase answered applied %t, the versions %+v and the documents %+v, want it applied with neither: the text stands in no version and no document's live state",
+		t.Errorf("the erase answered applied %t, the versions %+v and the documents %+v, want it applied with neither: the text stands in no version and no stored history",
 			erasure.Applied, erasure.Versions, erasure.Documents)
 	}
-	var excerpt string
-	var windowStands bool
-	if err := database.Pool.QueryRow(context.Background(), `
-		select (select excerpt from document_blocks where artifact_id = $1::uuid and block_id = 'quote'),
-		       exists (select 1 from embeddings where kind = $2 and split_part(id, '#', 1) = $3)
-	`, excerpted.artifactID, refs.DocumentWindowKind, windowed.artifactID).Scan(&excerpt, &windowStands); err != nil {
-		t.Fatalf("read the block and the window that quoted the comment: %v", err)
+	var outerExcerpt, quoteExcerpt string
+	var ownWindow, otherWindow bool
+	if err := database.Pool.QueryRow(ctx, `
+		select (select excerpt from document_blocks where artifact_id = $1::uuid and block_id = 'outer'),
+		       (select excerpt from document_blocks where artifact_id = $2::uuid and block_id = 'quote'),
+		       exists (select 1 from embeddings where kind = $3 and split_part(id, '#', 1) = $1::uuid::text),
+		       exists (select 1 from embeddings where kind = $3 and split_part(id, '#', 1) = $4::text)
+	`, seeded.document.artifactID, excerpted.artifactID, refs.DocumentWindowKind, windowed.artifactID).Scan(
+		&outerExcerpt, &quoteExcerpt, &ownWindow, &otherWindow); err != nil {
+		t.Fatalf("read the blocks and the windows that quoted the block: %v", err)
 	}
-	if marker := erasure.marker(); excerpt != "Alice wrote: "+marker || windowStands {
-		t.Errorf("after the erase the excerpt of %s reads %q and the window of %s stands: %t; want %q and no window: the run the test followed is not one that wrote them",
-			excerpted.refKey, excerpt, windowed.refKey, windowStands, "Alice wrote: "+marker)
+	if want := "Block outer holds " + erasure.marker(); outerExcerpt != want || ownWindow {
+		t.Errorf("after the erase the outer excerpt reads %q and the document's own window stands: %t; want %q and no window: the run the test followed is not one that wrote them",
+			outerExcerpt, ownWindow, want)
+	}
+	if quoteExcerpt != "Alice wrote: "+text || !otherWindow {
+		t.Errorf("after the erase %s's excerpt reads %q and %s's window stands: %t; want %q and the window: the erase changed rows of other nodes",
+			excerpted.refKey, quoteExcerpt, windowed.refKey, otherWindow, "Alice wrote: "+text)
+	}
+	for _, left := range [][]string{
+		{"leave public.document_blocks", excerpted.artifactID, "excerpt"},
+		{"leave public.embeddings", windowed.artifactID, "text_snapshot"},
+	} {
+		if !listed(erasure, left...) {
+			t.Errorf("the listing holds no line with %q, so it does not name a row it left:\n%s", left, strings.Join(erasure.Listing, "\n"))
+		}
 	}
 }
 
 // TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken holds lockInStoreOrder to what
 // it does when the owner rows it read before taking them are not all the ones it writes under
-// once it holds them. The run reads its owners while only the comment's own issue, CORE-1, stands
-// under the comment's text, and is held at CORE-1's row; a version of ACME-1's document quoting
-// the comment then commits, and ACME-1's row is held before CORE-1's is let go. Under its locks
-// the run reads ACME-1's document as one it rewrites, under an owner it did not take. A run that
-// went on would take ACME-1's row after the comment's node row, when it reads that document's live
-// state (docs.ReadErasedLiveText), and queue behind it holding graph_nodes. This one rolls back and
-// starts again, so it queues behind ACME-1's row at the start of its next try, having read nothing
-// of the store, and once let go it erases the quoting version with the rest.
+// once it holds them. The run reads its owners while the comment stands on CORE-1's document, and
+// is held at CORE-1's row. The transaction holding that row moves the comment onto ACME-1's
+// document, ACME-1's row is held, and that transaction commits, which lets CORE-1's row go. No
+// route moves a comment today; the statement stands for any write that puts a node under another
+// owner between the run's two reads. Under its locks the run reads the comment under an owner it
+// did not take. A run that went on would write the comment's rows under ACME-1 holding no lock on
+// it. This one rolls back and starts again, so it queues behind ACME-1's row at the start of its
+// next try, having read nothing of the store, and once let go it erases the comment.
 func TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
-	quoting := seedQuotingDocument(t, database, "ACME")
+	moved := seedQuotingDocument(t, database, "ACME")
 
 	core := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CORE-1's row", Step: lockstep.StepOwner, Statement: ownerLockStatement},
 		`select 1 from issues where key = $1 for update`, "CORE-1")
@@ -418,15 +446,21 @@ func TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken(t *testing
 		t.Fatalf("the erase answered (err %v) without waiting on issue CORE-1's row, which another transaction held", early.err)
 	}
 	lockstep.RequireStoppedAt(t, ctx, database, pid, "the erase", core)
-	quoteTheComment(t, database, quoting, seeded.comment)
+	if tag, err := core.Tx.Exec(ctx, `
+		update comments set artifact_id = $2::uuid, anchor = jsonb_build_object('artifact_id', $2::text) where id = $1::uuid
+	`, seeded.comment, moved.artifactID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("move comment %s onto %s: %d rows, %v", seeded.comment, moved.refKey, tag.RowsAffected(), err)
+	}
 	acme := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "issue ACME-1's row", Step: lockstep.StepOwner, Statement: ownerLockStatement,
 		Unlocked: append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
 	}, `select 1 from issues where key = $1 for update`, "ACME-1")
-	core.Release()
+	if err := core.Tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the move of comment %s: %v", seeded.comment, err)
+	}
 	if early, done := storetest.WaitForQueuedBehind(t, acme.Tx, pid, answered, lockstep.Wait); done {
-		t.Fatalf("the erase answered (err %v) without waiting on issue ACME-1's row, the owner of %s, which came to quote the comment once the erase had read its owner rows",
-			early.err, quoting.refKey)
+		t.Fatalf("the erase answered (err %v) without waiting on issue ACME-1's row, the owner the comment moved under once the erase had read its owner rows",
+			early.err)
 	}
 	lockstep.RequireStoppedAt(t, ctx, database, pid, "the erase", acme)
 	acme.Release()
@@ -440,7 +474,7 @@ func TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken(t *testing
 	if answer.err != nil {
 		t.Fatalf("the erase failed once issue ACME-1's row was let go: %v", answer.err)
 	}
-	requireTheQuoteErased(t, database, answer.erasure, seeded.comment, quoting)
+	requireTheCommentErased(t, database, answer.erasure, seeded.comment)
 }
 
 // quotingDocument is the one document of an issue of a project of its own, which quotes the
@@ -490,58 +524,76 @@ func quoteTheComment(t *testing.T, database *store.Store, document quotingDocume
 	}
 }
 
-// quoteTheCommentInABlock writes one block row of document, naming no node and indexed from no
-// version, whose excerpt quotes the body of comment, and no block text for it: the excerpt is the
-// one place document holds the text.
-func quoteTheCommentInABlock(t *testing.T, database *store.Store, document quotingDocument, comment string) {
+// quoteInABlock writes one block row of document, naming no node and indexed from no version,
+// whose excerpt quotes text, and no block text for it: the excerpt is the one place document
+// holds the text.
+func quoteInABlock(t *testing.T, database *store.Store, document quotingDocument, text string) {
 	t.Helper()
 	tag, err := database.Pool.Exec(context.Background(), `
 		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
-		select $1::uuid, 'quote', $2::text || '#quote', 'paragraph', '', 'Alice wrote: ' || body, 1, now()
-		from comments where id::text = $3
-	`, document.artifactID, document.refKey, comment)
+		values ($1::uuid, 'quote', $2::text || '#quote', 'paragraph', '', 'Alice wrote: ' || $3::text, 1, now())
+	`, document.artifactID, document.refKey, text)
 	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("write the block of %s that quotes comment %s: %d rows, %v", document.refKey, comment, tag.RowsAffected(), err)
+		t.Fatalf("write the block of %s that quotes %q: %d rows, %v", document.refKey, text, tag.RowsAffected(), err)
 	}
 }
 
-// quoteTheCommentInAWindow writes one embedding window of document whose text quotes the body of
-// comment: the window is the one place document holds the text.
-func quoteTheCommentInAWindow(t *testing.T, database *store.Store, document quotingDocument, comment string) {
+// quoteInAWindow writes one embedding window of the document artifactID, covering block, whose
+// text quotes text.
+func quoteInAWindow(t *testing.T, database *store.Store, artifactID, block, text string) {
 	t.Helper()
 	tag, err := database.Pool.Exec(context.Background(), `
-		insert into embeddings (kind, id, text_snapshot, content_hash)
-		select $1::text, $2::text || '#b1', 'Alice wrote: ' || body, 'hash'
-		from comments where id::text = $3
-	`, refs.DocumentWindowKind, document.artifactID, comment)
+		insert into embeddings (kind, id, text_snapshot, content_hash, covers)
+		values ($1::text, $2::text || '#' || $3::text, 'Alice wrote: ' || $4::text, 'hash', array[$3::text])
+	`, refs.DocumentWindowKind, artifactID, block, text)
 	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("write the window of %s that quotes comment %s: %d rows, %v", document.refKey, comment, tag.RowsAffected(), err)
+		t.Fatalf("write the window of %s that quotes %q: %d rows, %v", artifactID, text, tag.RowsAffected(), err)
 	}
 }
 
-// requireTheQuoteErased reads what the erase answered and what it left: it is applied, it lists
-// version 1 of the quoting document as one it ended, and the comment's node row, its comments row
-// and that version are gone, with one erasure naming the comment. The run a test followed is then
-// the one that committed.
-func requireTheQuoteErased(t *testing.T, database *store.Store, erasure *Erasure, comment string, quoting quotingDocument) {
+// requireTheQuoteLeft reads what the erase answered and what it left: it is applied and ended no
+// version, the comment is gone (requireTheCommentErased), and version 1 of the quoting document,
+// which derives from that document and not from the comment, stands as it was written and is on
+// the listing as a row the run left.
+func requireTheQuoteLeft(t *testing.T, database *store.Store, erasure *Erasure, comment string, quoting quotingDocument) {
 	t.Helper()
-	if !erasure.Applied || len(erasure.Versions) != 1 || erasure.Versions[0].Document != quoting.refKey || erasure.Versions[0].Issue != quoting.issue {
-		t.Errorf("the erase answered applied %t and the versions %+v, want it applied and version 1 of %s, %s's, on the list",
-			erasure.Applied, erasure.Versions, quoting.refKey, quoting.issue)
+	if !erasure.Applied || len(erasure.Versions) != 0 {
+		t.Errorf("the erase answered applied %t and the versions %+v, want it applied and no version ended: %s's version is another node's text",
+			erasure.Applied, erasure.Versions, quoting.refKey)
 	}
-	var nodeStands, commentStands, versionStands bool
+	requireTheCommentErased(t, database, erasure, comment)
+	var markdown string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select markdown from artifact_versions where artifact_id = $1::uuid and number = 1`, quoting.artifactID).Scan(&markdown); err != nil {
+		t.Fatalf("read version 1 of %s after the erase: %v", quoting.refKey, err)
+	}
+	if markdown != "Alice wrote: A remark on the spec." {
+		t.Errorf("after the erase version 1 of %s reads %q, want it as it was written", quoting.refKey, markdown)
+	}
+	if !listed(erasure, "leave public.artifact_versions", "["+quoting.refKey+" version 1 of "+quoting.issue+"]", "markdown") {
+		t.Errorf("the listing does not name version 1 of %s as a row it left:\n%s", quoting.refKey, strings.Join(erasure.Listing, "\n"))
+	}
+}
+
+// requireTheCommentErased reads that the comment's node row and its comments row are gone, with
+// one erasure naming the comment. The run a test followed is then the one that committed.
+func requireTheCommentErased(t *testing.T, database *store.Store, erasure *Erasure, comment string) {
+	t.Helper()
+	if !erasure.Applied {
+		t.Errorf("the erase of comment %s removed nothing", comment)
+	}
+	var nodeStands, commentStands bool
 	var erasures int64
 	if err := database.Pool.QueryRow(context.Background(), `
 		select exists (select 1 from graph_nodes where kind = $1 and id = $2),
 		       exists (select 1 from comments where id::text = $2),
-		       exists (select 1 from artifact_versions where artifact_id::text = $3),
 		       (select count(*) from graph_erasures where node_kind = $1 and node_id = $2)
-	`, commentNodeKind, comment, quoting.artifactID).Scan(&nodeStands, &commentStands, &versionStands, &erasures); err != nil {
+	`, commentNodeKind, comment).Scan(&nodeStands, &commentStands, &erasures); err != nil {
 		t.Fatalf("read what the erase left: %v", err)
 	}
-	if nodeStands || commentStands || versionStands || erasures != 1 {
-		t.Errorf("after the erase the comment's node row stands: %t, its comments row: %t, the quoting version: %t, and %d erasure(s) name it; want none standing and one erasure: the run the test followed is not one that committed",
-			nodeStands, commentStands, versionStands, erasures)
+	if nodeStands || commentStands || erasures != 1 {
+		t.Errorf("after the erase the comment's node row stands: %t, its comments row: %t, and %d erasure(s) name it; want neither standing and one erasure: the run the test followed is not one that committed",
+			nodeStands, commentStands, erasures)
 	}
 }
 
@@ -551,21 +603,27 @@ type eraseAnswer struct {
 	err     error
 }
 
-// startErase runs a confirmed Erase of node kind:id off the test's goroutine, on the connection the
-// erase opens for itself, and answers that connection's backend process id and the channel the
-// run's answer arrives on. The erase reads each document's live state through
-// docs.ReadErasedLiveText, which takes a document's owner row and then its room's lock; the
-// documents here hold no stored history, so it answers nil for each once it holds them, and the
-// erase lists no document whose history it replaces. Its sweep of the display trees waits a
-// millisecond, which no lock step here rests on.
+// startErase runs Erase of node kind:id as an operator does: without --confirm first, on the
+// test's goroutine, which takes no lock and so waits on no hold, and then with the digest that
+// run printed off the test's goroutine, on the connection the erase opens for itself. It answers
+// the confirmed run's backend process id and the channel its answer arrives on. The erase reads
+// each document's live state through docs.ReadErasedLiveText, which takes a document's owner row
+// and then its room's lock; the documents here hold no stored history, so the erase lists no
+// document whose history it replaces. Its sweep of the display trees waits a millisecond, which
+// no lock step here rests on.
 func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <-chan eraseAnswer) {
 	t.Helper()
+	listing := dryRun(t, database, kind, id)
 	answered := make(chan eraseAnswer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, true, time.Millisecond)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listing.Digest, time.Millisecond)
 		if erasure != nil {
 			for _, document := range erasure.Documents {
 				t.Errorf("document %s has a stored history, which this test never writes", document.Document)
+			}
+			if erasure.Mismatch() {
+				t.Errorf("the confirmed run read a listing of digest %s, not the %s the run before it printed:\n%s",
+					erasure.Digest, listing.Digest, strings.Join(erasure.Listing, "\n"))
 			}
 		}
 		answered <- eraseAnswer{erasure, err}
@@ -573,7 +631,7 @@ func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <
 	return eraseBackendIn(t, context.Background(), database), answered
 }
 
-// followTheErase runs Erase over comment while holds hold their rows (startErase), and follows it
+// followTheErase runs Erase over kind:id while holds hold their rows (startErase), and follows it
 // as graphcensus's followTheBackfill follows the backfill: it lets go of each hold the run's
 // backend queues behind, one at a time, reading where the run waits each time
 // (lockstep.RequireStoppedAt), holds the order the run queued in to the store's lock order
@@ -581,10 +639,10 @@ func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <
 // (requireOwnersAscending), and answers what the run answered. The order is read before a failed
 // run fails the test, since a run that takes a step out of order can fail on it, and the order is
 // what names the step.
-func followTheErase(t *testing.T, database *store.Store, comment string, holds []*lockstep.Hold) *Erasure {
+func followTheErase(t *testing.T, database *store.Store, kind, id string, holds []*lockstep.Hold) *Erasure {
 	t.Helper()
 	ctx := context.Background()
-	pid, answered := startErase(t, database, commentNodeKind, comment)
+	pid, answered := startErase(t, database, kind, id)
 	var queued []*lockstep.Hold
 	deadline := time.Now().Add(lockstep.Wait)
 	for {

@@ -3,6 +3,7 @@ package grapherase
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,65 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// dryRun runs Erase over kind:id without --confirm, which reads the listing in a read-only
+// transaction and writes nothing, fails the test on an error, and waits until that run's
+// connection is gone from pg_stat_activity, so a test that reads the backend of the confirmed
+// run after it finds that run's and no other.
+func dryRun(t *testing.T, database *store.Store, kind, id string) *Erasure {
+	t.Helper()
+	ctx := context.Background()
+	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), kind, id, "", 0)
+	if err != nil {
+		t.Fatalf("erase --node %s:%s without --confirm: %v", kind, id, err)
+	}
+	if erasure.Applied || erasure.Digest == "" {
+		t.Fatalf("erase --node %s:%s without --confirm answered applied %t and digest %q, want a listing and nothing removed",
+			kind, id, erasure.Applied, erasure.Digest)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var backends int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from pg_stat_activity
+			where application_name = $1 and datname = current_database() and pid <> pg_backend_pid()`,
+			eraseApplicationName).Scan(&backends); err != nil {
+			t.Fatalf("read the erase's backends: %v", err)
+		}
+		if backends == 0 {
+			return erasure
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run without --confirm left %d backend(s) open for 30 s", backends)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// confirmedErase is what an operator runs: Erase over kind:id without --confirm, then with the
+// digest that run printed.
+func confirmedErase(t *testing.T, database *store.Store, kind, id string, bound time.Duration) (*Erasure, error) {
+	t.Helper()
+	listed := dryRun(t, database, kind, id)
+	return Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listed.Digest, bound)
+}
+
+// listed reports whether a line of erasure's listing holds every one of parts.
+func listed(erasure *Erasure, parts ...string) bool {
+	for _, line := range erasure.Listing {
+		found := true
+		for _, part := range parts {
+			if !strings.Contains(line, part) {
+				found = false
+				break
+			}
+		}
+		if found {
+			return true
+		}
+	}
+	return false
+}
 
 // commentNodeKind is what the node and tuple store calls a comment (migration 20261109051232), the
 // kind of the node most of this package's tests erase.
@@ -76,10 +136,11 @@ func seedPreStoreDocument(t *testing.T, database *store.Store, blockIDs ...strin
 // reads rows of: one document of two blocks, the inner one inside the outer one, one block
 // reference out of the inner block, and one comment that the document owns and is anchored to,
 // written by a person. outer and inner are the two blocks' node addresses, and comment the
-// comment's id.
+// comment's id. cite is the address of a third block the document holds directly, which cites
+// the inner block, where the seed was asked for one (seedCitingStore), and empty otherwise.
 type agreeingStore struct {
-	document              preStoreDocument
-	outer, inner, comment string
+	document                    preStoreDocument
+	outer, inner, cite, comment string
 }
 
 // seedAgreeingStore writes the rows as a build before the store existed wrote them, runs the
@@ -90,12 +151,38 @@ type agreeingStore struct {
 // graphcensus takes after it, which is that package's to hold.
 func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 	t.Helper()
+	return seedStore(t, database, false)
+}
+
+// seedCitingStore is seedAgreeingStore with a third block, `cite`, which the document holds
+// directly and whose block reference names the inner block, so the backfill states a mentions
+// tuple from it into the inner block's node.
+func seedCitingStore(t *testing.T, database *store.Store) agreeingStore {
+	t.Helper()
+	return seedStore(t, database, true)
+}
+
+func seedStore(t *testing.T, database *store.Store, cite bool) agreeingStore {
+	t.Helper()
 	ctx := context.Background()
-	document := seedPreStoreDocument(t, database, "outer", "inner")
+	blocks := []string{"outer", "inner"}
+	if cite {
+		blocks = append(blocks, "cite")
+	}
+	document := seedPreStoreDocument(t, database, blocks...)
 	seeded := agreeingStore{
 		document: document,
 		outer:    document.refKey + "#outer",
 		inner:    document.refKey + "#inner",
+	}
+	if cite {
+		seeded.cite = document.refKey + "#cite"
+		if _, err := database.Pool.Exec(ctx, `
+			insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+			values ($1::uuid, 'cite', $2, $3, $4, 'mentions', 1)
+		`, document.artifactID, seeded.cite, refs.BlockNodeKind, seeded.inner); err != nil {
+			t.Fatalf("write the citing block's reference to the inner block: %v", err)
+		}
 	}
 	if _, err := database.Pool.Exec(ctx, `
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
@@ -125,10 +212,14 @@ func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 			ToKind: toKind, ToID: toID, At: now, Who: seedWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
 		}
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+	parents := []graphstore.Tuple{
 		parent(seeded.outer, "artifact", document.refKey),
 		parent(seeded.inner, refs.BlockNodeKind, seeded.outer),
-	}); err != nil {
+	}
+	if cite {
+		parents = append(parents, parent(seeded.cite, "artifact", document.refKey))
+	}
+	if err := graphstore.Write(ctx, tx, nil, parents); err != nil {
 		t.Fatalf("state the blocks' parents: %v", err)
 	}
 	if tag, err := tx.Exec(ctx, `

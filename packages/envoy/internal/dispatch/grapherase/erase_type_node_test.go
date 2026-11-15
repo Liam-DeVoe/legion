@@ -4,7 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -64,7 +67,7 @@ func TestTheEraseRefusesATypeNodeAndLeavesItWhole(t *testing.T) {
 		if node.kind == schemanodes.KindSupertag && before.in == 0 {
 			t.Fatalf("no tuple runs into %s:%s, so this test would not read the tuples an erase deletes from the far side", node.kind, node.id)
 		}
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), node.kind, node.id, true, 0)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), node.kind, node.id, "any digest", 0)
 		if err == nil || !strings.Contains(err.Error(), refusal) {
 			t.Errorf("erase --node %s:%s --confirm answered %v (applied %t), want the refusal %q",
 				node.kind, node.id, err, erasure != nil && erasure.Applied, refusal)
@@ -78,5 +81,72 @@ func TestTheEraseRefusesATypeNodeAndLeavesItWhole(t *testing.T) {
 			t.Errorf("erase --node %s:%s --confirm left the store holding %+v of it, want %+v as before the run",
 				node.kind, node.id, after, before)
 		}
+	}
+}
+
+// A role, a page and a session hold no text anybody wrote, so no erasure is owed for one, and the
+// event log keeps addressing each, so deleting one would leave the census a difference no erase
+// can close. The erase refuses all three before it opens a connection: confirmed, a run over each
+// answers the refusal even given a database URL nothing listens on, and over the real database the
+// node's row, its tuples and the tuples into it are all still there, with no erasure recorded.
+//
+// The seed is a role with its page, and a session that claimed the role, written as the store
+// writer writes them, so tuples run into the role and out of the page and the session.
+func TestTheEraseRefusesARoleAPageAndASessionAndLeavesThemWhole(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	const role, session = "erase-refusal", "erase-refusal-session"
+	page := graphstore.RolePageID(role)
+	seedAgents(t, database, role, page, session)
+
+	const refusal = "holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it"
+	for _, node := range []struct{ kind, id string }{
+		{graphstore.KindRole, role},
+		{graphstore.KindPage, page},
+		{graphstore.KindSession, session},
+	} {
+		before := readTypeNode(t, database, node.kind, node.id)
+		if !before.row || before.out+before.in == 0 {
+			t.Fatalf("the seed holds %s:%s as %+v, want a node with tuples, so this test would prove nothing", node.kind, node.id, before)
+		}
+		for _, url := range []string{"postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1", database.Pool.Config().ConnString()} {
+			erasure, err := Erase(ctx, url, node.kind, node.id, "any digest", 0)
+			if err == nil || !strings.Contains(err.Error(), "refuses "+node.kind+":"+node.id+": a "+node.kind+" node "+refusal) {
+				t.Errorf("erase --node %s:%s --confirm over %s answered %v (applied %t), want the refusal %q before any connection",
+					node.kind, node.id, url, err, erasure != nil && erasure.Applied, refusal)
+			}
+		}
+		if after := readTypeNode(t, database, node.kind, node.id); after != before {
+			t.Errorf("erase --node %s:%s --confirm left the store holding %+v of it, want %+v as before the run",
+				node.kind, node.id, after, before)
+		}
+	}
+}
+
+// seedAgents writes role, its page and session as nodes, with the page's part_of into the role
+// and the session's part_of into the role it claimed.
+func seedAgents(t *testing.T, database *store.Store, role, page, session string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the agents' write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	now := time.Now().UTC()
+	who := model.Actor{Kind: "session", ID: session}
+	partOf := func(kind, id string) graphstore.Tuple {
+		return graphstore.Tuple{FromKind: kind, FromID: id, Kind: graphstore.TuplePartOf, ToKind: graphstore.KindRole, ToID: role,
+			At: now, Who: who, SourceEvent: graphstore.NoEvent, Asserted: true}
+	}
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{
+		graphstore.PageNode(page, who, now, graphstore.NoEvent),
+		graphstore.RoleNode(role, who, now, graphstore.NoEvent),
+		graphstore.SessionNode(session, who, now, graphstore.NoEvent),
+	}, []graphstore.Tuple{partOf(graphstore.KindPage, page), partOf(graphstore.KindSession, session)}); err != nil {
+		t.Fatalf("write the agents: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the agents' write: %v", err)
 	}
 }

@@ -18,30 +18,33 @@ import (
 // agent bearer and no session reaches it, and it reads DATABASE_URL as every other database
 // subcommand does. It migrates nothing - the schema it works on is the deployment's own.
 //
-// It refuses to remove anything until it has listed what it would: run with --node alone it
-// reads the node, its tuples, its projection rows, every `artifact_versions` row whose markdown
-// holds the erased text and every `artifact_reviews` row whose digest covered those bytes, and
-// every document whose live state it would replace with what that costs, prints them each by its
-// document and its version, and rolls back with exit 1. Run again with --confirm it prints the
-// same list and removes it, in one transaction, recording what went into `graph_erasures` with no
-// erased text in the row.
+// It removes nothing until an operator has read what it would. Run with --node alone it reads,
+// in a read-only transaction that takes no write lock, every row it would delete, rewrite or
+// redact - the node, its tuples, its projection rows, each version of its own document whose
+// markdown holds the erased text and each approval over it by its issue and its version, its
+// embedding rows, each event row about it by its id, its document's history - and every row it
+// would leave, which holds the same bytes and derives from another node, by its table and key.
+// It prints that listing with its digest and exits 1. Run with --confirm <digest> it reads the
+// listing again in its own transaction, under its locks, and removes what it lists only when that
+// listing has the digest it was given, recording what went into `graph_erasures` with no erased
+// text in the row; a listing that changed since is refused with both digests, removing nothing.
 //
 // The exit convention is the census's: 0 when it erased, 1 when it refused and said why (no
-// --confirm, a row that points at the node and is not part of it, or a document whose live text
-// holds the erased bytes where its markdown spells them otherwise), 2 when it could not run at
-// all, and 2 too when it erased and its sweep of text_trees after the commit failed, the report
-// printed first.
+// --confirm, a digest that is not the listing's, a row of another node that states something
+// about this one, or a document whose live text holds the erased bytes where its markdown spells
+// them otherwise), 2 when it could not run at all, and 2 too when it erased and its sweep of
+// text_trees after the commit failed, the report printed first.
 func erase(ctx context.Context, args []string, databaseURL string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("erase", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	node := flags.String("node", "", "the node to erase, as <kind>:<id>")
-	confirm := flags.Bool("confirm", false,
-		"remove what a run without it lists; without this flag the command writes nothing")
+	confirm := flags.String("confirm", "",
+		"the listing digest a run without it printed; the run removes what it lists only when the listing it reads has this digest")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(errOut, "erase: unexpected argument %q; the flags are --node and --confirm\n", flags.Arg(0))
+		fmt.Fprintf(errOut, "erase: unexpected argument %q; the flags are --node and --confirm <digest>\n", flags.Arg(0))
 		return 2
 	}
 	if strings.TrimSpace(databaseURL) == "" {
@@ -62,19 +65,22 @@ func erase(ctx context.Context, args []string, databaseURL string, out, errOut i
 		return 2
 	}
 	switch {
+	case erasure.Applied:
+		return 0
+	case erasure.Mismatch():
+		fmt.Fprintf(errOut, "erase: nothing was removed: the listing this run read has digest %s, and --confirm named %s, so a row "+
+			"on it changed since the run that printed that digest. Read the listing above and confirm its digest.\n",
+			erasure.Digest, erasure.Confirmed)
 	case len(erasure.Blockers) > 0:
-		fmt.Fprintf(errOut, "erase: %s:%s is pointed at by rows that are not part of it, listed above; "+
-			"nothing was removed\n", kind, id)
-		return 1
+		fmt.Fprintf(errOut, "erase: %s:%s is stated by rows of other nodes, listed above; nothing was removed. "+
+			"Erase or edit those first.\n", kind, id)
 	case len(erasure.Unredacted()) > 0:
 		fmt.Fprintf(errOut, "erase: the live text of %s holds the erased bytes where its markdown spells them "+
 			"otherwise, so no marker can stand where they are; nothing was removed. Edit them out of the "+
 			"document and run the erase again.\n", strings.Join(erasure.Unredacted(), ", "))
-		return 1
-	case !erasure.Applied:
-		fmt.Fprintf(errOut, "erase: nothing was removed. The list above is what `envoy-dispatch erase "+
-			"--node %s:%s --confirm` would remove, and every version and review on it ends with it.\n", kind, id)
-		return 1
+	default:
+		fmt.Fprintf(errOut, "erase: nothing was removed. The listing above is every row `envoy-dispatch erase --node %s:%s "+
+			"--confirm %s` would delete, rewrite, redact or leave.\n", kind, id, erasure.Digest)
 	}
-	return 0
+	return 1
 }
