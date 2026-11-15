@@ -549,9 +549,6 @@ func TestTheKeptApprovalOfAReadmittedRootIsThePersonsAndNotTheBasis(t *testing.T
 			if len(starts) != 1 || starts[0].Task != tc.want {
 				t.Fatalf("architect starts %#v, want one whose task is %q", starts, tc.want)
 			}
-			if strings.Contains(starts[0].Task, "approved version 4") {
-				t.Fatalf("the start task %q names an approval of version 4, which no person gave", starts[0].Task)
-			}
 			inTx(t, pool, func(tx pgx.Tx) {
 				if approved, _, err := record.NewStore().ReadmittedApproval(ctx, tx, "LEGION-ROOT"); err != nil || approved != tc.approved {
 					t.Fatalf("kept approval after the re-admission = %d, %v; want %d", approved, err, tc.approved)

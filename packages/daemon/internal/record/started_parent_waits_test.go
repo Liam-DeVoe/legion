@@ -42,10 +42,17 @@ func TestStartedParentsAreTheIssuesWhosePhasesStarted(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("StartedParents = %v, want %v", got, want)
 	}
-	// None of them is a children-first candidate: that judgement reads the issues at admitted
-	// under an open gate alone, and this list passed it none.
-	if candidates := ChildrenFirstCandidates(issues, nil); len(candidates) != 0 {
-		t.Fatalf("ChildrenFirstCandidates = %v, want none: no gate stands open here", candidates)
+	// The children-first candidates are a judgement of their own: under every tree's open gate
+	// they are the issues at admitted, LEGION-9 among them, which never started and so is no
+	// started parent, and LEGION-15, whose owed start makes it one; no issue in a started phase is
+	// among them.
+	open := TreeGate{Rows: map[DesignStep]DesignGate{DesignStepSpec: {LatestVersion: 1, ApprovedVersion: new(1)}}}
+	gates := make(map[string]TreeGate, len(issues))
+	for _, issue := range issues {
+		gates[issue.Tree] = open
+	}
+	if candidates := ChildrenFirstCandidates(issues, gates); !slices.Equal(candidates, []string{"LEGION-15", "LEGION-9"}) {
+		t.Fatalf("ChildrenFirstCandidates under open gates = %v, want LEGION-15 and LEGION-9, the issues at admitted", candidates)
 	}
 }
 
@@ -84,6 +91,8 @@ func TestStartedParentWaitsReadsTheOpenChildrenOfAStartedParent(t *testing.T) {
 		for _, issue := range issues {
 			must(t, records.PutIssue(ctx, tx, issue))
 		}
+		// The root's gate stands open, so the children-first judgement below reads its tree.
+		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root, Step: DesignStepSpec, ArtifactID: "artifact-700", LatestVersion: 1, ApprovedVersion: new(1)}))
 		for _, row := range []DispatchIssueRow{
 			{Key: heldChild, Project: "LEGION", Status: "todo", Parent: parent, Seq: 1},
 			{Key: filed, Project: "LEGION", Status: "backlog", Parent: parent, Seq: 1},
@@ -106,8 +115,14 @@ func TestStartedParentWaitsReadsTheOpenChildrenOfAStartedParent(t *testing.T) {
 		if !reflect.DeepEqual(facts.StartedParentWaits, want) {
 			t.Fatalf("the line's facts carry %+v, want %+v", facts.StartedParentWaits, want)
 		}
-		if len(facts.ChildWaits) != 0 {
-			t.Fatalf("the line's facts carry the children-first waits %+v, want none: no issue here stands at admitted under an open gate", facts.ChildWaits)
+		if !facts.Gates[root].Open() {
+			t.Fatalf("the gate of %s reads closed in the line's facts, want it open", root)
+		}
+		childWaits, err := ChildWaitsOf(ctx, tx, records, "LEGION", issues, facts)
+		must(t, err)
+		if len(childWaits) != 0 {
+			t.Fatalf("the children-first waits under the open gate = %+v, want none: %s's open child is the started parent's to read, and %s, at admitted, has none",
+				childWaits, parent, heldChild)
 		}
 	})
 }

@@ -543,7 +543,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		// it every pass until the issue it waits on is done. Its root waits for that child under
 		// the children-first rule — a blocker holds a child alone (blockers.Holdable), so a tree
 		// silent by this wait is one whose root waits too — and the child's own blocker is what
-		// carries it: take the blocked-by rule out of the four and this tree is told, because
+		// carries it: take the blocked-by rule out of the five and this tree is told, because
 		// nothing would then stand between the child and a stall.
 		const blockedRoot, blockedChild, blocker = "LEGION-510", "LEGION-511", "LEGION-519"
 		seedQuietRoot(t, pool, blockedRoot, "B", phase.Admitted)
@@ -654,7 +654,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		// 12. A tree whose child a Dispatch blocked-by link holds where it stands while its root
 		// has stopped in its retro. The second wait is the child's, and the root is told with
 		// it: the same mixture as the tree above, read from the other side of the tree and through
-		// another of the four. The root stands past the phases whose starts an open child holds:
+		// another of the five. The root stands past the phases whose starts an open child holds:
 		// in implementing it would wait on this child in awaiting_children (dispatch://INFRA-3320
 		// R9), a wait by design on a child the daemon has released.
 		const mixedBlocked, mixedBlockedChild, mixedBlocker = "LEGION-600", "LEGION-601", "LEGION-609"
@@ -694,7 +694,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedMirrorChild(t, pool, gatedChild, "todo", gatedRoot)
 		idle(gatedRoot, gatedRoot)
 
-		// The fixture's own premise: each of the four is the wait it says it is, read from the
+		// The fixture's own premise: each of the five is the wait it says it is, read from the
 		// facts the pass itself judges from. Without this, a tree left out for some other reason —
 		// a tree the daemon does not run, one that is not quiet — would read here as a wait
 		// honoured and prove nothing.
@@ -708,6 +708,9 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 		if _, waits := facts.ChildWaits[childrenFirst]; !waits {
 			t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", childrenFirst, facts.ChildWaits)
+		}
+		if _, waits := facts.StartedParentWaits[working]; !waits {
+			t.Fatalf("%s in awaiting_children waits for no child of its own: the pass's own facts hold %v", working, facts.StartedParentWaits)
 		}
 		if _, owes := facts.Owed[owedStart]; !owes {
 			t.Fatalf("%s owes its worker no start marked for a slot: the pass's own facts hold %v", owedStart, facts.Owed)
@@ -836,7 +839,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedClaim(t, deadRecords, deadParent, deadParent, claim.RoleArchitect, architect)
 
 		// The project's own premise, read from the facts its pass judges from before any pass
-		// runs: both slots of the project are held, each by a root one of the four waits
+		// runs: both slots of the project are held, each by a root one of the five waits
 		// silences. Without this, a project named for some other reason would read here as a
 		// deadlock and prove nothing.
 		deadFacts, deadSlots := passFacts(t, deadPool)
@@ -845,7 +848,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 		for _, slot := range deadSlots {
 			if slot.Issue != deadAwaiting && slot.Issue != deadParent {
-				t.Fatalf("%s holds admission slot %d: the premise is that every slot of this project is held by an issue one of the four waits silences",
+				t.Fatalf("%s holds admission slot %d: the premise is that every slot of this project is held by an issue one of the five waits silences",
 					slot.Issue, slot.Index)
 			}
 		}
@@ -873,7 +876,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		return deadPool, deadAdmission
 	}
 
-	// 15. The deadlocked project. Every slot holder of it is silenced by one of the four waits
+	// 15. The deadlocked project. Every slot holder of it is silenced by one of the five waits
 	// and every claim of it is idle, so nothing of it can start again by itself, and every tree
 	// of it is named with its quiet hours whatever its members wait for.
 	t.Run("deadlocked", func(t *testing.T) {
@@ -901,7 +904,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 	// 16. The control, which must stay silent: the same project with the parent's architect at
 	// work. That agent will give its slot back when it is done, so the project's line can still
-	// move and the four waits silence what they are there to silence — neither the tree waiting
+	// move and the five waits silence what they are there to silence — neither the tree waiting
 	// on a person nor the tree whose architect is working is told.
 	t.Run("line-moving", func(t *testing.T) {
 		livePool, liveAdmission := deadlockedProject(t, supervise.StateWorking, false)

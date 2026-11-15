@@ -25,6 +25,19 @@ func ChildCycleReason(child, ancestor string) string {
 	return fmt.Sprintf("%s is blocked_by %s, which stands above it on its own Dispatch parent chain, so neither can start until a person takes that link off", child, ancestor)
 }
 
+// childCycleSentences is ChildCycleReason's sentence for each of open whose own blocked_by link
+// names an issue above it (record.OpenChild.Cycle), in order, each led by a space and ended by a
+// full stop, as the children-first and the awaiting_children notices append them; "" for none.
+func childCycleSentences(open []record.OpenChild) string {
+	var sentences strings.Builder
+	for _, child := range open {
+		if child.Cycle != "" {
+			sentences.WriteString(" " + ChildCycleReason(child.Key, child.Cycle) + ".")
+		}
+	}
+	return sentences.String()
+}
+
 // ChildrenFirstNotice is what the tree's architect is told when a parent's own first phase begins
 // to wait for its children: the parent, each open child with the Dispatch status that holds it,
 // what ends the wait, and each cycle among them. It is told once per issue and run of its tree —
@@ -35,14 +48,6 @@ func ChildCycleReason(child, ancestor string) string {
 // child holds every phase start of an issue whose phases started, so such a move would make that
 // issue wait too (dispatch://INFRA-3320 R11).
 func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
-	named := make([]string, 0, len(wait.Open))
-	var cycles []string
-	for _, child := range wait.Open {
-		named = append(named, fmt.Sprintf("%s (%s)", child.Key, child.Status))
-		if child.Cycle != "" {
-			cycles = append(cycles, ChildCycleReason(child.Key, child.Cycle))
-		}
-	}
 	reason := fmt.Sprintf("%s starts no phase of its own while Dispatch shows an open child under it: %s. "+
 		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s to an issue outside its tree or to no parent; %s starts its own first phase when the last of them has. "+
 		"Move a child to icebox "+parkRule+", and cite that reason in a comment on the child. "+
@@ -51,9 +56,6 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop: "+
 		"when they say to run it, move it back under %s and release it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
 		"Hold the acceptance of the root until they answer.",
-		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent, wait.Parent)
-	if len(cycles) > 0 {
-		reason += " " + strings.Join(cycles, " ") + "."
-	}
-	return record.Notice{Kind: ChildrenFirstNoticeKind, Role: claim.RoleArchitect, Reason: reason}
+		wait.Parent, openChildNames(wait.Open), wait.Parent, wait.Parent, wait.Parent, wait.Parent, wait.Parent)
+	return record.Notice{Kind: ChildrenFirstNoticeKind, Role: claim.RoleArchitect, Reason: reason + childCycleSentences(wait.Open)}
 }

@@ -194,23 +194,13 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 }
 
 // Every trigger reaching a parent in awaiting_children is a named ignore: no row of the table
-// leaves the phase, each trigger has its own reason, and the reasons name no trigger the workflow
-// does not have.
+// leaves the phase, and validateTable (TestEveryPhaseAndTriggerHasARowOrNamedIgnore) holds each
+// trigger there to its reason in awaitingChildrenIgnores. The two triggers of one act, a tester's
+// pass and failure or a review's approval and rejection, share one reason.
 func TestEveryTriggerInAwaitingChildrenIsANamedIgnore(t *testing.T) {
 	for _, row := range Table {
 		if row.From == phase.AwaitingChildren {
 			t.Errorf("the table holds a row out of awaiting_children (%s -> %s), want none: only the admission pass's return leaves it", row.Trigger, row.To)
 		}
-	}
-	for _, trigger := range allWorkflowTriggers {
-		if workflowTransitionRequired(phase.AwaitingChildren, trigger) {
-			t.Errorf("%s is required of awaiting_children, want it ignored", trigger)
-		}
-		if awaitingChildrenIgnores[trigger] == "" {
-			t.Errorf("%s in awaiting_children has no named ignore of its own", trigger)
-		}
-	}
-	if len(awaitingChildrenIgnores) != len(allWorkflowTriggers) {
-		t.Errorf("awaiting_children names %d ignores for %d triggers, want one each", len(awaitingChildrenIgnores), len(allWorkflowTriggers))
 	}
 }

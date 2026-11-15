@@ -225,12 +225,7 @@ func openChildNames(open []record.OpenChild) string {
 // too (dispatch://INFRA-3320 R11).
 func awaitingChildrenNotice(parent string, from phase.Phase, hold ChildrenHold) record.Notice {
 	reason := fmt.Sprintf("%s is in awaiting_children, holding the start of %s: %s. No phase of %s starts while Dispatch shows an open child under it: %s.",
-		parent, hold.Start, hold.Cause, parent, openChildNames(hold.Open))
-	for _, child := range hold.Open {
-		if child.Cycle != "" {
-			reason += " " + ChildCycleReason(child.Key, child.Cycle) + "."
-		}
-	}
+		parent, hold.Start, hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
 	reason += fmt.Sprintf(" The wait ends when no child under %[1]s is open: each one released and run until it leaves the workflow, closed, moved to icebox, taken out with park_child, or moved out from under %[1]s to an issue outside its tree or to no parent."+
 		" Then %[1]s goes back to the start it held by itself, a held testing, reviewing or accepting as implementing, and unless its pull request merged meanwhile its first implementing round merges the default branch forward and runs a full test round."+
 		" It holds no admission slot while it waits, and request_backward_move and sign_off on it are refused (%[2]s)."+

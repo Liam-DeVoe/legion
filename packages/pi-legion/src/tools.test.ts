@@ -2212,6 +2212,93 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
 });
 
+// A spec step open on an ancestor's approval holds in `designGate.approvedVersion` the version its
+// root registered, which no person approved (contract 138): the summary names it as its entry in
+// `gatedSteps` does, by its status word and the ancestor's version, and so the step that waits on
+// the ancestor's request; a step on no basis keeps its approved line.
+test("read_state's summary names a step on an ancestor's basis by its gatedSteps entry, not as approved", async () => {
+  const root = (key: string, designGate: unknown, gatedSteps: unknown[]) => ({
+    key,
+    generation: 1,
+    phase: "planning",
+    status: "in_progress",
+    workers: {},
+    designGate,
+    gatedSteps,
+  });
+  const state = legionState({
+    issues: {
+      "LEGION-207": root(
+        "LEGION-207",
+        { artifactId: "spec-207", currentVersion: 4, approvedVersion: 4 },
+        [
+          {
+            step: "spec",
+            artifactId: "spec-207",
+            currentVersion: 4,
+            approvedVersion: 4,
+            status: "open_on_basis",
+            basis: {
+              issue: "LEGION-200",
+              artifactId: "spec-200",
+              version: 5,
+              approver: "user:alice",
+              approvedAt: "2026-09-20T15:02:41Z",
+            },
+          },
+        ]
+      ),
+      "LEGION-214": root(
+        "LEGION-214",
+        { artifactId: "spec-214", currentVersion: 2, approvedVersion: 1 },
+        [
+          {
+            step: "spec",
+            artifactId: "spec-214",
+            currentVersion: 2,
+            approvedVersion: 1,
+            status: "pending_on_basis",
+            basis: { issue: "LEGION-200", artifactId: "spec-200", version: 6, askId: "ask-200" },
+          },
+        ]
+      ),
+      "LEGION-218": root(
+        "LEGION-218",
+        { artifactId: "spec-218", currentVersion: 3, approvedVersion: 3 },
+        [
+          {
+            step: "spec",
+            artifactId: "spec-218",
+            currentVersion: 3,
+            approvedVersion: 3,
+            status: "approved",
+          },
+        ]
+      ),
+    },
+  });
+  const { daemon } = recordingDaemon({ state });
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  const summary = block !== undefined && block.type === "text" ? block.text : "";
+
+  expect(summary).toContain(
+    "\nLEGION-207 planning in_progress\n  gate 4 open_on_basis LEGION-200 5\n"
+  );
+  expect(summary).toContain(
+    "\nLEGION-214 planning in_progress\n  gate 2 pending_on_basis LEGION-200 6\n"
+  );
+  expect(summary).toContain("\nLEGION-218 planning in_progress\n  gate 3 approved 3");
+  expect(summary).not.toContain("approved 4");
+  expect(summary).not.toContain("approved 1");
+});
+
 test("read_state's filters answer full records, and name what they cannot select", async () => {
   const state = stateOf92Issues();
   const { daemon } = recordingDaemon({ state });

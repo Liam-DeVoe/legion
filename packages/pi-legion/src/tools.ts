@@ -111,8 +111,10 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; admission cap; active/waiting/blocked; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
-  "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
-  "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
+  "runs its slot, hold, gate <current> approved <version|none> (for a spec step on an " +
+  "ancestor's basis, gate <current> open_on_basis|pending_on_basis <ancestor> <version>: open on " +
+  "a person's approval of that ancestor version, or waiting on the request for one) and <role> " +
+  "<claim state> <last turn start> <last turn end> lines, - for a value the daemon has none for. " +
   "read_state with issue, issues, phase or settings returns the full records it names.";
 
 /**
@@ -161,7 +163,15 @@ function stateSummary(state: LegionState): string {
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
-      lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`);
+      // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
+      // registered, which no person approved (contract 138), so a step on a basis reads its entry
+      // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
+      const spec = issue.gatedSteps?.find((step) => step.step === "spec");
+      lines.push(
+        spec?.basis === undefined
+          ? `  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`
+          : `  gate ${gate.currentVersion} ${spec.status} ${spec.basis.issue} ${spec.basis.version}`
+      );
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);

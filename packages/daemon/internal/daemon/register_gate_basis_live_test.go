@@ -24,6 +24,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -48,6 +49,11 @@ const registerGateToolRootEnv = "LEGION_E2E_TOOL_ROOT"
 
 // registerGateReason is the architect's reason the tool's calls carry.
 const registerGateReason = "R's one check serves P2 of P, whose spec the person approved at its latest version; R's spec holds no requirement of its own."
+
+// registerGateToolDeadline bounds one run of the tool's driver: bun's start and the few requests
+// one call makes take seconds, so a driver past it is hung, and the run fails there rather than at
+// the go test timeout.
+const registerGateToolDeadline = 2 * time.Minute
 
 // registerGateBasisLive is one run of the proof: the rig, the checkout whose tool runs, the home
 // bun runs in, and the world the steps build.
@@ -279,7 +285,11 @@ func (r *registerGateBasisLive) tool(call map[string]any) registerGateAnswer {
 	}
 	r.note("legion %s", shown)
 	pane := filepath.Join(r.toolRoot, "packages", "pi-legion")
-	command := exec.Command("bun", filepath.Join(pane, "test", "register-gate-basis-driver.ts"))
+	ctx, cancel := context.WithTimeout(t.Context(), registerGateToolDeadline)
+	defer cancel()
+	command := exec.CommandContext(ctx, "bun", filepath.Join(pane, "test", "register-gate-basis-driver.ts"))
+	// A child bun leaves holding the output pipes would hold Run past the kill; this bounds that.
+	command.WaitDelay = time.Second
 	command.Dir = pane
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -293,7 +303,8 @@ func (r *registerGateBasisLive) tool(call map[string]any) registerGateAnswer {
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("the tool's driver in %s failed: %v\nstdout %s\nstderr %s", pane, err, stdout.Bytes(), stderr.Bytes())
+		t.Fatalf("the tool's driver in %s failed: %v (deadline %s: %v)\nstdout %s\nstderr %s", pane, err, registerGateToolDeadline, ctx.Err(),
+			stdout.Bytes(), stderr.Bytes())
 	}
 	var answer registerGateAnswer
 	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {

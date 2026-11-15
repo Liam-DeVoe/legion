@@ -95,8 +95,10 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 	if opened.RestsOn != "LEGION-100" || !opened.RestsOnIssue("LEGION-100") || opened.RestsOnIssue("LEGION-101") {
 		t.Fatalf("the open step rests on %q, want LEGION-100 alone", opened.RestsOn)
 	}
-	if earlier.Basis != nil || earlier.KeptPerson != nil || *earlier.ApprovedVersion != 2 {
-		t.Fatalf("the transition wrote through the gate it was given: %#v", earlier)
+	// OpenOnBasis takes the gate by value, so only what it shares through a pointer could be
+	// written through: the approved version.
+	if *earlier.ApprovedVersion != 2 {
+		t.Fatalf("the transition wrote through the approved version of the gate it was given: %#v", earlier)
 	}
 
 	closed := CloseBasis(opened)
@@ -343,6 +345,13 @@ func TestARowAnEarlierReleaseMovedReadsItsBasisEnded(t *testing.T) {
 				ApprovedVersion: new(4), ApprovedMark: EventMark{Seq: 50}}
 			if got := SpecGate(gates); !reflect.DeepEqual(got, &want) {
 				t.Fatalf("the pending step a person's approval opened reads back as %#v, want %#v", got, want)
+			}
+			// Its basis_issue still names LEGION-100, which the store's condition selects on, but
+			// the step as read rests on nothing.
+			resting, err := records.GatesRestingOn(ctx, tx, "LEGION-100")
+			must(t, err)
+			if len(resting) != 0 {
+				t.Fatalf("the gates resting on LEGION-100 = %#v, want none: the step's wait ended", resting)
 			}
 		})
 	})

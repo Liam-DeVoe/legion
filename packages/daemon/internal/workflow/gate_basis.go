@@ -274,10 +274,13 @@ func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) 
 // workflow (RestingRoots), so this tells the end of that wait. A step rests on the ancestor whose
 // basis first opened it (RestsOn) and on the ancestor its basis names now, standing or pending
 // (record.DesignGate.RestsOnIssue), so one notice goes to each such ancestor, once per root,
-// generation, ancestor and event (queueRestingRoot), naming each step that rests there, the
-// version of the ancestor's document the step's basis names and the requirements the root's
-// checks serve. A step whose basis a new version of the root's own document ended keeps only the
-// ancestor it rests on, so the notice names no version and no requirement for it.
+// generation, ancestor and event (queueRestingRoot), naming each step that rests there and the
+// requirements the root's checks serve, each once. The document and the version the notice names
+// are one step's: the ancestor's document for the first step whose basis names the ancestor now,
+// and the version that basis names. A step whose basis a new version of the root's own document
+// ended keeps only the ancestor it rests on, so where no step's basis names the ancestor the
+// notice names the ancestor's document for the first step that rests there, no version and no
+// requirement.
 func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	gates, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil || len(gates) == 0 {
@@ -285,6 +288,9 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 	}
 	type rest struct {
 		steps []record.DesignStep
+		// step is the step whose document of the ancestor the notice names, and basis.Version
+		// is the version that step's basis names, if any.
+		step  record.DesignStep
 		basis record.GateBasis
 	}
 	rests := map[string]*rest{}
@@ -304,7 +310,7 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 			}
 			at, ok := rests[ancestor]
 			if !ok {
-				at = &rest{basis: record.GateBasis{Issue: ancestor}}
+				at = &rest{step: step, basis: record.GateBasis{Issue: ancestor}}
 				rests[ancestor] = at
 				ancestors = append(ancestors, ancestor)
 			}
@@ -314,9 +320,13 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 			at.steps = append(at.steps, step)
 			if gate.Basis != nil && gate.Basis.Issue == ancestor {
 				if at.basis.Version == 0 {
-					at.basis.Version = gate.Basis.Version
+					at.step, at.basis.Version = step, gate.Basis.Version
 				}
-				at.basis.Serves = append(at.basis.Serves, gate.Basis.Serves...)
+				for _, served := range gate.Basis.Serves {
+					if !slices.Contains(at.basis.Serves, served) {
+						at.basis.Serves = append(at.basis.Serves, served)
+					}
+				}
 			}
 		}
 	}
@@ -326,9 +336,13 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 		if status == "done" {
 			event, what = restingClosed, fmt.Sprintf("%s is done.", root.Key)
 		}
-		what += fmt.Sprintf(" Its %s rests on the approval of %s. The sign-off and the close of %s no longer wait for %s.",
-			stepsPhrase(at.steps), ancestor, ancestor, root.Key)
-		if err := e.queueRestingRoot(ctx, tx, root, at.steps[0], at.basis, event, what); err != nil {
+		verb := "rests"
+		if len(at.steps) > 1 {
+			verb = "rest"
+		}
+		what += fmt.Sprintf(" Its %s %s on the approval of %s. The sign-off and the close of %s no longer wait for %s.",
+			stepsPhrase(at.steps), verb, ancestor, ancestor, root.Key)
+		if err := e.queueRestingRoot(ctx, tx, root, at.step, at.basis, event, what); err != nil {
 			return err
 		}
 	}
@@ -757,6 +771,8 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 // Dispatch records on the asks of an issue set done (intake.DispatchAskClosed.Withdrawn) comes
 // before that issue's own event, which would end the wait as the ancestor's acceptance
 // (endPendingOnAncestorIssue), so the end it makes names that acceptance and the withdrawal both.
+// A row of a step the deployment does not gate holds nothing and takes no event, as basisArtifact
+// rules.
 func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
 	if fact.State == "answered" {
 		return nil
@@ -766,7 +782,10 @@ func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake
 		return err
 	}
 	for _, gate := range gates {
-		if !gate.PendingOnBasis() || gate.Basis.Pending.Ask != fact.Ask {
+		// Each row was selected on its pending ask, so a step that still waits waits on fact.Ask;
+		// one an earlier release's write of a person's approval opened reads back waiting on
+		// nothing (record's basisAsWritten).
+		if !e.gatesStep(gate.Step) || !gate.PendingOnBasis() {
 			continue
 		}
 		root, err := e.store.Issue(ctx, tx, gate.Issue)
@@ -855,9 +874,13 @@ func (e *Engine) pendingOn(ctx context.Context, tx pgx.Tx, ancestor string) ([]r
 	return pending, nil
 }
 
-// endEachPending ends the wait of each of gates (endPendingBasis), act being what ended it.
+// endEachPending ends the wait of each of gates (endPendingBasis), act being what ended it. A row
+// of a step the deployment does not gate holds nothing and takes no event, as basisArtifact rules.
 func (e *Engine) endEachPending(ctx context.Context, tx pgx.Tx, gates []record.DesignGate, act string) error {
 	for _, gate := range gates {
+		if !e.gatesStep(gate.Step) {
+			continue
+		}
 		root, err := e.store.Issue(ctx, tx, gate.Issue)
 		if err != nil {
 			return err

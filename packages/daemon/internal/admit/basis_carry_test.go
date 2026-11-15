@@ -114,6 +114,17 @@ func recordAncestor(at phase.Phase, status string) func(context.Context, pgx.Tx,
 	}
 }
 
+// recordedAccepted records the ancestor as recordAncestor does, standing in at, and then mirrors it
+// at work, so the daemon's record alone says it is accepted (record.Accepted).
+func recordedAccepted(at phase.Phase) func(context.Context, pgx.Tx, *record.Postgres) error {
+	return func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+		if err := recordAncestor(at, "retro")(ctx, tx, records); err != nil {
+			return err
+		}
+		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: carryAncestor, Project: testProject, Status: "in_progress", Seq: 6})
+	}
+}
+
 // childGates is every gate the child holds after the carry, by step.
 func childGates(t *testing.T, pool *pgxpool.Pool) map[record.DesignStep]record.DesignGate {
 	t.Helper()
@@ -255,7 +266,8 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 // ancestor is done, or accepted, carries no row for the step that rests on it: the child's
 // catch-up reports that step unregistered, and its architect registers the child's own document
 // for it. Every other step of the old root comes as before. Done is what the daemon's mirror of
-// Dispatch shows, and accepted is retro there, or retro or merging in the daemon's record.
+// Dispatch shows, and accepted is retro there, or retro or merging in the daemon's record, which
+// says so alone where the mirror still shows the ancestor at work.
 func TestAHandOverOntoAnAcceptedAncestorCarriesNoRowForTheStepOnItsBasis(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
 	for _, tc := range []struct {
@@ -264,14 +276,8 @@ func TestAHandOverOntoAnAcceptedAncestorCarriesNoRowForTheStepOnItsBasis(t *test
 	}{
 		{name: "Dispatch shows the ancestor done", ancestor: mirrorAncestor(record.DoneStatus)},
 		{name: "Dispatch shows the ancestor in retro", ancestor: mirrorAncestor("retro")},
-		{name: "the daemon records the ancestor in retro", ancestor: recordAncestor(phase.Retro, "retro")},
-		{name: "the daemon records the ancestor in merging", ancestor: func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
-			// The record alone says so: the mirror still shows the ancestor at work.
-			if err := recordAncestor(phase.Merging, "retro")(ctx, tx, records); err != nil {
-				return err
-			}
-			return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: carryAncestor, Project: testProject, Status: "in_progress", Seq: 6})
-		}},
+		{name: "the daemon records the ancestor in retro", ancestor: recordedAccepted(phase.Retro)},
+		{name: "the daemon records the ancestor in merging", ancestor: recordedAccepted(phase.Merging)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -341,7 +347,7 @@ func TestAHandOverCarriesAStepWithNoStandingBasisClosedWithTheRestTheOldRootHad(
 		{name: "a step whose basis a new version ended, on an ancestor Dispatch shows done", old: ended,
 			ancestor: mirrorAncestor(record.DoneStatus), approved: new(2), latest: 5},
 		{name: "a step whose basis a new version ended, on an ancestor the daemon records in retro", old: ended,
-			ancestor: recordAncestor(phase.Retro, "retro"), approved: new(2), latest: 5},
+			ancestor: recordedAccepted(phase.Retro), approved: new(2), latest: 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

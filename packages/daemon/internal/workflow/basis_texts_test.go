@@ -25,24 +25,29 @@ const basisOpening = " The spec step stands open on an ancestor's approval: a pe
 
 // An opening of the standing gate on an ancestor's approval names that approval: the ancestor, its
 // document and the version a person approved, and says that no person approved the root's version.
-// It keeps the two parts roles/merger.md quotes as the release of a merge, `The design gate of
-// <tree> opened:` and `every step the deployment gates now stands open`. Where a person's approval
-// of another step opens the gate while the spec step stands on a basis, the message names that
-// person's approval first, and then the step on the basis.
+// It begins with the words roles/merger.md quotes as the release of a merge: `The design gate of
+// <tree> opened: every step the deployment gates now stands open`, or, where a person's approval
+// of another step opens the gate while the spec step stands on a basis, the quote that names that
+// person's approval first; the step on the basis is named after it.
 func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t *testing.T) {
+	merger := rolePrompt(t, claim.RoleMerger)
+	fill := strings.NewReplacer("<tree>", gatedRoot, "<n>", "2", "<step>", string(record.DesignStepCriteria), "<id>", criteriaDoc)
 	for _, tc := range []struct {
 		name  string
 		steps []record.DesignStep
+		quote string
 		want  string
 	}{
 		{
 			name:  "a registration on an approved basis opens the gate",
 			steps: config.DesignGateRootIssues.Steps(),
+			quote: "The design gate of <tree> opened: every step the deployment gates now stands open",
 			want:  "The design gate of LEGION-208 opened: every step the deployment gates now stands open. A merge the closed gate held is released." + basisOpening,
 		},
 		{
 			name:  "a person's approval of another step opens the gate beside a step on a basis",
 			steps: twoSteps(),
+			quote: "The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open",
 			want: "The design gate of LEGION-208 opened: a person approved version 2 of its criteria document (artifact-criteria), " +
 				"and every step the deployment gates now stands open. A merge the closed gate held is released." + basisOpening,
 		},
@@ -71,13 +76,11 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 				{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: tc.want},
 				{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: tc.want},
 			})
-			for _, quoted := range []string{"The design gate of LEGION-208 opened: ", "every step the deployment gates now stands open"} {
-				if !strings.Contains(tc.want, quoted) {
-					t.Fatalf("the opening %q does not carry %q, which roles/merger.md quotes as the release of a merge", tc.want, quoted)
-				}
+			if !strings.Contains(merger, "`"+tc.quote+"`") {
+				t.Fatalf("roles/merger.md does not quote %q as the release of a merge", tc.quote)
 			}
-			if strings.Contains(strings.ToLower(tc.want), "a person approved version 4") {
-				t.Fatalf("the opening %q names a person's approval of version 4 of the root's document, which no person gave", tc.want)
+			if quoted := fill.Replace(tc.quote); !strings.HasPrefix(tc.want, quoted) {
+				t.Fatalf("the opening %q does not begin with %q, the words roles/merger.md quotes as the release of a merge", tc.want, quoted)
 			}
 		})
 	}
@@ -172,9 +175,6 @@ func TestTheKeptDecisionsTaskNamesThePersonsApprovalAndR1sPath(t *testing.T) {
 		"The other way is to write LEGION-208 as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
 	if task != want {
 		t.Fatalf("the start task = %q, want %q", task, want)
-	}
-	if strings.Contains(task, "approved at version 5") || strings.Contains(task, "approved version 5") {
-		t.Fatalf("the start task %q names an approval of the latest version, which no person gave", task)
 	}
 	decided := KeptDecisionsTask("LEGION-208", record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/spec",
 		Decision: record.DecisionDesignApproved, Actor: "user:alice"}}})

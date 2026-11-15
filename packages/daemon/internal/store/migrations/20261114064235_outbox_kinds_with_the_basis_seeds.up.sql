@@ -18,10 +18,16 @@
 -- migration in version order, so this list is the last word on a fresh database and on one main
 -- migrated. No release carries this file, so no deployment's database records it. A database a
 -- build of this branch migrated before the forward merge that brought 20261114031356 in does
--- record it and not 20261114031356, so its next upgrade applies that file after this one: a
--- queued pending_basis_seed or reparent_seed row then stops the upgrade (SQLSTATE 23514), and
--- with none queued the check it leaves refuses both kinds, since this file does not run again.
--- Run this file's two statements by hand on such a database after its upgrade.
+-- record it and not 20261114031356, so its next upgrade applies that file after this one, and that
+-- file's list names neither kind of this one. On such a database, with every daemon of it
+-- stopped, an operator first deletes the queued rows of both kinds, with the statement of
+-- docs/kubernetes.md's rollback of this release
+-- (`delete from public.outbox where kind in ('pending_basis_seed', 'reparent_seed');`), since a
+-- queued row of either stops the upgrade at 20261114031356 (SQLSTATE 23514). The delete costs
+-- little: the next boot queues a pending-basis seed again for each step that still waits, and a
+-- re-parented root and its new parent's architect are not told of that one move. The operator then
+-- runs the upgrade and, after it, this file's two statements by hand: this file does not run
+-- again, and the check 20261114031356 leaves refuses both kinds.
 --
 -- A daemon of an earlier release refuses neither row at the database, since this list admits
 -- them, but its strict decoder knows neither kind, so a row of either it finds pending fails its

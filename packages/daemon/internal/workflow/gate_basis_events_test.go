@@ -172,6 +172,38 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 	}
 }
 
+// A row of a step the deployment does not gate holds nothing and takes no event, as basisArtifact
+// rules: the close of the request it waits on and the ancestor's acceptance leave its wait as it
+// is, and tell nobody.
+func TestAPendingBasisOfAStepTheDeploymentDoesNotGateTakesNoEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fact intake.Fact
+	}{
+		{"a session's close of the request", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc,
+			State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61)}},
+		{"the ancestor done", intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: "done", Title: "ancestor", Rank: "T", HandedOver: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, _ := registeredPending(t)
+			// The next boot gates the criteria step alone.
+			criteriaOnly := stepsEngine([]record.DesignStep{record.DesignStepCriteria}, nil)
+
+			applyFacts(t, pool, criteriaOnly)("act", tc.fact)
+
+			if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-100" {
+				t.Fatalf("the spec step = %#v, want it still pending on ask-100: the deployment does not gate it", gate)
+			}
+			if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 0 {
+				t.Fatalf("basis-ended notices = %#v, want none for a step the deployment does not gate", got)
+			}
+			if got := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(got) != 1 {
+				t.Fatalf("resting-root notices = %#v, want the pending registration's alone", got)
+			}
+		})
+	}
+}
+
 // The daemon's own move of the ancestor into merging accepts it, which ends every step waiting on
 // its request as R1's first condition ends it.
 func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {

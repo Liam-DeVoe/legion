@@ -593,13 +593,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
-				// Every row that reaches here is below phaseEntriesContract too, so the two
-				// entry numbers go whatever the row is, as the decided record's keys above do.
+				// Every row that reaches here is below phaseEntriesContract and gateBasisContract
+				// too, so the two entry numbers and `treeRuns` go whatever the row is, as the
+				// decided record's keys above do.
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
-				if !tc.basis {
-					delete(issue, "treeRuns")
-				}
+				delete(issue, "treeRuns")
 				if !tc.quiet {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)

@@ -285,6 +285,23 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 	}
 }
 
+// Each child whose own blocked_by link names an issue above it is named in a sentence of its own,
+// ended by a full stop, in the children-first notice and in the awaiting_children notice alike:
+// two such children are two sentences, never one run together.
+func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
+	open := []record.OpenChild{{Key: cwChild, Status: "todo", Cycle: cwParent}, {Key: "LEGION-210", Status: "backlog"},
+		{Key: "LEGION-211", Status: "todo", Cycle: cwParent}}
+	want := " " + ChildCycleReason(cwChild, cwParent) + ". " + ChildCycleReason("LEGION-211", cwParent) + "."
+	for name, reason := range map[string]string{
+		"children-first":    ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: open}).Reason,
+		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, ChildrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open}).Reason,
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the %s notice's reason %q does not say %q", name, reason, want)
+		}
+	}
+}
+
 // A conflicting head held for the children tells the role whose phase it ended, on that role's own
 // lane, that the issue waits on its children and no task follows (record.PhaseEnded into
 // awaiting_children), its reason naming the open child; accepting's role is the architect, which

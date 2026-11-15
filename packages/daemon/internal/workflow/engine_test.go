@@ -380,16 +380,17 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+// rolePrompt is the shipped role prompt of role, every part of it in the order the composer gives
+// them, as the role's session reads it.
+func rolePrompt(t *testing.T, role claim.Role) string {
+	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(claim.RoleReviewer, false)
+	parts, err := composer.Compose(role, false)
 	if err != nil {
-		t.Fatalf("compose the reviewer's prompt: %v", err)
+		t.Fatalf("compose the %s's prompt: %v", role, err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -399,8 +400,15 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 		}
 		prompt.Write(part)
 	}
+	return prompt.String()
+}
+
+// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
+// its own completion carries none, so a rename on either side alone fails here.
+func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	prompt := rolePrompt(t, claim.RoleReviewer)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt.String(), want) {
+		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}
 	}

@@ -376,6 +376,44 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		})
 	}
 
+	// Two steps of R rest on P: the leave's notice names both, in the plural, and each requirement
+	// their bases serve once; the document of P it names and the version are one step's, the
+	// first whose basis names P now.
+	for _, tc := range []struct {
+		name     string
+		criteria record.DesignGate
+		ref      string
+		version  int
+	}{
+		{"both steps open on P's approval", record.OpenOnBasis(record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria,
+			ArtifactID: criteriaDoc, LatestVersion: 2}, record.GateBasis{Issue: basisAncestor, ArtifactID: "artifact-100-verification", Version: 2,
+			Approval: record.EventMark{Seq: 41, At: basisApprovedAt}, Approver: "user:alice", Serves: restingBasis().Serves, RegisteredAt: basisEngineNow}),
+			"dispatch://LEGION-100/artifact/verification-md", 2},
+		{"the criteria step resting on P after its basis ended", record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria,
+			ArtifactID: criteriaDoc, LatestVersion: 3, EverOpened: true, RestsOn: basisAncestor},
+			"dispatch://LEGION-100/spec", 3},
+	} {
+		t.Run("two steps that rest on the ancestor, "+tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := stepsEngine(twoSteps(), nil)
+			seedLiveAncestor(t, pool)
+			registerResting(t, pool, applyFacts(t, pool, engine))
+			seedGate(t, pool, tc.criteria)
+			closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
+
+			resting := noticesOfKind(t, pool, basisAncestor, "resting-root")
+			if len(resting) != 2 {
+				t.Fatalf("resting-root notices keyed by P = %#v, want the registration's and the close's", resting)
+			}
+			want := "LEGION-208 is done. Its criteria and spec steps rest on the approval of LEGION-100. " +
+				"The sign-off and the close of LEGION-100 no longer wait for LEGION-208. " +
+				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
+			if closed := resting[1]; closed.Reason != want || closed.Ref != tc.ref || closed.Version != tc.version {
+				t.Fatalf("the close's resting-root notice = %#v, want %q naming %s at version %d", closed, want, tc.ref, tc.version)
+			}
+		})
+	}
+
 	t.Run("an ancestor under a sub-architect is told through notices keyed by it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)

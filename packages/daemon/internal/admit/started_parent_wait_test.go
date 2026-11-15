@@ -327,13 +327,14 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 		name    string
 		at      phase.Phase
 		slotted bool
-		shape   func(*record.Issue)
-		pr      record.PullRequestState
+		// queued is a root that waits in the line for its tree to be opened: its record alone,
+		// with no tree lifecycle.
+		queued bool
+		shape  func(*record.Issue)
+		pr     record.PullRequestState
 	}{
 		{name: "a merged pull request", at: phase.Implementing, slotted: true, pr: record.PullRequestMerged},
-		{name: "a queued root", at: phase.Implementing, shape: func(issue *record.Issue) {
-			issue.Status, issue.HandedOverFrom = "todo", "LEGION-299"
-		}},
+		{name: "a queued root", at: phase.Implementing, queued: true},
 		{name: "held from implementing", at: phase.Held, slotted: true, shape: func(issue *record.Issue) {
 			issue.Hold = &record.Hold{From: phase.Implementing}
 		}},
@@ -344,7 +345,7 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 			pool := migratedPool(t)
 			// The cap admits nothing, so the pass makes its moves and starts no queued root.
 			admission := quiet(t, 0)
-			if tc.name == "a queued root" {
+			if tc.queued {
 				putIssue(t, pool, record.Issue{Key: spParent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 					Project: testProject, Title: spParent, Tree: spParent, Phase: tc.at, Generation: 1, Status: "todo", Rank: spParent,
 					HandedOver: true, HandedOverFrom: "LEGION-299"})
@@ -385,7 +386,7 @@ func TestASecondPassOverAMovedParentSendsNothingAgain(t *testing.T) {
 	spPass(t, pool, admission)
 
 	again := issue(t, pool, spParent)
-	if again.Phase != phase.AwaitingChildren || again.ChildrenWait == nil || *again.ChildrenWait != *first.ChildrenWait {
+	if again.Phase != phase.AwaitingChildren || !sameHeldStart(again.ChildrenWait, first.ChildrenWait) {
 		t.Fatalf("the held start after a second pass = %+v, want the first pass's %+v", again.ChildrenWait, first.ChildrenWait)
 	}
 	if told := spNotices(t, pool, spParent); len(told) != 1 {
@@ -525,7 +526,7 @@ func TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld(t *testing.T) {
 			t.Fatalf("the parent = phase %s, held start %+v, status %s; want testing as it was held", got.Phase, got.ChildrenWait, got.Status)
 		}
 		starts := startsOf(t, pool, spParent)
-		if len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].task != heldTask || strings.Contains(starts[0].task, spMergeLine) {
+		if len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].task != heldTask {
 			t.Fatalf("starts of %s = %+v, want one tester start carrying the held task and no forward merge", spParent, starts)
 		}
 		if told := spNotices(t, pool, spParent); len(told) != 0 {

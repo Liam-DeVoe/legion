@@ -1683,12 +1683,18 @@ func (s *Postgres) GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string)
 	return gatesWhere(ctx, tx, "basis_pending_ask = $1", ask, "pending on request "+ask)
 }
 
-// GatesRestingOn is every gate that rests on ancestor in this generation, of every tree, in issue
-// and then step order: rests_on names the ancestor a basis first opened the step on, and
-// basis_issue the ancestor of the basis the step stands open on or waits on now
-// (DesignGate.RestsOnIssue states the same rule over one row).
+// GatesRestingOn is every gate that rests on ancestor in this generation (DesignGate.RestsOnIssue),
+// of every tree, in issue and then step order: rests_on names the ancestor a basis first opened
+// the step on, and basis_issue the ancestor of the basis the step stands open on or waits on now.
+// The condition is the indexed prefilter, and the rule over each row as read decides: a pending
+// row an earlier release's write of a person's approval opened still names its ancestor in
+// basis_issue, but reads back with no basis (basisAsWritten), and so rests on nothing.
 func (s *Postgres) GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestor string) ([]DesignGate, error) {
-	return gatesWhere(ctx, tx, "rests_on = $1 or basis_issue = $1", ancestor, "resting on "+ancestor)
+	gates, err := gatesWhere(ctx, tx, "rests_on = $1 or basis_issue = $1", ancestor, "resting on "+ancestor)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return !gate.RestsOnIssue(ancestor) }), nil
 }
 
 // gatesWhere is every gate the condition selects with arg as its one parameter, in issue and then

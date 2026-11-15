@@ -15219,10 +15219,11 @@ test("a reference that is one document's slug and another's filename is the slug
 // The test `dispatch request-approval` makes over open decision blocks is the one another caller
 // that rests on a document makes too (the legion tool's register_gate on an ancestor's basis): it
 // reads the document `resolveIssueDocument` resolved, with its issue, names each open block, and
-// says the rest in that caller's own words. A document whose blocks are all settled passes.
+// says the rest in that caller's own words. A document whose block has settled, its opener in the
+// version the request names reading `state="answered"`, passes.
 test("the open decision block test refuses another caller in that caller's own words", async () => {
   const fetchFor =
-    (blocks: unknown[]) =>
+    (state: "open" | "answered") =>
     async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
       if (target.pathname === "/api/v1/issues/DSP-42") {
@@ -15240,7 +15241,9 @@ test("the open decision block test refuses another caller in that caller's own w
           ],
         });
       }
-      if (target.pathname === "/api/v1/artifacts/artifact-42/blocks") return response(blocks);
+      if (target.pathname === "/api/v1/artifacts/artifact-42/blocks") {
+        return response([{ id: "b-1", type: "ask", from: 0, to: 90 }]);
+      }
       if (target.pathname === "/api/v1/issues/DSP-42/asks") {
         return response([
           {
@@ -15248,7 +15251,7 @@ test("the open decision block test refuses another caller in that caller's own w
             kind: "question",
             block_id: "b-1",
             block_artifact: { id: "artifact-42" },
-            state: "open",
+            state,
             question: "Question of b-1?",
           },
         ]);
@@ -15256,17 +15259,16 @@ test("the open decision block test refuses another caller in that caller's own w
       if (target.pathname === "/api/v1/artifacts/artifact-42/versions/4") {
         return response({
           number: 4,
-          markdown:
-            ':::ask{#b-1 urgency="med" multiple="false" state="open"}\nQuestion of b-1?\n:::',
+          markdown: `:::ask{#b-1 urgency="med" multiple="false" state="${state}"}\nQuestion of b-1?\n:::`,
         });
       }
       throw new Error(`unexpected request: ${target.pathname}`);
     };
-  const clientWith = (blocks: unknown[]) =>
+  const clientWith = (state: "open" | "answered") =>
     new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      fetchFor(blocks) as typeof fetch
+      fetchFor(state) as typeof fetch
     );
   const words = {
     call: "legion register_gate",
@@ -15274,7 +15276,7 @@ test("the open decision block test refuses another caller in that caller's own w
     remedy: "Register the version that carries the answer.",
   };
 
-  const open = clientWith([{ id: "b-1", type: "ask", from: 0, to: 90 }]);
+  const open = clientWith("open");
   const resolved = await resolveIssueDocument(open, "DSP-42", "spec");
   expect(resolved.issue?.key).toBe("DSP-42");
   expect(resolved.artifact.id).toBe("artifact-42");
@@ -15288,7 +15290,7 @@ test("the open decision block test refuses another caller in that caller's own w
     "Register the version that carries the answer.",
   ]);
 
-  const settled = clientWith([]);
+  const settled = clientWith("answered");
   await expect(
     refuseOpenDecisionBlocks(settled, await resolveIssueDocument(settled, "DSP-42", "spec"), words)
   ).resolves.toBeUndefined();

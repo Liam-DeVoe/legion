@@ -17,10 +17,10 @@ import (
 
 // The admission pass's move of a parent into awaiting_children writes a `retire_task` row for the
 // worker it stops (workflow's StopForChildren), and the outbox runs it through the claim's
-// machine: the task the claim held for the stopped phase, not yet sent, is gone. The worker that
-// comes up during the wait is sent nothing, and after the return puts the issue back in that same
-// phase at the same run — where the phase fence the daemon wires holds a task of that phase again
-// — only the return's own start reaches it.
+// machine: the task the claim held for the stopped phase, not yet sent, is gone. After the return
+// puts the issue back in that same phase at the same run — where the phase fence the daemon wires
+// holds a task of that phase again — the worker that comes up is sent nothing of the stopped
+// phase, and only the return's own start reaches it.
 func TestTheMovesRetirementLeavesNoTaskOfTheStoppedPhase(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -87,8 +87,10 @@ func TestTheMovesRetirementLeavesNoTaskOfTheStoppedPhase(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	if prompts := conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("prompts once the worker came up = %+v, want none: the stopped phase's task was retired", prompts)
+	// A send the ready made would run on the machine's send goroutine: wait for it.
+	machine.Wait()
+	if pending, prompts := machine.Claim().Pending, conn.Prompts(); pending != nil || len(prompts) != 0 {
+		t.Fatalf("once the worker came up: pending %+v, prompts %+v; want neither: the stopped phase's task was retired", pending, prompts)
 	}
 
 	// The return's own start, on an entry of its own, is what reaches the worker.
