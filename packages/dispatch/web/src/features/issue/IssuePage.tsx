@@ -35,7 +35,7 @@ import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { putTheBoxAt, whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { outsideAskCard } from "../inbox/ask-card";
-import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
+import { statusLabel, statusText } from "../project/board-model";
 import {
   buildReferencePath,
   documentRoute,
@@ -54,6 +54,13 @@ import {
   issueStatusPillDotClassName,
   issueStatusSelectClassName,
 } from "./issue-header-classes";
+import {
+  assigneeBadgeWords,
+  closeIssueWords,
+  priorityBadgeWords,
+  releaseClaimWords,
+  selectableStatuses,
+} from "./issue-header-words";
 import { HeldWords, IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
 import { issuePriority } from "./issue-priority";
 import { issueTabChunks } from "./issue-tab-list";
@@ -210,6 +217,8 @@ function ItemLandingFailure({
  * says the same three things when it lands. The controls are boxes and not controls: the
  * status pick is the header's own `<select>`, `inert`, since a select is as wide as its widest
  * option; priority, assignee, Release and Close are `HeldWords` in their own badges and buttons.
+ * Their words and the pick's options are the header's own, from `issue-header-words.ts`, as its
+ * boxes are from `issue-header-classes.ts`: a word changed in the header changes here with it.
  * A press on this box is how a reader asks for a control, and it hands them the header itself.
  *
  * Not kept: the claim chip, whose words are the holder's live name and liveness from the agent
@@ -242,7 +251,7 @@ function WhatTheHeaderWouldSay({
           inert
           key={issue.status}
         >
-          {(isClosed ? issueStatuses : openIssueStatuses).map((status) => (
+          {selectableStatuses(isClosed).map((status) => (
             <option key={status} value={status}>
               {statusLabel(status)}
             </option>
@@ -251,29 +260,28 @@ function WhatTheHeaderWouldSay({
       </span>
       <span className={badgeSelectWrapper}>
         <span className={badgeSelectBadge}>
-          <HeldWords words={priority === null ? "Priority" : `P${priority}`} />
+          <HeldWords words={priorityBadgeWords(priority)} />
         </span>
       </span>
       <span className={badgeSelectWrapper}>
         <span className={badgeSelectBadge}>
-          <HeldWords words={issue.assignee ?? "Unassigned"} />
+          <HeldWords words={assigneeBadgeWords(issue.assignee)} />
         </span>
       </span>
       <ProgressChips bar progress={issue.progress} />
       <ApprovalChip artifact={artifact} asText variant="header" />
       {issue.claim === null ? null : (
         <span className={`${issueStateButtonClassName} inline-flex items-center`}>
-          <HeldWords words="Release" />
+          <HeldWords words={releaseClaimWords} />
         </span>
       )}
       {isClosed ? null : (
         <span className={`${issueStateButtonClassName} inline-flex items-center`}>
-          <span className="sm:hidden">
-            <HeldWords words="Close" />
-          </span>
-          <span className="hidden sm:inline">
-            <HeldWords words="Close issue" />
-          </span>
+          {closeIssueWords.map(({ className, words }) => (
+            <span className={className} key={words}>
+              <HeldWords words={words} />
+            </span>
+          ))}
         </span>
       )}
     </>

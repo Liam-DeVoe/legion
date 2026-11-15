@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"runtime"
-	"runtime/debug"
 	"runtime/metrics"
 	"strings"
 	"testing"
@@ -350,16 +348,16 @@ const chainedClientsSamples = 3
 // nothing: the answer at chainedClientsLarge may cost no more than chainedClientsSlack times the
 // growth of the clients over the answer at chainedClientsSmall. Each rung is timed in this
 // process's CPU, which the room's cut spends on the goroutine of the socket this row reads
-// (cputest.Measure), with the garbage collector stopped (timedWithoutCollections), and both rungs
-// are timed the same number of times, in turn, keeping the fastest of each: a cold start or a load
-// spike reaches the rung it lands on rather than the ratio, and neither side of the ratio draws
-// from more samples than the other. The asymmetric draw this row made at first - the faster of two
-// timings at the small rung against a single timing at the large one - biased the small rung low
-// and so inflated the ratio with no walk growing at all, which is how it failed CI at 24.5 against
-// a bound of 24 (pmdoc's sampleCount records the same finding against the same mistake). With the
-// draw made even it failed at 24.5 again, in envoy-go-docs-finalizers, because the collector's
-// time was still in the reading (timedWithoutCollections has that account). No test in this
-// package calls t.Parallel.
+// (cputest.Measure), with the garbage collector stopped (cputest.TimedWithoutCollections), and
+// both rungs are timed the same number of times, in turn, keeping the fastest of each: a cold start
+// or a load spike reaches the rung it lands on rather than the ratio, and neither side of the ratio
+// draws from more samples than the other. The asymmetric draw this row made at first - the faster
+// of two timings at the small rung against a single timing at the large one - biased the small
+// rung low and so inflated the ratio with no walk growing at all, which is how it failed CI at 24.5
+// against a bound of 24 (pmdoc's sampleCount records the same finding against the same mistake).
+// With the draw made even it failed at 24.5 again, in envoy-go-docs-finalizers, because the
+// collector's time was still in the reading (the comment over the row's timed window has that
+// account). No test in this package calls t.Parallel.
 func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *testing.T) {
 	service, small := newTestService(t)
 	service.settle = time.Hour
@@ -393,8 +391,25 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 		t.Cleanup(func() { _ = connection.Close() })
 		readToPong(t, connection, rung.room)
 		answers[i] = func() time.Duration {
+			// A collection's CPU time is the heap's and not the answer's: it marks everything the
+			// process holds, which in the package's CI jobs is every room the tests before this row
+			// left behind, and under GODEBUG=checkfinalizers=1, which envoy-go-docs-finalizers runs,
+			// each cycle adds partial stop-the-world collections on one processor. A cycle lands in
+			// the answer whose allocation trips it, and an answer at chainedClientsLarge allocates
+			// about eight times what one at chainedClientsSmall does (27 MiB against 3.2 MiB on a
+			// two-processor pod). That job's log prints a cycle every 35 to 70 ms all through this
+			// row, where an answer at the small rung took 3 to 6 ms of CPU and one at the large rung
+			// tens of milliseconds, and a Linux runner's clock moves in steps far under a millisecond
+			// (cputest's resolution), so a window there holds a single answer: the fastest of three
+			// at the small rung is one a cycle missed, while an answer at the large rung spans about
+			// a cycle's interval. Over nine CI runs of cybermonklabs/legion#2697 that job read the
+			// large rung at 34 to 99 ms and the ratio at 8.7 to 24.5, while envoy-go-race-docs read
+			// it at 11.2 to 12.4 over the same runs, and run 43599260655 failed at 24.5. So each
+			// window runs with the collector stopped, which hides nothing a quadratic walk would
+			// show: the cut walks on the goroutine that answers the socket, inside the window, and
+			// none of that walk is the collector's.
 			took, err := cputest.Measure(func(runs int) (time.Duration, error) {
-				return timedWithoutCollections(func() {
+				return cputest.TimedWithoutCollections(heldMemory()+answerWindowGrowth, func() {
 					for range runs {
 						askForTheDocument(t, connection, rung.room)
 					}
@@ -429,51 +444,18 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 	}
 }
 
-// timedWithoutCollections is the CPU time this process spends running work, with the garbage
-// collector settled before work starts and stopped while it runs, so the time is work's own. It is
-// pmdoc's timedWindow, which a test file of that package cannot lend this one.
-//
-// A collection's CPU time is the heap's and not the answer's: it marks everything the process
-// holds, which in the package's CI jobs is every room the tests before this row left behind, and
-// under GODEBUG=checkfinalizers=1, which envoy-go-docs-finalizers runs, each cycle adds partial
-// stop-the-world collections on one processor. A cycle lands in the answer whose allocation trips
-// it, and an answer at chainedClientsLarge allocates about eight times what one at
-// chainedClientsSmall does (27 MiB against 3.2 MiB on a two-processor pod). That job's log prints
-// a cycle every 35 to 70 ms all through this row, where an answer at the small rung took 3 to 6 ms
-// of CPU and one at the large rung tens of milliseconds, and a Linux runner's clock moves in steps
-// far under a millisecond (cputest's resolution), so a window there holds a single answer: the
-// fastest of three at the small rung is one a cycle missed, while an answer at the large rung
-// spans about a cycle's interval. Over nine CI runs of cybermonklabs/legion#2697 that job read the
-// large rung at 34 to 99 ms and the ratio at 8.7 to 24.5, while envoy-go-race-docs read it at 11.2
-// to 12.4 over the same runs, and run 43599260655 failed at 24.5.
-//
-// Stopping the collector hides nothing a quadratic walk would show: the cut walks on the
-// goroutine that answers the socket, inside the window, and none of that walk is the collector's.
-// The window may grow the heap by answerWindowGrowth while the collector is stopped, so a window
-// that allocates without bound is collected rather than killing the process, and it comes back
-// with an error naming its collections, since their time would be in its reading.
-func timedWithoutCollections(work func()) (time.Duration, error) {
-	runtime.GC()
-	defer debug.SetGCPercent(debug.SetGCPercent(-1))
-	limit := min(debug.SetMemoryLimit(-1), heldMemory()+answerWindowGrowth)
-	defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
-	cycles := gcCycles()
-	before := cputest.Process()
-	work()
-	took := cputest.Process() - before
-	if collected := gcCycles() - cycles; collected != 0 {
-		return took, fmt.Errorf("%d collections ran inside a timed window, which grew the memory the runtime holds to the %d MiB limit; their CPU time is in its %s", collected, limit>>20, took.Round(time.Millisecond))
-	}
-	return took, nil
-}
-
-// answerWindowGrowth is how much memory timedWithoutCollections lets a window add to what the
-// runtime holds as the window opens, unless the process already runs under a lower limit. The
-// limit is the held memory plus this rather than a number of its own because the package's CI
-// jobs run this row in one process with the package's other tests, whose rooms the runtime may
-// still hold. The largest window measured on a two-processor pod, whose 10 ms clock step makes a
-// window of 64 to 126 answers at the small rung (cputest.Measure), grew the heap by 395 MiB.
-const answerWindowGrowth = 1 << 30
+// answerWindowGrowth is how much memory the row's timed windows let the runtime add to what it
+// holds as a window opens (cputest.TimedWithoutCollections's limit), unless the process already
+// runs under a lower limit. The limit is the held memory plus this rather than a number of its own
+// because the package's CI jobs run this row in one process with the package's other tests, whose
+// rooms the runtime may still hold. On a two-processor pod, whose clock moves in 10 ms steps,
+// cputest.Measure sizes a window from a first reading of one answer, or of ten after one that read
+// 0, and a reading the step rounds low makes the next window dozens or hundreds of answers long:
+// one of 313 answers at the small rung grew the memory the runtime holds by 780 MiB, and one of
+// 21 answers at the large rung by 320 MiB. At 1 GiB, two of ten runs on that pod failed with a
+// window at the large rung (3.5 and 3.8 s of answers) reaching the limit; 3 GiB is pmdoc's
+// windowMemoryLimit.
+const answerWindowGrowth = 3 << 30
 
 // heldMemory is the memory the Go runtime holds from the system, the figure its memory limit is
 // held to: everything it has mapped, less the heap it has handed back.
@@ -481,13 +463,6 @@ func heldMemory() int64 {
 	samples := []metrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}}
 	metrics.Read(samples)
 	return int64(samples[0].Value.Uint64() - samples[1].Value.Uint64())
-}
-
-// gcCycles is how many collections this process has completed.
-func gcCycles() uint64 {
-	sample := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
-	metrics.Read(sample)
-	return sample[0].Value.Uint64()
 }
 
 // chainedClientsUpdate is the state of a document clients have appended a paragraph to in turn:

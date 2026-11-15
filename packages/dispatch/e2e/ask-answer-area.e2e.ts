@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { devices, expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
@@ -7,11 +7,12 @@ import {
   createComment,
   createIssue,
   createProject,
+  getAsk,
   patchIssue,
   resolveAsk,
 } from "./api";
 import { recordClipboard } from "./clipboard";
-import { documentEditor, indexedBlockAsk } from "./editor";
+import { documentEditor, indexedBlockAsk, marginCard } from "./editor";
 import { askCard, inboxRow } from "./inbox-pane";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { resetDatabase } from "./seed";
@@ -275,7 +276,57 @@ test("a decision block draws the same header fields as the ask's other places, w
   }
 });
 
-test("a read-only decision block keeps its copy control at its first row's right end, whatever its asker's name @phone", async ({
+/** Where a read-only decision block's header puts its parts: the rows they fall into, whether
+ *  who asked shares the label's row or takes one under it, whether "Answered by" follows the
+ *  copy control or takes a row under it, and the header's own height. */
+async function blockHeaderLayout(header: Locator) {
+  return header.evaluate((node) => {
+    const box = (selector: string) => {
+      const found = node.querySelector(selector);
+      if (found === null) throw new Error(`the block header draws no ${selector}`);
+      return found.getBoundingClientRect();
+    };
+    const shares = (a: DOMRect, b: DOMRect) => a.top < b.bottom && a.bottom > b.top;
+    const head = node.getBoundingClientRect();
+    const parts = {
+      answered: box("[data-dispatch-ask-answered]"),
+      asked: box("[data-dispatch-ask-asked]"),
+      copy: box("[data-copy-ref] button"),
+      decision: box("strong"),
+      label: box("[data-ask-state-label]"),
+      pill: box("[data-dispatch-ask-pill]"),
+    };
+    const { answered, asked, copy, label } = parts;
+    // A part opens a row when it starts below the bottom of every part on the row above it.
+    let rows = 0;
+    let rowBottom = Number.NEGATIVE_INFINITY;
+    for (const part of Object.values(parts).sort((a, b) => a.top - b.top)) {
+      if (part.top >= rowBottom - 1) {
+        rows += 1;
+        rowBottom = part.bottom;
+      } else {
+        rowBottom = Math.max(rowBottom, part.bottom);
+      }
+    }
+    const firstRowBottom = Math.max(copy.bottom, label.bottom);
+    return {
+      answeredAfterCopy: shares(answered, label)
+        ? answered.left >= copy.right
+        : answered.top >= firstRowBottom - 1,
+      answeredUnderAsked: answered.top >= asked.bottom - 1,
+      askedInsideHeader: asked.right <= head.right + 1,
+      askedOnLabelRow: shares(asked, label),
+      copyAfterAsked: copy.left >= asked.right,
+      copyAtRightEnd: Math.abs(head.right - copy.right) <= 1,
+      copyOnLabelRow: shares(copy, label),
+      height: Math.round(head.height),
+      oneOrTwoRows: rows === 1 || rows === 2,
+      rows,
+    };
+  });
+}
+
+test("a read-only decision block's header is one wrapping row from md, its copy control on the first, and rows of their own on a phone @phone", async ({
   browser,
 }) => {
   // A closed issue's answered block draws its own header: no card under it carries the
@@ -303,43 +354,218 @@ test("a read-only decision block keeps its copy control at its first row's right
       '[data-dispatch-ask-block="decide"] header[data-ask-header]'
     );
     await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
-    // The first row is the urgency, `Decision`, the label and the copy control at its right end;
-    // who asked and when is the row under it, inside the header however long the name, and who
-    // answered the row under that.
-    const layout = await header.evaluate((node) => {
-      const box = (selector: string) => {
-        const found = node.querySelector(selector);
-        if (found === null) throw new Error(`the block header draws no ${selector}`);
-        return found.getBoundingClientRect();
-      };
-      const head = node.getBoundingClientRect();
-      const decision = box("strong");
-      const label = box("[data-ask-state-label]");
-      const copy = box("[data-copy-ref] button");
-      const asked = box("[data-dispatch-ask-asked]");
-      const answered = box("[data-dispatch-ask-answered]");
-      return {
-        answeredUnderAsked: answered.top >= asked.bottom - 1,
-        askedInsideHeader: asked.right <= head.right + 1,
-        askedUnderFirstRow: asked.top >= Math.max(copy.bottom, label.bottom) - 1,
-        copyAtRightEnd: Math.abs(head.right - copy.right) <= 1,
-        copyBesideLabel: copy.left >= label.right,
-        copyOnFirstRow: copy.top < decision.bottom && copy.bottom > decision.top,
-      };
-    });
-    expect(layout, "the read-only block header's rows").toEqual({
-      answeredUnderAsked: true,
-      askedInsideHeader: true,
-      askedUnderFirstRow: true,
-      copyAtRightEnd: true,
-      copyBesideLabel: true,
-      copyOnFirstRow: true,
-    });
+    const viewport = page.viewportSize();
+    if (viewport === null) throw new Error("the page has no viewport");
+    // From `md` (768 px) the header is the one wrapping row it always was: the urgency,
+    // `Decision`, the label, who asked and when, and the copy control share a line that never
+    // wraps - the name truncates instead - and "Answered by" follows the control where it fits
+    // and takes the next row where it does not. Below `md`, beside a 44 px copy control, each
+    // takes a row of its own: the urgency, `Decision`, the label and the copy control at its
+    // right end, then who asked and when, then who answered. A desktop project reads the
+    // widths from 1280 down to `md` and a phone's 390 px, a phone project its own width.
+    const widths = viewport.width < 768 ? [viewport.width] : [1280, 1024, 768, 390];
+    for (const width of widths) {
+      await page.setViewportSize({ height: viewport.height, width });
+      const expected =
+        width < 768
+          ? {
+              answeredUnderAsked: true,
+              askedInsideHeader: true,
+              askedOnLabelRow: false,
+              copyAtRightEnd: true,
+              copyOnLabelRow: true,
+              rows: 3,
+            }
+          : {
+              answeredAfterCopy: true,
+              askedInsideHeader: true,
+              askedOnLabelRow: true,
+              copyAfterAsked: true,
+              copyOnLabelRow: true,
+              oneOrTwoRows: true,
+            };
+      await expect
+        .poll(() => blockHeaderLayout(header), {
+          message: `the block header's rows at ${width} px`,
+        })
+        .toMatchObject(expected);
+    }
     // A name the row cuts is still there whole, in the tooltip of the part that truncates.
     await expect(header.locator("[data-dispatch-ask-asked] > [title]")).toHaveAttribute(
       "title",
       new RegExp(`^${title} · `)
     );
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The long-titled session whose ask the card rows hand back to it: its name is the turn an
+ *  agent holds, the one part of the card's line that gives up width. */
+const ledger: FakeSession = {
+  ...planner,
+  dir: "/workspaces/ledger",
+  session_id: sessionIds.tester,
+  title: "Release planner for the ledger mirror",
+};
+
+/** Two anchored asks on one issue's spec: the planner's, waiting on the reader, and the
+ *  long-titled session's, whose turn the reader's question handed back to it. */
+async function seedTurns() {
+  await setLiveSessions([planner, ledger]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "## Specification\n\nThe mirror replays the ledger on a cold start.\n",
+    title: "Copy control",
+  });
+  const yours = await createAsk(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "replays the ledger" },
+      question: "Does a cold start replay the ledger?",
+    },
+    asker
+  );
+  const theirs = await createAsk(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "cold start" },
+      question: "Which mirror keeps the budget?",
+    },
+    { actor: { id: ledger.session_id, kind: "session" }, as: "agent" }
+  );
+  await createComment(issue.key, { ask_id: theirs.id, body: "Which mirror do you mean?" });
+  await expect
+    .poll(() => getAsk(theirs.id), { intervals: [50, 50, 100, 200, 500] })
+    .toMatchObject({ ask: { waiting_on: "agent" } });
+  return {
+    issue,
+    turns: [
+      { ask: yours, asker: planner, turn: "Waiting on you" },
+      { ask: theirs, asker: ledger, turn: `Waiting on ${ledger.title}` },
+    ],
+  };
+}
+
+/** An ask card's own line: the width of its `@container` row and of the viewport, the two
+ *  conditions that pick its layout, whether the copy control shares the label's line, and
+ *  whether who asked and when opens a line of its own under that one. */
+async function copyLine(card: Locator) {
+  await expect(card.locator("[data-ask-header] [data-copy-ref] button")).toBeVisible();
+  return card
+    .locator("[data-ask-header]")
+    .first()
+    .evaluate((header) => {
+      const label = header.querySelector("[data-ask-state-label]");
+      const copy = header.querySelector("[data-copy-ref] button");
+      if (label === null || copy === null) {
+        throw new Error("the card's header draws no label or no copy control");
+      }
+      let row = copy.parentElement;
+      while (row !== null && getComputedStyle(row).containerType !== "inline-size") {
+        row = row.parentElement;
+      }
+      if (row === null) throw new Error("the card's copy control stands in no @container row");
+      // Who asked and when is the box around the time the row draws.
+      const asked = row.querySelector("time")?.parentElement;
+      if (asked === null || asked === undefined) throw new Error("the card's row draws no time");
+      const at = label.getBoundingClientRect();
+      const control = copy.getBoundingClientRect();
+      const line = asked.getBoundingClientRect();
+      const start = row.getBoundingClientRect().left;
+      return {
+        askerOwnLine:
+          line.top >= Math.max(at.bottom, control.bottom) - 1 && Math.abs(line.left - start) <= 1,
+        copyOnLabelLine: control.top < at.bottom && control.bottom > at.top,
+        row: row.clientWidth,
+        viewport: window.innerWidth,
+      };
+    });
+}
+
+test("the Inbox card's copy control ends the label's one line, whoever's turn it is", async ({
+  browser,
+}) => {
+  const { turns } = await seedTurns();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    for (const { ask, turn } of turns) {
+      const card = await askCard(page, ask.id);
+      await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
+      const line = await copyLine(card);
+      // The card's widest layout: a row of 24rem or more, where label, turn, asker and copy
+      // control are one line.
+      expect(line.row, `${turn}: the Inbox card's row is 24rem or wider`).toBeGreaterThanOrEqual(
+        384
+      );
+      expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the margin card's copy control stands beside its two lines, on the label's, whoever's turn it is", async ({
+  browser,
+}) => {
+  const { issue, turns } = await seedTurns();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("tab", { name: "Spec" }).click();
+    for (const { ask, turn } of turns) {
+      const card = marginCard(page, ask.id);
+      await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
+      const line = await copyLine(card);
+      // The margin: a row under 24rem, which breaks the label and turn from the asker, at a
+      // viewport from `md`, where the copy control stands beside both lines.
+      expect(line.viewport, `${turn}: the viewport is md or wider`).toBeGreaterThanOrEqual(768);
+      expect(line.row, `${turn}: the margin card's row is under 24rem`).toBeLessThan(384);
+      expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+test("on a phone the Inbox card's copy control ends the label's line and the asker has the next line whole, whoever's turn it is @phone", async ({
+  browser,
+}) => {
+  const { turns } = await seedTurns();
+  const alice = await asUser(browser, "alice", devices["iPhone 13"]);
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    for (const { ask, asker: author, turn } of turns) {
+      const card = await askCard(page, ask.id);
+      await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
+      const line = await copyLine(card);
+      // A phone: a row under 24rem at a viewport under `md`, where the copy control is a 44 px
+      // touch box at the end of the label's line and the asker has the next line to itself.
+      expect(line.viewport, `${turn}: the viewport is under md`).toBeLessThan(768);
+      expect(line.row, `${turn}: the phone card's row is under 24rem`).toBeLessThan(384);
+      expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
+      expect(line.askerOwnLine, `${turn}: the asker opens the next line`).toBe(true);
+      const name = card.locator(
+        `[data-ask-header] [title="${author.title} · ${author.session_id}"]`
+      );
+      await expect(name).toHaveText(author.title);
+      // A name that fits that line is drawn whole. The agent's own title does not fit it at
+      // all - 223 px of name beside the live link and the time, which leave it 160 - so it
+      // truncates there whatever the copy control does, and its tooltip holds it whole.
+      if (author === ledger) continue;
+      const fits = await name.evaluate((element) => ({
+        client: element.clientWidth,
+        scroll: element.scrollWidth,
+      }));
+      expect(fits.scroll, `${turn}: the asker's name is not cut short`).toBeLessThanOrEqual(
+        fits.client
+      );
+    }
   } finally {
     await alice.close();
   }

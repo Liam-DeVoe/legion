@@ -4,6 +4,7 @@ import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, priorityBadge } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { priorityBadgeWords } from "./issue-header-words";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -66,7 +67,7 @@ export function PriorityEditor({
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {priority === null ? "Priority" : `P${priority}`}
+          {priorityBadgeWords(priority)}
         </span>
         <select
           aria-label={`Priority of ${issueKey}`}

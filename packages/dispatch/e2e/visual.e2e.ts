@@ -329,9 +329,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // pixels, which is a patch of about 4 by 4. That is the sentence to read this bound
         // by. It sees any change above that, down to one 8-bit step, because the per-pixel
         // bound is zero. A glyph is such a patch too: the sidebar's Inbox badge reading 6
-        // where its baseline read 5 is 14 pixels. So a badge's number is held only where a
-        // row's `ready` locator names it, as the `broadcast` row's does
-        // (`e2e/review-routes.ts`), and never by this bound.
+        // where its baseline read 5 is 14 pixels. That number is not this bound's to hold, and
+        // no shot reads it: the rail's Inbox entry is masked (the mask list above), and
+        // `waitForRouteSettled` waits for it to stop moving before the shot
+        // (`waitForInboxCountSettled`, `e2e/review-routes.ts`).
         //
         // What a real change gives is NOT one number, and a reader judging whether 20 is
         // safe needs the small end of it rather than the large. Two controls, each one

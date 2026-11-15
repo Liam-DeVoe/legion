@@ -814,9 +814,7 @@ export const dispatchToolSpecs = [
         .string()
         .nullable()
         .optional()
-        .describe(
-          "Parent issue key in the same project; null or an empty string clears the parent."
-        ),
+        .describe("Parent issue key in the same project; null clears the parent."),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(

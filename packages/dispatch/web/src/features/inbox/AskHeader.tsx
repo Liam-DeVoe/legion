@@ -178,7 +178,9 @@ export function askStateLabel(state: string, resolution: AskResolution | undefin
 interface AskHeaderFacts {
   readonly askedAt: ReactNode;
   readonly attributes: Record<string, string>;
-  readonly copy: ReactNode;
+  /** The copy control, or nothing where this header draws none, with the class the place puts
+   *  on its button (`CopyRefButton`'s own `className`) to stand it where its layout needs it. */
+  readonly copy: (className?: string) => ReactNode;
   readonly notch: ReactNode;
   /** Whether this header draws who asked, when, and the copy control: the card below a decision
    *  block draws all three, so the block's own header draws none of them. */
@@ -195,16 +197,14 @@ function askHeaderFacts(
   const urgency = block?.urgency ?? ask?.urgency;
   const state = block?.state ?? ask?.state;
   const provenance = ask !== undefined && !carded;
-  const copy = provenance && reference !== undefined ? <CopyRefButton route={reference} /> : null;
+  const copied = provenance ? reference : undefined;
 
   const attributes: Record<string, string> = { "data-ask-header": "" };
   if (urgency !== undefined) attributes["data-ask-urgency"] = urgency;
   if (state !== undefined) attributes["data-ask-state"] = state;
   if (provenance && ask !== undefined) attributes["data-ask-at"] = ask.created_at;
   if (asker !== undefined) attributes["data-ask-asker"] = asker.label;
-  if (copy !== null && reference !== undefined) {
-    attributes["data-ask-copy"] = buildDispatchReference(reference);
-  }
+  if (copied !== undefined) attributes["data-ask-copy"] = buildDispatchReference(copied);
 
   const urgencyPill =
     block === undefined ? null : block.malformed ? (
@@ -246,7 +246,8 @@ function askHeaderFacts(
   return {
     askedAt: ask === undefined ? null : <Timestamp at={ask.created_at} />,
     attributes,
-    copy,
+    copy: (className) =>
+      copied === undefined ? null : <CopyRefButton className={className} route={copied} />,
     notch,
     provenance,
     stateLabel,
@@ -254,44 +255,24 @@ function askHeaderFacts(
   };
 }
 
-/** The row every place draws, in the order every place draws it; what differs is the provenance
- *  each writes and the box it stands in. `line` is a place's class for one box around all of it
- *  but `trailing`, for a place whose row must not wrap before its copy control; `group` is the
- *  class of a box inside it around all of it but the copy control, for a place that breaks that
- *  part into lines of its own beside the control. */
+/** The parts every place draws, in the order every place draws them: the urgency, the place's
+ *  own `leading` part, the state label and the place's provenance. Each place draws its copy
+ *  control (`facts.copy`) and its `trailing` parts after them, in the boxes its layout needs. */
 function AskHeaderRow({
   facts,
-  group,
   leading,
-  line,
   provenance,
-  trailing,
 }: {
   facts: AskHeaderFacts;
-  group?: string;
   leading: ReactNode;
-  line?: string;
   provenance: ReactNode;
-  trailing: ReactNode;
 }): ReactNode {
-  const parts = (
+  return (
     <>
       {facts.urgencyPill}
       {leading}
       {facts.stateLabel}
       {provenance}
-    </>
-  );
-  const head = (
-    <>
-      {group === undefined ? parts : <span className={group}>{parts}</span>}
-      {facts.copy}
-    </>
-  );
-  return (
-    <>
-      {line === undefined ? head : <span className={line}>{head}</span>}
-      {trailing}
     </>
   );
 }
@@ -313,46 +294,51 @@ function DrawnAskHeader(props: AskHeaderProps & { asker: AskHeaderAsker | undefi
 }
 
 /** A decision block's own portalled header, with nothing of its own between the anchor and the
- *  provenance - the editor holds the question. Its first row is the urgency, the block's
- *  `Decision`, the state label and, at that row's right end, the copy control; who asked and
- *  when takes the next row (`order-1`), the asker's name truncating with the whole name in its
- *  tooltip, and the host's "Answered by" the row after it (`AskBlockCard`). Beside the label and
- *  a phone's 44 px copy control a first row has no room for the provenance as well: sharing it,
- *  a long name, or a phone, wrapped the copy control onto a row of its own. */
+ *  provenance - the editor holds the question. From `md` it is one wrapping row: the urgency,
+ *  the block's `Decision`, the state label, who asked and when, and the copy control stand in
+ *  one line that never wraps - the asker's name truncates, with the whole name in its tooltip -
+ *  and the host's "Answered by" (`AskBlockCard`) follows on that row where it fits, on the next
+ *  where it does not. Below `md` the copy control is a 44 px touch box, and a phone's row has
+ *  room for it beside the label alone, so the line gives way to rows: the urgency, `Decision`,
+ *  the label and the copy control at the first row's right end, who asked and when on the next
+ *  (`order-1`), and "Answered by" on the row after it. */
 function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): ReactNode {
   const author = ask?.author;
   return (
     <header
-      className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm [&>[data-copy-ref]>button]:ml-auto ${textMutedOnSurfaceMuted}`}
+      className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`}
       {...facts.attributes}
     >
-      <AskHeaderRow
-        facts={facts}
-        leading={leading}
-        provenance={
-          !facts.provenance || author === undefined ? null : (
-            <span
-              className="order-1 flex min-w-0 basis-full items-center gap-x-2 whitespace-nowrap"
-              data-dispatch-ask-asked=""
-            >
-              {asker === undefined ? (
-                <span className="shrink-0">Asked</span>
-              ) : (
-                <>
-                  <TruncatedText className="min-w-0" title={asker.title}>
-                    Asked by <AgentName actor={author} inline />
-                  </TruncatedText>
-                  <span className="shrink-0" aria-hidden="true">
-                    ·
-                  </span>
-                </>
-              )}
-              <span className="shrink-0">{facts.askedAt}</span>
-            </span>
-          )
-        }
-        trailing={trailing}
-      />
+      <span className="flex min-w-0 items-center gap-x-2 whitespace-nowrap max-md:contents">
+        <AskHeaderRow
+          facts={facts}
+          leading={leading}
+          provenance={
+            !facts.provenance || author === undefined ? null : (
+              <span
+                className="flex min-w-0 items-center gap-x-2 max-md:order-1 max-md:basis-full"
+                data-dispatch-ask-asked=""
+              >
+                {asker === undefined ? (
+                  <span className="shrink-0">Asked</span>
+                ) : (
+                  <>
+                    <TruncatedText className="min-w-0" title={asker.title}>
+                      Asked by <AgentName actor={author} inline />
+                    </TruncatedText>
+                    <span className="shrink-0" aria-hidden="true">
+                      ·
+                    </span>
+                  </>
+                )}
+                <span className="shrink-0">{facts.askedAt}</span>
+              </span>
+            )
+          }
+        />
+        {facts.copy("max-md:ml-auto")}
+      </span>
+      {trailing}
     </header>
   );
 }
@@ -383,75 +369,81 @@ function CardAskHeader({
       <div
         className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
       >
-        <AskHeaderRow
-          facts={facts}
-          // The label and the provenance are one group whose names truncate, and the copy
-          // control stands beside the group, so the line holding both never wraps and the
-          // control stays at the first line's right end at every width the card is drawn at.
-          // A separator that wrapped left a line opening - or ending - on a bare "·", and the
-          // agents are the only parts that can give up width ("Waiting on you" never does).
-          // Below 24rem of line (a phone, a margin) the group breaks in two: the label, as tall
-          // as the line's text, and the turn share the first line, and the asker and time take
-          // the next, with no separator - beside the turn, and beside the label, the asker's
-          // name kept a few letters. Below `md` (a phone, its review sheet) the copy control and
-          // the live link are 44 px touch boxes, so the group gives way to one wrapping line:
-          // the control ends the first line, and the asker's line is the card's whole width,
-          // which is what reads a name whole beside its live link (`e2e/agent-name.e2e.ts`).
-          // From `md` (the 280 px margin) the control's 32 px box stands beside both lines, so
-          // the card is no taller than it was before it drew a label.
-          group="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap @max-sm:[&>[data-ask-state-label]]:py-0 max-md:@max-sm:contents"
-          leading={leading}
-          line="flex min-w-0 items-center gap-x-1.5 max-md:@max-sm:flex-wrap max-md:@max-sm:[&>[data-copy-ref]>button]:ml-auto"
-          provenance={
-            !facts.provenance || ask === undefined || author === undefined ? null : (
-              <>
-                {turnHolder === null ? null : (
-                  <span
-                    className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold ${textSecondaryOnSurface}`}
-                    data-testid={`turn-${ask.id}`}
-                  >
-                    Waiting on{" "}
-                    {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
-                  </span>
-                )}
-                {turnHolder === null ? null : (
-                  <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
-                    ·
-                  </span>
-                )}
-                <span className="flex min-w-0 items-center gap-x-1.5 @max-sm:basis-full max-md:@max-sm:order-1">
-                  {session === undefined || control === undefined ? (
-                    <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
-                      {asker === undefined ? "asked" : <AgentName actor={author} />}
-                    </TruncatedText>
-                  ) : (
-                    // The asker's control keeps its name and opens the session's copy handles;
-                    // the component's live link sits beside it, outside the control.
-                    // `whitespace-pre` keeps the space before an attribution suffix, which a
-                    // flex item would drop.
-                    <AgentName
-                      actor={session}
-                      className="flex min-w-0 items-center whitespace-pre"
-                      control={(name) =>
-                        control(
-                          <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
-                            {name}
-                          </TruncatedText>
-                        )
-                      }
-                      kind="control"
-                    />
-                  )}
-                  <span className="shrink-0" aria-hidden="true">
-                    ·
-                  </span>
-                  {facts.askedAt}
-                </span>
-              </>
-            )
-          }
-          trailing={trailing}
-        />
+        {/* The label and the provenance are one group whose names truncate, and the copy
+            control stands beside the group, so the line holding both never wraps and the
+            control stays on the label's line at every width the card is drawn at. A separator
+            that wrapped left a line opening - or ending - on a bare "·", and the agents are the
+            only parts that can give up width ("Waiting on you" never does; an agent's turn
+            gives up all of it below 24rem, `flex-1` from a zero basis, so its name truncates
+            instead of pushing what follows it off the line). Below 24rem of line (a phone, a
+            margin) the group breaks in two: the label, as tall as the line's text, and the turn
+            share the first line, and the asker and time take the next, with no separator -
+            beside the turn, and beside the label, the asker's name kept a few letters. Below
+            `md` (a phone, its review sheet) the copy control and the live link are 44 px touch
+            boxes, so the group gives way to one wrapping line: the control ends the first line,
+            and the asker's line is the card's whole width, which is what reads a name whole
+            beside its live link (`e2e/agent-name.e2e.ts`). From `md` (the 280 px margin) the
+            control's 32 px box stands beside both lines, so the card is no taller than it was
+            before it drew a label. `e2e/ask-answer-area.e2e.ts` holds the control to the
+            label's line in all three. */}
+        <span className="flex min-w-0 items-center gap-x-1.5 max-md:@max-sm:flex-wrap">
+          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap @max-sm:[&>[data-ask-state-label]]:py-0 max-md:@max-sm:contents">
+            <AskHeaderRow
+              facts={facts}
+              leading={leading}
+              provenance={
+                !facts.provenance || ask === undefined || author === undefined ? null : (
+                  <>
+                    {turnHolder === null ? null : (
+                      <span
+                        className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate @max-sm:flex-1"} font-semibold ${textSecondaryOnSurface}`}
+                        data-testid={`turn-${ask.id}`}
+                      >
+                        Waiting on{" "}
+                        {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
+                      </span>
+                    )}
+                    {turnHolder === null ? null : (
+                      <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
+                        ·
+                      </span>
+                    )}
+                    <span className="flex min-w-0 items-center gap-x-1.5 @max-sm:basis-full max-md:@max-sm:order-1">
+                      {session === undefined || control === undefined ? (
+                        <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
+                          {asker === undefined ? "asked" : <AgentName actor={author} />}
+                        </TruncatedText>
+                      ) : (
+                        // The asker's control keeps its name and opens the session's copy
+                        // handles; the component's live link sits beside it, outside the
+                        // control. `whitespace-pre` keeps the space before an attribution
+                        // suffix, which a flex item would drop.
+                        <AgentName
+                          actor={session}
+                          className="flex min-w-0 items-center whitespace-pre"
+                          control={(name) =>
+                            control(
+                              <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
+                                {name}
+                              </TruncatedText>
+                            )
+                          }
+                          kind="control"
+                        />
+                      )}
+                      <span className="shrink-0" aria-hidden="true">
+                        ·
+                      </span>
+                      {facts.askedAt}
+                    </span>
+                  </>
+                )
+              }
+            />
+          </span>
+          {facts.copy("max-md:@max-sm:ml-auto")}
+        </span>
+        {trailing}
       </div>
     </div>
   );
@@ -502,8 +494,9 @@ function RecordAskHeader({
               </>
             )
           }
-          trailing={trailing}
         />
+        {facts.copy()}
+        {trailing}
       </div>
     </div>
   );

@@ -60,7 +60,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { ReaderIsHere, useAfterTheFirstBatch } from "../doc/first-batch";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
@@ -86,6 +86,7 @@ import {
   issueTitleBoxClassName,
   issueTitleTextClassName,
 } from "./issue-header-classes";
+import { closeIssueWords, releaseClaimWords, selectableStatuses } from "./issue-header-words";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
@@ -293,7 +294,6 @@ export function IssueHeader({
   ]);
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
-  const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -540,7 +540,7 @@ export function IssueHeader({
               onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
               value={pendingStatus ?? issue.status}
             >
-              {selectableStatuses.map((status) => (
+              {selectableStatuses(isClosed).map((status) => (
                 <option key={status} value={status}>
                   {statusLabel(status)}
                 </option>
@@ -615,7 +615,7 @@ export function IssueHeader({
                 title="Release this claim so another agent can take the issue"
                 type="button"
               >
-                {releaseClaim.isPending ? "Releasing…" : "Release"}
+                {releaseClaim.isPending ? "Releasing…" : releaseClaimWords}
               </button>
             </>
           )}
@@ -627,14 +627,13 @@ export function IssueHeader({
               onClick={() => drafts.requestStatusSubmit("done")}
               type="button"
             >
-              {pendingStatus === "done" ? (
-                "Closing…"
-              ) : (
-                <>
-                  <span className="sm:hidden">Close</span>
-                  <span className="hidden sm:inline">Close issue</span>
-                </>
-              )}
+              {pendingStatus === "done"
+                ? "Closing…"
+                : closeIssueWords.map(({ className, words }) => (
+                    <span className={className} key={words}>
+                      {words}
+                    </span>
+                  ))}
             </button>
           )}
         </div>

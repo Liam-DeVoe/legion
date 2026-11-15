@@ -95,10 +95,11 @@ export function AskBlockCard({
             trailing={
               <>
                 {!carded && answered ? (
-                  // A row of its own, under who asked and when, at every width: sharing the
-                  // first row, the state label's width decided whether it fitted there.
+                  // From `md` it follows the header's first line where it fits and takes the
+                  // next row where it does not; below `md` it is a row of its own, under who
+                  // asked and when (`BlockAskHeader`).
                   <span
-                    className="order-2 flex basis-full items-center gap-x-2"
+                    className="flex items-center gap-x-2 max-md:order-2 max-md:basis-full"
                     data-dispatch-ask-answered=""
                   >
                     <span>Answered by {facts.answeredBy}</span>

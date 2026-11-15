@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { copyIconBoxClassName } from "../../components/copy-button-classes";
 import {
   tabClassName,
   tabCountClassName,
@@ -128,9 +129,10 @@ export function IssueHeaderSkeleton({
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
           {/* The key badge's box: the header's own `px-2.5 py-1.5` around a 20 px line, so
-              32 px, and the copy control beside it, at `components/CopyButton.tsx`'s own
-              icon-only size: 44 px below md, which is the row's height there, and the badge's
-              width and its own are where the title starts from sm up. */}
+              32 px, and the copy control beside it, in `components/CopyButton.tsx`'s own
+              icon-only box (`copy-button-classes.ts`): 44 px below md, which is the row's
+              height there, and the badge's width and its own are where the title starts from
+              sm up. */}
           <div className="flex shrink-0 items-center gap-1 self-start">
             <p className={`${issueKeyBadgeClassName} ${issueKeyTextClassName}`}>
               {issueKey === undefined ? (
@@ -139,7 +141,7 @@ export function IssueHeaderSkeleton({
                 <HeldWords words={issueKey} />
               )}
             </p>
-            <span className="min-h-11 min-w-11 shrink-0 md:min-h-8 md:min-w-8" />
+            <span className={copyIconBoxClassName} />
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
             {/* The title's box: the heading's own border and padding around its 28 px lines,

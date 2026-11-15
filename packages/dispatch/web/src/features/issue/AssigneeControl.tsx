@@ -5,6 +5,7 @@ import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { assigneeBadgeWords, unassignedWords } from "./issue-header-words";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /**
@@ -43,7 +44,7 @@ export function AssigneeControl({
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {assignee ?? "Unassigned"}
+          {assigneeBadgeWords(assignee)}
         </span>
         <select
           aria-label={`Assignee of ${issueKey}`}
@@ -63,7 +64,7 @@ export function AssigneeControl({
           }}
           value={assignee ?? ""}
         >
-          <option value="">Unassigned</option>
+          <option value="">{unassignedWords}</option>
           {options.map((login) => (
             <option key={login} value={login}>
               {login}

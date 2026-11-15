@@ -2,6 +2,7 @@ import type { MouseEvent, ReactNode } from "react";
 
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import { dangerText, linkHoverText, linkText, successText } from "../theme/classes";
+import { copyIconBoxClassName } from "./copy-button-classes";
 
 /** Copies `value` to the clipboard and confirms inline for 1.5 s ("Copied") or reports the
  *  failure until the next attempt. With `children` the button shows that label before the
@@ -28,16 +29,16 @@ export function CopyButton({
 }): ReactNode {
   const { copy, status } = useCopyFeedback();
   const name = label ?? (typeof value === "string" ? `Copy ${what} ${value}` : `Copy ${what}`);
-  const shape =
+  const box =
     children === undefined
-      ? "min-w-11 justify-center md:min-w-8"
-      : "max-w-full gap-1 px-1 font-mono text-xs font-medium select-text";
+      ? copyIconBoxClassName
+      : "inline-flex min-h-11 max-w-full shrink-0 items-center gap-1 rounded-lg px-1 font-mono text-xs font-medium select-text md:min-h-8";
 
   return (
     <>
       <button
         aria-label={name}
-        className={`inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 ${shape} ${linkText} ${linkHoverText} ${className ?? ""}`}
+        className={`${box} ${linkText} ${linkHoverText} ${className ?? ""}`}
         onClick={(event) => copy(typeof value === "string" ? value : value(event))}
         title={name}
         type="button"
