@@ -2839,3 +2839,150 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
   // draws again the control it was made on hands the focus on, and never to the body.
   expect(lost, lost.join("; ")).toEqual([]);
 });
+
+/** The `scrollTop` a table's box settles at once a wheel step has moved it: read in the page
+ *  once it has held still for three frames running. The wait is frames rather than time: a
+ *  step's scroll lands over frames, and the focus rescue answers a loss a frame and a task after
+ *  it, so a box pulled back shows in the frames this reads. A frame WebKit holds back is given up
+ *  on after 100 ms, as the rescue's own `FRAME_WAIT_MS` gives it up. */
+async function settledScrollTop(box: Locator): Promise<number> {
+  return box.evaluate(async (node) => {
+    let last = node.scrollTop;
+    for (let still = 0, frames = 0; still < 3 && frames < 60; frames++) {
+      const drawn = Promise.withResolvers<void>();
+      requestAnimationFrame(() => drawn.resolve());
+      setTimeout(drawn.resolve, 100);
+      await drawn.promise;
+      still = node.scrollTop === last ? still + 1 : 0;
+      last = node.scrollTop;
+    }
+    return last;
+  });
+}
+
+/** The row holding the keyboard focus, by the value of `rowAttribute` it carries, or null where
+ *  the focus is in no such row. */
+async function focusedRowOf(page: Page, rowAttribute: string): Promise<string | null> {
+  return page.evaluate(
+    (attribute) =>
+      document.activeElement?.closest(`[${attribute}]`)?.getAttribute(attribute) ?? null,
+    rowAttribute
+  );
+}
+
+// SLOW(>=2s): 120 issues and 120 pull requests seeded, and two tables each scrolled by 25 wheel
+// steps with a settled read after each.
+// `@firefox` and `@webkit`: a focused row a virtual table takes away fires no `focusout` in these
+// engines, so the page's focus rescue sees that loss only by watching the page, and each engine
+// lands a wheel step's scroll over its own frames.
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6y_): with a row's checkbox focused, 20
+// wheel steps over a virtual table pulled its box back from 690 px to 24 px and moved the focus
+// onto another row. The reader's scroll is theirs: the box goes where the wheel takes it. The row
+// they picked leaves with the drawn window and takes the focus with it, as it did before the
+// rescue, and nothing hands the focus to a row they did not pick, so `x` then marks none.
+test("a table that holds the keyboard focus scrolls freely, and the focus moves to no row the reader did not pick @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const main = page.getByTestId("main-content");
+
+  /** Sends 25 wheel steps of 100 px with the pointer over `box`, reads its `scrollTop` once each
+   *  has settled, and answers those reads with what went wrong: a read more than 1 px above the
+   *  one before it, the focus in any row but `picked`, and a box that ended less than 1,500 px
+   *  below where it started. It answers where the focus ended too. */
+  const wheelOver = async (box: Locator, rowAttribute: string, picked: string) => {
+    await box.scrollIntoViewIfNeeded();
+    const area = await box.boundingBox();
+    if (area === null) throw new Error("the table's box is not on screen");
+    // Near the box's left edge, in the first cell's padding, where no row draws a link: a pointer
+    // resting on a row's link opens that link's hover card, which takes the wheel steps after it
+    // for itself. Measured in WebKit with the pointer at the box's middle: the box stopped at
+    // 400 px for the last 20 steps.
+    await page.mouse.move(area.x + 4, area.y + area.height / 2);
+    const readings = [await settledScrollTop(box)];
+    const wrong: string[] = [];
+    for (let step = 1; step <= 25; step++) {
+      await page.mouse.wheel(0, 100);
+      const top = await settledScrollTop(box);
+      const before = readings.at(-1) ?? 0;
+      if (top < before - 1) wrong.push(`step ${step} pulled the box back from ${before} to ${top}`);
+      readings.push(top);
+      const focused = await focusedRowOf(page, rowAttribute);
+      if (focused !== null && focused !== picked) {
+        wrong.push(`after step ${step} the focus is in ${focused}`);
+      }
+    }
+    const moved = (readings.at(-1) ?? 0) - (readings[0] ?? 0);
+    if (moved < 1_500) wrong.push(`the box ended ${moved} px below where it started`);
+    const ended = await page.evaluate(() => document.activeElement?.tagName ?? "nothing");
+    return { ended, readings, wrong };
+  };
+
+  // The project List, on one page of 120 issues, far more than its box draws. Each title differs
+  // from every other in a word of its own, since the server refuses a near copy of a title it
+  // holds (409 POSSIBLE_DUPLICATE).
+  await createProject({ key: "CORE", name: "Core" });
+  for (let batch = 0; batch < 120; batch += 10) {
+    await Promise.all(
+      Array.from({ length: 10 }, (_, offset) =>
+        createIssue({ project: "CORE", title: `Scrolled row ${batch + offset + 1}` })
+      )
+    );
+  }
+  await openIssuesTab(page, "CORE", "List");
+  const pager = control(main, CONTROL.pager);
+  await expect(pager).toContainText("120 of 120 issues");
+  await pager.getByRole("combobox").selectOption("250");
+  await expect(page).toHaveURL(/[?&]size=250/);
+  const listBox = control(main, CONTROL.dataTable);
+  const picked =
+    (await listBox.locator("[data-issue-row]").nth(2).getAttribute("data-issue-row")) ?? "";
+  const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
+  await pickedBox.click();
+  const bar = control(main, CONTROL.selectionBar);
+  await expect(bar).toContainText("1 selected");
+  expect(await focusedRowOf(page, "data-issue-row"), "the click left the focus in no row").toBe(
+    picked
+  );
+  const list = await wheelOver(listBox, "data-issue-row", picked);
+  console.log(
+    `project List, ${picked}'s checkbox clicked: ${list.readings.join(" ")}; the focus ends on ${list.ended}`
+  );
+  expect(list.wrong, `project List: ${list.wrong.join("; ")}`).toEqual([]);
+  // `x` marks no row the reader did not pick: the row they marked is still the one marked, and
+  // the only one, once the box is back at its top.
+  await page.keyboard.press("x");
+  await listBox.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await expect(pickedBox).toBeChecked();
+  await expect(bar).toContainText("1 selected");
+
+  // The Delivery list, over the delivery fixture and 120 more pull requests merged in its
+  // window. A press on one of its rows opens that row's details, so the row takes the focus as
+  // its keys give it one. It marks nothing, so its scroll and its focus are all there is to read.
+  await seedDeliveryFixture();
+  await sql(
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     )
+     SELECT 'acme/widgets', 100 + n, 'feat: scrolled widget ' || n,
+            'https://github.com/acme/widgets/pull/' || (100 + n), 'octocat',
+            timestamptz '2024-06-01T04:00:00Z' + n * interval '1 minute',
+            timestamptz '2024-06-01T06:00:00Z' + n * interval '1 minute',
+            1, 1, false, null, ARRAY[]::text[], false
+       FROM generate_series(1, 120) AS n`
+  );
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  const prBox = control(main, CONTROL.dataTable);
+  const pickedRow = prBox.locator("tbody tr[data-pr-row]").nth(2);
+  await expect(pickedRow).toBeVisible();
+  const pickedPR = (await pickedRow.getAttribute("data-pr-row")) ?? "";
+  await pickedRow.focus();
+  const delivery = await wheelOver(prBox, "data-pr-row", pickedPR);
+  console.log(
+    `Delivery list, ${pickedPR} focused: ${delivery.readings.join(" ")}; the focus ends on ${delivery.ended}`
+  );
+  expect(delivery.wrong, `Delivery list: ${delivery.wrong.join("; ")}`).toEqual([]);
+});
