@@ -550,6 +550,9 @@ type queryer interface {
 // or DELETE - that names its presser in Dispatch-Login runs only as that person
 // (refuseChangedLogin).
 //
+// Every route the read list does not name (readScopeRoutes), GET /ws/live among them, answers a
+// read-only broker token 403 READ_ONLY_TOKEN before anything else it does (refuseReadOnlyToken).
+//
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
 // websocket. The live socket takes a bearer as well as a cookie, so it runs under
@@ -699,6 +702,12 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// (routeScopes).
 		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
 	}
+	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) > 0 {
+		// A read list naming a route nothing serves opens nothing while it reads as though it
+		// did, and one naming a write would open that write to a token minted only to read, so
+		// the table is refused rather than mounted (readScopeRoutes).
+		panic("api.Register: the route table's read list names a route that is not a GET row the table mounts: " + strings.Join(refused, "; "))
+	}
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -722,73 +731,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
 	for _, route := range routes {
-		handler := route.Handler
-		if keyedMethod(route.Method) {
-			handler = s.keyedWrites(route.Method, route.Pattern, handler, replays[route.Method+" "+route.Pattern])
-		}
-		if route.Method+" "+route.Pattern == issueUploadRoute {
-			handler = s.refuseUploadToAClosedIssue(handler)
-		}
-		if route.Method != http.MethodGet {
-			// Outside the keyed layer and the upload's spool, so a write to another project's
-			// object, into another session's own rows, or by a credential that names no person
-			// claims no idempotency key and costs no body (withinProjectScope,
-			// withinSessionScope, writeNeedsASignedInPerson).
-			handler = s.withinProjectScope(route, handler)
-			handler = s.withinSessionScope(route, handler)
-			// Outermost of the three, so a caller that may make no write at all is told that
-			// rather than which session the write it tried belongs to. The project check has
-			// nothing to tell it: a token naming a service is held to no one project
-			// (broker_token.go).
-			handler = s.writeNeedsASignedInPerson(handler)
-			handler = s.refuseChangedLogin(handler)
-		}
-		// Outside the two scope checks and outside the GET test, so it runs before them and
-		// before every handler, on a read as on a write: the whole id it resolves a path
-		// prefix into is the value the project check resolves and the value the handler
-		// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
-		handler = s.resolveIDPrefixes(route, handler)
-		handler = s.refuseUnstorableParameters(route.Pattern, handler)
-		if len(route.OAuthScopes) > 0 {
-			// Ahead of the keyed layer and the project and session checks, so the row's own
-			// scopes are the first thing a request is held to: a credential that holds none is
-			// told so rather than told its write belongs to another project or another session,
-			// and its refusal claims no idempotency key, so the person who ticks the scope back
-			// is not answered the stored refusal under the same key. It is inside the drain, so
-			// a client that asked to be told to continue is handled as it is for every other
-			// early answer.
-			handler = s.gateRouteScopes(route.OAuthScopes, handler)
-		}
-		// One place for the whole table: every answer says its body depends on Dispatch-Trees
-		// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
-		// trees an answer written for a reader without them. It is outside the scope gate, so a
-		// refusal of the row's own scopes carries the header too. The answer's other Vary, on
-		// Accept-Encoding, is added by the same loop, where the encoding is chosen
-		// (compressAnswers).
-		handler = varyOnDisplayTrees(handler)
-		if route.Method != http.MethodGet {
-			// Every layer above may answer before the body is read; the answer waits for the body.
-			//
-			// A client that asked to be told to continue before it sends its body (Expect:
-			// 100-continue) and is answered early sends none of it, and its connection closes after
-			// the answer, as long as nothing reads that body: net/http sends 100 Continue at the
-			// body's first read, and otherwise closes the connection once the answer begins rather
-			// than wait on a body that never comes. It decides from the expect-continue reader its
-			// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
-			// Body, so it is not that trackTransactions hands this layer a copy of the request: the
-			// handling holds with the drain's body put on net/http's own request. What keeps the body
-			// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
-			// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
-			// pins: without either, the client is told to continue and the answer waits on its body.
-			handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
-		}
-		// The access-log line is outermost, so it records what every layer answered - a keyed
-		// replay, a refused login, an early answer the drain held - and the caller the first of
-		// them resolved. Compression sits just inside it, so every one of those answers is
-		// compressed for a caller that takes gzip and the line counts the bytes that went on the
-		// wire. The two websockets below carry no compressed answer: the upgrade is not a body,
-		// and the frames after it are the socket's (compressAnswers).
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -796,9 +739,107 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		const pattern = "/ws/doc/{room}"
 		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
 	}
-	const livePattern = "/ws/live"
-	mux.Handle("GET "+livePattern, accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
+	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
+}
+
+// routeHandler is the chain register mounts one row of the table behind: the row's own handler
+// inside every layer the row runs, in the one order every row runs them. It is the one place that
+// order is written, so register and a test that walks the table with each row's handler replaced
+// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
+// (keyedReplays), nil for a row that has none.
+func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+	handler := route.Handler
+	if keyedMethod(route.Method) {
+		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+	}
+	if route.Method+" "+route.Pattern == issueUploadRoute {
+		handler = s.refuseUploadToAClosedIssue(handler)
+	}
+	if route.Method != http.MethodGet {
+		// Outside the keyed layer and the upload's spool, so a write to another project's
+		// object, into another session's own rows, or by a credential that names no person
+		// claims no idempotency key and costs no body (withinProjectScope,
+		// withinSessionScope, writeNeedsASignedInPerson).
+		handler = s.withinProjectScope(route, handler)
+		handler = s.withinSessionScope(route, handler)
+		// Outermost of the three, so a caller whose credential names a service and no person
+		// is told it may make no write at all rather than which session the write it tried
+		// belongs to. The project check has nothing to tell it: a token naming a service is
+		// held to no one project (broker_token.go). A read-only token names a service and no
+		// person too, and never reaches here: the read-only gate further out has answered it
+		// (refuseReadOnlyToken).
+		handler = s.writeNeedsASignedInPerson(handler)
+		handler = s.refuseChangedLogin(handler)
+	}
+	// Outside the two scope checks and outside the GET test, so it runs before them and
+	// before every handler, on a read as on a write: the whole id it resolves a path
+	// prefix into is the value the project check resolves and the value the handler
+	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
+	handler = s.resolveIDPrefixes(route, handler)
+	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	if len(route.OAuthScopes) > 0 {
+		// Ahead of the keyed layer and the project and session checks, so the row's own
+		// scopes are the first thing a request is held to once the read-only gate outside it
+		// has let it through: a credential that holds none is told so rather than told its
+		// write belongs to another project or another session, and its refusal claims no
+		// idempotency key, so the person who ticks the scope back is not answered the stored
+		// refusal under the same key. It is inside the drain, so a client that asked to be
+		// told to continue is handled as it is for every other early answer.
+		handler = s.gateRouteScopes(route.OAuthScopes, handler)
+	}
+	// Outside the scope gate and every layer inside it, so a read-only token on a row the read
+	// list does not name is refused before anything the row does: before the row's own scopes,
+	// which would name a scope to ask for where no scope makes the row its to call; before the
+	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
+	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of
+	// which it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a
+	// client that asked to be told to continue is handled as for every other early answer.
+	handler = s.refuseReadOnlyToken(route.ReadScope, handler)
+	// One place for the whole table: every answer says its body depends on Dispatch-Trees
+	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
+	// trees an answer written for a reader without them. It is outside the scope gate and the
+	// read-only gate, so a refusal by either carries the header too. The answer's other Vary,
+	// on Accept-Encoding, is added outside it, where the encoding is chosen (compressAnswers).
+	handler = varyOnDisplayTrees(handler)
+	if route.Method != http.MethodGet {
+		// Every layer above may answer before the body is read; the answer waits for the body.
+		//
+		// A client that asked to be told to continue before it sends its body (Expect:
+		// 100-continue) and is answered early sends none of it, and its connection closes after
+		// the answer, as long as nothing reads that body: net/http sends 100 Continue at the
+		// body's first read, and otherwise closes the connection once the answer begins rather
+		// than wait on a body that never comes. It decides from the expect-continue reader its
+		// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
+		// Body, so it is not that trackTransactions hands this layer a copy of the request: the
+		// handling holds with the drain's body put on net/http's own request. What keeps the body
+		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
+		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
+		// pins: without either, the client is told to continue and the answer waits on its body.
+		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+	}
+	// The access-log line is outermost, so it records what every layer answered - a keyed
+	// replay, a refused login, an early answer the drain held - and the caller the first of
+	// them resolved. Compression sits just inside it, so every one of those answers is
+	// compressed for a caller that takes gzip and the line counts the bytes that went on the
+	// wire. The two websockets register mounts beside the table carry no compressed answer: the
+	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
+	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+}
+
+// liveSocketPattern is the path of the live socket, which register mounts beside the table.
+const liveSocketPattern = "/ws/live"
+
+// liveSocketHandler is the chain register mounts GET /ws/live behind, around serve, which is
+// serveLiveSocket there and a stand-in in a test that walks every mount a read-only token can
+// reach (read_only_token_test.go): one place for the order, as routeHandler is for a row.
+//
+// The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
+// the upgrade: no read list names the socket, since a socket delivers whatever its views carry,
+// so a read-only token is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it.
+func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
+	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.decideBrokerToken(
+		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1207,6 +1248,38 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 		}
 		handler(w, r.WithContext(context.WithValue(
 			r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})))
+	}
+}
+
+// refuseReadOnlyToken is the one place a read-only token is held to the read list: register wraps
+// every row of the table in it, listed being the row's apiRoute.ReadScope, and GET /ws/live with
+// listed false. On a route the list does not name (readScopeRoutes), a caller decideBrokerToken
+// resolved to a read-only credential (model.Credential.ReadOnly) is answered 403 READ_ONLY_TOKEN
+// and next does not run; every other request runs next as it always did. A row the list names is
+// handed back as it is, so it pays nothing for the gate.
+//
+// It reads the decision decideBrokerToken carried (resolvedCallerKey) and resolves nothing of its
+// own: a second verification would present the request's DPoP proof twice, and a proof is single
+// use. A request that presented no broker token carries no decision, so a cookie, a bearer or an
+// anonymous request passes untouched, at the cost of one context read, and one whose broker
+// token did not resolve passes too, to the layer that answers that refusal today.
+//
+// The refusal carries no WWW-Authenticate challenge, unlike a missing scope's
+// (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs, and
+// no scope makes such a route the token's to call. Its code is the contract a client reads.
+func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
+	if listed {
+		return next
+	}
+	refusal := "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
+		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
+	return func(w http.ResponseWriter, r *http.Request) {
+		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
+			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {
+			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
+			return
+		}
+		next(w, r)
 	}
 }
 
