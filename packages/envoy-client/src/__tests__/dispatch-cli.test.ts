@@ -742,7 +742,7 @@ describe("the dispatch CLI", () => {
     expect(requests.map((request) => request.path)).toEqual(
       Array(4).fill("/api/v1/agents/ses-1/answers")
     );
-  }, 20_000);
+  });
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);

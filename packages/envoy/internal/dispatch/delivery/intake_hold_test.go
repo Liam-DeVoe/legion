@@ -1240,16 +1240,30 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	requireDeliveredFromTheFloor(t, publisher, next, acknowledged, unacknowledged)
 }
 
-// previousBuildReconciler runs the configuration reconciliation of the build before holds
-// (legion-envoy-v19.0.0's reconcileDurableConsumer, cut to its first case) against the delivery
-// durable every interval until the test ends, as a process of that build does on its own pool:
-// under the durable's consumer lease, it looks the durable up, and when there is none it creates
-// the durable with that build's config, which names no start and so delivers from the stream's
-// first message. It reads no hold. created counts the durables it created, and present the passes
-// that found the durable there. interval is the stand-in's own pace, which a test sets well under
-// that build's bind poll (durableBindInterval) so its passes fall inside a take-over's window more
-// often; nothing the test waits for reads it.
-func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string, interval time.Duration) (created, present *atomic.Int32) {
+// previousBuild is a process of the build before holds, as far as the delivery durable goes: the
+// configuration reconciliation of that build (legion-envoy-v19.0.0's reconcileDurableConsumer,
+// cut to its first case) on a pool of its own. A pass, under the durable's consumer lease, looks
+// the durable up, and when there is none it creates the durable with that build's config, which
+// names no start and so delivers from the stream's first message. It reads no hold. created counts
+// the durables its passes created, present the passes that found the durable there, and passes
+// every pass it made, one skipped because another process held the lease included.
+//
+// That build paces its passes by a ticker of its own (durableBindInterval). Here they run only
+// when the test asks: one at a time (pass), or back to back from reconcile to stop, over a window
+// the test opens and closes itself, so a pass reaches every moment of that window it can and none
+// is left to a pace.
+type previousBuild struct {
+	leases duty.Leases
+	client *bus.Client
+
+	created, present, passes atomic.Int32
+
+	mu sync.Mutex
+	// end stops the passes reconcile started and waits for the one in flight; nil while none run.
+	end func()
+}
+
+func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string) *previousBuild {
 	t.Helper()
 	leases := storetest.Leases(t, storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool)
 	client, err := bus.Connect([]string{natsURL})
@@ -1257,52 +1271,77 @@ func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string, int
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
 	t.Cleanup(client.Close)
-	created, present = &atomic.Int32{}, &atomic.Int32{}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	p := &previousBuild{leases: leases, client: client}
+	t.Cleanup(p.stop)
+	return p
+}
+
+// pass makes one pass, as that build's process does at each tick of its reconciliation.
+func (p *previousBuild) pass() {
+	p.passes.Add(1)
+	duty.Exclusive(context.Background(), p.leases, intakeConsumerLease, time.Time{}, 0, func(context.Context) {
+		_, err := p.client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		switch {
+		case errors.Is(err, natsgo.ErrConsumerNotFound):
+			previous := natsgo.ConsumerConfig{
+				Durable:        bus.DispatchDeliveryDurable,
+				DeliverSubject: natsgo.NewInbox(),
+				FilterSubject:  githubIntakeSubject,
+				AckPolicy:      natsgo.AckExplicitPolicy,
+				AckWait:        intakeAckWait(),
+				MaxAckPending:  intakeMaxAckPending,
+			}
+			if _, err := p.client.JS().AddConsumer(bus.Stream, &previous); err == nil {
+				p.created.Add(1)
+			}
+		case err == nil:
+			p.present.Add(1)
+		}
+	})
+}
+
+// reconcile makes passes back to back, on a goroutine of their own, until stop.
+func (p *previousBuild) reconcile() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.end != nil {
+		return
+	}
+	quit, ended := make(chan struct{}), make(chan struct{})
 	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		defer close(ended)
 		for {
-			duty.Exclusive(ctx, leases, intakeConsumerLease, time.Time{}, 0, func(context.Context) {
-				_, err := client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-				switch {
-				case errors.Is(err, natsgo.ErrConsumerNotFound):
-					previous := natsgo.ConsumerConfig{
-						Durable:        bus.DispatchDeliveryDurable,
-						DeliverSubject: natsgo.NewInbox(),
-						FilterSubject:  githubIntakeSubject,
-						AckPolicy:      natsgo.AckExplicitPolicy,
-						AckWait:        intakeAckWait(),
-						MaxAckPending:  intakeMaxAckPending,
-					}
-					if _, err := client.JS().AddConsumer(bus.Stream, &previous); err == nil {
-						created.Add(1)
-					}
-				case err == nil:
-					present.Add(1)
-				}
-			})
 			select {
-			case <-ctx.Done():
+			case <-quit:
 				return
-			case <-ticker.C:
+			default:
+				p.pass()
 			}
 		}
 	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-	return created, present
+	p.end = func() {
+		close(quit)
+		<-ended
+	}
+}
+
+// stop ends the passes reconcile started, once the pass in flight has returned.
+func (p *previousBuild) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.end != nil {
+		p.end()
+		p.end = nil
+	}
 }
 
 // A take-over whose create fails once after the delete creates the durable itself, at its ack
 // floor, while a process of the build before holds reconciles the same durable under the same
 // consumer lease: that process never finds the durable missing, so it never creates its own,
-// which would replay every message the durable had acknowledged. None of the acknowledged
-// messages come back, none of the others are skipped, and that process finds the durable there.
+// which would replay every message the durable had acknowledged. The window is the take-over's,
+// from the create that fails, made after the delete, to the create tried after it, and that
+// process reconciles through the whole of it. None of the acknowledged messages come back, none of
+// the others are skipped, and that process finds the durable there afterwards.
 func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -1316,15 +1355,27 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 	}
 	start := floor.AckFloor.Stream + 1
 
-	created, present := previousBuildReconciler(t, pool, natsURL, 100*time.Millisecond)
-	var failed atomic.Bool
-	attempts := failCreatesWhile(t, func() bool { return !failed.Swap(true) })
+	previous := previousBuildReconciler(t, pool, natsURL)
+	var creates atomic.Int32
+	attempts := failCreatesWhile(t, func() bool {
+		switch creates.Add(1) {
+		case 1:
+			previous.reconcile()
+			return true
+		case 2:
+			previous.stop()
+		}
+		return false
+	})
 	process := startIntakeProcess(t, pool, natsURL, nil)
 	requireDeliveredFromTheFloor(t, publisher, process, acknowledged, unacknowledged)
 	if got := attempts.Load(); got < 2 {
 		t.Fatalf("the intake tried the create %d times, want the failed one and one after it", got)
 	}
-	if got := created.Load(); got != 0 {
+	if previous.passes.Load() == 0 {
+		t.Fatal("the previous build's process made no pass between the take-over's failed create and the create after it, so this row proves nothing")
+	}
+	if got := previous.created.Load(); got != 0 {
 		t.Fatalf("the previous build's process found the durable missing and created it %d times", got)
 	}
 	taken, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -1337,8 +1388,15 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 			taken.Config.DeliverPolicy, taken.Config.OptStartSeq, taken.Config.Metadata[generationKey],
 			natsgo.DeliverByStartSequencePolicy, start, consumerConfigGeneration)
 	}
-	before := present.Load()
-	waitFor(t, func() bool { return present.Load() > before }, func() string {
+	// A pass the lease skips finds nothing, so the process passes until one takes the lease.
+	before := previous.present.Load()
+	waitFor(t, func() bool {
+		previous.pass()
+		return previous.present.Load() > before
+	}, func() string {
 		return "the previous build's process did not find the durable present after the take-over: " + consumerState(publisher)
 	})
+	if got := previous.created.Load(); got != 0 {
+		t.Fatalf("the previous build's process found the durable missing after the take-over and created it %d times", got)
+	}
 }

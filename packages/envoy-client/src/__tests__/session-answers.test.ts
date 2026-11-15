@@ -22,7 +22,6 @@ import {
   renderSessionAnswerItem,
   renderSessionAnswers,
   renderSessionAnswersList,
-  SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
   type SessionAnswersRead,
   sessionAnswersFailureLine,
@@ -1032,26 +1031,33 @@ describe("readSessionAnswers", () => {
     expect(calls).toHaveLength(2);
   });
 
+  // On the request path the read's client asks once and lets that answer through: the read's
+  // own 5-minute back-off is its answer to a release rolling out, so no request waits out
+  // attempts of a route this Dispatch has not got. The read's deadline and the client's wait
+  // before an attempt again are both timers in the code under test, so the row runs the read on
+  // Bun's fake clock and never moves it: the read answers with the clock where it started, which
+  // a read that waited for its deadline or for a second attempt could not do. No fake sleep here:
+  // the client's own wait is the one on the clock.
   test("Dispatch's own no-route 404 is unavailable within the deadline, from one ask", async () => {
-    // On the request path the read's client asks once and lets that answer through: the read's
-    // own 5-minute back-off is its answer to a release rolling out, so no request waits out
-    // attempts of a route this Dispatch has not got. No fake clock and no fake sleep here.
+    jest.useFakeTimers();
     const dispatch = dispatchAt();
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
-    const startedAt = Date.now();
-    const read = await readSessionAnswers({
+    let read: SessionAnswersRead | undefined;
+    void readSessionAnswers({
       session: newSession(),
       dispatch,
       env: envAt(stateDir()),
       fetchImpl,
+    }).then((answered) => {
+      read = answered;
     });
+    await settle();
     expect(read).toEqual({
       text: undefined,
       source: "unavailable",
       reason: NO_ANSWERS_ROUTE_REASON,
       notice: noRouteNotice(dispatch.url),
     });
-    expect(Date.now() - startedAt).toBeLessThan(SESSION_ANSWERS_DEADLINE_MS);
     expect(calls).toHaveLength(1);
   });
 

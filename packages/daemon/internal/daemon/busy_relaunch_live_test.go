@@ -613,8 +613,8 @@ func (r *busyRelaunchLive) relaunchSubagentWorker() {
 	pane := r.pane(r.worker)
 	r.awaitQuiet(pane.token)
 	r.startsASubagent(pane, "SUBAGENT-WORKER-"+randomSuffix(r.t))
-	killed := r.killAndRelaunch(pane)
-	prompt := r.firstPromptAfter(pane, killed)
+	killed, asked := r.killAndRelaunch(pane)
+	prompt := r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchDiedWords, relaunchSubagentWords)
 	r.note("the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
@@ -640,8 +640,8 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 
 	told := len(r.architectNotices(pane.issue, "catch-up"))
 	r.startsASubagent(pane, "SUBAGENT-ROOT-"+suffix)
-	killed := r.killAndRelaunch(pane)
-	prompt := r.firstPromptAfter(pane, killed)
+	killed, asked := r.killAndRelaunch(pane)
+	prompt := r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchDiedWords, relaunchSubagentWords)
 	r.note("holding no task: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
@@ -659,8 +659,8 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	turn.await(r, "the architect's turn of the task it holds")
 	r.awaitReported(pane.token, "subagent")
 	told = len(r.architectNotices(pane.issue, "catch-up"))
-	killed = r.killAndRelaunch(pane)
-	prompt = r.firstPromptAfter(pane, killed)
+	killed, asked = r.killAndRelaunch(pane)
+	prompt = r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchSubagentWords,
 		relaunchNoTurnReportWords, relaunchTurnGoneWords, held)
 	r.note("holding a task in its turn: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
@@ -684,12 +684,12 @@ func (r *busyRelaunchLive) relaunchTask() {
 	r.deliver(pane.token, "Run the long check in the background, then report on it. "+marker)
 	turn.await(r, "the task's turn after its job was backgrounded")
 	r.awaitReported(pane.token, "async-job")
-	killed := r.killAndRelaunch(pane)
+	killed, asked := r.killAndRelaunch(pane)
 	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool {
 		return slices.Contains(e.Kinds, "async-job") && e.Turn && e.TaskTurn && e.Reported
 	})
 	r.note("the claim row records %s", ended.describe())
-	prompt := r.firstPromptAfter(pane, killed)
+	prompt := r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchJobWords, marker)
 	r.note("the first prompt the relaunched process was sent, %s after the death, is the task behind the sentence:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
@@ -709,6 +709,18 @@ func (r *busyRelaunchLive) pane(issue string) *busyPane {
 	return nil
 }
 
+// paneOf is the live claim token names, and fails the step when token names none.
+func (r *busyRelaunchLive) paneOf(token claim.Token) *busyPane {
+	r.t.Helper()
+	for _, pane := range r.panes {
+		if pane.token == token {
+			return pane
+		}
+	}
+	r.t.Fatalf("this proof drives no pane for the claim %s", token)
+	return nil
+}
+
 // deliver gives the claim one task of the operator's own, through the route `legion claims
 // deliver` posts to.
 func (r *busyRelaunchLive) deliver(token claim.Token, task string) {
@@ -720,28 +732,34 @@ func (r *busyRelaunchLive) deliver(token claim.Token, task string) {
 	}
 }
 
-// awaitQuiet waits until the claim holds no task and is ready or idle, and has stayed so for
-// liveSettle: an Oh My Pi phase worker's turn can run on past its prompt's result (the plugin's
-// phase reminder continues the run once), so a claim read idle once may be read working again,
-// and nothing the daemon or the pane writes says that no such turn is coming. The wait is the
-// shared one (testwait), with no bound of its own.
+// awaitQuiet waits until the claim holds no task and is ready or idle, and stays so through a
+// span of liveSettle in which its pane's stand-in is asked for no turn: an Oh My Pi phase worker's
+// turn can run on past its prompt's result (the plugin's phase reminder continues the run once),
+// so a claim read idle once may be read working again, and nothing the daemon or the pane writes
+// says that no such turn is coming. Every turn asks the stand-in for the model as it begins, so a
+// turn begun inside the span is a request the stand-in counted (turnRequests), however briefly
+// the claim was read working meanwhile. The span is watchQuiet's; the wait around it is the
+// shared one (testwait.Eventually), with no bound of its own, and a span a turn began in is
+// followed by another.
 func (r *busyRelaunchLive) awaitQuiet(token claim.Token) {
 	r.t.Helper()
-	var since time.Time
-	testwait.Eventually(r.t, string(token)+" to hold no task and run no turn for "+liveSettle.String(), func() bool {
+	stand := r.paneOf(token).stand
+	settled := func() bool {
 		held := r.claim(token)
 		if held.State == string(supervise.StateFailed) {
 			r.t.Fatalf("%s failed; its workers' output is under %s", token, r.rt.paneLogs)
 		}
-		switch {
-		case held.Pending != nil || (held.State != string(supervise.StateReady) && held.State != string(supervise.StateIdle)):
-			since = time.Time{}
-		case since.IsZero():
-			since = time.Now()
-		case time.Since(since) >= liveSettle:
-			return true
+		return held.Pending == nil && (held.State == string(supervise.StateReady) || held.State == string(supervise.StateIdle))
+	}
+	testwait.Eventually(r.t, string(token)+" to hold no task and run no turn for "+liveSettle.String(), func() bool {
+		if !settled() {
+			return false
 		}
-		return false
+		asked := stand.turnRequests()
+		r.watchQuiet(liveSettle, "a turn the plugin's phase reminder continues comes, if at all, after the prompt's result, and "+
+			"nothing the daemon, the pane or Oh My Pi records says that none is coming, so no state reads it and no later action's "+
+			"effect is ordered after it; the daemon's real NATS and Postgres and the Oh My Pi process keep it out of a synctest bubble")
+		return settled() && stand.turnRequests() == asked
 	})
 }
 
@@ -790,8 +808,10 @@ func (r *busyRelaunchLive) awaitReported(token claim.Token, kind string) {
 // killAndRelaunch SIGKILLs the claim's process group — the shim, Oh My Pi and every job and
 // subagent Oh My Pi started, as a process killed under it dies — and waits for the process to end,
 // for the daemon to relaunch it and for the new process to report ready. It answers when the
-// process was killed.
-func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) time.Time {
+// process was killed, which the step's notes read, and how many requests the pane's stand-in had
+// received by then (received), which is where the relaunched process's requests begin: no
+// process of the claim runs between the kill and the relaunch.
+func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) (killed time.Time, asked int) {
 	r.t.Helper()
 	was := r.claim(pane.token)
 	r.rt.mu.Lock()
@@ -800,7 +820,7 @@ func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) time.Time {
 	if !ok {
 		r.t.Fatalf("the runtime runs no process for %s", pane.token)
 	}
-	killed := time.Now()
+	asked, killed = pane.stand.received(), time.Now()
 	if err := syscall.Kill(-running.pid, syscall.SIGKILL); err != nil {
 		r.t.Fatalf("kill %s's process group %d: %v", pane.token, running.pid, err)
 	}
@@ -824,21 +844,21 @@ func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) time.Time {
 	ready := time.Now()
 	r.note("killed %s's process group %d (generation %d); the daemon relaunched it as generation %d, ready %s later",
 		pane.token, running.pid, was.Generation, now.Generation, ready.Sub(killed).Round(100*time.Millisecond))
-	return killed
+	return killed, asked
 }
 
-// firstPromptAfter is the first prompt the stand-in received after killed — a role turn's request
-// whose last message is the prompt itself — waited for through the shared wait. A relaunched
-// process that is sent no prompt fails the step's sentence assertion: the sentence is what the
-// first prompt was to carry, and the base commit sends a root architect holding nothing no prompt
-// at all.
-func (r *busyRelaunchLive) firstPromptAfter(pane *busyPane, killed time.Time) seenRequest {
+// firstPromptAfter is the first prompt the stand-in received after the first asked of its requests
+// — a role turn's request whose last message is the prompt itself — waited for through the shared
+// wait. A relaunched process that is sent no prompt fails the step's sentence assertion: the
+// sentence is what the first prompt was to carry, and the base commit sends a root architect
+// holding nothing no prompt at all.
+func (r *busyRelaunchLive) firstPromptAfter(pane *busyPane, asked int) seenRequest {
 	r.t.Helper()
 	var prompt seenRequest
 	r.failedAt = "sentence"
 	testwait.Eventually(r.t, fmt.Sprintf("sentence: the first prompt the relaunched process of %s is sent", pane.token), func() bool {
 		var sent bool
-		prompt, sent = pane.stand.firstPromptAfter(killed)
+		prompt, sent = pane.stand.firstPromptAfter(asked)
 		return sent
 	})
 	r.failedAt = ""
@@ -1321,12 +1341,35 @@ func (s *scriptedStandin) promptsCarrying(marker string) []seenRequest {
 	return carrying
 }
 
-// firstPromptAfter is the first role turn's prompt the stand-in received after at.
-func (s *scriptedStandin) firstPromptAfter(at time.Time) (seenRequest, bool) {
+// received is how many requests the stand-in has received, in the order it recorded them (seen).
+func (s *scriptedStandin) received() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return len(s.seen)
+}
+
+// turnRequests is how many of the requests the stand-in has received are a role turn's own: a
+// turn asks the stand-in for the model as it begins and again after each tool's result, and a
+// side question or a subagent's request is neither.
+func (s *scriptedStandin) turnRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns := 0
 	for _, seen := range s.seen {
-		if seen.at.After(at) && seen.prompt && !seen.side && !seen.subagent {
+		if !seen.side && !seen.subagent {
+			turns++
+		}
+	}
+	return turns
+}
+
+// firstPromptAfter is the first role turn's prompt among the requests the stand-in received after
+// its first asked.
+func (s *scriptedStandin) firstPromptAfter(asked int) (seenRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, seen := range s.seen[asked:] {
+		if seen.prompt && !seen.side && !seen.subagent {
 			return seen, true
 		}
 	}

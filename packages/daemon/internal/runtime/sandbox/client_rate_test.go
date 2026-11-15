@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -604,37 +605,49 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 // A request's own timeout starts once the client's limiter lets it go (client-go's
 // Request.request), which is what lets a launch wait out a queue longer than apiTimeout: here the
 // limiter holds a request of the requests' client twice its timeout, and it succeeds. A timeout
-// that covered the queue would end the request where it stands, so the queue is what the row
-// reads — the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
-// request's success to say anything — and not the span of the call, which also carries a loopback
-// round trip a loaded machine makes slow. The timeout is client-go's own request timeout, which no
-// clock of this repository's reaches, so the row lengthens it (5 s, from the 50 ms and then the
-// second it once was) to keep an ordinary round trip, starved as far as a loaded machine starves
-// it, well inside it, and holds the request twice as long: only the queue can spend it.
+// that covered the queue would end the request where it stands — the fake limiter refuses at once
+// a wait that lies past its context's deadline, as x/time/rate does — so the queue is what the row
+// reads: the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
+// request's success to say anything. The timeout is the runtime's own (requestConfig's apiTimeout).
+// The row runs in a synctest bubble, on whose clock both client-go's timeout and the limiter's hold
+// run, over an API server in the test's own memory (secretAnswer): the minute's hold costs the row
+// nothing, and no round trip spends any of the timeout.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"held","namespace":"legion"}}`)
-	}))
-	t.Cleanup(server.Close)
-	requests := requestConfig(&rest.Config{Host: server.URL})
-	// One slot every ten seconds: the Wait below takes the free one, and the request waits out the
-	// next, twice its 5 s timeout.
-	limit := newFakeLimiter(0.1, 1)
-	if err := limit.Wait(context.Background()); err != nil {
-		t.Fatal(err)
+	synctest.Test(t, func(t *testing.T) {
+		requests := requestConfig(&rest.Config{Host: "http://kube.invalid", Transport: secretAnswer{}})
+		// One slot every twice the timeout: the Wait below takes the free one, and the request waits
+		// out the next.
+		limit := newFakeLimiter(1/(2*requests.Timeout.Seconds()), 1)
+		if err := limit.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		requests.RateLimiter = limit
+		kube, err := kubernetes.NewForConfig(requests)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := kube.CoreV1().Secrets("legion").Get(context.Background(), "held", metav1.GetOptions{}); err != nil {
+			t.Fatalf("a request the limiter held past its client's timeout failed: %v", err)
+		}
+		if held := limit.heldLast(); held <= requests.Timeout {
+			t.Fatalf("the limiter held the request %s, want longer than the %s timeout it is to outlast", held, requests.Timeout)
+		}
+	})
+}
+
+// secretAnswer is an API server in the test's own memory: it answers every request with the one
+// Secret, and a request whose context has ended with that context's error, as the connection of a
+// request that ran out does.
+type secretAnswer struct{}
+
+func (secretAnswer) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
 	}
-	requests.RateLimiter, requests.Timeout = limit, 5*time.Second
-	kube, err := kubernetes.NewForConfig(requests)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := kube.CoreV1().Secrets("legion").Get(context.Background(), "held", metav1.GetOptions{}); err != nil {
-		t.Fatalf("a request the limiter held past its client's timeout failed: %v", err)
-	}
-	if held := limit.heldLast(); held <= requests.Timeout {
-		t.Fatalf("the limiter held the request %s, want longer than the %s timeout it is to outlast", held, requests.Timeout)
-	}
+	return &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Request: req,
+		Body: io.NopCloser(strings.NewReader(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"held","namespace":"legion"}}`)),
+	}, nil
 }
 
 // sameClients is c as both of a runtime's client sets, for a test whose fakes need not tell the
