@@ -125,6 +125,12 @@ import { navigateInApp } from "./sends";
  *   the page opens folded to the frontier (R1), so this is how a reader opens a branch the
  *   fold left shut, and `unfoldEveryBranch` is a check doing it. c-tree, c-checks-readable,
  *   c-nodes, c-nothing-lost.
+ * - **The header's band**, from the top of the identity block to the top of the preset row,
+ *   which is where R13 measures the header's height and its lines (`headerReading`).
+ *   c-properties, c-typeface.
+ * - **The typeface**: the app's stylesheet declares Inter (`TYPEFACE`) in an `@font-face` rule
+ *   whose address the page loads it from, the document's font set holds that face, and the
+ *   identity block's computed `font-family` names it first. c-typeface.
  *
  * ## How a test reads the page
  *
@@ -807,6 +813,165 @@ export function identityBlockBottom(page: Page): Promise<number | null> {
     if (header === null) return null;
     const rect = header.getBoundingClientRect();
     return getComputedStyle(header).position === "sticky" || rect.top <= 1 ? rect.bottom : 0;
+  }, SELECTORS);
+}
+
+/** The header as R13 measures it: the band from the top of the identity block to the top of the
+ *  preset row. c-properties, c-typeface. */
+export interface HeaderReading {
+  /** The band's height in CSS pixels. */
+  readonly height: number;
+  /** The words of each line drawn in the band, top to bottom. */
+  readonly lines: readonly string[];
+}
+
+/**
+ * The header's band and the lines drawn in it. A line is a run of drawn text: every text node of
+ * the page inside the band and inside the identity block's own column (so a panel beside it
+ * counts for nothing), one box per line the text wraps to, and a form control's value as a box
+ * of its own font size at the control's middle, since a select draws its value without a text
+ * node and a control can stand taller than the line it sits on. Boxes that overlap vertically
+ * are one line. Text a box of at most a pixel clips away (`sr-only`), or that is invisible or
+ * transparent, is not drawn. Null when the page draws no identity block or no preset row.
+ */
+export function headerReading(page: Page): Promise<HeaderReading | null> {
+  return page.evaluate((selectors) => {
+    const block = document.querySelector(selectors.identityBlock);
+    const presets = document.querySelector(selectors.presetRow);
+    const root = document.querySelector(selectors.issuePage);
+    if (block === null || presets === null || root === null) return null;
+    const column = block.getBoundingClientRect();
+    const top = column.top;
+    const bottom = presets.getBoundingClientRect().top;
+    const inBand = (box: DOMRect): boolean =>
+      box.width > 0 &&
+      box.height > 0 &&
+      box.bottom > top &&
+      box.top < bottom &&
+      box.right > column.left &&
+      box.left < column.right;
+    const drawn = (element: Element): boolean => {
+      for (let at: Element | null = element; at !== null; at = at.parentElement) {
+        const style = getComputedStyle(at);
+        if (style.visibility !== "visible" || style.opacity === "0") return false;
+        const box = at.getBoundingClientRect();
+        if (style.overflow !== "visible" && (box.width <= 1 || box.height <= 1)) return false;
+      }
+      return true;
+    };
+    const pieces: { bottom: number; left: number; text: string; top: number }[] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const content = node.textContent ?? "";
+      const element = node.parentElement;
+      if (content.trim() === "" || element === null || element.closest("select") !== null) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const boxes = [...range.getClientRects()].filter(inBand);
+      if (boxes.length === 0 || !drawn(element)) continue;
+      // A text that wraps is one box per line; each line is given the characters drawn in it,
+      // so a failure names the words of each line rather than the whole text on each.
+      const words = boxes.length === 1 ? [content] : boxes.map(() => "");
+      for (let at = 0; boxes.length > 1 && at < content.length; at += 1) {
+        range.setStart(node, at);
+        range.setEnd(node, at + 1);
+        const glyph = range.getClientRects()[0];
+        if (glyph === undefined) continue;
+        const line = boxes.findIndex(
+          (box) => glyph.top >= box.top - 1 && glyph.bottom <= box.bottom + 1
+        );
+        if (line >= 0) words[line] += content[at];
+      }
+      boxes.forEach((box, line) => {
+        const text = (words[line] ?? "").replace(/\s+/g, " ").trim();
+        pieces.push({ bottom: box.bottom, left: box.left, text, top: box.top });
+      });
+    }
+    for (const control of root.querySelectorAll("select, input:not([type='hidden']), textarea")) {
+      const box = control.getBoundingClientRect();
+      if (!inBand(box) || !drawn(control)) continue;
+      const size = Number.parseFloat(getComputedStyle(control).fontSize);
+      const middle = (box.top + box.bottom) / 2;
+      const text =
+        control instanceof HTMLSelectElement
+          ? (control.selectedOptions[0]?.textContent ?? "").trim()
+          : (control as HTMLInputElement).value;
+      pieces.push({ bottom: middle + size / 2, left: box.left, text, top: middle - size / 2 });
+    }
+    pieces.sort((a, b) => a.top - b.top);
+    const lines: (typeof pieces)[] = [];
+    let lineBottom = Number.NEGATIVE_INFINITY;
+    for (const piece of pieces) {
+      const line = lines.at(-1);
+      if (line !== undefined && piece.top < lineBottom - 1) {
+        line.push(piece);
+        lineBottom = Math.max(lineBottom, piece.bottom);
+      } else {
+        lines.push([piece]);
+        lineBottom = piece.bottom;
+      }
+    }
+    return {
+      height: bottom - top,
+      lines: lines.map((line) =>
+        line
+          .sort((a, b) => a.left - b.left)
+          .map((piece) => piece.text)
+          .join(" ")
+      ),
+    };
+  }, SELECTORS);
+}
+
+/** The family `web/src/styles.css` declares for the typeface the app ships and draws in. */
+export const TYPEFACE = "Inter";
+
+/** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
+ *  rule; null when no rule declares the family. c-typeface. */
+export function typefaceAddress(page: Page): Promise<string | null> {
+  return page.evaluate((family) => {
+    const find = (rules: CSSRuleList, base: string): string | null => {
+      for (const rule of rules) {
+        if (rule instanceof CSSFontFaceRule) {
+          const named = rule.style.getPropertyValue("font-family").replace(/["']/g, "").trim();
+          const source = /url\(["']?([^"')]+)["']?\)/.exec(rule.style.getPropertyValue("src"));
+          if (named === family && source?.[1] !== undefined) return new URL(source[1], base).href;
+        } else if (rule instanceof CSSGroupingRule) {
+          const found = find(rule.cssRules, base);
+          if (found !== null) return found;
+        }
+      }
+      return null;
+    };
+    for (const sheet of document.styleSheets) {
+      const found = find(sheet.cssRules, sheet.href ?? document.baseURI);
+      if (found !== null) return found;
+    }
+    return null;
+  }, TYPEFACE);
+}
+
+/** How each face of the typeface's family stands in the document's font set: `loaded` once the
+ *  file arrived, `error` once its request failed. c-typeface. */
+export function typefaceStatuses(page: Page): Promise<string[]> {
+  return page.evaluate(
+    (family) =>
+      [...document.fonts]
+        .filter((face) => face.family.replace(/["']/g, "") === family)
+        .map((face) => face.status),
+    TYPEFACE
+  );
+}
+
+/** The stack the identity block's text is drawn in, as its computed `font-family`, each family
+ *  unquoted. c-typeface. */
+export function identityBlockFamilies(page: Page): Promise<string[]> {
+  return page.evaluate((selectors) => {
+    const block = document.querySelector(selectors.identityBlock);
+    if (block === null) return [];
+    return getComputedStyle(block)
+      .fontFamily.split(",")
+      .map((family) => family.replace(/["']/g, "").trim());
   }, SELECTORS);
 }
 

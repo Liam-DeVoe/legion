@@ -110,8 +110,10 @@ import {
   focusThePage,
   gapKinds,
   gotoIssue,
+  headerReading,
   identityBlock,
   identityBlockBottom,
+  identityBlockFamilies,
   issuePage,
   marginHideControl,
   marginResizeHandle,
@@ -154,11 +156,14 @@ import {
   rowsOfType,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
+  TYPEFACE,
   threeThings,
   threeThingsSentences,
   tooltipTexts,
   tree,
   treeText,
+  typefaceAddress,
+  typefaceStatuses,
   undividedTexts,
   unfoldEveryBranch,
   uploadInput,
@@ -3027,6 +3032,127 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
         `the child's row draws none of its title's words at ${width} px`
       ).toBeVisible();
       await assertPageFits(page);
+    }
+  });
+});
+
+// c-typeface. The header is measured on this issue's own 115-character title, the one the spec's
+// header widths were read on (dispatch://INFRA-1196/comment/f31b8ac4-874c-4735-94c8-8af17a95eba2):
+// at 1440 px it fills most of the header's line in Inter, so the fallback the page drew before it
+// shipped Inter, which drew that title a quarter wider, wraps it and gives the header a fourth
+// line.
+const MEASURED_TITLE =
+  "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
+
+test("the header holds its rule when the typeface does not load @phone", async ({ browser }) => {
+  // Five loads of the page, the first with the typeface and four without it.
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await patchIssue(seeded.key, { title: MEASURED_TITLE });
+
+    // The built application serves the typeface, and the page is drawn in it.
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(() => typefaceStatuses(page), {
+        message: `the document's font set holds no ${TYPEFACE} face that loaded`,
+      })
+      .toEqual(["loaded"]);
+    expect(
+      (await identityBlockFamilies(page))[0],
+      `the identity block's text is not drawn in ${TYPEFACE} first`
+    ).toBe(TYPEFACE);
+    const address = await typefaceAddress(page);
+    if (address === null) {
+      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
+    }
+    const file = await page.request.get(address);
+    expect(file.status(), `${address} answers ${file.status()}`).toBe(200);
+    expect(file.headers()["content-type"], `${address} is not served as a font`).toBe("font/woff2");
+    expect(
+      (await file.body()).subarray(0, 4).toString("latin1"),
+      `${address} is not a WOFF2 file`
+    ).toBe("wOF2");
+    const notices = await (await page.request.get("/THIRD_PARTY_NOTICES.txt")).text();
+    expect(notices, "the build's notices list no entry for the typeface").toContain(
+      `${TYPEFACE}@4.1\nLicense: OFL-1.1`
+    );
+    expect(notices, "the build's notices hold no text of the typeface's licence").toContain(
+      "SIL OPEN FONT LICENSE Version 1.1"
+    );
+
+    // Every request for that file refused: the page is drawn in the fallback, and holds R13's
+    // header rule at the two widths it names and R18's reflow rule at four. Each reading is
+    // soft, so one run reports every width.
+    const headerLimits = new Map([
+      [1440, { height: 130, lines: 3 }],
+      [390, { height: 180, lines: 6 }],
+    ]);
+    const blocked = await asUser(browser, "alice");
+    try {
+      let refused = 0;
+      await blocked.route(address, async (route) => {
+        refused += 1;
+        await route.abort();
+      });
+      const without = await blocked.newPage();
+      for (const width of [1440, 1024, 390, 320]) {
+        await without.setViewportSize({
+          height: width < 1024 ? PHONE.height : DESKTOP.height,
+          width,
+        });
+        await gotoIssue(without, `/issues/${seeded.key}`);
+        await expectIssuePageDrawn(without);
+        await expect(identityBlock(without)).toContainText(MEASURED_TITLE);
+        // The fit is read with the tree's rows drawn, as c-reflow reads it: a page that holds no
+        // row yet is a page that fits.
+        await expect
+          .poll(async () => await nodeRows(without).count(), {
+            message: `the tree draws no row at ${width} px`,
+          })
+          .toBeGreaterThan(0);
+        await expect
+          .poll(() => typefaceStatuses(without), {
+            message: `the ${TYPEFACE} face did not fail at ${width} px, so this is not the fallback`,
+          })
+          .toEqual(["error"]);
+
+        const limit = headerLimits.get(width);
+        if (limit !== undefined) {
+          const header = await headerReading(without);
+          if (header === null) {
+            throw new Error(`the page draws no identity block or no preset row at ${width} px`);
+          }
+          const drawn = `${header.lines.length} lines, ${header.height.toFixed(1)} px`;
+          test.info().annotations.push({ description: `${width} px: ${drawn}`, type: "header" });
+          expect
+            .soft(
+              header.lines.length,
+              `the header takes ${drawn} at ${width} px without the typeface: ${JSON.stringify(header.lines)}`
+            )
+            .toBeLessThanOrEqual(limit.lines);
+          expect
+            .soft(header.height, `the header takes ${drawn} at ${width} px without the typeface`)
+            .toBeLessThanOrEqual(limit.height);
+        }
+        const fit = await without.evaluate(() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        }));
+        test.info().annotations.push({
+          description: `${width} px: scrollWidth ${fit.scrollWidth}, clientWidth ${fit.clientWidth}`,
+          type: "fit",
+        });
+        expect
+          .soft(
+            fit.scrollWidth,
+            `the page scrolls sideways at ${width} px without the typeface: ${fit.scrollWidth} px of page in ${fit.clientWidth} px`
+          )
+          .toBe(fit.clientWidth);
+      }
+      expect(refused, "no request for the typeface reached the refusal").toBeGreaterThan(0);
+    } finally {
+      await blocked.close();
     }
   });
 });
