@@ -941,6 +941,34 @@ describe("cleanDetail", () => {
     }
     expect(shown).toEqual([]);
   });
+
+  // The value after an API-key or bearer label is a token, so a URL there whose word holds no `@`
+  // shows nothing after its `host:` either: that text is the token's, not a port. Measured in a
+  // gVisor issue pod on 2026-11-15 at 63bf5151 by the implementer: `Bearer http://u:SECRETPASS`
+  // cleaned to `Bearer ***://u:SECRETPASS`, as on main. A numeric port may stay visible; its row
+  // holds only that the label stays.
+  test("masks a token that is a URL with no at sign after a label", () => {
+    const shown: string[] = [];
+    for (const label of ["Bearer ", "api-key: ", "x-subscription-token: "]) {
+      for (const value of [
+        "http://u:SECRETPASS",
+        "https://u:SECRETPASS/x",
+        "http://u:SECRETPASS?q=1",
+        "_http://u:SECRETPASS",
+        // The `@` is joined on, so no line of the source holds a URL's userinfo shape.
+        "http://u:SECRETPASS" + "\t" + "@h",
+        "http://u:SECRETPASS" + " " + "@h",
+      ]) {
+        const text = `curl -H ${label}${value}`;
+        const cleaned = cleanDetail(text);
+        if (cleaned.includes("SECRETPASS"))
+          shown.push(`${JSON.stringify(text)} -> ${JSON.stringify(cleaned)}`);
+      }
+      const port = `curl -H ${label}http://h:8080/x`;
+      if (!cleanDetail(port).includes(label.trim())) shown.push(`${port}: lost the label`);
+    }
+    expect(shown).toEqual([]);
+  });
 });
 
 describe("credential redaction", () => {
