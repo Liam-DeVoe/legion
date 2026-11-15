@@ -323,7 +323,7 @@ func TestABundleFailsWhenTheAppsInstallationsCannotBeRead(t *testing.T) {
 // An owner directory gh holds to be no directory's name fails the bundle rather than being left
 // out of it: the directory carries that owner's whole lease and may be the bundle's default, so
 // a bundle written from a name that is not one would make a file of the bundle's into a
-// directory and lose every owner (ghconfig.IsDirName, WriteBundle). The drift check answers no
+// directory and lose every owner (ghconfig.IsOwner, WriteBundle). The drift check answers no
 // set for it either, which leaves every pod where it is.
 func TestABundleFailsOnAnOwnerThatIsNoDirectoryName(t *testing.T) {
 	repos := projectRepos("acme/widgets")
