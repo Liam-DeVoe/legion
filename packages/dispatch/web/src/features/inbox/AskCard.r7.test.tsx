@@ -1,0 +1,361 @@
+import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+
+import { graphNode } from "../../__tests__/graph-fixture";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { api } from "../../api/client";
+import type { Ask, AskRead, TextRewrite } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
+import { AskCard } from "./AskCard";
+
+// The ask card as INFRA-3231's R7 has it: one split button whose menu holds the card's other
+// actions in three groups with their keys, the rewrite's one badge, whose turn it is only where
+// it is not the reader's, the line that names who handed the question on, and no urgency or
+// Asked-of label.
+
+let whoAmI: Mock<typeof api.whoAmI>;
+let getReferences: Mock<typeof api.getReferences>;
+let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
+
+beforeEach(() => {
+  whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "ask-1", kind: "ask" }),
+  });
+  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+});
+
+afterEach(() => {
+  whoAmI.mockRestore();
+  getReferences.mockRestore();
+  getIssueSubscribers.mockRestore();
+});
+
+function openAsk(overrides: Partial<Ask> = {}): Ask {
+  return {
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    block_id: null,
+    created_at: "2026-10-08T00:00:00Z",
+    edited_at: null,
+    id: "ask-1",
+    issue_key: "CORE-1",
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [
+      { description: "Go out today.", label: "Ship" },
+      { description: "Wait a week.", label: "Hold" },
+    ],
+    question: "Ship the release today, or hold it a week for the migration?",
+    state: "open",
+    urgency: "blocking",
+    waiting_on: "human",
+    waiting_on_person: "alice",
+    ...overrides,
+  };
+}
+
+function approvalAsk(): Ask {
+  return openAsk({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+    question: "Approve spec.md (version 4)?",
+  });
+}
+
+function thread(ask: Ask): AskRead {
+  return {
+    answers: [],
+    ask,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  };
+}
+
+const rewrittenAt = "2026-10-08T00:05:00Z";
+
+/** The ask the agent wrote, as Dispatch keeps it beside the rewrite. */
+const agentWording: TextRewrite["original"] = {
+  body: "R3 flip audit: go with B per the train?",
+  options: [{ description: "Per the train.", label: "Ship" }, { label: "Hold" }],
+};
+
+function renderCard(ask: Ask) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const wrap = (node: ReactNode) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>{node}</KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(wrap(<AskCard ask={ask} initialThread={thread(ask)} />));
+  return {
+    card: () => within(view.getByTestId(`ask-${ask.id}`)),
+    rerender: (next: Ask) =>
+      view.rerender(wrap(<AskCard ask={next} initialThread={thread(ask)} />)),
+    view,
+  };
+}
+
+/** Opens the card's menu and answers its groups: each the labels and keys of its items. */
+async function menuGroups(user: UserEvent): Promise<{ key: string | null; label: string }[][]> {
+  await user.click(screen.getByRole("button", { name: "More actions" }));
+  const menu = await screen.findByRole("menu", { name: "More actions" });
+  return Array.from(menu.querySelectorAll("[data-ask-menu] > div"), (group) =>
+    Array.from(group.querySelectorAll<HTMLElement>("[role=menuitem]"), (item) => ({
+      key: item.getAttribute("aria-keyshortcuts"),
+      label: item.querySelector("span")?.textContent ?? "",
+    }))
+  );
+}
+
+test("an open question's menu holds its other actions in three groups, each with its key", async () => {
+  const user = userEvent.setup();
+  const { view } = renderCard(openAsk());
+  try {
+    await screen.findByRole("radio", { name: /^Ship/ });
+    expect(await menuGroups(user)).toEqual([
+      [
+        { key: "r", label: "Rewrite" },
+        { key: "b", label: "Ask back" },
+        { key: "a", label: "Hand this question to…" },
+      ],
+      [{ key: "n", label: "Decline to answer" }],
+      [{ key: "d", label: "Define selected words" }],
+    ]);
+    // Define acts on words selected in the question, and none are.
+    expect(screen.getByRole("menuitem", { name: "Define selected words" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval request's menu is shorter: it is not rewritten and cannot be declined", async () => {
+  const user = userEvent.setup();
+  const { view } = renderCard(approvalAsk());
+  try {
+    await screen.findByRole("radio", { name: "Approve" });
+    expect(await menuGroups(user)).toEqual([
+      [
+        { key: "b", label: "Ask back" },
+        { key: "a", label: "Hand this question to…" },
+      ],
+      [{ key: "d", label: "Define selected words" }],
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the card draws no urgency label, no Asked-of label and no Decline button of its own", async () => {
+  const { card, view } = renderCard(openAsk({ asked_of: "alice", waiting_on_person: "alice" }));
+  try {
+    await card().findByRole("radio", { name: /^Ship/ });
+    // The card's edge and its name keep the urgency (a decision block's header names it in
+    // words, `AskBlockCard.test.tsx`).
+    expect(screen.getByRole("article", { name: "Urgency: Blocking" })).toBeTruthy();
+    expect(card().queryByText(/^blocking$/i)).not.toBeInTheDocument();
+    expect(card().queryByText(/Asked of/)).not.toBeInTheDocument();
+    expect(card().queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    // The reader's own question is waiting on them wherever it is drawn, so the card says
+    // nothing of whose turn it is.
+    expect(card().queryByText(/Waiting on/)).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a question handed on names whose turn it is and who handed it on, and when", async () => {
+  const { view } = renderCard(
+    openAsk({
+      asked_of: "bob",
+      asked_of_at: "2026-10-08T00:10:00Z",
+      asked_of_by: "dana",
+      waiting_on_person: "bob",
+    })
+  );
+  try {
+    const turn = await screen.findByTestId("turn-ask-1");
+    expect(turn.textContent).toBe("Waiting on bob,");
+    const handedOn = view.container.querySelector("[data-ask-handed-on]");
+    expect(handedOn?.textContent).toMatch(/^handed on by dana /);
+    expect(handedOn?.querySelector("time")).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Rewrite reads Rewriting… at once, then Rewritten, and the badge or w shows the original in place", async () => {
+  const user = userEvent.setup();
+  const ask = openAsk();
+  // The press reads the ask's thread again once it settles.
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(ask));
+  const rewriteAsk = spyOn(api, "rewriteAsk").mockResolvedValue({
+    ask_id: ask.id,
+    rewrite: {
+      at: "2026-10-08T00:04:00Z",
+      by: "person",
+      original: agentWording,
+      state: "rewriting",
+    },
+    started: true,
+  });
+  const { card, rerender, view } = renderCard(ask);
+  try {
+    await card().findByRole("radio", { name: /^Ship/ });
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rewrite" }));
+    expect(rewriteAsk).toHaveBeenCalledWith(ask.id, keyedAttempt);
+    expect((await card().findByRole("status")).textContent).toBe("Rewriting…");
+
+    // The rewrite's `ask.edited` refreshes the ask's read, which carries the rewrite in place.
+    rerender({
+      ...ask,
+      rewrite: { at: rewrittenAt, by: "person", original: agentWording, state: "rewritten" },
+    });
+    const badge = await card().findByRole("button", { name: "Rewritten" });
+    expect(card().getByText(ask.question)).toBeTruthy();
+    // The card says nothing else of the rewrite: not who asked for it, nor why.
+    expect(card().queryByText(/at your request|before it reached you/)).not.toBeInTheDocument();
+
+    await user.click(badge);
+    expect(card().getByRole("button", { name: "Original" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(card().getByText(agentWording.body)).toBeTruthy();
+    expect(card().queryByText(ask.question)).not.toBeInTheDocument();
+    // An option keeps its label and shows the description the agent wrote, or none.
+    expect(card().getByRole("radio", { name: "Ship Per the train." })).toBeTruthy();
+    expect(card().getByRole("radio", { name: "Hold" })).toBeTruthy();
+
+    // `w`, with the card in hand, shows the rewrite again.
+    act(() => card().getByRole("radio", { name: "Ship Per the train." }).focus());
+    await user.keyboard("w");
+    expect(await card().findByRole("button", { name: "Rewritten" })).toBeTruthy();
+    expect(card().getByText(ask.question)).toBeTruthy();
+  } finally {
+    view.unmount();
+    rewriteAsk.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+test("a reviewer's rewrite wears the same Rewritten badge", async () => {
+  const ask = openAsk({
+    rewrite: { at: rewrittenAt, by: "reviewer", original: agentWording, state: "rewritten" },
+  });
+  const { card, view } = renderCard(ask);
+  try {
+    expect(await card().findByRole("button", { name: "Rewritten" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a failed rewrite reads Rewrite failed, its reason only in the tooltip, and r tries again", async () => {
+  const user = userEvent.setup();
+  const reason = "The rewrite changed an option's label.";
+  const ask = openAsk({
+    rewrite: { at: rewrittenAt, by: "person", original: agentWording, reason, state: "failed" },
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(ask));
+  const rewriteAsk = spyOn(api, "rewriteAsk").mockResolvedValue({
+    ask_id: ask.id,
+    rewrite: {
+      at: "2026-10-08T00:06:00Z",
+      by: "person",
+      original: agentWording,
+      state: "rewriting",
+    },
+    started: true,
+  });
+  const { card, view } = renderCard(ask);
+  try {
+    const badge = await card().findByRole("button", { name: "Rewrite failed" });
+    expect(badge).toHaveAttribute("title", `${reason} Try again (r)`);
+    expect(view.container.textContent).not.toContain(reason);
+
+    act(() => card().getByRole("radio", { name: /^Ship/ }).focus());
+    await user.keyboard("r");
+    await waitFor(() => expect(rewriteAsk).toHaveBeenCalledWith(ask.id, keyedAttempt));
+    expect((await card().findByRole("status")).textContent).toBe("Rewriting…");
+  } finally {
+    view.unmount();
+    rewriteAsk.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+test("of two cards on a page, the one holding the focus has the keys, and the command bar lists them", async () => {
+  const first = openAsk();
+  const second = openAsk({ id: "ask-2", question: "Which region goes first?" });
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <AskCard ask={first} initialThread={thread(first)} />
+          <AskCard ask={second} initialThread={thread(second)} />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const card = within(await screen.findByTestId("ask-ask-2"));
+    act(() => card.getByRole("radio", { name: /^Hold/ }).focus());
+    // In each scope no two bindings of one key act at once: each card registers the same keys,
+    // and only the card in hand's apply.
+    expect(appKeymap.conflicts()).toEqual([]);
+    // The command bar lists the keys that act with no text field in focus, for the card in hand.
+    const rows = appKeymap
+      .actions()
+      .filter((action) => action.scope === "ask")
+      .map((action) => action.label);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        "Ask back",
+        "Decline to answer",
+        "Hand this question to…",
+        "Pick option 1",
+        "Pick option 2",
+        "Rewrite",
+      ])
+    );
+    // Only the options the card has, and no original to show on a text nobody rewrote.
+    expect(rows).not.toContain("Pick option 3");
+    expect(rows).not.toContain("Show or hide the original wording");
+  } finally {
+    view.unmount();
+  }
+});

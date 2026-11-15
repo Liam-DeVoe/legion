@@ -37,6 +37,8 @@ import {
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
+import { originalWording, toggleOriginal, useOriginalShown } from "../inbox/ask-rewrite";
+import { RewriteBadge } from "../inbox/RewriteBadge";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { ThreadCard } from "../margin/ThreadCard";
@@ -350,6 +352,9 @@ function MessageTurn({
   replyDisabled: boolean;
 }): ReactNode {
   const author = item.root.author;
+  // A message the reviewer rewrote before the reader saw it: its badge beside the author and
+  // time shows the agent's wording in place.
+  const original = originalWording(item.root.rewrite, useOriginalShown(item.root.id));
   return (
     <li
       aria-current={current ? "true" : undefined}
@@ -363,12 +368,17 @@ function MessageTurn({
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={author} className="font-semibold" inline />
             <Timestamp at={item.root.created_at} />
+            <RewriteBadge
+              onToggle={() => toggleOriginal(item.root.id)}
+              rewrite={item.root.rewrite}
+              showingOriginal={original !== undefined}
+            />
             {item.unread ? <UnreadMark /> : null}
           </p>
           <MarkdownBody
-            markdown={item.root.body}
+            markdown={original?.body ?? item.root.body}
             source={textSourceOf("message", item.root.id)}
-            tree={item.root.body_tree}
+            tree={original === undefined ? item.root.body_tree : undefined}
           />
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>

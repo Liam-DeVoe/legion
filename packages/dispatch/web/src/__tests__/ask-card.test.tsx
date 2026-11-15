@@ -1,8 +1,9 @@
 import { afterAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { RenderResult } from "@testing-library/react";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -127,6 +128,14 @@ function renderCard(node: ReactNode) {
     </MemoryRouter>
   );
   return { queryClient, view };
+}
+
+/** The card's Ask back, from its split button's menu: the action then reads Ask back, and the
+ *  text in the answer box is what it sends. `view` reads the whole page, the portalled menu with
+ *  it. */
+async function chooseAskBack(user: UserEvent, view: RenderResult): Promise<void> {
+  await user.click(view.getByRole("button", { name: "More actions" }));
+  await user.click(await view.findByRole("menuitem", { name: "Ask back" }));
 }
 
 /** The element a forward Tab reaches from `from`: the next enabled, unhidden focusable element in
@@ -357,13 +366,15 @@ test("AskCard exposes medium urgency to screen readers without an inline label",
   }
 });
 
-test("AskCard renders a blocking urgency notch", () => {
+// The card's coloured edge keeps the urgency, and its name tells a screen reader; no label on the
+// card repeats it, since the row that opens the card already names it (INFRA-3231's R7).
+test("AskCard keeps a blocking urgency in its edge and its name, with no urgency label", () => {
   const input = ask({ urgency: "blocking" });
   const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
 
   try {
     const card = view.getByRole("article", { name: "Urgency: Blocking" });
-    expect(within(card).getByText("BLOCKING", { exact: true })).toBeTruthy();
+    expect(within(card).queryByText(/^blocking$/i)).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -656,10 +667,7 @@ test("AskCard submits the selected single option with the revision the human rev
 
   try {
     const answer = view.getByLabelText("Your answer");
-    expect(answer).toHaveAttribute(
-      "placeholder",
-      "Answer in your own words, or ask a question back"
-    );
+    expect(answer).toHaveAttribute("placeholder", "Answer in your own words");
     const submit = view.getByRole("button", { name: "Answer" });
     expect(submit.hasAttribute("disabled")).toBe(true);
 
@@ -994,7 +1002,7 @@ test("AskCard dismisses the question-shaped guard when the response becomes an a
   }
 });
 
-test("an approval-kind ask labels itself Approval requested and has one reason field", async () => {
+test("an approval-kind ask carries no label saying it is one, and has one reason field", async () => {
   const input = ask({
     kind: "approval",
     options: [{ label: "Approve" }, { label: "Request changes" }],
@@ -1004,13 +1012,13 @@ test("an approval-kind ask labels itself Approval requested and has one reason f
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    expect(within(card).getByText("Approval requested")).toBeTruthy();
+    expect(within(card).queryByText("Approval requested")).not.toBeInTheDocument();
     await view.findByRole("radio", { name: "Approve" });
     expect(within(card).getByRole("radio", { name: "Request changes" })).toBeTruthy();
     expect(within(card).queryByRole("radio", { name: "Other" })).not.toBeInTheDocument();
     expect(view.getByLabelText("Reason")).toHaveAttribute(
       "placeholder",
-      "Answer in your own words, or ask a question back"
+      "Answer in your own words"
     );
   } finally {
     view.unmount();
@@ -1243,21 +1251,17 @@ test("the compact card opens and focuses the reason field when Request changes i
     const answer = within(card).getByRole("button", { name: "Answer" });
     expect(answer.hasAttribute("disabled")).toBe(true);
     expect(within(card).getByText("Add a reason to send Request changes")).toBeTruthy();
-    await user.click(reason);
-    await user.paste("Needs another pass.");
-    expect(answer).not.toHaveAttribute("disabled");
 
-    // Closing the disclosure unmounts the field; Request changes is still the picked radio, so
-    // reopening the disclosure is what brings the field back, and it must take focus again.
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
+    // Approve with nothing written folds the field away; Request changes again is what brings
+    // it back, and it must take focus again.
+    await user.click(within(card).getByRole("radio", { name: "Approve" }));
     expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
+    await user.click(within(card).getByRole("radio", { name: "Request changes" }));
     const reopened = within(card).getByLabelText("Reason (required)");
     expect(reopened).toHaveFocus();
+    await user.click(reopened);
+    await user.paste("Needs another pass.");
+    expect(answer).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();
   }
@@ -1713,6 +1717,7 @@ test("AskCard asks back from its answer field and clears the text without cleari
     const field = view.getByLabelText("Your answer");
     await user.click(field);
     await user.paste("Any update on this?");
+    await chooseAskBack(user, view);
     await user.click(view.getByRole("button", { name: "Ask back" }));
 
     await waitFor(() =>
@@ -1746,6 +1751,7 @@ test("AskCard surfaces a retryable error when asking back fails", async () => {
   try {
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Retry me");
+    await chooseAskBack(user, view);
     await user.click(view.getByRole("button", { name: "Ask back" }));
     const alert = await view.findByRole("alert");
     expect(alert).toHaveTextContent("Could not send your clarification.");
@@ -2076,8 +2082,8 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
     const answeredCard = within(answered.container);
     const failedCard = within(failed.container);
     await answeredCard.findByRole("button", { name: "Write a reply" });
-    // The open ask's only composer is the card's own Answer / Ask back row.
-    await openCard.findByRole("button", { name: "Ask back" });
+    // The open ask's only composer is the card's own answer box under its split button.
+    await openCard.findByRole("button", { name: "More actions" });
     expect(openCard.queryByRole("button", { name: "Write a reply" })).not.toBeInTheDocument();
     const retry = await failedCard.findByRole("button", { name: "Replies unavailable — retry" });
     expect(retry).toHaveAttribute("title", "boom");
@@ -2338,6 +2344,7 @@ test("asking back from a document ask posts an artifact comment and keeps the se
     const field = view.getByLabelText("Your answer");
     await user.click(field);
     await user.paste("Does this include the rollback?");
+    await chooseAskBack(user, view);
     await user.click(view.getByRole("button", { name: "Ask back" }));
 
     await waitFor(() =>
@@ -2373,16 +2380,14 @@ test("AskCard compact variant keeps its note disclosure available after selectin
     expect((within(card).getByRole("radio", { name: "Hold" }) as HTMLInputElement).checked).toBe(
       false
     );
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
+    await user.click(within(card).getByRole("button", { name: "Add a note" }));
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
   } finally {
     view.unmount();
   }
 });
 
-test("the compact card's note disclosure leaves the reader in the field it reveals, and a close moves nowhere", async () => {
+test("the compact card's Add a note leaves the reader in the field it reveals, and an option that needs no words folds it away", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
@@ -2391,26 +2396,21 @@ test("the compact card's note disclosure leaves the reader in the field it revea
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    const disclosure = await within(card).findByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
+    const disclosure = await within(card).findByRole("button", { name: "Add a note" });
     // Whoever opens it - the reader's press here, the Inbox's Enter, which presses this same
-    // control - is moved into the box behind it.
+    // control - is moved into the box behind it, and the control leaves with nothing to open.
     await user.click(disclosure);
     const answer = within(card).getByLabelText("Your answer");
     expect(answer).toHaveFocus();
+    expect(within(card).queryByRole("button", { name: "Add a note" })).not.toBeInTheDocument();
 
-    // Picking an option that needs no words neither opens the disclosure nor takes the reader
-    // off the option they just picked.
-    await user.click(disclosure);
-    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
-    // The close moves nobody: the reader is left on the control they pressed, which a press
-    // focuses.
-    expect(disclosure).toHaveFocus();
+    // Picking an option that needs no words, with nothing written, folds the field away and
+    // leaves the reader on the option they just picked.
     const ship = within(card).getByRole("radio", { name: "Ship" });
     await user.click(ship);
     expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
     expect(ship).toHaveFocus();
+    expect(within(card).getByRole("button", { name: "Add a note" })).toBeTruthy();
   } finally {
     view.unmount();
   }
@@ -2445,7 +2445,10 @@ test("AskCard compact variant renders long options as the same wrapping choice r
     expect(
       options.querySelectorAll('[class*="whitespace-nowrap"], [class*="rounded-full"]')
     ).toHaveLength(0);
-    expect(within(card).queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+    // The split button is drawn at once; its Answer waits for a pick.
+    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
+      true
+    );
 
     await user.click(first);
     expect((first as HTMLInputElement).checked).toBe(true);

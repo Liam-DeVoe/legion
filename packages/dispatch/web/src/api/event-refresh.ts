@@ -420,7 +420,9 @@ function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): vo
 }
 
 // The ask lifecycle events, listed rather than matched on the `ask.` prefix so a new one falls
-// to the default branch instead of silently routing here.
+// to the default branch instead of silently routing here. A person's Rewrite starting or failing
+// (`ask.rewriting`, `ask.rewrite_failed`) moves the `rewrite` every read of the ask carries, so an
+// open card follows it (INFRA-3231's R7); a Rewrite that is applied is the ask's `ask.edited`.
 function isAskEvent(event: DispatchEvent): boolean {
   return (
     event.type === "ask.opened" ||
@@ -432,7 +434,9 @@ function isAskEvent(event: DispatchEvent): boolean {
     event.type === "ask.resolved" ||
     event.type === "ask.follower_added" ||
     event.type === "ask.follower_removed" ||
-    event.type === "ask.reviewed"
+    event.type === "ask.reviewed" ||
+    event.type === "ask.rewriting" ||
+    event.type === "ask.rewrite_failed"
   );
 }
 
@@ -834,14 +838,16 @@ const EVERY_QUESTION_MAP: RefreshTarget = { queryKey: ["references", "questions"
 
 /** Whether the event can change what a `#id` names: a new version of a document, which decides
  *  which `:::ask{#id}` blocks the latest version declares, or an ask settling into a block,
- *  leaving one or moving - every ask event but a follower's arrival or departure, which moves
- *  no block. */
+ *  leaving one or moving - every ask event but a follower's arrival or departure and a Rewrite
+ *  starting or failing, none of which moves a block. */
 function changesQuestionMaps(event: DispatchEvent): boolean {
   return (
     event.type === "artifact.version" ||
     (isAskEvent(event) &&
       event.type !== "ask.follower_added" &&
-      event.type !== "ask.follower_removed")
+      event.type !== "ask.follower_removed" &&
+      event.type !== "ask.rewriting" &&
+      event.type !== "ask.rewrite_failed")
   );
 }
 

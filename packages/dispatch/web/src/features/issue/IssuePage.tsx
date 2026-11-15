@@ -19,7 +19,9 @@ import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ConversationTab } from "../conversation/ConversationTab";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
+import { originalWording, useOriginalShown } from "../inbox/ask-rewrite";
 import { PlanTab } from "../plan/PlanTab";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import {
   buildReferencePath,
   documentRoute,
@@ -359,6 +361,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     () => new Map((issue.data?.artifacts ?? []).map((artifact) => [artifact.id, artifact])),
     [issue.data?.artifacts]
   );
+  // An issue the reviewer rewrote as its agent opened it: while the header's badge shows the
+  // agent's wording, the Spec tab reads the agent's spec in place of the live document.
+  const originalSpec = originalWording(issue.data?.rewrite, useOriginalShown(route.key))?.body;
 
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
@@ -471,21 +476,28 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       >
         {activatedTabs.spec && !(artifactRoute !== undefined && !isPrimaryArtifactRoute) ? (
           <div className="space-y-4">
-            <ArtifactDocument
-              artifact={primaryArtifact}
-              askId={askId}
-              commentId={commentId}
-              highlightTerm={highlightTerm}
-              isClosed={isClosed}
-              onToolbarChange={handleSpecToolbarChange}
-              owner={{ key: issueKey, kind: "issue" }}
-              onVersionChange={(version) => {
-                setSpecShowDiff(false);
-                selectDocumentVersion(primaryArtifact, version);
-              }}
-              showDiff={specShowDiff}
-              version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
-            />
+            <div hidden={originalSpec !== undefined}>
+              <ArtifactDocument
+                artifact={primaryArtifact}
+                askId={askId}
+                commentId={commentId}
+                highlightTerm={highlightTerm}
+                isClosed={isClosed}
+                onToolbarChange={handleSpecToolbarChange}
+                owner={{ key: issueKey, kind: "issue" }}
+                onVersionChange={(version) => {
+                  setSpecShowDiff(false);
+                  selectDocumentVersion(primaryArtifact, version);
+                }}
+                showDiff={specShowDiff}
+                version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
+              />
+            </div>
+            {originalSpec === undefined ? null : (
+              <div className="dispatch-doc" data-issue-original-spec="">
+                <MarkdownBody markdown={originalSpec} />
+              </div>
+            )}
             <SpecRequirements issueKey={issueKey} />
           </div>
         ) : null}

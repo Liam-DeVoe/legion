@@ -31,6 +31,7 @@ import type {
   MyReplyAgentRow,
   MyReplyRow,
   MyReplyThreadRow,
+  TextRewrite,
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useSending } from "../../hooks/useSending";
@@ -66,6 +67,8 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { originalWording, toggleOriginal, useOriginalShown } from "./ask-rewrite";
+import { RewriteBadge } from "./RewriteBadge";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -79,6 +82,9 @@ interface ThreadTurn {
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
+  /** The reviewer's rewrite of the comment or message, where it held the text and posted it
+   *  rewritten: its badge beside the author and time shows the agent's wording in place. */
+  readonly rewrite?: TextRewrite;
 }
 
 /** The text a thread in a document is anchored to, which a card and the pane's fall-back show in
@@ -107,6 +113,7 @@ function ThreadTurnView({
   turn: ThreadTurn;
   unread: boolean;
 }): ReactNode {
+  const original = originalWording(turn.rewrite, useOriginalShown(turn.id));
   return (
     <div
       className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
@@ -118,6 +125,11 @@ function ThreadTurnView({
         <span>
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
         </span>
+        <RewriteBadge
+          onToggle={() => toggleOriginal(turn.id)}
+          rewrite={turn.rewrite}
+          showingOriginal={original !== undefined}
+        />
         {unread ? (
           <span
             className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgePrimary.bg} ${badgePrimary.text}`}
@@ -127,7 +139,10 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} tree={turn.tree} />
+        <MarkdownBody
+          markdown={original?.body ?? turn.body}
+          tree={original === undefined ? turn.tree : undefined}
+        />
       </div>
       {turn.note}
     </div>
@@ -363,6 +378,7 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     created_at: comment.created_at,
     id: comment.id,
     tree: comment.body_tree,
+    ...(comment.rewrite === undefined ? {} : { rewrite: comment.rewrite }),
   };
 }
 
@@ -374,6 +390,7 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     id: message.id,
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
+    ...(message.rewrite === undefined ? {} : { rewrite: message.rewrite }),
   };
 }
 

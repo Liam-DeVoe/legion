@@ -1026,7 +1026,7 @@ test("the column's card registers its hand-on, so the list keeps the row the col
   });
   const held = Promise.withResolvers<InboxRow>();
   const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
-  // The control reads the people as the reader reaches for it, bob among them.
+  // The picker reads the people as it opens, bob among them.
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
     { login: "bob" },
@@ -1034,7 +1034,11 @@ test("the column's card registers its hand-on, so the list keeps the row the col
   const { handOnLiveness, view } = renderPane({ ask: row });
 
   try {
-    await user.selectOptions(await screen.findByLabelText("Hand this question to"), "bob");
+    // The card's menu holds Hand this question to…, which opens the people picker.
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Hand this question to…" }));
+    const picker = await screen.findByRole("dialog", { name: "Hand this question to" });
+    await user.click(await within(picker).findByRole("button", { name: /^bob/ }));
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     // The control sits in the card, not in the head, so the registration reaches the list
     // through the context the Inbox provides rather than through a prop of this column's: the

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test"
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -156,13 +156,31 @@ function backdrop(container: HTMLElement): Element {
   return found;
 }
 
-test("an open question offers Decline to answer, whoever holds the turn", async () => {
+/** The card's Decline to answer, from its split button's menu, which opens the dialog: the card
+ *  draws no button of its own for it (INFRA-3231's R7). */
+async function chooseDecline(user: UserEvent, container: HTMLElement): Promise<void> {
+  await user.click(await within(container).findByRole("button", { name: "More actions" }));
+  await user.click(
+    await within(document.body).findByRole("menuitem", { name: "Decline to answer" })
+  );
+}
+
+/** The names of the items the card's menu lists, in their order. */
+async function menuItems(user: UserEvent, container: HTMLElement): Promise<string[]> {
+  await user.click(await within(container).findByRole("button", { name: "More actions" }));
+  const items = await within(document.body).findAllByRole("menuitem");
+  return items.map((item) => item.firstElementChild?.textContent ?? "");
+}
+
+test("an open question offers Decline to answer in its menu, whoever holds the turn, and no button of its own", async () => {
   for (const turn of ["human", "agent"]) {
+    const user = userEvent.setup();
     const ask = openAsk({ waiting_on: turn });
     const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
     const card = within(view.container);
     try {
-      expect(await card.findByRole("button", { name: "Decline to answer" })).toBeTruthy();
+      expect(await menuItems(user, view.container)).toContain("Decline to answer");
+      expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
     } finally {
       view.unmount();
     }
@@ -175,7 +193,8 @@ test("an approval request offers no decline, which the server refuses", async ()
   const card = within(view.container);
   try {
     await card.findByRole("radio", { name: "Approve" });
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    expect(await menuItems(user, view.container)).not.toContain("Decline to answer");
   } finally {
     view.unmount();
   }
@@ -230,7 +249,7 @@ test("a decline sends the person's note and closes the question", async () => {
   );
   const card = within(view.container);
   try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByLabelText("Note (optional)"));
     await user.paste(note);
@@ -264,7 +283,7 @@ test("the decline dialog counts what is left to write, and sends no note when em
   );
   const card = within(view.container);
   try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     const field = within(dialog).getByLabelText("Note (optional)");
     expect(field).toHaveAttribute("maxlength", String(DISPATCH_EVENT_BODY_MAX));
@@ -307,7 +326,7 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
   );
   const card = within(view.container);
   try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Declining…" })));
