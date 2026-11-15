@@ -157,11 +157,9 @@ until that answer comes clean.
   is gated by nothing. It also reads the reviewer's prose commits here with the rest, no new
   round, and does
   not accept while the issue holds a finding ask no controller took (`findings.md`, "When no
-  controller takes it"). Approval is gated by the `before_merge` checks of the issue's own
-  Verification document at its head, so a child's result against a root's check proves nothing:
-  a root's checks are proven at its own head, in its last round. No `after_merge` result is
-  asked here: it is recorded after the close, where the project opens a check (*The production
-  check after the close*, below).
+  controller takes it").
+  No `after_merge` result is asked here: it is recorded after the close, where the project opens
+  a check (*The production check after the close*, below).
   CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names
   the checks GitHub reported and leaves the decision to the roles it told. Read the head's checks
   on GitHub yourself before you accept, and send a red head back with `request_backward_move`.
