@@ -1270,6 +1270,36 @@ ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 5 a
 out="$(fixture_run "$dir" --replay)"
 ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$?" "$out"
 
+# 76. A recorded command reproduces on a machine that never ran it. At 9959ca5563 the row
+# m-ctl-our-row-count kept its Go module cache at $TMPDIR/gomod, outside IOC_CACHE and
+# IOC_CLONES. So a replay at new roots on a machine that had run it before still read a warm
+# cache. On a machine that had not, go printed one "go: downloading" line per module before
+# "rows 38", and the row failed its {"equals":"rows 38"}. Test round 25's cold replay met it
+# on a pod that had just been replaced. The case runs that row's own command, read from
+# claims.jsonl, through the gate's replay, with a fresh TMPDIR and IOC_CACHE and our tree at
+# the commit sources.json pins, and holds it to its own predicate. It needs go, git and the
+# Go module proxy, and prints SKIP when go is missing.
+if command -v go >/dev/null 2>&1; then
+    row="$(jq -c 'select(.id=="m-ctl-our-row-count")' "$HERE/claims.jsonl")"
+    if [ -z "$row" ]; then
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL the row m-ctl-our-row-count is not in claims.jsonl, so nothing replays the count it proves\n'
+    else
+        cold="$WORK/cold-go"
+        mkdir -p "$cold/tmp" "$cold/cache" "$cold/our"
+        git -C "$IOC_ROOT" archive "$(jq -r '.our_repository.commit' "$HERE/sources.json")" go.work go.work.sum packages/daemon packages/envoy |
+            tar -x -C "$cold/our"
+        dir="$(fresh cold-go-cache)"
+        plant_behaviour "$dir" "$(printf '%s' "$row" | jq -r '.command')" "$(printf '%s' "$row" | jq -c '.expect')"
+        out="$(TMPDIR="$cold/tmp" IOC_CACHE="$cold/cache" IOC_OUR_TREE="$cold/our" fixture_run "$dir" --replay)"
+        # go writes its module cache read-only, and the EXIT trap removes $WORK.
+        chmod -R u+w "$cold"
+        honest_result "m-ctl-our-row-count meets its predicate on a machine with no Go module cache" replay-command "$out"
+    fi
+else
+    printf 'SKIP the replay of m-ctl-our-row-count with no Go module cache: go is missing\n'
+fi
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
