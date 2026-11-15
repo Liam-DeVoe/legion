@@ -90,8 +90,9 @@
 # default, at the commits sources.json pins. Everything env.sh builds is under IOC_CACHE,
 # $TMPDIR/infra3134 by default, and so is every cache a tool of a recorded command writes:
 # env.sh's ioc_env_cache_table names one variable per cache (go's GOMODCACHE and GOCACHE,
-# uv's cache and the interpreters it downloads, pip's, huggingface's, bun's, npm's and
-# XDG_CACHE_HOME), env.sh exports each, and --replay exports them by the same table when its
+# uv's cache and the interpreters it downloads, pip's, huggingface's, torch's compiler
+# cache, bun's, npm's and XDG_CACHE_HOME), env.sh exports each, and --replay exports them by
+# the same table when its
 # fixture builds nothing. No row names a cache of its own, so a fresh IOC_CACHE is a machine
 # that never ran the replay; --help prints that table. Each recorded command runs with TMPDIR
 # set to an empty directory of its own under the run's scratch, so no row reads what an

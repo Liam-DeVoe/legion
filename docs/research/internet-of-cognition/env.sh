@@ -131,6 +131,7 @@ HF_HOME|cache/hf|huggingface_hub: every snapshot it downloads, IOC_MODEL_DIR amo
 XDG_CACHE_HOME|cache/xdg|every other tool that keeps its cache by the XDG base directories
 GOMODCACHE|cache/go/mod|go: every module it downloads
 GOCACHE|cache/go/build|go: what it builds
+TORCHINDUCTOR_CACHE_DIR|cache/torchinductor|torch: the directory its compiler keeps, which importing torch makes under TMPDIR otherwise
 BUN_INSTALL_CACHE_DIR|cache/bun|bun: every package it installs
 npm_config_cache|cache/npm|npm and npx: every package they fetch
 TABLE
