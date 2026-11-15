@@ -4,7 +4,6 @@ import { mkdir, readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import {
-  type Block,
   type Cleanup,
   deliveryFor,
   messageStream,
@@ -19,9 +18,9 @@ import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
-// Decision 15 of INFRA-2811 on the real binary: a phase worker claims its Envoy name right after
-// its `claims/ready` has answered, and a message the listener kept for the role, handed over at
-// that claim, does not take the turn of the task the worker takes.
+// On the real binary: a phase worker claims its Envoy name right after its `claims/ready` has
+// answered, and a message the listener kept for the role, handed over at that claim, does not
+// take the turn of the task the worker takes.
 //
 // The worker is the pinned Oh My Pi in RPC mode, as the daemon launches a phase worker, with both
 // plugin entries from this checkout. One stand-in is the model gateway — each Messages request
@@ -88,8 +87,6 @@ interface Turn {
   readonly request: Request;
   /** Answers it with one text block. */
   reply(text: string): void;
-  /** Answers it with `blocks` (a tool call among them), so the run takes another step. */
-  replyBlocks(blocks: readonly Block[]): void;
 }
 
 /** The fields of a transcript card entry the cases read; the rest is passed through. */
@@ -112,16 +109,14 @@ interface Worker {
   /** Resolves once the session has taken that message: the word it answers the relay frame with
    * (`sendRelayFrame`, which refuses a `nak` by name, so this resolves on a take alone). */
   handedOver(what: string): Promise<void>;
-  /** How long after the stand-in answered `claims/ready` the role claim reached the listener. */
-  claimedAfterReadyMs(): number;
-  /** How many runs of this session have ended: a message read inside a turn that is already
-   * running arrives with none of them over. */
-  runsEnded(): number;
+  /** The boot's `claims/ready` and the first claim of the worker's role, in the order they reached
+   * the stand-in. */
+  bootOrder(): readonly string[];
   /**
    * How the session's own host handed the card carrying `summary` over, read off the transcript
-   * Oh My Pi wrote rather than any record of the extension's: `run-active` is a card the session
-   * took while a run of its own was running, `startup` one it took while it was idle and still
-   * starting (`CardHandOver`, packages/pi-envoy/src/card-wake.ts).
+   * Oh My Pi wrote rather than any record of the extension's: `task-pending` is a card the
+   * session took while the task-turn mark held it back (`CardHandOver`,
+   * packages/pi-envoy/src/card-wake.ts).
    */
   handOverOf(summary: string): Promise<string>;
 }
@@ -193,8 +188,7 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
   const tasks = taskStandIn();
   if (options.task !== undefined) tasks.give(options.task);
   const turns: Turn[] = [];
-  let readyAt = 0;
-  let claimAt = 0;
+  const bootOrder: string[] = [];
   let roleHolder = "";
   let grants = 0;
   const { base } = serveStandin(cleanup, async (url, body) => {
@@ -204,7 +198,6 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
       turns.push({
         request: { path: url.pathname, body },
         reply: (text) => answer.resolve(messageStream([{ type: "text", text }], `msg_${index}`)),
-        replyBlocks: (blocks) => answer.resolve(messageStream(blocks, `msg_${index}`)),
       });
       return new Response(await answer.promise, {
         headers: { "content-type": "text/event-stream" },
@@ -228,7 +221,7 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
     if (url.pathname === "/legion/v1/claims/ready") {
       // The boot's own, right after which the role is claimed; a capability report later in the
       // session's life is a ready of its own and moves nothing.
-      if (readyAt === 0) readyAt = Date.now();
+      if (!bootOrder.includes("ready")) bootOrder.push("ready");
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/grants") {
@@ -248,7 +241,7 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     if (url.pathname === "/v1/roles/set") {
       if (body.role === CLAIM_TOKEN && roleHolder === "") {
-        claimAt = Date.now();
+        bootOrder.push("role claim");
         // The next turn of the stand-in's event loop, so the grant goes out before the lane it
         // hands over, as the listener grants a claim and then forwards what it kept.
         setImmediate(() => handOver(sid));
@@ -276,7 +269,6 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
   await writeStandinProfile(home, base);
 
   const closed: { error?: unknown } = {};
-  let runsEnded = 0;
   const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
@@ -297,15 +289,8 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
       },
-      onFrame: (frame) => {
-        if (
-          "type" in frame &&
-          frame.type === "agent_end" &&
-          !("isTerminal" in frame && frame.isTerminal === false)
-        ) {
-          runsEnded += 1;
-        }
-      },
+      // The cases read what the stand-in saw and the transcript, no RPC frame.
+      onFrame: () => undefined,
     },
     cleanup
   );
@@ -344,8 +329,7 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
       const sent = await until(what, () => receipt);
       await sent;
     },
-    claimedAfterReadyMs: () => claimAt - readyAt,
-    runsEnded: () => runsEnded,
+    bootOrder: () => bootOrder,
     async handOverOf(summary) {
       const files = (await readdir(sessions, { recursive: true })).filter((file) =>
         file.endsWith(".jsonl")
@@ -388,7 +372,7 @@ test.skipIf(skip)(
     expect(conversation(task.request)).toContain(TASK);
     expect(conversation(task.request)).not.toContain("arrived with no turn to read");
     expect(worker.takes()).toHaveLength(1);
-    expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(0);
+    expect(worker.bootOrder()).toEqual(["ready", "role claim"]);
     // The host wrote the card as one held while the task's turn was pending.
     expect(await worker.handOverOf(worker.kept)).toBe("task-pending");
     task.reply("WAITING on the review of the change.");
@@ -411,7 +395,7 @@ test.skipIf(skip)(
     const worker = await startWorker({ task: undefined });
 
     const woken = await worker.nextTurn("the turn the kept message started");
-    expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(0);
+    expect(worker.bootOrder()).toEqual(["ready", "role claim"]);
     expect(conversation(woken.request)).toContain(worker.kept);
     // This session was given nothing, so the turn it ran is the kept message's own.
     expect(worker.turns).toHaveLength(1);

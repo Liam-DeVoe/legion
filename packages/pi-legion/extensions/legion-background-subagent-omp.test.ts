@@ -365,7 +365,7 @@ async function startRolePane(): Promise<RolePane> {
   const held: Held[] = [];
   let sides = 0;
   let grants = 0;
-  // The daemon's assignment: a task the pane takes, not a prompt the daemon writes.
+  // The daemon's assignment: a task the pane takes.
   const tasks = taskStandIn();
   tasks.give(ASSIGNMENT);
   const { requests, base } = serveStandin(cleanup, async (url, body) => {

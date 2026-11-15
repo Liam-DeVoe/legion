@@ -10,11 +10,7 @@ import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { createTaskTake, type TaskTake } from "@legion/pi-shared/task-take";
-import {
-  clearTaskTurnPending,
-  markTaskTurnPending,
-  takeTaskSignals,
-} from "@legion/pi-shared/task-values";
+import { takeTaskSignals, taskTurnMark } from "@legion/pi-shared/task-values";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
@@ -68,13 +64,13 @@ export function attributionInputs(
  * lifetime, so both are plain closure state, set before `claims/ready`. The ready carries no
  * capability report: the session's capability rows are measured later, on its own interval.
  *
- * The daemon pushes no task. The take holds the claim's value from the registration's answer on,
- * which is also when it sets the task-turn mark, before the role is claimed; it takes each value
- * the Envoy entry hands over from a task frame the listener relayed, and reads the value again
- * from the daemon whenever the session's relay begins a new epoch and whenever the heartbeat
- * regains the role (`takeTaskSignals`, `readTask`). The Envoy name is taken right after
- * `claims/ready` has answered, so the session is addressable from its ready on, and the lane the
- * listener kept for the role arrives while the mark holds its cards back.
+ * The take holds the claim's value from the registration's answer on, which is also when it sets
+ * the task-turn mark, before the role is claimed; it takes each value the Envoy entry hands over
+ * from a task frame the listener relayed, and reads the value again from the daemon whenever the
+ * session's relay begins a new epoch and whenever the heartbeat regains the role
+ * (`takeTaskSignals`, `readTask`). The Envoy name is taken right after `claims/ready` has
+ * answered, so the session is addressable from its ready on, and the lane the listener kept for
+ * the role arrives while the mark holds its cards back.
  *
  * The take asks only from a timer that fires once `session_start` has returned: Oh My Pi holds a
  * send made from `session_start` until its startup is over, and runs a send made while its
@@ -136,10 +132,7 @@ export function createClaimSession(deps: {
             generation: claim.generation,
           },
           run: deps.runTask,
-          setPending: (pending) => {
-            if (pending) markTaskTurnPending(sessionID);
-            else clearTaskTurnPending(sessionID);
-          },
+          setPending: taskTurnMark(sessionID),
           log: logger,
         });
         take.read(claim);

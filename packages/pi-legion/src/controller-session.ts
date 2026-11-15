@@ -4,7 +4,7 @@ import {
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
-import type { LegionControllerRegistration, LegionGrant } from "@legion/contracts/legion-api";
+import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
@@ -15,12 +15,8 @@ import {
   markStartupTurnSent,
 } from "@legion/pi-shared/startup-turn";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { createTaskTake, type TaskTake } from "@legion/pi-shared/task-take";
-import {
-  clearTaskTurnPending,
-  markTaskTurnPending,
-  takeTaskSignals,
-} from "@legion/pi-shared/task-values";
+import { createTaskTake, type TaskTake, type TaskTakeCaller } from "@legion/pi-shared/task-take";
+import { takeTaskSignals, taskTurnMark } from "@legion/pi-shared/task-values";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import {
@@ -34,6 +30,14 @@ import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack
 type PersistedTranscript = (
   context: CommandContext | SessionContext
 ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
+
+/** The daemon-launched controller's take of its claim's task: the session it takes for, the take
+ * (`@legion/pi-shared/task-take`), and its read of the claim's value from the daemon. */
+interface Taking {
+  readonly session: string;
+  readonly take: TaskTake;
+  readonly read: () => Promise<void>;
+}
 
 /** How far one claim got, which its caller's notice reports. */
 interface ClaimProgress {
@@ -115,40 +119,26 @@ export function createControllerSession(deps: {
   // own run, which may begin before or after the re-claim that sent it shows its widget, so it
   // takes no widget down.
   let startTurnSession: string | undefined;
-  // The daemon-launched controller's take of its claim's task: the session it takes for, the take
-  // (`@legion/pi-shared/task-take`), and its read of the claim's value from the daemon.
-  let taking:
-    | { readonly session: string; readonly take: TaskTake; readonly read: () => Promise<void> }
-    | undefined;
+  // The daemon-launched controller's take of its claim's task.
+  let taking: Taking | undefined;
 
   /**
-   * The take of the daemon-launched controller's task for the registration `registration` of
-   * `sessionID`, replacing any earlier one: the daemon writes the value of the controller's start
-   * task at each ready, and the session takes it as any claim takes its task. The values the
-   * Envoy entry hands over reach it from here on (`takeTaskSignals`), and each new epoch of the
-   * session's relay reads the value from the daemon again. The task-turn mark it keeps names
-   * `sessionID`; a replaced take's mark is cleared.
+   * The take of the daemon-launched controller's task for the claim `caller` names, replacing any
+   * earlier one: the daemon writes the value of the controller's start task at each ready, and the
+   * session takes it as any claim takes its task. The values the Envoy entry hands over reach it
+   * from here on (`takeTaskSignals`), and each new epoch of the session's relay reads the value
+   * from the daemon again. The task-turn mark it keeps names the caller's session. The replaced
+   * take is closed: what it was still sending stops, an answer that still arrives for it changes
+   * nothing, and its mark is cleared, so a late answer for a registration this claim replaced can
+   * neither run a text nor take down the mark of the take that replaces it.
    */
-  const takeFor = (
-    client: LegionDaemonClient,
-    registration: LegionControllerRegistration,
-    sessionID: string
-  ): TaskTake => {
-    if (taking !== undefined && taking.session !== sessionID) clearTaskTurnPending(taking.session);
-    const caller = {
-      claimToken: registration.claimToken,
-      sessionId: sessionID,
-      secret: registration.secret,
-      generation: registration.generation,
-    };
+  const takeFor = (client: LegionDaemonClient, caller: TaskTakeCaller): Taking => {
+    taking?.take.close();
     const take = createTaskTake({
       daemon: client,
       caller,
       run: deps.runTask,
-      setPending: (pending) => {
-        if (pending) markTaskTurnPending(sessionID);
-        else clearTaskTurnPending(sessionID);
-      },
+      setPending: taskTurnMark(caller.sessionId),
       log: logger,
     });
     const read = async (): Promise<void> => {
@@ -161,14 +151,15 @@ export function createControllerSession(deps: {
         );
       }
     };
-    taking = { session: sessionID, take, read };
+    const entry = { session: caller.sessionId, take, read };
+    taking = entry;
     takeTaskSignals((signal) => {
       const current = taking;
       if (current === undefined || signal.session !== current.session) return;
       if (signal.kind === "value") current.take.relayed(signal.value);
       else void current.read();
     });
-    return take;
+    return entry;
   };
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
@@ -406,7 +397,13 @@ export function createControllerSession(deps: {
       startMessageSent = true;
     }
     // Before the role claim, so a value the listener relays when the role is claimed reaches it.
-    const take = supervised ? takeFor(client, registration, sessionID) : undefined;
+    const caller: TaskTakeCaller = {
+      claimToken: registration.claimToken,
+      sessionId: sessionID,
+      secret: registration.secret,
+      generation: registration.generation,
+    };
+    const taken = supervised ? takeFor(client, caller) : undefined;
     await claimEnvoyRole(sessionID, registration.claimToken, envoyContext);
     await subscribeLegionNotice(
       sessionID,
@@ -425,22 +422,17 @@ export function createControllerSession(deps: {
         registration.claimToken
       );
     }
-    if (take !== undefined) {
+    if (taken !== undefined) {
       // The daemon writes the start task's value at this ready, so the start is on its way from
       // here on.
       markStartupTurnSent(sessionID);
       startTurnSession = sessionID;
-      await client.ready({
-        claimToken: registration.claimToken,
-        sessionId: sessionID,
-        secret: registration.secret,
-        generation: registration.generation,
-      });
-      await taking?.read();
+      await client.ready(caller);
+      await taken.read();
       // From a timer, once `session_start` has returned: a send made from there, or while Oh My
       // Pi's startup drains its sends, would run the start turn inside that drain, where RPC mode
       // reads no command (`src/claim-session.ts`).
-      setImmediate(() => take.ready());
+      setImmediate(() => taken.take.ready());
     }
     claimComplete = true;
     // A re-claim's refusal or hand-over the widget still shows is out of date once a claim succeeds.

@@ -877,8 +877,11 @@ export default function legionExtension(pi: PiApi): void {
   // takes hear the end before the report goes: a take the end of the run allows is asked at once.
   pi.on("agent_end", async (event, context) => {
     const sessionID = context.sessionManager.getSessionId();
-    const task = subagentEvent(context) ? undefined : claimSession.runEnded();
-    if (!subagentEvent(context)) controllerSession.runEnded(sessionID);
+    let task: number | undefined;
+    if (!subagentEvent(context)) {
+      task = claimSession.runEnded();
+      controllerSession.runEnded(sessionID);
+    }
     await turnOutcomes.report(sessionID, event, task);
   });
 

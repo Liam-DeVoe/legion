@@ -1,29 +1,22 @@
 // A stand-in for the daemon's task routes, shared by the tests that run the real Oh My Pi binary
-// (each plugin's `*-omp.test.ts`, the harness's `runLegionPane`): the daemon pushes no task, it
-// writes the number of the task a claim is owed as the claim's value, which the session takes once
-// its host is idle (`src/task-take.ts`). This stand-in holds one claim's value, answers the
-// registration's `task` and `finished`, `claims/task`, `claims/task-seen` and `claims/take` as the
-// daemon's record answers them, and finishes a task when a turn-outcome report names it. A task
-// given after the session registered reaches it as the listener relays a value: a task frame on
-// its deliver subject (`publishTaskFrame`).
+// (each plugin's `*-omp.test.ts`, the harness's `runLegionPane`): the daemon writes the number of
+// the task a claim is owed as the claim's value, which the session takes once its host is idle
+// (`src/task-take.ts`). This stand-in holds one claim's value, answers the registration's `task`
+// and `finished`, `claims/task`, `claims/task-seen` and `claims/take` as the daemon's record
+// answers them, and finishes a task when a turn-outcome report names it. A task given after the
+// session registered reaches it as the listener relays a value: a task frame on its deliver
+// subject (`publishTaskFrame`, on the connection `taskRelayConnection` opens).
+import type { LegionTask } from "@legion/contracts/legion-api";
 import { deliverSubject, TaskHeader } from "@legion/envoy-client/consumer-delivery";
-import { headers, type NatsConnection } from "nats";
-
-/** A claim's task value: its number, and the bucket's epoch and revision of the write. */
-export interface StandInTaskValue {
-  readonly number: number;
-  readonly epoch: string;
-  readonly revision: number;
-}
+import { connect, headers, type NatsConnection } from "nats";
+import type { TaskValue } from "../src/task-take";
+import type { Cleanup } from "./omp-harness";
 
 export interface TaskStandIn {
   /** The registration answer's `task` and `finished`, as the record holds them now. */
-  readonly registered: () => {
-    readonly task: StandInTaskValue | null;
-    readonly finished: number;
-  };
+  readonly registered: () => LegionTask;
   /** Queues a new task whose text is `text`: the next number, written at a new revision. */
-  readonly give: (text: string) => StandInTaskValue;
+  readonly give: (text: string) => TaskValue;
   /**
    * Answers a request to one of the task routes, or undefined for any other path. A turn-outcome
    * report is read, finishing the task it names unless it carries a provider error, and left for
@@ -35,20 +28,19 @@ export interface TaskStandIn {
 }
 
 /** The bucket epoch every stand-in's values carry. */
-export const STAND_IN_TASK_EPOCH = "2026-11-13T16:21:44.123456789Z";
+const STAND_IN_TASK_EPOCH = "2026-11-13T16:21:44.123456789Z";
 
 export function taskStandIn(): TaskStandIn {
-  let revision = 0;
+  // Each task given is the next number, written at the next revision.
   let written = 0;
   let finished = 0;
-  let current: { readonly value: StandInTaskValue; readonly text: string } | undefined;
+  let current: { readonly value: TaskValue; readonly text: string } | undefined;
   const takes: Record<string, unknown>[] = [];
   return {
     registered: () => ({ task: current?.value ?? null, finished }),
     give: (text) => {
-      revision += 1;
       written += 1;
-      const value = { number: written, epoch: STAND_IN_TASK_EPOCH, revision };
+      const value = { number: written, epoch: STAND_IN_TASK_EPOCH, revision: written };
       current = { value, text };
       return value;
     },
@@ -92,7 +84,7 @@ export function publishTaskFrame(
   connection: NatsConnection,
   sessionID: string,
   claim: string,
-  value: StandInTaskValue
+  value: TaskValue
 ): void {
   const frame = headers();
   frame.set(TaskHeader.claim, claim);
@@ -104,4 +96,21 @@ export function publishTaskFrame(
     new TextEncoder().encode(JSON.stringify({ task: value.number })),
     { headers: frame }
   );
+}
+
+/** The connection a test relays task frames on (`publishTaskFrame`): opened to the NATS server at
+ * `natsUrl` at the first call, which `cleanup` closes, and the same one at every call after. */
+export function taskRelayConnection(
+  natsUrl: string,
+  cleanup: Cleanup
+): () => Promise<NatsConnection> {
+  let connection: NatsConnection | undefined;
+  return async () => {
+    if (connection === undefined) {
+      connection = await connect({ servers: natsUrl });
+      const opened = connection;
+      cleanup.push(() => opened.close());
+    }
+    return connection;
+  };
 }

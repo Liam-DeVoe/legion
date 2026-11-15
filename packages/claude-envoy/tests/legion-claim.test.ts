@@ -246,9 +246,11 @@ test("hands the bridge each value relayed for its own claim, the newest held unt
   const registered = await daemonFixture("register.json")
   const token = String(registered["claimToken"])
   const ready = Promise.withResolvers<void>()
+  // What `claims/task` answers at the relay's two new epochs below: task 7, written after the
+  // relayed task 6, and then the same value once the daemon recorded task 7 finished.
   const readings = [
-    { task: valueAt(7, 17), finished: 6 },
-    { task: valueAt(6, 18), finished: 6 },
+    { task: valueAt(7, 18), finished: 6 },
+    { task: valueAt(7, 18), finished: 7 },
   ]
   const stub = (async (input) => {
     const path = new URL(input.toString()).pathname
@@ -303,7 +305,7 @@ test("hands the bridge each value relayed for its own claim, the newest held unt
   // names is finished hands nothing over.
   await claim.readTask()
   await claim.readTask()
-  expect(handed).toEqual([valueAt(5, 13), valueAt(0, 16), valueAt(6, 17), valueAt(7, 17)])
+  expect(handed).toEqual([valueAt(5, 13), valueAt(0, 16), valueAt(6, 17), valueAt(7, 18)])
 })
 
 test("a registration the daemon refuses logs the refusal, stops the pane, and claims no role", async () => {

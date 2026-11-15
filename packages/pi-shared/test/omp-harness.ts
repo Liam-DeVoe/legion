@@ -17,9 +17,8 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
-import { connect, type NatsConnection } from "nats";
 import { linkOmpNatives } from "./omp-natives";
-import { publishTaskFrame, taskStandIn } from "./task-stand-in";
+import { publishTaskFrame, taskRelayConnection, taskStandIn } from "./task-stand-in";
 
 export interface Request {
   readonly path: string;
@@ -119,12 +118,15 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
-export interface RelayConnection {
+/**
+ * What a relay frame needs of a NATS connection: one request carrying `Headers`, the header set
+ * the frame's `newHeaders` makes. `nats`'s `NatsConnection` is one for `nats`'s `MsgHdrs`.
+ */
+export interface RelayConnection<Headers extends RelayFrameHeaders = RelayFrameHeaders> {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options: { readonly timeout: number; readonly headers: Headers }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -134,10 +136,12 @@ export interface RelayFrameHeaders {
 }
 
 /** One frame of the stand-in stream, as `sendRelayFrame` sends it. */
-export interface RelayFrame {
-  readonly connection: RelayConnection;
+export interface RelayFrame<Headers extends RelayFrameHeaders = RelayFrameHeaders> {
+  /** Typed by the header set `newHeaders` makes, never inferred from the connection: `nats`'s
+   * `request` takes its headers as optional, and `MsgHdrs | undefined` is no header set. */
+  readonly connection: RelayConnection<NoInfer<Headers>>;
   /** Makes an empty header set; `nats`'s `headers` is one. */
-  readonly newHeaders: () => RelayFrameHeaders;
+  readonly newHeaders: () => Headers;
   /** The session the listener relays to, which the deliver subject names. */
   readonly sessionID: string;
   /** The subject the stream stored the message on, which the frame carries. */
@@ -230,7 +234,9 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * the answer through it: a caller that awaits a send would otherwise read a frame the session
  * dropped, or one it refused, as a frame it took.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
+export async function sendRelayFrame<Headers extends RelayFrameHeaders>(
+  frame: RelayFrame<Headers>
+): Promise<RelayTake> {
   // Read once, so the refusal below names the bound this send actually kept.
   const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
   const deadline = Date.now() + within;
@@ -1033,15 +1039,7 @@ export async function runLegionPane(
   await writeStandinProfile(home, base, options.config ?? [], options.providers);
 
   // The connection a later task is relayed on, opened at the first such task.
-  let relayConnection: NatsConnection | undefined;
-  const relayTask = async (prompt: string): Promise<void> => {
-    if (relayConnection === undefined) {
-      relayConnection = await connect({ servers: options.nats });
-      const opened = relayConnection;
-      cleanup.push(() => opened.close());
-    }
-    publishTaskFrame(relayConnection, paneSession, claimToken, tasks.give(prompt));
-  };
+  const relay = taskRelayConnection(options.nats, cleanup);
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each task of
@@ -1107,8 +1105,11 @@ export async function runLegionPane(
       if (index > 0) settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
-      if (!legion) rpc.send({ type: "prompt", message: prompt });
-      else if (index > 0) await relayTask(prompt);
+      if (!legion) {
+        rpc.send({ type: "prompt", message: prompt });
+      } else if (index > 0) {
+        publishTaskFrame(await relay(), paneSession, claimToken, tasks.give(prompt));
+      }
       if (options.quietMs === undefined) {
         await Promise.race([settled.promise, rpc.closed]);
       } else {

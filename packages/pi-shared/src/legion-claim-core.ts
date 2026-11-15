@@ -4,7 +4,6 @@ import {
   callReadyWithRetry,
   LegionDaemonApiError,
   type LegionDaemonClient,
-  type ReadyInput,
   type RegisterInput,
 } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
@@ -25,11 +24,10 @@ export interface LegionClaimHost {
    * capability, and a take is answered only once the ready is in. */
   readonly setCapability: (capability: ClaimCapability) => void;
   /** Claims `role`, the claim token, on Envoy for this session: the topic the listener relays the
-   * claim's task value and every notice on. It runs right after `claims/ready` has answered
-   * (decision 15 of INFRA-2811's plan): the task is a value the session takes once its host is
-   * idle, so nothing the role's kept lane hands over can take the task's turn, and the session
-   * holds its name from its ready on. Throws when the role cannot be held, which is logged and
-   * stops the session. */
+   * claim's task value and every notice on. It runs right after `claims/ready` has answered: the
+   * task is a value the session takes once its host is idle, so nothing the role's kept lane
+   * hands over can take the task's turn, and the session holds its name from its ready on. Throws
+   * when the role cannot be held, which is logged and stops the session. */
   readonly claimRole: (role: string) => Promise<void>;
   /**
    * Takes the claim's task value as the daemon reads it now (`claims/task`): at each regain of
@@ -66,10 +64,10 @@ export interface LegionClaimBoot {
  * time the heartbeat regains the role. It answers the claim it booted, through which the host
  * reads that value again at a new epoch of its relay, or undefined for a boot that stopped.
  *
- * The daemon pushes no task: it writes the number of the task a claim is owed as the claim's
- * value, which the listener relays to the session holding the role, and the session takes it once
- * its host is idle (`src/task-take.ts`). So the role is claimed as soon as the ready has answered,
- * and the lane the listener kept for the role arrives while the take's mark holds its cards back
+ * The daemon writes the number of the task a claim is owed as the claim's value, which the
+ * listener relays to the session holding the role, and the session takes it once its host is idle
+ * (`src/task-take.ts`). So the role is claimed as soon as the ready has answered, and the lane the
+ * listener kept for the role arrives while the take's mark holds its cards back
  * (`packages/pi-envoy/src/card-wake.ts`); nothing of a message is held, delayed, reordered or read
  * here. A regain reads the value rather than sending the ready again, since a ready makes the
  * daemon send nothing.
@@ -97,17 +95,17 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     return undefined;
   }
   const { taskValue } = host;
+  // The claim in the agent form its ready and its task reads speak for.
+  const caller = {
+    claimToken: claim.claimToken,
+    sessionId: host.registration.sessionId,
+    secret: claim.secret,
+    generation: claim.generation,
+  };
   // The claim's value read now and handed to the host; whether the read answered.
   const readTask = async (why: string): Promise<boolean> => {
     try {
-      taskValue(
-        await daemon.task({
-          claimToken: claim.claimToken,
-          sessionId: host.registration.sessionId,
-          secret: claim.secret,
-          generation: claim.generation,
-        })
-      );
+      taskValue(await daemon.task(caller));
       return true;
     } catch (error) {
       host.log(
@@ -128,13 +126,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       generation: claim.generation,
       promptAgents: claim.promptAgents,
     });
-    const ready: ReadyInput = {
-      claimToken: claim.claimToken,
-      sessionId: host.registration.sessionId,
-      secret: claim.secret,
-      generation: claim.generation,
-    };
-    await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    await callReadyWithRetry("claims/ready", () => daemon.ready(caller));
     await host.claimRole(claim.claimToken);
   } catch (error) {
     host.log(

@@ -523,7 +523,8 @@ test("a prompt carrying anything else is the daemon's assignment and opens the p
 // A task's turn starts with the text its accepted take answered, which the bridge writes to Claude
 // Code itself (`packages/daemon/internal/claudebridge/take.go`): it is no line this server wrote,
 // so its prompt is the assignment, a note the daemon put in front of the text included. A card
-// this server wrote while the take was pending is that turn's next step, an inbound event of it.
+// this server wrote while the take was pending is still a delivery when its own prompt arrives
+// behind the task's: it reopens no phase the worker closed in between.
 test("a taken task's prompt is the assignment, with a card waiting behind it and a note in front of it", async () => {
   const card = "Envoy delivery from the architect: the architect asks for a status"
   const taken =
@@ -536,8 +537,10 @@ test("a taken task's prompt is the assignment, with a card waiting behind it and
     endpoint.deliveryWritten(card)
     expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: taken })).toEqual({})
     expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    endpoint.phaseClosed()
+    expect(await record()).toEqual({ state: "closed", count: 0, reported: false })
     expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: card })).toEqual({})
-    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await record()).toEqual({ state: "closed", count: 0, reported: false })
   } finally {
     await close()
   }

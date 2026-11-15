@@ -359,11 +359,13 @@ export interface ConsumerDelivery {
    */
   registration(): DeliveryRequest;
   /**
-   * Takes the registration's answer. An answer that
-   * reports a gap, or names another stream than the resume the registration sent, tells the
-   * session once. Persists the snapshot when it changed.
+   * Takes the registration's answer. An answer that reports a gap, or names another stream than
+   * the resume the registration sent, tells the session once. Persists the snapshot when it
+   * changed. Says whether this is the first answer taken in the current epoch: from then on the
+   * listener relays to this session's subject again, and a task frame it relayed while the
+   * session was not subscribed is lost, so a host reads its claim's task value again then.
    */
-  answered(answer: DeliveryAnswer): void;
+  answered(answer: DeliveryAnswer): boolean;
   /**
    * Whether the session followed `topic` before a frame stored at `storedAtMs`: a frame the
    * stream kept while the session was away acts on a topic only when it predates nothing
@@ -439,6 +441,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const ownSubject = agentSubject(sessionID);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
+  // The epoch of the last registration answer taken (`answered`).
+  let answeredEpoch: string | undefined;
   // When each followed topic was first followed, on the host's clock.
   let follows = new Map<string, number>();
   // The resume point's stream, the frames of it received and not yet written, and the highest
@@ -834,6 +838,9 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
         gapTold = true;
       }
       persist();
+      const first = answeredEpoch !== currentEpoch.id;
+      answeredEpoch = currentEpoch.id;
+      return first;
     },
     followedBefore(topic, storedAtMs) {
       const at = follows.get(topic);

@@ -2390,8 +2390,6 @@ export default function envoyExtension(pi: PiApi): void {
     readonly sessionID: string;
     readonly delivery: ConsumerDelivery;
     subscription: Subscription | undefined;
-    /** The epoch of the last registration answer taken for this relay (`takeDeliveryAnswer`). */
-    answeredEpoch: string | undefined;
   }
   let relay: Relay | undefined;
 
@@ -2462,7 +2460,7 @@ export default function envoyExtension(pi: PiApi): void {
     const restored = consumerSnapshot(entries, id);
     if (restored !== undefined) delivery.restore(restored);
     persistedFollows = JSON.stringify(delivery.snapshot().follows);
-    return { sessionID: id, delivery, subscription: undefined, answeredEpoch: undefined };
+    return { sessionID: id, delivery, subscription: undefined };
   };
 
   // Subscribes the relay subject, unless it is open: a subscription on a connection the listener
@@ -2578,10 +2576,7 @@ export default function envoyExtension(pi: PiApi): void {
     result: SubscribeResult
   ): void => {
     if (sessionID !== registeredSession || relay !== asked) return;
-    asked.delivery.answered(result.delivery);
-    const epoch = asked.delivery.epoch().id;
-    if (asked.answeredEpoch === epoch) return;
-    asked.answeredEpoch = epoch;
+    if (!asked.delivery.answered(result.delivery)) return;
     publishTaskSignal(publishedInterface, { kind: "epoch", session: asked.sessionID }, logTaker);
   };
 

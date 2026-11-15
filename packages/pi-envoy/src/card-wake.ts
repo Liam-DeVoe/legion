@@ -394,31 +394,15 @@ export class CardWake {
     // An idle host has no run, whatever end of it no extension was told of.
     if (idle === true) this.#runActive = false;
     // While a task's turn is pending, an idle card waits for it in any phase, so the turn the
-    // take's text starts is not a card's.
+    // take's text starts is not a card's; in the startup phase, an idle card waits for the start
+    // turn. A held card goes as a follow-up with no turn, owed a wake.
     const taskHeld = idle === true && this.#taskTurnHolds();
-    const startup =
+    const held =
       taskHeld ||
       (this.#startupPhase &&
         idle === true &&
         (context?.mode === "rpc" || this.#startTurnHold() !== undefined));
-    // The host state at this hand-over, read in the order the delivery itself is decided, so the
-    // record says what this module acted on: a context with no idle state says nothing, a held
-    // card is the task turn's or the startup phase's whatever else holds, and the clear above
-    // means an idle host has no active run, so `idle` wins over `run-active`. What is left is a
-    // busy host with no run, which is setting a prompt up or settling after one, the `setup` the
-    // wake reads below.
-    const handOver: CardHandOver =
-      typeof idle !== "boolean"
-        ? "unknown"
-        : taskHeld
-          ? "task-pending"
-          : startup
-            ? "startup"
-            : idle
-              ? "idle"
-              : this.#runActive
-                ? "run-active"
-                : "prompt-setup";
+    const handOver = this.#handOverOf(idle, taskHeld, held);
     // A card sent while the host sets a prompt up is never woken. Under main every targeted Aside
     // went as an aside, which the host folds with no turn under the latch or in plan mode, so a
     // wake for one would start a turn main never started. A startup targeted Aside does get one:
@@ -427,17 +411,33 @@ export class CardWake {
     // mode at startup is the one case where that wake starts a turn main did not, which
     // `AGENTS.md` states.
     const setup = handOver === "prompt-setup";
-    const wake = startup ? "startup" : setup || targetedAside ? undefined : "fold";
+    const wake = held ? "startup" : setup || targetedAside ? undefined : "fold";
     const details: EnvoyCardMarker = {
       envoyCard: randomUUID(),
       handOver,
       ...(wake !== undefined && { wake }),
     };
-    if (startup) {
+    if (held) {
       this.#unseenStartup.set(details.envoyCard, this.#deps.now());
       return { deliverAs: "followUp", triggerTurn: false, details };
     }
     return { deliverAs: "aside", triggerTurn: true, details };
+  }
+
+  /**
+   * The host state at a hand-over, read in the order the delivery itself is decided, so the
+   * record says what this module acted on: a context with no idle state says nothing, a held card
+   * is the task turn's or the startup phase's whatever else holds, and `deliveryFor`'s clear of
+   * the run means an idle host has no active run, so `idle` wins over `run-active`. What is left
+   * is a busy host with no run, which is setting a prompt up or settling after one, the `setup`
+   * the wake reads.
+   */
+  #handOverOf(idle: boolean | undefined, taskHeld: boolean, held: boolean): CardHandOver {
+    if (typeof idle !== "boolean") return "unknown";
+    if (taskHeld) return "task-pending";
+    if (held) return "startup";
+    if (idle) return "idle";
+    return this.#runActive ? "run-active" : "prompt-setup";
   }
 
   /** A host `message_end`: an interrupt holds the wake back, and a card the host appended arms

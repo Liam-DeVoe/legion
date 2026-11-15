@@ -1104,11 +1104,14 @@ describe("while the task-turn mark names the session", () => {
       await host.fire();
       expect(host.sent).toEqual([]);
       // No event tells the wake that a take was refused, so it reads the mark again at each poll,
-      // and holds for as long as the mark does: the mark has no cap.
+      // and holds for as long as the mark does: the mark has no cap. Each poll that finds the mark
+      // arms the next.
       for (let polls = 0; polls < 3 * (STARTUP_TURN_CAP_MS / TASK_TURN_POLL_MS); polls += 1) {
+        const armed = host.delays.length;
         expect(host.delays.at(-1)).toBe(TASK_TURN_POLL_MS);
         host.advance(TASK_TURN_POLL_MS);
         await host.fire();
+        expect(host.delays).toHaveLength(armed + 1);
       }
       expect(host.sent).toEqual([]);
       expect(host.card("held-too").delivery).toMatchObject(followUp);

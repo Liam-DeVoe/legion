@@ -108,6 +108,8 @@ test("a task line the bridge refuses rejects naming its error, and the delivery 
   const notifier = createInboxNotifier(socketPath)
   const task = notifier.task({ number: 4, epoch: EPOCH, revision: 12 })
   const delivery = notifier.notification(notification("x", "evt-5"))
-  await expect(task).rejects.toThrow("the Legion inbox refused task line")
+  await expect(task).rejects.toThrow(
+    /^the Legion inbox refused task line [0-9a-f-]{36}: an inbox delivery is one JSON object with an id and content$/,
+  )
   await expect(delivery).resolves.toBeUndefined()
 })

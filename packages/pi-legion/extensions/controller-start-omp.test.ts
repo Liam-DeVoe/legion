@@ -28,6 +28,7 @@ import {
 import {
   publishTaskFrame,
   type TaskStandIn,
+  taskRelayConnection,
   taskStandIn,
 } from "@legion/pi-shared/test/task-stand-in";
 import {
@@ -36,7 +37,7 @@ import {
   type Writer,
   writtenLines,
 } from "@legion/test-fixtures/transcript-lines";
-import { connect, type Msg, type NatsConnection, headers as natsHeaders, StringCodec } from "nats";
+import { connect, type Msg, headers as natsHeaders, StringCodec } from "nats";
 import { z } from "zod";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
@@ -53,7 +54,7 @@ import { z } from "zod";
 // the model gateway — each Messages request held until the case answers it — the daemon, Dispatch
 // and the Envoy listener, and the real NATS server the Envoy role claim needs, over which the
 // cases also send the controller cards and notices. The controller the daemon launches, which runs
-// Oh My Pi in RPC mode and gets its start message as the daemon's prompt, runs against the same
+// Oh My Pi in RPC mode and takes its start message as its claim's task, runs against the same
 // stand-in (`startDaemonController`). LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the
 // NATS server, as in pi-envoy's real-binary tests. A run without both skips, except on GitHub
 // Actions, where the pi-legion job supplies both (`ompNatsGuard`).
@@ -681,7 +682,7 @@ interface DaemonController {
    * listener relays it: a task frame on the session's deliver subject, which the session takes
    * once its host is idle, its take answered with `message`.
    */
-  deliver(message: string): void;
+  give(message: string): void;
   /** Answers one RPC `get_state`, which Oh My Pi reads only once its startup is over. */
   state(): Promise<z.infer<typeof RpcStateSchema>>;
   /** Sends one RPC `abort`, as the terminal's Esc does, and resolves on its answer. */
@@ -697,7 +698,7 @@ interface DaemonController {
  * both extensions and the pod's environment — its boot token's file in place of a capability, the
  * project's Slack channels (none unless `launch` names them), and no
  * LEGION_CONTROLLER_START_MESSAGE, since the controller takes its start message as a task once
- * it reports ready (`deliver`) — against the controller's stand-in (`serveController`), which
+ * it reports ready (`give`) — against the controller's stand-in (`serveController`), which
  * answers the daemon's state while the daemon holds the controller's claim (internal/projection's
  * golden), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
  * (ENVOY_HEARTBEAT_MS, 90 s by default), which a case that watches a pass shortens.
@@ -782,7 +783,7 @@ async function startDaemonController(
 
   let taken = 0;
   // The connection a task is relayed on, opened at the first task given.
-  let relay: NatsConnection | undefined;
+  const relay = taskRelayConnection(nats, cleanup);
   return {
     turns,
     async nextTurn(what) {
@@ -790,14 +791,9 @@ async function startDaemonController(
       taken += 1;
       return turn;
     },
-    deliver(message) {
+    give(message) {
       void (async () => {
-        if (relay === undefined) {
-          relay = await connect({ servers: nats });
-          const opened = relay;
-          cleanup.push(() => opened.close());
-        }
-        publishTaskFrame(relay, roleHolder(), claimToken, tasks.give(message));
+        publishTaskFrame(await relay(), roleHolder(), claimToken, tasks.give(message));
       })().catch((error: unknown) => {
         closed.error = error;
       });
@@ -1684,19 +1680,19 @@ test.skipIf(skip)(
 );
 
 // The daemon's controller reports ready once it holds the role and the controller topic, and the
-// daemon writes its start prompt then, which RPC mode reads only once Oh My Pi's startup is over. A
-// card that reached the session during that startup is a follow-up that starts no turn, and the
-// wake for it fired once the host was idle after the startup, which can be before the prompt
-// arrives, so the wake's turn was the first. The claim marks the start turn sent right before its
-// ready (src/controller-session.ts), which holds the wake behind the start turn. The stand-in holds
-// that ready, inside the claim `session_start` awaits, while the card arrives. RPC mode answers
-// its first command only once its startup drain has returned, when the card's follow-up is in the
-// context and the check its `message_end` armed is on the host's 0 ms timer; the second
-// `get_state`, written after that answer, is read on a later turn of omp's event loop, after that
-// timer ran, so a wake that check sent has started its turn by then. Only then does the case
-// deliver the start prompt.
+// daemon writes its start task's value then, which the session takes only once Oh My Pi's startup
+// is over. A card that reached the session during that startup is a follow-up that starts no turn,
+// and the wake for it fired once the host was idle after the startup, which can be before the
+// start task's text arrives, so the wake's turn was the first. The claim marks the start turn sent
+// right before its ready (src/controller-session.ts), which holds the wake behind the start turn.
+// The stand-in holds that ready, inside the claim `session_start` awaits, while the card arrives.
+// RPC mode answers its first command only once its startup drain has returned, when the card's
+// follow-up is in the context and the check its `message_end` armed is on the host's 0 ms timer;
+// the second `get_state`, written after that answer, is read on a later turn of omp's event loop,
+// after that timer ran, so a wake that check sent has started its turn by then. Only then does the
+// case give the start task.
 test.skipIf(skip)(
-  "the daemon-launched controller's start prompt is its first turn, and a startup card's wake runs after it",
+  "the daemon-launched controller's start task is its first turn, and a startup card's wake runs after it",
   async () => {
     const ready = newHold();
     let sid: string | undefined;
@@ -1718,7 +1714,7 @@ test.skipIf(skip)(
     await session.state();
     expect((await session.state()).isStreaming).toBe(false);
     expect(session.turns).toHaveLength(0);
-    session.deliver(START_MESSAGE);
+    session.give(START_MESSAGE);
 
     const start = await session.nextTurn("the first model request");
     expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
@@ -1770,7 +1766,7 @@ test.skipIf(skip)(
     await session.state();
     expect((await session.state()).isStreaming).toBe(false);
     expect(session.turns).toHaveLength(0);
-    session.deliver(START_MESSAGE);
+    session.give(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
     expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
     expect(conversation(start.request)).toContain(card.summary);
@@ -1791,7 +1787,7 @@ test.skipIf(skip)(
     noRequestAfterStart();
 
     const prompt = `PROBE-${randomUUID().slice(0, 8)}`;
-    session.deliver(prompt);
+    session.give(prompt);
     const probe = await session.nextTurn("the probe's model request");
     expect(lastMessage(probe.request)).toContain(prompt);
     expect(conversation(probe.request)).toContain(card.summary);
@@ -2018,9 +2014,9 @@ test.skipIf(skip)(
         : undefined
     );
 
-    // The daemon's start prompt and the turn it runs: the session's startup phase ends there, so
+    // The daemon's start task and the turn it runs: the session's startup phase ends there, so
     // what arrives after it is an idle session's to read.
-    session.deliver(START_MESSAGE);
+    session.give(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
     expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");

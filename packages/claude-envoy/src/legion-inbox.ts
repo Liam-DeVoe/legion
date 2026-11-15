@@ -129,29 +129,30 @@ export function createInboxNotifier(socketPath: string): LegionInbox {
     return opened
   }
 
-  /** Writes one line naming `id`, and resolves once the bridge answers it. */
-  const send = (what: string, id: string, line: Record<string, unknown>): Promise<void> => {
+  /** Writes `line`, which names its `id`, and resolves once the bridge answers that id. */
+  const send = (
+    what: string,
+    line: { readonly id: string } & Record<string, unknown>,
+  ): Promise<void> => {
     const settle = Promise.withResolvers<void>()
-    waiting.push({ id, what, settle })
+    waiting.push({ id: line.id, what, settle })
     connected().write(`${JSON.stringify(line)}\n`)
     return settle.promise
   }
 
   return {
     notification(notification: ChannelNotification): Promise<void> {
-      const id = notification.eventId ?? randomUUID()
       // `blocks` is additional: `content` is the message's text whatever a reader makes of the
       // blocks, so a bridge that does not know the field delivers the message as it always did.
-      return send("delivery", id, {
-        id,
+      return send("delivery", {
+        id: notification.eventId ?? randomUUID(),
         content: notification.content,
         ...(notification.blocks === undefined ? {} : { blocks: notification.blocks }),
       })
     },
     task(value: InboxTaskValue): Promise<void> {
-      const id = randomUUID()
-      return send("task line", id, {
-        id,
+      return send("task line", {
+        id: randomUUID(),
         kind: "task",
         number: value.number,
         epoch: value.epoch,

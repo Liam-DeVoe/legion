@@ -56,14 +56,12 @@ export interface TurnOutcomeReporter {
   readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
 }
 
-/** Statuses a provider answers "not now" with, which its own retries may still get through. */
-const TRANSIENT_STATUSES: Readonly<Record<number, true>> = { 408: true, 429: true };
-
 /**
  * The provider failure an `error` stop carries, as the turn-outcome report names it: the HTTP
  * status of the failed request (0 where it had none, as a content filter's refusal has none), the
  * provider and the model, the provider's message, and whether this plugin reads the status as a
- * failure that may clear (a 408, a 429 or a 5xx). The daemon decides by the status alone.
+ * failure that may clear: a 408 or a 429, a provider's "not now" its own retries may still get
+ * through, or a 5xx. The daemon decides by the status alone.
  */
 function providerError(
   message: AgentEndMessage,
@@ -75,7 +73,7 @@ function providerError(
     provider: message.provider ?? "",
     model: message.model ?? "",
     message: refusal,
-    retryable: TRANSIENT_STATUSES[status] === true || status >= 500,
+    retryable: status === 408 || status === 429 || status >= 500,
   };
 }
 

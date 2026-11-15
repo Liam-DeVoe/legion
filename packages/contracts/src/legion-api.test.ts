@@ -1016,11 +1016,11 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
   // body: the operator routes are the only surface that serves it. The one `task` key the body
-  // carries is `unseenTaskValues[].task`, a task's number and never its text, so that list is held
-  // to numbers and the rest of the body to no `task` key at all.
+  // carries is `unseenTaskValues[].task`, a task's number and never its text, which its schema
+  // holds to an integer: the whole body carries that key, and the rest of it none at all.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
-  const { unseenTaskValues, ...withoutUnseen } = parsed;
-  expect(unseenTaskValues?.every((value) => Number.isInteger(value.task))).toBe(true);
+  const { unseenTaskValues: _numbers, ...withoutUnseen } = parsed;
+  expect(JSON.stringify(parsed)).toContain('"task"');
   expect(JSON.stringify(withoutUnseen)).not.toContain('"task"');
 
   // A cause outside the seven words, a linger that is no instant and an empty key in the chain

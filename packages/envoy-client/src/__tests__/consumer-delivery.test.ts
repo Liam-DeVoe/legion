@@ -1044,6 +1044,18 @@ describe("resume point", () => {
     expect(delivery.beginEpoch().id).not.toBe(before);
     expect(delivery.registration().epoch).toBe(delivery.epoch().id);
   });
+
+  // A host reads its claim's task value again at the first answer of each epoch: a task frame
+  // relayed while the session was not subscribed is lost.
+  test("only the first answer taken in each epoch says it is the first", () => {
+    const { delivery } = setup();
+
+    expect(delivery.answered(answerStarting(1))).toBe(true);
+    expect(delivery.answered(answerStarting(1))).toBe(false);
+    delivery.beginEpoch();
+    expect(delivery.answered(answerStarting(1))).toBe(true);
+    expect(delivery.answered(answerStarting(1))).toBe(false);
+  });
 });
 
 describe("gaps", () => {

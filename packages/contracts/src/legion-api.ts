@@ -1023,6 +1023,14 @@ const legionTaskValue = z.object({
   revision: z.number().int().positive(),
 });
 
+/** A claim's value as the task bucket holds it now, null where it holds none, and the number of
+ * the last task the claim finished, 0 for none: what `POST /legion/v1/claims/task` answers
+ * (`LegionTaskResponse`), which the registration's answer carries too. */
+const taskReadingFields = {
+  task: legionTaskValue.nullable(),
+  finished: z.number().int().nonnegative(),
+};
+
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
@@ -1038,8 +1046,7 @@ export const LegionRegisterResponse = z.object({
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   promptAgents: z.array(nonEmptyString),
-  task: legionTaskValue.nullable(),
-  finished: z.number().int().nonnegative(),
+  ...taskReadingFields,
 });
 
 export type LegionRegistration = z.output<typeof LegionRegisterResponse>;
@@ -1166,12 +1173,7 @@ function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
 
 /** The value a seen report or a take names: the task `number` and the `epoch` and `revision` of
  * the value the worker was handed. */
-const taskValueFields = {
-  generation: z.number().int().positive(),
-  number: z.number().int().positive(),
-  epoch: nonEmptyString,
-  revision: z.number().int().positive(),
-};
+const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
  * value, at a new epoch of its relay or when it gains its role again (contract 130). */
@@ -1182,10 +1184,7 @@ export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
  * finished, 0 for none (contract 130). */
-export const LegionTaskResponse = z.object({
-  task: legionTaskValue.nullable(),
-  finished: z.number().int().nonnegative(),
-});
+export const LegionTaskResponse = z.object(taskReadingFields);
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
@@ -1399,10 +1398,9 @@ export const LegionErrorResponse = z.object({
 });
 
 /** `api.DeliveryView` — the claim's pending task; `confirmedAt` is when the task was recorded as
- * taken (an accepted take), absent until it is. No prompt is acknowledged since contract 130, so
- * the view carries no `deliveredAt`. `phase` is the issue phase the task was queued for, which is
- * what says whether it is still the work to do; a task of no phase — an operator's own, an
- * architect's — carries none. */
+ * taken (an accepted take), absent until it is. `phase` is the issue phase the task was queued
+ * for, which is what says whether it is still the work to do; a task of no phase — an operator's
+ * own, an architect's — carries none. */
 const legionDeliveryView = z.object({
   id: nonEmptyString,
   task: nonEmptyString,

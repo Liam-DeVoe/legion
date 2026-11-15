@@ -50,9 +50,14 @@ const put = (number: number, revision: number, claim = caller.claimToken): Relay
   task: number,
 });
 
-/** What one attempt of a request meets: the daemon's answer, a failure, or no answer at all, in
- * which case the attempt waits until its bound aborts it. */
-type Attempt<T> = { readonly answer: T } | { readonly fail: Error } | { readonly silent: true };
+/** What one attempt of a request meets: the daemon's answer, a failure, no answer at all, in
+ * which case the attempt waits until its bound aborts it, or an answer that arrives when `late`
+ * settles, whether or not the attempt was aborted before. */
+type Attempt<T> =
+  | { readonly answer: T }
+  | { readonly fail: Error }
+  | { readonly silent: true }
+  | { readonly late: Promise<T> };
 
 interface Call {
   readonly route: "task-seen" | "take";
@@ -68,7 +73,9 @@ async function flush(): Promise<void> {
  * The take over a fake daemon client and a fake clock. The daemon answers each take with the next
  * attempt `takes` holds (a refusal, by default, as a hold would answer it), and each seen report
  * with the next `seens` holds (204, by default). `advance` moves the clock, firing every wait it
- * passes; `waits` is every wait between two attempts of one request, in the order they were made.
+ * passes; a wait that fired stops listening for its abort, as `timerWait` does, so a later abort
+ * of its signal takes no other wait off the clock. `waits` is every wait between two attempts of
+ * one request, in the order they were made.
  */
 function rig() {
   const calls: Call[] = [];
@@ -79,12 +86,13 @@ function rig() {
   const warned: string[] = [];
   const waits: number[] = [];
   let now = 0;
-  const timers: { due: number; readonly resolve: (passed: boolean) => void }[] = [];
+  const timers: { readonly due: number; readonly fire: () => void }[] = [];
 
   const attempt = <T>(next: Attempt<T> | undefined, fallback: T, signal?: AbortSignal) => {
     if (next === undefined) return Promise.resolve(fallback);
     if ("answer" in next) return Promise.resolve(next.answer);
     if ("fail" in next) return Promise.reject(next.fail);
+    if ("late" in next) return next.late;
     const { promise, reject } = Promise.withResolvers<T>();
     signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
     return promise;
@@ -112,16 +120,19 @@ function rig() {
         return promise;
       }
       if (ms !== TASK_ANSWER_TIMEOUT_MS) waits.push(ms);
-      const timer = { due: now + ms, resolve };
-      timers.push(timer);
-      signal.addEventListener(
-        "abort",
-        () => {
-          timers.splice(timers.indexOf(timer), 1);
-          resolve(false);
+      const stop = () => {
+        timers.splice(timers.indexOf(timer), 1);
+        resolve(false);
+      };
+      const timer = {
+        due: now + ms,
+        fire: () => {
+          signal.removeEventListener("abort", stop);
+          resolve(true);
         },
-        { once: true }
-      );
+      };
+      timers.push(timer);
+      signal.addEventListener("abort", stop, { once: true });
       return promise;
     },
   });
@@ -135,7 +146,7 @@ function rig() {
       if (next === undefined || next.due > until) break;
       timers.shift();
       now = next.due;
-      next.resolve(true);
+      next.fire();
     }
     now = until;
     await flush();
@@ -319,7 +330,7 @@ test("a take sent again for a number already accepted runs the text once", async
   expect(ran).toEqual([TEXT]);
 });
 
-test("a dropped take clears the value and the mark, and a deleted value asks nothing", async () => {
+test("a dropped take clears the mark, and neither the delete it made nor a stale relay of the dropped value asks again", async () => {
   const { take, routed, takes, marks, advance } = rig();
   take.ready();
   takes.push({ answer: DROPPED });
@@ -456,4 +467,40 @@ test("a deleted value ends the re-sending of its take", async () => {
 
   expect(routed("take")).toEqual([body(4, 12)]);
   expect(marks).toEqual([true, false]);
+});
+
+// The daemon-launched controller replaces its take at each claim (`takeFor` in
+// `packages/pi-legion/src/controller-session.ts`): the replaced take's requests and mark are not
+// the new take's to keep.
+test("a closed take sends nothing more, drops an answer that still arrives, clears its mark, and does nothing after", async () => {
+  const { take, routed, takes, seens, ran, marks, advance } = rig();
+  take.ready();
+  const late = Promise.withResolvers<LegionTake>();
+  takes.push({ late: late.promise });
+  seens.push({ fail: transport("ECONNREFUSED") }, { fail: transport("ECONNREFUSED") });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(routed("task-seen")).toEqual([body(4, 12)]);
+  expect(marks).toEqual([true]);
+
+  take.close();
+  expect(marks).toEqual([true, false]);
+  // The seen report's re-sending stops, and the take's answer, arriving now, runs nothing.
+  late.resolve(ACCEPTED);
+  await advance(10 * TASK_RESEND_MAX_DELAY_MS);
+  expect(routed("task-seen")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([]);
+
+  // Nothing it is handed after it reports, asks or marks anything.
+  take.relayed(put(5, 13));
+  take.read({ task: value(5, 13), finished: 4 });
+  take.ready();
+  take.runStarted();
+  expect(take.runEnded()).toBeUndefined();
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(routed("task-seen")).toEqual([body(4, 12)]);
+  expect(marks).toEqual([true, false]);
+  expect(ran).toEqual([]);
 });

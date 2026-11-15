@@ -840,9 +840,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     /** The id's state file, which also holds the relay's snapshot. */
     readonly state: ReplayStateWriter
     subscription: ChannelTopicSubscription | undefined
-    /** The epoch whose first registration answer the session's task values were told of
-     *  (`takeDeliveryAnswer`), undefined before any. */
-    answeredEpoch: string | undefined
   }
   let relay: Relay | undefined
 
@@ -956,7 +953,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       delivery: consumer,
       state,
       subscription: undefined,
-      answeredEpoch: undefined,
     }
     relay = owner
     const subscription = options.connection.subscribe(consumer.subject)
@@ -1017,11 +1013,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    */
   const takeDeliveryAnswer = (sessionID: string, asked: Relay, result: SubscribeResult): void => {
     if (sessionID !== identity.id || relay !== asked) return
-    asked.delivery.answered(result.delivery)
-    const epoch = asked.delivery.epoch().id
-    if (asked.answeredEpoch === epoch) return
-    asked.answeredEpoch = epoch
-    options.taskValues?.epoch()
+    if (asked.delivery.answered(result.delivery)) options.taskValues?.epoch()
   }
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and

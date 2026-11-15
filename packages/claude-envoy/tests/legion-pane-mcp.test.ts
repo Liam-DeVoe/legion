@@ -84,9 +84,10 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     },
   })
   const broker = new FakeNatsServer()
-  // The inbox's deliveries; the claim's task lines (`kind: "task"`), which the bridge takes and
-  // writes nothing of into the conversation, are answered and kept apart.
+  // The inbox's deliveries, and the claim's task lines (`kind: "task"`), which the bridge takes
+  // and writes nothing of into the conversation: each is answered, and the two are kept apart.
   const inboxLines: { id: string; content: string }[] = []
+  const taskLines: unknown[] = []
   const inboxPath = join(root, "inbox.sock")
   const inbox = createServer((socket: Socket) => {
     let buffered = ""
@@ -100,7 +101,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
           kind?: string
         }
         buffered = buffered.slice(end + 1)
-        if (line.kind !== "task") inboxLines.push(line)
+        if (line.kind === "task") taskLines.push(line)
+        else inboxLines.push(line)
         socket.write(`${JSON.stringify({ id: line.id, ok: true })}\n`)
       }
     })
@@ -177,9 +179,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         },
       },
     ])
-    // The name is taken right after the ready, with no turn of the session needed: the daemon
-    // pushes no task, so nothing the listener kept for the role can take the task's turn
-    // (decision 15 of INFRA-2811's plan).
+    // The name is taken right after the ready, with no turn of the session needed: the task is a
+    // value the session takes, so nothing the listener kept for the role can take the task's turn.
     await waitFor(async () => roles.length > 0, "the pane to claim its role right after its ready")
     // The claim names the process that made it — the one id this server minted and registers
     // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
@@ -188,6 +189,15 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect([...new Set(instances)]).toEqual([instance])
     expect(roles).toEqual([
       { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
+    ])
+    // The registration's task value is the bridge's to take: one task line, naming the value as
+    // the registration answered it.
+    await waitFor(
+      async () => taskLines.length > 0,
+      "the registration's task value to reach the inbox",
+    )
+    expect(taskLines).toEqual([
+      { id: expect.any(String), kind: "task", ...(registered["task"] as object) },
     ])
     // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
     // registration of the session carries both modes the bridge serves.

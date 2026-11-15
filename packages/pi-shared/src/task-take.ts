@@ -1,19 +1,19 @@
 import type { LegionTake, LegionTask } from "@legion/contracts/legion-api";
 import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
 import { messageFor } from "@legion/envoy-client/errors";
-import { LegionDaemonApiError, type LegionDaemonClient } from "./daemon-client";
+import { daemonUnreachable, LegionDaemonApiError, type LegionDaemonClient } from "./daemon-client";
 
 /**
- * A worker's take of its claim's task (dispatch://INFRA-2811 R2). The daemon pushes no task: it
- * writes the number of the task its record owes a claim into the claim's key of the Legion task
- * bucket, and the Envoy listener relays each write to the session holding the claim's role. The
- * worker holds the newest value it was handed — by the registration's answer, by a read of
- * `claims/task`, or by a relayed task frame — reports each one to the daemon as seen, whether or
- * not its host is idle, and asks the daemon to take it once its host is idle. The daemon answers
- * from its record: the text to run, a hold that refuses it, or a drop. A new revision is the only
- * signal to ask again: the worker asks once per `(epoch, revision)`, and the pairs it asked at are
- * kept in this process's memory alone, so a relaunched process asks again at the value it is
- * handed, which is the daemon's to answer.
+ * A worker's take of its claim's task (dispatch://INFRA-2811 R2). The daemon writes the number of
+ * the task its record owes a claim into the claim's key of the Legion task bucket, and the Envoy
+ * listener relays each write to the session holding the claim's role. The worker holds the newest
+ * value it was handed — by the registration's answer, by a read of `claims/task`, or by a relayed
+ * task frame — reports each one to the daemon as seen, whether or not its host is idle, and asks
+ * the daemon to take it once its host is idle. The daemon answers from its record: the text to
+ * run, a hold that refuses it, or a drop. A new revision is the only signal to ask again: the
+ * worker asks once per `(epoch, revision)`, and the pairs it asked at are kept in this process's
+ * memory alone, so a relaunched process asks again at the value it is handed, which is the
+ * daemon's to answer.
  *
  * The host is idle when no run of its session is going, from a run's `agent_start` to its
  * `agent_end`: a compaction between runs does not make it busy, so a take is made during one, and
@@ -37,11 +37,14 @@ import { LegionDaemonApiError, type LegionDaemonClient } from "./daemon-client";
  * failure, no answer within `TASK_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion
  * error code — is sent again, the same request, after a wait that doubles from
  * `TASK_RESEND_FIRST_DELAY_MS` to `TASK_RESEND_MAX_DELAY_MS`, with no attempt limit, until the
- * daemon answers it or a newer value replaces it (departure 7 of INFRA-2811's plan): a take the
- * daemon never received would otherwise be lost, since the worker asks once per revision. Such a
- * re-send is the same ask, not a second one, and the daemon answers a take repeated for a number
- * it accepted with the same text. Every refusal of these routes names a code, so a coded refusal
- * is an answer and is not sent again.
+ * daemon answers it or a newer value replaces it: a take the daemon never received would
+ * otherwise be lost, since the worker asks once per revision. Such a re-send is the same ask, not
+ * a second one, and the daemon answers a take repeated for a number it accepted with the same
+ * text. Every refusal of these routes names a code, so a coded refusal is an answer and is not
+ * sent again.
+ *
+ * A take its host replaced (`close`) does nothing more: what it was sending stops, an answer that
+ * still arrives for it is dropped, and its task-turn mark is cleared.
  */
 
 /** How long one attempt of a seen report or a take waits for the daemon's answer before the same
@@ -90,7 +93,7 @@ export interface TaskTakeDeps {
 export interface TaskTake {
   /** The daemon's reading of the claim's value: the registration's answer, or a `claims/task`
    * read at a new epoch of the relay or a regain of the role. */
-  readonly read: (reading: Pick<LegionTask, "task" | "finished">) => void;
+  readonly read: (reading: LegionTask) => void;
   /** A value a task frame relayed; one for another claim is not this take's. */
   readonly relayed: (value: RelayTaskValue) => void;
   /** The claim's ready has answered: from now on a take is made once the host is idle. Before
@@ -101,6 +104,10 @@ export interface TaskTake {
   /** That run ended (its `agent_end`): the number of the task whose turn it was, which the turn's
    * report names, or undefined for a run of no task. */
   readonly runEnded: () => number | undefined;
+  /** The take is replaced by another of the same host: every request it is sending stops, an
+   * answer that still arrives for one changes nothing, its task-turn mark is cleared, and every
+   * call after this one does nothing. */
+  readonly close: () => void;
 }
 
 /** An attempt the daemon did not answer within `TASK_ANSWER_TIMEOUT_MS`. */
@@ -111,32 +118,16 @@ class TaskAnswerTimeout extends Error {
   }
 }
 
-/** The error codes of a request that reached no daemon answer: a refused, reset or closed
- * connection (Bun's own names and Node's), and a DNS failure. */
-const UNANSWERED_CODES: Readonly<Record<string, true>> = {
-  ConnectionRefused: true,
-  ECONNREFUSED: true,
-  ConnectionClosed: true,
-  ECONNRESET: true,
-  EPIPE: true,
-  ENOTFOUND: true,
-  EAI_AGAIN: true,
-};
-
 /** Whether `error` is an attempt the daemon gave no answer to, which is sent again: every
- * failure departure 7 names, and nothing the daemon itself answered. */
+ * failure the module's comment names, and nothing the daemon itself answered. */
 function unanswered(error: unknown): boolean {
-  if (error instanceof TaskAnswerTimeout) return true;
+  if (error instanceof TaskAnswerTimeout || daemonUnreachable(error) !== undefined) return true;
   if (error instanceof LegionDaemonApiError) {
-    return [502, 503, 504].includes(error.status) && error.code === undefined;
+    return error.status === 504 && error.code === undefined;
   }
   if (!(error instanceof Error)) return false;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  if (code !== undefined && UNANSWERED_CODES[code] === true) return true;
-  return (
-    error instanceof TypeError &&
-    (error.message === "fetch failed" || error.message === "Failed to fetch")
-  );
+  return code === "ENOTFOUND" || code === "EAI_AGAIN";
 }
 
 function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
@@ -188,6 +179,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
+  let closed = false;
 
   const owed = (value: TaskValue | undefined): value is TaskValue =>
     value !== undefined && value.number > finished;
@@ -292,8 +284,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     }
   };
 
-  const ask = (value: TaskValue): void => {
-    const sending: Sending = { key: keyOf(value), stop: new AbortController() };
+  const ask = (value: TaskValue, key: string): void => {
+    const sending: Sending = { key, stop: new AbortController() };
     taking = sending;
     untilAnswered("claims/take", sending.stop.signal, (signal) =>
       deps.daemon.take(request(value), { signal })
@@ -322,12 +314,15 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
 
   /** Asks about the held value where it may, and keeps the task-turn mark to what is pending. */
   const settle = (): void => {
-    if (armed && !busy && owed(held) && !asked.has(keyOf(held))) {
-      asked.add(keyOf(held));
-      ask(held);
+    const key = held === undefined ? undefined : keyOf(held);
+    if (armed && !busy && owed(held) && key !== undefined && !asked.has(key)) {
+      asked.add(key);
+      ask(held, key);
     }
     const pending =
-      (owed(held) && !asked.has(keyOf(held))) || taking !== undefined || accepted !== undefined;
+      (owed(held) && key !== undefined && !asked.has(key)) ||
+      taking !== undefined ||
+      accepted !== undefined;
     if (pending === marked) return;
     marked = pending;
     deps.setPending(pending);
@@ -356,12 +351,13 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
 
   return {
     read: (reading) => {
+      if (closed) return;
       finished = Math.max(finished, reading.finished);
       if (reading.task !== null) hold(reading.task);
       settle();
     },
     relayed: (value) => {
-      if (value.claim !== caller.claimToken) return;
+      if (closed || value.claim !== caller.claimToken) return;
       const at = { epoch: value.epoch, revision: value.revision };
       if (value.op === "put") {
         hold({ number: value.task, ...at });
@@ -376,10 +372,12 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       settle();
     },
     ready: () => {
+      if (closed) return;
       armed = true;
       settle();
     },
     runStarted: () => {
+      if (closed) return;
       busy = true;
       if (accepted !== undefined && heldText === undefined) {
         running = accepted;
@@ -388,6 +386,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       settle();
     },
     runEnded: () => {
+      if (closed) return undefined;
       busy = false;
       const ended = running;
       running = undefined;
@@ -398,6 +397,14 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       }
       settle();
       return ended;
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      replace(undefined);
+      if (!marked) return;
+      marked = false;
+      deps.setPending(false);
     },
   };
 }

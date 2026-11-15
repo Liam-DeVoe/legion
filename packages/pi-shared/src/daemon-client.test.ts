@@ -715,7 +715,8 @@ test("reports a task value seen and takes it, reading every take answer the daem
     "http://daemon.test/legion/v1/claims/take",
   ]);
   expect(requests.every(({ body }) => JSON.stringify(body) === JSON.stringify(taken))).toBe(true);
-  expect(signals.slice(0, 2)).toEqual([abort.signal, abort.signal]);
+  expect(signals[0]).toBe(abort.signal);
+  expect(signals[1]).toBe(abort.signal);
 
   // A seen report is answered 204 and nothing else, and a take a body the contract does not
   // describe.

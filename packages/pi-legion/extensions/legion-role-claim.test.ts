@@ -185,8 +185,8 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const heartbeatOutage = Promise.withResolvers<string>();
   const registrations: { readonly session_id: string; readonly topics: readonly string[] }[] = [];
   const heartbeatRegistration = Promise.withResolvers<void>();
-  // The registration the role claim refreshes right after it takes the role: the claim runs at
-  // the session's first turn, and nothing of the host awaits it.
+  // The registration the role claim refreshes right after it takes the role: the role is claimed
+  // right after the claim's ready, inside the boot `session_start` awaits.
   const roleClaimed = Promise.withResolvers<void>();
   const tree = "REPO-42";
   const sessionID = "ses_legion_root";
@@ -202,6 +202,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   globalThis.fetch = (async (input, init) => {
     const url = new URL(input.toString());
     if (url.pathname === "/legion/v1/claims/register") {
+      // A claim with no task: this pane neither reports a value seen nor takes one.
       return Response.json({
         ...registered,
         claimToken: role,
@@ -210,6 +211,8 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
         role: "architect",
         generation: 3,
         secret: "root-secret",
+        task: null,
+        finished: 0,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -301,8 +304,8 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   }
   await sessionStart({}, context);
 
-  // The boot is over and the name is taken: the claim runs right after the ready (decision 15 of
-  // INFRA-2811's plan), awaited inside `session_start`.
+  // The boot is over and the name is taken: the role is claimed right after the ready, awaited
+  // inside `session_start`.
   await roleClaimed.promise;
 
   // Two managed intervals: the role claimant's own heartbeat, armed by the claim inside the boot,

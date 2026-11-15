@@ -198,10 +198,10 @@ export interface LegionClaim {
  * transcript, and in a pod whose launcher keeps it (`launcherSaves`) for the launcher's first save
  * of it too, registers with it as the session file (`agentId` is the session id,
  * `pluginContract` this package's `legion.daemonApiVersion`), sends `claims/ready` with no
- * capability report, and claims the claim token's Envoy role soft right after it (decision 15 of
- * INFRA-2811's plan), recording it with the channel session, whose heartbeat re-asserts it. A
- * failure the core stops on ends the pane through `stop`; a failure before a registration is
- * logged and leaves the pane to the daemon's registration deadline.
+ * capability report, and claims the claim token's Envoy role soft right after it, recording it
+ * with the channel session, whose heartbeat re-asserts it. A failure the core stops on ends the
+ * pane through `stop`; a failure before a registration is logged and leaves the pane to the
+ * daemon's registration deadline.
  *
  * The claim hands the bridge every task value it is handed (`task`, the inbox's task line): the
  * registration's, a `claims/task` read at a regain of the role or at a new epoch of the relay
@@ -272,7 +272,7 @@ export function startLegionClaim(deps: {
 
   /** A reading of the claim's value (the registration's answer, a `claims/task` read): its value,
    * where it names a task the claim did not finish. */
-  const read = (reading: Pick<LegionTask, "task" | "finished">): void => {
+  const read = (reading: LegionTask): void => {
     finished = Math.max(finished, reading.finished)
     if (reading.task !== null && reading.task.number > finished) offer(reading.task)
   }

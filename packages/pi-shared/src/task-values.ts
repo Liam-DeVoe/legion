@@ -59,3 +59,12 @@ export function clearTaskTurnPending(sessionID: string): void {
   if (reading.iface.taskTurnPending?.session !== sessionID) return;
   reading.iface.taskTurnPending = undefined;
 }
+
+/** A take's `setPending` for `sessionID` (`src/task-take.ts`): marks that session as the one whose
+ * task's turn is pending, or clears the mark it names. */
+export function taskTurnMark(sessionID: string): (pending: boolean) => void {
+  return (pending) => {
+    if (pending) markTaskTurnPending(sessionID);
+    else clearTaskTurnPending(sessionID);
+  };
+}
