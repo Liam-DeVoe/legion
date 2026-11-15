@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    During a roll from one listener build to the next, a message could be lost for good. When the
+    newer build adds a stream subject, its pod puts that subject on the notification stream as it
+    starts, but the older pod, still the machine's active pod, reads the stream's subjects only
+    when it connects and once a minute after. Until that read, the older pod judged a topic under
+    the new subject as one no stream captures: it left the topic out of the consumer filter of a
+    session whose relay it ran, and out of a registration made through it, with a warning. A
+    message on that topic published in that window was then never delivered to the session, and
+    the older pod's later read did not bring it back. The older pod now reads the stream's
+    subjects again before it judges a topic uncaptured, so such a topic stays in the session's
+    filter and its registration, and the message is delivered. Topics no stream captures at all
+    cost the NATS server at most one extra read of the stream every 250 ms, however many
+    registrations name them.
+time: 2026-11-15T10:13:09.000000000Z
+custom:
+    Issue: pr2404

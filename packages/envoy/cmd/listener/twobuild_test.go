@@ -8,9 +8,13 @@
 // dropped by both while the machine's delivery passes from one build to the other.
 // TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures checks that while the older
 // build holds the machine's delivery, a session it registered receives a message the newer build
-// publishes on a topic only the newer build's subject captures. Like the rows beside them they use
-// nothing a build before INFRA-557 (819dc283) lacks but cmdtest.Build's tags, so they run there
-// with that harness beside them.
+// publishes on a topic only the newer build's subject captures.
+// TestTwoBuildsTheOlderPodsRelayKeepsATopicTheNewerPodRegisteredInsideTheRefreshWindow and
+// TestTwoBuildsTheOlderPodStoresATopicTheNewerBuildAddedInsideTheRefreshWindow check the same
+// delivery before the older pod's periodic read of the stream's subjects has seen the newer
+// subject, through a registration with either pod. Like the rows beside them they use nothing a
+// build before INFRA-557 (819dc283) lacks but cmdtest.Build's tags, so they run there with that
+// harness beside them.
 
 package main
 
@@ -34,11 +38,17 @@ const (
 	// (internal/bus/stream_extra_twobuild.go).
 	tbNewerSubject = "notifications.twobuild.>"
 	// tbSubjectsRead bounds how long a plain pod that connected before the other build added
-	// tbNewerSubject takes to judge a topic on it captured: its client reads the deployed stream's
-	// subjects at each ensure of the stream, which runs at connect and after every reconnect, and
-	// every streamSubjectsRefresh (internal/bus/nats.go, a minute) from its connect, each read
-	// within streamSubjectsRead (10 s). The 5 s past those is the registrations that observe it.
+	// tbNewerSubject takes to judge a topic on it captured. A pod of this build reads the deployed
+	// subjects again before it judges a topic uncaptured (bus.Client.DeployedStreamCapturesFresh),
+	// so it judges it at once; one built before that reads them only at each ensure of the stream,
+	// which runs at connect and after every reconnect, and every streamSubjectsRefresh
+	// (internal/bus/nats.go, a minute) from its connect, each read within streamSubjectsRead
+	// (10 s). The 5 s past those is the registrations that observe it.
 	tbSubjectsRead = 75 * time.Second
+	// tbSubjectsRefresh is streamSubjectsRefresh (internal/bus/nats.go), the period of a pod's
+	// own read of the deployed stream's subjects, the first of them that long after the pod's
+	// client connected: a row that has to run before a pod's first such read runs inside it.
+	tbSubjectsRefresh = time.Minute
 )
 
 // tbTargets is a topic on every subject the plain build's stream stores (bus.StreamSubjects),
@@ -55,11 +65,12 @@ const (
 // plain build serves it: a registration's followed topics and a session consumer's filter are
 // judged on the subjects the deployed stream carries, as the pod's own client last read them
 // (bus.Client.DeployedStreamCaptures, read at each ensure of the stream, which runs at connect and
-// after every reconnect, and every streamSubjectsRefresh, a minute), and no build's ensure drops a
+// after every reconnect, and every streamSubjectsRefresh, a minute, and read again before a topic
+// is judged uncaptured, bus.Client.DeployedStreamCapturesFresh), and no build's ensure drops a
 // subject it does not compile in. So once a pod of the other build has added the subject, a
-// session following a topic on it is served by a pod of either build that has read the stream
-// since, whichever build holds the term; a pod that has not read it yet leaves the topic out of a
-// registration and names it in the answer's warning.
+// session following a topic on it is served by a pod of either build, whichever build holds the
+// term; a pod built before that fresh read that has not read the subjects since leaves the topic
+// out of a registration and names it in the answer's warning.
 func tbTargets() []mpTarget {
 	subjects := bus.StreamSubjects()
 	var targets []mpTarget
@@ -191,12 +202,14 @@ func TestTwoBuildsSkipOrDoubleNoMessage(t *testing.T) {
 // B's start puts the subject on the deployed stream: every pod, a standby too, connects through
 // bus.ConnectOwningStream, whose ensure (ensureStreamWithConfig) adds the subjects its build
 // compiles and keeps every one it finds, which the row reads back from the stream itself. A, which
-// connected before B, reads the stream's subjects again at its next streamSubjectsRefresh. That
-// read has no line of its own, so the row watches for it where it shows: a registration through A
-// of a probe session following another topic under the subject, which A answers with a warning
-// naming the topic until it has read the subject (splitUncapturedTopics), once a second until
-// tbSubjectsRead. The session itself then registers through A once, which answers 200 storing the
-// topic and with no warning.
+// connected before B, reads the stream's subjects again before it judges a topic on the subject
+// uncaptured (bus.Client.DeployedStreamCapturesFresh), and a plain build from before that read
+// reads them only at its next streamSubjectsRefresh. That read has no line of its own, so the row
+// watches for it where it shows: a registration through A of a probe session following another
+// topic under the subject, which A answers with a warning naming the topic until it has read the
+// subject (splitUncapturedTopics), once a second until tbSubjectsRead; a plain pod of this build
+// answers the first without one. The session itself then registers through A once, which answers
+// 200 storing the topic and with no warning.
 //
 // Before #2461 the plain build filtered a session's consumer on the subjects it compiles
 // (bus.StreamCaptures) rather than on the deployed stream's (bus.Client.DeployedStreamCaptures,
@@ -253,9 +266,209 @@ func TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures(t *tes
 	serving.requireOnce(t, []mpMessage{m})
 }
 
-// tbRequireStreamSubject fails the test unless the deployed stream carries subject, as a client of
-// the test's own reads the stream.
-func tbRequireStreamSubject(t *testing.T, natsURL, subject string) {
+// tbRoll is a roll's two pods inside the plain pod's refresh window: A, the plain pod, is the
+// machine's active pod and B, the envoy_twobuild pod, its standby, and B's start added
+// tbNewerSubject to the stream after A's client last read the stream's subjects.
+type tbRoll struct {
+	uri     string
+	serving *mpNATSSession
+	plainA  *mpPod
+	newerB  *mpPod
+	// aStarted is when the row started A's process, before A's client connected, so the time
+	// since it is at least the time since A's connect, from which A's first periodic read of the
+	// stream's subjects is tbSubjectsRefresh away.
+	aStarted time.Time
+}
+
+// tbStartRoll starts the plain pod A, behind an mpLaneRelay so a row can hold one of its
+// connections, and waits for it to be active, reads back from the stream, as a client of the
+// row's own, that A's start left it without tbNewerSubject, then starts the envoy_twobuild pod B,
+// waits for it to be the standby, and reads back that B's start added the subject. A's client read
+// the stream's subjects at its ensure, which ran before A was active, and reads them next
+// tbSubjectsRefresh after its connect (tbRoll.requireInsideRefresh), unless a judgement of a topic
+// it holds uncaptured reads them first (bus.Client.DeployedStreamCapturesFresh): until either, A
+// holds subjects without tbNewerSubject. Nothing here asks A anything that would read them.
+func tbStartRoll(t *testing.T) *tbRoll {
+	t.Helper()
+	plain := cmdtest.Build(t, "envoy-listener")
+	newer := cmdtest.Build(t, "envoy-listener-twobuild", "envoy_twobuild")
+	roll := &tbRoll{uri: mpNATS(t)}
+	roll.serving = mpStartNATSSessions(t, roll.uri)
+	mpJournalOf(t).readsFrom(roll.uri)
+	roll.aStarted = time.Now()
+	roll.plainA = mpStartPodBehindLanes(t, plain, roll.uri, "pod-a")
+	mpWaitActive(t, roll.plainA, 30*time.Second)
+	if subjects := tbStreamSubjects(t, roll.uri); slices.Contains(subjects, tbNewerSubject) {
+		t.Fatalf("the stream %s carries %v before %s (envoy_twobuild) started; the row needs %s's own read without %s", bus.Stream, subjects, "pod-b", roll.plainA.instance, tbNewerSubject)
+	}
+	roll.newerB = mpStartPod(t, newer, roll.uri, "pod-b")
+	mpWaitStandby(t, roll.newerB, 30*time.Second)
+	tbRequireStreamSubject(t, roll.uri, tbNewerSubject)
+	t.Logf("%s (envoy_twobuild) is standby and the stream carries %s, %s after %s (plain) started",
+		roll.newerB.instance, tbNewerSubject, time.Since(roll.aStarted).Round(time.Millisecond), roll.plainA.instance)
+	return roll
+}
+
+// requireInsideRefresh fails the test unless the moment when names comes before A's first
+// periodic read of the stream's subjects, tbSubjectsRefresh after its client connected, and logs
+// how long after A's start it came: an upper bound on the time since A's connect.
+func (r *tbRoll) requireInsideRefresh(t *testing.T, when string) {
+	t.Helper()
+	since := time.Since(r.aStarted)
+	if since >= tbSubjectsRefresh {
+		t.Fatalf("%s came %s after %s started, past its first periodic read of the stream's subjects (%s after its connect); the row measures the window before it",
+			when, since.Round(time.Millisecond), r.plainA.instance, tbSubjectsRefresh)
+	}
+	t.Logf("%s came %s after %s started, inside its first %s, before its first periodic read of the stream's subjects",
+		when, since.Round(time.Millisecond), r.plainA.instance, tbSubjectsRefresh)
+}
+
+// publishThroughNewer publishes a message on topic for sessionID through B's own POST
+// /v1/messages/publish, as TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures
+// does: B's client holds tbNewerSubject, so it stores the message.
+func (r *tbRoll) publishThroughNewer(t *testing.T, sessionID, topic, event string) mpMessage {
+	t.Helper()
+	published := time.Now()
+	body := fmt.Sprintf(`{"topic":%q,"message":%q}`, topic, "a message the newer build publishes mp-event="+event)
+	if answer := r.newerB.call(http.MethodPost, "/v1/messages/publish", body); answer.status != http.StatusOK {
+		t.Fatalf("publish %s through %s: status %d %s %v", body, r.newerB.instance, answer.status, answer.body, answer.err)
+	}
+	m := mpMessage{event: event, session: sessionID, published: published}
+	mpJournalOf(t).publish(m, topic)
+	return m
+}
+
+// While two builds serve the machine during a roll, a session that registers through the newer
+// pod B, following a topic only B's stream subject captures, receives a message on that topic
+// relayed by the older pod A before A's first periodic read of the stream's subjects. B, a
+// standby, serves /v1, judges the topic on its own subjects and stores it on the session's row.
+// A, the active pod, runs the session's relay: it hears B's entry and restarts the session's
+// consumer on the filter it builds from the row (sessionRelays.restart, sessionConsumerFilter).
+// A hears the entry only once B's registration has answered: the row holds A's main connection,
+// which carries A's watch of the session bucket, while it registers through B, and lets it go
+// after, as a watch that lags B's writes does in a roll. B's registration ends on its own repair
+// of the consumer from the row (confirmRegistered), which sets the filter on B's subjects again,
+// so a restart of A's landing before that repair would leave B's filter standing, and the row
+// would measure B rather than A. Held for that registration alone, the connection is lost to
+// neither the server nor A, which reads nothing of the stream meanwhile.
+// The row waits until A pulls from that consumer, which it does only after that restart has
+// written the filter, and logs the filter as the row's own client reads it; it then publishes the
+// message on the topic through B, and a second message on the session's agent subject, which the
+// filter keeps whatever A judged, and waits for that second message: A's relay has pulled past the
+// first by then. The first takes the session exactly once within mpGracefulBound of its publish,
+// all inside A's refresh window (tbRoll.requireInsideRefresh), A active and B standby throughout.
+//
+// Before A judged a topic uncaptured only on a fresh read of the subjects
+// (bus.Client.DeployedStreamCapturesFresh), A built the filter on the subjects it read at its
+// connect, without B's, and left the topic out of it. A filter write keeps the consumer's
+// position, and the server moves a pulling consumer past a message its filter does not match, so
+// the message on the topic was skipped and never reached the session.
+func TestTwoBuildsTheOlderPodsRelayKeepsATopicTheNewerPodRegisteredInsideTheRefreshWindow(t *testing.T) {
+	const (
+		sessionID = "ses_tb_roll_window_relay"
+		topic     = "notifications.twobuild.mp-roll-window-relay"
+		event     = "evt-tb-roll-window-relay"
+	)
+	if bus.StreamCaptures(topic) {
+		t.Fatalf("the plain build compiles a subject capturing %s; the row needs a topic only the envoy_twobuild build's subject captures", topic)
+	}
+	roll := tbStartRoll(t)
+	publisher := mpConnectPublisher(t, roll.uri)
+	release := roll.plainA.lanes.cut(mpReceiveConnection(roll.plainA.instance))
+	topics, warnings := tbRegisterOn(t, roll.newerB, roll.serving, sessionID, topic)
+	release()
+	if !slices.Contains(topics, topic) || len(warnings) > 0 {
+		t.Fatalf("%s's registration through %s stored %v with warnings %q; want %s stored and no warning", sessionID, roll.newerB.instance, topics, warnings, topic)
+	}
+	filter := tbAwaitRelayPull(t, publisher, sessionID, 15*time.Second)
+	t.Logf("%s (plain, active) pulls %s's consumer, which filters on %v", roll.plainA.instance, sessionID, filter)
+
+	tbRequireRoles(t, roll.plainA, roll.newerB, "at the publish")
+	roll.requireInsideRefresh(t, "the publish")
+	m := roll.publishThroughNewer(t, sessionID, topic, event)
+	next := publisher.mustPublish(t, sessionID)
+	roll.serving.awaitAll(t, []mpMessage{next}, mpGracefulBound)
+	roll.serving.awaitAll(t, []mpMessage{m}, max(time.Until(m.published.Add(mpGracefulBound)), 0))
+	roll.requireInsideRefresh(t, "the receipt")
+	tbRequireRoles(t, roll.plainA, roll.newerB, "at the receipt")
+	if at, took := roll.serving.first(sessionID, event); took {
+		t.Logf("%s reached %s %s after %s (envoy_twobuild, standby) published it on %s, relayed by %s (plain, active)",
+			event, sessionID, at.Sub(m.published).Round(time.Millisecond), roll.newerB.instance, topic, roll.plainA.instance)
+	}
+	time.Sleep(mpQuiet)
+	roll.serving.requireKnown(t, []mpMessage{m, next})
+	roll.serving.requireOnce(t, []mpMessage{m, next})
+}
+
+// While two builds serve the machine during a roll, the older pod A, registering a session that
+// follows a topic only the newer pod B's stream subject captures before A's first periodic read
+// of the stream's subjects, stores the topic and answers no warning, and the session takes a
+// message B publishes on it exactly once within mpGracefulBound, relayed by A. A judges the topic
+// on the subjects it holds, read at its connect, without B's, and reads them again before it
+// judges the topic uncaptured (bus.Client.DeployedStreamCapturesFresh); the registration comes
+// inside A's refresh window (tbRoll.requireInsideRefresh), and A is active and B standby
+// throughout.
+//
+// Before that read, A left the topic out of the registration with a warning naming it
+// (splitUncapturedTopics), so the session's row never held it and no message on it reached the
+// session.
+func TestTwoBuildsTheOlderPodStoresATopicTheNewerBuildAddedInsideTheRefreshWindow(t *testing.T) {
+	const (
+		sessionID = "ses_tb_roll_window_register"
+		topic     = "notifications.twobuild.mp-roll-window-register"
+		event     = "evt-tb-roll-window-register"
+	)
+	if bus.StreamCaptures(topic) {
+		t.Fatalf("the plain build compiles a subject capturing %s; the row needs a topic only the envoy_twobuild build's subject captures", topic)
+	}
+	roll := tbStartRoll(t)
+	roll.requireInsideRefresh(t, "the registration")
+	if topics, warnings := tbRegisterOn(t, roll.plainA, roll.serving, sessionID, topic); !slices.Contains(topics, topic) || len(warnings) > 0 {
+		t.Fatalf("%s's registration through %s stored %v with warnings %q; want %s stored and no warning", sessionID, roll.plainA.instance, topics, warnings, topic)
+	}
+
+	tbRequireRoles(t, roll.plainA, roll.newerB, "at the publish")
+	m := roll.publishThroughNewer(t, sessionID, topic, event)
+	roll.serving.awaitAll(t, []mpMessage{m}, mpGracefulBound)
+	roll.requireInsideRefresh(t, "the receipt")
+	tbRequireRoles(t, roll.plainA, roll.newerB, "at the receipt")
+	if at, took := roll.serving.first(sessionID, event); took {
+		t.Logf("%s reached %s %s after %s (envoy_twobuild, standby) published it on %s, relayed by %s (plain, active)",
+			event, sessionID, at.Sub(m.published).Round(time.Millisecond), roll.newerB.instance, topic, roll.plainA.instance)
+	}
+	time.Sleep(mpQuiet)
+	roll.serving.requireKnown(t, []mpMessage{m})
+	roll.serving.requireOnce(t, []mpMessage{m})
+}
+
+// tbAwaitRelayPull waits until a pull request stands on sessionID's consumer, as the row's own
+// client reads the consumer, and returns the consumer's filter then. Only the machine's active pod
+// relays a session's consumer, and its relay pulls only once its restart has written the filter.
+func tbAwaitRelayPull(t *testing.T, publisher *mpPublisher, sessionID string, within time.Duration) []string {
+	t.Helper()
+	name, ok := bus.SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%s names no session consumer", sessionID)
+	}
+	var filter []string
+	mpEventually(t, within, "a pull on "+sessionID+"'s consumer", func() bool {
+		info, err := publisher.client.JS().ConsumerInfo(bus.Stream, name)
+		if err != nil || info.NumWaiting == 0 {
+			return false
+		}
+		filter = slices.Clone(info.Config.FilterSubjects)
+		if info.Config.FilterSubject != "" {
+			filter = append(filter, info.Config.FilterSubject)
+		}
+		slices.Sort(filter)
+		return true
+	})
+	return filter
+}
+
+// tbStreamSubjects is the subjects the deployed stream carries, as a client of the test's own
+// reads the stream.
+func tbStreamSubjects(t *testing.T, natsURL string) []string {
 	t.Helper()
 	client, err := bus.Connect([]string{natsURL})
 	if err != nil {
@@ -266,16 +479,25 @@ func tbRequireStreamSubject(t *testing.T, natsURL, subject string) {
 	if err != nil {
 		t.Fatalf("read the stream %s: %v", bus.Stream, err)
 	}
-	if !slices.Contains(info.Config.Subjects, subject) {
-		t.Fatalf("the stream %s carries %v, without %s", bus.Stream, info.Config.Subjects, subject)
+	return info.Config.Subjects
+}
+
+// tbRequireStreamSubject fails the test unless the deployed stream carries subject, as a client of
+// the test's own reads the stream.
+func tbRequireStreamSubject(t *testing.T, natsURL, subject string) {
+	t.Helper()
+	if subjects := tbStreamSubjects(t, natsURL); !slices.Contains(subjects, subject) {
+		t.Fatalf("the stream %s carries %v, without %s", bus.Stream, subjects, subject)
 	}
 }
 
 // tbAwaitCaptured registers sessionID through the pod following topic, once a second, until the
-// pod answers with no warning, and fails the test when it still warns past within. A pod that has
-// not read the stream's subjects since the subject capturing topic was added leaves the topic out
-// of the registration and names it in the answer's warning, so the first answer without one is the
-// pod's read of that subject.
+// pod answers with no warning, and fails the test when it still warns past within. A pod that
+// judges the topic uncaptured on subjects it read before the subject capturing topic was added
+// leaves the topic out of the registration and names it in the answer's warning, so the first
+// answer without one is the pod's read of that subject: at that registration itself for a pod
+// that reads them again before it judges a topic uncaptured (bus.Client.DeployedStreamCapturesFresh),
+// at its next periodic read for one built before that.
 func tbAwaitCaptured(t *testing.T, pod *mpPod, serving *mpNATSSession, sessionID, topic string, within time.Duration) {
 	t.Helper()
 	for deadline := time.Now().Add(within); ; time.Sleep(time.Second) {

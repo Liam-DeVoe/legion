@@ -396,6 +396,12 @@ type Client struct {
 	// subjectsRefused is set once the server refused a read of the deployed stream's subjects under
 	// the NATS user's permissions (readDeployedSubjects): the client then reads them no more.
 	subjectsRefused atomic.Bool
+	// subjectsRereading is the read of the deployed subjects DeployedStreamCapturesFresh has in
+	// flight, closed when it ends, and nil while none is; subjectsRereadAt is when the last such
+	// read ended, zero before the first. Both are under subjectsRereadMu (rereadDeployedSubjects).
+	subjectsRereadMu  sync.Mutex
+	subjectsRereading chan struct{}
+	subjectsRereadAt  time.Time
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
@@ -635,11 +641,22 @@ const streamSubjectsRefresh = 60 * time.Second
 // no stream makes at connect. A server answers it at once, unless the NATS user may not read the
 // stream: the server then drops the request, and the read waits out this bound. The connect waits
 // for it, so the server's report of that refusal reaches the connection before the client's first
-// publish, which would otherwise read it as a refusal of its own (confirmPublished).
+// publish, which would otherwise read it as a refusal of its own (confirmPublished). It bounds the
+// read DeployedStreamCapturesFresh makes too, which its callers wait for.
 const firstStreamSubjectsRead = 2 * time.Second
 
-// streamSubjectsRead bounds each later read of the deployed stream's subjects.
+// streamSubjectsRead bounds each read of the deployed stream's subjects followDeployedSubjects
+// makes.
 const streamSubjectsRead = 10 * time.Second
+
+// streamSubjectsRereadGap is the least time from the end of one read of the deployed stream's
+// subjects DeployedStreamCapturesFresh makes to the start of the next. It trades the server's load
+// against how stale a "not captured" may be: however many judgements of topics the stream does not
+// capture come at once - a registration naming several, every session following an ad-hoc topic
+// at its heartbeat, a relay restart of each - the client sends at most one STREAM.INFO per gap,
+// and in exchange a subject a newer build adds within the gap after a read is judged uncaptured
+// until the first judgement past the gap reads again, or the next streamSubjectsRefresh.
+const streamSubjectsRereadGap = 250 * time.Millisecond
 
 // ensureStream ensures the stream through js and keeps the subjects it carries afterwards.
 // defaultsAnUnsetCap is what the connected server is, read from the version it answers
@@ -1775,13 +1792,16 @@ func (c *Client) UsesCoreTransport(topic string) bool {
 // exception lane of one, which no consumer filters on even where a stream still captures them.
 //
 // The capture is judged on the subjects of the deployed stream as the client last read them (at
-// each ensure of an owning client, at connect for any other, and every streamSubjectsRefresh), and
-// on the subjects this build compiles (StreamCaptures) only while the client has never read them.
+// each ensure of an owning client, at connect for any other, every streamSubjectsRefresh, and at
+// each read DeployedStreamCapturesFresh makes), and on the subjects this build compiles
+// (StreamCaptures) only while the client has never read them.
 // A nil client has read no deployed stream - a caller that holds none, and the deps a test builds
 // without one - so it answers on the compiled subjects too. Two builds can run at once, and the
 // deployed stream holds the subjects of both: a topic under a subject only the newer build adds is
 // published through JetStream, with its MsgId, by the older build too, and the older build's
-// listener puts it in a session's consumer filter (cmd/listener's sessionConsumerFilter).
+// listener puts it in a session's consumer filter (cmd/listener's sessionConsumerFilter, which
+// asks DeployedStreamCapturesFresh, so a no from subjects read before the newer build added its
+// own is read again first).
 func (c *Client) DeployedStreamCaptures(topic string) bool {
 	if subjectsCapture(roleLaneSubjects, topic) {
 		return false
@@ -1794,6 +1814,76 @@ func (c *Client) DeployedStreamCaptures(topic string) bool {
 	return StreamCaptures(topic)
 }
 
+// DeployedStreamCapturesFresh answers what DeployedStreamCaptures answers, except that it judges a
+// notification topic uncaptured only on a fresh read of the deployed stream's subjects. A topic the
+// subjects the client holds capture is answered from them, with no read. A role lane, or the
+// exception lane of one, is answered no, and so is a topic outside NotificationTopicPrefix, with no
+// read either: no subject a build adds makes either a topic a consumer filters on. Any other topic
+// they do not capture is judged again once the client has read the subjects once more
+// (readDeployedSubjects, within firstStreamSubjectsRead), and that read is kept, so every judgement
+// of the client's after it - its publishes' transport, the listener's fan-out - takes the subjects
+// it read too.
+//
+// It is for a judgement whose "not captured" loses a message for good: the listener's consumer
+// filter (cmd/listener's sessionConsumerFilter), where a topic left out moves the consumer past
+// every message stored on it while the filter stands, and its registration (splitUncapturedTopics),
+// where it leaves the topic out of the row. During a roll the newer build's start adds its subjects
+// to the stream, and an older pod that read the subjects before then would otherwise judge a topic
+// on one of them uncaptured until its next streamSubjectsRefresh, up to a minute.
+//
+// Callers share one read in flight, and the client starts the next no sooner than
+// streamSubjectsRereadGap after the last ended, answering on the subjects it holds in between, so a
+// burst of such judgements costs the server one STREAM.INFO. A client that holds no connection, or
+// whose NATS user may not read the stream (subjectsRefused), reads nothing. A read that fails keeps
+// what the client held, and the answer is the one those give, as DeployedStreamCaptures answers:
+// what a failed read costs the caller is the wait for it, at most firstStreamSubjectsRead, or less
+// when ctx ends first. ctx bounds the caller's wait and not the read, which other callers may share
+// and which runs on to its own bound when ctx ends first. A nil client answers as
+// DeployedStreamCaptures does.
+func (c *Client) DeployedStreamCapturesFresh(ctx context.Context, topic string) bool {
+	if c.DeployedStreamCaptures(topic) {
+		return true
+	}
+	if c == nil || !strings.HasPrefix(topic, NotificationTopicPrefix) || subjectsCapture(roleLaneSubjects, topic) {
+		return false
+	}
+	c.rereadDeployedSubjects(ctx)
+	return c.DeployedStreamCaptures(topic)
+}
+
+// rereadDeployedSubjects is DeployedStreamCapturesFresh's read of the deployed subjects: it joins
+// the read in flight, or starts one on the connection the client is connected over unless the last
+// ended within streamSubjectsRereadGap, and waits for it to end or for ctx to.
+func (c *Client) rereadDeployedSubjects(ctx context.Context) {
+	if c.subjectsRefused.Load() {
+		return
+	}
+	c.subjectsRereadMu.Lock()
+	reading := c.subjectsRereading
+	if reading == nil {
+		conn := c.ConnectedConn()
+		if conn == nil || (!c.subjectsRereadAt.IsZero() && time.Since(c.subjectsRereadAt) < streamSubjectsRereadGap) {
+			c.subjectsRereadMu.Unlock()
+			return
+		}
+		reading = make(chan struct{})
+		c.subjectsRereading = reading
+		go func() {
+			c.readDeployedSubjects(conn, firstStreamSubjectsRead)
+			c.subjectsRereadMu.Lock()
+			c.subjectsRereading = nil
+			c.subjectsRereadAt = time.Now()
+			c.subjectsRereadMu.Unlock()
+			close(reading)
+		}()
+	}
+	c.subjectsRereadMu.Unlock()
+	select {
+	case <-reading:
+	case <-ctx.Done():
+	}
+}
+
 // ReachesNoSession reports whether a topic a caller names would deliver to no session at all: a
 // notification topic the deployed stream does not capture (UsesCoreTransport) that is not a role
 // lane. A session receives what its own consumer delivers, which is what the stream stored, so a
@@ -1801,17 +1891,19 @@ func (c *Client) DeployedStreamCaptures(topic string) bool {
 // deliver nothing. POST /v1/messages/publish refuses such a publish by name, since its sender is
 // there to read the answer, and POST /v1/interests/subscribe leaves such a topic out of the
 // registration and names it in a warning, the rest of the registration stored, since refusing a
-// registration whole leaves its session no consumer at all (cmd/listener/api.go). A role lane is
-// the exception the name's "no session" turns on: it travels over core NATS to the listener, which
-// forwards the message to its holder's agent subject, where the stream stores it for the holder's
-// own consumer.
+// registration whole leaves its session no consumer at all (cmd/listener/api.go); the registration
+// leaves a topic out only once a fresh read of the subjects agrees (DeployedStreamCapturesFresh). A
+// role lane is the exception the name's "no session" turns on: it travels over core NATS to the
+// listener, which forwards the message to its holder's agent subject, where the stream stores it
+// for the holder's own consumer.
 //
 // It is a method for the same reason UsesCoreTransport is: the question is what the DEPLOYED
 // stream captures, not what this binary compiles. While two builds serve one NATS, the stream
 // holds the subjects of both, so a topic only the newer build adds reaches a session's consumer
 // and the older build must not refuse a publish or an interest of it (the subjects this client
-// last read, deployedSubjects). The listener's consumer filter judges the same deployed subjects
-// (DeployedStreamCaptures), so a topic a registration stores is one its consumer filters on.
+// last read, deployedSubjects). The listener's consumer filter judges the same deployed subjects,
+// read again as the registration's are (DeployedStreamCapturesFresh), so a topic a registration
+// stores is one its consumer filters on.
 func (c *Client) ReachesNoSession(topic string) bool {
 	return c.UsesCoreTransport(topic) && !strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }

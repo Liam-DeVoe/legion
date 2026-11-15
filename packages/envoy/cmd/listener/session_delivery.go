@@ -539,7 +539,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.sessionConsumerFilter(ctx, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -725,7 +725,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(body.SessionID, topics), startSeq)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(ctx, body.SessionID, topics), startSeq)
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -932,11 +932,12 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 }
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
-// every one of topics the deployed stream stores, as m.stream last read its subjects
-// (bus.Client.DeployedStreamCaptures), a team topic among them. Those are the subjects
-// /v1/interests/subscribe judges a registration's topics on (m.splitUncapturedTopics), so a
-// topic only a newer build's subjects capture, which this build stores on the session's row
-// while the two builds run, is in the filter too, and a message stored on it is delivered. A
+// every one of topics the deployed stream stores, as m.stream last read its subjects, read again
+// within ctx before a topic is judged uncaptured (bus.Client.DeployedStreamCapturesFresh), a team
+// topic among them. Those are the subjects /v1/interests/subscribe judges a registration's topics
+// on (m.splitUncapturedTopics), so a topic only a newer build's subjects capture, which this build
+// stores on the session's row while the two builds run, is in the filter too, and a message stored
+// on it is delivered. A
 // Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
 // topics while the session holds that project's controller role, and this filter is the whole of
 // how it now reaches the controller: the lane's live core subscription, which handed the session
@@ -948,15 +949,23 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // warning now, reaches nothing.
 // SessionConsumers reduces the list to filters that do not overlap.
 //
+// The read again is what keeps a roll from losing a message: a newer build's start adds its
+// subjects to the stream, and a registration through that build stores a topic on one of them,
+// which this listener's relay restart and repairs then build the filter from. Judged on subjects
+// read before that start, the topic would be left out, and the consumer, which keeps its position
+// through a filter write, would move past every message stored on it while that filter stood
+// (fenceFilterWrite's doc states that cost). ctx bounds only the wait for that read: a caller
+// whose ctx ends first is answered on the subjects m.stream held.
+//
 // A topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token, as
 // in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
 // left out, though the row stores it: with it in the list the server refuses the whole call and
 // the session gets no consumer at all, and no message can reach such a subject anyway.
-func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
+func (m *sessionDelivery) sessionConsumerFilter(ctx context.Context, sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.AgentSubject(sessionID))
 	for _, topic := range topics {
-		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
+		if m.stream.DeployedStreamCapturesFresh(ctx, topic) && bus.CheckFilterSubject(topic) == nil {
 			filter = append(filter, topic)
 		}
 	}

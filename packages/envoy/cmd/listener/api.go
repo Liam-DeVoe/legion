@@ -2354,8 +2354,13 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 // notifications.> is both, and what it earns is the private warning (subscribeHandler).
 //
 // It judges the topics on m.stream, the client the consumer's filter is judged on
-// (sessionConsumerFilter), so a topic a registration stores is one its consumer filters on. A nil
-// m judges the subjects this build compiles; such a listener refuses every registration anyway.
+// (sessionConsumerFilter), and in the same way: a topic m.stream's last read of the deployed
+// subjects does not capture is left out only once a read of them again within ctx agrees
+// (bus.Client.DeployedStreamCapturesFresh), so a registration during a roll keeps a topic on a
+// subject the newer build's start added after this listener last read them, and a topic a
+// registration stores is one its consumer filters on. A caller whose ctx ends before that read is
+// answered on the subjects m.stream held. A nil m judges the subjects this build compiles; such a
+// listener refuses every registration anyway.
 //
 // Both plugins refuse an explicit subscribe to one in those same words (envoy_subscribe in
 // pi-envoy's extensions/envoy.ts and follow in claude-envoy's src/envoy-channel-server.ts, both
@@ -2363,7 +2368,7 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 // named one reads the same sentence wherever it is told: the sentence itself is written once, as
 // uncapturedTopicRefusal in packages/contracts, which scripts/gen-go.ts emits as
 // contracts.UncapturedTopicRefusal.
-func (m *sessionDelivery) splitUncapturedTopics(requested []string) ([]string, map[string]struct{}) {
+func (m *sessionDelivery) splitUncapturedTopics(ctx context.Context, requested []string) ([]string, map[string]struct{}) {
 	var stream *bus.Client
 	if m != nil {
 		stream = m.stream
@@ -2371,7 +2376,7 @@ func (m *sessionDelivery) splitUncapturedTopics(requested []string) ([]string, m
 	planned := make([]string, 0, len(requested))
 	uncaptured := make(map[string]struct{})
 	for _, topic := range requested {
-		if stream.ReachesNoSession(topic) {
+		if stream.ReachesNoSession(topic) && !stream.DeployedStreamCapturesFresh(ctx, topic) {
 			uncaptured[topic] = struct{}{}
 			continue
 		}
@@ -2745,7 +2750,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the
 		// loop below names each in its warning, after the private rule has had its say. The
 		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
-		planned, uncaptured := d.consumers.splitUncapturedTopics(requested)
+		planned, uncaptured := d.consumers.splitUncapturedTopics(ctx, requested)
 		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",
