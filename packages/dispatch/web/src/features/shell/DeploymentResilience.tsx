@@ -364,8 +364,8 @@ export function DeploymentResilience(): ReactNode {
   const lastVersionCheckAt = useRef(0);
 
   // The headless Markdown engine, warmed once this component has painted. Its module
-  // (`features/refs/markdown-engine.ts`) is fetched here rather than imported, and with the
-  // typed-block drawing it alone imports it is a chunk of its own (`markdown-engine-*.js`, beside
+  // (`features/refs/markdown-engine.ts`) is fetched here rather than imported, and it is a chunk
+  // of its own (`markdown-engine-*.js`, which carries the typed-block drawing as well, beside
   // the parse worker's queue and the stored-tree builder it shares with the editor's chunks): this
   // component is in the entry chunk, which every page parses before it draws anything, and this
   // warm was the engine's one importer there. The entry fell by 13,554 bytes when it stopped

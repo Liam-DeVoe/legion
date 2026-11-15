@@ -275,7 +275,7 @@ jobs:
       # dispatched one above, so they come back on every push.
       dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
       # The browser suite, ungated: a pull request that changes what it reads runs it, because
-      # the dispatch-browser job below then runs the cheap `pull-request` lane, the two projects
+      # the dispatch-browser job below then runs the cheap `pull-request` lane, the four projects
       # a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
       # only which lane it runs: that job's `lane:` input reads the label, and the comment there
       # says what each event gets.
@@ -1277,7 +1277,7 @@ jobs:
               - 'scripts/third-party-notices.ts'
               # The workflow that holds every browser step, which this job reads as its own
               # definition, and the nightly, the other caller of that file. An unlabelled pull
-              # request runs the pull-request lane, the two projects a change is held to; a pull
+              # request runs the pull-request lane, the four projects a change is held to; a pull
               # request carrying `full-ci`, the merge group and a dispatch run the full lane,
               # every project and the two-process job, which is the lane the nightly calls. So a
               # worker can put the whole suite on a pull request with the label, the group is
@@ -4758,7 +4758,7 @@ jobs:
     if: needs.changes.outputs.dispatch_browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
-      # An unlabelled pull request gets the two-project `pull-request` lane; a pull request
+      # An unlabelled pull request gets the four-project `pull-request` lane; a pull request
       # carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
       # recheck a slow-suite failure on a pull request: the label picks the lane, while the
       # `dispatch_browser` output above runs the suite either way.

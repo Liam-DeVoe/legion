@@ -388,9 +388,12 @@ func (s *server) landingCredentialRequests(ctx context.Context, caller model.Act
 	return &pending
 }
 
-// landingIssuePage reads what the issue page draws. A key that is no issue, or a read that
-// failed, leaves every part of the page null but the ones that are not the issue's: their
-// routes answer them anyway.
+// landingIssuePage reads what the issue page draws, each part through landingPart of its own,
+// so a read that failed leaves that part null and no other. A key that is no issue leaves the
+// issue null and with it the parts read through it - its document, its coverage and its
+// project's architecture sources; every other part is read by the key alone and is answered as
+// its own route answers that key (landing_test.go,
+// TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell).
 func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key string, trees bool) *landingIssuePage {
 	page := &landingIssuePage{}
 

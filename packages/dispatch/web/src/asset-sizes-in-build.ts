@@ -34,7 +34,7 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * 500,220 bytes, as it is here to. The boundary that answered it is the headless Markdown
  * engine, whose one importer in the entry was the warm every page starts at boot: fetched there
  * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out.
- * No hash is recorded with it: that hash carries the build id, which falls back to the clock
+ * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. A change that adds to what every page parses spends that room and then fails
  * `bun run check:asset-sizes`, which is the point: the next shell boundary is cheaper to find
@@ -47,7 +47,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  *
  * Read it again: `bun run build:web && bun run check:asset-sizes` in `packages/dispatch`. The
  * three sizes of this head were measured that way on 2026-11-15; the two older entry sizes are
- * `web/vite.config.ts`'s own record of 2026-10-29 and 2026-11-11.
+ * the readings of 2026-10-29 and 2026-11-11 named above, which `web/vite.config.ts` no longer
+ * records: its own numbers are this head's.
  */
 export const MAX_ENTRY_BYTES = 500_000;
 

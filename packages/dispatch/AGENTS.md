@@ -2751,8 +2751,8 @@ execs instead of building them from this checkout, and which it refuses when any
 not executable there. It serves one directory only, `packages/envoy/out/dispatch-e2e-broker`
 under this checkout, and refuses every other by name before anything starts, because
 `e2e/real-broker.ts` runs `requestseed` out of that path alone, resolved against its own module
-and from no variable; its callers, the `shard`, `alone`, `multiprocess`, `embedder` and
-`visual` jobs of `.github/workflows/dispatch-browser.yaml`, each download that file's
+and from no variable; its callers, the `shard`, `alone`, `embedder` and `visual` jobs of
+`.github/workflows/dispatch-browser.yaml`, each download that file's
 `binaries` job's artifact into exactly that path. The proxy alternates each HTTP
 request and each websocket upgrade between A and B (two turns, each starting at A), streams each
 response back as it arrives, and forwards `Host` and `Origin` unchanged.
@@ -2790,8 +2790,8 @@ passing on extra arguments
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
 Its two halves are scripts of their own: `build:web-b` writes the second bundle, and
 `e2e:multiprocess:run` runs Playwright over bundles that are already there; the
-`DISPATCH_E2E_WEB_DIST_B` assignment above is that second half's, so a caller of either script
-keeps the B it named.
+`DISPATCH_E2E_WEB_DIST_B` assignment above is that second half's, so a caller of
+`e2e:multiprocess` or of `e2e:multiprocess:run` keeps the B it named.
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs `e2e:multiprocess:run`
 and no build, on the full lane alone: both bundles come out of the `binaries` job's artefact
 (dispatch://INFRA-1109). CI's `dispatch-two-builds` job runs `cross-build.multiprocess` with

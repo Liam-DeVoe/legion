@@ -251,7 +251,8 @@ export function preloadRouteChunk(pathname: string): void {
 // Every other route of the shell, each under `renderChunk` as the three above are, and for the
 // same reason: a reader is waiting on this download the moment the router renders the route, so
 // its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
-// on may be passed over, and the entry's prefetch is the only such chunk there is
+// on may be passed over, which is what every `prefetchChunk` call is: the preload below, the
+// Inbox peek's chunk after a page's first paint and the boot warm of the Markdown engine
 // (`features/shell/DeploymentResilience.tsx`). Left bare, as these were, a route chunk that
 // failed while the entry's prefetch of another chunk was still out was read as that prefetch's
 // and reloaded nothing, leaving the reader in front of a page that could not draw
