@@ -1259,7 +1259,7 @@ export const dispatchToolSpecs = [
       "Replace the body of a comment or a suggestion you wrote, to correct it. The author alone " +
       "may edit a comment: every other caller is refused 403 NOT_AUTHOR. The comment keeps its " +
       "id, its place in its thread and its anchor, and every read of it carries the time of the " +
-      "edit. Dispatch keeps the body you replace: " +
+      "edit. A Dispatch of this release keeps the body you replace: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history lists each earlier body with the " +
       "actor that replaced it and the time. Use it to correct what you wrote, never to answer: a " +
       "new point is a reply (dispatch comment --reply-to), which the thread shows in its own " +
@@ -1286,7 +1286,7 @@ export const dispatchToolSpecs = [
       "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
       "document before the body goes, so the text an insert suggestion put there goes with it. " +
       "Every block of it loses the text each revision recorded, so a reference pinned to a block " +
-      "of the comment reads none either. Dispatch keeps the body: " +
+      "of the comment reads none either. A Dispatch of this release keeps the body: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
       "and lists no body. Correct a wording with dispatch edit-comment instead, and close an " +
       "addressed thread with dispatch resolve-comment. A comment of a closed issue is deleted " +
@@ -1350,7 +1350,7 @@ export const dispatchToolSpecs = [
       "message: every other caller is refused 403 NOT_AUTHOR. Only a message on an issue is " +
       "edited; a message of a direct conversation, which names no issue, is refused 409 " +
       "NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and every read " +
-      "of it carries the time of the edit. Dispatch keeps the body you replace: " +
+      "of it carries the time of the edit. A Dispatch of this release keeps the body you replace: " +
       "dispatch read --ref dispatch://KEY/message/<id> --history lists each earlier body with the " +
       "actor that replaced it and the time. Use it to correct what you wrote, never to answer: a " +
       "new point is a reply (dispatch message --in-reply-to). The block ids follow the new text, " +
@@ -1374,7 +1374,8 @@ export const dispatchToolSpecs = [
       "409 NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and no read " +
       "gives any part of its body again: each read marks it deleted and names who deleted it and " +
       "when. Its replies keep their own text, each send still waiting is failed, and search stops " +
-      "matching it. Dispatch keeps the body: dispatch read --ref dispatch://KEY/message/<id> " +
+      "matching it. A Dispatch of this release keeps the body: dispatch read --ref " +
+      "dispatch://KEY/message/<id> " +
       "--history then marks the message deleted and lists no body. Correct a wording with " +
       "dispatch edit-message instead. A message of a closed issue is deleted too, and a second " +
       "delete is refused 409 POST_DELETED.",
