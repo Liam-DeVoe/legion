@@ -1151,8 +1151,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
 
 - **Socket frames.**
   A new member is additive: the delivery socket (`/ws/delivery`) ignores a member a frame does not declare (`decodeSocketClientFrame`).
-  A new frame type or view kind degrades on build N, which answers it `INVALID_FRAME`:
-  the page then closes the socket and reconnects with the backoff of a lost socket (`web/src/api/delivery-live.ts`), until it reaches a process that serves the frame.
+  A new frame type or view kind degrades on build N, which answers that subscription `INVALID_FRAME`, and so does a member build N declares but refuses on a view of that kind, as a build before INFRA-1077 refuses a pipeline view's `window`:
+  the page fails that one view and keeps the socket, whose other subscriptions build N goes on answering, and sends the view again on its next socket, which a rotation (4001) or build N's own shutdown close (1012) opens and which can reach a process that serves it (`web/src/api/live-socket.ts`).
   A subscribe frame's `resume` is the exception to the ignoring:
   it is the point the view restarts from, so a member the view's resume does not take is refused by name (`decodeLiveResume`) rather than dropped, which would restart the view somewhere else.
 

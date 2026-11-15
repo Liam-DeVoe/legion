@@ -229,6 +229,26 @@ test("the page's window control moves the Pipeline section's view with the timel
   await subscriptionTo(socket, { kind: "timeline", window: { preset: 28 }, query: "" });
 });
 
+// A server of a build before INFRA-1077 serves no pipeline window: it answers the Pipeline
+// section's view `INVALID_FRAME` ("a pipeline view names at most an at") as it reads the frame,
+// before it answers the timeline, which needs a read of its own. The page still gets every view
+// that server knows, on the socket it refused the one view on: the timeline it answers after the
+// refusal is drawn, and the Pipeline section alone says it could not load.
+test("a server that refuses the Pipeline section's view still answers the page's timeline on the same socket", async () => {
+  renderPage();
+  const socket = await openSocket();
+  const pipeline = await subscriptionTo(socket, { kind: "pipeline", window: URL_WINDOW });
+  const timeline = await subscription(socket, "timeline");
+
+  serve(socket, errorFrame(pipeline.sub, "INVALID_FRAME", "a pipeline view names at most an at"));
+  serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
+
+  expect(await screen.findByText("No PRs in the current filter/window.")).toBeDefined();
+  expect(screen.getByText("Couldn't load the pipeline.")).toBeDefined();
+  expect(socket.closedWith).toBeUndefined();
+  expect(sockets.sockets).toHaveLength(1);
+});
+
 test("an unconfigured timeline shows the setup form in its place, reading no settings, and once a save configures it the page's own subscription brings the timeline", async () => {
   const user = userEvent.setup();
   const saved: DeliverySettings = {
