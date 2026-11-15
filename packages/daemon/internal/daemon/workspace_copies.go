@@ -57,8 +57,11 @@ const runningCopyBudget = runningCopyPeriod - idleTickInterval
 // operator and a production check read each whole, and a message reworded at one call site would
 // answer that search with a part of the answer.
 const (
-	// runningCopyStoredLine is a copy taken and stored, at Info: the issue, the bytes it holds
-	// and how long the copy took, the bundler's build and the write together.
+	// runningCopyStoredLine is a copy taken and stored, at Info: the issue, the bytes it holds,
+	// `taken`, the store's time the copy's take began (store.WorkspaceCopyBegun), which is the
+	// copy's own time and the one the cadence's period is measured on, and how long the copy took,
+	// the bundler's build and the write together. The line's own timestamp is when the copy ended,
+	// so a reader measuring the cadence reads `taken` and not the line's time.
 	runningCopyStoredLine = "running copy: stored a copy of an issue workspace's unpushed work"
 	// runningCopyDroppedLine is a workspace that bundled to nothing, at Info. The store refuses
 	// an empty copy, so the issue's running copy is dropped instead: a copy taken minutes ago
@@ -791,6 +794,10 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 		return
 	}
 	bundle, err := w.copyBundler.BundleWorkspace(ctx, issue, role)
+	// No shim answers a whole body over the bound: the shim refuses it on its size before it reads
+	// it (internal/shim's runBundle, MaxBytes), and the stream answers that refusal as
+	// runtime.WorkspaceBundleTooLargeError. This guard is the second line for a bundler that
+	// broke that rule, and it cannot run against any shim today, so no test drives it.
 	if size := bundle.Size(); err == nil && size > runtime.MaxWorkspaceBundleBytes {
 		err = &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: runtime.MaxWorkspaceBundleBytes}
 	}
@@ -845,7 +852,7 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 			return
 		}
 		settled = true
-		w.log.Info(runningCopyStoredLine, "issue", issue, "role", role, "bytes", size, "took", took())
+		w.log.Info(runningCopyStoredLine, "issue", issue, "role", role, "bytes", size, "taken", begun.At(), "took", took())
 	}
 }
 
