@@ -79,9 +79,9 @@ func RetryAfter(err error) (time.Duration, Budget) {
 }
 
 // spent is the budget a rate limit whose answer carries headers spent: GitHub's secondary limit when
-// it asks for a Retry-After or shows no sign of the primary limit (primary false: neither
-// x-ratelimit-remaining: 0 nor the primary limit's message), and otherwise the primary budget
-// x-ratelimit-resource names, or the core budget, the REST API's own, when it names none.
+// it asks for a Retry-After or reports no primary budget spent (primary false), and otherwise the
+// primary budget x-ratelimit-resource names, or the core budget, the REST API's own, when it names
+// none.
 func spent(headers http.Header, primary bool) Budget {
 	if headers.Get("Retry-After") != "" || !primary {
 		return BudgetSecondary
@@ -195,7 +195,7 @@ func (c Client) refusal(method string, target *url.URL, response *http.Response,
 	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
 		RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}
 	if refused.RateLimited {
-		refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0" || namesPrimaryLimit(string(body)))
+		refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0")
 	}
 	return refused
 }
@@ -217,18 +217,11 @@ func (c Client) answerPath(target *url.URL) string {
 // of the same limit, "You have triggered an abuse detection mechanism", beside it.
 var secondaryLimitMessages = []string{"secondary rate limit", "abuse detection mechanism"}
 
-// primaryLimitMessage is what GitHub's primary rate limit says in the body of its 403: "API rate
-// limit exceeded for installation ID <id>", or for a user or an address. The message is read as
-// the limit on its own, as the secondary limit's is, rather than through the headers alone: GitHub
-// has refused an installation's reads with it while the same installation's other requests were
-// answered with thousands of calls left in x-ratelimit-remaining.
-const primaryLimitMessage = "api rate limit exceeded"
-
 // RateLimited says whether response, whose body is body, is GitHub's rate limit: a 429, or a 403
-// carrying x-ratelimit-remaining: 0 or a retry-after, or one whose body says it is the primary or
-// the secondary limit, which GitHub's REST documentation allows with neither header set. Those are
-// the statuses GitHub documents a limit on; a caller that reads another status as an answer of its
-// own asks RateLimitSignals before it does.
+// carrying x-ratelimit-remaining: 0 or a retry-after, or one whose body says it is the secondary
+// limit, which GitHub's REST documentation allows with neither header set. Those are the statuses
+// GitHub documents a limit on; a caller that reads another status as an answer of its own asks
+// RateLimitSignals before it does.
 func RateLimited(response *http.Response, body []byte) bool {
 	if response.StatusCode == http.StatusTooManyRequests {
 		return true
@@ -240,20 +233,14 @@ func RateLimited(response *http.Response, body []byte) bool {
 }
 
 // RateLimitSignals says whether response's headers or its body, body, carry GitHub's rate limit,
-// whatever the status: x-ratelimit-remaining: 0, a retry-after, or a body naming the primary or the
-// secondary limit. A status GitHub does not document a limit on still means the limit and not the
-// answer when it carries one of these, so a caller reading such a status as a verdict of its own
+// whatever the status: x-ratelimit-remaining: 0, a retry-after, or a body naming the secondary
+// limit. A status GitHub does not document a limit on still means the limit and not the answer
+// when it carries one of these, so a caller reading such a status as a verdict of its own
 // (appauth's 422 for a permission set) asks this first.
 func RateLimitSignals(response *http.Response, body []byte) bool {
 	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
 		response.Header.Get("Retry-After") != "" ||
-		namesSecondaryLimit(string(body)) || namesPrimaryLimit(string(body))
-}
-
-// namesPrimaryLimit says whether text, a GitHub answer's body, says it is GitHub's primary rate
-// limit (primaryLimitMessage), in any case.
-func namesPrimaryLimit(text string) bool {
-	return strings.Contains(strings.ToLower(text), primaryLimitMessage)
+		namesSecondaryLimit(string(body))
 }
 
 // namesSecondaryLimit says whether text, a GitHub answer's body or error message, says it is GitHub's
@@ -272,9 +259,9 @@ func namesSecondaryLimit(text string) bool {
 // as its REST documentation's "Exceeding the rate limit" says: the retry-after header's seconds,
 // else, when x-ratelimit-remaining is 0, until the x-ratelimit-reset epoch second, capped at an
 // hour, GitHub's primary rate limit's window, so a host clock behind GitHub's never stretches the
-// wait past it; else at least a minute, which is what a limit named by its message alone, primary
-// or secondary, is waited. A reset this host's clock already reads as past is waited the minute
-// too. Zero for an answer that is not a rate limit.
+// wait past it; else at least a minute, which is what a secondary limit named by its message alone
+// is waited. A reset this host's clock already reads as past is waited the minute too. Zero for an
+// answer that is not a rate limit.
 func retryAfter(response *http.Response, body []byte, now time.Time) time.Duration {
 	if !RateLimited(response, body) {
 		return 0
@@ -325,9 +312,9 @@ type Answer struct {
 
 // LimitHeaders is the rate-limit headers of a GitHub answer as GitHub sent them, "" for each it did
 // not send: Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (an epoch
-// second) and X-RateLimit-Resource. RetryAfter and Budget are what the client reads from them;
-// these are kept as received so that a log of a refusal names the limit that refused it in
-// GitHub's own words, including where they disagree with the body.
+// second) and X-RateLimit-Resource. RetryAfter and Budget are what the client reads from them and
+// decides by; these decide nothing, and are kept as received so that a log of a refusal names the
+// limit that refused it in GitHub's own words, including where they disagree with the body.
 type LimitHeaders struct {
 	RetryAfter string
 	Limit      string

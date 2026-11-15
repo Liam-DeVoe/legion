@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,10 +17,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -76,27 +81,28 @@ func spentLimit(w http.ResponseWriter, reset int64) {
 }
 
 // spendsOnce is a refuse for newLimitedGitHub that answers the first read of repo with spentLimit,
-// its reset three seconds after that read, which it stores in reset, and lets every later read be
-// answered.
-func spendsOnce(repo string, reset *atomic.Int64) func(w http.ResponseWriter, repo string, read int) bool {
+// its reset ahead of that read, which it stores in reset, and lets every later read be answered.
+func spendsOnce(repo string, ahead time.Duration, reset *atomic.Int64) func(w http.ResponseWriter, repo string, read int) bool {
 	limited := repo
 	return func(w http.ResponseWriter, repo string, read int) bool {
 		if repo != limited || read > 1 {
 			return false
 		}
-		reset.Store(time.Now().Add(3 * time.Second).Unix())
+		reset.Store(time.Now().Add(ahead).Unix())
 		spentLimit(w, reset.Load())
 		return true
 	}
 }
 
 // limitedRig is an option of mappingRigWith that has the rig's runtime read each repository's
-// default branch from github and log to logs, as JSON, with each of recorded recorded before the
-// boot reads the mapping, as an earlier boot of the project left them.
+// default branch from github and log to logs, as JSON, as the boot wires it (heldThroughLimit told
+// of each read answered from the branch held), with each of recorded recorded before the boot reads
+// the mapping, as an earlier boot of the project left them.
 func limitedRig(t *testing.T, github *limitedGitHub, logs *syncBuffer, recorded ...record.Issue) func(*workflowRuntime) {
 	t.Helper()
 	return func(w *workflowRuntime) {
 		w.defaultBranches = newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)
+		w.defaultBranches.onHold = w.heldThroughLimit
 		w.log = slog.New(slog.NewJSONHandler(logs, nil))
 		if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
 			for _, issue := range recorded {
@@ -111,10 +117,10 @@ func limitedRig(t *testing.T, github *limitedGitHub, logs *syncBuffer, recorded 
 	}
 }
 
-// doneOn is a done issue of the rig's project, recorded on repo at the default branch branch.
-func doneOn(key, repo, branch string) record.Issue {
-	return record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "V",
-		Repo: repo, DefaultBranch: branch, GitHubRepo: repo}
+// doneOn is a done issue of project, recorded on repo at the default branch branch.
+func doneOn(key, project, repo, branch string) record.Issue {
+	return record.Issue{Key: key, Tree: key, Project: project, Title: key, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done",
+		Rank: "V", Repo: repo, DefaultBranch: branch, GitHubRepo: repo}
 }
 
 // limitedBoth is the rig's two repositories as GitHub answers them once it answers: zeta/tools's
@@ -132,17 +138,47 @@ func loggedAt(t *testing.T, line map[string]any) time.Time {
 	return at
 }
 
+// heldLine is the line a repository served on a default branch the daemon holds in place of a
+// rate-limited read logs (heldThroughLimit).
+const heldLine = "so the daemon serves it on the default branch it holds"
+
+// waitLine is the line the boot logs for a rate-limited repository it holds no branch for
+// (waitOutLimits).
+const waitLine = "so the boot waits as long as GitHub asks"
+
+// linesFor is each of lines that names repo.
+func linesFor(lines []map[string]any, repo string) []map[string]any {
+	var named []map[string]any
+	for _, line := range lines {
+		if line["repo"] == repo {
+			named = append(named, line)
+		}
+	}
+	return named
+}
+
+// heldAdmission prepares an unrecorded todo of the rig's project on repo, as the Dispatch consumer
+// and the boot's listing prepare one (prepareUnrecorded), and requires it prepared with no error:
+// what the boot's reconciliation and admission read of the repository's default branch.
+func heldAdmission(t *testing.T, w *workflowRuntime, repo string) {
+	t.Helper()
+	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: repo}, false, 0); err != nil {
+		t.Fatalf("prepare an admission on %s: %v, want it prepared on the branch held", repo, err)
+	}
+}
+
 // A boot whose read of a repository's default branch GitHub refuses for a spent rate limit serves
 // the repository at once on the default branch a record of the project holds for it, where it
 // exited before: the limit says nothing about the repository, and the record's branch is the one
-// GitHub named when the issue was recorded. Nothing reads the repository inside the limit, and
-// the first read after the reset is the read the refused one owed: here GitHub has renamed the
-// default branch since, and that read serves the new name.
+// GitHub named when the issue was recorded. A read of the branch and an admission's preparation
+// inside the limit are answered from the held branch and ask GitHub nothing, and the first read
+// after the reset is the read the refused one owed: here GitHub has renamed the default branch
+// since, and that read serves the new name.
 func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterTheReset(t *testing.T) {
 	var reset atomic.Int64
-	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", &reset))
+	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", 6*time.Second, &reset))
 	logs := &syncBuffer{}
-	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, doneOn("LEGION-1", "zeta/tools", "main")))
+	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, doneOn("LEGION-1", "LEGION", "zeta/tools", "main")))
 	resetAt := time.Unix(reset.Load(), 0)
 
 	stage := loggedLines(t, logs.String(), `"stage":"repositories"`)
@@ -155,18 +191,29 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 	if accepted, _ := stage[0]["accepted"].([]any); !slices.Contains(accepted, any("zeta/tools")) || !slices.Contains(accepted, any("acme/widgets")) {
 		t.Fatalf("the boot serves %v, want acme/widgets and zeta/tools", stage[0]["accepted"])
 	}
-	held := loggedLines(t, logs.String(), "so the daemon serves it on the default branch it holds")
+	held := loggedLines(t, logs.String(), heldLine)
 	if len(held) != 1 || held[0]["repo"] != "zeta/tools" || held[0]["defaultBranch"] != "main" || held[0]["rateLimit"] != "15000" ||
 		held[0]["rateLimitRemaining"] != "0" || held[0]["rateLimitReset"] != strconv.FormatInt(reset.Load(), 10) {
 		t.Fatalf("the held repository's lines = %v, want one naming zeta/tools at the recorded main and GitHub's limit headers", held)
+	}
+
+	if got, err := w.defaultBranches.Named(context.Background(), ghrepo.MustParse("zeta/tools")); err != nil || got.DefaultBranch != "main" {
+		t.Fatalf("a read of zeta/tools inside the limit = %+v, %v; want the held main", got, err)
+	}
+	heldAdmission(t, w, "zeta/tools")
+	if !time.Now().Before(resetAt) {
+		t.Fatalf("the reads inside the limit ran past its reset at %s, so they prove nothing of it", resetAt)
+	}
+	if reads := github.readsOf("zeta/tools"); len(reads) != 1 {
+		t.Fatalf("GitHub was read for zeta/tools %d times by the reads inside the limit, want only the one it refused", len(reads))
 	}
 
 	testwait.Eventually(t, "zeta/tools read from GitHub again after the limit's reset", func() bool {
 		kept, ok := w.defaultBranches.Kept("zeta/tools")
 		return ok && kept.DefaultBranch == "trunk"
 	})
-	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Before(resetAt) {
-		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more at or after the reset at %s", reads, resetAt)
+	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Before(resetAt) || reads[1].After(resetAt.Add(10*time.Second)) {
+		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more soon after the reset at %s", reads, resetAt)
 	}
 	if !served(w, "zeta/tools") {
 		t.Fatal("zeta/tools is not served after its read again")
@@ -180,13 +227,13 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 // supervisor restarted it straight into the same limit.
 func TestABootWithNoDefaultBranchHeldWaitsOutARateLimitAndReadsOnceMore(t *testing.T) {
 	var reset atomic.Int64
-	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", &reset))
+	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", 3*time.Second, &reset))
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 	resetAt := time.Unix(reset.Load(), 0)
 
-	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Before(resetAt) {
-		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more at or after the reset at %s", reads, resetAt)
+	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Before(resetAt) || reads[1].After(resetAt.Add(5*time.Second)) {
+		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more soon after the reset at %s", reads, resetAt)
 	}
 	if !served(w, "zeta/tools") || !served(w, "acme/widgets") {
 		t.Fatalf("served zeta/tools %v, acme/widgets %v; want both", served(w, "zeta/tools"), served(w, "acme/widgets"))
@@ -194,7 +241,7 @@ func TestABootWithNoDefaultBranchHeldWaitsOutARateLimitAndReadsOnceMore(t *testi
 	if kept, ok := w.defaultBranches.Kept("zeta/tools"); !ok || kept.DefaultBranch != "trunk" {
 		t.Fatalf("zeta/tools's default branch = %+v, %v; want GitHub's trunk", kept, ok)
 	}
-	waits := loggedLines(t, logs.String(), "so the boot waits as long as GitHub asks")
+	waits := loggedLines(t, logs.String(), waitLine)
 	if len(waits) != 1 {
 		t.Fatalf("wait lines = %v, want one", waits)
 	}
@@ -237,10 +284,10 @@ func TestABootLeavesOutARepositoryGitHubStillRateLimitsAndServesItOnceGitHubAnsw
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
 	}
-	if reads := github.readsOf("zeta/tools"); len(reads) < 2 || reads[1].Sub(reads[0]) < time.Second {
+	if reads := github.readsOf("zeta/tools"); len(reads) < 2 || reads[1].Sub(reads[0]) < time.Second || reads[1].Sub(reads[0]) > 6*time.Second {
 		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and the boot's one more a second later, as Retry-After asked", reads)
 	}
-	if waits := loggedLines(t, logs.String(), "so the boot waits as long as GitHub asks"); len(waits) != 1 || waits[0]["retryAfter"] != "1" || waits[0]["budget"] != "secondary" {
+	if waits := loggedLines(t, logs.String(), waitLine); len(waits) != 1 || waits[0]["retryAfter"] != "1" || waits[0]["budget"] != "secondary" {
 		t.Fatalf("wait lines = %v, want one, naming the Retry-After and the secondary budget", waits)
 	}
 	if left := loggedLines(t, logs.String(), "so the daemon boots leaving it out and reads it again"); len(left) != 1 || left[0]["repo"] != "zeta/tools" {
@@ -251,11 +298,47 @@ func TestABootLeavesOutARepositoryGitHubStillRateLimitsAndServesItOnceGitHubAnsw
 	testwait.Eventually(t, "zeta/tools served once GitHub answers", func() bool { return served(w, "zeta/tools") })
 }
 
+// A read after the boot has waited out a rate limit that GitHub does not answer at all — the
+// connection closed with no answer — leaves the repository out for now and reads it again, as a
+// limit there does, rather than refusing the boot: GitHub said nothing about the repository.
+func TestABootLeavesOutARepositoryWhoseReadAfterARateLimitGetsNoAnswer(t *testing.T) {
+	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, read int) bool {
+		switch {
+		case repo != "zeta/tools":
+			return false
+		case read == 1:
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+			return true
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("take the connection to close it unanswered: %v", err)
+			return true
+		}
+		_ = conn.Close()
+		return true
+	})
+	logs := &syncBuffer{}
+	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
+
+	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	}
+	if !served(w, "acme/widgets") {
+		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
+	}
+	if left := loggedLines(t, logs.String(), "so the daemon boots leaving it out and reads it again"); len(left) != 1 || left[0]["repo"] != "zeta/tools" {
+		t.Fatalf("left-out lines = %v, want one naming zeta/tools", left)
+	}
+}
+
 // GitHub's 403 naming its rate limit in the body alone, with thousands of calls left in its
-// headers, is the limit all the same: the boot serves the repository on the default branch a
-// record holds, reads GitHub for it no more inside the minute GitHub's documentation waits such a
-// limit, and its line names the headers as GitHub sent them. Read as a refusal of the repository,
-// as before, the answer exited the boot.
+// headers, is the limit to the read of a default branch: the boot serves the repository on the
+// default branch a record holds, a read and an admission inside the minute GitHub's documentation
+// waits such a limit ask GitHub nothing, and the line names the headers as GitHub sent them. Read
+// as a refusal of the repository, as before, the answer exited the boot.
 func TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit(t *testing.T) {
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, read int) bool {
 		if repo != "zeta/tools" || read > 1 {
@@ -269,17 +352,21 @@ func TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit(t *testing.T) {
 		return true
 	})
 	logs := &syncBuffer{}
-	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, doneOn("LEGION-1", "zeta/tools", "main")))
+	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, doneOn("LEGION-1", "LEGION", "zeta/tools", "main")))
 
-	held := loggedLines(t, logs.String(), "so the daemon serves it on the default branch it holds")
-	if len(held) != 1 || held[0]["repo"] != "zeta/tools" || held[0]["defaultBranch"] != "main" || held[0]["rateLimitRemaining"] != "14671" || held[0]["budget"] != "core" {
-		t.Fatalf("the held repository's lines = %v, want one naming zeta/tools at the recorded main, GitHub's 14671 calls left and the core budget", held)
+	held := loggedLines(t, logs.String(), heldLine)
+	if len(held) != 1 || held[0]["repo"] != "zeta/tools" || held[0]["defaultBranch"] != "main" || held[0]["rateLimitRemaining"] != "14671" || held[0]["wait"] != "1m0s" {
+		t.Fatalf("the held repository's lines = %v, want one naming zeta/tools at the recorded main, GitHub's 14671 calls left and a minute's wait", held)
 	}
-	if kept, ok := w.defaultBranches.Kept("zeta/tools"); !served(w, "zeta/tools") || !ok || kept.DefaultBranch != "main" {
-		t.Fatalf("zeta/tools served %v at %+v, %v; want it served at the recorded main", served(w, "zeta/tools"), kept, ok)
+	if got, err := w.defaultBranches.Named(context.Background(), ghrepo.MustParse("zeta/tools")); err != nil || got.DefaultBranch != "main" {
+		t.Fatalf("a read of zeta/tools inside the limit = %+v, %v; want the held main", got, err)
 	}
+	heldAdmission(t, w, "zeta/tools")
 	if reads := github.readsOf("zeta/tools"); len(reads) != 1 {
 		t.Fatalf("GitHub was read for zeta/tools %d times, want the one refused read and none inside the limit", len(reads))
+	}
+	if !served(w, "zeta/tools") {
+		t.Fatal("zeta/tools is not served, want it served at the recorded main")
 	}
 }
 
@@ -317,22 +404,198 @@ func TestABootRefusesADefaultBranchRead404AndRetriesA500AsBefore(t *testing.T) {
 	}
 }
 
-// The daemon itself boots through a spent rate limit: GitHub refuses the boot's read of the
-// project's repository with a 403 naming no call left until a reset three seconds away, and then
-// answers. The boot waits the limit out, says so once, reads once more and comes up, where before
-// it exited after its appauth stage with GitHub's refusal.
+// A record keeps the name its repository had when it was recorded, so the branch it holds is the
+// fallback for the repository GitHub holds it under now: under a configured rename whose old name
+// the project no longer serves, a record on the old name holds the branch of the new one, named
+// so; when the project serves both names, they are two repositories, and the record holds the
+// branch of the old one alone.
+func TestARecordedDefaultBranchIsHeldForTheRepositoryAConfiguredRenameServes(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return records.PutIssue(ctx, tx, doneOn("LEGION-1", "LEGION", "old/widgets", "main"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	renames := ghrepo.MustRenames(ghrepo.MustRename("old/widgets", "new/widgets"))
+	for _, tc := range []struct {
+		name   string
+		served []string
+		want   string
+	}{
+		{name: "the old name no longer served", served: []string{"new/widgets"}, want: "new/widgets"},
+		{name: "both names served", served: []string{"new/widgets", "old/widgets"}, want: "old/widgets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repos := newRepositories("LEGION", renames)
+			var mapped []mappedRepository
+			for _, name := range tc.served {
+				mapped = append(mapped, mappedRepository{Repo: ghrepo.MustParse(name)})
+			}
+			repos.set(mapped, nil)
+			w := &workflowRuntime{pool: pool, records: records, repositories: repos}
+			recorded, err := w.recordedBranches(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := recorded[tc.want]; len(recorded) != 1 || !ok || got.Name.String() != tc.want || got.DefaultBranch != "main" {
+				t.Fatalf("recorded branches = %+v, want only %s at main", recorded, tc.want)
+			}
+		})
+	}
+}
+
+// liveBootDispatch is a Dispatch for a daemon's boot whose project maps repos, the first its
+// default, and lists listed, answering every other call every boot makes (servedBootCall).
+func liveBootDispatch(t *testing.T, project string, repos []string, listed []map[string]any) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body any
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
+			mapping := make([]map[string]any, 0, len(repos))
+			for index, repo := range repos {
+				mapping = append(mapping, map[string]any{"repo": repo, "project": project, "default": index == 0})
+			}
+			body = mapping
+		case servedBootCall(t, w, r, project):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+			body = listed
+		default:
+			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Errorf("write %s: %v", r.URL.Path, err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// listedAs is an unlabelled issue as Dispatch's listing shows it, in status on repo.
+func listedAs(key, status, repo string) map[string]any {
+	return map[string]any{"key": key, "title": key, "status": status, "labels": []string{}, "resolved_repo": repo}
+}
+
+// recordBeforeBoot records issues in cfg's database, migrated first, as an earlier boot of the
+// project left them.
+func recordBeforeBoot(t *testing.T, cfg config.Config, issues ...record.Issue) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		for _, issue := range issues {
+			if err := record.NewStore().PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("record the project's issues before the boot: %v", err)
+	}
+}
+
+// The daemon itself, with a record of an issue on its repository, boots through a spent rate limit
+// at once: GitHub refuses the boot's read of the repository's default branch with a 403 naming no
+// call left until a reset half a minute away, and the daemon answers /healthz long before it,
+// serving the repository on the recorded branch.
+func TestABootWithARecordedDefaultBranchComesUpAtOnceThroughARateLimit(t *testing.T) {
+	cfg := workflowConfig(t, workflowNATS(t))
+	recorded := cfg.Project + "-1"
+	cfg.DispatchURL = liveBootDispatch(t, cfg.Project, []string{"acme/widgets"}, []map[string]any{listedAs(recorded, "done", "acme/widgets")})
+	recordBeforeBoot(t, cfg, doneOn(recorded, cfg.Project, "acme/widgets", "main"))
+	var reset atomic.Int64
+	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, spendsOnce("acme/widgets", 30*time.Second, &reset))
+	logs := &syncBuffer{}
+	if err := bootsOrExitsOn(t, cfg, &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+		t.Fatalf("boot = %v, want it to come up on the recorded default branch", err)
+	}
+	resetAt := time.Unix(reset.Load(), 0)
+	if !time.Now().Before(resetAt) {
+		t.Fatalf("the daemon answered /healthz at or after the limit's reset at %s, want before it: it waits for nothing it holds", resetAt)
+	}
+	if held := linesFor(loggedLines(t, logs.String(), heldLine), "acme/widgets"); len(held) != 1 || held[0]["defaultBranch"] != "main" {
+		t.Fatalf("held lines for acme/widgets = %v, want one naming the recorded main", held)
+	}
+	if waits := loggedLines(t, logs.String(), waitLine); len(waits) != 0 {
+		t.Fatalf("wait lines = %v, want none", waits)
+	}
+	if reads := github.readsOf("acme/widgets"); len(reads) != 1 {
+		t.Fatalf("GitHub was read for acme/widgets %d times, want only the one it refused", len(reads))
+	}
+}
+
+// A held branch outlives its own reset for the rest of the boot. The daemon serves acme/widgets on
+// its recorded branch, then waits out zeta/tools's longer limit, by which time the hold on
+// acme/widgets has passed its reset; the boot's reconciliation then prepares an unrecorded todo on
+// acme/widgets, which reads its default branch again, and GitHub's limit refuses that read too. The
+// read is answered from the held branch and the daemon comes up, where a refusal there would end
+// the boot.
+func TestABootServesAHeldDefaultBranchToAnAdmissionReadAfterTheHoldsReset(t *testing.T) {
+	cfg := workflowConfig(t, workflowNATS(t))
+	recorded, todo := cfg.Project+"-1", cfg.Project+"-2"
+	cfg.DispatchURL = liveBootDispatch(t, cfg.Project, []string{"acme/widgets", "zeta/tools"}, []map[string]any{
+		listedAs(recorded, "done", "acme/widgets"), listedAs(todo, "todo", "acme/widgets")})
+	recordBeforeBoot(t, cfg, doneOn(recorded, cfg.Project, "acme/widgets", "main"))
+	var zetaReset atomic.Int64
+	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"}, func(w http.ResponseWriter, repo string, read int) bool {
+		switch {
+		case repo == "acme/widgets":
+			// Every read of acme/widgets is refused, each limit resetting within a second.
+			spentLimit(w, time.Now().Add(time.Second).Unix())
+			return true
+		case read == 1:
+			zetaReset.Store(time.Now().Add(3 * time.Second).Unix())
+			spentLimit(w, zetaReset.Load())
+			return true
+		}
+		return false
+	})
+	logs := &syncBuffer{}
+	if err := bootsOrExitsOn(t, cfg, &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+		t.Fatalf("boot = %v, want it to come up, the admission's read answered from the held branch", err)
+	}
+	zetaAt := time.Unix(zetaReset.Load(), 0)
+	widgets := github.readsOf("acme/widgets")
+	if len(widgets) < 2 || widgets[1].Before(zetaAt) {
+		t.Fatalf("GitHub was read for acme/widgets at %v, want the boot's refused read and the reconciliation's after zeta/tools's reset at %s", widgets, zetaAt)
+	}
+	if held := linesFor(loggedLines(t, logs.String(), heldLine), "acme/widgets"); len(held) < 2 {
+		t.Fatalf("held lines for acme/widgets = %v, want the boot's and the reconciliation's read", held)
+	}
+	if waits := linesFor(loggedLines(t, logs.String(), waitLine), "zeta/tools"); len(waits) != 1 {
+		t.Fatalf("wait lines for zeta/tools = %v, want one", waits)
+	}
+}
+
+// The daemon itself boots through a spent rate limit on a repository it holds no branch for:
+// GitHub refuses the boot's read of the project's repository with a 403 naming no call left until a
+// reset three seconds away, and then answers. The boot waits the limit out, says so once, reads
+// once more and comes up, where before it exited after its appauth stage with GitHub's refusal.
 func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
 	var reset atomic.Int64
-	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, spendsOnce("acme/widgets", &reset))
+	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, spendsOnce("acme/widgets", 3*time.Second, &reset))
 	logs := &syncBuffer{}
 	if err := bootsOrExitsOn(t, workflowConfig(t, workflowNATS(t)), &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit and come up", err)
 	}
 	resetAt := time.Unix(reset.Load(), 0)
-	if reads := github.readsOf("acme/widgets"); len(reads) < 2 || reads[1].Before(resetAt) {
-		t.Fatalf("GitHub was read for acme/widgets at %v, want the refused read and one more at or after the reset at %s", reads, resetAt)
+	if reads := github.readsOf("acme/widgets"); len(reads) < 2 || reads[1].Before(resetAt) || reads[1].After(resetAt.Add(5*time.Second)) {
+		t.Fatalf("GitHub was read for acme/widgets at %v, want the refused read and one more soon after the reset at %s", reads, resetAt)
 	}
-	if waits := loggedLines(t, logs.String(), "so the boot waits as long as GitHub asks"); len(waits) != 1 || waits[0]["repo"] != "acme/widgets" {
+	if waits := loggedLines(t, logs.String(), waitLine); len(waits) != 1 || waits[0]["repo"] != "acme/widgets" {
 		t.Fatalf("wait lines = %v, want one naming acme/widgets", waits)
 	}
 }

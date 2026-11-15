@@ -195,7 +195,8 @@ func TestDefaultBranchRefusesARepositoryItCannotRead(t *testing.T) {
 // wrap: a caller tells the limit, and how long GitHub asks it to wait, from a refusal of the
 // repository such as the 404 above, and reads the limit's headers as GitHub sent them.
 func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
-	reset := strconv.FormatInt(time.Now().Add(3*time.Second).Unix(), 10)
+	// Ten minutes out, so no scheduling delay can carry the clock past it before the answer is read.
+	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "15000")
 		w.Header().Set("X-RateLimit-Remaining", "0")
@@ -209,8 +210,8 @@ func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
 	if !errors.As(err, &answer) || !answer.RateLimited {
 		t.Fatalf("Read = %v, want GitHub's rate-limited *githubrest.Answer", err)
 	}
-	if answer.RetryAfter <= 0 || answer.RetryAfter > 3*time.Second {
-		t.Errorf("the limit's wait = %s, want up to the reset 3 s away", answer.RetryAfter)
+	if answer.RetryAfter < 9*time.Minute || answer.RetryAfter > 10*time.Minute {
+		t.Errorf("the limit's wait = %s, want until the reset ten minutes away", answer.RetryAfter)
 	}
 	if want := (githubrest.LimitHeaders{Limit: "15000", Remaining: "0", Reset: reset}); answer.Limit != want {
 		t.Errorf("the limit's headers = %+v, want %+v", answer.Limit, want)

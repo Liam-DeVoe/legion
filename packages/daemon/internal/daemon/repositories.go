@@ -722,8 +722,8 @@ func nameAccepted(ctx context.Context, accepted []mappedRepository, named *defau
 	for index, mapped := range accepted {
 		group.Go(func() error {
 			repo, err := named.Named(read, mapped.Repo)
-			if answer, limited := rateLimited(err); limited {
-				limits[index] = limitedRead{mapped: mapped, answer: answer, err: err, until: time.Now().Add(answer.RetryAfter)}
+			if answer, wait, limited := defaultBranchLimit(err); limited {
+				limits[index] = limitedRead{mapped: mapped, answer: answer, err: err, wait: wait, until: named.now().Add(wait)}
 				return nil
 			}
 			if err != nil {
