@@ -393,9 +393,18 @@ const (
 // attempt after it finds nothing to repair and ends the retry.
 //
 // A bucket that opens is not the end of it: the watcher it installs fills the records in the
-// background, and until it has, the store answers for none of the sessions the bucket knows. So
-// the loop waits for the copy to become servable before it reports that one (awaitOpened),
-// outside repairMu, where no reconnect hook's own attempt waits behind it.
+// background, and until it has, the store answers for none of the sessions the bucket knows, so
+// the open is reported only once the copy has become servable (awaitOpened). That wait runs on a
+// goroutine of its own, never in this loop, which makes its next attempt after its first wait, as
+// after any repair. The first read can last as long as the repair of a failed move: a disconnect
+// during it completes nothing and wakes no waiter (kvwatch.Watcher.Disconnected), and nats.go
+// keeps the watcher's subscription open, so no end of the watcher ends the wait either. A loop
+// blocked in that wait would stay armed while it repaired nothing, so the move of the reconnect
+// after that disconnect, when it failed, would arm no retry (armRepair), and the store would stay
+// off the bucket until the next connection event. The next attempt instead moves the watcher such
+// a move left behind, or finds nothing and retires the retry, and a move that fails after that
+// arms a fresh one; a watch that ends before its first read completes arms one too (awaitOpened).
+// The bucket opens once, so at most one such wait runs per store, and it ends at the stop.
 //
 // The only lines it writes are the repairs (awaitOpened, attemptRepair), and none for an attempt
 // that failed: the first failure is logged where it happened (OpenKnownSessions, and the
@@ -426,7 +435,7 @@ func (s *KnownSessions) repairUntilStopped() {
 		case repairNothing:
 			return
 		case repairOpened:
-			s.awaitOpened()
+			go s.awaitOpened()
 		case repairMoved:
 		}
 	}
@@ -541,6 +550,13 @@ func (s *KnownSessions) retireRepair() {
 // start gates exactly this hazard with WaitForCacheReady before it serves, and nothing gates the
 // attempt that opens the bucket later. The line is written after the wait, so it means what it
 // says.
+//
+// The background retry runs it on a goroutine of its own once an attempt has opened the bucket
+// (repairUntilStopped), and never waits on it, because the read it waits for can wait on that
+// retry: a disconnect during the first read completes nothing, and the read that completes then
+// is the one a move installs, the reconnect's own or, once that failed, the retry's. It waits
+// until a read of the watcher completes, whichever move installed it, or until the store stops
+// (untilStopped). The bucket opens once, so a store waits here once at most.
 func (s *KnownSessions) awaitOpened() {
 	watcher := s.watch()
 	if watcher == nil {
@@ -552,7 +568,10 @@ func (s *KnownSessions) awaitOpened() {
 	if err := watcher.WaitComplete(ctx); err != nil {
 		// The store stopped, or the watch ended before it had read the bucket. Opened stays false,
 		// which leaves a publish's count out rather than answering it from a cache that holds part
-		// of it; the retry's next attempt moves a watcher that ended (attemptRepair).
+		// of it. The retry went on without this wait and may have retired before the watch ended,
+		// so a watch that ended arms it again, and its next attempt moves the watcher that ended
+		// (attemptRepair); after a stop it arms nothing (armRepair).
+		s.armRepair()
 		return
 	}
 	s.logger().Info("the known-session bucket is open; this listener writes and reads the 30-day records from now on",

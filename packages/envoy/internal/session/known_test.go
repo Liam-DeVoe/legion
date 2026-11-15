@@ -755,6 +755,185 @@ func TestAStopEndsTheStoresRetry(t *testing.T) {
 	}
 }
 
+// A move that fails while a bucket opened after the start is still in its first read is repaired
+// by the store itself, as any move that failed is
+// (TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore). A disconnect during that read
+// completes nothing and wakes nothing that waits for it (kvwatch.Watcher.Disconnected), and
+// nats.go keeps the watcher's subscription open through the outage, so nothing ends a wait for
+// that read either. A retry that waited for that read itself stayed armed while it repaired
+// nothing: the failed move of the reconnect after the disconnect armed no retry of its own
+// (armRepair), and the store answered no record until the next connection event, which can be
+// days away. Here no connection event follows the failed move, so the store's own retry is the
+// whole repair.
+func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing.T) {
+	const openLine = "the known-session bucket is open"
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, knownBucketGrant()...)
+	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
+	if err != nil {
+		t.Fatalf("connect as the user whose grant carries the bucket: %v", err)
+	}
+	t.Cleanup(conn.Close)
+
+	// The records the late open is to answer once the store is repaired.
+	const topic = "notifications.team.late-open-repair"
+	held := []string{"ses_late_repair_1", "ses_late_repair_2", "ses_late_repair_3"}
+	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the store that fills the bucket: %v", err)
+	}
+	for _, id := range held {
+		if err := filling.RecordWithin(context.Background(), KnownSession{SessionID: id, Topics: []string{topic}}); err != nil {
+			t.Fatalf("write the record of %s: %v", id, err)
+		}
+	}
+	filling.StopWatch()
+
+	// reading is closed once the late open's watcher has installed its first read: the watcher arms
+	// its first wait (kvwatch.WithAfterFunc) as that read installs, after the read has taken its
+	// count of disconnects, so a disconnect said from then on lands inside the read. Every wait is
+	// armed on the real clock all the same.
+	reading := make(chan struct{})
+	var installed sync.Once
+	after := func(d time.Duration, f func()) kvwatch.Timer {
+		installed.Do(func() { close(reading) })
+		return time.AfterFunc(d, f)
+	}
+
+	// The grant goes away, as it is away on every listener started before it is applied.
+	grant.Grant(t, "nothing.this.store.uses")
+	logs := &lockedWriter{}
+	logged := logs.String
+	known, err := OpenKnownSessions(conn,
+		WithKnownSessionReplicas(1),
+		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
+		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
+		withKnownSessionWatch(kvwatch.WithAfterFunc(after)))
+	if err != nil {
+		t.Fatalf("open the store over a bucket its user may not open: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	if known.Opened() {
+		t.Fatal("the store reports its bucket open while its user may not open it")
+	}
+
+	// The first read is held at its start while the disconnect is said: its first hook takes the
+	// store's lock (knownCache.BeginRead), so it delivers nothing, let alone completes, while the
+	// test holds that lock.
+	known.mu.Lock()
+	var unlocked sync.Once
+	release := func() { unlocked.Do(known.mu.Unlock) }
+	defer release()
+	grant.Grant(t, knownBucketGrant()...)
+	select {
+	case <-reading:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the store did not open the bucket within 60s of the grant")
+	}
+	known.Disconnected()
+	release()
+	awaitKnown(t, 60*time.Second, "the first read of the bucket did not end", known.watch().Ready)
+	if known.Opened() {
+		t.Fatal("the first read completed over the disconnect said inside it; this test says nothing about a read a disconnect overlapped")
+	}
+	if strings.Contains(logged(), openLine) {
+		t.Fatalf("the store said its bucket is open before a read of it completed:\n%s", logged())
+	}
+
+	// The reconnect after the disconnect moves the watcher, and the move fails: the cluster
+	// refuses this listener again.
+	grant.Grant(t, "nothing.this.store.uses")
+	if err := known.Rewatch(conn); err == nil {
+		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
+	}
+
+	// The cluster takes this listener back, and nothing asks the store to move again: no
+	// connection event, no reconnect hook, no rebuild.
+	grant.Grant(t, knownBucketGrant()...)
+	awaitKnown(t, 60*time.Second, "the store did not repair itself after the move that failed during its first read", known.Opened)
+	if got := matchedIDs(known, topic); !slices.Equal(got, held) {
+		t.Errorf("the repaired store answered %v, want every record the bucket holds, %v", got, held)
+	}
+	if _, ok := known.Get(held[0]); !ok {
+		t.Errorf("the repaired store answers no record of %s, which the bucket holds", held[0])
+	}
+	const written = "ses_after_the_late_repair"
+	const writtenTopic = "notifications.team.late-open-written"
+	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: written, Topics: []string{writtenTopic}}); err != nil {
+		t.Fatalf("record through the repaired store: %v", err)
+	}
+	if got := matchedIDs(known, writtenTopic); !slices.Equal(got, []string{written}) {
+		t.Errorf("the repaired store answered %v for the topic of the record just written, want %q", got, written)
+	}
+	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
+
+	// Opened is the moved watcher's read completed, and the open line is written by the goroutine
+	// that waited for that read, so the two are not ordered: wait for the line before counting it.
+	awaitKnown(t, 60*time.Second, "the store did not say its bucket is open", func() bool {
+		return strings.Contains(logged(), openLine)
+	})
+	if lines := strings.Count(logged(), openLine); lines != 1 {
+		t.Errorf("the store said its bucket is open %d times, want one line:\n%s", lines, logged())
+	}
+	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
+		t.Errorf("the repair logged %d lines saying the store is back, want the one that reports the move it made:\n%s", lines, logged())
+	}
+}
+
+// A watch that ends before the first read of a bucket opened after the start has completed is
+// repaired by the store too, whenever it ends. The retry does not wait for that read
+// (TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore), so it can have found nothing
+// left to repair and retired before the watch ended: the goroutine that waits for the read meets
+// the end and arms the retry again, whose next attempt moves the watcher that ended. Here the
+// watch ends because the grant carries the bucket but not the consumer a watch of it creates, so
+// the bucket opens and the create request of its watcher's consumer is dropped.
+func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing.T) {
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
+	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
+	if err != nil {
+		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	known, err := OpenKnownSessions(conn,
+		WithKnownSessionReplicas(1),
+		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open the store over a bucket its user may not open: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+
+	grant.Grant(t, slices.DeleteFunc(knownBucketGrant(), func(subject string) bool {
+		return strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE.")
+	})...)
+	awaitKnown(t, 60*time.Second, "the store did not open the bucket", func() bool {
+		return known.watch() != nil
+	})
+	awaitKnown(t, 60*time.Second, "the first watch of the bucket did not end", func() bool {
+		return known.watch().Err() != nil
+	})
+	if known.Opened() {
+		t.Fatal("the store reports its bucket open over a watch that ended before any read of it")
+	}
+
+	// The cluster grants the consumer, and nothing asks the store to move: no connection event.
+	grant.Grant(t, knownBucketGrant()...)
+	awaitKnown(t, 60*time.Second, "the store did not repair the watch that ended before its first read", known.Opened)
+	const written = "ses_after_the_ended_watch"
+	const topic = "notifications.team.ended-watch"
+	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: written, Topics: []string{topic}}); err != nil {
+		t.Fatalf("record through the repaired store: %v", err)
+	}
+	if got := matchedIDs(known, topic); !slices.Equal(got, []string{written}) {
+		t.Errorf("the repaired store answered %v for the topic of the record just written, want %q", got, written)
+	}
+	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
+}
+
 // knownSessionMemoryBound is what the records, their revision fence and the subject index of
 // 100,000 sessions may cost in memory. Each session here carries its agent subject, which no other
 // session shares, and one of ten team topics, which is the shape the store holds in production:
