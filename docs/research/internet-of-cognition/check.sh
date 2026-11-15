@@ -25,12 +25,14 @@
 # reported nothing, because its code crashed, exited or was skipped, is a FAIL naming it,
 # so no assertion is passed by its silence; each prints its PASS only after all its parts
 # have run. A mode cannot run when a prerequisite its table declares is missing, the GitHub
-# budget is spent, env.sh or the install reader cannot load or does not run to its end, or a
-# live source does not answer; the reason is then the last line, and for a missing
-# prerequisite it names what is missing and, at its end, what provides it. Any other ending,
-# no output at all included, is a failed check: a run that was killed prints nothing and
-# exits non-zero for a reason that is not this deliverable's. Read the run by its last line
-# and not by the exit status alone.
+# budget is spent, env.sh or the install reader cannot load or does not run to its end, a
+# live source does not answer, or, for --self-test, a run of the gate it makes over its
+# fixture, of check.test.sh or of --admitted cannot run; the reason is then the last line,
+# for a missing prerequisite it names what is missing and, at its end, what provides it,
+# and for --self-test it names the run and ends with that run's own reason. Any other
+# ending, no output at all included, is a failed check: a run that was killed prints
+# nothing and exits non-zero for a reason that is not this deliverable's. Read the run by
+# its last line and not by the exit status alone.
 #
 # Two rules hold what every mode reads, and this is the one place they are stated.
 #
@@ -51,14 +53,15 @@
 #
 # The live-read rule: every read of a live source goes through one function, live_read,
 # in the mode's own shell before any assertion of the mode judges: the judgement and the
-# two records under check from Dispatch, Dispatch's answer to each dispatch:// reference,
-# the Dispatch API, the GitHub budget, the default branch and its fetch, and the fetch of
-# each pinned clone. A source that does not answer is a mode that cannot run, exit 2,
-# naming the source; it is never an assertion's failure. A source that answers that it
-# holds no such thing has answered, and judges the deliverable: Dispatch's "not found",
-# "No block", "no version N of" or "document ... not found" for a reference fails
-# citation-dispatch, and for the judgement leaves the text empty, which every assertion
-# over it then fails by its floor. The one live read that is no input is the report of
+# two records under check from Dispatch, whose copies every row that reads a record reads
+# too, Dispatch's answer to each dispatch:// reference, the Dispatch API, the GitHub
+# budget, the default branch and its fetch, and the fetch of each pinned clone. A source
+# that does not answer is a mode that cannot run, exit 2, naming the source; it is never
+# an assertion's failure. A source that answers that it holds no such thing has answered,
+# and judges the deliverable: Dispatch's "not found", "No block", "no version N of" or
+# "document ... not found" for a reference fails citation-dispatch, and for the judgement
+# or a record under check leaves the text empty, which every assertion over it then fails
+# by its floor or its committed rows. The one live read that is no input is the report of
 # each published page's live address, which reports an address that does not answer
 # rather than stopping, as the Verification document asks of it.
 #
@@ -91,33 +94,78 @@
 # $TMPDIR/infra3134 by default, and so is every cache a tool of a recorded command writes:
 # env.sh's ioc_env_cache_table names one variable per cache (go's GOMODCACHE and GOCACHE,
 # uv's cache and the interpreters it downloads, pip's, huggingface's, torch's compiler
-# cache, bun's, npm's and XDG_CACHE_HOME), env.sh exports each, and --replay exports them by
-# the same table when its
-# fixture builds nothing. No row names a cache of its own, so a fresh IOC_CACHE is a machine
-# that never ran the replay; --help prints that table. Each recorded command runs with TMPDIR
-# set to an empty directory of its own under the run's scratch, so no row reads what an
-# earlier run or an earlier row left under $TMPDIR, and a row reads every input through
-# env.sh's variables. Its scratch, each run's and the fixtures of --self-test, is under
-# $TMPDIR and is removed when the run ends. It writes nothing else, but for what a tool
-# writes outside every cache, which no cache variable moves, measured on 2026-11-15 over
-# rows of every tool the replay runs at a fresh IOC_CACHE and over --landed: dispatch writes
-# the state of the session that runs it (answers.json, results.jsonl and state.json) under
-# DISPATCH_STATE_DIR on each read, and go keeps its telemetry counters under the user's
-# configuration directory (go env GOTELEMETRYDIR), which its first run on a machine makes.
-# No row reads either.
+# cache, bun's, npm's and XDG_CACHE_HOME), env.sh exports each, and --replay exports them
+# by the same table when its fixture builds nothing. No row names a cache of its own, so a
+# fresh IOC_CACHE is a machine that never ran the replay; --help prints that table. Each
+# recorded command runs with TMPDIR set to an empty directory of its own under the run's
+# scratch, so no row reads what an earlier run or an earlier row left under $TMPDIR, and a
+# row reads every input through env.sh's variables. Its scratch, each run's and the
+# fixtures of --self-test with the IOC_CACHE of each, is under $TMPDIR and is removed when
+# the run ends. It writes nothing else, but for what a tool writes outside every cache,
+# which no cache variable moves, measured on 2026-11-15 over rows of every tool the replay
+# runs at a fresh IOC_CACHE and over --landed: dispatch writes the state of the session
+# that runs it (answers.json, results.jsonl and state.json) under DISPATCH_STATE_DIR on
+# each read, and go keeps its telemetry counters under the user's configuration directory
+# (go env GOTELEMETRYDIR), which its first run on a machine makes. No row reads either.
+#
+# Nothing a killed run leaves is trusted. A pod replacement kills a run part-way, and the
+# next run reads the same IOC_CACHE and IOC_CLONES, so every entry env.sh keeps there is
+# written under a temporary name and renamed into place only when it is whole, or carries
+# a stamp written last, which the next run reads before it reuses the entry; an entry with
+# no stamp, or with the stamp of other inputs, is built again from nothing. env.sh's
+# header lists each entry with the one of the two that keeps it. An environment env.sh
+# built is no longer its build once a row installs into it, so --replay removes env.sh's
+# stamp of each environment a row installs into, as the install reader reads the row,
+# before the row runs, and of each whose site-packages changed while it ran, after; the
+# next run builds that environment again. A tool keeps its own cache whole by its own
+# means, and what a row writes under IOC_CACHE is written again by a row of the same run
+# before any row reads it. An install into an environment that no row the reader reads
+# installs into, which a kill cuts short, is outside this rule, as an install the reader
+# cannot see is outside install-pinned. The run's scratch is made fresh by each run, so
+# what a killed run left there is never read.
+#
+# The fixture of --self-test. --self-test builds a small deliverable of its own under its
+# scratch and runs the gate over it, and check.test.sh does the same in each of its cases.
+# Each such run, fixture_run, has an environment of its own, made with env -i, and none
+# of the caller's:
+#   carried   PATH, without which a mode finds no tool; TMPDIR, under which the fixture's
+#             scratch goes; HOME, under which git, uv and go keep their configuration;
+#             DISPATCH_URL, DISPATCH_TOKEN_FILE, DISPATCH_HOST and DISPATCH_SESSION_ID,
+#             without any one of which dispatch refuses to read, and DISPATCH_STATE_DIR,
+#             without which it writes its session's state under HOME, each measured on
+#             2026-11-15 by running the fixture's four modes with one taken away; and,
+#             where they are set, the proxy variables git, curl and go read, and GOPROXY,
+#             GONOPROXY, GOSUMDB, GONOSUMDB, GOPRIVATE, GOINSECURE and GOTOOLCHAIN, by which
+#             go reaches a module (FIXTURE_CARRIED)
+#   set       IOC_ROOT, IOC_EVIDENCE and IOC_JUDGEMENT to the fixture's tree and judgement,
+#             IOC_NO_ENV=1, IOC_PUBLISHED_COMMIT to the fixture's head, and IOC_CACHE to an
+#             empty directory of the fixture's own
+#   cleared   every other variable: IOC_HISTORY_REF, IOC_CLONES, IOC_OUR_TREE, every
+#             variable env.sh exports and every cache of its table among them, so the
+#             fixture reads its own history, clones under $TMPDIR/ioc-clones and keeps its
+#             caches in its own IOC_CACHE
+# A case of check.test.sh plants a fault by setting one of FIXTURE_INPUTS on its own
+# command (IOC_HISTORY_REF, IOC_CACHE, IOC_CLONES, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the
+# five program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, UV_OFFLINE,
+# UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes on; --self-test, and a shell
+# that sources this script as check.test.sh does, unset the caller's values of them
+# first, so a fixture reads one only from a case. A run the self-test makes that cannot
+# run, over the fixture or of check.test.sh or --admitted, ends the self-test exit 2,
+# naming the run and its reason; it is never counted as an assertion that failed.
 #
 # No recorded command may read the scratch of the pod this reading was made in, because
-# that pod's disk died with it. --replay therefore sources env.sh once, before it runs the
-# first recorded command, and env.sh prepares what those commands read and this tree
-# cannot hold: the two Dispatch records under check, a python environment with
-# sentence-transformers, torch and rdflib, the pinned all-MiniLM-L6-v2 snapshot checked
-# against the checksum claims.jsonl carries, mas-lab installed from its clone, the SHACL
-# shapes graph of the scope clone, and the review corpus one search reads. It caches all
-# of that under IOC_CACHE, $TMPDIR/infra3134 by default, builds each thing once, and
-# exports one variable per input, which every recorded command reads beside IOC_CLONES.
-# env.sh's own header names each variable. A run whose environment env.sh cannot build
-# ends there, exit 2, with env.sh's line naming what it could not build and, last,
-# check.sh cannot run and the reason.
+# that pod's disk died with it. --replay therefore reads the two Dispatch records under
+# check itself, then sources env.sh once, before it runs the first recorded command, and
+# env.sh prepares the rest of what those commands read and this tree cannot hold: a python
+# environment with sentence-transformers, torch and rdflib, the pinned all-MiniLM-L6-v2
+# snapshot checked against the checksum claims.jsonl carries, mas-lab installed from its
+# clone, the SHACL shapes graph of the scope clone, and the review corpus one search reads.
+# It caches all of that under IOC_CACHE, $TMPDIR/infra3134 by default, builds each thing
+# once, by the rule above, and exports one variable per input, which every recorded
+# command reads beside IOC_CLONES; the records it takes from --replay as IOC_DESIGN and
+# IOC_COMMENT. env.sh's own header names each variable. A run whose environment env.sh
+# cannot build ends there, exit 2, with env.sh's line naming what it could not build and,
+# last, check.sh cannot run and the reason.
 #
 # --shape and --landed read the history of this pull request: the commit that adds the
 # question list and the commits of the landed steps. After the squash merge the default
@@ -138,8 +186,11 @@
 # number of rows that use it, and fails an entry no row uses, a row the classifier refuses,
 # and a line of the table in the header above run_recorded that differs from the one it
 # measured; it fails as well a list of reserved names there that differs from the
-# reader's, and a name of the runner no reserved prefix covers. --self-test runs it as one
-# assertion.
+# reader's, and a name of the runner no reserved prefix covers. A line of claims.jsonl
+# that is no JSON object is the evidence being wrong: it fails admitted-rows alone, naming
+# the line. The reader reads the whole file before any of the four judges, and one that
+# cannot load, because env.sh is missing or the reader does not start, or that does not
+# run to its end, is a mode that cannot run, exit 2. --self-test runs it as one assertion.
 #
 # The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
 # into a file under its own scratch, readable by its owner alone, exports that file's path
@@ -174,6 +225,17 @@
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The variables a fixture takes from its caller, and the gate's inputs a case of
+# check.test.sh sets on a fixture of its own (fixture_run; the header's "The fixture of
+# --self-test" says why each). A shell that runs fixtures, --self-test or one that sources
+# this script as check.test.sh does, first unsets its caller's FIXTURE_INPUTS, so that a
+# fixture reads one only from a case that sets it on its own command.
+FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
+FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_CLONES IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${1:-}" = --self-test ]; then
+    # shellcheck disable=SC2086
+    unset $FIXTURE_INPUTS
+fi
 ROOT="${IOC_ROOT:-$(cd "$HERE/../../.." && pwd)}"
 CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
 EVIDENCE="${IOC_EVIDENCE:-$HERE}"
@@ -230,7 +292,7 @@ landed-third-change|landed|the third change, a refusal of a reviewer completion 
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
 published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|-
 admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
-admitted-rows|admitted|the classifier refuses no row of claims.jsonl that carries a command|-
+admitted-rows|admitted|every line of claims.jsonl is a JSON object the classifier reads, and it refuses no row that carries a command|-
 admitted-header|admitted|the table of admitted forms in the header above run_recorded is the one --admitted measures, line for line|-
 admitted-reserved|admitted|the header's list of reserved names is the reader's, and every name the runner and the shims record with starts with a reserved prefix|-
 self-test-baseline|self-test|the fixture deliverable passes --replay, --shape, --citations and --landed|-
@@ -559,13 +621,15 @@ dispatch_get() {
 
 # env_functions makes env.sh's functions and lists those of this shell, so that check.sh
 # and env.sh share each rule they both read: the command that reads a Dispatch record
-# (ioc_env_record_command), a clone (ioc_env_clone), the variables uv and pip enforce the
-# locks by (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN, read by
-# ioc_env_frozen_entry), the reader of a lock (ioc_env_lock_py), and the check of what an
+# (ioc_env_record_command), a clone (ioc_env_clone), the table of tool caches and its
+# export (ioc_env_cache_table, ioc_env_caches), the variables uv and pip enforce the locks
+# by (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN, read by
+# ioc_env_frozen_labels and ioc_env_frozen_entry), the stamp of an environment
+# (ioc_env_unstamp), the reader of a lock (ioc_env_lock_py), and the check of what an
 # environment holds (ioc_env_frozen). env.sh read this way defines them and prepares
 # nothing.
 env_functions() {
-    declare -F ioc_env_read_record >/dev/null && return 0
+    declare -F ioc_env_record_command >/dev/null && return 0
     [ -r "$EVIDENCE/env.sh" ] || return 1
     local IOC_ENV_FUNCTIONS_ONLY=1
     # shellcheck source=env.sh
@@ -599,30 +663,29 @@ judgement_text() {
 }
 
 # record_load <label>; reads one record under check, by its label in sources.json, into
-# this run's scratch: from the copy sources.json names, which is how the self-test's
-# fixture holds one; else from the copy env.sh fetched before the first recorded command
-# ran; else live from Dispatch through live_read. A Dispatch that answers it holds no such
-# record leaves the text empty, and citation-row then fails by its committed rows.
-# record_text <label> prints what it read.
+# this run's scratch, once per run: from the copy sources.json names, which is how the
+# self-test's fixture holds one, or else live from Dispatch through live_read. A Dispatch
+# that answers it holds no such record leaves the text empty, and citation-row then fails
+# by its committed rows. It names the copy of the design as IOC_DESIGN and that of the
+# reconciliation as IOC_COMMENT, which every row that counts or quotes a line of one reads
+# and env.sh then reads no record again, so the rows and citation-row read one copy, read
+# in this run. record_text <label> prints what it read.
 record_load() {
-    local label="$1" ref copy cache="$RUN_SCRATCH/record-$1.md" prepared=""
-    [ -e "$cache" ] && return 0
-    ref="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .ref' "$EVIDENCE/sources.json")"
-    copy="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .copy // ""' "$EVIDENCE/sources.json")"
-    if [ -n "$copy" ]; then
-        cp "$EVIDENCE/$copy" "$cache"
-        return 0
+    local label="$1" ref copy cache="$RUN_SCRATCH/record-$1.md"
+    if [ ! -e "$cache" ]; then
+        ref="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .ref' "$EVIDENCE/sources.json")"
+        copy="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .copy // ""' "$EVIDENCE/sources.json")"
+        if [ -n "$copy" ]; then
+            cp "$EVIDENCE/$copy" "$cache"
+        else
+            env_functions || cannot_run " --$MODE: env.sh, which holds the command a Dispatch record is read by, did not load."
+            live_read "Dispatch, the read of $ref" "$cache" ioc_env_record_command "$ref" || : >"$cache"
+        fi
     fi
     case "$label" in
-    d) prepared="${IOC_DESIGN:-}" ;;
-    r) prepared="${IOC_COMMENT:-}" ;;
+    d) export IOC_DESIGN="$cache" ;;
+    r) export IOC_COMMENT="$cache" ;;
     esac
-    if [ -n "$prepared" ] && [ -s "$prepared" ]; then
-        cp "$prepared" "$cache"
-        return 0
-    fi
-    env_functions || cannot_run " --$MODE: env.sh, which holds the command a Dispatch record is read by, did not load."
-    live_read "Dispatch, the read of $ref" "$cache" ioc_env_record_command "$ref" || : >"$cache"
 }
 record_text() { cat "$RUN_SCRATCH/record-$1.md"; }
 
@@ -766,8 +829,8 @@ GAPS
 # exports one variable per input. Sourcing it here puts those variables in this shell's
 # environment, so that each recorded command reads them beside IOC_CLONES. The fixture of
 # --self-test builds a deliverable whose rows need none of them and sets IOC_NO_ENV=1; its
-# rows' tools still keep every cache under IOC_CACHE, by env.sh's one table of them, so a
-# row planted there runs as cold as the tree's own.
+# rows' tools still keep every cache under IOC_CACHE, an empty one of the fixture's own, by
+# env.sh's one table of them, so a row planted there runs as cold as the tree's own.
 prepare_env() {
     if [ "${IOC_NO_ENV:-0}" = 1 ]; then
         env_functions || cannot_run ": env.sh, which names where every tool cache of a recorded command lives, did not load."
@@ -1358,11 +1421,11 @@ github_budget() {
 # command on stdin and prints each program name the classifier admits in command
 # position, one per line, or one UNREAD line naming the refusal; "stages" reads one
 # command and prints the command of each stage of its final pipeline; "admitted" reads
-# claims.jsonl on stdin and prints each refused row, each entry of ADMITTED with the
-# number of rows that use it and each reserved name, which --admitted reads. The reader's
-# first lines are PROGRAM_VARIABLES and RUNNER_PREFIXES, written from the two variables
-# above program_shims, then env.sh's ENFORCED and ENVIRONMENTS, and env.sh's reader of a
-# lock.
+# claims.jsonl on stdin and prints each line that is no JSON object, each refused row,
+# each entry of ADMITTED with the number of rows that use it and each reserved name, which
+# --admitted reads. The reader's first lines are PROGRAM_VARIABLES and RUNNER_PREFIXES,
+# written from the two variables above program_shims, then env.sh's ENFORCED and
+# ENVIRONMENTS, and env.sh's reader of a lock.
 reader_py() {
     local v label
     # env.sh's IOC_ENV_ENFORCED, the variables uv and pip enforce the locks by, which the
@@ -2770,12 +2833,22 @@ elif sys.argv[-1] == "names":
             print(kind[1])
 elif sys.argv[-1] == "admitted":
     # Reads claims.jsonl on stdin and classifies the command of each row that carries one.
-    # Prints REFUSED<TAB><id><TAB><why> for each row it refuses, then one line per entry of
-    # ADMITTED, in its order, FORM<TAB><key><TAB><rows that use it><TAB><what it is>, then
-    # one line per name no row may touch, RESERVED<TAB><name><TAB><what it is>.
+    # Prints UNREAD<TAB><line><TAB><why> for each line that is no JSON object, by its number
+    # in the file, REFUSED<TAB><id><TAB><why> for each row it refuses, then one line per
+    # entry of ADMITTED, in its order, FORM<TAB><key><TAB><rows that use it><TAB><what it
+    # is>, then one line per name no row may touch, RESERVED<TAB><name><TAB><what it is>. A
+    # line that holds only space is no row, as claims() reads the file.
     counts = {key: 0 for key in ADMITTED}
-    for line in sys.stdin:
-        row = json.loads(line)
+    for number, line in enumerate(sys.stdin, 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError("it holds a JSON %s" % type(row).__name__)
+        except ValueError as why:
+            print("UNREAD\t%d\t%s" % (number, " ".join(str(why).split())[:160]))
+            continue
         if not row.get("command"):
             continue
         USED.clear()
@@ -2845,16 +2918,32 @@ reserved_line() { printf '%-37s %s' "$1" "$2"; }
 
 # mode_admitted; the audit of ADMITTED. It runs the classifier over the command of every
 # row of claims.jsonl, through the one table the classifier admits by, and prints one line
-# per entry with the number of rows that use it. It fails an entry no row uses, a row the
-# classifier refuses, and a line of the header's table that differs from the one measured.
-# It fails as well a header list of reserved names that differs from the reader's, which
-# the reader builds from PROGRAM_VARIABLES, RUNNER_PREFIXES and env.sh's IOC_ENV_ENFORCED,
-# and a name the runner or the shims record with that starts with none of RUNNER_PREFIXES,
-# which no row would be kept from touching.
+# per entry with the number of rows that use it. It fails a line of claims.jsonl that is no
+# JSON object, naming the line, an entry no row uses, a row the classifier refuses, and a
+# line of the header's table that differs from the one measured. It fails as well a header
+# list of reserved names that differs from the reader's, which the reader builds from
+# PROGRAM_VARIABLES, RUNNER_PREFIXES and env.sh's IOC_ENV_ENFORCED, and a name the runner
+# or the shims record with that starts with none of RUNNER_PREFIXES, which no row would be
+# kept from touching. The reader is built from env.sh and runs to its end before any of
+# the four judges: one that cannot load or does not run to its end is a mode that cannot
+# run, exit 2.
 mode_admitted() {
     local kind a b c line measured=() header=() reserved=() refused=0 differ=0 unused=0
+    local reader table="$RUN_SCRATCH/admitted" input
+    env_functions || cannot_run " --admitted: env.sh, which holds the variables and the lock reader the install reader is built from, did not load."
+    reader="$(reader_py)" || cannot_run " --admitted: the install reader could not be built from env.sh."
+    # The reader reads claims.jsonl itself, so a line it cannot parse is named by its number
+    # in the file; a claims.jsonl that is not there reads as one with no row.
+    input="$(claims_file)"
+    [ -r "$input" ] || input=/dev/null
+    python3 -c "$reader" admitted <"$input" >"$table" 2>"$table.err" ||
+        cannot_run " --admitted: the install reader did not run to its end: $(tail -1 "$table.err" | head -c 240)"
     while IFS=$'\t' read -r kind a b c; do
         case "$kind" in
+        UNREAD)
+            refused=$((refused + 1))
+            fail admitted-rows "line $a of claims.jsonl is no JSON object, so the classifier reads no row there: $b"
+            ;;
         REFUSED)
             refused=$((refused + 1))
             fail admitted-rows "the row $a is refused: $b"
@@ -2873,13 +2962,13 @@ mode_admitted() {
             reserved+=("$(reserved_line "$a" "$b")")
             ;;
         esac
-    done < <(claims | python3 -c "$(reader_py)" admitted)
+    done <"$table"
     [ "${#measured[@]}" -gt 0 ] && [ "$unused" -eq 0 ] &&
         pass admitted-form "every one of the ${#measured[@]} entries of ADMITTED, listed above with the rows that use each, is used by a row"
     if [ "${#measured[@]}" -eq 0 ]; then
         fail admitted-rows "the classifier printed no table, so no row was read"
     elif [ "$refused" -eq 0 ]; then
-        pass admitted-rows "the classifier refuses no row of claims.jsonl that carries a command"
+        pass admitted-rows "every line of claims.jsonl is a row the classifier reads, and it refuses no row that carries a command"
     fi
 
     # The header's table: the lines after its column names, down to the first comment line
@@ -2936,14 +3025,16 @@ mode_replay() {
     # The budget is read before the environment is prepared, so a run that cannot carry
     # those commands refuses at once rather than after an install.
     github_budget
-    prepare_env
-    # The live inputs of the assertions below, read before any of them judges: the two
-    # records under check and the judgement, which count-zero-premise reads.
-    local label
+    # The live inputs of the assertions below, read before any of them judges and before
+    # env.sh prepares anything: the two records under check, whose copies every row that
+    # reads a record reads too, so env.sh reads neither again (record_load), and the
+    # judgement, which count-zero-premise reads.
+    local label IOC_ENV_RECORDS_READ=1
     for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
         record_load "$label"
     done
     judgement_load
+    prepare_env
     # The header file every recorded curl of the Dispatch API reads. The prerequisites read
     # that DISPATCH_TOKEN_FILE names a readable file; a header that still cannot be written
     # leaves it unset, and those rows then fail on the read they could not make.
@@ -2952,7 +3043,7 @@ mode_replay() {
     local kinds='project-code our-code behaviour published absence quotation'
     local marks='verified false unverified not-externally-checkable supported unsupported unreleased'
     local bad_form=0 bad_mark=0 bad_predicate=0 ran=0 command_failures="" absence_failures="" bad_quotation=0
-    local row id kind mark command expect environments stamps changed frozen_failures=""
+    local row id kind mark command expect environments installs stamps changed frozen_failures=""
     # The environments each row installs into, as the install reader reads its command;
     # each is checked after the row, beside any whose site-packages changed while it ran.
     env_functions || cannot_run ": env.sh, which names the environments a row installs into, did not load."
@@ -2998,12 +3089,24 @@ mode_replay() {
             continue
         fi
         ran=$((ran + 1))
+        # A row's install is no build of env.sh's: env.sh's stamp of each environment the
+        # row installs into goes before the row runs, and that of each whose site-packages
+        # changed while it ran goes after, so the next run builds each again rather than
+        # reuse what a killed install left (the header's "Nothing a killed run leaves is
+        # trusted").
+        installs="$(printf '%s\n' "$environments" | awk -F '\t' -v id="$id" '$1 == id { print $2 }')"
+        for label in $installs; do
+            ioc_env_unstamp "$label"
+        done
         stamps="$(environment_stamps)"
         run_recorded "$command" "$work/$id.out"
         changed="$({
-            printf '%s\n' "$environments" | awk -F '\t' -v id="$id" '$1 == id { print $2 }'
+            printf '%s\n' "$installs"
             diff <(printf '%s\n' "$stamps") <(environment_stamps) | awk '$1 == ">" { print $2 }'
         } | sort -u)"
+        for label in $changed; do
+            ioc_env_unstamp "$label"
+        done
         # shellcheck disable=SC2086
         [ -z "$changed" ] || check_environments "$id" $changed || frozen_failures="$frozen_failures $id"
         # A program the evaluator cannot record fails the row whatever its kind and its
@@ -4173,11 +4276,12 @@ mode_published() {
 
 # ---------------------------------------------------------------- --self-test
 
-# The self-test builds one small deliverable of its own under $TMPDIR, proves the gate
-# passes over it, then plants, one at a time, a bad case of every kind the gate reads and
-# proves the gate fails and names the family. The planted list and the assertion table are
-# one list: the table's fourth column is the fault, and a family whose fault is unplanted
-# fails here.
+# The self-test builds one small deliverable of its own under its run's scratch, proves the
+# gate passes over it, then plants, one at a time, a bad case of every kind the gate reads
+# and proves the gate fails and names the family. The planted list and the assertion table
+# are one list: the table's fourth column is the fault, and a family whose fault is
+# unplanted fails here. Each run of the gate over the fixture runs in the environment the
+# header's "The fixture of --self-test" states.
 
 fixture_build() {
     local dir="$1"
@@ -4187,7 +4291,8 @@ fixture_build() {
     mkdir -p "$dir/repo/packages/daemon/internal/api"
     cp "$EVIDENCE/citations.py" "$evidence/citations.py"
     cp "$EVIDENCE/check.sh" "$evidence/check.sh"
-    # env.sh is read for its functions alone: --citations clones a repository by its rule.
+    # env.sh, whose functions the fixture's modes read: --citations clones a repository by
+    # its rule, and --replay exports the fixture's tool caches by its table (prepare_env).
     cp "$EVIDENCE/env.sh" "$evidence/env.sh"
     # The hashed locks, which a planted install may read, and ioc-venv.in, which is none.
     cp "$EVIDENCE/evidence/ioc-venv.lock" "$EVIDENCE/evidence/ioc-venv.in" "$EVIDENCE/evidence/tm-constraints.txt" \
@@ -4414,14 +4519,23 @@ MD
 }
 
 fixture_run() {
-    # fixture_run <dir> <mode>; prints the gate's own output. The fixture's own rows read
-    # its own repository alone, so it needs nothing env.sh prepares and skips it.
-    local dir="$1" mode="$2"
-    IOC_ROOT="$dir/repo" \
+    # fixture_run <dir> <mode>; prints the gate's own output, and ends with its status. The
+    # fixture's own rows read its own repository alone, so it needs nothing env.sh
+    # prepares and skips it. It runs in an environment of its own, as the header's "The
+    # fixture of --self-test" states: FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is
+    # set, the fixture's own tree, judgement and head, and an IOC_CACHE of its own unless a
+    # case names one; no other variable of the caller's.
+    local dir="$1" mode="$2" name carried=()
+    for name in $FIXTURE_CARRIED $FIXTURE_INPUTS; do
+        [ -n "${!name+set}" ] && carried+=("$name=${!name}")
+    done
+    env -i "${carried[@]}" \
+        IOC_ROOT="$dir/repo" \
         IOC_EVIDENCE="$dir/repo/docs/research/internet-of-cognition" \
         IOC_JUDGEMENT="$dir/judgement.md" \
         IOC_NO_ENV=1 \
         IOC_PUBLISHED_COMMIT="$(git -C "$dir/repo" rev-parse HEAD 2>/dev/null)" \
+        IOC_CACHE="${IOC_CACHE:-$dir/cache}" \
         bash "$dir/repo/docs/research/internet-of-cognition/check.sh" "$mode" 2>&1
 }
 
@@ -4588,14 +4702,24 @@ MD
     return 0
 }
 
+# self_test_ran <the run> <its status> <its output>; a run the self-test made that ended
+# exit 2 could not run, and judged nothing, so neither can the self-test: it ends here,
+# exit 2, naming the run and, last, the run's own last line, its reason. Such a run is
+# never read as an assertion that failed.
+self_test_ran() {
+    [ "$2" -eq 2 ] || return 0
+    cannot_run " --self-test: $1 could not run, so the self-test judged nothing: $(printf '%s\n' "$3" | tail -1)"
+}
+
 mode_self_test() {
-    local work baseline
-    work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-selftest.XXXXXX")"
+    local work="$RUN_SCRATCH/self-test" baseline
+    mkdir -p "$work"
     fixture_build "$work/base"
     local mode modes="replay shape citations landed"
     local broken=0
     for mode in $modes; do
         baseline="$(fixture_run "$work/base" "--$mode")"
+        self_test_ran "--$mode over the fixture deliverable" "$?" "$baseline"
         if ! printf '%s' "$baseline" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
             broken=$((broken + 1))
             fail "self-test-baseline" "the fixture deliverable does not pass --$mode: $(printf '%s' "$baseline" | grep '^FAIL' | head -3 | tr '\n' ' ')$(printf '%s' "$baseline" | tail -1)"
@@ -4620,6 +4744,7 @@ mode_self_test() {
         fi
         local out
         out="$(fixture_run "$planted" "--$mode")"
+        self_test_ran "--$mode over the fixture with the planted fault of $family" "$?" "$out"
         if printf '%s' "$out" | grep -q "^FAIL $family"; then
             pass "$family" "the gate fails the planted fault and names it: $fault"
         else
@@ -4635,6 +4760,7 @@ mode_self_test() {
     if [ -r "$EVIDENCE/check.test.sh" ]; then
         local cases
         cases="$(bash "$EVIDENCE/check.test.sh" 2>&1)"
+        self_test_ran "check.test.sh" "$?" "$cases"
         if printf '%s\n' "$cases" | tail -1 | grep -q '^all [0-9]* cases passed$'; then
             pass gate-cases "check.test.sh: $(printf '%s\n' "$cases" | tail -1)"
         else
@@ -4648,6 +4774,7 @@ mode_self_test() {
     # header's table is the one --admitted measures.
     local admitted
     admitted="$(bash "$EVIDENCE/check.sh" --admitted 2>&1)"
+    self_test_ran "check.sh --admitted" "$?" "$admitted"
     if printf '%s\n' "$admitted" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
         pass admitted-table "check.sh --admitted: every entry of ADMITTED is used by a row, no row is refused, and the header's table is the one measured"
     else

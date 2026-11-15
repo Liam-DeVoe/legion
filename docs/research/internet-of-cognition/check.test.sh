@@ -8,7 +8,9 @@
 #   bash docs/research/internet-of-cognition/check.test.sh
 #
 # It prints one PASS or FAIL line per case and a last line reading `all N cases passed`.
-# It needs what check.sh --self-test needs: git, jq and python3.
+# It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
+# --self-test and of the four modes it runs over its fixture, --replay, --shape, --citations
+# and --landed. A case that needs uv, go or bun prints SKIP when that tool is missing.
 
 set -u
 
@@ -1277,11 +1279,12 @@ ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$?" 
 # "rows 38", and the row failed its {"equals":"rows 38"}. Test round 25's cold replay met it
 # on a pod that had just been replaced. The case runs that row's own command, read from
 # claims.jsonl, through the gate's replay, with a fresh TMPDIR and IOC_CACHE and our tree at
-# the commit sources.json pins, and holds it to its own predicate. GOMODCACHE and GOCACHE
-# are set to empty directories as well: since 49ec14d3dd the row reads the Go caches env.sh
-# puts under IOC_CACHE, and the fixture runs no env.sh, so without them the row would read
-# whatever Go caches the caller's environment names, which a Legion pod sets to warm shared
-# ones. It needs go, git and the Go module proxy, and prints SKIP when go is missing.
+# the commit sources.json pins, and holds it to its own predicate. It names no Go cache of
+# its own: the fixture's --replay runs prepare_env, which exports every cache of env.sh's
+# table under the IOC_CACHE given here, GOMODCACHE and GOCACHE among them, so the row reads
+# go's caches from that empty directory, and a fixture takes no Go cache the caller's
+# environment names. It needs go, git and the Go module proxy, and prints SKIP when go is
+# missing.
 if command -v go >/dev/null 2>&1; then
     row="$(jq -c 'select(.id=="m-ctl-our-row-count")' "$HERE/claims.jsonl")"
     if [ -z "$row" ]; then
@@ -1294,7 +1297,7 @@ if command -v go >/dev/null 2>&1; then
             tar -x -C "$cold/our"
         dir="$(fresh cold-go-cache)"
         plant_behaviour "$dir" "$(printf '%s' "$row" | jq -r '.command')" "$(printf '%s' "$row" | jq -c '.expect')"
-        out="$(TMPDIR="$cold/tmp" IOC_CACHE="$cold/cache" GOMODCACHE="$cold/cache/go/mod" GOCACHE="$cold/cache/go/build" IOC_OUR_TREE="$cold/our" fixture_run "$dir" --replay)"
+        out="$(TMPDIR="$cold/tmp" IOC_CACHE="$cold/cache" IOC_OUR_TREE="$cold/our" fixture_run "$dir" --replay)"
         # go writes its module cache read-only, and the EXIT trap removes $WORK.
         chmod -R u+w "$cold"
         honest_result "m-ctl-our-row-count meets its predicate on a machine with no Go module cache" replay-command "$out"
@@ -1539,6 +1542,180 @@ z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccou
     chmod -R u+w "$WORK"
 else
     printf 'SKIP the replay of a go row on a cold cache: go is missing\n'
+fi
+
+# 84-87 come from the eleventh review of the pull request and the architect's ruling on
+# it, and the header of check.sh states each rule they hold: a run that cannot run ends
+# exit 2 and is never counted as failed assertions, a fixture runs in an environment of
+# its own, and nothing a killed run leaves is trusted. Each fault ended at 0fdbb24ddf in a
+# count of failed assertions, in a fixture that read its caller's environment, or in a
+# pass on what a killed run left; each honest form beside it passes there and here.
+#
+# 84. A fixture runs in an environment of its own, not its caller's. At 0fdbb24ddf
+# fixture_run passed every variable of its caller on, so an IOC_HISTORY_REF exported as
+# the history line of `check.sh --help` says, which names a commit of this tree and none
+# of the fixture's, left the fixture's --shape and --landed unable to run. A shell that
+# sources check.sh, as this file does, with this tree's HEAD exported as IOC_HISTORY_REF,
+# now runs each over the fixture and passes, and so does the same shell with nothing
+# exported, the honest form. A variable the header names nowhere does not reach a
+# fixture's row either: a row that prints one prints nothing of it.
+head_commit="$(git -C "$IOC_ROOT" rev-parse HEAD)"
+dir="$(fresh history-exported)"
+for mode in shape:9 landed:5; do
+    out="$(IOC_HISTORY_REF="$head_commit" bash -c '. "$1"; fixture_run "$2" "$3"' _ "$HERE/check.sh" "$dir" "--${mode%:*}")"
+    ending_result "--${mode%:*} over the fixture passes from a shell that exported IOC_HISTORY_REF, a commit of this tree" 0 "^all ${mode#*:} assertions passed\$" "$?" "$out"
+    out="$(bash -c '. "$1"; fixture_run "$2" "$3"' _ "$HERE/check.sh" "$dir" "--${mode%:*}")"
+    ending_result "--${mode%:*} over the fixture passes from a shell that exported no IOC_HISTORY_REF" 0 "^all ${mode#*:} assertions passed\$" "$?" "$out"
+done
+dir="$(fresh caller-variable)"
+plant_behaviour "$dir" "printf 'ran once%s\\n' \"\$IOC_CALLER_PROBE\"" '{"equals":"ran once"}'
+out="$(IOC_CALLER_PROBE=' and a variable of the caller' fixture_run "$dir" --replay)"
+ending_result "a variable of the caller's that the header does not name does not reach a fixture's row" 0 '^all 16 assertions passed$' "$?" "$out"
+
+# 85. A run the self-test makes that cannot run is a self-test that cannot run. At
+# 0fdbb24ddf mode_self_test looked only for the all-passed line at the end of each run it
+# made, so a fixture run that ended "check.sh cannot run" became FAIL self-test-baseline,
+# and the self-test ended "39 of 39 assertions failed", exit 1: with a Dispatch that does
+# not answer, through the fixture's --citations, and with IOC_HISTORY_REF exported,
+# through its --shape and --landed (the eleventh review, item 3). The case runs the
+# --self-test of a scratch copy of this directory whose check.test.sh is a stub that
+# passes, so that it does not run this file again. With a Dispatch that does not answer it
+# ends exit 2, naming the fixture's --citations and, last, Dispatch; with IOC_HISTORY_REF
+# exported beside it, it ends the same way, so the fixture's --shape and --replay, which
+# run first, read no history of their caller's. The honest form is the same copy's
+# --self-test, which passes.
+self_copy="$WORK/self-test-copy"
+mkdir -p "$self_copy/evidence"
+cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$self_copy/"
+cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
+    "$HERE/evidence/build-constraints.txt" "$self_copy/evidence/"
+printf '%s\n' "printf 'all 0 cases passed\\n'" >"$self_copy/check.test.sh"
+SELF_CANNOT='^check\.sh cannot run --self-test: --citations over the fixture deliverable could not run, so the self-test judged nothing: check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
+out="$(DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
+ending_result "--self-test whose fixture's --citations has no Dispatch to read cannot run, naming the run and Dispatch" 2 "$SELF_CANNOT" "$?" "$out"
+out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
+ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$?" "$out"
+out="$(IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
+ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 39 assertions passed$' "$?" "$out"
+
+# 86. --admitted reads the status of the install reader. At 0fdbb24ddf it read the
+# classifier's lines through a process substitution, so no status of python3 reached it:
+# one line of claims.jsonl that is no JSON object, the eleventh review's
+# {"id": "broken-row", "kind": , stopped the reader with a traceback and the mode ended
+# "4 of 4 assertions failed", as it did with env.sh missing and with a reader that does not
+# start. A line the reader cannot parse is the evidence being wrong: it fails admitted-rows
+# alone, exit 1, naming the line by its number. A reader that cannot load is a mode that
+# cannot run, exit 2. Each form runs --admitted over a scratch copy of claims.jsonl and
+# env.sh, or, for the reader that does not start, a scratch copy of check.sh, as cases 41
+# and 42 do; the honest form is the copy as it stands.
+admitted_copy() {
+    # admitted_copy <name>; prints a scratch directory holding this directory's
+    # claims.jsonl, env.sh and evidence/, which --admitted reads as its IOC_EVIDENCE.
+    local copy="$WORK/$1"
+    mkdir -p "$copy"
+    cp "$HERE/claims.jsonl" "$HERE/env.sh" "$copy/"
+    ln -s "$HERE/evidence" "$copy/evidence"
+    printf '%s' "$copy"
+}
+copy="$(admitted_copy admitted-broken-line)"
+printf '%s\n' '{"id": "broken-row", "kind": ' >>"$copy/claims.jsonl"
+out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
+ending_result "a line of claims.jsonl that is no JSON object fails admitted-rows alone, exit 1" 1 '^1 of 4 assertions failed: admitted-rows$' "$?" "$out"
+case_result "a line of claims.jsonl that is no JSON object is named by its number" "admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims.jsonl is no JSON object" "$out"
+copy="$(admitted_copy admitted-no-env)"
+rm "$copy/env.sh"
+out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
+ending_result "--admitted whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run --admitted: env\.sh, which holds .* did not load\.$' "$?" "$out"
+plant_gate admitted-reader-start 's/^import json, os, re, shlex, sys$/&, ioc_no_such_module_3134/' 'import json, os, re, shlex, sys, ioc_no_such_module_3134' holds
+out="$(bash "$GATE" --admitted 2>&1)"
+ending_result "--admitted whose install reader does not start cannot run: exit 2, the reason last" 2 "^check\\.sh cannot run --admitted: the install reader did not run to its end: ModuleNotFoundError: No module named 'ioc_no_such_module_3134'\$" "$?" "$out"
+copy="$(admitted_copy admitted-honest)"
+out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
+ending_result "--admitted over a copy of claims.jsonl and env.sh passes" 0 '^all 4 assertions passed$' "$?" "$out"
+
+# 87. Nothing a killed run leaves is trusted. A pod replacement kills a replay part-way.
+# At 0fdbb24ddf env.sh wrote the shapes graph of the scope clone under its own name, so a
+# generator killed after its first line left a file the next run reused as the whole
+# graph, and the replay left env.sh's mark of a whole environment on one a row had
+# installed into. The case builds a scope clone of its own, offline, whose generator
+# writes one line and then, when asked, kills its own process group, as a pod replacement
+# kills the run; env.sh builds the graph once killed and once more, and the graph must then
+# hold the generator's second line. The honest form is a build nobody kills. Then, offline,
+# in an environment case 66's world builds, a fixture's --replay of a row that installs
+# into IOC_TC_WORK must leave no stamp of env.sh's on it, so the next run builds it again;
+# a row that installs into nothing leaves the stamp, the honest form.
+killed="$WORK/killed-shapes"
+mkdir -p "$killed/clones/scope/ontology/scripts" "$killed/clones/scope/ontology/src/scope_ontology" "$killed/cache" "$killed/honest-cache"
+for name in mas-ontology metrics-ontology semantic-ontology analysis-ontology insight-ontology mas-shapes-custom; do
+    printf '# %s\n' "$name" >"$killed/clones/scope/ontology/src/scope_ontology/$name.ttl"
+done
+cat >"$killed/clones/scope/ontology/scripts/generate_shacl_shapes.py" <<'PY'
+import os, signal, sys
+with open(sys.argv[1], "w") as out:
+    out.write("# the first line of the generated shapes\n")
+    out.flush()
+    if os.environ.get("IOC_KILL_AFTER_FIRST_LINE"):
+        os.killpg(0, signal.SIGKILL)
+    out.write("# the second line of the generated shapes\n")
+PY
+# shapes_build <cache> [kill]; env.sh's build of the shapes graph under <cache>, in a
+# process group of its own, whose generator kills that group after its first line when
+# asked; the group around it keeps bash's report of the kill out of this file's output.
+# shapes_whole <cache> is true when both files of the graph hold the second line.
+shapes_build() {
+    {
+        IOC_CACHE="$1" IOC_CLONES="$killed/clones" IOC_PY="$(command -v python3)" IOC_KILL_AFTER_FIRST_LINE="${2:-}" \
+            setsid -w bash -c 'IOC_ENV_FUNCTIONS_ONLY=1 . "$1" && ioc_env_scope_shapes' _ "$HERE/env.sh" >/dev/null
+    } 2>/dev/null
+}
+shapes_whole() {
+    grep -qxF '# the second line of the generated shapes' "$1/mas-shapes.ttl" 2>/dev/null &&
+        grep -qxF '# the second line of the generated shapes' "$1/scope-shapes.ttl" 2>/dev/null
+}
+if command -v setsid >/dev/null 2>&1; then
+    shapes_build "$killed/cache" kill
+    shapes_build "$killed/cache"
+    if shapes_whole "$killed/cache"; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS the shapes graph a killed build left part-written is built whole by the next run\n'
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL the shapes graph a killed build left part-written is built whole by the next run: the graph holds %s\n' "$(head -c 160 "$killed/cache/scope-shapes.ttl" 2>/dev/null | tr '\n' ' ')"
+    fi
+    shapes_build "$killed/honest-cache"
+    if shapes_whole "$killed/honest-cache"; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS the shapes graph of a build nobody killed is whole\n'
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL the shapes graph of a build nobody killed is whole: the graph holds %s\n' "$(head -c 160 "$killed/honest-cache/scope-shapes.ttl" 2>/dev/null | tr '\n' ' ')"
+    fi
+else
+    printf 'SKIP a killed build of the shapes graph: setsid is missing\n'
+fi
+# stamp_result <name> <gone|stands> <stamp file> <gate output>; passes when the stamp is
+# gone, or stands, as named.
+stamp_result() {
+    if { [ "$2" = gone ] && [ ! -e "$3" ]; } || { [ "$2" = stands ] && [ -e "$3" ]; }; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$1"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: the stamp %s does not; the run ended %s\n' "$1" "$2" "$(printf '%s\n' "$4" | tail -1)"
+    fi
+}
+if freeze_world && freeze_venv stamped && freeze_venv kept; then
+    printf 'built by env.sh\n' >"$FREEZE/stamped/venv/.ioc-built-from"
+    printf 'built by env.sh\n' >"$FREEZE/kept/venv/.ioc-built-from"
+    dir="$(fresh stamp-install)"
+    plant_behaviour "$dir" "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" '{"contains":"ran once"}'
+    out="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/stamped" IOC_CLONES="$FREEZE/clones" fixture_run "$dir" --replay)"
+    stamp_result "a replay whose row installs into IOC_TC_WORK removes env.sh's stamp of it" gone "$FREEZE/stamped/venv/.ioc-built-from" "$out"
+    dir="$(fresh stamp-no-install)"
+    out="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/kept" IOC_CLONES="$FREEZE/clones" fixture_run "$dir" --replay)"
+    stamp_result "a replay whose rows install into nothing leaves env.sh's stamp of IOC_TC_WORK" stands "$FREEZE/kept/venv/.ioc-built-from" "$out"
+else
+    printf 'SKIP the stamp of an environment a row installs into: uv, or an environment it builds here offline, is missing\n'
 fi
 
 total=$((CASES_PASSED + CASES_FAILED))

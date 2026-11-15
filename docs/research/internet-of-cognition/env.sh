@@ -12,9 +12,16 @@
 #
 #   bash docs/research/internet-of-cognition/env.sh
 #
-# It is idempotent. A second run reuses what the first built: it re-downloads nothing,
-# re-installs nothing and re-reads Dispatch only when the copy is missing. Delete the
-# cache directory to build it again from nothing.
+# It is idempotent. A second run reuses what the first built whole: it re-downloads
+# nothing, re-installs nothing but an environment a recorded command has installed into
+# since, and, run on its own, re-reads Dispatch only when a copy is missing. Nothing a run
+# that was killed part-way left is reused: each entry below carries a stamp written last or
+# is renamed into place when whole, by the rule check.sh's header states ("Nothing a killed
+# run leaves is trusted"), and the list after the exports names which. To build it all
+# again from nothing, remove the cache directory, after making it writable, since go makes
+# its module cache read-only:
+#
+#   chmod -R u+w "$IOC_CACHE" && rm -rf "$IOC_CACHE"
 #
 # It builds under one directory, IOC_CACHE, which defaults to $TMPDIR/infra3134, and it
 # clones under a second, IOC_CLONES, which defaults to $TMPDIR/ioc-clones; it writes nothing
@@ -33,6 +40,8 @@
 #   IOC_EVID        the absolute path of the committed evidence/ directory
 #   IOC_DESIGN      the design under check, dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md
 #   IOC_COMMENT     the reconciliation under check, dispatch://INFRA-3134/comment/326a044a-…
+#                   check.sh --replay reads both records itself, live, before it sources
+#                   env.sh, and names its own copies here; env.sh then reads neither
 #   IOC_VENV        the virtual environment uv builds for the similarity and scope rows
 #   IOC_PY          that environment's python: sentence-transformers, torch, rdflib and pyshacl
 #   IOC_MODEL_DIR   the pinned all-MiniLM-L6-v2 snapshot, its model.safetensors checksummed
@@ -59,6 +68,33 @@
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   the variables of ioc_env_cache_table   every tool cache, each under IOC_CACHE
 #
+# What it keeps, and how each entry is kept whole, so that the next run builds again what a
+# killed run left part-built rather than reuse it:
+#
+#   entry                                   kept whole by
+#   each clone, IOC_CLONES/<name>           a stamp, .git/ioc-complete, naming the pinned
+#                                           commit; a clone without it is cloned again
+#   ioc-design.md, comment-326a.md          a temporary name, <file>.part, renamed when the
+#                                           read ended well; only when run on its own
+#   IOC_VENV, IOC_MASLAB_VENV,              a stamp, .ioc-built-from, of what it was built
+#   IOC_MASLAB_WHEEL_VENV, IOC_TC_WORK/venv from, removed before env.sh changes it and by
+#                                           check.sh before a row installs into it; one
+#                                           without it is built again from nothing
+#   IOC_MODEL_DIR                           a stamp, model.built-from, of its revision and
+#                                           checksum; huggingface writes each file under a
+#                                           temporary name of its own
+#   IOC_CONCORD_WHEEL                       a stamp, <wheel>.built-from, removed before the
+#                                           build
+#   IOC_SCOPE_MAS_SHAPES, IOC_SCOPE_SHAPES  a temporary name, <file>.part
+#   IOC_REVIEWS                             a temporary name, reviews.jsonl.part
+#   IOC_OUR_TREE                            a temporary name, <dir>.part, holding a stamp,
+#                                           .complete
+#   IOC_TM_OVERLAY                          nothing: it is written again at every run
+#   the caches of ioc_env_cache_table       each tool, by its own means
+#
+# A recorded command that writes under IOC_CACHE writes what it reads back itself or what a
+# later row of the same run reads, so no row reads what a killed run left there.
+#
 # Every package env.sh installs comes from a committed, hashed file under evidence/,
 # resolved as the package index stood at 2026-11-12T07:55:56Z, the instant sources.json
 # records: IOC_VENV is synced exactly to ioc-venv.lock, the mas-lab environments read
@@ -67,15 +103,14 @@
 # it builds each environment of IOC_ENV_FROZEN it checks what the environment holds
 # against that environment's own lock (ioc_env_frozen). The rule these serve, the one
 # install written with the visible prefix UV_REQUIRE_HASHES=0, and what none of them can
-# see are stated once, in check.sh's header above reader_py. The mas-lab
-# environment and the ioc-concord wheel carry a stamp of the sha256 of the files and the
-# clone commit they were built from, and a cache whose stamp differs is built again, so a
-# venv or a wheel that predates the hashed files is never used.
+# see are stated once, in check.sh's header above reader_py. The stamp of each
+# environment and of the ioc-concord wheel is the sha256 of the files and the clone commit
+# it was built from, so a venv or a wheel that predates the hashed files is never used.
 #
 # It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
-# clones at the commits sources.json pins when they are missing. It refuses, with a line
-# naming what it could not prepare and a non-zero status, rather than leaving a variable
-# pointing at something that is not there.
+# clones at the commits sources.json pins when they are missing or not whole. It refuses,
+# with a line naming what it could not prepare and a non-zero status, rather than leaving a
+# variable pointing at something that is not there.
 
 ioc_env_refuse() {
     printf 'env.sh cannot prepare %s: %s\n' "$1" "$2" >&2
@@ -92,30 +127,33 @@ ioc_env_need() {
 
 # One clone, at the commit sources.json pins, with the working tree at that commit:
 # the shapes generator, the mas-lab install and similarity.py all read files and not
-# git objects.
+# git objects. The clone is reused only when its stamp, .git/ioc-complete, written after
+# its checkout, names that commit and its HEAD is that commit; any other, one a fetch or a
+# checkout that was killed part-way left among them, is removed and cloned again.
 ioc_env_clone() {
-    local name="$1" url commit dir
+    local name="$1" url commit dir stamp
     url="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .url' "$IOC_ENV_HERE/sources.json")"
     commit="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .commit' "$IOC_ENV_HERE/sources.json")"
     [ -n "$url" ] && [ -n "$commit" ] || ioc_env_refuse "the clone $name" "sources.json pins no such repository" || return 1
     dir="$IOC_CLONES/$name"
+    stamp="$dir/.git/ioc-complete"
+    if [ "$(cat "$stamp" 2>/dev/null)" = "$commit" ] && [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" = "$commit" ]; then
+        return 0
+    fi
     # The clone is the one the triage read: one commit deep and with no tags. The triage
     # recorded that shape as a fact of its own reading, so a clone of the whole history
     # would answer those rows differently, and the maturity of a repository is read from
     # its own REST answers, which are committed under published/github-api/.
-    if [ ! -d "$dir/.git" ]; then
-        mkdir -p "$dir"
-        git -C "$dir" init --quiet >&2 ||
-            ioc_env_refuse "the clone $name" "git init under $IOC_CLONES failed" || return 1
-        git -C "$dir" remote add origin "$url" 2>/dev/null || true
-    fi
-    git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null ||
-        git -C "$dir" fetch --quiet --depth 1 --no-tags origin "$commit" >&2 ||
+    rm -rf "$dir" && mkdir -p "$dir" && git -C "$dir" init --quiet >&2 ||
+        ioc_env_refuse "the clone $name" "git init of $dir failed" || return 1
+    git -C "$dir" remote add origin "$url" ||
+        ioc_env_refuse "the clone $name" "git remote add of $url failed" || return 1
+    git -C "$dir" fetch --quiet --depth 1 --no-tags origin "$commit" >&2 ||
         ioc_env_refuse "the clone $name" "git fetch of $commit from $url failed" || return 1
-    if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
-        git -C "$dir" checkout --quiet --detach "$commit" >&2 ||
-            ioc_env_refuse "the clone $name" "it holds no commit $commit" || return 1
-    fi
+    git -C "$dir" checkout --quiet --detach "$commit" >&2 ||
+        ioc_env_refuse "the clone $name" "it holds no commit $commit" || return 1
+    printf '%s\n' "$commit" >"$stamp" ||
+        ioc_env_refuse "the clone $name" "its stamp $stamp could not be written"
 }
 
 # Every tool cache, one line each: the variable the tool reads, the directory under
@@ -257,6 +295,32 @@ ioc_env_frozen_entry() {
         return 0
     done
     return 1
+}
+
+# The stamp of an environment of IOC_ENV_FROZEN is the file .ioc-built-from in its
+# directory, holding the line ioc_env_stamp writes of what env.sh built it from. env.sh
+# removes the stamp before it changes the environment and writes it last, once the
+# environment is built and its check passed, and it reuses an environment only when the
+# stamp is there and names what it would build it from now; any other, one an install that
+# was killed part-way left among them, is built again from nothing. A row's install is no
+# build of env.sh's, so check.sh removes the stamp of each environment a row installs into
+# before the row runs, and the next run builds that environment again.
+#
+# ioc_env_built <label> <stamp>; true when the environment <label> carries <stamp> and has
+# its python. ioc_env_stamp_write <label> <stamp> writes the stamp, and ioc_env_unstamp
+# <label> removes it, doing nothing for an environment whose variable is not set.
+ioc_env_built() {
+    ioc_env_frozen_entry "$1" && [ -n "$IOC_ENV_ENTRY_DIR" ] || return 1
+    [ "$(cat "$IOC_ENV_ENTRY_DIR/.ioc-built-from" 2>/dev/null)" = "$2" ] && [ -x "$IOC_ENV_ENTRY_DIR/bin/python" ]
+}
+ioc_env_stamp_write() {
+    ioc_env_frozen_entry "$1" && [ -n "$IOC_ENV_ENTRY_DIR" ] || return 1
+    printf '%s\n' "$2" >"$IOC_ENV_ENTRY_DIR/.ioc-built-from" ||
+        ioc_env_refuse "$1" "its stamp $IOC_ENV_ENTRY_DIR/.ioc-built-from could not be written"
+}
+ioc_env_unstamp() {
+    ioc_env_frozen_entry "$1" && [ -n "$IOC_ENV_ENTRY_DIR" ] || return 0
+    rm -f "$IOC_ENV_ENTRY_DIR/.ioc-built-from"
 }
 
 # ioc_env_frozen <label> <locks directory>; checks the result of every install into the
@@ -408,11 +472,19 @@ ioc_env_read_record() {
     mv "$part" "$file"
 }
 
-# The two records under check, read live from Dispatch and written into the cache, which
-# is what the rows that count or quote a line of either one read. A copy an earlier run
-# kept is read again when it is a refusal.
+# The two records under check, which the rows that count or quote a line of either one
+# read. check.sh --replay reads both itself, live through its live_read, before it sources
+# env.sh, exports IOC_DESIGN and IOC_COMMENT as its copies and sets IOC_ENV_RECORDS_READ=1
+# in its own shell, and env.sh then reads neither. Run on its own, env.sh reads each from
+# Dispatch into the cache, and a copy an earlier run kept is read again when it is a
+# refusal.
 ioc_env_records() {
     local label file ref
+    if [ "${IOC_ENV_RECORDS_READ:-0}" = 1 ]; then
+        [ -e "${IOC_DESIGN:-}" ] && [ -e "${IOC_COMMENT:-}" ] ||
+            ioc_env_refuse "IOC_DESIGN and IOC_COMMENT" "check.sh read the records under check and named no copy of both"
+        return
+    fi
     for label in d r; do
         case "$label" in
         d) file="$IOC_CACHE/ioc-design.md" ;;
@@ -429,8 +501,9 @@ ioc_env_records() {
     export IOC_COMMENT="$IOC_CACHE/comment-326a.md"
 }
 
-# The interpreter the similarity table and the scope rows run on, synced at every run to
-# exactly the hashed lock, so a cache an earlier run left cannot carry another set:
+# The interpreter the similarity table and the scope rows run on, synced to exactly the
+# hashed lock whenever it is built, and reused only when its stamp names that lock, so a
+# cache an earlier run left cannot carry another set:
 # evidence/ioc-venv.in names its four requirements, sentence-transformers, torch and
 # rdflib at the versions similarity/table.md records and pyshacl, which the scope rows
 # run beside rdflib, and evidence/ioc-venv.lock pins all 71 packages with their hashes.
@@ -451,27 +524,36 @@ PY
 ioc_env_python() {
     export IOC_VENV="$IOC_CACHE/venv"
     export IOC_PY="$IOC_VENV/bin/python"
-    local lock=""
+    local lock="" want
     ioc_env_frozen_entry IOC_VENV && lock="$IOC_EVID/$IOC_ENV_ENTRY_LOCK"
     [ -s "$lock" ] || ioc_env_refuse "IOC_PY" "$lock, the hashed lock of IOC_VENV, is missing" || return 1
-    uv venv --allow-existing --python 3.12 "$IOC_VENV" >&2 ||
-        ioc_env_refuse "IOC_PY" "uv venv --python 3.12 $IOC_VENV failed" || return 1
-    uv pip sync --python "$IOC_PY" --require-hashes "$lock" >&2 ||
-        ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes $lock failed" || return 1
+    want="$(ioc_env_stamp - "$lock")"
+    if ! ioc_env_built IOC_VENV "$want"; then
+        ioc_env_unstamp IOC_VENV
+        uv venv --clear --python 3.12 "$IOC_VENV" >&2 ||
+            ioc_env_refuse "IOC_PY" "uv venv --clear --python 3.12 $IOC_VENV failed" || return 1
+        uv pip sync --python "$IOC_PY" --require-hashes "$lock" >&2 ||
+            ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes $lock failed" || return 1
+    fi
     ioc_env_python_pinned ||
         ioc_env_refuse "IOC_PY" "$IOC_PY does not import the four requirements of evidence/ioc-venv.in at those versions" || return 1
-    ioc_env_check_frozen IOC_VENV
+    ioc_env_check_frozen IOC_VENV || return 1
+    ioc_env_stamp_write IOC_VENV "$want"
 }
 
 # The weights, pinned by revision and by the checksum the row s-model-checksum carries.
+# The snapshot is reused only when its stamp, model.built-from under IOC_CACHE, written
+# once the checksum matched, names this revision and checksum; any other is downloaded
+# again, which fetches every file a killed download left out.
 ioc_env_model() {
-    local revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41" want got file
+    local revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41" want got file stamp="$IOC_CACHE/model.built-from"
     export IOC_MODEL_DIR="$HF_HOME/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/$revision"
     file="$IOC_MODEL_DIR/model.safetensors"
     want="$(jq -r 'select(.id=="s-model-checksum") | .expect.contains' "$IOC_ENV_HERE/claims.jsonl" | head -1)"
     [ -n "$want" ] ||
         ioc_env_refuse "IOC_MODEL_DIR" "claims.jsonl carries no checksum in the row s-model-checksum" || return 1
-    if [ ! -s "$file" ]; then
+    if [ "$(cat "$stamp" 2>/dev/null)" != "$revision $want" ] || [ ! -s "$file" ]; then
+        rm -f "$stamp"
         "$IOC_PY" -c "
 from huggingface_hub import snapshot_download
 print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='$revision',
@@ -482,7 +564,9 @@ print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='$rev
         ioc_env_refuse "IOC_MODEL_DIR" "$file is not there after the download" || return 1
     got="$(sha256sum "$file" | cut -d' ' -f1)"
     [ "$got" = "$want" ] ||
-        ioc_env_refuse "IOC_MODEL_DIR" "$file has sha256 $got, and the row s-model-checksum pins $want"
+        ioc_env_refuse "IOC_MODEL_DIR" "$file has sha256 $got, and the row s-model-checksum pins $want" || return 1
+    printf '%s %s\n' "$revision" "$want" >"$stamp" ||
+        ioc_env_refuse "IOC_MODEL_DIR" "its stamp $stamp could not be written"
 }
 
 # mas-lab, installed from the clone the way evidence/tm-load.sh installed it: the three
@@ -497,17 +581,18 @@ ioc_env_maslab() {
     export IOC_MASLAB_WHEEL_CTL="$IOC_MASLAB_WHEEL_VENV/bin/mas-ctl"
     local clone="$IOC_CLONES/mas-lab" constraints="" build="$IOC_EVID/build-constraints.txt"
     ioc_env_frozen_entry IOC_MASLAB_VENV && constraints="$IOC_EVID/$IOC_ENV_ENTRY_LOCK"
-    local stamp="$IOC_MASLAB_VENV/.ioc-built-from" want rebuilt=0
+    local want rebuilt=0
     [ -s "$constraints" ] ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$constraints, the pinned dependencies of mas-lab, is missing" || return 1
     [ -s "$build" ] ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$build, the pinned build environment, is missing" || return 1
     want="$(ioc_env_stamp "$(git -C "$clone" rev-parse HEAD)" "$constraints" "$build")"
-    # A venv that imports mas.lab is reused only when it was built from these same files
-    # and this same clone commit; any other, one of evidence/tm-load.sh's among them, is
-    # built again from nothing.
-    if ! { [ "$(cat "$stamp" 2>/dev/null)" = "$want" ] && [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] &&
+    # A venv that imports mas.lab is reused only when its stamp says it was built from these
+    # same files and this same clone commit; any other, one of evidence/tm-load.sh's or one
+    # a row installed into since among them, is built again from nothing.
+    if ! { ioc_env_built IOC_MASLAB_VENV "$want" && [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] &&
         "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
+        ioc_env_unstamp IOC_MASLAB_VENV
         uv venv --clear "$IOC_MASLAB_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_VENV" "uv venv --clear $IOC_MASLAB_VENV failed" || return 1
         # The one install written with UV_REQUIRE_HASHES=0, as the header above reader_py in
@@ -517,26 +602,29 @@ ioc_env_maslab() {
             UV_REQUIRE_HASHES=0 VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" --require-build-hashes ./runtime ./ctl ./library-standard >&2 &&
                 UV_REQUIRE_HASHES=0 VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" --require-build-hashes -e ./ctl -e ./lab/components/core >&2
         ) || ioc_env_refuse "IOC_MASLAB_VENV" "uv pip install from $clone failed" || return 1
-        printf '%s\n' "$want" >"$stamp"
         rebuilt=1
     fi
     { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$IOC_MASLAB_VENV holds no mas-ctl that imports mas.lab" || return 1
     ioc_env_check_frozen IOC_MASLAB_VENV || return 1
+    ioc_env_stamp_write IOC_MASLAB_VENV "$want" || return 1
     # The two schema rows do their own installs into the second environment, so it has to
-    # exist; one that is missing, or that a rebuild of the first left behind, starts from
-    # nothing.
-    if [ "$rebuilt" -eq 1 ] || [ ! -x "$IOC_MASLAB_WHEEL_VENV/bin/python" ]; then
+    # exist, and it starts empty: one whose stamp is not that of the first, or that a
+    # rebuild of the first left behind, is made again from nothing.
+    if [ "$rebuilt" -eq 1 ] || ! ioc_env_built IOC_MASLAB_WHEEL_VENV "$want"; then
+        ioc_env_unstamp IOC_MASLAB_WHEEL_VENV
         uv venv --clear "$IOC_MASLAB_WHEEL_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_WHEEL_VENV" "uv venv --clear $IOC_MASLAB_WHEEL_VENV failed" || return 1
     fi
-    ioc_env_check_frozen IOC_MASLAB_WHEEL_VENV
+    ioc_env_check_frozen IOC_MASLAB_WHEEL_VENV || return 1
+    ioc_env_stamp_write IOC_MASLAB_WHEEL_VENV "$want"
 }
 
 # ioc-concord, built once into a wheel under evidence/build-constraints.txt. The tc-run
 # rows run it with uv run --with, which takes no build constraint, so they run this one
 # build rather than building the source again per row; a wheel needs no build. The wheel
-# is reused only when its stamp names this build constraint and this clone commit.
+# is reused only when its stamp names this build constraint and this clone commit; the
+# stamp goes before the build and is written after it, so a killed build is built again.
 ioc_env_concord() {
     local dir="$IOC_CACHE/wheels" build="$IOC_EVID/build-constraints.txt" want
     export IOC_CONCORD_WHEEL="$dir/ioc_concord-0.1.0-py3-none-any.whl"
@@ -555,7 +643,9 @@ ioc_env_concord() {
 
 # The shapes graph, assembled the way the scope clone's own verification.py assembles it:
 # the five ontology files, the generated mas-shapes.ttl and the committed custom shapes.
-# tests/scope.md and evidence/scope-pyshacl.txt record it.
+# tests/scope.md and evidence/scope-pyshacl.txt record it. Each of the two files is written
+# as <file>.part and renamed into place only once it is whole, so a generator or a cat
+# that was killed part-way leaves no file the next run reuses.
 ioc_env_scope_shapes() {
     export IOC_SCOPE_MAS_SHAPES="$IOC_CACHE/mas-shapes.ttl"
     export IOC_SCOPE_SHAPES="$IOC_CACHE/scope-shapes.ttl"
@@ -563,15 +653,20 @@ ioc_env_scope_shapes() {
     if [ ! -s "$IOC_SCOPE_MAS_SHAPES" ]; then
         (
             cd "$IOC_CLONES/scope/ontology" || exit 1
-            "$IOC_PY" scripts/generate_shacl_shapes.py "$IOC_SCOPE_MAS_SHAPES" >&2
-        ) || ioc_env_refuse "IOC_SCOPE_SHAPES" "generate_shacl_shapes.py of the scope clone failed" || return 1
+            "$IOC_PY" scripts/generate_shacl_shapes.py "$IOC_SCOPE_MAS_SHAPES.part" >&2
+        ) && [ -s "$IOC_SCOPE_MAS_SHAPES.part" ] && mv "$IOC_SCOPE_MAS_SHAPES.part" "$IOC_SCOPE_MAS_SHAPES" ||
+            {
+                rm -f "$IOC_SCOPE_MAS_SHAPES.part"
+                ioc_env_refuse "IOC_SCOPE_SHAPES" "generate_shacl_shapes.py of the scope clone failed"
+                return 1
+            }
     fi
     if [ ! -s "$IOC_SCOPE_SHAPES" ]; then
         cat "$src/mas-ontology.ttl" "$src/metrics-ontology.ttl" "$src/semantic-ontology.ttl" \
             "$src/analysis-ontology.ttl" "$src/insight-ontology.ttl" "$IOC_SCOPE_MAS_SHAPES" \
-            "$src/mas-shapes-custom.ttl" >"$IOC_SCOPE_SHAPES" ||
+            "$src/mas-shapes-custom.ttl" >"$IOC_SCOPE_SHAPES.part" && mv "$IOC_SCOPE_SHAPES.part" "$IOC_SCOPE_SHAPES" ||
             {
-                rm -f "$IOC_SCOPE_SHAPES"
+                rm -f "$IOC_SCOPE_SHAPES.part"
                 ioc_env_refuse "IOC_SCOPE_SHAPES" "the seven files of the shapes graph did not read"
                 return 1
             }
@@ -614,12 +709,18 @@ ioc_env_reviews() {
         fi
         mv "$part" "$IOC_REVIEWS"
     fi
-    # The recorded script builds its own install into ./venv of this directory.
-    if [ ! -x "$IOC_TC_WORK/venv/bin/python" ]; then
-        uv venv --python 3.12 "$IOC_TC_WORK/venv" >&2 ||
-            ioc_env_refuse "IOC_TC_WORK" "uv venv $IOC_TC_WORK/venv failed" || return 1
+    # The recorded script builds its own install into ./venv of this directory, so env.sh
+    # makes it empty, and makes it again from nothing when its stamp is not that of this
+    # lock, as it is after a run whose row installed into it.
+    local stamp
+    stamp="$(ioc_env_stamp - "$IOC_EVID/ioc-venv.lock")"
+    if ! ioc_env_built IOC_TC_WORK "$stamp"; then
+        ioc_env_unstamp IOC_TC_WORK
+        uv venv --clear --python 3.12 "$IOC_TC_WORK/venv" >&2 ||
+            ioc_env_refuse "IOC_TC_WORK" "uv venv --clear $IOC_TC_WORK/venv failed" || return 1
     fi
-    ioc_env_check_frozen IOC_TC_WORK
+    ioc_env_check_frozen IOC_TC_WORK || return 1
+    ioc_env_stamp_write IOC_TC_WORK "$stamp"
 }
 
 # Our code as it stands at the pinned commit, written once with git archive and kept only
@@ -694,8 +795,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         printf '%s=%s\n' "$ioc_env_name" "${!ioc_env_name}"
     done
 elif [ "${IOC_ENV_FUNCTIONS_ONLY:-0}" = 1 ]; then
-    # check.sh reads the record reader and the clone this way: the functions, and nothing
-    # prepared.
+    # check.sh reads env.sh this way, for the functions its env_functions names: the
+    # functions, and nothing prepared.
     return 0
 else
     ioc_env_main || return 1
