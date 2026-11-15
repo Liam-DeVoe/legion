@@ -419,3 +419,48 @@ func TestALaunchKeyBothKindsReadDriftsBothPods(t *testing.T) {
 		})
 	}
 }
+
+// A launch key inside a keyed map drifts the pod whose launch reads it, as every other launch key
+// does. `projects.<KEY>.commit_issue_trailer_repos` reaches every role of an issue pod as
+// LEGION_ISSUE_TRAILER (podkind.go's agentEnv, from the launch specs), and
+// `projects.<KEY>.memory.config_files` reaches a memory-group role's Oh My Pi as its overlays,
+// so spec version 41's rule — a key answered applied reaches each of its consumers when its
+// class says, the next launch — needs the update round spec's Design opens for each issue pod
+// whose launch reads the key. The walk that builds the record visits `projects` as one value,
+// a rebuild row, and keeps launch rows alone, so neither key is in the record and a change of
+// either replaced no running pod.
+func TestALaunchKeyOfAProjectDriftsTheIssuePod(t *testing.T) {
+	withProject := func(trailer []ghrepo.Repository, overlays []string) *config.Config {
+		cfg := launchFixture()
+		cfg.Projects = map[string]config.Project{"LEGION": {
+			CommitIssueTrailerRepos: trailer,
+			Memory:                  config.Memory{Mode: config.MemoryOn, ConfigFiles: overlays},
+		}}
+		return cfg
+	}
+	boot := withProject([]ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, []string{"/etc/legion-operator/memory.yml"})
+	for name, tc := range map[string]struct {
+		moved *config.Config
+		names string
+	}{
+		"the repositories whose commits carry the issue key": {
+			withProject([]ghrepo.Repository{ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("acme/gadgets")}, []string{"/etc/legion-operator/memory.yml"}),
+			"commit_issue_trailer_repos",
+		},
+		"a memory-group role's overlays": {
+			withProject([]ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, []string{"/etc/legion-operator/memory-2.yml"}),
+			"memory.config_files",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			built := LaunchSettings(boot)
+			g := newRig(t, nil, withOptions(func(o *Options) { o.LaunchSettings = built }))
+			loc := g.spawn(workerSpec(t))
+			r2 := secondRuntime(t, g, func(o *Options) { o.LaunchSettings = LaunchSettings(tc.moved) })()
+			drifted := driftOf(t, g.ctx, r2, loc)
+			if !slices.ContainsFunc(drifted, func(reason string) bool { return strings.Contains(reason, tc.names) }) {
+				t.Errorf("PodDrift = %q, want a reason naming %s: the key moved and every role of the pod reads it at launch", drifted, tc.names)
+			}
+		})
+	}
+}
