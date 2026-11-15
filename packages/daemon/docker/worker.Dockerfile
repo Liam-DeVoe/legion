@@ -590,22 +590,28 @@ COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker
 # large ones (Node, the AWS CLI, Go and Chromium, tens to hundreds of megabytes each) and 300 s for
 # the language servers' `npm ci`, a lockfile's worth of npm tarballs. Everything else here — the
 # checksum check, the unpacking, the links, the go.env edits and the AWS installer — is local and
-# stays bare.
+# stays bare. Each download's URL is set once and both fetched and named from that one variable, so
+# a fetch that exhausts its attempts names the URL it failed on, and the name cannot drift from
+# what the line fetches (dispatch://INFRA-1865, folded into dispatch://INFRA-1545).
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
     t=/tmp/toolchain; mkdir -p "$t" /out/bin /opt/node; \
-    retry 120 "uv download" curl -fsSLo "$t/uv.tar.gz" \
-      "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
-    retry 300 "node download" curl -fsSLo "$t/node.tar.xz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
-    retry 300 "aws cli download" curl -fsSLo "$t/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
-    retry 300 "go download" curl -fsSLo "$t/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
-    retry 120 "kubectl download" curl -fsSLo "$t/kubectl" "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
-    retry 120 "yq download" curl -fsSLo "$t/yq" \
-      "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
-    retry 300 "chromium download" curl -fsSLo "$t/chromium.zip" \
-      "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
+    u="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
+    retry 120 "uv download from $u" curl -fsSLo "$t/uv.tar.gz" "$u"; \
+    u="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    retry 300 "node download from $u" curl -fsSLo "$t/node.tar.xz" "$u"; \
+    u="https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
+    retry 300 "aws cli download from $u" curl -fsSLo "$t/awscli.zip" "$u"; \
+    u="https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
+    retry 300 "go download from $u" curl -fsSLo "$t/go.tar.gz" "$u"; \
+    u="https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
+    retry 120 "kubectl download from $u" curl -fsSLo "$t/kubectl" "$u"; \
+    u="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
+    retry 120 "yq download from $u" curl -fsSLo "$t/yq" "$u"; \
+    u="https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
+    retry 300 "chromium download from $u" curl -fsSLo "$t/chromium.zip" "$u"; \
     printf '%s  %s\n' "$UV_SHA256" "$t/uv.tar.gz" "$NODE_SHA256" "$t/node.tar.xz" \
       "$AWS_CLI_SHA256" "$t/awscli.zip" "$GO_SHA256" "$t/go.tar.gz" \
       "$KUBECTL_SHA256" "$t/kubectl" "$YQ_SHA256" "$t/yq" \
