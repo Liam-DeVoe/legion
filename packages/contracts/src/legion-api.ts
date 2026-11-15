@@ -1068,7 +1068,7 @@ export const LegionProjectReleaseRequest = z.strictObject({
 });
 
 /** `api.ProjectReleaseResponse`, the body of `POST` and `GET /legion/v1/operator/project/release`
- * and the state's `projectRelease` (contract 134): the release's record id (none on a dry run),
+ * and the state's `projectRelease` (contract 138): the release's record id (none on a dry run),
  * when it started and when it deletes every pod still waiting (`boundAt`), that `bound` as a Go
  * duration, when it finished and when a boot ended it (`endedBy` `boot`), each absent until it
  * happens, and its result: one line per Sandbox of the project and one per claim it stopped,
@@ -1127,7 +1127,7 @@ export type LegionProjectRelease = z.output<typeof LegionProjectReleaseResponse>
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
  * the shapes `internal/projection` answers before the route marks them carry none either.
  * `projectRelease` is the project's newest project release, the body its own `GET` answers
- * (contract 134), absent while none was ever recorded and for a caller in a pod below 134
+ * (contract 138), absent while none was ever recorded and for a caller in a pod below 138
  * (`api.stateFor`, `withoutProjectRelease`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,

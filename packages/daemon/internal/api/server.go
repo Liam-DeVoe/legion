@@ -1132,13 +1132,13 @@ const waitingOnIssueContract = 132
 const mergeWaitContract = 133
 
 // projectReleaseContract is the daemon contract that added `projectRelease`, the project's newest
-// project release and its result (version.go's 134, dispatch://INFRA-3583). A plugin before it is
+// project release and its result (version.go's 138, dispatch://INFRA-3583). A plugin before it is
 // served the state without it: one built before sjawhar/legion#2788 reads the state with a strict
 // schema and would refuse the whole body for a key it does not name, and one built after strips
 // the key instead, so the strip is what keeps the release from a caller that did not ask for it.
 // The roles a running release asks are such callers, and they are asked to push and end their
 // turn on that same body.
-const projectReleaseContract = 134
+const projectReleaseContract = 138
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
