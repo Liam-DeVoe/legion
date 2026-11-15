@@ -569,7 +569,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), with what each reviewing issue's
 			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait),
-			// and with every root's `treeRuns` gone, the key contract 138 added beside the gated
+			// and with every root's `treeRuns` gone, the key contract 147 added beside the gated
 			// steps of a root on an ancestor's basis, which go with `gatedSteps` itself for a
 			// caller this far back (withoutGateBasis). Every row that reaches here is below all of
 			// them, so every one of them goes whatever the row is.

@@ -1081,7 +1081,7 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. waitingOnIssueContract,
 // mergeWaitContract and gateBasisContract stand above it, and the first one's strip takes a word
-// of the line's `kind` and no key, so a caller in a pod at 111 through 137 is served the measure
+// of the line's `kind` and no key, so a caller in a pod at 111 through 146 is served the measure
 // and neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis, and
 // one at 111 through 132 no `mergeWait` either.
 const quietTimeContract = 111
@@ -1094,7 +1094,7 @@ const quietTimeContract = 111
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
 // optional. mergeWaitContract and gateBasisContract stand above it, so a caller in a pod at 132
-// through 137 is served the word and neither `treeRuns` nor the gated steps of an issue a step of
+// through 146 is served the word and neither `treeRuns` nor the gated steps of an issue a step of
 // which stands on a basis, and one at 132 no `mergeWait` either.
 const waitingOnIssueContract = 132
 
@@ -1110,7 +1110,7 @@ const waitingOnIssueContract = 132
 const mergeWaitContract = 133
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 138,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 147,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
 // gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
 // root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
@@ -1126,7 +1126,7 @@ const mergeWaitContract = 133
 // highest of the bands, this daemon's own contract, so of the pods whose claims record a contract
 // only one at it is served the basis, `treeRuns` and the two words; a pod whose claims record none
 // and a caller in no pod are served the state as it is (stateFor).
-const gateBasisContract = 138
+const gateBasisContract = 147
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
