@@ -4631,7 +4631,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   That cap is the limit on these repeats: a session shown more than 20,000 frames within 72 hours can be shown the oldest of them again.
 
 - **The log lines of a start:** the session-consumer connection writes three lines with the logger the listener passes to `bus.ConnectSessionConsumers`, its own JSON logger (`connectSessionDelivery`), so each line carries the listener's `machine_id`.
-  dispatch://INFRA-3635's production check reads the texts this code writes and their keys, the clamp's line among them, so keep them exact.
+  dispatch://INFRA-3635's production check reads the clamp's line by its text and keys, and this item states all three, so keep them exact.
   WARN `session consumer start past the stream's end, created at the stream's first sequence` reports a create that clamped its start, a restart's create included.
   Its keys are `session_id`, `asked_start` (the start before the clamp, after the record rule where that applied; for a restart, the sequence after the ack floor it read), `stream_last_seq` (the last sequence of the read that settled the clamp), `stream_id` and `consumer_start` (the clamped start, the first sequence of that read, at most `stream_last_seq + 1`).
   INFO `session consumer created at its resume record's floor, below the start the caller asked` reports a create that lowered a caller's start to the record's floor plus one.

@@ -951,12 +951,12 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 // that and never handed to the session. Started at the stream's first sequence, the first message
 // the consumer hands over is the first the stream holds on its filters, so none of them is
 // skipped, and the session's plugin drops by identity, in its delivery ledger, any it was handed
-// before, within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT,
-// packages/envoy-client/src/delivery-ledger.ts). A session that deregistered before such a loss comes back that way, with its resume
-// point past the end and no record to lower it: a loss that cuts the stream below the record's
-// floor removes the record too, since the stream stored it after that floor. A target of the
-// sequence after the stream's last would skip every message stored between the loss and the
-// session's next registration
+// before, within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames
+// (DELIVERY_LEDGER_LIMIT, packages/envoy-client/src/delivery-ledger.ts). A session that
+// deregistered before such a loss comes back that way, with its resume point past the end and no
+// record to lower it: a loss that cuts the stream below the record's floor removes the record
+// too, since the stream stored it after that floor. A target of the sequence after the stream's
+// last would skip every message stored between the loss and the session's next registration
 // (cmd/listener TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence).
 // A restart's start past the end comes from the same cause: a consumer whose ack floor, as the
 // server reports it, is above the stream's last sequence is not kept, and its restart asks for the
