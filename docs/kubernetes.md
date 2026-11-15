@@ -5330,7 +5330,8 @@ The release does five things, in this order:
 4. As each pod's wait ends, it reads that pod's workspace one last time and stops its role processes.
    It waits until each of the pod's claims is stored suspended, by `project_release` or by any source that took the claim over meanwhile, or until `worker_stop_timeout_seconds` passed.
    A claim that failed or retired meanwhile holds no process, so the release does not wait for it, and its line names how it ended.
-   Then it asks once more for each claim stored suspended by a source other than `project_release` and an operator, such as an idle release's `released`, so that the release's suspension takes that claim over by rank and the next boot starts it.
+   Then it asks once more for each claim stored suspended by an idle release's `released`, so that the release's suspension takes that claim over by rank and the next boot starts it.
+   A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
    Then it deletes the pod's Sandbox, with the pod and its disk.
    A pod it asked nothing is deleted as soon as its last read and its stop are done.
    A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
