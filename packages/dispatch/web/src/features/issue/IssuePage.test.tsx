@@ -186,6 +186,19 @@ const openIssueAsk: Ask = {
   urgency: "med",
 };
 
+/** An open approval request on the issue's spec whose turn is a person's: it waits on the
+ *  reader, so the header's approval control carries Approve and Request changes (R31). */
+function approvalAsk(): NonNullable<IssueDetails["open_asks"]>[number] {
+  return {
+    ...openIssueAsk,
+    artifact_id: issue.artifacts[0]?.id ?? null,
+    id: "ask-approval",
+    kind: "approval",
+    last_reply: null,
+    question: "Approve the spec?",
+  };
+}
+
 function issueWithExternalLink(url: string): IssueDetails {
   return { ...issue, external_links: [{ url }] };
 }
@@ -424,17 +437,21 @@ async function openSubscribedAgents(count: number) {
   return screen.findByRole("region", { name: "Subscribed agents" });
 }
 
-/** Who opened the issue, where the redesigned page draws it: the panel's People section, with
- *  the label beside the name as text rather than the tooltip the metadata rail carried
- *  (dispatch://INFRA-1196 R11). */
+/** Who opened the issue, where the redesigned page draws it: its row of Details' People
+ *  section, the label in the row's own column and the name beside it as text rather than the
+ *  tooltip the metadata rail carried (dispatch://INFRA-1196 R13). */
 async function expectCreator(label: string): Promise<HTMLElement> {
-  const panel = await screen.findByTestId("issue-margin");
-  const openedBy = await within(panel).findByText("Opened by:");
-  const row = openedBy.parentElement as HTMLElement;
-  expect(row.textContent).toBe(`Opened by:${label}`);
+  const row = await openedByRow();
   const creator = row.querySelector<HTMLElement>("[data-author-text]") as HTMLElement;
   expect(creator.textContent).toBe(label);
   return creator;
+}
+
+/** The Opened by row of Details: its label, then its value. */
+async function openedByRow(): Promise<HTMLElement> {
+  const panel = await screen.findByTestId("issue-margin");
+  const openedBy = await within(panel).findByText("Opened by");
+  return openedBy.parentElement?.parentElement as HTMLElement;
 }
 
 /**
@@ -623,13 +640,14 @@ test("IssuePage focuses the node a link on the page leads to, and a fresh load k
   }
 });
 
-test("IssuePage omits creator metadata for historical issues", async () => {
+test("IssuePage reads None for the creator of a historical issue", async () => {
   const restore = stubIssuePage({ ...issue, created_by: null });
   const view = renderIssuePage();
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    // A property with no value reads None in its own row (dispatch://INFRA-1196 R13).
+    expect(await openedByRow()).toHaveTextContent("Opened byNone");
   } finally {
     view.unmount();
     restore();
@@ -637,10 +655,14 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 });
 
 test("IssuePage's header warns when nobody holds the route, and adds nothing when it is live", async () => {
-  // The warning sits in row four of the identity block, beside the route it speaks for: both
-  // wrap, so neither is ever reached by scrolling a row sideways (dispatch://INFRA-1196 R11).
+  // The header keeps one marker where the route reaches nobody; the route itself and its reach
+  // are Details' Route row (dispatch://INFRA-1196 R13).
   const stateRow = async () => {
-    const row = await screen.findByTestId("issue-work-row");
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-details-row="route"]');
+      if (found === null) throw new Error("Details draws no route row");
+      return found;
+    });
     await within(row).findByRole("button", { name: "Messages default to role:sre" });
     return row;
   };
@@ -648,9 +670,15 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   const unheld = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
   const unheldView = renderIssuePage();
   try {
-    const marker = within(await stateRow()).getByTestId("issue-route-unreachable");
+    await stateRow();
+    const marker = within(screen.getByTestId("issue-header")).getByTestId(
+      "issue-route-unreachable"
+    );
     expect(marker).toHaveTextContent("role:sre:");
     expect(marker).toHaveTextContent("Nobody holds it right now");
+    expect(
+      within(await stateRow()).getByTestId("issue-details-route-unreachable")
+    ).toHaveTextContent("Nobody holds it right now");
   } finally {
     unheldView.unmount();
     unheld();
@@ -665,7 +693,8 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   const liveView = renderIssuePage();
   try {
     const row = await stateRow();
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-details-route-unreachable")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
   } finally {
     liveView.unmount();
@@ -683,7 +712,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
     const row = await stateRow();
     expect(within(row).getByTestId("issue-route-unknown").textContent).toBe("Route reach unknown");
     expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
   } finally {
     unjudgedView.unmount();
     unjudged();
@@ -704,7 +733,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
       `Route reach unknown: ${AGENT_LIST_REFILLING}`
     );
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
   } finally {
     refillingView.unmount();
     refilling();
@@ -715,9 +744,13 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
 // listener judged it and said the session is stalled, and what is sent to the issue waits for
 // it. Folding that into either of the other two markers tells a reader to re-staff a role that
 // is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
-test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
+test("IssuePage's Details marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
   const stateRow = async () => {
-    const row = await screen.findByTestId("issue-work-row");
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-details-row="route"]');
+      if (found === null) throw new Error("Details draws no route row");
+      return found;
+    });
     await within(row).findByRole("button", { name: "Messages default to role:sre" });
     return row;
   };
@@ -732,12 +765,12 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
   try {
     const row = await stateRow();
     const marker = within(row).getByTestId("issue-route-unresponsive");
-    expect(marker).toHaveTextContent("role:sre:");
+    // The row names the route itself beside the marker, so the marker says the state alone.
     expect(marker).toHaveTextContent("Unresponsive, still reached");
     // The page raises no tooltip (dispatch://INFRA-1196 R21), so the marker's explanation is
     // drawn for a screen reader rather than held in its `title`.
     expect(marker).toHaveTextContent("waits until it answers");
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
   } finally {
@@ -763,7 +796,7 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
   }
 });
 
-test("IssuePage omits creator metadata when an issue response omits it", async () => {
+test("IssuePage reads None for the creator when an issue response omits it", async () => {
   // IssueDetails models the supported wire contract; this fixture probes a future raw response
   // that omits the optional value rather than serializing it as null.
   const issueWithoutCreator = { ...issue, created_by: undefined } as unknown as IssueDetails;
@@ -772,7 +805,7 @@ test("IssuePage omits creator metadata when an issue response omits it", async (
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    expect(await openedByRow()).toHaveTextContent("Opened byNone");
   } finally {
     view.unmount();
     restore();
@@ -2203,8 +2236,8 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
         },
       ],
     });
-    expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe(
-      "Waiting on agents (1)"
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on agents (1)")
     );
   } finally {
     view.unmount();
@@ -2228,6 +2261,7 @@ test("IssuePage hides whose turn when the server sent open asks without waiting_
   }
 });
 test("IssuePage keeps state actions available while approval awaits", async () => {
+  // The request waits on the reader, so its chip carries Approve in the header (R31).
   const restore = stubIssuePage({
     ...issue,
     artifacts: [
@@ -2236,15 +2270,16 @@ test("IssuePage keeps state actions available while approval awaits", async () =
         approval: { latest_version: 1, state: "awaiting" },
       },
     ],
+    open_asks: [approvalAsk()],
   });
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
+    // The pin is one of the overflow menu's actions (dispatch://INFRA-1196 R13).
+    await openIssueActions();
     const pin = screen.getByRole("button", { name: "Pin issue" });
-    expect(pin).not.toBeNull();
     expect(pin).toHaveAttribute("aria-pressed", "false");
-    expect(pin.querySelector("path")?.getAttribute("fill")).toBe("none");
 
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
@@ -2271,6 +2306,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
         approval: { latest_version: 1, state: "awaiting" },
       },
     ],
+    open_asks: [approvalAsk()],
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
@@ -2319,6 +2355,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
         approval: { latest_version: 1, state: "awaiting" },
       },
     ],
+    open_asks: [approvalAsk()],
   });
   // A deployment may gate the decisions and the Verification document and not the spec; the
   // spec still has an approval to answer, and only the header's own chip can answer it.
@@ -2355,7 +2392,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
   }
 });
 
-test("IssuePage fills and marks the issue pin when it is pinned", async () => {
+test("IssuePage marks the issue pin when it is pinned", async () => {
   const restore = stubIssuePage(issue, [], [], {
     dismissed: [],
     last_read_seq: 0,
@@ -2366,9 +2403,9 @@ test("IssuePage fills and marks the issue pin when it is pinned", async () => {
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
     const pin = screen.getByRole("button", { name: "Unpin issue" });
     expect(pin).toHaveAttribute("aria-pressed", "true");
-    expect(pin.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
   } finally {
     view.unmount();
     restore();
@@ -2390,6 +2427,7 @@ test("IssuePage's pin refreshes the sidebar's pinned list once the pin is saved"
   try {
     await within(view.container).findByRole("heading", { level: 1, name: issue.title });
     expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(false);
+    await openIssueActions();
     await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
     await waitFor(() =>
       expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(true)
@@ -2814,7 +2852,7 @@ test("IssuePage draws its panel in its own column wherever the margin draws none
 
   try {
     const panel = await screen.findByTestId("issue-margin");
-    expect(within(panel).getByText("Opened by:")).toBeInTheDocument();
+    expect(within(panel).getByText("Opened by")).toBeInTheDocument();
     expect(within(panel).getByRole("link", { name: "CORE-9" })).toBeInTheDocument();
     expect(within(panel).getByRole("listbox", { name: "Conversation" })).toBeInTheDocument();
   } finally {
@@ -2863,7 +2901,7 @@ test("IssuePage draws the priorities an issue advances in the panel's Developmen
     expect(
       await within(row).findByRole("link", { name: "P1 Evals collecting data now" })
     ).toHaveAttribute("href", "/priorities/evals-now");
-    expect(within(row).getByText("Advances:")).toHaveAttribute("data-page-chrome", "");
+    expect(within(row).getByText("Advances")).toHaveAttribute("data-page-chrome", "");
     expect(
       within(row).getByRole("button", { name: "Remove P1 Evals collecting data now from CORE-1" })
     ).toBeEnabled();
@@ -2892,8 +2930,9 @@ test("IssuePage offers a priority from its one add control while the issue advan
     expect(within(row).getByRole("button", { name: "Add a priority to CORE-1" })).toHaveTextContent(
       "Add a priority"
     );
-    const header = screen.getByTestId("issue-header");
-    await user.click(within(header).getByRole("button", { name: "Add" }));
+    // The one add control is Details' (dispatch://INFRA-1196 R13).
+    const panel = screen.getByTestId("issue-margin");
+    await user.click(within(panel).getByRole("button", { name: "Add" }));
     await user.click(await screen.findByRole("menuitem", { name: "Advances" }));
     expect(
       await within(row).findByRole("combobox", { name: "Priority to advance" })

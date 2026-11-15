@@ -65,14 +65,18 @@ export function RouteReachUnknownMarker({
 export function UnreachableRouteMarker({
   issue,
   showRoute = false,
+  testId = "issue-route-unreachable",
 }: {
   issue: RoutedIssue;
   showRoute?: boolean;
+  /** The marker's test id: the header's is the one every check reads, and Details' reading of
+   *  the same route carries its own, so the two are never one ambiguous name. */
+  testId?: string;
 }): ReactNode {
   if (issue.route === null || issue.route_status !== "no_holder") {
     return null;
   }
-  return <UnreachableRoute route={issue.route} showRoute={showRoute} />;
+  return <UnreachableRoute route={issue.route} showRoute={showRoute} testId={testId} />;
 }
 
 /**
@@ -114,14 +118,22 @@ export function UnresponsiveRouteMarker({
   );
 }
 
-function UnreachableRoute({ route, showRoute }: { route: string; showRoute: boolean }): ReactNode {
+function UnreachableRoute({
+  route,
+  showRoute,
+  testId,
+}: {
+  route: string;
+  showRoute: boolean;
+  testId: string;
+}): ReactNode {
   const text = useAgentText();
   const sessionId = sessionOfAddress(route);
   const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionText(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
   return (
     <span
       className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
-      data-testid="issue-route-unreachable"
+      data-testid={testId}
       style={{ flexShrink: showRoute ? 1 : 0 }}
       title={useTooltips() ? explanation : undefined}
     >

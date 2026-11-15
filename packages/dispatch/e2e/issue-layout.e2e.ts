@@ -32,7 +32,11 @@ import { getUnsubscribeCalls } from "./agents";
 import {
   answerAsk,
   claimIssue,
+  createIssue,
+  createIssueArtifact,
+  createProject,
   createProjectDocument,
+  editArtifact,
   getArtifact,
   getArtifactVersion,
   getAsk,
@@ -47,6 +51,8 @@ import {
   listIssueMessages,
   patchIssue,
   requestApproval,
+  reviewArtifact,
+  setGatedSteps,
 } from "./api";
 import { placeCaret } from "./editor";
 import {
@@ -69,6 +75,7 @@ import {
   asPlanner,
   PLANNER,
   PLANNER_TITLE,
+  PROJECT,
   plannerActor,
   recorderActor,
   WHOLE_REPO,
@@ -107,7 +114,9 @@ import {
   copyCommandControls,
   type DrawnRow,
   detailsControl,
+  detailsRow,
   drawnRows,
+  expectActivePreset,
   filterBox,
   focusBranchControl,
   focusedNodeFacts,
@@ -115,14 +124,15 @@ import {
   focusThePage,
   gapKinds,
   gotoIssue,
+  headerLabels,
   headerReading,
   iconRail,
   identityBlock,
   identityBlockBottom,
   identityBlockFamilies,
   issuePage,
+  labelsLeft,
   marginResizeHandle,
-  marginSection,
   marginSectionDisclosure,
   marginShell,
   marginSlot,
@@ -176,6 +186,7 @@ import {
   uploadInput,
   versionControl,
   versionPicker,
+  waitingCount,
 } from "./issue-page";
 import {
   assertInventoryCarried,
@@ -1628,158 +1639,381 @@ test("the children are a section above the outline with the bar and both counts 
   });
 });
 
+/** Twenty labels, the most Dispatch lets an issue hold (`maxIssueLabels`,
+ *  `packages/envoy/internal/dispatch/api/issue_queries.go`): more than the header's line holds
+ *  at 1440 px and at 390 px, so it ends with the count of those left over. */
+const TWENTY_LABELS = [
+  "dispatch",
+  "layout",
+  "redesign",
+  "header",
+  "details",
+  "keyboard",
+  "phone",
+  "typeface",
+  "accessibility",
+  "approval",
+  "outline",
+  "presets",
+  "contents",
+  "composer",
+  "decisions",
+  "verification",
+  "plan",
+  "children",
+  "routing",
+  "web",
+] as const;
+
+/** Every element the header draws that a reader reads or presses, by what it is: its test id,
+ *  or its tag with the name a reader hears. Text it lays out unseen is left out. */
+function headerParts(page: Page): Promise<string[]> {
+  return identityBlock(page).evaluate((header) =>
+    [...header.querySelectorAll("a, button, select, h1, textarea, [data-testid]")]
+      .filter((part) => part.checkVisibility())
+      .map(
+        (part) =>
+          part.getAttribute("data-testid") ??
+          `${part.tagName.toLowerCase()} ${part.getAttribute("aria-label") ?? (part.textContent ?? "").replace(/\s+/g, " ").trim()}`
+      )
+  );
+}
+
+/**
+ * The header's controls a phone reader presses that fail WCAG 2.2's target size (2.5.8) as
+ * written: each target at least 24 by 24 CSS px, or, where one is smaller, a 24 px circle
+ * centred on it that overlaps no other target. The header's controls are 24 px on a phone, as
+ * the prototype draws them, because R13's 180 px leave no room for the 44 px the rest of a
+ * phone page gives a control.
+ */
+function undersizedTargets(page: Page): Promise<string[]> {
+  return identityBlock(page).evaluate((header) => {
+    const targets = [...header.querySelectorAll<HTMLElement>("a, button, select")]
+      .filter((target) => target.checkVisibility())
+      .map((target) => ({
+        box: target.getBoundingClientRect(),
+        name: target.getAttribute("aria-label") ?? (target.textContent ?? "").trim(),
+      }));
+    const overlaps = (centre: { x: number; y: number }, box: DOMRect) => {
+      const x = Math.max(box.left, Math.min(centre.x, box.right));
+      const y = Math.max(box.top, Math.min(centre.y, box.bottom));
+      return (x - centre.x) ** 2 + (y - centre.y) ** 2 < 12 ** 2;
+    };
+    return targets
+      .filter(({ box }, index) => {
+        if (box.width >= 24 - 0.5 && box.height >= 24 - 0.5) return false;
+        const centre = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+        return targets.some((other, at) => at !== index && overlaps(centre, other.box));
+      })
+      .map(({ box, name }) => `${name}: ${box.width.toFixed(1)} x ${box.height.toFixed(1)}`);
+  });
+}
+
+/** The iPhone 13's viewport, the suite's phone (`e2e/playwright.config.ts`'s `iphone` project),
+ *  which is the screen the header's limit at 390 px is for. */
+const IPHONE_13 = { height: 664, width: 390 } as const;
+
+/** The viewport a row reads `width` in: the iPhone 13's at 390 px, else the suite's own height
+ *  for a phone or a desktop width. */
+function viewportAt(width: number): { readonly height: number; readonly width: number } {
+  if (width === IPHONE_13.width) return IPHONE_13;
+  return { height: width < 1024 ? PHONE.height : DESKTOP.height, width };
+}
+
+/**
+ * R13's limit on the header, measured from the top of the identity block to the top of the
+ * filter row, as dispatch://INFRA-1196/artifact/build-rulings-md ruling 3 (version 2) sets it:
+ * 3 lines and 130 px at 1440 px; at 390 px, with the title whole, 7 lines and 215 px while no
+ * approval request waits on the reader and 8 lines and 245 px while one does, since Approve and
+ * Request changes take a line of their own there. No other width has one.
+ */
+function headerLimit(
+  width: number,
+  requestWaiting: boolean
+): { readonly height: number; readonly lines: number } | undefined {
+  if (width === DESKTOP.width) return { height: 130, lines: 3 };
+  if (width !== IPHONE_13.width) return undefined;
+  return requestWaiting ? { height: 245, lines: 8 } : { height: 215, lines: 7 };
+}
+
+/**
+ * The header read against its limit at `width`, softly so one run reports every width and seed;
+ * and at 390 px what the limit is for (ruling 3, version 2): the title drawn whole, with no
+ * clamp, and the top of the outline's first row inside the iPhone 13's 390 x 664 viewport with
+ * the page at its top. `drawnIn` names the typeface the page is drawn in, for the message.
+ */
+async function expectHeaderWithinItsLimit(
+  page: Page,
+  width: number,
+  requestWaiting: boolean,
+  drawnIn: string
+): Promise<void> {
+  const limit = headerLimit(width, requestWaiting);
+  if (limit === undefined) return;
+  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting`;
+  const reading = await headerReading(page);
+  if (reading === null) throw new Error(`the page draws no header or no filter row ${where}`);
+  const drawnAs = `${reading.lines.length} lines, ${reading.height.toFixed(1)} px`;
+  test.info().annotations.push({ description: `${where}: ${drawnAs}`, type: "header" });
+  expect
+    .soft(
+      reading.lines.length,
+      `the header takes ${drawnAs} ${where}: ${JSON.stringify(reading.lines)}`
+    )
+    .toBeLessThanOrEqual(limit.lines);
+  expect
+    .soft(reading.height, `the header takes ${drawnAs} ${where}`)
+    .toBeLessThanOrEqual(limit.height);
+  if (width !== IPHONE_13.width) return;
+
+  await assertWhole(identityBlock(page).getByRole("heading", { level: 1 }));
+  const firstRow = tree(page).locator("[data-node-row]").first();
+  await expect(firstRow, `the outline draws no row ${where}`).toBeVisible();
+  const top = await firstRow.evaluate((row) => {
+    for (let box = row.parentElement; box !== null; box = box.parentElement) box.scrollTop = 0;
+    window.scrollTo(0, 0);
+    return row.getBoundingClientRect().top;
+  });
+  test.info().annotations.push({
+    description: `${where}: the outline's first row starts at ${top.toFixed(1)} px`,
+    type: "outline",
+  });
+  expect
+    .soft(
+      top,
+      `the outline's first row starts ${top.toFixed(1)} px down, off the ${IPHONE_13.height} px screen, ${where}`
+    )
+    .toBeLessThan(IPHONE_13.height);
+}
+
 // c-properties.
 test("every property with a value is visible at every width @phone", async ({ browser }) => {
-  // Six loads of the page, four of them read with Details opened and closed again (R14):
-  // measured at 60 s in the desktop project on an issue pod's two CPUs, where the default
-  // deadline is 60 s. Two and a half times that leaves room for a loaded box.
-  test.setTimeout(150_000);
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const issue = await getIssue(seeded.key);
-    // Every property the seed set, named one by one and read at the element that draws its
-    // value. A reading of the page's own text would count text an inner scroller has pushed
-    // out of sight - which is exactly how the rail this redesign removed hid 744 px of the
-    // issue's properties - and a substring of that text ("11", "alice") can be met by another
-    // value; so each value is read where it is drawn: for being drawn, for being where the
-    // reader can see it, and for having nothing between it and the document that clips it
-    // (`e2e/unclipped.ts`). Drawn is not enough on its own, because an element a scroller has
-    // pushed past its edge keeps its box, its size and its text and is drawn still; what says
-    // the reader can see it is where that box is. The block's values are on the first screen,
-    // so they are read against the whole viewport; the panel's are read sideways only, which
-    // is what a column that scrolls down by design can be held to
-    // (`expectInsideTheViewportSideways`).
-    //
-    // A value read by a locator that names no text is read for its words too: the assignee and
-    // the repository are found by the control that draws them, not by what they say, so a
-    // badge reading "Unassigned" or "No repository" is drawn, visible and whole, and only its
-    // own text says the seed's value is not what it draws.
-    const panel = marginSlot(page);
-    const inTheBlock: readonly (readonly [string, Locator, string?])[] = [
-      [
-        "the parent",
-        identityBlock(page).getByRole("link", { exact: true, name: seeded.parentKey }),
-      ],
-      // The assignee is the badge its control draws, not any text saying `alice` inside the
-      // state row: the control's own `select` holds an `option` with the same word.
-      ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`), "alice"],
-      ["the first label", page.getByTestId("issue-labels").getByText("dispatch", { exact: true })],
-      ["the second label", page.getByTestId("issue-labels").getByText("layout", { exact: true })],
-      ["the third label", page.getByTestId("issue-labels").getByText("redesign", { exact: true })],
-    ];
-    // The panel is a column of its own that scrolls down by design, so what is read inside it
-    // is the sideways half of both readings: its box inside the viewport sideways, and the
-    // sideways half of the clipping walk (R17 bans two dimensions, never one). The repository
-    // is read as the assignee is, at the badge its control draws, since its select and the
-    // description beside it carry the same words.
-    const inThePanel: readonly (readonly [string, Locator, string?])[] = [
-      ["the repository", badgeValue(page, `Repository of ${seeded.key}`), WHOLE_REPO],
-      ["the pull request", panel.getByRole("link", { name: /^#11\b/ })],
-      [
-        "a component",
-        panel.getByTestId("issue-components").getByText("Issue panel", { exact: true }),
-      ],
-      [
-        "the other component",
-        panel.getByTestId("issue-components").getByText("Issue tree", { exact: true }),
-      ],
-    ];
+  // Six loads of the seeded issue: two with no approval request waiting, read against the
+  // header's limit, and four with one waiting, each read in the header and in Details; then the
+  // two-label issue, the parent, an issue that advances nothing and the child that inherits a
+  // priority.
+  test.setTimeout(300_000);
+  await phase(browser, seedWholeIssueAdvancing, async (page, seeded) => {
+    // This issue's own title and every property set, with twenty labels; and a parent whose
+    // route reaches nobody, which is the one issue that draws the header's route marker.
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    await patchIssue(seeded.parentKey, { route: "role:nobody-holds-this" });
+    const desktopProject = test.info().project.name !== "iphone";
 
-    for (const width of [1440, 1280, 1024, 390]) {
-      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
+    // Ruling 3's first seed (dispatch://INFRA-1196/artifact/build-rulings-md, version 2): no
+    // approval request waits on the reader, so the approval control reads Not requested and
+    // carries no Approve, and the header holds its limit for that case.
+    for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
+      await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
-      for (const [name, at, words] of inTheBlock) {
-        await expect(
-          at,
-          `${name} is not drawn at ${width} px with no control opened`
-        ).toBeVisible();
-        if (words !== undefined) {
-          await expect(at, `${name} does not read "${words}" at ${width} px`).toHaveText(words);
-        }
-        await expect(
-          at,
-          `${name} is drawn outside the ${width} px viewport with no control opened`
-        ).toBeInViewport();
-        await assertWhole(at);
-      }
-      // Every other property is in Details, which opens over the right of the page and is
-      // closed on every load (R14): each is read there one by one, with Details open.
-      await openDetails(page);
-      for (const [name, at, words] of inThePanel) {
-        await expect(at, `${name} is not drawn in Details at ${width} px`).toBeVisible();
-        if (words !== undefined) {
-          await expect(at, `${name} does not read "${words}" at ${width} px`).toHaveText(words);
-        }
-        await expectInsideTheViewportSideways(page, at, `${name} at ${width} px`);
-        await assertWholeAcross(at);
-      }
-      await closeDetails(page);
-      // The claim is the holder's own link, which `AgentName` draws the title in: a reading
-      // by that text would find the link and the span around it both. It is read for being
-      // drawn alone, because the chip shortens a long title with an ellipsis of its own
-      // (`ClaimChip.tsx`), which is the page's choice and not a word lost.
-      await expect(
-        page.getByTestId("issue-claim").getByRole("link", { exact: true, name: PLANNER_TITLE }),
-        `the claim is not drawn at ${width} px with no control opened`
-      ).toBeVisible();
       await expectIssuePageDrawn(page);
-      await assertPageFits(page);
-
-      // The status, the priority, the assignee and the labels stay with the title, each read
-      // at the element that draws it inside the block and never as a substring of the block's
-      // own text: that text holds "alice" in the assignee control's own `option` list and
-      // "dispatch" wherever another value of this seed spells it, so a substring of it says
-      // nothing about where the value is drawn.
-      expect(
-        await identityBlock(page).getByRole("combobox", { name: "Status" }).count(),
-        `the status control left the title block at ${width} px`
-      ).toBe(1);
-      expect(
-        await identityBlock(page)
-          .getByRole("combobox", { name: `Assignee of ${seeded.key}` })
-          .count(),
-        `the assignee left the title block at ${width} px`
-      ).toBe(1);
-      expect(
-        await identityBlock(page)
-          .getByTestId("issue-labels")
-          .getByText("dispatch", { exact: true })
-          .count(),
-        `the first label left the title block at ${width} px`
-      ).toBe(1);
-      expect(
-        await identityBlock(page)
-          .getByRole("combobox", { name: `Priority of ${seeded.key}` })
-          .count(),
-        `the priority control left the title block at ${width} px`
-      ).toBe(1);
+      await expect(identityBlock(page)).toContainText(MEASURED_TITLE);
+      await expect(identityBlock(page)).toContainText(CONTROL_LABELS.not_requested);
+      await expect(identityBlock(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
+      await expectHeaderWithinItsLimit(page, width, false, TYPEFACE);
     }
 
-    // An empty field is reachable from one add control that lists it.
+    // Its second: an approval request that waits on the reader here and on no other issue.
+    await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
+    // R13's list, each part of the header by what it is: nothing else may be drawn there.
+    const named = [
+      /^a /,
+      /^button Open navigation$/,
+      /^button Copy issue key /,
+      /^button Issue actions$/,
+      /^button Details$/,
+      /^h1 /,
+      /^select Status$/,
+      new RegExp(`^select Priority of ${seeded.key}$`),
+      new RegExp(`^select Assignee of ${seeded.key}$`),
+      /^issue-header$/,
+      /^issue-details-control$/,
+      /^issue-state-actions$/,
+      /^issue-header-labels$/,
+      /^issue-labels-left$/,
+      /^issue-progress-children$/,
+      /^issue-progress-subtree$/,
+      /^issue-whose-turn$/,
+      /^issue-approval-steps$/,
+      /^button (Awaiting approval|Approve|Request changes)/,
+      /^issue-route-unreachable$/,
+    ];
+
+    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect(identityBlock(page)).toContainText(MEASURED_TITLE);
+
+      // The header's own values, each where it is drawn, with no control opened.
+      const header = identityBlock(page);
+      const inTheHeader: readonly (readonly [string, Locator, (string | RegExp)?])[] = [
+        ["the parent", header.getByRole("link", { exact: true, name: seeded.parentKey })],
+        ["the status", header.getByRole("combobox", { name: "Status" })],
+        ["the priority", badgeValue(page, `Priority of ${seeded.key}`), "P1"],
+        ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`), "alice"],
+        ["the first label", headerLabels(page).first(), TWENTY_LABELS[0]],
+        ["the children's progress", header.getByTestId("issue-progress-children")],
+        ["the whole tree's progress", header.getByTestId("issue-progress-subtree")],
+        ["the count of what waits", waitingCount(page), /^Waiting on you \(\d+\)$/],
+        ["Approve", header.getByRole("button", { exact: true, name: "Approve" })],
+        ["Request changes", header.getByRole("button", { exact: true, name: "Request changes" })],
+      ];
+      for (const [name, at, words] of inTheHeader) {
+        await expect(at, `${name} is not drawn in the header at ${width} px`).toBeVisible();
+        if (words !== undefined) {
+          await expect(at, `${name} does not read "${words}" at ${width} px`).toHaveText(words);
+        }
+        await expect(at, `${name} is outside the ${width} px viewport`).toBeInViewport();
+        await assertWhole(at);
+      }
+      expect(
+        await header.getByRole("combobox", { name: "Status" }).inputValue(),
+        `the status reads otherwise at ${width} px`
+      ).toBe("in_progress");
+
+      // The header draws R13's list and nothing else.
+      const parts = await headerParts(page);
+      expect(
+        parts.filter((part) => !named.some((pattern) => pattern.test(part))),
+        `the header draws parts R13 does not name at ${width} px`
+      ).toEqual([]);
+
+      // The labels that fit, and a count equal to the labels the line does not draw, which
+      // opens Details at its Labels row.
+      await expect(labelsLeft(page), `the labels end on no count at ${width} px`).toBeVisible();
+      const drawn = await headerLabels(page).count();
+      expect(drawn, `the header draws every label at ${width} px`).toBeLessThan(20);
+      await expect(labelsLeft(page)).toHaveText(
+        `+${20 - drawn} ${20 - drawn === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`
+      );
+
+      await expectHeaderWithinItsLimit(page, width, true, TYPEFACE);
+      if (width === IPHONE_13.width) {
+        expect(
+          await undersizedTargets(page),
+          "a header control fails WCAG 2.5.8 at 390 px"
+        ).toEqual([]);
+      }
+      await assertPageFits(page);
+
+      // Every other property is in Details, each in its own row, read one by one.
+      await labelsLeft(page).click();
+      await expect(marginShell(page), "the labels' count opened no Details").toBeVisible();
+      const labelsRow = detailsRow(page, "Labels");
+      await expect
+        .poll(async () =>
+          (await labelsRow.locator("[data-author-text]").allTextContents()).filter((label) =>
+            (TWENTY_LABELS as readonly string[]).includes(label)
+          )
+        )
+        .toEqual([...TWENTY_LABELS]);
+      const inDetails: readonly (readonly [string, Locator, string?])[] = [
+        ["the repository", badgeValue(page, `Repository of ${seeded.key}`), WHOLE_REPO],
+        [
+          "the pull request",
+          detailsRow(page, "Pull request").getByRole("link", { name: /^#11\b/ }),
+        ],
+        ["a component", detailsRow(page, "Components").getByText("Issue panel", { exact: true })],
+        [
+          "the claim",
+          detailsRow(page, "Claimed by").getByRole("link", { exact: true, name: PLANNER_TITLE }),
+        ],
+        [
+          "the route",
+          detailsRow(page, "Messages go to").getByRole("button", {
+            name: `Messages default to ${PLANNER_TITLE}`,
+          }),
+        ],
+        [
+          "the release",
+          detailsRow(page, "Claimed by").getByRole("button", {
+            name: `Release the claim on ${seeded.key}`,
+          }),
+        ],
+        ["the priority row", detailsRow(page, "Advances").getByRole("link").first()],
+        ["who opened it", detailsRow(page, "Opened by")],
+        ["the approval", detailsRow(page, "Approval")],
+        ["the files", marginSlot(page).getByRole("link", { name: /^notes\.md/ })],
+        ["what blocks it", detailsRow(page, "Blocked by"), "None"],
+      ];
+      for (const [name, at, words] of inDetails) {
+        await expect(at, `${name} is not drawn in Details at ${width} px`).toBeVisible();
+        if (words !== undefined) {
+          await expect(at, `${name} does not read "${words}"`).toContainText(words);
+        }
+        await expectInsideTheViewportSideways(page, at, `${name} at ${width} px`);
+      }
+      await closeDetails(page);
+    }
+
+    // An issue whose labels fit draws them all and no count: with the request still waiting,
+    // the 1440 px line leaves the labels room for one.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
     await gotoIssue(page, `/issues/${seeded.key}`);
-    expect(await addControl(page).count(), "the page offers no one add control").toBe(1);
+    await expect(headerLabels(page)).toHaveText(["dispatch"]);
+    await expect(labelsLeft(page), "a label that fits ends on a count").toHaveCount(0);
+
+    // The issue no approval request waits on draws its control with no Approve, and its route
+    // that reaches nobody is the header's one marker.
+    await gotoIssue(page, `/issues/${seeded.parentKey}`);
+    await expectIssuePageDrawn(page);
+    await expect(identityBlock(page).getByTestId("issue-route-unreachable")).toHaveCount(1);
+    await expect(identityBlock(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
+    await expect(identityBlock(page)).toContainText(CONTROL_LABELS.not_requested);
+    // An empty field reads None in its own row, and is reachable from the one add control.
+    await openDetails(page);
+    await expect(detailsRow(page, "Parent")).toContainText("None");
+    expect(await addControl(page).count(), "Details offers no one add control").toBe(1);
     await addControl(page).click();
     expect(
-      await openMenu(page).count(),
-      "the add control opens no list of the fields with no value"
-    ).toBe(1);
-    expect(
-      await openMenu(page).getByRole("menuitem").count(),
-      "the add control's list names no field"
-    ).toBeGreaterThan(0);
+      await openMenu(page).getByRole("menuitem").allTextContents(),
+      "the add control lists no empty field"
+    ).toContain("Parent");
     await page.keyboard.press("Escape");
+    await closeDetails(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(identityBlock(page).getByTestId("issue-route-unreachable")).toHaveCount(0);
+
+    // INFRA-2947's priority row is Details': an issue that advances none draws no such row, and
+    // its control adds one, whose row links to the priority's page and is removed again; a
+    // child that inherits a priority says so.
+    const plain = await createIssue({ force: true, project: PROJECT, title: "Advances nothing" });
+    await gotoIssue(page, `/issues/${plain.key}`);
+    await openDetails(page);
+    await expect(detailsRow(page, "Advances")).toHaveCount(0);
+    await marginSlot(page)
+      .getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${plain.key}` })
+      .click();
+    await marginSlot(page)
+      .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
+      .selectOption(seeded.priorities.own);
+    await marginSlot(page)
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.add })
+      .last()
+      .click();
+    const added = detailsRow(page, "Advances").getByRole("link");
+    await expect(added, "the priority added drew no row").toHaveCount(1);
+    await added.click();
+    await expect(page).toHaveURL(`/priorities/${seeded.priorities.own}`);
+    await gotoIssue(page, `/issues/${plain.key}`);
+    await openDetails(page);
+    await detailsRow(page, "Advances")
+      .getByRole("button", { name: /^Remove / })
+      .click();
+    await expect(detailsRow(page, "Advances"), "the priority removed left its row").toHaveCount(0);
+    await gotoIssue(page, `/issues/${seeded.children.keys[0]}`);
+    await openDetails(page);
+    await expect(detailsRow(page, "Advances")).toContainText(CONTROL_LABELS.advances_inherited);
 
     // A section opens expanded on a first load, and a collapsed one keeps that state.
-    await openDetails(page);
     expect(
       await marginSectionDisclosure(page, "development").getAttribute("aria-expanded"),
       "the Development section is collapsed on a first load"
     ).toBe("true");
     await marginSectionDisclosure(page, "development").click();
-    expect(
-      (await marginSection(page, "development").innerText()).replace(/\s+/g, " "),
-      "collapsing the section left its values on the page"
-    ).not.toContain(issue.repo ?? "");
+    await expect(detailsRow(page, "Repository")).toHaveCount(0);
     await gotoIssue(page, `/issues/${seeded.parentKey}`);
     await expectIssuePageDrawn(page);
     await openDetails(page);
@@ -1789,6 +2023,201 @@ test("every property with a value is visible at every width @phone", async ({ br
     ).toBe("false");
   });
 });
+
+/** The id of the first row the outline draws that waits on the reader: an open question or a
+ *  decision waiting for their review, in the order the rows stand. */
+function firstWaitingRow(page: Page): Promise<string | null> {
+  return page.evaluate(
+    () =>
+      [...document.querySelectorAll<HTMLElement>('[role="tree"] [data-node-row]')]
+        .find(
+          (row) =>
+            (row.dataset.nodeType === "ask" && row.dataset.nodeState === "open") ||
+            (row.dataset.nodeType === "decision" && row.dataset.nodeState === "waiting_review")
+        )
+        ?.getAttribute("data-node-id") ?? null
+  );
+}
+
+// dispatch://INFRA-3678, under R13: the count of what waits on the reader is a control. Pressed,
+// or Enter on it, from a document of an issue holding more than one item that waits, it returns
+// to the outline, turns the Decisions filter on and puts the focus on the first item that waits
+// in the filter's order; an approval request alone puts the focus on the header's approval
+// control.
+test("the count of what waits on the reader opens the first thing that waits @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const [width, key] of (desktopProject
+      ? [
+          [1440, "click"],
+          [390, "Enter"],
+        ]
+      : [[390, "click"]]) as readonly (readonly [number, "click" | "Enter"])[]) {
+      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
+      await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
+      await expect(openedArtifact(page), "the document did not open").toBeVisible();
+      await expect(waitingCount(page)).toHaveText(/^Waiting on you \((\d+)\)$/);
+      const counted = Number(/\((\d+)\)/.exec((await waitingCount(page).textContent()) ?? "")?.[1]);
+      expect(counted, "the issue holds fewer than two items that wait").toBeGreaterThanOrEqual(2);
+      if (key === "click") await waitingCount(page).click();
+      else {
+        await waitingCount(page).focus();
+        await page.keyboard.press("Enter");
+      }
+      await expect(openedArtifact(page), "the count left the document open").toHaveCount(0);
+      await expectActivePreset(page, PRESET_NAMES.decisions);
+      await expect
+        .poll(async () => (await focusedNodeId(page)) ?? "", {
+          message: `the focus is not on the first item that waits at ${width} px`,
+        })
+        .not.toBe("");
+      expect(await focusedNodeId(page)).toBe(await firstWaitingRow(page));
+    }
+
+    // An approval request is all that waits: the count puts the focus on the approval control.
+    const lone = await createIssue({ force: true, project: PROJECT, spec: "Plan.", title: "Lone" });
+    await requestApproval(lone.primary_artifact_id ?? "", { summary: "Read it." });
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${lone.key}`);
+    await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+    await waitingCount(page).click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => document.activeElement?.hasAttribute("data-approval-artifact"))
+      )
+      .toBe(true);
+    expect(
+      await page.evaluate(() => document.activeElement?.closest("[data-issue-header]") !== null),
+      "the focus is on an approval control outside the header"
+    ).toBe(true);
+  });
+});
+
+// c-approval. The parts the model holds today: the converted issue's query nodes, which an
+// entry reads after the conversion, wait on dispatch://INFRA-1253.
+test("the approval entries stay in the identity block and read the node each step approves", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await resetDatabase();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await createProject({ key: "GATED", name: "Gated" });
+    await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
+    await createProject({ key: "PLAIN", name: "Plain" });
+
+    // A root of a project that gates steps: one entry per step, in the project's order, each
+    // reading its own document - the decisions approved where they stand, the criteria with no
+    // document written, and the spec awaiting the approval its open request asks for.
+    const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
+    const decisions = await createIssueArtifact(root.key, {
+      content: "# Decisions\n\nHTTP it is.\n",
+      name: "decisions.md",
+    });
+    await reviewArtifact(decisions.artifact.id, { state: "approved" });
+    await requestApproval(root.primary_artifact_id ?? "", { summary: "Read it." });
+    await gotoIssue(page, `/issues/${root.key}`);
+    const steps = identityBlock(page).getByTestId("issue-approval-steps");
+    await expect
+      .poll(async () =>
+        steps
+          .locator("[data-approval-step]")
+          .evaluateAll((entries) =>
+            entries.map((entry) => entry.getAttribute("data-approval-step"))
+          )
+      )
+      .toEqual(["decisions", "criteria", "spec"]);
+    const entry = (step: string) => steps.locator(`[data-approval-step="${step}"]`);
+    await expect(entry("decisions").getByRole("button", { name: "Approved v1" })).toBeVisible();
+    await expect(entry("criteria")).toContainText(CONTROL_LABELS.not_requested);
+    await expect(entry("spec").getByRole("button", { name: "Awaiting approval" })).toBeVisible();
+    // The request waits on the reader, so the spec's entry carries Approve in the header (R31),
+    // and the approval it records reads back.
+    await entry("spec").getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect
+      .poll(async () => (await getArtifact(root.primary_artifact_id ?? "")).approval?.state)
+      .toBe("approved");
+    await expect(entry("spec").getByRole("button", { exact: true, name: "Approve" })).toHaveCount(
+      0
+    );
+
+    // A root of a project that gates nothing carries the one chip, "Not requested" while its
+    // approval is absent.
+    const plain = await createIssue({ project: "PLAIN", spec: "The plan.", title: "Plain root" });
+    await gotoIssue(page, `/issues/${plain.key}`);
+    await expect(identityBlock(page).getByTestId("issue-approval-steps")).toHaveCount(0);
+    await expect(identityBlock(page)).toContainText(CONTROL_LABELS.not_requested);
+
+    // Every child carries the one chip, and no list of steps: the child of a parent not yet
+    // approved, the child of a parent whose spec changed since its approval, and the child of an
+    // approved parent; none has an approval of its own, so each chip reads "Not requested".
+    const oneChip = async (key: string) => {
+      await gotoIssue(page, `/issues/${key}`);
+      await expectIssuePageDrawn(page);
+      await expect(identityBlock(page).getByTestId("issue-approval-steps")).toHaveCount(0);
+      await expect(
+        identityBlock(page).getByText(CONTROL_LABELS.not_requested, { exact: true })
+      ).toHaveCount(1);
+    };
+    const childOf = (parent: string, title: string) =>
+      createIssue({ parent, project: "PLAIN", spec: "The child's plan.", title });
+    const unapproved = await createIssue({
+      project: "PLAIN",
+      spec: "Not yet.",
+      title: "Unapproved",
+    });
+    await oneChip((await childOf(unapproved.key, "Child of an unapproved parent")).key);
+    const changed = await createIssue({
+      project: "PLAIN",
+      spec: "Before.",
+      title: "Changed since",
+    });
+    await reviewArtifact(changed.primary_artifact_id ?? "", { state: "approved" });
+    await editArtifact(changed.primary_artifact_id ?? "", {
+      ops: [{ find: "Before.", op: "replace", with: "After." }],
+    });
+    expect((await getArtifact(changed.primary_artifact_id ?? "")).approval?.state).toBe("stale");
+    await oneChip((await childOf(changed.key, "Child of a changed parent")).key);
+    await requestApproval(plain.primary_artifact_id ?? "", { summary: "Read it." });
+    await reviewArtifact(plain.primary_artifact_id ?? "", { state: "approved" });
+    const child = await childOf(plain.key, "Child of an approved parent");
+    await oneChip(child.key);
+
+    // A child with an approval request open answers it from its chip in the header, and the
+    // approval it records reads back.
+    await requestApproval(child.primary_artifact_id ?? "", { summary: "Read it." });
+    await gotoIssue(page, `/issues/${child.key}`);
+    await identityBlock(page).getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect
+      .poll(async () => (await getArtifact(child.primary_artifact_id ?? "")).approval?.state)
+      .toBe("approved");
+  } finally {
+    await context.close();
+  }
+});
+
+/** The box the header's rows stand in. The header is the prototype's `#hdr-sticky`, a band as
+ *  wide as the column whose 28 px insets are its own padding, so this is what the page's
+ *  column measure reads. */
+function headerRowsBox(page: Page): Promise<{ width: number; x: number; y: number } | null> {
+  return identityBlock(page).evaluate((block) => {
+    const rows = block.firstElementChild;
+    if (rows === null) return null;
+    const box = rows.getBoundingClientRect();
+    const style = getComputedStyle(rows);
+    const left = Number.parseFloat(style.paddingLeft);
+    return {
+      width: box.width - left - Number.parseFloat(style.paddingRight),
+      x: box.x + left,
+      y: box.y,
+    };
+  });
+}
 
 // c-one-panel, with R14's rail. At 1440 px the shell's navigation is an icon rail of 56 px and
 // Details is a drawer over the right of the page, closed on every load, so the header and the
@@ -1854,7 +2283,7 @@ test("one panel of properties holds no conversation list @phone", async ({ brows
     await expect(sheet).toBeHidden();
 
     // The header and the outline have the window less the rail: 1328 px between the insets.
-    const header = await identityBlock(page).boundingBox();
+    const header = await headerRowsBox(page);
     expect(Math.round(header?.width ?? 0), "the header is not 1328 px wide at 1440 px").toBe(1328);
     expect(Math.round(header?.x ?? 0), "the header does not start 28 px right of the rail").toBe(
       84
@@ -1928,7 +2357,7 @@ test("one panel of properties holds no conversation list @phone", async ({ brows
     ).toBe(DESKTOP.width);
     expect(Math.round(drawer?.width ?? 0), "Details does not open at its width").toBe(384);
     expect(
-      Math.round((await identityBlock(page).boundingBox())?.width ?? 0),
+      Math.round((await headerRowsBox(page))?.width ?? 0),
       "opening Details took a column from the page rather than opening over it"
     ).toBe(1328);
 
@@ -2068,6 +2497,8 @@ test("the conversation state is kept for the same login", async ({ browser }) =>
     ).toBe("true");
 
     // The reader picks the questions, which is a state of the panel and no address of its own.
+    // The panel is Details, closed on a load (dispatch://INFRA-1196 R14).
+    await openDetails(page);
     await conversationStateControl(page, "questions").click();
     expect(
       await conversationStateControl(page, "questions").getAttribute("aria-selected"),
@@ -3268,10 +3699,11 @@ const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
 
 test("the header holds its rule when the typeface does not load @phone", async ({ browser }) => {
-  // Five loads of the page, the first with the typeface and four without it.
-  test.setTimeout(120_000);
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
-    await patchIssue(seeded.key, { title: MEASURED_TITLE });
+  // Thirteen loads of the page: the first with the typeface; then on each of ruling 3's two
+  // seeds two more with it and four without it.
+  test.setTimeout(240_000);
+  await phase(browser, seedWholeIssueAdvancing, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
 
     // The built application serves the typeface, and the page is drawn in it.
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -3304,13 +3736,11 @@ test("the header holds its rule when the typeface does not load @phone", async (
       "SIL OPEN FONT LICENSE Version 1.1"
     );
 
-    // Every request for that file refused: the page is drawn in the fallback, and holds R13's
-    // header rule at the two widths it names and R18's reflow rule at four. Each reading is
-    // soft, so one run reports every width.
-    const headerLimits = new Map([
-      [1440, { height: 130, lines: 3 }],
-      [390, { height: 180, lines: 6 }],
-    ]);
+    // On each of ruling 3's two seeds (dispatch://INFRA-1196/artifact/build-rulings-md, version
+    // 2), no approval request waiting on the reader and then one waiting, the header holds its
+    // limit at 1440 px and at 390 px in the typeface; and with every request for that file
+    // refused, the page is drawn in the fallback and holds the same limit, and R18's reflow rule
+    // at four widths. Each reading is soft, so one run reports every width.
     const blocked = await asUser(browser, "alice");
     try {
       let refused = 0;
@@ -3319,59 +3749,55 @@ test("the header holds its rule when the typeface does not load @phone", async (
         await route.abort();
       });
       const without = await blocked.newPage();
-      for (const width of [1440, 1024, 390, 320]) {
-        await without.setViewportSize({
-          height: width < 1024 ? PHONE.height : DESKTOP.height,
-          width,
-        });
-        await gotoIssue(without, `/issues/${seeded.key}`);
-        await expectIssuePageDrawn(without);
-        await expect(identityBlock(without)).toContainText(MEASURED_TITLE);
-        // The fit is read with the tree's rows drawn, as c-reflow reads it: a page that holds no
-        // row yet is a page that fits.
-        await expect
-          .poll(async () => await nodeRows(without).count(), {
-            message: `the tree draws no row at ${width} px`,
-          })
-          .toBeGreaterThan(0);
-        await expect
-          .poll(() => typefaceStatuses(without), {
-            message: `the ${TYPEFACE} face did not fail at ${width} px, so this is not the fallback`,
-          })
-          .toEqual(["error"]);
-
-        const limit = headerLimits.get(width);
-        if (limit !== undefined) {
-          const header = await headerReading(without);
-          if (header === null) {
-            throw new Error(`the page draws no identity block or no preset row at ${width} px`);
-          }
-          const drawn = `${header.lines.length} lines, ${header.height.toFixed(1)} px`;
-          test.info().annotations.push({ description: `${width} px: ${drawn}`, type: "header" });
+      for (const requestWaiting of [false, true]) {
+        if (requestWaiting) {
+          await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
+        }
+        for (const width of [DESKTOP.width, IPHONE_13.width]) {
+          await page.setViewportSize(viewportAt(width));
+          await gotoIssue(page, `/issues/${seeded.key}`);
+          await expectIssuePageDrawn(page);
+          await expect(identityBlock(page)).toContainText(MEASURED_TITLE);
+          await expect
+            .poll(() => typefaceStatuses(page), {
+              message: `the ${TYPEFACE} face did not load at ${width} px`,
+            })
+            .toEqual(["loaded"]);
+          await expectHeaderWithinItsLimit(page, width, requestWaiting, TYPEFACE);
+        }
+        for (const width of [DESKTOP.width, 1024, IPHONE_13.width, 320]) {
+          await without.setViewportSize(viewportAt(width));
+          await gotoIssue(without, `/issues/${seeded.key}`);
+          await expectIssuePageDrawn(without);
+          await expect(identityBlock(without)).toContainText(MEASURED_TITLE);
+          // The fit is read with the tree's rows drawn, as c-reflow reads it: a page that holds
+          // no row yet is a page that fits.
+          await expect
+            .poll(async () => await nodeRows(without).count(), {
+              message: `the tree draws no row at ${width} px`,
+            })
+            .toBeGreaterThan(0);
+          await expect
+            .poll(() => typefaceStatuses(without), {
+              message: `the ${TYPEFACE} face did not fail at ${width} px, so this is not the fallback`,
+            })
+            .toEqual(["error"]);
+          await expectHeaderWithinItsLimit(without, width, requestWaiting, "the fallback");
+          const fit = await without.evaluate(() => ({
+            clientWidth: document.documentElement.clientWidth,
+            scrollWidth: document.documentElement.scrollWidth,
+          }));
+          test.info().annotations.push({
+            description: `${width} px: scrollWidth ${fit.scrollWidth}, clientWidth ${fit.clientWidth}`,
+            type: "fit",
+          });
           expect
             .soft(
-              header.lines.length,
-              `the header takes ${drawn} at ${width} px without the typeface: ${JSON.stringify(header.lines)}`
+              fit.scrollWidth,
+              `the page scrolls sideways at ${width} px without the typeface: ${fit.scrollWidth} px of page in ${fit.clientWidth} px`
             )
-            .toBeLessThanOrEqual(limit.lines);
-          expect
-            .soft(header.height, `the header takes ${drawn} at ${width} px without the typeface`)
-            .toBeLessThanOrEqual(limit.height);
+            .toBe(fit.clientWidth);
         }
-        const fit = await without.evaluate(() => ({
-          clientWidth: document.documentElement.clientWidth,
-          scrollWidth: document.documentElement.scrollWidth,
-        }));
-        test.info().annotations.push({
-          description: `${width} px: scrollWidth ${fit.scrollWidth}, clientWidth ${fit.clientWidth}`,
-          type: "fit",
-        });
-        expect
-          .soft(
-            fit.scrollWidth,
-            `the page scrolls sideways at ${width} px without the typeface: ${fit.scrollWidth} px of page in ${fit.clientWidth} px`
-          )
-          .toBe(fit.clientWidth);
       }
       expect(refused, "no request for the typeface reached the refusal").toBeGreaterThan(0);
     } finally {
@@ -3818,6 +4244,8 @@ test("the new page carries every element of the old one @phone", async ({ browse
     await assignee.selectOption("bob");
     await expect.poll(async () => (await getIssue(seeded.key)).assignee).toBe("bob");
 
+    // The labels' control is Details' Labels row; the header draws the labels that fit (R13).
+    await openDetails(page);
     await offered(page, "button", "Edit labels").click();
     await page.getByRole("combobox", { name: "Search or create label" }).fill("carried");
     await page
@@ -3826,13 +4254,16 @@ test("the new page carries every element of the old one @phone", async ({ browse
       .click();
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await getIssue(seeded.key)).labels).toContain("carried");
+    await closeDetails(page);
 
+    // The parent's editor opens in Details' Parent row, from the header's overflow menu.
     await openIssueActions(page);
     await offered(page, "button", "Edit parent issue").click();
     await page.getByRole("textbox", { name: "Parent" }).fill("");
     await offered(page, "button", CONTROL_LABELS.save_parent).click();
     await expect.poll(async () => (await getIssue(seeded.key)).parent).toBeNull();
 
+    // The route and its editor are Details' Route row (R13), which the parent left open.
     await offered(page, "button", `Messages default to ${PLANNER_TITLE}`).click();
     const route = page.getByRole("textbox", { name: "Messages go to" });
     await route.fill("role:reviewer");
@@ -3860,15 +4291,20 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // The header's own controls are written with Details closed, which on a phone covers them.
     await closeDetails(page);
 
+    // The pin is the overflow menu's.
+    await openIssueActions(page);
     await offered(page, "button", "Unpin issue").click();
     await expect.poll(async () => (await getMyState("alice"))[seeded.key]?.pinned).toBe(false);
 
     // The close before the closed-state inventory took the seed's claim with it, so the issue
     // is claimed again for the one control that hands a claim back.
     await claimIssue(seeded.key, asPlanner);
+    // The claim and its Release are Details' (R13).
+    await openDetails(page);
     await expect(offered(page, "button", `Release the claim on ${seeded.key}`)).toBeVisible();
     await offered(page, "button", `Release the claim on ${seeded.key}`).click();
     await expect.poll(async () => (await getIssue(seeded.key)).claim).toBeNull();
+    await closeDetails(page);
 
     await openIssueActions(page);
     await offered(page, "button", "Close issue").click();

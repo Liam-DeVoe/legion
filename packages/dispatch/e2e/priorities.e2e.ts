@@ -21,6 +21,7 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
+import { openDetails } from "./issue-page";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -519,7 +520,9 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     const page = await context.newPage();
     await priorityPage(page);
     // Read from another page, because the number is the rail's and not the priorities page's.
-    await page.goto(`/issues/${seed.rollout}`);
+    // The issue page draws the shell as an icon rail with no counts (dispatch://INFRA-1196
+    // R14), so the number is read where the whole sidebar is drawn: the Inbox.
+    await page.goto("/");
     const entry = railEntry(page);
     await expect(entry).toBeVisible();
     await expect(entry.locator("span").last()).toHaveText("5");
@@ -719,6 +722,8 @@ test("an issue's header names the priorities it advances and links to each", asy
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.rollout}`);
+    // The priority row is Details', closed on a load (dispatch://INFRA-1196 R13, R14).
+    await openDetails(page);
     const line = advancesRow(page);
     await expect(line).toContainText("Advances");
     const link = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
@@ -730,6 +735,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     // An issue that advances none carries no line at all: no label, no name, only the control
     // that places it under a priority.
     await page.goto(`/issues/${seed.clock}`);
+    await openDetails(page);
     await expect(advancesRow(page).getByRole("link")).toHaveCount(0);
     await expect(advancesRow(page)).not.toContainText("Advances");
     await expect(
@@ -739,6 +745,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     // A priority an issue inherits says so and carries no remove: that relation is the
     // ancestor's, and a relation on a child places nothing above it.
     await page.goto(`/issues/${seed.child}`);
+    await openDetails(page);
     const inherited = advancesRow(page);
     await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
@@ -820,6 +827,8 @@ test("a person places an issue under a priority from the issue and takes it off 
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.clock}`);
+    // The priority row is Details', closed on a load (dispatch://INFRA-1196 R13, R14).
+    await openDetails(page);
 
     await advancesRow(page)
       .getByRole("button", { name: `Add a priority to ${seed.clock}` })
@@ -829,6 +838,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     const named = advancesRow(page).getByRole("link", { name: `P2 ${seed.titles[1]}` });
     await expect(named).toBeVisible();
     await page.reload();
+    await openDetails(page);
     await expect(named).toBeVisible();
 
     // The priority's own page lists the issue among its work, which is the same relation read
@@ -842,6 +852,7 @@ test("a person places an issue under a priority from the issue and takes it off 
 
     // Taken off from the same line, and gone from both ends after a reload.
     await page.goto(`/issues/${seed.clock}`);
+    await openDetails(page);
     await advancesRow(page)
       .getByRole("button", { name: `Remove P2 ${seed.titles[1]} from ${seed.clock}` })
       .click();
@@ -887,6 +898,8 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     const reader = await alice.newPage();
     await priorityPage(reader);
     await reader.goto(`/issues/${seed.smoke}`);
+    // The priority row is Details', closed on a load (dispatch://INFRA-1196 R13, R14).
+    await openDetails(reader);
     await reader.evaluate(() => {
       document.documentElement.dataset.heldOpen = "yes";
     });
@@ -919,6 +932,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
       )
       .toEqual([seed.ids[0], seed.ids[1]].sort());
     await reader.reload();
+    await openDetails(reader);
     await expect(kept).toBeVisible();
     await expect(added).toBeVisible();
     await expect(deleted).toHaveCount(0);

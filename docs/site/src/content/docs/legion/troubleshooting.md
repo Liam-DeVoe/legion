@@ -279,7 +279,7 @@ Check, in order:
    in `legion.yaml`, and its repository one the daemon serves. An issue whose repository resolves to
    none, or to one not mapped to the project, or left out for a missing App, is not admitted: the
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
-   changes. Set the issue's repository (the issue header's Repository picker, or
+   changes. Set the issue's repository (the Repository picker in the issue's Details panel, or
    `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
    `todo` again. A child of a tree is told the same way, and its tree's architect gets a
    `child-not-recorded` notice.

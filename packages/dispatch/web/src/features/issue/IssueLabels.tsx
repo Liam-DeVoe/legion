@@ -57,6 +57,9 @@ function saveLabels(draft: readonly string[], labels: readonly string[]): string
 }
 
 export interface IssueLabelsProps {
+  /** The shape of each label's chip, where its host draws labels in a shape of its own (the
+   *  issue page's Details draws the prototype's `.lchip`). */
+  readonly chipClassName?: string;
   readonly disabled: boolean;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;
@@ -68,6 +71,7 @@ export interface IssueLabelsProps {
 /** The issue header's labels: the current chips and the shared `MultiSelect`, which stages a
  *  draft while open and saves the final draft once, when it closes. */
 export function IssueLabels({
+  chipClassName,
   disabled,
   labels,
   onSave,
@@ -150,7 +154,10 @@ export function IssueLabels({
       >
         {displayLabels.map((label) => (
           <span
-            className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`}
+            className={`inline-flex shrink-0 items-center whitespace-nowrap ${
+              chipClassName ??
+              `min-h-11 rounded-full px-3 py-1 text-xs font-medium sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+            }`}
             key={label}
             {...authorText}
           >

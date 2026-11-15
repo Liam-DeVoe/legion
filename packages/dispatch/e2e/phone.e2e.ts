@@ -963,18 +963,18 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     // alone can reach is a fact a reader on a phone does not have). So neither the external
     // link nor the route control is cut here and neither has a tooltip to read. What this row
     // guards of them is the thing that still holds: a long name never widens the page. Each
-    // stays inside the screen, and the page scrolls in one dimension only. The external link is
-    // a property in Details, which a reader opens from the header (R14); the route control is
-    // still the header's own.
+    // stays inside the screen, and the page scrolls in one dimension only. The external link and
+    // the route control are properties in Details, which a reader opens from the header (R13,
+    // R14).
     const insideScreen = (locator: Locator) =>
       locator.first().evaluate((element) => {
         const rect = element.getBoundingClientRect();
         return rect.left >= -1 && rect.right <= window.innerWidth + 1;
       });
-    const routeControl = page.getByRole("button", { name: longRoute });
+    await openDetails(page);
+    const routeControl = marginShell(page).getByRole("button", { name: longRoute });
     await expect(routeControl.first()).toBeVisible();
     expect.soft(await insideScreen(routeControl), "the route reaches past the screen").toBe(true);
-    await openDetails(page);
     const longLink = marginShell(page).getByRole("link", { name: longUrl });
     await expect(longLink).toBeVisible();
     expect
@@ -1002,6 +1002,8 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
 
     // A label picker row.
     await navigateInApp(page, `/issues/${labelled.key}`);
+    // The labels' control is Details' Labels row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     await page.getByRole("button", { name: "Edit labels" }).click();
     const labelOption = page.getByRole("option", { exact: true, name: longLabel });
     await expectEllipsis(labelOption);

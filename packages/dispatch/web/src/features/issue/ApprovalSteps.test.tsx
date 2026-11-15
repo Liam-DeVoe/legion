@@ -40,7 +40,9 @@ function decisionsEntry(approval?: ArtifactApproval): StepEntry {
 }
 
 function renderSteps(entries: StepEntry[]) {
-  return renderWithQueries(<ApprovalSteps entries={entries} primaryArtifactId={SPEC_ID} />);
+  return renderWithQueries(
+    <ApprovalSteps actions entries={entries} primaryArtifactId={SPEC_ID} reasons />
+  );
 }
 
 function stepItem(view: { container: HTMLElement }, step: string): HTMLElement {

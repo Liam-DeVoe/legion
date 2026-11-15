@@ -288,16 +288,15 @@ test("RepoControl says No repository when nothing resolves in a project that map
   const { listRepoProjects, unmount } = renderControl({ repo: null, resolvedRepo: null });
   try {
     expect(await screen.findByText("No repository", { selector: badge })).toBeTruthy();
-    expect(screen.getByText("Repository:")).toBeTruthy();
     expect(listRepoProjects).toHaveBeenCalledTimes(1);
   } finally {
     unmount();
   }
 });
 
-// A project that maps no repository offers nothing to pick, so the details rail carries no
-// repository item at all.
-test("RepoControl shows nothing for an issue whose project maps no repository", async () => {
+// A project that maps no repository offers nothing to pick, so the row of Details that holds the
+// control reads None, and draws no picker (dispatch://INFRA-1196 R13).
+test("RepoControl reads None for an issue whose project maps no repository", async () => {
   const others = mappings.filter((mapping) => mapping.project !== "CORE");
   const { queryClient, unmount } = renderControl({ repo: null, resolvedRepo: null }, others);
   try {
@@ -310,7 +309,7 @@ test("RepoControl shows nothing for an issue whose project maps no repository", 
     expect(
       screen.queryByRole("combobox", { name: "Repository of CORE-1" })
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Repository:")).not.toBeInTheDocument();
+    expect(screen.getByText("None")).toBeTruthy();
   } finally {
     unmount();
   }
@@ -327,7 +326,6 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
   );
   try {
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
-    expect(screen.getByText("Repository:")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(select().options.length).toBe(3));

@@ -125,7 +125,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `s` | Focus the status |
 | `p` | Focus the priority |
 | `0` – `3` | Set priority P0–P3 |
-| `l` | Edit labels |
+| `l` | Edit labels, in **Details**' **Labels** row |
 | `e` | Edit the title |
 | `Shift+P` | Pin or unpin the issue |
 | `t t` | Open the Tree preset |

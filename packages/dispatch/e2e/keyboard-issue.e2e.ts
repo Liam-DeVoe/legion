@@ -98,16 +98,24 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         new URL(response.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
     );
     await page.keyboard.press("Shift+P");
-    await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+    // The pin is the overflow menu's action, pressed while the menu is shut (R13).
+    await expect(header.locator('[data-issue-action="pin"]')).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     expect((await pinned).ok()).toBe(true);
     await leaveFocus(page);
 
     await page.reload();
     await expect(header.locator("span", { hasText: /^P2$/ })).toBeVisible();
-    await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+    await expect(header.locator('[data-issue-action="pin"]')).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     await leaveFocus(page);
 
-    // l opens the labels popover - the listbox itself, not just its trigger.
+    // l opens the labels popover in Details' Labels row - the listbox itself, not just its
+    // trigger (R13).
     await page.keyboard.press("l");
     await expect(page.getByRole("listbox", { name: "Labels options" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeFocused();
@@ -401,11 +409,18 @@ test.describe("issue page", () => {
       await page.keyboard.press("Shift+P");
       await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
       expect(pinned).toBe(0);
-      await expect(page.getByRole("button", { name: "Pin issue" })).toBeVisible();
+      // The pin is the overflow menu's action, drawn hidden while the menu is shut (R13).
+      await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute(
+        "aria-pressed",
+        "false"
+      );
 
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.keyboard.press("Shift+P");
-      await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+      await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
       // The header shows the pin optimistically, before its `PUT` leaves the page, so the write
       // is waited for rather than read the moment the button flips.
       await expect.poll(() => pinned).toBe(1);
@@ -459,7 +474,10 @@ test.describe("issue page", () => {
       // have left the page before those answers came back - it goes out in the task of the
       // keypress that made it - so the counters are read after them rather than after a window.
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
-      await expect(page.getByRole("button", { name: "Pin issue" })).toBeVisible();
+      await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute(
+        "aria-pressed",
+        "false"
+      );
       expect({ patched, pinned }).toEqual({ patched: 0, pinned: 0 });
 
       // From the page itself both keys still write, which is what makes the first half a guard.
@@ -467,7 +485,10 @@ test.describe("issue page", () => {
       await page.keyboard.press("1");
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 1 });
       await page.keyboard.press("Shift+P");
-      await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+      await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
     } finally {
       await context.close();
     }

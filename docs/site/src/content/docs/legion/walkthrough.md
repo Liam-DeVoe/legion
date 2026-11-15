@@ -19,7 +19,7 @@ registering with it.
 ## 1. Hand the issue over
 
 The issue has a title that states the outcome and a spec with acceptance criteria. You add the
-`legion` label from the issue header and set the status to `todo`.
+`legion` label in the issue's Details panel and set the status to `todo`.
 
 ![An issue handed to Legion: the label picker open on its header with legion selected, and the status Todo.](/legion/media/legion/handover.png)
 

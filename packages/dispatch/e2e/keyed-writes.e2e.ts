@@ -18,7 +18,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
-import { openIssueAddress } from "./issue-page";
+import { openDetails, openIssueActions, openIssueAddress } from "./issue-page";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -114,6 +114,8 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
   await page.bringToFront();
   await page.getByLabel("Status").selectOption("backlog");
   await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+  // The labels' control is Details' Labels row (dispatch://INFRA-1196 R13).
+  await openDetails(page);
   const editLabels = page.getByRole("button", { name: "Edit labels" });
   await editLabels.click();
   const labelSearch = page.getByRole("combobox", { name: "Search or create label" });
@@ -939,7 +941,7 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
       });
       await page.clock.install();
       await page.goto(`/issues/${issue.key}`);
-      await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: "Status" })).toBeVisible();
       tabs.push(page);
     }
     for (const [index, page] of tabs.entries()) {
@@ -951,7 +953,10 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
     const [signingOut] = tabs;
     if (signingOut === undefined) throw new Error("no tab was opened");
     await signingOut.bringToFront();
-    await signingOut.getByRole("button", { name: "Sign out" }).click();
+    // On the issue page the shell's navigation is an icon rail whose foot control opens the whole
+    // navigation, Sign out with it (dispatch://INFRA-1196 R14).
+    await signingOut.getByRole("button", { exact: true, name: "Open navigation" }).click();
+    await signingOut.getByRole("button", { exact: true, name: "Sign out" }).click();
     await expect(signingOut.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
     expect(confirmedAt).toEqual(expect.any(Number));
     for (const page of tabs) {
@@ -1115,7 +1120,7 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
     });
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Status" })).toBeVisible();
     await queueBehindAHeldStatus(page, issue.key, "alice-only");
 
     const other = await alice.newPage();
@@ -1206,6 +1211,8 @@ test("the issue header's pin pressed during an outage survives a reload and land
     const puts = watchWrites(page, "PUT", `/api/v1/me/issues/${issue.key}/state`);
     const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
     await page.goto(`/issues/${issue.key}`);
+    // The pin is the header's overflow menu's (dispatch://INFRA-1196 R13).
+    await openIssueActions(page);
     await page.getByRole("button", { name: "Pin issue" }).click();
     await expect(pendingWrites(page)).toBeVisible();
     await expect.poll(() => keptWrites(page)).toBe(1);
@@ -1216,7 +1223,7 @@ test("the issue header's pin pressed during an outage survives a reload and land
     await expect
       .poll(async () => (await getMyState())[issue.key]?.pinned ?? false, { timeout: 30_000 })
       .toBe(true);
-    await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+    await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute("aria-pressed", "true");
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
     // The same press before and after the reload: one body, the header's own write.

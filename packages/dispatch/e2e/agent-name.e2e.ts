@@ -16,6 +16,7 @@ import {
 } from "./agent-name";
 import { setLiveSessions, setSessionLive } from "./agents";
 import { askCard } from "./inbox-pane";
+import { openDetails } from "./issue-page";
 import { devices, expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -40,10 +41,13 @@ test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment sh
     // Claimed by: the running holder by its current title with the owner suffix, the stopped
     // holder by the title it stamped.
     await page.goto(`/issues/${seeded.runIssue}`);
+    // The claim is Details' Claimed by row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     const runClaim = page.getByTestId("issue-claim");
     await expectAgent(runClaim, runId, { hidden: runStamped, name: runCurrent, running: true });
     await expect(agentIn(runClaim, runId)).toContainText(`${runCurrent} (for alice)`);
     await page.goto(`/issues/${seeded.stopIssue}`);
+    await openDetails(page);
     await expectAgent(page.getByTestId("issue-claim"), stopId, {
       name: stopStamped,
       running: false,
@@ -91,6 +95,8 @@ test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment sh
 
     // Margin comments, each in its opened thread.
     await page.goto(`/issues/${seeded.runIssue}/spec`);
+    // The margin's threads are in Details, closed on a load (dispatch://INFRA-1196 R14).
+    await openDetails(page);
     const runThread = await openMarginThread(page, seeded.runComment);
     await expectAgent(runThread, runId, { hidden: runStamped, name: runCurrent, running: true });
     const stopThread = await openMarginThread(page, seeded.stopComment);
@@ -106,6 +112,7 @@ test("the live link opens that agent's conversation, running or not", async ({ b
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${seeded.runIssue}`);
+    await openDetails(page);
     const runLink = agentIn(page.getByTestId("issue-claim"), runId).locator(
       `a[href="${livePath(runId)}"]`
     );
@@ -115,6 +122,7 @@ test("the live link opens that agent's conversation, running or not", async ({ b
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(runCurrent);
 
     await page.goto(`/issues/${seeded.runIssue}/spec`);
+    await openDetails(page);
     const stopThread = await openMarginThread(page, seeded.stopComment);
     const stopLink = agentIn(stopThread, stopId).locator(`a[href="${livePath(stopId)}"]`);
     await expect(stopLink).toBeVisible();

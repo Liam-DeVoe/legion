@@ -12,6 +12,7 @@ import {
   card,
   dangerText,
   inputClasses,
+  pageHeaderControl,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -229,6 +230,10 @@ export interface ApprovalChipProps {
   showActions?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
+  /** `compact` draws the chip and its two actions at the size of the issue page header's other
+   *  pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13): 12 px
+   *  type, 20 to 22 px tall, 24 px on a phone. Everywhere else they keep their own size. */
+  size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
   onReviewed?(): void;
@@ -243,6 +248,7 @@ export function ApprovalChip({
   artifact,
   layout = "inline",
   onReviewed,
+  size = "default",
   variant = "list",
   showActions = variant === "header",
 }: ApprovalChipProps): ReactNode {
@@ -291,7 +297,7 @@ export function ApprovalChip({
     >
       <button
         aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state)}
+        className={approvalPillClassName(approval.state, size)}
         // The document whose approval this is, which an approval request's own address puts the
         // focus on (`features/issue/IssuePage.tsx`, dispatch://INFRA-1196 R20).
         data-approval-artifact={artifact.id}
@@ -307,11 +313,19 @@ export function ApprovalChip({
       </button>
       {variant === "header" && showActions ? (
         <>
+          {/* In the issue header on a phone the two actions follow the chip, which stands
+              beside the waiting count, and wrap to the line under it where the line has no room
+              for them (dispatch://INFRA-1196/artifact/build-rulings-md, ruling 3); no line of
+              their own is forced, since an empty line costs the header a second row gap. */}
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
             // two outline buttons made a reader choose before reading either.
             <button
-              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+              className={
+                size === "compact"
+                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] px-2.5 text-xs leading-5 font-medium md:min-h-0 md:py-px ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+                  : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+              }
               disabled={review.isPending}
               onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
               type="button"
@@ -320,7 +334,11 @@ export function ApprovalChip({
             </button>
           )}
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+            className={
+              size === "compact"
+                ? pageHeaderControl
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`
+            }
             disabled={review.isPending}
             onClick={() => setRequestChangesOpen(true)}
             type="button"

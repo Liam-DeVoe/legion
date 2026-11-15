@@ -181,8 +181,10 @@ export interface TreeNode {
   readonly type: NodeType;
   /** Whether the model marks this decision unsure, which its row says in one word (R9). */
   readonly unsure?: true;
-  /** Whether this decision waits for the reader's review, which is where Keep and Change are
-   *  drawn and what the Decisions preset opens on (R7). */
+  /** Whether this node waits on the reader: a decision waiting for their review, which is where
+   *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
+   *  whose turn is a person's. The header's count of what waits puts the focus on the first
+   *  of them (R13, `waiting.ts`). */
   readonly waiting: boolean;
 }
 

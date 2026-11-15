@@ -4,20 +4,22 @@ import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
 import { buildIssuePath, type IssueTab } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { useOpenDetailsAt } from "./details-rows";
 import { bringOnScreen } from "./identity-block";
 import { presetPath } from "./issue-address";
 import { CONTROL_LABELS, PRESET_NAMES } from "./page-words";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
- * What the `issue` scope acts on. Every target is a control the identity block already renders,
- * so a key does exactly what a click on it does. Scoping the lookup to `[data-issue-header]`
- * keeps a child issue's row in the children section at the top of the body - it carries the
- * same accessible names - out of reach.
+ * What the `issue` scope acts on. Every target is a control the header already renders - the
+ * pin inside its overflow menu, which is drawn hidden while shut - so a key does exactly what a
+ * click on it does. Scoping the lookup to `[data-issue-header]` keeps a child issue's row in the
+ * children section at the top of the body - it carries the same accessible names - out of
+ * reach. The labels' control is Details' (`labels` below).
  */
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
-const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
+const PIN_TOGGLE = 'button[data-issue-action="pin"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = 'select[aria-label="Status"]';
 const TITLE_HEADING = 'h1[tabindex="0"]';
@@ -261,6 +263,7 @@ const CHORDS: readonly {
  */
 export function useIssueKeymap(priorityWrite: IssuePriorityWrite, issueKey: string): void {
   const navigate = useNavigate();
+  const openDetailsAt = useOpenDetailsAt();
   useKeymapScope("issue");
   useKeymap("issue", [
     {
@@ -285,11 +288,16 @@ export function useIssueKeymap(priorityWrite: IssuePriorityWrite, issueKey: stri
       when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
+      // The labels' control is in Details' Labels row (dispatch://INFRA-1196 R13): the key
+      // opens Details there and presses it, as a reader does.
       id: "labels",
       keys: "l",
       label: "Edit labels",
-      run: () => usableControl(LABELS_TRIGGER)?.click(),
-      when: () => usableControl(LABELS_TRIGGER) !== null,
+      run: () => openDetailsAt("labels", true),
+      when: () => {
+        const control = document.querySelector(`[data-details-row="labels"] ${LABELS_TRIGGER}`);
+        return control instanceof HTMLButtonElement && !control.disabled;
+      },
     },
     {
       // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and

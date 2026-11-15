@@ -523,9 +523,6 @@ export const CONTROL_LABELS = freeze({
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
    *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). */
   answer: "Answer",
-  /** What the blocked-by line says while the issue waits on no other issue
-   *  (`BlockedByControl.tsx`). */
-  blocked_by_none: "nothing",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
@@ -535,6 +532,11 @@ export const CONTROL_LABELS = freeze({
   children: "Children",
   /** The direct children done of total, labelled on the collapsed header (R10). */
   children_done: "Children done",
+  /** The two words that make a progress count read as a sentence in the header's properties
+   *  line, around the issue's own numbers: "Children 2 of 7 done", "Whole tree 5 of 30 done"
+   *  (R13, the 1440 px picture). */
+  count_of: "of",
+  count_done: "done",
   /** The priority picker's first choice, which picks nothing. */
   choose_priority: "Choose a priority",
   /** Closes the Details panel and the Outline sheet, each in its own head (R14); Escape does
@@ -609,8 +611,8 @@ export const CONTROL_LABELS = freeze({
   how_it_gets_done: "How it gets done",
   /** The heading over the issue's three sentences in the Contents pane (R8). */
   in_short: "In short",
-  /** The one control row one keeps the actions behind: close, reopen and setting the parent.
-   *  It names actions, never a property (R11 bans "more"). */
+  /** The one control row one keeps the actions behind: close, reopen, the pin and setting the
+   *  parent. It names actions, never a property (R11 bans "more"). */
   issue_actions: "Issue actions",
   /** Agrees with an agent's decision as its node draws it, which takes it out of what waits
    *  for the reader's review (R7). */
@@ -620,6 +622,12 @@ export const CONTROL_LABELS = freeze({
   keep_open: "Keep open",
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
+  /** The count that ends the header's properties line when the issue's labels do not all fit
+   *  on it, after the number of labels left over: "+1 label", "+17 labels". It opens Details
+   *  at its Labels row, which lists every label (R13, the ruling of
+   *  dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). */
+  labels_left_one: "label",
+  labels_left_many: "labels",
   /** What the shell's indicator calls a write of where this issue's messages go: "Route of
    *  CORE-1 saved". It is the noun the editor's own Save route and the row's No route carry,
    *  so the line names what the reader just pressed. The box itself is named by the label it
@@ -635,6 +643,12 @@ export const CONTROL_LABELS = freeze({
   new_document: "New document",
   /** Moves to the next open question that waits on the reader (R6). */
   next_question: "Next open question",
+  /** What a row of Details says of a property the issue has no value for (R13): the row is
+   *  drawn, and the one add control lists the property. */
+  none: "None",
+  /** What the approval control says of a document nobody has asked anyone to approve: no
+   *  approval, or a draft one (R31). The gated steps' entries say the same word. */
+  not_requested: "Not requested",
   /** What the repository control says while neither the issue nor its project names one. */
   no_repository: "No repository",
   /** What the route control says while the issue has none to show. */
@@ -646,6 +660,9 @@ export const CONTROL_LABELS = freeze({
   other_nodes: "Files and documents",
   /** Opens the Contents pane's list below 1024 px, where the pane is not drawn (R14). */
   outline: "Outline",
+  /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
+   *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
+  pin_issue: "Pin issue",
   /** The row of five queries over the one tree, as a reader of it hears it named (R3). */
   presets: "Issue presets",
   /** The priority picker, named by what the issue will do with the one picked. */
@@ -673,6 +690,9 @@ export const CONTROL_LABELS = freeze({
   set_parent: "Set parent issue",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
+  /** Opens the rest of a list of unbounded length in Details, which shows its first ten
+   *  entries and then this, with the whole count (R13): "Show all 14". */
+  show_all: "Show all",
   /** The whole subtree done of total, labelled beside the direct count (R10). */
   subtree_done: "Whole tree done",
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
@@ -700,6 +720,10 @@ export const CONTROL_LABELS = freeze({
   unchecked: "running state unknown",
   /** Opens a branch of the tree (R1). */
   unfold: "Unfold",
+  /** The pin's words while the issue is pinned. */
+  unpin_issue: "Unpin issue",
+  /** The whole subtree's count in the header's properties line: "Whole tree 5 of 30 done". */
+  whole_tree: "Whole tree",
   /** What a decision the model marks unsure says of itself, in one word on its own row (R9):
    *  the decisions read's `unsure`, which the server sets for a decision holding a paragraph
    *  that opens `Unsure:`. */

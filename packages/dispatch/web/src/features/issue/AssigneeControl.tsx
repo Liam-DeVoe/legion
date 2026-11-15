@@ -3,8 +3,19 @@ import { type ReactNode, useState } from "react";
 
 import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import {
+  badgeLow,
+  badgePrimary,
+  pageAvatar,
+  pageInkText,
+  pageQuietText,
+} from "../../theme/classes";
+import {
+  badgeSelectBadge,
+  badgeSelectHeaderWrapper,
+  badgeSelectOverlay,
+  badgeSelectWrapper,
+} from "./badge-select";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { useIssueAssignee } from "./useIssueAssignee";
@@ -37,10 +48,15 @@ export function AssigneeControl({
   assignee,
   disabled = false,
   issueKey,
+  variant = "badge",
 }: {
   assignee: string | null;
   disabled?: boolean;
   issueKey: string;
+  /** `header` draws the issue page's header (the prototype's `.person`): the person's initial
+   *  in a filled circle beside their name in the ink, or Unassigned in the quiet grey. The
+   *  select over it is the same either way. */
+  variant?: "badge" | "header";
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
@@ -53,14 +69,36 @@ export function AssigneeControl({
   const tone = assignee === null ? badgeLow : badgePrimary;
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span
-          aria-hidden="true"
-          className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
-          {...(assignee === null ? pageChrome : authorText)}
-        >
-          {assignee ?? CONTROL_LABELS.unassigned}
-        </span>
+      <span
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+      >
+        {variant === "header" ? (
+          <span
+            aria-hidden="true"
+            className={`inline-flex min-w-0 items-center gap-1.5 text-sm leading-5 ${
+              assignee === null ? pageQuietText : pageInkText
+            }`}
+            {...(assignee === null ? pageChrome : authorText)}
+          >
+            {assignee === null ? null : (
+              // The initial is drawn, not written: the name beside it is the value a reader and
+              // a reading of the badge take, so the circle adds no letter to its text.
+              <span
+                className={`inline-grid size-5 shrink-0 place-items-center rounded-full text-xs leading-5 font-semibold before:content-[attr(data-initial)] ${pageAvatar}`}
+                data-initial={assignee.charAt(0).toUpperCase()}
+              />
+            )}
+            <span className="min-w-0 truncate">{assignee ?? CONTROL_LABELS.unassigned}</span>
+          </span>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
+            {...(assignee === null ? pageChrome : authorText)}
+          >
+            {assignee ?? CONTROL_LABELS.unassigned}
+          </span>
+        )}
         <select
           aria-label={assigneeControlName(issueKey)}
           className={badgeSelectOverlay}

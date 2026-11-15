@@ -10,6 +10,7 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
+import { openDetails } from "./issue-page";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -112,6 +113,8 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}`);
+    // The claim is Details' Claimed by row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     const chip = page.getByTestId("issue-claim");
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toBeVisible();
@@ -182,6 +185,7 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}`);
+    await openDetails(page);
     const chip = page.getByTestId("issue-claim");
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toContainText("unresponsive since");
@@ -269,6 +273,8 @@ test("a route to an unresponsive session, and to a role it holds, reads holder_u
 
       const page = await alice.newPage();
       await page.goto(`/issues/${key}`);
+      // The route's reach is Details' route row (dispatch://INFRA-1196 R13).
+      await openDetails(page);
       const marker = page.getByTestId("issue-route-unresponsive");
       await expect(marker).toBeVisible();
       await expect(marker).toContainText("Unresponsive, still reached");

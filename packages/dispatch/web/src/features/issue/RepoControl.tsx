@@ -3,7 +3,12 @@ import { type ReactNode, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
+import {
+  badgeLow,
+  badgePrimary,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -20,21 +25,21 @@ export function repoControlName(issueKey: string): string {
 }
 
 /**
- * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
- * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
- * not its own; "No repository" when none resolves) with a native `<select>` laid over it, as
- * `AssigneeControl` does. The select lists Inherit first, then the repositories mapped to the
- * issue's project in Settings; Inherit clears the issue's own repository. Named by
- * `repoControlName`. While the issue resolves to a repository the mappings are read only once
- * the reader reaches for the control (pointer over it, a touch on it, or focus). While it resolves
- * to none, they are read at once, because the item shows only when the project maps a repository:
- * until the read answers nothing shows, a project that maps none has nothing to pick and gets no
- * item, and a read that fails shows `Repository:` with the failure and a Retry, never a hidden
- * item. A failed read beside a resolved repository shows the same failure next to the picker. The
- * badge is hidden from assistive technology; the select's description names what it shows: the
- * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`. Those same words are drawn beside the badge, because an inherited repository
- * and one the issue sets of its own differ in the badge's colour alone otherwise, and a state is
+ * The issue's repository, in its row of Details (dispatch://INFRA-1196 R13), which carries the
+ * label: a badge naming the repository the issue resolves to (its own, else its nearest
+ * ancestor's, else the project's default, muted when not its own; "No repository" when none
+ * resolves) with a native `<select>` laid over it, as `AssigneeControl` does. The select lists
+ * Inherit first, then the repositories mapped to the issue's project in Settings; Inherit clears
+ * the issue's own repository. Named by `repoControlName`. While the issue resolves to a
+ * repository the mappings are read only once the reader reaches for the control (pointer over
+ * it, a touch on it, or focus). While it resolves to none, they are read at once, because the
+ * picker shows only when the project maps a repository: until the read answers, and for a
+ * project that maps none, the row reads None, and a read that fails shows the failure and a
+ * Retry. A failed read beside a resolved repository shows the same failure next to the picker.
+ * The badge is hidden from assistive technology; the select's description names what it shows:
+ * the repository, `, inherited or the project's default` when it is not the issue's own, or `No
+ * repository`. Those same words are drawn beside the badge, because an inherited repository and
+ * one the issue sets of its own differ in the badge's colour alone otherwise, and a state is
  * told by a word and a shape and never by colour (dispatch://INFRA-1196 R15).
  */
 export function RepoControl({
@@ -74,7 +79,11 @@ export function RepoControl({
     />
   ) : null;
   if (resolvedRepo === null && !mappings.isError && (mappings.isPending || mapped.length === 0)) {
-    return null;
+    return (
+      <span className={textMutedOnSurface} {...pageChrome}>
+        {CONTROL_LABELS.none}
+      </span>
+    );
   }
   // The issue's own repository stays selectable before the list loads, so the control never
   // shows a value its options lack.
@@ -136,10 +145,7 @@ export function RepoControl({
       </span>
     );
   return (
-    <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className="font-medium" {...pageChrome}>
-        {PROPERTY_LABELS.repository}:
-      </span>
+    <div className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
       {picker}
       {/* Why the repository shown may not be the issue's own, in words: an inherited
           repository and one the issue sets are told apart by the badge's colour alone

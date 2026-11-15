@@ -1,25 +1,46 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useState } from "react";
-import type { IssueDetails } from "../../api/types";
+import { Link } from "react-router-dom";
+
+import { api } from "../../api/client";
+import { projectsQuery, referenceTargetsQuery } from "../../api/queries";
+import type { Artifact, IssueDetails } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
 import {
-  borderDefault,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
+  dangerText,
+  linkHoverText,
+  linkText,
+  pageAvatar,
+  pageInkText,
+  pageLabelChip,
+  pageQuietText,
+  pageRowBorder,
+  pageRowHoverBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useMarginDrawsSlot } from "../margin/margin-slot";
+import { issueDecisionsQuery } from "../doc/spec-marks";
+import { useMarginDrawer, useMarginDrawsSlot } from "../margin/margin-slot";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
-import { buildDispatchReference } from "../refs/routes";
-import { BlockedByControl } from "./BlockedByControl";
+import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { ApprovalSteps } from "./ApprovalSteps";
+import { BlockedByControl, IssueLine } from "./BlockedByControl";
 import { ConversationStates } from "./conversation-states";
+import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import type { FocusedNode } from "./focused-node";
 import { GitHubLink } from "./GitHubLink";
+import { gatedStepEntries, STEP_LABELS } from "./gated-steps";
+import { IssueAddMenu } from "./IssueAddMenu";
+import { IssueClaimControl } from "./IssueClaimControl";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { IssueComponentsLine } from "./IssueComponentsLine";
+import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
+import { IssueLabels } from "./IssueLabels";
+import { statusGlyph, statusTone } from "./IssuePropertiesRow";
+import { RouteControl } from "./IssueRouteControl";
 import {
   authorText,
   MARGIN_SECTION_NAMES,
@@ -27,11 +48,23 @@ import {
   PROPERTY_LABELS,
   pageChrome,
 } from "./page-structure";
-import type { ConversationState } from "./page-words";
+import {
+  CONTROL_LABELS,
+  type ConversationState,
+  FILE_WORDS,
+  issueStatusWord,
+  PROGRESS_NOUNS,
+} from "./page-words";
 import { RepoControl } from "./RepoControl";
 import { SubscribedAgents } from "./SubscribedAgents";
+import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { useIssueSubscribers } from "./useIssueSubscribers";
-import { useMarginSections } from "./useMarginSections";
+import { type MarginSections, useMarginSections } from "./useMarginSections";
+import { waitingOnReader } from "./waiting";
+
+/** How many entries a list of unbounded length draws before it folds behind a count that opens
+ *  the rest (dispatch://INFRA-1196 R13). */
+const FOLD_AFTER = 10;
 
 /**
  * The margin's own side of the issue page's panel (dispatch://INFRA-1196 R12): the margin's
@@ -88,34 +121,46 @@ export function IssueMarginCards({
 }
 
 /**
- * The issue page's one right-hand panel (dispatch://INFRA-1196 R12): the properties that are not
- * the issue's identity, in three named collapsible sections; the facts of whatever the reader's
- * focus is on; and the conversation itself - its four state controls and the one list they
- * drive, which lives here and in no column of the page.
+ * Details, the issue page's one panel of properties (dispatch://INFRA-1196 R13, R14, the
+ * prototype's `#details` and the picture page-v3-details-1440): every property the header does
+ * not hold, each a row of its own - a label column with a shape for the property and its name,
+ * and the value beside it, `None` where the issue has none - with every control the page had
+ * for it, and nothing read-only. A field with no value is reachable from the one add control,
+ * and only a list of unbounded length folds, after its first ten entries, behind a count that
+ * opens the rest. The rows sit in three named sections the reader can collapse, kept for the
+ * next issue.
  *
- * It is one panel, not two: the properties are not a second column beside the conversation, and
- * no property of the issue is drawn in both this and the identity block.
+ * Under the properties, the facts of whatever the reader's focus is on, and the conversation
+ * - its four state controls and the one list they drive - which pass E of the round moves into
+ * the outline.
  *
- * The page draws it once and moves it into whichever host is on the screen - the margin's
- * column above, or the page's own under the identity block, wherever the margin keeps no
- * column (at the width it is a sheet, and while the reader has collapsed it to its rail). So
- * the properties are read at every width and under either preference without opening
- * anything, and nothing in the panel is thrown away as the reader moves between them (R11).
+ * The page draws it once and moves it into whichever host is on the screen - the shell's
+ * drawer, or the page's own column where no shell draws one - so nothing in it is thrown away as
+ * the reader moves between them. What it reads that the header does not - the titles of the
+ * issues around this one - it reads only while it is open, so a load that leaves Details shut
+ * costs no request for it.
  */
 export function IssueMarginPanel({
   conversationList,
   conversationState,
+  documentArtifact,
+  editingField,
   focused,
   isClosed,
   issue,
   onConversationState,
+  onEditingField,
   openCollaborators = false,
+  writes,
 }: {
-  /** The conversation's one list, which the state controls above it drive. It reads at the
-   *  panel's own width (384 px by default, 280 px at its narrowest). */
+  /** The conversation's one list, which the state controls above it drive. */
   conversationList?: ReactNode;
   /** Which state the conversation is in, which the address names and these controls move. */
   conversationState: ConversationState;
+  /** The issue's primary document, whose approval the Approval row draws. */
+  documentArtifact: Artifact | undefined;
+  /** The editor open in its row - the parent's or the route's - or `null`. */
+  editingField: IssueField | null;
   /** What the reader's focus is on, which the page reads and hands over (`focused-node.tsx`). */
   focused: FocusedNode;
   isClosed: boolean;
@@ -123,125 +168,380 @@ export function IssueMarginPanel({
   /** Takes the state a reader picked, which the page holds for the address they are on, or
    *  opens the address of where that state is one (`IssuePage`'s `pickState`). */
   onConversationState: (state: ConversationState) => void;
+  onEditingField: (field: IssueField | null) => void;
   /** Whether the People section opens with the issue's collaborators drawn, which is what
    *  `/issues/<key>/collaborators` - the address the Collaborators tab answered - names
    *  (R19). Every other address leaves the list closed and reads nothing. */
   openCollaborators?: boolean;
+  /** The page's one set of the issue's writes, which the header draws too. */
+  writes: IssueHeaderWrites;
 }): ReactNode {
   const sections = useMarginSections();
   const subscribers = useIssueSubscribers(issue.key);
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(openCollaborators);
   const [referencesOpen, setReferencesOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
   const referencesPanelId = useId();
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The address opens the list; closing it again is the reader's, so this only ever opens.
-  // The panel outlives a move between the issue's addresses, so seeding the state is not
-  // enough: a link to `/collaborators` followed from another of the issue's addresses arrives
-  // under a panel that is already mounted.
   useEffect(() => {
     if (openCollaborators) setCollaboratorsOpen(true);
   }, [openCollaborators]);
+  // What Details reads beyond the issue - the titles of the issues around this one - only while
+  // the drawer is open, so a load that leaves it shut, and a page outside the shell, costs no
+  // request for it; the Blocks row is drawn once its read has answered.
+  const reading = useMarginDrawer()?.open === true;
+  const blockers = issue.blocked_by ?? [];
+  const blockerTitles = useQuery({
+    ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
+    enabled: reading && blockers.length > 0,
+  });
+  const titleOf = (key: string) =>
+    blockerTitles.data?.targets.find(
+      (target) => target.ref === buildDispatchReference({ key, kind: "issue" })
+    )?.name;
+  // What waits on this issue is the other direction of `blocked_by`: the references of that
+  // kind that point at it.
+  const blocking = useQuery({
+    enabled: reading,
+    queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
+    queryKey: ["references", issueReference, "blocked_by"],
+  });
+  const blocks = (blocking.data?.edges ?? [])
+    .filter((edge) => edge.kind === "blocked_by" && edge.node.issue_key !== undefined)
+    .map((edge) => ({ key: edge.node.issue_key ?? "", title: edge.node.text ?? "" }));
+  // Approve and Request changes are here wherever no approval request waits on the reader,
+  // and in the header while one does (R31).
+  const decisions = useQuery(issueDecisionsQuery(issue.key, true));
+  const approvalWaits = waitingOnReader(issue, decisions.data).approvals.length > 0;
+  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  const gated = gatedStepEntries(
+    projects.data?.find((candidate) => candidate.key === issue.project),
+    issue
+  );
+  const approvalEntries =
+    gated.length > 0 && gated.some((entry) => entry.document?.id === issue.primary_artifact_id)
+      ? gated
+      : [{ document: documentArtifact, label: STEP_LABELS.spec, step: "spec" as const }, ...gated];
+  const pullRequests = (issue.external_links ?? []).filter((link) => link.kind === "github_pr");
+  const otherLinks = (issue.external_links ?? []).filter((link) => link.kind !== "github_pr");
+  const labels = issue.labels ?? [];
+  const advances = issue.advances ?? [];
+  const artifacts = issue.artifacts ?? [];
+  const files = filesOpen ? artifacts : artifacts.slice(0, FOLD_AFTER);
+  const none = (
+    <span className={pageQuietText} {...pageChrome}>
+      {CONTROL_LABELS.none}
+    </span>
+  );
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <PropertySection name="development" sections={sections}>
-        <RepoControl
-          disabled={isClosed}
-          issueKey={issue.key}
-          project={issue.project}
-          repo={issue.repo}
-          resolvedRepo={issue.resolved_repo}
-        />
-        <IssueComponentsLine issue={issue} />
-        {/* The priorities the issue advances and the control that adds and removes one
-            (dispatch://INFRA-2947 R3, R16), which this panel holds rather than the identity
-            block (dispatch://INFRA-1196 R13): an issue that advances none draws the control
-            alone. */}
-        <IssuePriorityLine disabled={isClosed} issue={issue} />
-        <BlockedByControl issue={issue} />
-        {(issue.external_links ?? []).length === 0 ? null : (
-          <Property label={PROPERTY_LABELS.external_links}>
-            {(issue.external_links ?? []).map((link) => (
+        <Row glyph="◐" label={PROPERTY_LABELS.status}>
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(issue.status)}`}
+            {...pageChrome}
+          >
+            <span aria-hidden="true">{statusGlyph(issue.status)}</span>
+            {issueStatusWord(issue.status)}
+          </span>
+        </Row>
+        <Row glyph="▮" label={PROPERTY_LABELS.priority}>
+          {issue.priority === null ? (
+            none
+          ) : (
+            <span className="font-semibold" {...authorText}>
+              P{issue.priority}
+            </span>
+          )}
+        </Row>
+        <Row glyph="●" label={PROPERTY_LABELS.assignee}>
+          {issue.assignee === null ? (
+            none
+          ) : (
+            <span className="inline-flex min-w-0 items-center gap-1.5" {...authorText}>
+              <span
+                aria-hidden="true"
+                className={`inline-grid size-5 shrink-0 place-items-center rounded-full text-xs leading-5 font-semibold before:content-[attr(data-initial)] ${pageAvatar}`}
+                data-initial={issue.assignee.charAt(0).toUpperCase()}
+              />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{issue.assignee}</span>
+            </span>
+          )}
+        </Row>
+        {/* Every label, with the control that adds and removes one (the ruling of
+            dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4): the header draws
+            those that fit, and its count opens this row. */}
+        <Row glyph="#" label={PROPERTY_LABELS.labels} row="labels">
+          {labels.length === 0 ? none : null}
+          <IssueLabels
+            chipClassName={`rounded-md border px-[7px] text-xs leading-[18px] font-medium ${pageLabelChip}`}
+            disabled={isClosed}
+            labels={labels}
+            onSave={(next) => writes.labels.mutateAsync(next)}
+            project={issue.project}
+            saving={writes.labels.isPending}
+            variant="rail"
+          />
+        </Row>
+        {/* The priorities the issue advances, with the control that adds and removes one
+            (dispatch://INFRA-2947 R3, R16): an issue that advances none draws no such row, and
+            its control stands beside the add control below. */}
+        {advances.length === 0 ? null : (
+          <Row glyph="↗" label={PROPERTY_LABELS.advances} testId="issue-advances">
+            <IssuePriorityLine disabled={isClosed} issue={issue} />
+          </Row>
+        )}
+        <Row glyph="↑" label={PROPERTY_LABELS.parent} row="parent">
+          {issue.parent === null ? (
+            none
+          ) : (
+            <Link
+              className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+              to={buildIssuePath({ key: issue.parent, kind: "issue" })}
+              {...authorText}
+            >
+              {issue.parent}
+            </Link>
+          )}
+          <IssueFieldForms
+            field={editingField === "parent" ? "parent" : null}
+            isClosed={isClosed}
+            issue={issue}
+            onClose={() => onEditingField(null)}
+            writes={writes}
+          />
+          {writes.parentSaveFailed ? (
+            <p className={`w-full text-sm ${dangerText}`} id="issue-parent-error">
+              {writes.parentError}
+            </p>
+          ) : null}
+        </Row>
+        <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by}>
+          <BlockedByControl issue={issue} titleOf={titleOf} />
+        </Row>
+        {blocking.data === undefined ? null : (
+          <Row glyph="⊙" label={PROPERTY_LABELS.blocks}>
+            {blocks.length === 0 ? none : <IssueList issues={blocks} />}
+          </Row>
+        )}
+        <Row glyph="⌂" label={PROPERTY_LABELS.repository}>
+          <RepoControl
+            disabled={isClosed}
+            issueKey={issue.key}
+            project={issue.project}
+            repo={issue.repo}
+            resolvedRepo={issue.resolved_repo}
+          />
+        </Row>
+        <Row glyph="⇄" label={PROPERTY_LABELS.pull_request}>
+          {pullRequests.length === 0
+            ? none
+            : pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)}
+        </Row>
+        {otherLinks.length === 0 ? null : (
+          <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
+            {otherLinks.map((link) => (
               <GitHubLink key={link.url} link={link} />
             ))}
-          </Property>
+          </Row>
         )}
+        <Row glyph="⚑" label={PROPERTY_LABELS.claim}>
+          <IssueClaimControl issue={issue} writes={writes} />
+        </Row>
+        <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
+          <RouteControl
+            editing={editingField === "route"}
+            isClosed={isClosed}
+            issue={issue}
+            onEdit={() => onEditingField("route")}
+            writes={writes}
+          />
+          <IssueFieldForms
+            field={editingField === "route" ? "route" : null}
+            isClosed={isClosed}
+            issue={issue}
+            onClose={() => onEditingField(null)}
+            writes={writes}
+          />
+        </Row>
+        <Row glyph="▦" label={PROPERTY_LABELS.components}>
+          <IssueComponentsLine issue={issue} />
+        </Row>
+        {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
+          <Row glyph="☑" label={PROPERTY_LABELS.tasks}>
+            <span data-testid="issue-progress-tasks" {...pageChrome}>
+              <span {...authorText}>
+                {issue.progress.tasks.done}/{issue.progress.tasks.total}
+              </span>{" "}
+              {issue.progress.tasks.total === 1 ? PROGRESS_NOUNS.task : PROGRESS_NOUNS.tasks}
+            </span>
+          </Row>
+        )}
+        {/* The one add control, which lists every field this issue has no value for and opens
+            its control; and, while the issue advances no priority, the control that adds one,
+            which is INFRA-2947's priority row with nothing in it yet. */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2">
+          <IssueAddMenu isClosed={isClosed} issue={issue} onOpenField={onEditingField} />
+          {advances.length === 0 ? (
+            <div className="contents" data-testid="issue-advances">
+              <IssuePriorityLine disabled={isClosed} issue={issue} />
+            </div>
+          ) : null}
+        </div>
       </PropertySection>
       <PropertySection name="people" sections={sections}>
-        {issue.created_by == null ? null : (
-          <Property label={PROPERTY_LABELS.opened_by}>
+        <Row glyph="☺" label={PROPERTY_LABELS.opened_by}>
+          {issue.created_by == null ? (
+            none
+          ) : (
             <span {...authorText}>
               <AgentName actor={issue.created_by} author inline />
             </span>
-          </Property>
-        )}
-        <button
-          aria-expanded={subscribersOpen}
-          className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
-          onClick={() => setSubscribersOpen((open) => !open)}
-          type="button"
-          {...pageChrome}
-        >
-          <span>
-            {subscribers.counted ? `${PROPERTY_LABELS.subscribers}:` : PROPERTY_LABELS.subscribers}
-          </span>
-          {subscribers.counted ? <span {...authorText}>{subscribers.rows.length}</span> : null}
-        </button>
-        {subscribersOpen ? (
-          <SubscribedAgents
-            onUnsubscribe={(sessionId) => subscribers.unsubscribe.mutate(sessionId)}
-            ownerLabel={issue.key}
-            subscribers={subscribers.rows}
-          />
-        ) : null}
-        {subscribers.error ? (
-          <QueryError
-            error={subscribers.failure}
-            message="Subscribed agents unavailable — Envoy listener unreachable."
-            onRetry={subscribers.refetch}
-            retrying={subscribers.fetching}
-          />
-        ) : null}
-        {subscribers.unsubscribe.isError ? (
-          <QueryError
-            message="Could not unsubscribe this agent."
-            onRetry={() => subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")}
-            retrying={subscribers.unsubscribe.isPending}
-          />
-        ) : null}
+          )}
+        </Row>
+        <Row wide>
+          <button
+            aria-expanded={subscribersOpen}
+            className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${textSecondaryOnSurface}`}
+            onClick={() => setSubscribersOpen((open) => !open)}
+            type="button"
+            {...pageChrome}
+          >
+            <span>
+              {subscribers.counted
+                ? `${PROPERTY_LABELS.subscribers}:`
+                : PROPERTY_LABELS.subscribers}
+            </span>
+            {subscribers.counted ? <span {...authorText}>{subscribers.rows.length}</span> : null}
+          </button>
+          {subscribersOpen ? (
+            <SubscribedAgents
+              onUnsubscribe={(sessionId) => subscribers.unsubscribe.mutate(sessionId)}
+              ownerLabel={issue.key}
+              subscribers={subscribers.rows}
+            />
+          ) : null}
+          {subscribers.error ? (
+            <QueryError
+              error={subscribers.failure}
+              message="Subscribed agents unavailable — Envoy listener unreachable."
+              onRetry={subscribers.refetch}
+              retrying={subscribers.fetching}
+            />
+          ) : null}
+          {subscribers.unsubscribe.isError ? (
+            <QueryError
+              message="Could not unsubscribe this agent."
+              onRetry={() =>
+                subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")
+              }
+              retrying={subscribers.unsubscribe.isPending}
+            />
+          ) : null}
+        </Row>
         {/* Everyone who worked the issue, running or not, which the nine-tab page gave a tab
-              of its own. It is read only once a reader opens it, so the panel costs the page no
-              request on an address that does not name it (R20). */}
-        <button
-          aria-expanded={collaboratorsOpen}
-          className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
-          onClick={() => setCollaboratorsOpen((open) => !open)}
-          type="button"
-          {...pageChrome}
-        >
-          <span>{PROPERTY_LABELS.collaborators}</span>
-        </button>
-        {collaboratorsOpen ? (
-          <div {...authorText}>
-            <IssueCollaboratorList issueKey={issue.key} />
-          </div>
-        ) : null}
+            of its own. It is read only once a reader opens it, so the panel costs the page no
+            request on an address that does not name it (R20). */}
+        <Row wide>
+          <button
+            aria-expanded={collaboratorsOpen}
+            className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${textSecondaryOnSurface}`}
+            onClick={() => setCollaboratorsOpen((open) => !open)}
+            type="button"
+            {...pageChrome}
+          >
+            <span>{PROPERTY_LABELS.collaborators}</span>
+          </button>
+          {collaboratorsOpen ? (
+            <div className="w-full" {...authorText}>
+              <IssueCollaboratorList issueKey={issue.key} />
+            </div>
+          ) : null}
+        </Row>
       </PropertySection>
       <PropertySection name="references" sections={sections}>
-        <ReferencedByToggle
-          controls={referencesPanelId}
-          count={issue.referenced_by_count}
-          expanded={referencesOpen}
-          onToggle={() => setReferencesOpen((open) => !open)}
-        />
-        {referencesOpen ? (
-          <ReferencedBy
-            className="w-full"
-            reference={issueReference}
-            toggle={{ id: referencesPanelId }}
+        {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
+            wherever no approval request waits on the reader (R13, R31). */}
+        <Row glyph="▤" label={PROPERTY_LABELS.approval}>
+          <ApprovalSteps
+            actions={!approvalWaits}
+            entries={approvalEntries}
+            primaryArtifactId={issue.primary_artifact_id}
+            reasons
+            testId="issue-details-approval-steps"
           />
-        ) : null}
+        </Row>
+        <Row wide>
+          <ReferencedByToggle
+            controls={referencesPanelId}
+            count={issue.referenced_by_count}
+            expanded={referencesOpen}
+            onToggle={() => setReferencesOpen((open) => !open)}
+          />
+          {referencesOpen ? (
+            <ReferencedBy
+              className="w-full"
+              reference={issueReference}
+              toggle={{ id: referencesPanelId }}
+            />
+          ) : null}
+        </Row>
+        {/* Every document and file of the issue, each opening its own address, folded after ten
+            behind a count that opens the rest (R13). */}
+        <Row
+          glyph="▤"
+          label={
+            <>
+              {PROPERTY_LABELS.files} · <span {...authorText}>{artifacts.length}</span>
+            </>
+          }
+          wide
+        >
+          {artifacts.length === 0 ? (
+            none
+          ) : (
+            <ul className="flex w-full min-w-0 flex-col">
+              {files.map((artifact) => (
+                <li key={artifact.id}>
+                  <Link
+                    className={`grid w-full grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-md p-1 text-sm ${pageInkText} ${pageRowHoverBg}`}
+                    to={buildIssuePath({ key: issue.key, kind: "artifact", slug: artifact.slug })}
+                  >
+                    <span aria-hidden="true" className={pageQuietText}>
+                      {artifact.kind === "image" ? "▣" : "▤"}
+                    </span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]" {...authorText}>
+                      {artifact.name}
+                    </span>
+                    <span className={`text-xs whitespace-nowrap ${pageQuietText}`} {...pageChrome}>
+                      {artifact.kind === "doc"
+                        ? FILE_WORDS.doc
+                        : artifact.kind === "image"
+                          ? FILE_WORDS.image
+                          : FILE_WORDS.file}
+                      {artifact.versions === null || artifact.versions.length === 0 ? null : (
+                        <span {...authorText}> v{artifact.versions.length}</span>
+                      )}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+          {artifacts.length > FOLD_AFTER && !filesOpen ? (
+            <button
+              className={`pt-1.5 text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
+              onClick={() => setFilesOpen(true)}
+              type="button"
+              {...pageChrome}
+            >
+              {CONTROL_LABELS.show_all} <span {...authorText}>{artifacts.length}</span>
+            </button>
+          ) : null}
+        </Row>
       </PropertySection>
       <FocusedNodeFacts node={focused} />
       {/* Under the margin's own content, never above it, for the same reason the sections
@@ -258,6 +558,34 @@ export function IssueMarginPanel({
   );
 }
 
+/** The issues of a list of them, each its key as a link and its title beside it, folded after
+ *  ten behind a count that opens the rest (R13). */
+function IssueList({
+  issues,
+}: {
+  issues: readonly { readonly key: string; readonly title: string }[];
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  const shown = open ? issues : issues.slice(0, FOLD_AFTER);
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-1">
+      {shown.map((one) => (
+        <IssueLine issueKey={one.key} key={one.key} title={one.title} />
+      ))}
+      {issues.length > FOLD_AFTER && !open ? (
+        <button
+          className={`self-start text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
+          onClick={() => setOpen(true)}
+          type="button"
+          {...pageChrome}
+        >
+          {CONTROL_LABELS.show_all} <span {...authorText}>{issues.length}</span>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 /** One named section of the panel's properties, open or closed by its own one control. A closed
  *  section draws none of its values, so what a reader sees is what the page holds. */
 function PropertySection({
@@ -267,15 +595,15 @@ function PropertySection({
 }: {
   children: ReactNode;
   name: MarginSection;
-  sections: ReturnType<typeof useMarginSections>;
+  sections: MarginSections;
 }): ReactNode {
   const open = sections.isOpen(name);
   return (
-    <section className={`border-b pb-2 ${borderDefault}`} data-margin-section={name}>
+    <section data-margin-section={name}>
       <h2>
         <button
           aria-expanded={open}
-          className={`flex min-h-11 w-full items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
+          className={`flex min-h-11 w-full items-center justify-between gap-2 text-xs leading-4 font-semibold tracking-[0.08em] uppercase md:min-h-8 ${pageQuietText}`}
           onClick={() => sections.toggle(name)}
           type="button"
           {...pageChrome}
@@ -284,19 +612,55 @@ function PropertySection({
           <span aria-hidden="true">{open ? "−" : "+"}</span>
         </button>
       </h2>
-      {open ? <div className="flex min-w-0 flex-col gap-2">{children}</div> : null}
+      {open ? <div className="flex min-w-0 flex-col">{children}</div> : null}
     </section>
   );
 }
 
-/** One property of the issue inside a section: its name, then its value. */
-function Property({ children, label }: { children: ReactNode; label: string }): ReactNode {
+/**
+ * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
+ * and its name, and the value beside it; a `wide` row is one column, for a property whose own
+ * control names it. `row` names the row a control elsewhere opens Details at
+ * (`details-rows.ts`).
+ */
+function Row({
+  children,
+  glyph,
+  label,
+  row,
+  testId,
+  wide = false,
+}: {
+  children: ReactNode;
+  glyph?: string;
+  label?: ReactNode;
+  row?: DetailsRow;
+  testId?: string;
+  wide?: boolean;
+}): ReactNode {
   return (
-    <div className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className={`font-medium ${textMutedOnSurface}`} {...pageChrome}>
-        {label}:
-      </span>
-      {children}
+    <div
+      className={`grid min-w-0 gap-2.5 border-b py-2 text-sm leading-5 ${
+        wide ? "grid-cols-1" : "grid-cols-[112px_minmax(0,1fr)]"
+      } ${pageRowBorder}`}
+      data-testid={testId}
+      {...(row === undefined ? {} : { [DETAILS_ROW_ATTRIBUTE]: row })}
+    >
+      {label === undefined ? null : (
+        <div className={`flex min-w-0 items-start gap-[7px] ${pageQuietText}`}>
+          <span aria-hidden="true" className="w-3.5 shrink-0 text-center">
+            {glyph}
+          </span>
+          <span className="min-w-0" {...pageChrome}>
+            {label}
+          </span>
+        </div>
+      )}
+      <div
+        className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 [overflow-wrap:break-word] ${pageInkText}`}
+      >
+        {children}
+      </div>
     </div>
   );
 }

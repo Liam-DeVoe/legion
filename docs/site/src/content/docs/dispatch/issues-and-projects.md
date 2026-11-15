@@ -165,9 +165,9 @@ and an agent names the first one in the call that creates the project.
 
 ### Labels
 
-Choose **Labels** in the issue header to edit an issue's labels. The list offers every label used
-in the project, and you can create a new one from the search box. Your changes save when the list
-closes.
+Choose **+N labels** at the end of the header's line to open **Details** at its **Labels** row,
+then **Edit labels** there; `l` does both. The list offers every label used in the project, and
+you can create a new one from the search box. Your changes save when the list closes.
 
 ### Filters
 
@@ -220,23 +220,35 @@ the issue's properties and its conversation.
 
 ### The header
 
-The header stays at the top of the screen while you scroll. It has four rows:
+The header stays at the top of the screen while you scroll. It holds what tells you to act and
+nothing else, in three lines on a desktop screen:
 
 1. The parent issue as a link, when there is one, then the issue's key, a control that copies
-   it, the pin, and **Issue actions**, the `⋯` at the end of the row. **Issue actions** holds
-   **Close issue**, or **Reopen into Backlog** on a closed issue, and **Set parent issue**, or
-   **Edit parent issue** when the issue has a parent.
-2. The title, in full, wrapped at any width. Choose it, or press `e`, to edit it.
-3. **Status**, priority, assignee and labels; **Add**; the progress counts; the approval chip
-   once someone has asked for the spec to be approved; and whose turn it is: `Waiting on you (N)`
-   or `Waiting on agents (N)`, counting the issue's open asks.
-4. **Messages go to** and the issue's route; and, while an agent holds the issue, **Claimed by**
-   and that agent, with **Release**.
+   it, and **Issue actions**, the `⋯`; at the right end, **Details**, which opens the panel. On a
+   screen narrower than 768 px the row starts with `☰`. **Issue actions** holds **Pin issue**, or
+   **Unpin issue** on a pinned issue, **Close issue**, or **Reopen into Backlog** on a closed
+   issue, and **Set parent issue**, or **Edit parent issue** when the issue has a parent.
+2. The title. On a screen 768 px wide or more it shows two lines; on a phone it shows all of it.
+   Choose it, or press `e`, to edit it: the box you type in wraps as the title does and shows all
+   of it, so ending the edit moves nothing under it.
+3. **Status**, priority and assignee; the children's progress, **Children N of M done** with a
+   bar and **Whole tree N of M done**; `Waiting on you (N)`, or `Waiting on agents (N)` while the
+   issue's open asks wait on agents alone; the approval control; and the labels that fit on the
+   line, then **+N labels**, which opens **Details** at its **Labels** row.
 
-**Add** lists each property the issue has no value for yet: **Parent**, **Assignee**,
-**Labels**, **Messages go to**, **Blocked by**, **Repository** and **Components**. Pick one to
-open the control that sets it. A closed issue has no **Add**, and shows **This issue is closed.**
-above the rows. On a screen narrower than 768 px the fourth row is at the end of the page.
+`Waiting on you (N)` counts three things: the open asks whose turn is yours, the decisions
+waiting for your review, and an approval request waiting on you. Choose it, or press Enter on it,
+to turn the **Decisions** preset on with the first of them focused; when only the approval request
+waits, it moves you to the approval control instead. From a document, it returns to the outline
+first.
+
+The approval control reads **Not requested** until somebody asks for the spec to be approved.
+While a request waits on you it carries **Approve** and **Request changes**; on a phone they are
+on the line under it. A root issue of a project that gates steps shows one entry per step instead,
+in the project's order. Where the issue's messages reach nobody, the line ends with a marker that
+says so.
+
+A closed issue shows **This issue is closed.** above the rows.
 
 A list that still clamps a title shows the whole of it on hover.
 
@@ -426,13 +438,22 @@ or choosing a highlighted passage opens it too, since the comment is drawn there
 edge to change its width, which this browser keeps. On a phone it covers the screen. The
 margin's own comment cards are at its top, and the issue's conversation is in it.
 
-Three sections hold the rest of the issue's properties. Choose a section's name to close or open
-it. This browser keeps your choice for the next issue you open.
+**Details** holds every property of the issue, the header's included, each on a row of its own
+with its name at the left, so nothing has to be opened to be seen. A property with no value reads
+**None**. Three sections hold them. Choose a section's name to close or open it. This browser
+keeps your choice for the next issue you open.
 
-- **Development**: **Repository**; **Components**, the parts of the project's architecture the
-  issue belongs to, which you can change when the project has an architecture source, picking
-  from the components of every source; **Blocked by**, the issues this one waits on; and
-  **Links**, the GitHub issues and pull requests linked to it.
+- **Development**: **Status**, **Priority**, **Assignee**, and **Labels** with every label listed
+  and **Edit labels**; **Advances**, the priorities the issue advances, with the control that adds
+  and removes one; **Parent**; **Blocked by**, each issue this one waits on with its title, and
+  **Blocks**, the issues that wait on it; **Repository**; **Pull request**, each with its state;
+  **Links**, the other GitHub issues linked to it; **Claimed by**, the agent that holds the issue
+  and since when, with **Release**; **Messages go to**, the issue's route and whether it reaches
+  anyone, with its editor; **Components**, the parts of the project's architecture the issue
+  belongs to, which you can change when the project has an architecture source; and **Tasks**,
+  the spec's task list counted. **Add** lists each property the issue has no value for yet:
+  **Parent**, **Assignee**, **Labels**, **Messages go to**, **Blocked by**, **Repository** and
+  **Components**. Pick one to open the control that sets it. A closed issue has no **Add**.
 - **People**: **Opened by**; **Subscribers: N**, which lists the agent sessions subscribed to the
   issue, where **Unsubscribe** stops delivery to one and tells it so; and **Collaborators**,
   which lists everyone who has worked the issue. That list has Legion's agents by role, each
@@ -442,8 +463,10 @@ it. This browser keeps your choice for the next issue you open.
   shows whether it is running. When Legion's record of this issue's agents cannot be read, the
   list says so instead of listing nothing. An issue nobody has worked reads **No one has worked
   this issue yet.**
-- **References**: **Referenced by (N)** lists every issue, document, ask, comment, and message
-  that links here.
+- **References**: **Approval**, each approval step with the reason a reviewer gave, and
+  **Approve** and **Request changes** when no request waits on you; **Referenced by (N)**, every
+  issue, document, ask, comment, and message that links here; and **Files and documents**, every
+  document and file of the issue, the first ten and then **Show all N**.
 
 **The row you are on** gives the focused row's kind and text, its **Status**, and **Written by**
 with its author. With no row focused, it gives the issue's.
@@ -536,8 +559,8 @@ Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send. `Enter` alone starts a new lin
 
 Pins keep things you return to within reach.
 
-- **An issue.** Choose the pin in the header's first row, or press `Shift+P`. Pinned issues
-  appear under **Pinned** in the sidebar, with their open-ask counts.
+- **An issue.** Choose **Pin issue** in the header's **Issue actions**, or press `Shift+P`. Pinned
+  issues appear under **Pinned** in the sidebar, with their open-ask counts.
 - **A Conversation entry.** Every entry has a pin at its top right. Pinned entries appear in the
   margin's **Pinned** tab beside the document, each with **Unpin**, and **Pinned** in the panel's
   Conversation lists only them.

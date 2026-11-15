@@ -1,31 +1,31 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import {
-  borderDefault,
-  card,
-  focusVisibleRing,
-  secondaryButtonBorder,
+  pageHairBorder,
+  pageHeaderControl,
+  pageInkText,
+  pagePaperBg,
+  pageRowHoverBg,
   secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
 /**
- * The one control row one keeps the issue's actions behind: close, reopen, and the control that
- * gives the issue a parent (dispatch://INFRA-1196, the identity block's row one). It holds
- * actions, never a property: every property with a value is drawn, and a property with none is
- * reached from the add control (R11, which bans a "more" that hides a property).
+ * The header's one overflow menu (dispatch://INFRA-1196 R13): the pin, close, reopen, and the
+ * control that gives the issue a parent. It holds actions, never a property: every property
+ * with a value is drawn, and a property with none is reached from Details' one add control (R13,
+ * which bans a "more" that hides a property). It is the prototype's `#more-btn` and `#menu`.
  *
- * Each action is a plain `button`, in a labelled group rather than a `role="menu"` of
- * `menuitem`s: these are the controls the old header drew as buttons, and a reader - or the
- * check that reads every control the old page offered - finds them under the same role. The
- * words are not all the old ones: reopening now reads "Reopen into Backlog"
- * (`CONTROL_LABELS.reopen_into_backlog`), because a control says what it does where a tooltip
- * used to (R11) and its words are its name (`IssueHeader.tsx`, WCAG 2.5.3). A check that looks
- * for the old "Reopen issue" reads the new sentence instead.
+ * Each action is a plain `button`, in a group rather than a `role="menu"` of `menuitem`s: these
+ * are the controls the old header drew as buttons, and a reader - or the check that reads every
+ * control the old page offered - finds them under the same role. The words are not all the old
+ * ones: reopening now reads "Reopen into Backlog" (`CONTROL_LABELS.reopen_into_backlog`),
+ * because a control says what it does where a tooltip used to and its words are its name
+ * (`IssueHeader.tsx`, WCAG 2.5.3).
+ *
+ * The group is drawn while it is shut too, hidden, so the keys that act on one of its controls -
+ * `Shift+P`, the pin (`useIssueKeymap.ts`) - press the same control a reader presses.
  */
 export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] }): ReactNode {
   const [open, setOpen] = useState(false);
@@ -62,7 +62,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         aria-controls={panelId}
         aria-expanded={open}
         aria-label={CONTROL_LABELS.issue_actions}
-        className={`min-h-11 rounded-lg px-2 text-sm font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`}
+        className={pageHeaderControl}
         onClick={() => setOpen((shown) => !shown)}
         type="button"
       >
@@ -70,28 +70,32 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
           ⋯
         </span>
       </button>
-      {open ? (
-        <div
-          className={`absolute right-0 z-30 mt-1 flex w-56 flex-col gap-1 rounded-lg border p-2 shadow-lg ${borderDefault} ${card}`}
-          id={panelId}
-        >
-          {actions.map((action) => (
-            <button
-              className={`min-h-11 rounded-lg px-2 py-2 text-left text-sm font-medium ${textSecondaryOnSurface} ${secondaryButtonDisabledText}`}
-              disabled={action.disabled}
-              key={action.text}
-              onClick={() => {
-                setOpen(false);
-                action.run();
-              }}
-              type="button"
-              {...pageChrome}
-            >
-              {action.text}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {/* Below the phone's width the panel spans the screen less the page's 14 px insets, under
+          the control where it opened, so it never reaches past the right edge (R17); from
+          `md` it hangs from the control at the prototype's menu width. */}
+      <div
+        className={`fixed inset-x-3.5 z-30 mt-1 flex flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] md:absolute md:inset-x-auto md:left-0 md:w-64 ${pageHairBorder} ${pagePaperBg}`}
+        hidden={!open}
+        id={panelId}
+      >
+        {actions.map((action) => (
+          <button
+            aria-pressed={action.pressed}
+            data-issue-action={action.id}
+            className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium md:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
+            disabled={action.disabled}
+            key={action.id}
+            onClick={() => {
+              setOpen(false);
+              action.run();
+            }}
+            type="button"
+            {...pageChrome}
+          >
+            {action.text}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -99,9 +103,13 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
 /** One action of the issue: the words the control shows a reader, and what it does. The words
  *  are its name too - the control carries no `aria-label` - so a voice user who says what it
  *  reads presses it (WCAG 2.5.3, axe's `label-content-name-mismatch`). Reopening says which
- *  status it reopens into, where a tooltip used to (R11), and that whole sentence is the name. */
+ *  status it reopens into, where a tooltip used to, and that whole sentence is the name. A
+ *  toggle - the pin - says what is so with `pressed`. */
 export interface IssueAction {
   readonly disabled?: boolean;
+  /** Which action this is, apart from the words it shows, which change as it saves. */
+  readonly id: string;
+  readonly pressed?: boolean;
   readonly run: () => void;
   readonly text: string;
 }

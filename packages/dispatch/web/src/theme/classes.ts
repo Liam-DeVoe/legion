@@ -815,11 +815,43 @@ export const pagePersonBg = "bg-page-person";
 export const pageIssueBg = "bg-page-issue";
 export const pageWaitingBg = "bg-page-waiting";
 
+/** The header's small bordered control (the prototype's `.hbtn`): Details, the overflow menu and
+ *  the phone's `☰`, 22 px tall from the phone's width up and 24 px below it, the least a touch
+ *  target may be (WCAG 2.5.8), because the header's six lines at 390 px leave no room for more
+ *  (dispatch://INFRA-1196 R13). */
+export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
+/** An issue's status as the header's pill draws it (the prototype's `.st-*`): in progress, under
+ *  test and in review in the in-progress blue, done in the passed green, and every other status
+ *  in the not-run grey. The pill's glyph and its word say the status; the colour repeats it. */
+export const pageStatusProgressText = "text-page-in-progress";
+export const pageStatusDoneText = "text-page-passed";
+export const pageStatusIdleText = "text-page-not-run";
+/** The count of what waits on the reader (the prototype's `.waitchip`): its words on the waiting
+ *  tint, inside a rule and beside a dot of the waiting colour. */
+export const pageWaitingChip = "border-page-waiting bg-page-waiting-tint text-page-waiting-text";
+/** A label as the header and Details draw it (the prototype's `.lchip`). */
+export const pageLabelChip = "border-page-hair bg-page-pane text-page-muted";
+/** A person's initial in a filled circle (the prototype's `.ava`). */
+export const pageAvatar = "bg-page-ink text-page-paper";
+/** The children's progress as a row of segments, one per child (the prototype's `.segs`): done
+ *  in the passed green, in progress in the in-progress blue, the rest in the hairline grey. The
+ *  two counts beside it say the same in words, so the bar is decoration. */
+export const pageSegmentDoneBg = "bg-page-passed";
+export const pageSegmentProgressBg = "bg-page-in-progress";
+export const pageSegmentBg = "bg-page-hair";
+/** A row of Details (the prototype's `.frow`): its rule, and the hover of a row that is a
+ *  control of its own (a file, a menu item). */
+export const pageRowBorder = "border-page-line";
+export const pageRowHoverBg = "hover:bg-page-mark";
+/** What the header says of a write Dispatch refused, in the failed red on the page's paper. */
+export const pageFailedText = "text-page-failed";
+
 for (const ground of ["page-paper", "page-pane"]) {
   for (const ink of ["page-ink", "page-muted", "page-quiet"]) {
     registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
   }
 }
+registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
 registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
 // A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
 registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);

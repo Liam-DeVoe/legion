@@ -59,16 +59,24 @@ export const PROPERTY_LABELS = freeze({
    *  (dispatch://INFRA-2947 R4, R16), which the panel's Development section draws with the
    *  control that adds and removes one (dispatch://INFRA-1196 R13). */
   advances: "Advances",
+  /** The documents of the issue a reviewer approves, each with how it stands and why a
+   *  reviewer sent it back (R13, R31): Details' row of the approval steps and their reasons. */
+  approval: "Approval",
   assignee: "Assignee",
   /** The issues this one waits on (`blocked_by`). */
   blocked_by: "Blocked by",
+  /** The issues that wait on this one: the other direction of `blocked_by`, which Dispatch
+   *  reads as the references of kind `blocked_by` that point at the issue. */
+  blocks: "Blocks",
   /** Who is working the issue, which is not where its messages go. */
   claim: "Claimed by",
   /** Everyone who worked the issue, running or not, which the panel opens on request. */
   collaborators: "Collaborators",
   components: "Components",
-  /** The issue's links out of Dispatch, such as a pull request. */
+  /** The issue's links out of Dispatch other than a pull request. */
   external_links: "Links",
+  /** Every document and file of the issue, each opening its own address (R13). */
+  files: "Files and documents",
   /** The heading of the panel's facts of the node the reader's focus is on (R12). A node is a
    *  row to the reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   focused_node: "The row you are on",
@@ -76,16 +84,22 @@ export const PROPERTY_LABELS = freeze({
   opened_by: "Opened by",
   parent: "Parent",
   priority: "Priority",
+  /** The issue's pull requests, each with its state (R13). */
+  pull_request: "Pull request",
   referenced_by: "Referenced by",
   repository: "Repository",
   /** Where a message on this issue goes, said rather than named (R11). */
   route: "Messages go to",
   status: "Status",
   subscribers: "Subscribers",
+  /** How many of the task-list items of the issue's spec are checked, which the header drew
+   *  as a chip before Details held it (R13). */
+  tasks: "Tasks",
   /** The issue's own title, which the identity block draws as itself; the name is what the
    *  shell's indicator calls a write of it. */
   title: "Title",
-  /** Row three's waiting marker: whose turn it is on the open asks. */
+  /** The header's count of what waits on the reader, and the indicator of whose turn the issue
+   *  is when nothing waits on them (R13). */
   waiting_on_agents: "Waiting on agents",
   waiting_on_you: "Waiting on you",
 } as const);

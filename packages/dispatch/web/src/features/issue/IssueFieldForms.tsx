@@ -132,7 +132,7 @@ function RouteForm({
     }
   };
   return (
-    <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
+    <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
         className={`text-sm font-medium ${textSecondaryOnSurface}`}
         htmlFor="issue-route"
@@ -142,7 +142,7 @@ function RouteForm({
       </label>
       <input
         aria-describedby="issue-route-help"
-        className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+        className={`w-full rounded px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
         disabled={isClosed}
         id="issue-route"
         onChange={(event) => drafts.writeRoute(event.target.value)}
@@ -202,7 +202,7 @@ function ParentForm({
     }
   };
   return (
-    <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
+    <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
         className={`text-sm font-medium ${textSecondaryOnSurface}`}
         htmlFor="issue-parent"
@@ -212,7 +212,7 @@ function ParentForm({
       </label>
       <input
         aria-describedby="issue-parent-help"
-        className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+        className={`w-full rounded px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
         disabled={isClosed}
         id="issue-parent"
         onChange={(event) => drafts.writeParent(event.target.value)}

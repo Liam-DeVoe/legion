@@ -222,7 +222,7 @@ work it out from the order.
 
 An issue gets the label in one of three ways:
 
-- **A person hands it over**, from the issue header in the Dispatch dashboard.
+- **A person hands it over**, from the issue's **Details** panel in the Dispatch dashboard.
 - **A person asks the controller to**, in a message, a Slack request, or the answer to one of its
   asks, and the controller sets the label for them.
 - **A Legion agent reports a clear defect** no running tree owns, one whose fix needs no choice of

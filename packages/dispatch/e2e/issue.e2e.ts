@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { PROPERTY_LABELS } from "../web/src/features/issue/page-structure";
@@ -19,7 +20,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
-import { openIssueActions } from "./issue-page";
+import { closeDetails, openDetails, openIssueActions } from "./issue-page";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -55,6 +56,8 @@ test("database reset clears fake Envoy subscribers before the next issue", async
     );
     await page.goto(`/issues/${issue.key}`);
     expect((await subscribers).status()).toBe(200);
+    // The subscribers are a row of Details (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     await expect(page.getByRole("button", { name: "Subscribers: 0" })).toBeVisible();
   } finally {
     await context.close();
@@ -165,9 +168,9 @@ test("issue header identifies session and human creators", async ({ browser }, t
     await page.goto(`/issues/${sessionIssue.key}`);
     const sessionHeader = page.getByTestId("issue-header");
     await expect(sessionHeader).toBeVisible();
-    // Who opened the issue is a property of the issue, not its identity, so it is in the panel's
-    // People section (dispatch://INFRA-1196 R12) rather than in the header's deleted rail.
-    await expect(page.getByTestId("issue-margin")).toContainText(/Opened by:\s*chief of staff/);
+    // Who opened the issue is a property of the issue, not its identity, so it is a row of
+    // Details' People section (dispatch://INFRA-1196 R13), its name beside the value.
+    await expect(page.getByTestId("issue-margin")).toContainText(/Opened by\s*chief of staff/);
     // Nothing on the page is reached by scrolling a row sideways, at any width (R11, R17).
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -182,7 +185,7 @@ test("issue header identifies session and human creators", async ({ browser }, t
     await page.goto(`/issues/${humanIssue.key}`);
     const humanHeader = page.getByTestId("issue-header");
     await expect(humanHeader).toBeVisible();
-    await expect(page.getByTestId("issue-margin")).toContainText(/Opened by:\s*alice/);
+    await expect(page.getByTestId("issue-margin")).toContainText(/Opened by\s*alice/);
     const humanScreenshot = testInfo.outputPath("issue-header-human-creator.png");
     await humanHeader.screenshot({ path: humanScreenshot });
     await testInfo.attach("human-authored issue header", {
@@ -193,7 +196,8 @@ test("issue header identifies session and human creators", async ({ browser }, t
     await page.goto(`/issues/${historicalIssue.key}`);
     const historicalHeader = page.getByTestId("issue-header");
     await expect(historicalHeader).toBeVisible();
-    await expect(page.getByText("Opened by:", { exact: true })).toHaveCount(0);
+    // An issue with no recorded creator reads None in that row (R13).
+    await expect(page.getByTestId("issue-margin")).toContainText(/Opened by\s*None/);
     const historicalScreenshot = testInfo.outputPath("issue-header-historical-creator.png");
     await historicalHeader.screenshot({ path: historicalScreenshot });
     await testInfo.attach("historical issue header", {
@@ -241,7 +245,9 @@ test("issue header copies its key and persists its title, status, and route", as
     await expect.poll(copied).toEqual([issue.key, `dispatch://${issue.key}`]);
     // The route editor is its label, its box and its two buttons: the page draws no sentence
     // beside it explaining what a route is (dispatch://INFRA-1196, the person's ruling on helper
-    // text), so the screenshot shows the editor as a reader meets it.
+    // text), so the screenshot shows the editor as a reader meets it. The route is a row of
+    // Details (R13).
+    await openDetails(page);
     await page.getByRole("button", { name: "Messages default to no route" }).click();
     await expect(page.getByLabel(PROPERTY_LABELS.route, { exact: true })).toBeVisible();
     await expect(page.getByText("wake this agent or role", { exact: false })).toHaveCount(0);
@@ -249,6 +255,7 @@ test("issue header copies its key and persists its title, status, and route", as
       path: testInfo.outputPath("issue-header-1280.png"),
     });
     await page.getByRole("button", { name: "Cancel" }).click();
+    await closeDetails(page);
     await heading.click();
     const issueTitle = page.getByLabel("Issue title");
     await issueTitle.fill("First decision revised");
@@ -256,6 +263,7 @@ test("issue header copies its key and persists its title, status, and route", as
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ title: "First decision revised" });
     await page.getByLabel("Status").selectOption("todo");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "todo" });
+    await openDetails(page);
     await page.getByRole("button", { name: "Messages default to no route" }).click();
     await page
       .getByLabel(PROPERTY_LABELS.route, { exact: true })
@@ -315,6 +323,7 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribedAgents).toContainText("e2e-session-title");
@@ -335,7 +344,8 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
       page.getByRole("link", { name: "https://github.com/sjawhar/legion/issues/815" })
     ).toHaveCount(0);
     // No component attached anywhere on the chain: the rail's read-only line says so.
-    await expect(page.getByTestId("issue-components")).toContainText("Components:Not attached");
+    // The components are Details' row, which carries the label (dispatch://INFRA-1196 R13).
+    await expect(page.getByTestId("issue-components")).toContainText("Not attached");
     // The children are a section of every preset now, not a tab of their own (R10).
     const childRow = page
       .getByTestId("issue-children")
@@ -384,6 +394,7 @@ test("a subscriber no longer live shows its last heartbeat, not its subscription
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     const row = subscribedAgents
@@ -432,14 +443,19 @@ test("editing the parent line moves the issue across Children tabs live", async 
       })(),
       (async () => {
         await moverPage.goto(`/issues/${mover.key}`);
-        await expect(moverPage.getByRole("link", { name: oldParent.key })).toBeVisible();
+        // The parent is the header's breadcrumb, and again Details' Parent row (R13).
+        await expect(
+          moverPage.getByTestId("issue-header").getByRole("link", { name: oldParent.key })
+        ).toBeVisible();
       })(),
     ]);
     await openIssueActions(moverPage);
     await moverPage.getByRole("button", { name: "Edit parent issue" }).click();
     await moverPage.getByLabel("Parent").fill(newParent.key);
     await moverPage.getByRole("button", { name: "Save parent" }).click();
-    await expect(moverPage.getByRole("link", { name: newParent.key })).toBeVisible();
+    await expect(
+      moverPage.getByTestId("issue-header").getByRole("link", { name: newParent.key })
+    ).toBeVisible();
 
     // The new parent's open page hears child.added on the live event feed and gains the row
     // without a reload.
@@ -480,6 +496,8 @@ test("an answered ask remains in the issue conversation", async ({ browser }) =>
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    // The ask's card is in the panel, Details (dispatch://INFRA-1196 R14).
+    await openDetails(page);
     const askCard = page.getByTestId(`ask-${ask.id}`);
     await askCard.getByRole("radio", { name: "Ship" }).check();
     await askCard.getByRole("button", { exact: true, name: "Answer" }).click();
@@ -515,6 +533,7 @@ test("a quote-anchored ask identifies its document in the margin and Conversatio
   const page = await alice.newPage();
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openDetails(page);
     const marginCard = needsYouCards(page).getByTestId(`ask-${ask.id}`);
     await expect(marginCard.getByRole("link", { name: "spec.md" })).toHaveAttribute(
       "href",
@@ -565,9 +584,13 @@ test("closing an issue removes its asks from the inbox and pinning stays private
     await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     await expect(inbox.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(inbox.getByText("First ask", { exact: true })).toHaveCount(0);
+    // The pin is the header's actions menu's (dispatch://INFRA-1196 R13).
+    await openIssueActions(page);
     await page.getByRole("button", { name: "Pin issue" }).click();
-    await expect(page.getByRole("button", { name: "Unpin issue" })).toBeEnabled();
-    await page.reload();
+    await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute("aria-pressed", "true");
+    // The sidebar's Pinned group is the shell's whole navigation, which the issue page draws as
+    // an icon rail (dispatch://INFRA-1196 R14): the Inbox draws it whole.
+    await page.goto("/");
     await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
     const bob = await asUser(browser, "bob");
     const bobPage = await bob.newPage();
@@ -649,6 +672,8 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
     await page.unroute("**/api/v1/me/state");
     await page.unroute("**/api/v1/me/issues/*/state");
     await page.goto(`/issues/${issue.key}`);
+    // The margin's Pinned tab is in Details, closed on a load (R14).
+    await openDetails(page);
     await page.getByRole("tab", { name: "Pinned" }).click();
     // The redesign draws the message in the tree and in the panel (R1, R12), so this reads the
     // panel's copy rather than resolving to both.
@@ -681,6 +706,7 @@ test("a human can unsubscribe an agent from an issue and the session is told", a
 
   try {
     await page.goto(`/issues/${issue.key}`);
+    await openDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribedAgents.getByText("Worker (e2e)", { exact: true })).toBeVisible();
@@ -752,10 +778,6 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const top = async (locator: Locator) => Math.round((await locator.boundingBox())?.y ?? -1);
-  const middle = async (locator: Locator) => {
-    const box = await locator.boundingBox();
-    return Math.round((box?.y ?? -1) + (box?.height ?? 0) / 2);
-  };
   const inView = async (locator: Locator, width: number) => {
     const box = await locator.boundingBox();
     return box !== null && box.x >= 0 && box.x + box.width <= width;
@@ -769,7 +791,10 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     // read off the page as a whole, every one of them would pass with the change reverted,
     // since the header's own fourth row sits below the state row too.
     const panel = page.getByTestId("issue-margin");
-    const openedBy = panel.getByText("Opened by:", { exact: true });
+    // The panel is Details, closed on a load (dispatch://INFRA-1196 R14); each property is a row
+    // of it, its name beside its value (R13).
+    await openDetails(page);
+    const openedBy = panel.getByText("Opened by", { exact: true });
     const subscribers = panel.getByRole("button", { name: "Subscribers: 1" });
     const link = panel.getByRole("link", { name: "#1051 sjawhar/legion" });
     await expect(indicator).toHaveText("Waiting on you (1)");
@@ -778,6 +803,7 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     await expect(
       page.getByRole("link", { name: "https://github.com/sjawhar/legion/pull/1051" })
     ).toHaveCount(0);
+    await closeDetails(page);
 
     // Row three holds how the issue stands - the status, the priority, the assignee and the
     // labels together - with the waiting marker; row one holds what a reader does to the issue,
@@ -786,14 +812,16 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     const stateRow = await top(page.getByLabel("Status"));
     // `Priority of <KEY>` is the issue's own grade; the control that adds a priority the issue
     // advances is in the panel and names that word too.
-    expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
-    await expect(page.getByTestId("issue-state-actions").getByTestId("issue-labels")).toBeVisible();
+    expect(await top(page.getByLabel(/^Priority of /))).toBeCloseTo(stateRow, -1);
+    await expect(
+      page.getByTestId("issue-state-actions").getByTestId("issue-header-labels")
+    ).toBeVisible();
     expect(await top(page.getByRole("button", { name: "Issue actions" }))).toBeLessThan(stateRow);
     await expect(panel).toHaveCount(1);
-    // Each sits below the state row as well, which is where the panel is drawn at this width.
-    for (const item of [openedBy, subscribers, link]) {
-      expect(await top(item)).toBeGreaterThan(stateRow);
-    }
+    // The panel's properties are Details', a sheet on the phone, which the header opens.
+    await openDetails(page);
+    for (const item of [openedBy, subscribers, link]) await expect(item).toBeVisible();
+    await closeDetails(page);
     expect(await inView(indicator, 390)).toBe(true);
     const phoneHeader = await header.boundingBox();
     expect(phoneHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(400);
@@ -807,11 +835,10 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     await testInfo.attach("issue header (390px)", { contentType: "image/png", path: phoneShot });
 
     await page.setViewportSize({ height: 900, width: 1280 });
-    // The shell swaps its phone bar for the sidebar, and the margin its sheet for the column, in
-    // a React commit after the media query's change event. Until then the phone DOM is laid out
-    // under the desktop CSS, which squeezes <main> to its padding at the right edge.
-    await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
-    await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible();
+    // The shell swaps the header's `☰` for its icon rail (dispatch://INFRA-1196 R14) in a React
+    // commit after the media query's change event. Until then the phone DOM is laid out under
+    // the desktop CSS, which squeezes <main> to its padding at the right edge.
+    await expect(header.getByRole("button", { name: "Open navigation" })).toHaveCount(0);
     await expect(indicator).toHaveText("Waiting on you (1)");
     expect(await inView(indicator, 1280)).toBe(true);
     const desktopHeader = await header.boundingBox();
@@ -820,14 +847,14 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     await page.setViewportSize({ height: 900, width: 1536 });
     await expect(indicator).toHaveText("Waiting on you (1)");
     expect(await inView(indicator, 1536)).toBe(true);
-    // The route is row four's, beside the claim; the properties stay in the panel at every
-    // width, so none of them joins the identity block as the page widens.
-    expect(await middle(page.getByRole("button", { name: "Messages default to no route" }))).toBe(
-      await middle(page.getByTestId("issue-work-row"))
-    );
-    for (const item of [openedBy, subscribers, link]) {
-      expect(await top(item)).toBeGreaterThan(await top(header));
-    }
+    // The route and every other property are Details' at every width (dispatch://INFRA-1196
+    // R13), so none of them joins the identity block as the page widens.
+    await expect(header.getByRole("button", { name: /^Messages default to/ })).toHaveCount(0);
+    await openDetails(page);
+    await expect(
+      page.getByTestId("issue-margin").getByRole("button", { name: "Messages default to no route" })
+    ).toBeVisible();
+    for (const item of [openedBy, subscribers, link]) await expect(item).toBeVisible();
   } finally {
     await context.close();
   }
@@ -875,14 +902,17 @@ test("the identity block gives the title a row of its own at every width", async
   // document whose text opens on a top-level heading puts that heading on the page too. The
   // header holds the one heading the issue is identified by.
   const title = page.getByTestId("issue-header").getByRole("heading", { level: 1 });
+  // The header is a band as wide as the column, its insets its rows' own padding, so the title
+  // is measured against the box those rows stand in.
   const measureTitle = () =>
     page.evaluate(() => {
       const heading = document.querySelector("[data-testid=issue-header] h1") as HTMLElement;
-      const header = document.querySelector("[data-testid=issue-header]") as HTMLElement;
-      const style = getComputedStyle(header);
+      const rows = document.querySelector("[data-testid=issue-header]")
+        ?.firstElementChild as HTMLElement;
+      const style = getComputedStyle(rows);
       return {
         contentWidth:
-          header.clientWidth -
+          rows.clientWidth -
           Number.parseFloat(style.paddingLeft) -
           Number.parseFloat(style.paddingRight),
         width: heading.getBoundingClientRect().width,
@@ -931,10 +961,13 @@ test("the identity block gives the title a row of its own at every width", async
     await page.reload();
     await expect(title).toHaveText("Migrate the issue header to a single row");
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
+    // The subscribers and the pull request are Details' (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
     await expect(
       page.getByTestId("issue-margin").getByRole("link", { name: "#1051 sjawhar/legion" })
     ).toBeVisible();
+    await closeDetails(page);
     for (const width of [1265, 1279]) {
       await page.setViewportSize({ height: 800, width });
       await nextFrames(page);
@@ -949,67 +982,93 @@ test("the identity block gives the title a row of its own at every width", async
   }
 });
 
-test("issue header delivers the click that ends a title edit to the control under the pointer", async ({
+/** A title of `lines` lines at the header's width: words added until the heading, drawn whole,
+ *  takes that many lines of its own line height. */
+async function titleOfLines(page: Page, lines: number): Promise<string> {
+  const words = ["The", "header", "keeps", "the", "press", "that", "ends", "a", "title", "edit"];
+  let title = "Edit";
+  for (let index = 0; index < 400; index += 1) {
+    title = `${title} ${words[index % words.length]}`;
+    const drawn = await page.evaluate((text) => {
+      const heading = document.querySelector<HTMLElement>("[data-issue-header] h1");
+      if (heading === null) return 0;
+      const probe = heading.cloneNode() as HTMLElement;
+      probe.textContent = text;
+      probe.style.display = "block";
+      probe.style.webkitLineClamp = "unset";
+      probe.style.width = `${heading.getBoundingClientRect().width}px`;
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      heading.parentElement?.append(probe);
+      const lineHeight = Number.parseFloat(getComputedStyle(probe).lineHeight);
+      const count = Math.round((probe.getBoundingClientRect().height - 2) / lineHeight);
+      probe.remove();
+      return count;
+    }, title);
+    if (drawn === lines) return title;
+  }
+  throw new Error(`no title takes ${lines} lines`);
+}
+
+// LEGION-62's row, for the title that wraps (INFRA-1196, the title editor's defect): ending the
+// edit of a title that takes two or three lines must not move the control under it between the
+// mousedown that blurs the editor and the mouseup, or the press lands on nothing.
+test("issue header delivers the click that ends a title edit to the control under the pointer @phone", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Short title" });
+  // Something waits on the reader, so the count of it is a control under the title.
+  await createAsk(issue.key, { question: "Which layout?" }, session);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  // A real click is mousedown then mouseup: the mousedown blurs the title editor, and the header
-  // must not re-lay out on that blur, or the mouseup lands on a different element and the
-  // browser delivers no click to the control the user pressed. The raw mouse sequence skips
-  // `click()`'s actionability wait, so wait for the control ourselves: the pin and Close stay
-  // `disabled` while their previous write is in flight, and a browser drops a click on a
-  // disabled button.
-  const pressWhileEditingTitle = async (control: Locator) => {
-    await page.getByTestId("issue-header").getByRole("heading", { level: 1 }).click();
-    await expect(page.getByLabel("Issue title")).toBeFocused();
-    await expect(control).toBeEnabled();
-    const box = await control.boundingBox();
-    if (box === null) {
-      throw new Error("the control must be visible while the title is being edited");
-    }
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.up();
-  };
+  const header = page.getByTestId("issue-header");
+  const count = header.getByTestId("issue-whose-turn");
   try {
-    for (const width of [1024, 1279]) {
-      await page.setViewportSize({ height: 800, width });
-      await page.goto(`/issues/${issue.key}`);
-      await expect(
-        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Short title" })
-      ).toBeVisible();
-
-      const pin = page.getByRole("button", { name: "Pin issue" });
-      await pressWhileEditingTitle(pin);
-      await expect(page.getByRole("button", { name: "Unpin issue" })).toHaveAttribute(
-        "aria-pressed",
-        "true"
-      );
-      await pressWhileEditingTitle(page.getByRole("button", { name: "Unpin issue" }));
-      await expect(pin).toHaveAttribute("aria-pressed", "false");
-
-      // The first press out of a title edit is the actions control itself, and it opens: the
-      // blur a mousedown causes must not move what the reader was about to press.
-      await pressWhileEditingTitle(page.getByRole("button", { name: "Issue actions" }));
-      await page.getByRole("button", { name: "Close issue" }).click();
-      await openIssueActions(page);
-      await expect(
-        page.getByRole("button", { name: CONTROL_LABELS.reopen_into_backlog })
-      ).toBeVisible();
-      await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "done" });
-      if (width === 1024) {
-        const shot = testInfo.outputPath("issue-header-title-edit-click-1024.png");
-        await page.screenshot({ path: shot });
-        await testInfo.attach("close clicked straight out of a title edit (1024px)", {
-          contentType: "image/png",
-          path: shot,
-        });
+    const widths = testInfo.project.name === "iphone" ? [390] : [1440, 390];
+    for (const width of widths) {
+      await page.setViewportSize({ height: width < 768 ? 844 : 900, width });
+      for (const lines of [2, 3]) {
+        await page.goto(`/issues/${issue.key}`);
+        await expect(header.getByRole("heading", { level: 1 })).toBeVisible();
+        const title = await titleOfLines(page, lines);
+        await patchIssue(issue.key, { title });
+        await page.goto(`/issues/${issue.key}`);
+        await expect(header.getByRole("heading", { level: 1 })).toHaveText(title);
+        await header.getByRole("heading", { level: 1 }).click();
+        const editor = page.getByLabel("Issue title");
+        await expect(editor).toBeFocused();
+        // The editor draws the whole title, as many lines as it takes. Read softly, so a run
+        // whose editor is one line still reads the press below, which is what that costs.
+        const drawnLines = await editor.evaluate((box) =>
+          Math.round(
+            (box.getBoundingClientRect().height - 2) /
+              Number.parseFloat(getComputedStyle(box).lineHeight)
+          )
+        );
+        expect
+          .soft(drawnLines, `the editor draws the ${lines}-line title in another number of lines`)
+          .toBe(lines);
+        // A real press, down and up, on the count under the title, straight out of the edit.
+        const box = await count.boundingBox();
+        if (box === null) throw new Error("the count is not drawn while the title is edited");
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.up();
+        await expect(
+          page,
+          `the press out of a ${lines}-line title's edit at ${width} px landed on nothing`
+        ).toHaveURL(new RegExp(`/issues/${issue.key}/decisions$`));
+        if (lines === 3) {
+          const shot = testInfo.outputPath(`title-edit-${width}.png`);
+          await page.screenshot({ path: shot });
+          await testInfo.attach(`a three-line title's edit ended by a press (${width}px)`, {
+            contentType: "image/png",
+            path: shot,
+          });
+        }
       }
-      await patchIssue(issue.key, { status: "triage" });
     }
   } finally {
     await context.close();
@@ -1045,8 +1104,9 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     );
     await control.selectOption("alice");
     expect((await patch).postDataJSON()).toEqual({ assignee: "alice" });
+    // The header's badge is the prototype's avatar and name: the name is the badge's text.
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^alice$/ })
+      page.getByTestId("issue-header").locator("[data-author-text]", { hasText: /^alice$/ })
     ).toBeVisible();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ assignee: "alice" });
     const events = await getIssueEvents(issue.key);
@@ -1067,7 +1127,7 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     await page.reload();
     await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveValue("");
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^Unassigned$/ })
+      page.getByTestId("issue-header").locator("[data-page-chrome]", { hasText: /^Unassigned$/ })
     ).toBeVisible();
 
     // A session acting for Alice through her personal token creates issues assigned to her; a
@@ -1113,6 +1173,7 @@ test("issue header picks the issue's repository from its project's mappings, and
   const page = await context.newPage();
   try {
     await page.goto(`/issues/${parent.key}`);
+    await openDetails(page);
     // The visible badge; the select's description repeats its text in a span of its own.
     // The repository is a property of the issue, so it is drawn in the panel's Development
     // section (dispatch://INFRA-1196 R12) rather than in the identity block.
@@ -1162,6 +1223,7 @@ test("issue header picks the issue's repository from its project's mappings, and
       .poll(() => getIssue(parent.key))
       .toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
     await page.reload();
+    await openDetails(page);
     await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveValue("");
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
@@ -1175,8 +1237,9 @@ test("issue header picks the issue's repository from its project's mappings, and
     );
     await page.goto(`/issues/${bare.key}`);
     await mappingsRead;
-    // The panel's Development section is where the repository is drawn; an issue whose project
-    // maps none has no item there at all (dispatch://INFRA-1196 R12).
+    // Details' Development section is where the repository is drawn; an issue whose project
+    // maps none reads None there and offers no picker (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     const development = page.locator('[data-margin-section="development"]');
     await expect(development).toBeVisible();
     await expect(page.getByLabel(`Repository of ${bare.key}`)).toHaveCount(0);
@@ -1203,6 +1266,7 @@ test("an open issue's header follows its project's default repository as the map
     // `MIN_REFETCH_INTERVAL_MS`; that is a page timer, so the page's own clock fires it.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
+    await openDetails(page);
     const badge = (text: RegExp) =>
       page.getByTestId("issue-margin").locator('span[aria-hidden="true"]', { hasText: text });
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
@@ -1265,11 +1329,12 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
       await expect.poll(() => refused).toBeGreaterThanOrEqual(attempt);
       await page.clock.fastForward(QUERY_RETRY_DELAY_MS);
     }
+    await openDetails(page);
     const development = page.locator('[data-margin-section="development"]');
     await expect(
       development.getByText("Could not load the repositories mapped to CORE.")
     ).toBeVisible();
-    await expect(development.getByText("Repository:")).toBeVisible();
+    await expect(development.getByText("Repository", { exact: true })).toBeVisible();
 
     failing = false;
     await development.getByRole("button", { name: "Retry" }).click();

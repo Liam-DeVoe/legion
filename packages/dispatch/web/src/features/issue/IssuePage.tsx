@@ -14,7 +14,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
-import type { Artifact } from "../../api/types";
+import type { Artifact, IssueDetails, UserIssueState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
 import {
@@ -36,9 +36,11 @@ import { ISSUE_FRAME, usePageFrame } from "../shell/page-frame";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { narrowConversation } from "./conversation-states";
+import { useOpenDetailsAt } from "./details-rows";
 import { DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueBody, PAGE_INSET } from "./IssueBody";
+import type { IssueField } from "./IssueFieldForms";
 import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
@@ -60,8 +62,9 @@ import {
 import { stateForIssue } from "./pins";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
+import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 import { useIssueKeymap } from "./useIssueKeymap";
-import { useIssuePriority } from "./useIssuePriority";
+import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
 import { VersionControl } from "./VersionControl";
 
@@ -756,10 +759,18 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     // and the panel says the same for the margin's own cards (`IssueMargin.tsx`).
     <NoTooltips>
       <section className="flex min-w-0 flex-col">
-        <IssueHeader
+        <IssueProperties
           documentArtifact={primaryArtifact}
           isClosed={isClosed}
           issue={issue.data}
+          panel={{
+            conversationList,
+            conversationState,
+            focused,
+            onConversationState: pickState,
+            openCollaborators: opensCollaborators,
+          }}
+          panelStage={panelStage}
           priorityWrite={priorityWrite}
           restoringTo={restoringTo}
           state={issueState}
@@ -804,23 +815,81 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             ref={holdPanel}
           />
         )}
-        {/* The panel itself, drawn once for the life of the page into its own stage, which the
-          host above or the margin's own holds (`panelStage`). It is rendered here, in the
-          page's tree, wherever it is placed: a reader moving between the two hosts keeps their
-          unsent message, their open blocked-by edit and every list they opened in it. */}
-        {createPortal(
-          <IssueMarginPanel
-            conversationList={conversationList}
-            conversationState={conversationState}
-            focused={focused}
-            isClosed={isClosed}
-            issue={issue.data}
-            onConversationState={pickState}
-            openCollaborators={opensCollaborators}
-          />,
-          panelStage
-        )}
       </section>
     </NoTooltips>
+  );
+}
+
+/**
+ * The header and Details, which draw the issue's properties between them (dispatch://INFRA-1196
+ * R13), over the page's one set of the issue's writes: a draft begun in either - the title in
+ * the header, the route or the parent in Details - is the same draft, and a write either makes
+ * is reported once. Details is drawn once for the life of the page into its own stage, which
+ * the shell's drawer or the page's own column holds (`IssueDetail`'s `panelStage`), so a reader
+ * moving between the two keeps every editor and list they opened in it.
+ */
+function IssueProperties({
+  documentArtifact,
+  isClosed,
+  issue,
+  panel,
+  panelStage,
+  priorityWrite,
+  restoringTo,
+  state,
+}: {
+  documentArtifact: Artifact | undefined;
+  isClosed: boolean;
+  issue: IssueDetails;
+  panel: {
+    readonly conversationList: ReactNode;
+    readonly conversationState: ConversationState;
+    readonly focused: FocusedNode;
+    readonly onConversationState: (state: ConversationState) => void;
+    readonly openCollaborators: boolean;
+  };
+  panelStage: HTMLElement;
+  priorityWrite: IssuePriorityWrite;
+  restoringTo: number | undefined;
+  state: UserIssueState;
+}): ReactNode {
+  const writes = useIssueHeaderWrites(issue, state);
+  // The one editor open in a row of Details - the parent's or the route's - which the header's
+  // overflow menu and Details' add control both open.
+  const [editingField, setEditingField] = useState<IssueField | null>(null);
+  const openDetailsAt = useOpenDetailsAt();
+  return (
+    <>
+      <IssueHeader
+        documentArtifact={documentArtifact}
+        isClosed={isClosed}
+        issue={issue}
+        onOpenField={(field) => {
+          setEditingField(field);
+          openDetailsAt(field);
+        }}
+        onOpenLabels={() => openDetailsAt("labels")}
+        priorityWrite={priorityWrite}
+        restoringTo={restoringTo}
+        state={state}
+        writes={writes}
+      />
+      {createPortal(
+        <IssueMarginPanel
+          conversationList={panel.conversationList}
+          conversationState={panel.conversationState}
+          documentArtifact={documentArtifact}
+          editingField={editingField}
+          focused={panel.focused}
+          isClosed={isClosed}
+          issue={issue}
+          onConversationState={panel.onConversationState}
+          onEditingField={setEditingField}
+          openCollaborators={panel.openCollaborators}
+          writes={writes}
+        />,
+        panelStage
+      )}
+    </>
   );
 }

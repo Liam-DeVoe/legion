@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import type { IssueProgress, ProgressCount } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
 import { useTooltips } from "../../components/tooltips";
-import { progressBarFill, surfaceMutedStrongBg, textSecondaryOnSurface } from "../../theme/classes";
 import { authorText, pageChrome } from "./page-structure";
 import { PROGRESS_NOUNS } from "./page-words";
 
@@ -27,21 +26,18 @@ function countTitle(count: ProgressCount, noun: "tasks" | "children"): string {
 }
 
 /**
- * An issue's progress wherever the issue is shown, counted as GitHub counts an issue's: its spec's
- * task-list items and its direct children, each done of total, and each only when the server
- * counted one - `null` is a spec with no task list, an issue with no child - so an issue with
- * neither renders nothing and a list of plain issues stays quiet. A List row and a Board card show
- * each as a chip; the issue header passes `bar` and gets each with a thin bar filled to done/total
- * beside its count, since the header has the room and a reader glancing at it wants the shape
- * before the number.
+ * An issue's progress wherever a list shows the issue, counted as GitHub counts an issue's: its
+ * spec's task-list items and its direct children, each done of total, and each only when the
+ * server counted one - `null` is a spec with no task list, an issue with no child - so an issue
+ * with neither renders nothing and a list of plain issues stays quiet. A List row and a Board
+ * card show each as a chip; the issue page draws its own children's progress in its header
+ * (`IssuePropertiesRow.tsx`) and the task count in Details (`IssueMargin.tsx`).
  */
 export function ProgressChips({
   progress,
-  bar = false,
 }: {
   /** Absent from an answer an older server gives during a deploy's overlap, which shows nothing. */
   progress?: IssueProgress;
-  bar?: boolean;
 }): ReactNode {
   const tooltips = useTooltips();
   if (progress === undefined) {
@@ -56,41 +52,18 @@ export function ProgressChips({
 
   return (
     <>
-      {counts.map(({ noun, count }) =>
-        bar ? (
-          <span
-            className={`inline-flex shrink-0 items-center gap-2 text-xs ${textSecondaryOnSurface}`}
-            data-testid={`issue-progress-${noun}`}
-            key={noun}
-            title={tooltips ? countTitle(count, noun) : undefined}
-          >
-            <span
-              aria-hidden="true"
-              className={`h-1.5 w-16 overflow-hidden rounded-full ${surfaceMutedStrongBg}`}
-            >
-              <span
-                className={`block h-full rounded-full ${progressBarFill}`}
-                style={{ width: `${count.total === 0 ? 0 : (100 * count.done) / count.total}%` }}
-              />
-            </span>
-            <span className="whitespace-nowrap" {...pageChrome}>
-              <span {...authorText}>{`${count.done}/${count.total}`}</span>{" "}
-              {countNoun(count.total, noun)}
-            </span>
-          </span>
-        ) : (
-          <span
-            className={pillClassName("label")}
-            data-testid={`issue-progress-${noun}`}
-            key={noun}
-            title={tooltips ? countTitle(count, noun) : undefined}
-            {...pageChrome}
-          >
-            <span {...authorText}>{`${count.done}/${count.total}`}</span>{" "}
-            {countNoun(count.total, noun)}
-          </span>
-        )
-      )}
+      {counts.map(({ noun, count }) => (
+        <span
+          className={pillClassName("label")}
+          data-testid={`issue-progress-${noun}`}
+          key={noun}
+          title={tooltips ? countTitle(count, noun) : undefined}
+          {...pageChrome}
+        >
+          <span {...authorText}>{`${count.done}/${count.total}`}</span>{" "}
+          {countNoun(count.total, noun)}
+        </span>
+      ))}
     </>
   );
 }

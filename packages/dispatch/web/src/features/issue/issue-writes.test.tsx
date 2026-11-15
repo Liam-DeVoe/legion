@@ -1081,7 +1081,7 @@ test("IssuePage mounts the header without reading who has signed in until the as
   }
 });
 
-test("IssuePage saves a parent from the header's parent editor", async () => {
+test("IssuePage saves a parent from the parent editor the overflow menu opens", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
@@ -1097,7 +1097,11 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
     );
-    const link = (await screen.findByRole("link", { name: "CORE-9" })) as HTMLAnchorElement;
+    // The breadcrumb draws the parent as the way back up to it, and Details' Parent row draws
+    // it too (dispatch://INFRA-1196 R13); the breadcrumb is read.
+    const link = (await within(screen.getByTestId("issue-header")).findByRole("link", {
+      name: "CORE-9",
+    })) as HTMLAnchorElement;
     expect(link).toHaveAttribute("href", "/issues/CORE-9");
   } finally {
     unmount();

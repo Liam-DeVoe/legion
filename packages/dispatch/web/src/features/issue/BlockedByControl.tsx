@@ -7,14 +7,14 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
+  pageQuietText,
   secondaryButtonBorder,
   secondaryButtonText,
-  textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { FormActions } from "./IssueFieldForms";
-import { authorText, HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 
@@ -42,10 +42,11 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
 }
 
 /**
- * The issues this one waits on, in the panel's Development section beside the repository and
- * the components (dispatch://INFRA-1196 R11): every blocker as a link to it, and one control
- * that opens the editor for them - the same control whether the issue waits on nothing or on
- * five, so a set value can be changed and cleared and not only set once.
+ * The issues this one waits on, in their row of Details beside the repository and the
+ * components (dispatch://INFRA-1196 R13), which carries the label: every blocker as a link to
+ * it with its title after it, and one control that opens the editor for them - the same control
+ * whether the issue waits on nothing or on five, so a set value can be changed and cleared and
+ * not only set once.
  *
  * The editor is here, where the value is, as the repository's and the components' are. It
  * stays open until Dispatch answers and says there what it refused - a key it has no issue
@@ -58,7 +59,14 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
  * refusal at all. Opening the editor forgets the last refusal, so the one drawn is always the
  * one the reader is looking at.
  */
-export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode {
+export function BlockedByControl({
+  issue,
+  titleOf,
+}: {
+  issue: IssueDetails;
+  /** The title of the issue `key`, once Details has read it. */
+  titleOf: (key: string) => string | undefined;
+}): ReactNode {
   const blockers = issue.blocked_by ?? [];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -86,26 +94,14 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
     write.save(issueKeysIn(draft));
   };
   return (
-    <div className={`flex min-w-0 flex-col gap-1 text-sm ${textSecondaryOnSurface}`}>
+    <div className={`flex w-full min-w-0 flex-col gap-1 text-sm ${textSecondaryOnSurface}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className={`font-medium ${textMutedOnSurface}`} {...pageChrome}>
-          {PROPERTY_LABELS.blocked_by}:
-        </span>
         {blockers.length === 0 ? (
-          <span className={textMutedOnSurface} {...pageChrome}>
-            {CONTROL_LABELS.blocked_by_none}
+          <span className={pageQuietText} {...pageChrome}>
+            {CONTROL_LABELS.none}
           </span>
         ) : (
-          blockers.map((key) => (
-            <Link
-              className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
-              key={key}
-              to={buildIssuePath({ key, kind: "issue" })}
-              {...authorText}
-            >
-              {key}
-            </Link>
-          ))
+          blockers.map((key) => <IssueLine issueKey={key} key={key} title={titleOf(key)} />)
         )}
         {isClosed || editing ? null : (
           <button
@@ -166,5 +162,27 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
         </form>
       ) : null}
     </div>
+  );
+}
+/** One issue in a row of Details: its key, bold, as the way to it, and its title after it (the
+ *  prototype's `.lnkrow`). */
+export function IssueLine({
+  issueKey,
+  title,
+}: {
+  issueKey: string;
+  title: string | undefined;
+}): ReactNode {
+  return (
+    <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+      <Link
+        className={`dispatch-inline-link mr-1.5 font-semibold underline ${linkText} ${linkHoverText}`}
+        to={buildIssuePath({ key: issueKey, kind: "issue" })}
+        {...authorText}
+      >
+        {issueKey}
+      </Link>
+      {title === undefined || title === "" ? null : <span {...authorText}>{title}</span>}
+    </span>
   );
 }

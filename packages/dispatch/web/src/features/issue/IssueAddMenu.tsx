@@ -10,6 +10,7 @@ import {
   secondaryButtonText,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useMarginDrawer } from "../margin/margin-slot";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { assigneeControlName } from "./AssigneeControl";
 import { blockedByControlName } from "./BlockedByControl";
@@ -21,14 +22,14 @@ import { repoControlName } from "./RepoControl";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
- * R11). Every property that has a value is drawn where it belongs - in the identity block or in
- * the panel's sections - so nothing is hidden behind this; what it lists is exactly what is not
+ * R13), in Details. Every property that has a value is drawn where it belongs - in the header or
+ * in a row of Details - so nothing is hidden behind this; what it lists is exactly what is not
  * there yet, and picking one opens the control that sets it.
  *
- * Five of the fields it lists are edited by a control drawn elsewhere on the page (the
- * assignee, the issues this one waits on, the repository, the components and the priorities it
- * advances), so the menu presses those rather than holding a second copy of them. It finds each
- * by the name that control exports - `assigneeControlName`, `blockedByControlName`,
+ * Six of the fields it lists are edited by a control drawn elsewhere on the page (the assignee,
+ * the labels, the issues this one waits on, the repository, the components and the priorities
+ * it advances), so the menu presses those rather than holding a second copy of them. It finds
+ * each by the name that control exports - `assigneeControlName`, `blockedByControlName`,
  * `repoControlName`, `componentsControlName`, `addPriorityControlName` - so the two sides
  * cannot drift apart, and lists one only while the page draws it: a project that maps no
  * repository offers no repository to set.
@@ -43,6 +44,7 @@ export function IssueAddMenu({
   onOpenField: (field: IssueField) => void;
 }): ReactNode {
   const [open, setOpen] = useState(false);
+  const drawer = useMarginDrawer();
   const wrapper = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -107,12 +109,21 @@ export function IssueAddMenu({
   function emptyFields(details: IssueDetails): readonly AddableField[] {
     // The name of a control the panel draws is that control's own, built by the function it
     // exports: neither side spells it, so renaming one renames both and the entry cannot go
-    // missing on a word nobody meant to change.
+    // missing on a word nobody meant to change. A control of the header - the assignee - is
+    // reached with Details closed, since on a phone Details covers it.
     const atControl = (name: string) => ({
       open: () => {
         const control = pageControl(name);
-        if (control instanceof HTMLSelectElement) control.focus();
-        else control?.click();
+        const reach = () => {
+          if (control instanceof HTMLSelectElement) control.focus();
+          else control?.click();
+        };
+        if (control?.closest("[data-issue-header]") != null && drawer?.open === true) {
+          drawer.setOpen(false);
+          requestAnimationFrame(() => requestAnimationFrame(reach));
+          return;
+        }
+        reach();
       },
       reachable: () => pageControl(name) !== null,
     });

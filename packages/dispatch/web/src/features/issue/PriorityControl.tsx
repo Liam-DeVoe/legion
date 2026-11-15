@@ -2,8 +2,13 @@ import type { ReactNode } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, priorityBadge } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { badgeLow, pageInkText, pageQuietText, priorityBadge } from "../../theme/classes";
+import {
+  badgeSelectBadge,
+  badgeSelectHeaderWrapper,
+  badgeSelectOverlay,
+  badgeSelectWrapper,
+} from "./badge-select";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
@@ -55,24 +60,44 @@ export function PriorityEditor({
   disabled = false,
   issueKey,
   priority,
+  variant = "badge",
   write,
 }: {
   disabled?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
+  /** `header` draws the issue page's header (the prototype's `.prio`): three bars filled by how
+   *  urgent the priority is, beside `P1` in the ink, or the word Priority in the quiet grey
+   *  while it has none. The select over it is the same either way. */
+  variant?: "badge" | "header";
   write: IssuePriorityWrite;
 }): ReactNode {
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span
-          aria-hidden="true"
-          className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
-          {...(priority === null ? pageChrome : authorText)}
-        >
-          {priority === null ? PROPERTY_LABELS.priority : `P${priority}`}
-        </span>
+      <span
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+      >
+        {variant === "header" ? (
+          <span
+            aria-hidden="true"
+            className={`inline-flex items-center gap-[5px] text-sm leading-5 font-semibold ${
+              priority === null ? pageQuietText : pageInkText
+            }`}
+            {...(priority === null ? pageChrome : authorText)}
+          >
+            <PriorityBars priority={priority} />
+            {priority === null ? PROPERTY_LABELS.priority : `P${priority}`}
+          </span>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
+            {...(priority === null ? pageChrome : authorText)}
+          >
+            {priority === null ? PROPERTY_LABELS.priority : `P${priority}`}
+          </span>
+        )}
         <select
           aria-label={`Priority of ${issueKey}`}
           className={badgeSelectOverlay}
@@ -101,5 +126,30 @@ export function PriorityEditor({
         />
       ) : null}
     </>
+  );
+}
+
+/** The prototype's priority shape: three rising bars, as many filled as the priority is urgent
+ *  - three for P0, none for P3 or none set. `P1` beside it says the same in words. */
+function PriorityBars({ priority }: { priority: IssuePriority | null }): ReactNode {
+  const filled = priority === null ? 0 : 3 - priority;
+  return (
+    <svg aria-hidden="true" className="size-3.5 shrink-0" viewBox="0 0 14 14">
+      {[
+        { height: 5, x: 1, y: 8 },
+        { height: 8, x: 5.5, y: 5 },
+        { height: 11, x: 10, y: 2 },
+      ].map((bar, index) => (
+        <rect
+          className={index < filled ? "fill-page-ink" : "fill-page-hair"}
+          height={bar.height}
+          key={bar.x}
+          rx="1"
+          width="3"
+          x={bar.x}
+          y={bar.y}
+        />
+      ))}
+    </svg>
   );
 }

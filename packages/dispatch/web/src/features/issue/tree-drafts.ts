@@ -87,7 +87,8 @@ export interface Draft {
   type: NodeType;
   /** Whether the model marks this decision unsure (`Decision.unsure`). */
   unsure?: true;
-  /** Whether this decision waits for the reader's review (`Decision.waiting_review`). */
+  /** Whether this node waits on the reader: a decision waiting for their review
+   *  (`Decision.waiting_review`), or an open question whose turn is a person's. */
   waiting: boolean;
 }
 
@@ -381,6 +382,9 @@ function addAsks(
     draft.tree = ask.question_tree;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
+    // An open question whose turn is a person's waits on the reader, and is what the header's
+    // count of what waits puts the focus on (R13, `waiting.ts`).
+    draft.waiting = ask.state === "open" && ask.waiting_on === "human";
   }
   return placed;
 }

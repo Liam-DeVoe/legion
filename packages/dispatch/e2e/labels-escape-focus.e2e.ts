@@ -1,4 +1,5 @@
 import { createIssue, createProject } from "./api";
+import { openDetails } from "./issue-page";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -13,6 +14,8 @@ test("Escape after picking a label leaves focus on the labels trigger", async ({
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}`);
+    // The labels' control is Details' Labels row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     const labels = page.getByTestId("issue-labels");
     await expect(labels.getByText("bug", { exact: true })).toBeVisible();
     const trigger = page.getByRole("button", { name: "Edit labels" });

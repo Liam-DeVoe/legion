@@ -289,9 +289,35 @@ export function nodeMenuItems(page: Page): Locator {
   return openMenu(page).getByRole("menuitem");
 }
 
-/** The one control that adds a property with no value yet (R11 bans "more"). */
+/** The one control that adds a property with no value yet, which Details holds (R13 bans
+ *  "more"). */
 export function addControl(page: Page): Locator {
-  return identityBlock(page).getByRole("button", { exact: true, name: CONTROL_LABELS.add });
+  return marginSlot(page).getByRole("button", { exact: true, name: CONTROL_LABELS.add });
+}
+
+/** The header's labels: those that fit on its properties line (the ruling of
+ *  dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). A chip past the line's
+ *  end is not drawn at all, so every chip the line holds is one the reader sees. */
+export function headerLabels(page: Page): Locator {
+  return identityBlock(page).locator('[data-testid="issue-header-labels"] > [data-header-label]');
+}
+
+/** The count that ends the header's properties line with the labels left over, which opens
+ *  Details at its Labels row. */
+export function labelsLeft(page: Page): Locator {
+  return identityBlock(page).getByTestId("issue-labels-left");
+}
+
+/** The header's count of what waits on the reader, or whose turn it is when nothing waits. */
+export function waitingCount(page: Page): Locator {
+  return identityBlock(page).getByTestId("issue-whose-turn");
+}
+
+/** One row of Details, by the label in its own column: the row's label and its value. */
+export function detailsRow(page: Page, label: string): Locator {
+  return marginSlot(page)
+    .locator("[data-margin-section] > div > div")
+    .filter({ has: page.getByText(label, { exact: true }) });
 }
 
 /** The value a badge-and-select control shows a reader: the badge drawn under the `select`

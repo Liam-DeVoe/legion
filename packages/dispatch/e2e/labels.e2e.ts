@@ -1,5 +1,6 @@
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
+import { headerLabels, openDetails } from "./issue-page";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -24,6 +25,8 @@ test("edits issue labels from a searchable multi-select and filters project issu
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${edited.key}`);
+    // The labels' control is Details' Labels row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     const editLabels = page.getByRole("button", { name: "Edit labels" });
     await editLabels.click();
     const labelSearch = page.getByRole("combobox", { name: "Search or create label" });
@@ -89,7 +92,7 @@ test("edits issue labels from a searchable multi-select and filters project issu
   }
 });
 
-// The label controls' phone half: the header's Edit labels and its search box, and the project
+// The label controls' phone half: Details' Edit labels and its search box, and the project
 // list's Labels picker with its options and Clear, are what a finger presses, so each holds the
 // 44 px touch target and the filtered list fits the screen. What those controls do is the row
 // above, which holds at any width.
@@ -106,6 +109,7 @@ test("the label controls keep touch-sized targets and the filtered list fits the
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${edited.key}`);
+    await openDetails(page);
     const editLabels = page.getByRole("button", { name: "Edit labels" });
     await editLabels.click();
     const labelSearch = page.getByRole("combobox", { name: "Search or create label" });
@@ -137,18 +141,20 @@ test("the label controls keep touch-sized targets and the filtered list fits the
   }
 });
 
-test("eight thirty-character labels wrap inside the identity block without widening the page", async ({
+// The header draws the labels that fit on its properties line and a count of those left over,
+// which opens Details at its Labels row, where all of them wrap inside the panel (the ruling of
+// dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4).
+test("eight thirty-character labels end the header's line on a count and wrap in Details without widening the page", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Long labels" });
+  const long = Array.from({ length: 8 }, (_, index) => `label-${index}-`.padEnd(30, "x"));
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const title = page
-      .getByTestId("issue-header")
-      .getByRole("heading", { level: 1, name: "Long labels" });
-    const labels = page.getByTestId("issue-labels");
+    const header = page.getByTestId("issue-header");
+    const title = header.getByRole("heading", { level: 1, name: "Long labels" });
     for (const [width, height] of [
       [1280, 900],
       [390, 844],
@@ -156,36 +162,37 @@ test("eight thirty-character labels wrap inside the identity block without widen
       await page.setViewportSize({ height, width });
       await patchIssue(issue.key, { labels: [] });
       await page.goto(`/issues/${issue.key}`);
-      await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
+      await expect(title).toBeVisible();
       const titleBefore = await title.boundingBox();
 
-      await patchIssue(issue.key, {
-        labels: Array.from({ length: 8 }, (_, index) => `label-${index}-`.padEnd(30, "x")),
-      });
+      await patchIssue(issue.key, { labels: long });
       await page.reload();
-      await expect(page.getByText("label-7-".padEnd(30, "x"), { exact: true })).toBeVisible();
-
-      // The title box is untouched, and the labels take as many lines as they need inside row
-      // three rather than a sideways scroll: the rail that scrolled is gone, and nothing on this
-      // page is reached by dragging a row (dispatch://INFRA-1196 R11, R17).
+      const left = header.getByTestId("issue-labels-left");
+      await expect(left).toBeVisible();
+      // The title box is untouched, and the labels stand on one line of the header: those that
+      // fit, then the count of the rest.
       expect(await title.boundingBox()).toEqual(titleBefore);
+      const drawn = await headerLabels(page).count();
+      await expect(left).toHaveText(`+${8 - drawn} ${8 - drawn === 1 ? "label" : "labels"}`);
+      const line = await header.getByTestId("issue-header-labels").boundingBox();
+      expect(line?.height ?? 0).toBeLessThanOrEqual(24);
+
+      // The count opens Details at the Labels row, which wraps every label inside the panel.
+      await left.click();
+      const labels = page.getByTestId("issue-labels");
+      await expect(page.getByText(long[7] ?? "", { exact: true }).last()).toBeVisible();
       const metrics = await labels.evaluate((element) => ({
         clientWidth: element.clientWidth,
         height: element.getBoundingClientRect().height,
-        overflowX: getComputedStyle(element).overflowX,
         scrollWidth: element.scrollWidth,
       }));
-      expect(metrics.overflowX).toBe("visible");
       expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
-      expect(metrics.clientWidth).toBeLessThanOrEqual(width);
-      // Eight long labels do not fit one line at either width, so they wear more than one.
       expect(metrics.height).toBeGreaterThan(44);
       const pageWidths = await page.evaluate(() => ({
         clientWidth: document.documentElement.clientWidth,
         scrollWidth: document.documentElement.scrollWidth,
       }));
       expect(pageWidths.scrollWidth).toBe(pageWidths.clientWidth);
-      expect(pageWidths.clientWidth).toBeLessThanOrEqual(width);
       const shot = testInfo.outputPath(`labels-overflow-${width}.png`);
       await page.screenshot({ path: shot });
       await testInfo.attach(`eight long labels (${width}px)`, {

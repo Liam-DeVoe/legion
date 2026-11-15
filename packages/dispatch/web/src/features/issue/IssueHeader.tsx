@@ -6,59 +6,63 @@ import {
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
-  card,
-  dangerText,
-  textMutedOnSurface,
+  pageFailedText,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
 } from "../../theme/classes";
-import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import type { IssueAction } from "./IssueActionsMenu";
-import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
+import type { IssueField } from "./IssueFieldForms";
 import { IssueIdentityRow } from "./IssueIdentityRow";
 import { IssuePropertiesRow } from "./IssuePropertiesRow";
 import { IssueTitleRow } from "./IssueTitleRow";
-import { IssueWorkRow } from "./IssueWorkRow";
 import { useIdentityBlock } from "./identity-block";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
-import { statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
+import { type IssueHeaderWrites, statusPickOnly } from "./useIssueHeaderWrites";
 import { useIssuePalette } from "./useIssuePalette";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
- * The identity block: the issue, as a reader has to see it before anything else
- * (dispatch://INFRA-1196 R11), in four rows that are all visible with no control opened.
+ * The header (dispatch://INFRA-1196 R13): what tells a reader to act, and nothing else, drawn
+ * as the prototype's `#hdr-sticky` and `#hdr-props` draw it.
  *
- * 1. Where the issue sits and what a reader does to it: the parent as a breadcrumb, the key, the
- *    copy control, the pin, and one actions control holding close, reopen and setting the parent.
- * 2. The title.
- * 3. How it stands: the status, the priority, the assignee, the labels, the one add control for
- *    a property with no value, and the waiting marker.
- * 4. Where its messages go, always, and who holds it while a claim is on it.
+ * 1. The breadcrumb, the key, the control that copies it and the one overflow menu, with
+ *    Details at the right (`IssueIdentityRow.tsx`).
+ * 2. The title, which is its own editor (`IssueTitleRow.tsx`).
+ * 3. One properties line: the status, the priority, the assignee, the children's progress, the
+ *    count of what waits on the reader, the approval control, the one marker where the route
+ *    reaches nobody, and the labels that fit (`IssuePropertiesRow.tsx`).
  *
- * Every other property is in the panel's sections (`IssueMargin.tsx`): the repository, the
- * components, the links out, who opened it, its subscribers and what refers to it. No property
- * is behind a control named "more", nothing here scrolls sideways at any width, and the two
- * tooltips that used to carry meaning - what a route is, and who opened the issue - are drawn as
- * text (R11, R21).
+ * Every other property, and every control of one, is in Details (`IssueMargin.tsx`), which the
+ * control at the right of row one opens; the writes both draw are the page's one set
+ * (`useIssueHeaderWrites`), so a draft begun in either is the same draft.
  *
- * The block is sticky in a condensed form (`identity-block.ts`), which also publishes its own
+ * The header is sticky in a condensed form (`identity-block.ts`), which also publishes its own
  * height, so the tree's focused row can clear it rather than guess at it.
  *
  * `data-issue-header` is load-bearing for the keyboard: the `issue` scope's bindings find the
- * Status, priority, labels, title and pin controls through it, and scoping to it is what keeps a
+ * status, the priority, the title and the pin through it, and scoping to it is what keeps a
  * child issue's row - which carries the same accessible names - out of their reach.
  */
 export function IssueHeader({
   documentArtifact,
   isClosed,
   issue,
+  onOpenField,
+  onOpenLabels,
   priorityWrite,
   restoringTo,
   state,
+  writes,
 }: {
   documentArtifact: Artifact | undefined;
   isClosed: boolean;
   issue: IssueDetails;
+  /** Opens Details at the row whose editor `field` is, with that editor open. */
+  onOpenField: (field: IssueField) => void;
+  /** Opens Details at its Labels row. */
+  onOpenLabels: () => void;
   /** The page's one priority write, shared with the keyboard's `0`–`3` and the palette's Set
    *  priority rows, so a refusal of any of them is reported once and by this header. */
   priorityWrite: IssuePriorityWrite;
@@ -67,13 +71,10 @@ export function IssueHeader({
    *  where the page stands now (`identity-block.ts`). */
   restoringTo?: number;
   state: UserIssueState;
+  writes: IssueHeaderWrites;
 }): ReactNode {
-  const writes = useIssueHeaderWrites(issue, state);
   const { drafts, pendingStatus, updateIssue } = writes;
   const [editingTitle, setEditingTitle] = useState(false);
-  // One editor at a time: the three fields a reader types rather than picks share the row under
-  // the block, so opening one closes the one before it.
-  const [editingField, setEditingField] = useState<IssueField | null>(null);
   const block = useRef<HTMLElement | null>(null);
   const { condensed } = useIdentityBlock(block, restoringTo);
   useIssuePalette({
@@ -82,26 +83,21 @@ export function IssueHeader({
     priorityWrite,
     saving: updateIssue.isPending,
   });
-  // Where the fourth row goes. From `md` it is the block's own last row, as the design draws
-  // it. Below `md` it is 144 px of a 844 px screen - four lines of 44 px controls - and the
-  // identity block is already 400 px there, so it is drawn at the end of the page's column
-  // instead (`order-last`, with `IssueDetail`'s column a flex column): every property is still
-  // visible with nothing opened (R11), and the head above the tree is four lines shorter, which
-  // is what puts the first open question on a phone's first screen (R6).
-  const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
-  const workRow = { isClosed, issue, onOpenField: setEditingField, writes };
 
   // Each action is named by the words it shows, which is the name the control carries: a voice
   // user who says what they read presses it (WCAG 2.5.3, axe's `label-content-name-mismatch`).
-  // Reopen reads "Reopen into Backlog", so that whole sentence is its name - under the old
-  // name "Reopen issue" the words and the name said two different things, and the axe lane
-  // never saw it because the actions are closed while it scans. The rail's old parent button
-  // said "None" under the name "Set parent issue" and had to spell the mismatch away as
-  // "None, set parent issue"; here the control says "Set parent issue" itself.
   const actions: IssueAction[] = [
+    {
+      disabled: writes.pin.isPending,
+      id: "pin",
+      pressed: state.pinned,
+      run: () => writes.pinGuard.guard(() => writes.pin.mutate(!state.pinned)),
+      text: state.pinned ? CONTROL_LABELS.unpin_issue : CONTROL_LABELS.pin_issue,
+    },
     isClosed
       ? {
           disabled: updateIssue.isPending,
+          id: "reopen",
           run: () => drafts.requestStatusSubmit("backlog"),
           text:
             pendingStatus === "backlog"
@@ -110,28 +106,32 @@ export function IssueHeader({
         }
       : {
           disabled: updateIssue.isPending,
+          id: "close",
           run: () => drafts.requestStatusSubmit("done"),
           text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,
         },
     {
       disabled: isClosed,
-      run: () => setEditingField("parent"),
+      id: "parent",
+      run: () => onOpenField("parent"),
       text: issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent,
     },
   ];
 
   return (
-    <>
-      <header
-        className={`sticky top-0 z-20 mx-3.5 mt-2 mb-0.5 flex min-w-0 flex-col gap-0.5 rounded-xl border p-2 md:mx-7 ${card}`}
-        data-condensed={condensed ? "true" : "false"}
-        data-issue-header=""
-        data-testid="issue-header"
-        ref={block}
-      >
+    <header
+      className={`sticky top-0 z-20 flex min-w-0 flex-col ${pagePaperBg} ${pageInkText} ${
+        condensed ? "shadow-[0_6px_14px_rgba(28,25,23,0.06)]" : ""
+      }`}
+      data-condensed={condensed ? "true" : "false"}
+      data-issue-header=""
+      data-testid="issue-header"
+      ref={block}
+    >
+      <div className="flex min-w-0 flex-col px-3.5 pt-2 pb-0.5 md:px-7 md:pt-[7px] md:pb-px">
         {isClosed ? (
           <p
-            className={`rounded-lg px-3 py-1 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+            className={`mb-1 rounded-lg border px-3 py-1 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
             {...pageChrome}
           >
             {STATE_LINES.closed}
@@ -140,10 +140,8 @@ export function IssueHeader({
         <IssueIdentityRow
           actions={actions}
           issueKey={issue.key}
-          onPin={() => writes.pinGuard.guard(() => writes.pin.mutate(!state.pinned))}
           parent={issue.parent}
-          pinSaving={writes.pin.isPending}
-          pinned={state.pinned}
+          project={issue.project}
         />
         <IssueTitleRow
           condensed={condensed}
@@ -152,29 +150,25 @@ export function IssueHeader({
           isClosed={isClosed}
           onEditingChange={setEditingTitle}
         />
-        <IssuePropertiesRow
-          documentArtifact={documentArtifact}
-          isClosed={isClosed}
-          issue={issue}
-          onOpenField={setEditingField}
-          priorityWrite={priorityWrite}
-          writes={writes}
-        />
-        {isPhoneViewport ? null : <IssueWorkRow {...workRow} />}
-        <IssueFieldForms
-          field={editingField}
-          isClosed={isClosed}
-          issue={issue}
-          onClose={() => setEditingField(null)}
-          writes={writes}
-        />
         {drafts.titleError === null ? null : (
-          <p className={`text-sm ${dangerText}`} id="issue-title-help">
+          <p className={`text-sm ${pageFailedText}`} id="issue-title-help">
             {drafts.titleError}
           </p>
         )}
+      </div>
+      <IssuePropertiesRow
+        documentArtifact={documentArtifact}
+        isClosed={isClosed}
+        issue={issue}
+        onOpenLabels={onOpenLabels}
+        priorityWrite={priorityWrite}
+        writes={writes}
+      />
+      {/* What the page says in answer to a write of the reader's, under the line it came from:
+          drawn only while there is one, so the header is its three lines otherwise. */}
+      <div className="flex min-w-0 flex-col gap-1 px-3.5 empty:hidden md:px-7">
         {writes.statusSaving ? (
-          <span className={`block text-xs ${textMutedOnSurface}`} role="status" {...pageChrome}>
+          <span className={`block text-xs ${pageMutedText}`} role="status" {...pageChrome}>
             {pendingStatus === "done"
               ? ANSWER_LINES.saving_close
               : pendingStatus === "backlog" && isClosed
@@ -189,20 +183,12 @@ export function IssueHeader({
             retrying={writes.pin.isPending}
           />
         ) : null}
-        {writes.releaseClaim.isError ? (
-          <QueryError
-            message="Could not release this claim."
-            onRetry={() => writes.releaseClaim.mutate()}
-            retrying={writes.releaseClaim.isPending}
-          />
-        ) : null}
-        {updateIssue.isError && !statusPickOnly(updateIssue.variables) ? (
-          writes.parentSaveFailed ? (
-            <p className={`text-sm ${dangerText}`} id="issue-parent-error">
-              {writes.parentError}
-            </p>
-          ) : writes.titleRefusal !== null ? (
-            <p className={`text-sm ${dangerText}`} id="issue-title-error" role="alert">
+        {/* A refused parent is said beside its editor, in Details (`IssueMargin.tsx`). */}
+        {updateIssue.isError &&
+        !statusPickOnly(updateIssue.variables) &&
+        !writes.parentSaveFailed ? (
+          writes.titleRefusal !== null ? (
+            <p className={`text-sm ${pageFailedText}`} id="issue-title-error" role="alert">
               {writes.titleRefusal}
             </p>
           ) : (
@@ -213,12 +199,7 @@ export function IssueHeader({
             />
           )
         ) : null}
-      </header>
-      {isPhoneViewport ? (
-        <div className="order-last mx-3.5 mb-3 min-w-0">
-          <IssueWorkRow {...workRow} />
-        </div>
-      ) : null}
-    </>
+      </div>
+    </header>
   );
 }

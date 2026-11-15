@@ -81,9 +81,6 @@ export function IssueComponentsLine({
       className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textSecondaryOnSurface}`}
       data-testid="issue-components"
     >
-      <span className="font-medium" {...pageChrome}>
-        {PROPERTY_LABELS.components}:
-      </span>
       {components.mode === "inherit" ? (
         <span className={textMutedOnSurface} {...pageChrome}>
           {CONTROL_LABELS.components_not_attached}

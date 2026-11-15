@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
@@ -18,6 +18,7 @@ import { pageChrome } from "./page-structure";
 import { EMPTY_STATE_LINES, PRESET_ORDER, type Preset } from "./page-words";
 import { presetCounts, presetView } from "./presets";
 import { useIssueTree } from "./useIssueTree";
+import { firstWaitingNode, waitingPressOf } from "./waiting";
 
 /** The width the Contents pane stands beside the outline from (R8, R14): 1024 px, in `rem` so
  *  it switches with Tailwind's `lg:` at any default font size. */
@@ -76,7 +77,7 @@ export function IssueBody({
   toolbar?: ReactNode;
 }): ReactNode {
   const navigate = useNavigate();
-  const { hash, pathname, search } = useLocation();
+  const { hash, pathname, search, state: locationState } = useLocation();
   const { blocksRead, root } = useIssueTree(issue);
   const counts = useMemo(
     () => presetCounts(root, address.filter, PRESET_ORDER),
@@ -153,6 +154,26 @@ export function IssueBody({
   const [focusBranch, setFocusBranch] = useState(false);
   const ask = (id: string | undefined, branch: boolean) =>
     setRequest((held) => ({ focusBranch: branch, id, seq: (held?.seq ?? 0) + 1 }));
+  // The header's count of what waits on the reader turns the Decisions filter on and leaves its
+  // press in the history entry (`IssuePropertiesRow.tsx`): once the filter has drawn the first
+  // node that waits - an open question whose turn is the reader's, or a decision waiting for
+  // their review, in the filter's order - the outline goes to it as the Contents pane's list
+  // goes to a node, once per press (R13, dispatch://INFRA-3678).
+  const waitingPress = waitingPressOf(locationState);
+  const waitingNode = useMemo(
+    () =>
+      waitingPress === undefined || address.preset !== "decisions"
+        ? undefined
+        : firstWaitingNode(view.root),
+    [address.preset, view.root, waitingPress]
+  );
+  const tookPress = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (waitingPress === undefined || waitingNode === undefined || drawsDocument) return;
+    if (tookPress.current === waitingPress) return;
+    tookPress.current = waitingPress;
+    setRequest((held) => ({ focusBranch, id: waitingNode, seq: (held?.seq ?? 0) + 1 }));
+  }, [drawsDocument, focusBranch, waitingNode, waitingPress]);
   const list = (close?: () => void) =>
     drawsDocument ? null : (
       <ContentsList

@@ -6,11 +6,11 @@ import {
   claimTakeableNow,
 } from "@legion/contracts";
 import type { ReactNode } from "react";
-
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
 import { useTooltips } from "../../components/tooltips";
+import { pageInkText } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
@@ -140,23 +140,29 @@ export function claimIsTakeable(
  * carries it, a Board card and a List row, drawing it as well would say the same thing twice
  * and widen a chip those hosts have no room for.
  *
- * A session title can be any length, and no name may widen the page (the rule
- * `IssueHeader.tsx` cites for the metadata rail). `pillClassName` sets `shrink-0`, and no class
- * reliably beats it: `shrink` is in the same Tailwind group, and `[flex-shrink:1]` measured a
- * computed `flex-shrink` of 0 on the built page, so the shrink is an inline style, which
- * cannot lose whatever the stylesheet order. The chip also caps itself at the row's width.
- * Only the holder's name ellipsizes:
- * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
- * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
+ * A session title can be any length, and no name may widen the page (dispatch://INFRA-1196
+ * R17). `pillClassName` sets `shrink-0`, and no class reliably beats it: `shrink` is in the
+ * same Tailwind group, and `[flex-shrink:1]` measured a computed `flex-shrink` of 0 on the
+ * built page, so the shrink is an inline style, which cannot lose whatever the stylesheet
+ * order. The chip also caps itself at the row's width. On a Board card and a List row only the
+ * holder's name ellipsizes: "Claimed by", the age and "not running" stay whole, because a chip
+ * reading "Claimed…" would say nothing. In Details (`inRow`) nothing is cut: the issue page
+ * draws every word (R17), so the claim is plain words that wrap inside the row's value column,
+ * the name breaking where it must.
  */
 export function ClaimChip({
   author = false,
   claim,
+  inRow = false,
   liveness,
 }: {
   /** Whether the holder is named as the issue page names an author (`AgentName`'s `author`). */
   author?: boolean;
   claim: IssueClaim | null;
+  /** Whether the claim is the value of a row of the issue page's Details, which draws the
+   *  label "Claimed by" beside it: then it is the prototype's plain words, holder, age and
+   *  marks, wrapping inside the row's value column rather than a pill that cuts the name. */
+  inRow?: boolean;
   liveness?: ClaimHolderLiveness;
 }): ReactNode {
   const registry = useAgentRegistry(claim?.actor.kind === "session");
@@ -209,7 +215,13 @@ export function ClaimChip({
   // running state, which no word of the chip would otherwise carry.
   return (
     <span
-      className={`${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`}
+      className={
+        inRow
+          ? // Below 1280 px an inline link takes 6 px of padding above and below for a finger
+            // (`styles.css`'s `.dispatch-inline-link`), so wrapped lines stand that far apart.
+            `inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 gap-y-3 text-sm xl:gap-y-0 ${pageInkText}`
+          : `${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`
+      }
       data-testid="issue-claim"
       style={{ flexShrink: 1 }}
       title={
@@ -218,10 +230,17 @@ export function ClaimChip({
           : undefined
       }
     >
-      <span className="shrink-0" {...pageChrome}>
-        {PROPERTY_LABELS.claim}
-      </span>
-      <AgentName actor={claim.actor} author={author} className="min-w-0 truncate" inline />
+      {inRow ? null : (
+        <span className="shrink-0" {...pageChrome}>
+          {PROPERTY_LABELS.claim}
+        </span>
+      )}
+      <AgentName
+        actor={claim.actor}
+        author={author}
+        className={inRow ? undefined : "min-w-0 truncate"}
+        inline
+      />
       <span aria-hidden="true" className="shrink-0" {...pageChrome}>
         ·
       </span>

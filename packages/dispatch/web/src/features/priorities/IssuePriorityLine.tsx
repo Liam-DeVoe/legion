@@ -21,7 +21,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { authorText, PROPERTY_LABELS, pageChrome } from "../issue/page-structure";
+import { authorText, pageChrome } from "../issue/page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "../issue/page-words";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
@@ -120,15 +120,7 @@ export function IssuePriorityLine({
   };
 
   return (
-    <div
-      className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textSecondaryOnSurface}`}
-      data-testid="issue-advances"
-    >
-      {advances.length === 0 ? null : (
-        <span className={`font-medium ${textMutedOnSurface}`} {...pageChrome}>
-          {PROPERTY_LABELS.advances}:
-        </span>
-      )}
+    <div className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
       {advances.map((entry) => {
         const label = labels.get(entry.id) ?? entry.id;
         return (

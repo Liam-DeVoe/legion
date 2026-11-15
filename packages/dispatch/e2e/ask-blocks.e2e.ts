@@ -130,11 +130,11 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
     await expect(decisions).toHaveCSS("height", "28px");
     const header = page.getByTestId("issue-header");
     const specification = documentEditor(page).getByRole("heading", { name: "Specification" });
-    // The block is measured once it has all four of its rows. The fourth - the route with the
-    // claim - is drawn from the issue's own read, after the rows above it, and a height taken
-    // before it arrives is the block half drawn: that is what had this row measure 96 px one
-    // run and 150 px the next, with no polling to tell the two apart.
-    await expect(page.getByTestId("issue-work-row")).toBeVisible();
+    // The header is measured once its properties line is drawn from the issue's own read: a
+    // height taken before it arrives is the header half drawn. The route and the claim are
+    // Details' now (dispatch://INFRA-1196 R13), so the line is the header's last.
+    await expect(header.getByTestId("issue-state-actions")).toBeVisible();
+    await expect(header.getByRole("combobox", { name: "Status" })).toBeVisible();
     const desktopMetrics = await Promise.all([
       header.evaluate((element) => element.getBoundingClientRect().height),
       specification.evaluate((element) => element.getBoundingClientRect().y),

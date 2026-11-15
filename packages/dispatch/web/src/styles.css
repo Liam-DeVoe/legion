@@ -280,11 +280,14 @@ a {
 }
 
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
-   through tablet widths so the sheet remains directly operable. */
+   through tablet widths so the sheet remains directly operable. The issue page's header draws
+   its status and its title's editor in its own type at every width, as the prototype does: the
+   status at 12 px, sized to its value, and the title's editor at the heading's own size, which
+   it must match so ending an edit moves nothing (dispatch://INFRA-1196 R13). */
 @media (max-width: 1279px) {
   input,
-  select,
-  textarea {
+  select:not([data-issue-header] *),
+  textarea:not([data-issue-header] *) {
     font-size: 1rem;
   }
 }
@@ -306,12 +309,18 @@ a {
      is a box no reader ever sees and reads as a control reachable only by scrolling sideways
      (`e2e/page-inventory.ts`, c-nothing-lost at 390 px). It is written into the selector
      rather than taken back by a rule below, because the floor's own `:not()`s already make it
-     the more specific of the two. Focus paints the control, and the floor applies again. */
-  button:not(.dispatch-inline-link):not(.sr-only:not(:focus)),
-  a:not(.prose a):not(.dispatch-inline-link):not(.sr-only:not(:focus)),
+     the more specific of the two. Focus paints the control, and the floor applies again.
+
+     `:not([data-issue-header] *)`: the issue page's header draws its controls at the
+     prototype's size, 24 px on a phone - each at least 24 by 24 px or spaced so a 24 px circle
+     on it meets no other target, WCAG 2.2's 2.5.8 as written - because the header's six lines
+     at 390 px leave no room for 44 (dispatch://INFRA-1196 R13). The title's editor is the
+     heading's own box, at least 28 px tall, so ending an edit never moves what is under it. */
+  button:not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *),
+  a:not(.prose a):not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *),
   input:not([type="checkbox"]):not([type="radio"]):not(.sr-only:not(:focus)),
-  select:not(.sr-only:not(:focus)),
-  textarea:not(.sr-only:not(:focus)) {
+  select:not(.sr-only:not(:focus)):not([data-issue-header] *),
+  textarea:not(.sr-only:not(:focus)):not([data-issue-header] *) {
     min-width: 44px;
     min-height: 44px;
   }

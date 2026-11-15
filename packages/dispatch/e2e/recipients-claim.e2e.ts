@@ -13,6 +13,7 @@ import {
   releaseClaim,
 } from "./api";
 import { inboxRow } from "./inbox-pane";
+import { openDetails } from "./issue-page";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -273,6 +274,8 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
   });
   try {
     await page.goto(`/issues/${issue.key}`);
+    // The route's reach is Details' route row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     const headerMarker = page.getByTestId("issue-route-unknown");
     await expect(headerMarker).toHaveText("Route reach unknown");
     // The issue page raises no tooltip at all (dispatch://INFRA-1196 R21), so its marker keeps

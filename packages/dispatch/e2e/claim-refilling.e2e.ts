@@ -1,6 +1,7 @@
 import { setListsState, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
 import { pickFilterOption } from "./filters";
+import { detailsRow, openDetails } from "./issue-page";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -45,11 +46,14 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
-    const chip = page.getByTestId("issue-claim");
+    // The claim is Details' Claimed by row (dispatch://INFRA-1196 R13): the row's name says
+    // Claimed by, and the chip beside it is the holder.
+    await openDetails(page);
+    const chip = detailsRow(page, "Claimed by").getByTestId("issue-claim");
     // The issue page raises no tooltip at all (dispatch://INFRA-1196 R21), so every mark the
     // chip makes is read where it is drawn, and "not running" is a mark rather than a phrase
     // inside a `title`.
-    await expect(chip).toContainText("Claimed by");
+    await expect(chip).toBeVisible();
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
 
     await setListsState("refilling");
@@ -87,6 +91,7 @@ test("a complete agent list without the holder lapses its claim on the chip and 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
+    await openDetails(page);
     // Drawn, not hovered: the issue page raises no tooltip (R21).
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveText("not running");
     await expect(page.getByTestId("issue-claim-unchecked")).toHaveCount(0);

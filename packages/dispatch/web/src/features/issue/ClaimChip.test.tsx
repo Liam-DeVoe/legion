@@ -12,10 +12,10 @@ import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from
 import { NoTooltips } from "../../components/tooltips";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
-import { IssueHeader } from "./IssueHeader";
+import { IssueClaimControl } from "./IssueClaimControl";
 import { CONTROL_LABELS } from "./page-words";
 import { stateForIssue } from "./pins";
-import type { IssuePriorityWrite } from "./useIssuePriority";
+import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 const claim: IssueClaim = {
   actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
@@ -53,17 +53,15 @@ const base: Issue = {
   updated_at: "2026-09-24T06:00:00Z",
 };
 
-/** These rows are about the claim chip, not the priority: the header's write never runs. */
-const idlePriorityWrite: IssuePriorityWrite = {
-  failed: false,
-  pending: false,
-  retry: () => undefined,
-  submit: () => undefined,
-};
+/** The claim's row of Details, over the page's own writes, as `IssueMargin.tsx` draws it. */
+function ClaimRow({ issue }: { issue: IssueDetails }): ReactNode {
+  const writes = useIssueHeaderWrites(issue, stateForIssue(undefined, issue.key));
+  return <IssueClaimControl issue={issue} writes={writes} />;
+}
 
 /**
- * The header around one issue. `liveness` is what the issue read says of the claim's holder,
- * which outranks the agent list.
+ * The claim's row of Details around one issue (dispatch://INFRA-1196 R13). `liveness` is what
+ * the issue read says of the claim's holder, which outranks the agent list.
  *
  * `tooltips` is the surface the chip is drawn on. The issue page raises no tooltip at all
  * (dispatch://INFRA-1196 R21, `components/tooltips.tsx`), which is this helper's default and
@@ -92,12 +90,6 @@ function header(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as these do; a project that maps none shows no repository item. The components line
-  // reads the project's architecture sources the same way, and a project with none offers no
-  // picker, so neither read reaches the network.
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
-  const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -106,22 +98,9 @@ function header(
     </MemoryRouter>
   );
   const user = userEvent.setup();
-  const view = render(
-    <IssueHeader
-      documentArtifact={undefined}
-      isClosed={false}
-      issue={details}
-      priorityWrite={idlePriorityWrite}
-      state={stateForIssue(undefined, issue.key)}
-    />,
-    { wrapper }
-  );
+  const view = render(<ClaimRow issue={details} />, { wrapper });
   return {
-    unmount: () => {
-      view.unmount();
-      mappings.mockRestore();
-      architectureSources.mockRestore();
-    },
+    unmount: () => view.unmount(),
     user,
   };
 }
@@ -149,7 +128,7 @@ function unresponsive(sessionID: string, title: string, lastSeen: number): Agent
   return { ...running(sessionID, title), last_seen: lastSeen, state: "unresponsive" };
 }
 
-test("a claimed issue names its holder and releases the claim from the header", async () => {
+test("a claimed issue names its holder and releases the claim from Details", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     running("session-one", "Implementer"),
@@ -160,7 +139,9 @@ test("a claimed issue names its holder and releases the claim from the header", 
     // The chip says who holds the issue and since when in words, not in a tooltip: the issue
     // page draws none at all (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
     const claimed = await screen.findByTestId("issue-claim");
-    expect(claimed.textContent).toContain("Claimed by");
+    // The row's own label says "Claimed by" (`IssueMargin.tsx`), so the chip opens with the
+    // holder (dispatch://INFRA-1196 R13).
+    expect(claimed.textContent).not.toContain("Claimed by");
     expect(claimed.textContent).toContain("Implementer");
     expect(claimed.querySelector("time")?.textContent ?? "").toMatch(/\(.+\)/);
     // The holder is drawn by `AgentName`: its name links to its live conversation, and the
@@ -263,12 +244,12 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
   }
 });
 
-test("an unclaimed issue shows no holder and nothing to release", async () => {
+test("an unclaimed issue reads None and offers nothing to release", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   const view = header(base);
   try {
-    expect(await screen.findByRole("heading", { level: 1 })).toBeDefined();
+    expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
     expect(screen.queryByTitle(/Claimed by/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Release the claim/ })).not.toBeInTheDocument();
   } finally {

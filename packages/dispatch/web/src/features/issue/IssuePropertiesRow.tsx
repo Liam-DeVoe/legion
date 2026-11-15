@@ -1,82 +1,88 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { projectsQuery } from "../../api/queries";
-import type { Artifact, IssueDetails } from "../../api/types";
+import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
+import { approvalPillClassName } from "../../components/Pill";
 import {
   bgTransparent,
-  borderDefault,
-  calloutWarningBg,
-  calloutWarningBorder,
-  calloutWarningText,
-  statusPill,
-  statusPillDot,
+  focusVisibleRing,
+  pageInkText,
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
+  pageSegmentBg,
+  pageSegmentDoneBg,
+  pageSegmentProgressBg,
+  pageStatusDoneText,
+  pageStatusIdleText,
+  pageStatusProgressText,
+  pageWaitingBg,
+  pageWaitingChip,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { gatedStepEntries } from "./gated-steps";
-import { IssueAddMenu } from "./IssueAddMenu";
-import type { IssueField } from "./IssueFieldForms";
-import { IssueLabels } from "./IssueLabels";
+import { presetPath } from "./issue-address";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
-import { ProgressChips } from "./ProgressChips";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
+import { UnreachableRouteMarker } from "./RouteReach";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import type { IssuePriorityWrite } from "./useIssuePriority";
+import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
- * Row three of the identity block: how the issue stands and who it is for - the status, the
- * priority, the assignee and its labels - with the one add control for a property it has no
- * value for, and the waiting marker at the right.
+ * The header's one properties line (dispatch://INFRA-1196 R13, the prototype's `#hdr-props`):
+ * the status, the priority, the assignee, the children's progress as a bar with its two counts,
+ * the count of what waits on the reader - or, while nothing does, whose turn the issue is - the
+ * approval control, the one marker where the issue's message route reaches nobody, and then the
+ * labels, as many as fit on the line, which ends with a count of those left over that opens
+ * Details at its Labels row (the ruling of
+ * dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). Nothing else: every other
+ * property, and every control of one, is in Details (`IssueMargin.tsx`).
  *
- * The row wraps rather than scrolling: every control is visible at 390 px as a second line, and
- * nothing here is reached by dragging a row sideways (R11, R17).
+ * The line wraps rather than scrolling: nothing here is reached by dragging a row sideways.
  */
 export function IssuePropertiesRow({
   documentArtifact,
   isClosed,
   issue,
-  onOpenField,
+  onOpenLabels,
   priorityWrite,
   writes,
 }: {
   documentArtifact: Artifact | undefined;
   isClosed: boolean;
   issue: IssueDetails;
-  onOpenField: (field: IssueField) => void;
+  /** Opens Details at its Labels row, which lists every label with its control. */
+  onOpenLabels: () => void;
   priorityWrite: IssuePriorityWrite;
   writes: IssueHeaderWrites;
 }): ReactNode {
+  const navigate = useNavigate();
   const saving = writes.updateIssue.isPending;
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
+  const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
+  // The decisions read the outline makes, under its key, so the count costs no request.
+  const decisions = useQuery(issueDecisionsQuery(issue.key, true));
+  const waiting = waitingOnReader(issue, decisions.data);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
-  // turn it is, so the marker stays off rather than shown wrong.
+  // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
-  const waitingForHuman = waitingOnHuman(openAsks);
-  // The marker's words are the page's own; the count beside them is the issue's data, so it is
-  // drawn as a value rather than as a word the page declares.
-  const whoseTurn =
-    openAsks.length === 0 || !knowsWhoseTurn
-      ? null
-      : waitingForHuman.length > 0
-        ? { count: waitingForHuman.length, label: PROPERTY_LABELS.waiting_on_you }
-        : {
-            count: openAsks.length - waitingForHuman.length,
-            label: PROPERTY_LABELS.waiting_on_agents,
-          };
-  const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
+  const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The one shared read of the projects, under the key the shell's sidebar and the search
-  // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
-  // no reload and the row makes no second, per-issue read. While that read is pending or
-  // failed there is no row, so the steps are empty and this row draws its one chip below
-  // rather than claiming a gate it has not read. Only a root issue has steps at all
-  // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
-  // reads whatever the shared cache holds, and a child draws the single chip either way.
+  // palette already hold: only a root issue has gated steps at all (`gatedStepEntries`), so a
+  // child does not ask for the list, and while the read is pending or failed the issue draws
+  // its one chip rather than claiming a gate it has not read.
   const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
@@ -86,35 +92,55 @@ export function IssuePropertiesRow({
   const stepHoldsPrimaryDocument = entries.some(
     (entry) => entry.document?.id === issue.primary_artifact_id
   );
-  const showApprovalActions =
-    documentArtifact?.approval !== undefined &&
-    (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
+  // Approve and Request changes are here while an approval request waits on the reader, and in
+  // Details otherwise, with the steps and their reasons (R31).
+  const approvalWaits = waiting.approvals.length > 0;
+  const approval = documentArtifact?.approval;
+
+  // The count's press: the Decisions filter, with the outline drawn in place of any document,
+  // and the focus on the first node there that waits (`IssueBody.tsx`); an approval request
+  // alone puts the focus on the approval control on this line (R13, dispatch://INFRA-3678).
+  const goToWaiting = () => {
+    if (waiting.asks + waiting.decisions > 0) {
+      const press: WaitingPress = { waitingPress: performance.now() };
+      navigate(presetPath(issue.key, "decisions"), { state: press });
+      return;
+    }
+    const header = document.querySelector("[data-issue-header]");
+    const control =
+      waiting.approvals
+        .map((id) =>
+          header?.querySelector<HTMLElement>(`[data-approval-artifact="${CSS.escape(id)}"]`)
+        )
+        .find((found) => found !== null && found !== undefined) ??
+      header?.querySelector<HTMLElement>("[data-approval-artifact]");
+    control?.focus();
+  };
 
   return (
     <div
-      className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
+      className={`flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3.5 pt-1 pb-2.5 text-sm leading-5 md:gap-x-3.5 md:px-7 md:pt-0.5 md:pb-[7px] ${pageLineBorder} ${pageMutedText}`}
       data-testid="issue-state-actions"
     >
-      {/* The status pill may shrink: at 390 px its widest option ("Needs review") would
-          otherwise hold a line of its own and push the priority and the assignee onto a third,
-          which is 44 px of the head the first open question needs (dispatch://INFRA-1196 R6). */}
+      {/* The prototype's `.pill`: the status's glyph and word inside a rule of its colour. */}
       <label
-        className={`flex min-h-11 min-w-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+        className={`inline-flex min-h-6 shrink-0 items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold md:min-h-0 ${statusTone(status)}`}
       >
-        <span
-          aria-hidden="true"
-          className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-        />
+        <span aria-hidden="true" {...pageChrome}>
+          {statusGlyph(status)}
+        </span>
+        {/* Sized to the status it shows, as the prototype's pill is; a browser with no
+            `field-sizing` draws the select at its longest option, which is its own width. */}
         <select
           aria-label={PROPERTY_LABELS.status}
-          className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
+          className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
           disabled={isClosed || saving}
           onChange={(event) => writes.drafts.requestStatusSubmit(event.target.value)}
-          value={writes.pendingStatus ?? issue.status}
+          value={status}
         >
-          {selectableStatuses.map((status) => (
-            <option key={status} value={status}>
-              {statusLabel(status)}
+          {selectableStatuses.map((choice) => (
+            <option key={choice} value={choice}>
+              {statusLabel(choice)}
             </option>
           ))}
         </select>
@@ -123,50 +149,268 @@ export function IssuePropertiesRow({
         disabled={isClosed || saving}
         issueKey={issue.key}
         priority={issuePriority(issue.priority)}
+        variant="header"
         write={priorityWrite}
       />
       <AssigneeControl
         assignee={issue.assignee}
         disabled={isClosed || saving}
         issueKey={issue.key}
+        variant="header"
       />
-      <IssueLabels
-        disabled={isClosed}
-        labels={issue.labels ?? []}
-        onSave={(labels) => writes.labels.mutateAsync(labels)}
-        project={issue.project}
-        saving={writes.labels.isPending}
-        variant="rail"
-      />
-      <IssueAddMenu isClosed={isClosed} issue={issue} onOpenField={onOpenField} />
-      {/* How far the work has got, like the status: the children section draws the same counts
-          as a bar, and the task count stays here. */}
-      <ProgressChips bar progress={issue.progress} />
-      {/* A root issue of a gated project reads its gate step by step, after the chip's
-          place; the chip itself stays beside those steps whenever no step drawn reviews the
-          primary document, since otherwise an open request on that document could not be
-          answered on this page at all. Every other issue - and any issue whose project is
-          still unread - keeps that chip for the primary document alone, unchanged. */}
-      {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
+      <ChildrenProgress childIssues={issue.children ?? []} />
+      {waiting.total > 0 ? (
+        // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
+        <button
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
+          data-testid="issue-whose-turn"
+          onClick={goToWaiting}
+          type="button"
+          {...pageChrome}
+        >
+          <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
+          {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+        </button>
+      ) : agentsTurn > 0 && knowsWhoseTurn ? (
+        <span
+          className={`inline-flex shrink-0 items-center text-xs leading-[22px] font-semibold ${pageQuietText}`}
+          data-testid="issue-whose-turn"
+          {...pageChrome}
+        >
+          {PROPERTY_LABELS.waiting_on_agents} (<span {...authorText}>{agentsTurn}</span>)
+        </span>
+      ) : null}
+      {/* The approval control (R31): a root issue of a gated project reads its gate step by
+          step, and the one chip stays beside those steps whenever no step reviews the primary
+          document, so an open request on that document can always be answered here. Every
+          other issue keeps the one chip, which says "Not requested" while nobody has asked. */}
+      {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : approval === undefined ||
+        approval.state === "draft" ? (
+        <span className={approvalPillClassName("draft", "compact")} {...pageChrome}>
+          {CONTROL_LABELS.not_requested}
+        </span>
+      ) : (
         <ApprovalChip
           artifact={documentArtifact}
           layout="contents"
-          showActions={showApprovalActions}
+          showActions={approvalWaits}
+          size="compact"
           variant="header"
         />
       )}
       {entries.length === 0 ? null : (
-        <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
+        <ApprovalSteps
+          actions={approvalWaits}
+          entries={entries}
+          primaryArtifactId={issue.primary_artifact_id}
+          reasons={false}
+          size="compact"
+        />
       )}
-      {whoseTurn === null ? null : (
-        <span
-          className={`ml-auto inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
-          data-testid="issue-whose-turn"
-          {...pageChrome}
-        >
-          {whoseTurn.label} (<span {...authorText}>{whoseTurn.count}</span>)
-        </span>
-      )}
+      {/* One marker, where the route reaches nobody; whether it reaches anyone otherwise, and
+          the route itself, are Details' (R13). It speaks for the saved route only. */}
+      {writes.drafts.route === (issue.route ?? "") ? (
+        <UnreachableRouteMarker issue={issue} showRoute />
+      ) : null}
+      <HeaderLabels labels={issue.labels ?? []} onOpenAll={onOpenLabels} />
     </div>
   );
+}
+
+/** The status's colour, as the prototype's `.st-*` gives it. */
+export function statusTone(status: string): string {
+  if (status === "done") return pageStatusDoneText;
+  if (status === "in_progress" || status === "testing" || status === "needs_review") {
+    return pageStatusProgressText;
+  }
+  return pageStatusIdleText;
+}
+
+/** The status's shape, the prototype's: a half-filled circle while the work moves, a tick once
+ *  it is done, an empty circle before it starts. The word beside it says the same. */
+export function statusGlyph(status: string): string {
+  if (status === "done") return "✓";
+  if (status === "in_progress" || status === "testing" || status === "needs_review") return "◐";
+  return "○";
+}
+
+/** How many segments the bar draws one child each before it is one bar instead: past this a
+ *  row of segments is wider than the counts beside it. */
+const MOST_SEGMENTS = 12;
+
+/**
+ * The children's progress (R13, the prototype's `.kids-prog`): the direct children done of
+ * total, the bar, one segment per child, and the whole subtree done of total, each count with
+ * its label, because the two numbers differ and a reader cannot tell which is which from the
+ * numbers alone. An issue with no children draws none of it.
+ */
+function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] }): ReactNode {
+  if (childIssues.length === 0) return null;
+  const done = childIssues.filter((child) => child.status === "done").length;
+  const subtree = childIssues.reduce(
+    (sum, child) => ({
+      done: sum.done + child.subtree_done,
+      total: sum.total + child.subtree_total,
+    }),
+    { done: 0, total: 0 }
+  );
+  const moving = childIssues.filter(
+    (child) =>
+      child.status === "in_progress" ||
+      child.status === "testing" ||
+      child.status === "needs_review"
+  ).length;
+  return (
+    // Two items from the phone's width up; below it one item, the direct count, the bar, then
+    // the whole tree's count, so the line wraps around it rather than between the two
+    // (dispatch://INFRA-1196/artifact/build-rulings-md, ruling 3), and the item wraps inside
+    // itself only where a line is narrower than it, as at 320 px.
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 md:contents">
+      <span
+        className={`inline-flex shrink-0 items-center gap-2 font-medium ${pageInkText}`}
+        data-testid="issue-progress-children"
+        {...pageChrome}
+      >
+        <span>
+          {CONTROL_LABELS.children} <span {...authorText}>{done}</span> {CONTROL_LABELS.count_of}{" "}
+          <span {...authorText}>{childIssues.length}</span>
+          <span className="hidden md:inline"> {CONTROL_LABELS.count_done}</span>
+        </span>
+        <span aria-hidden="true" className="inline-flex gap-0.5">
+          {childIssues.length > MOST_SEGMENTS ? (
+            <span
+              className={`relative block h-2 w-16 overflow-hidden rounded-sm md:w-24 ${pageSegmentBg}`}
+            >
+              <span
+                className={`absolute inset-y-0 left-0 block ${pageSegmentDoneBg}`}
+                style={{ width: `${(100 * done) / childIssues.length}%` }}
+              />
+            </span>
+          ) : (
+            childIssues.map((child, index) => (
+              <span
+                className={`block h-2 w-2 rounded-sm md:w-3 ${
+                  index < done
+                    ? pageSegmentDoneBg
+                    : index < done + moving
+                      ? pageSegmentProgressBg
+                      : pageSegmentBg
+                }`}
+                key={child.key}
+              />
+            ))
+          )}
+        </span>
+      </span>
+      <span
+        className={`shrink-0 text-xs leading-5 ${pageMutedText}`}
+        data-testid="issue-progress-subtree"
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.whole_tree} <span {...authorText}>{subtree.done}</span>{" "}
+        {CONTROL_LABELS.count_of} <span {...authorText}>{subtree.total}</span>{" "}
+        {CONTROL_LABELS.count_done}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The labels, in Dispatch's order, as many as fit on what is left of the line once every other
+ * property is drawn, and then the count of those left over, which opens Details at its Labels
+ * row, where every label is listed with its control (R13, the ruling of 2026-11-15). An issue
+ * whose labels fit draws them all and no count.
+ *
+ * What fits is read off the page, never guessed at a width the typeface decides: every chip is
+ * laid out once, with the count drawn at its widest, and the chips past the line's end are then
+ * left out, so the line holds no word it hides. That reading is taken again whenever the labels
+ * change or the line's width does, inside one commit, so no frame draws the chips that do not
+ * fit.
+ */
+function HeaderLabels({
+  labels,
+  onOpenAll,
+}: {
+  labels: readonly string[];
+  onOpenAll: () => void;
+}): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  const key = labels.join("\n");
+  const [fit, setFit] = useState<{ readonly key: string; readonly shown: number } | null>(null);
+  // Null while the line is being read: every chip laid out, and the count at its widest.
+  const shown = fit?.key === key ? fit.shown : null;
+  useLayoutEffect(() => {
+    if (shown === null && box.current !== null) {
+      setFit({ key, shown: labelsThatFit(box.current) });
+    }
+  });
+  // A width the line changes to is read again on the next frame, so the reading is a commit
+  // of its own rather than one inside the observer's notification.
+  const hasLabels = labels.length > 0;
+  useEffect(() => {
+    const element = box.current;
+    if (!hasLabels || element === null || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth === width) return;
+      width = element.clientWidth;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => setFit(null));
+    });
+    observer.observe(element);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [hasLabels]);
+  if (labels.length === 0) return null;
+  const left = labels.length - (shown ?? 0);
+  return (
+    <>
+      {/* `relative`: the chips' offsets are read against this box (`labelsThatFit`). */}
+      <div
+        className="relative flex min-w-0 flex-[1_1_0] gap-1.5 overflow-hidden"
+        data-testid="issue-header-labels"
+        ref={box}
+      >
+        {labels.slice(0, shown ?? labels.length).map((label) => (
+          <span
+            className={`inline-flex shrink-0 items-center rounded-md border px-[7px] text-xs leading-[18px] font-medium whitespace-nowrap ${pageLabelChip}`}
+            data-header-label=""
+            key={label}
+            {...authorText}
+          >
+            {label}
+          </span>
+        ))}
+      </div>
+      {left === 0 ? null : (
+        // Tabular digits, so the count read at its widest is as wide as any count of as many
+        // digits it then draws.
+        <button
+          className={`shrink-0 text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing}`}
+          data-testid="issue-labels-left"
+          onClick={onOpenAll}
+          type="button"
+          {...pageChrome}
+        >
+          +<span {...authorText}>{left}</span>{" "}
+          {left === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}
+        </button>
+      )}
+    </>
+  );
+}
+
+/** How many of the header's label chips stand wholly inside `box`, in order: the first that
+ *  reaches past its end ends the run, as the line reads left to right. */
+function labelsThatFit(box: HTMLElement): number {
+  const width = box.clientWidth;
+  let fit = 0;
+  for (const chip of box.querySelectorAll<HTMLElement>("[data-header-label]")) {
+    if (chip.offsetLeft + chip.offsetWidth > width + 0.5) break;
+    fit += 1;
+  }
+  return fit;
 }
