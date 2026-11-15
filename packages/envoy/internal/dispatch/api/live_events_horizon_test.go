@@ -19,30 +19,24 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// relayStartSettle is the moment the relay's first start is left to read the log once it has begun
-// (firstRelayCursor): its floor mark and the log's gaps, a few local statements. An event committed
-// after awaitRelayStart therefore commits after that read, and so stands above the cursor the start
-// answers, which is what the tests of that cursor turn on.
-const relayStartSettle = 300 * time.Millisecond
-
-// awaitRelayStart returns once a subscription has reached relay's first cursor read and that read
-// has had relayStartSettle to run. Every caller holds the horizon back (a transaction open
-// elsewhere on the instance, or an event id still open in this database), so the start is waiting
-// on Horizon.Await by then and cannot finish until the caller lets it.
-func awaitRelayStart(t *testing.T, relay *eventStreamRelay) {
+// awaitRelayStart returns once the subscription that starts served's relay, the server's first
+// relay start, has read the log its first cursor comes from (firstRelayCursor) and waits on
+// Horizon.Await. An event committed after it returns therefore commits after that read, and so
+// stands above the cursor the start answers, which is what the tests of that cursor turn on. Every
+// caller holds the horizon back (a transaction open elsewhere on the instance, or an event id
+// still open in this database), so the start cannot finish until the caller lets it.
+func awaitRelayStart(t *testing.T, served *server) {
 	t.Helper()
-	testwait.Eventually(t, "the subscription reaches the relay's first start", func() bool {
+	relay := served.eventRelay
+	testwait.Eventually(t, "the relay's first start to have read the log and to wait on the horizon", func() bool {
 		relay.mu.Lock()
 		defer relay.mu.Unlock()
-		return relay.starting != nil
+		return relay.starting != nil && served.relayStartReads.Load() == 1
 	})
-
-	testwait.Span(t, relayStartSettle, "the relay's first start reads the log on the subscription's goroutine and then "+
-		"waits on Horizon.Await, and no state the test reads says the read has run, the database is real I/O (no "+
-		"synctest), and no later action of the test is ordered after a read that answers nothing it can see")
 }
 
 // holdEventWriterTransactionID opens a transaction in Dispatch's own database and takes a
@@ -307,7 +301,7 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served.eventRelay)
+	awaitRelayStart(t, rig.served)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the relay starts")
 	committed := eventHead(t, rig.database)
 	release()
@@ -329,7 +323,7 @@ func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRe
 	release := holdClusterTransactionID(t)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served.eventRelay)
+	awaitRelayStart(t, rig.served)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the relay starts")
 	committed := eventHead(t, rig.database)
 	release()
@@ -356,7 +350,7 @@ func TestTheFirstColdSubscriptionIsSentAnEventCommittedWhileAWriteFromBeforeBoot
 
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served.eventRelay)
+	awaitRelayStart(t, rig.served)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the relay starts")
 	committed := eventHead(t, rig.database)
 	release()
@@ -470,7 +464,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 	before := eventsTuplesRead(t, rig.database)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served.eventRelay)
+	awaitRelayStart(t, rig.served)
 	// The writer ends a second into the start, as a write holding its id for seconds does: the
 	// span is that production write's own length, which the start must not read the log over.
 	testwait.Span(t, time.Second, "the writer this test stands in for holds its transaction id for seconds in "+
@@ -498,7 +492,7 @@ func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T
 	sendEventsSubscribe(t, client, "events", nil)
 	// The start's gap read finds low missing and then waits on it: low's own transaction holds a
 	// transaction id in this database, so no horizon is proven while it is open.
-	awaitRelayStart(t, rig.served.eventRelay)
+	awaitRelayStart(t, rig.served)
 	commitLow()
 
 	eventsStartID(t, client, "events")
@@ -531,7 +525,7 @@ func TestTheFirstColdSubscriptionSkipsAnIdThatRolledBack(t *testing.T) {
 
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served.eventRelay)
+	awaitRelayStart(t, rig.served)
 	release()
 	if start := eventsStartID(t, client, "events"); start != backlog {
 		t.Fatalf("the first cold subscription starts after event %d, want the log's newest id %d: the gap that rolled back moved its cursor", start, backlog)
@@ -641,13 +635,15 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	// An event insert that opened before the next process boots, and outlives its first start.
 	open, release := holdEventInsert(t, database)
 	read := eventsTuplesRead(t, database)
-	server := httptest.NewServer(secondProcessHandler(t, database))
+	// The next process, on a pool of its own over the same database (storetest.SecondProcess), as
+	// secondProcessHandler mounts one, but answered with its server, whose relay start the test
+	// waits on.
+	second, _, _, served := newRegisteredTestServer(t, testServerOptions{store: storetest.SecondProcess(t, database)})
+	server := httptest.NewServer(second)
 	t.Cleanup(server.Close)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", withBearer("agent-token")).read()
 	sendEventsSubscribe(t, client, "events", nil)
-	testwait.Span(t, 300*time.Millisecond, "the second process's relay begins its first start on the subscription's "+
-		"goroutine, and the test holds no handle on that process's relay to read that it has begun, the database "+
-		"and the socket are real I/O (no synctest), and the socket sends nothing until the start ends")
+	awaitRelayStart(t, served)
 	renameIssue(t, first, issue.Key, "Renamed while the insert is open")
 	committed := eventHead(t, database)
 	release()

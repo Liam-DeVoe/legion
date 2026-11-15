@@ -436,6 +436,11 @@ type server struct {
 	// bootMark closes once the server's boot mark has been taken (takeBootMark), which the marks
 	// in eventMarks begin with; nil on a server with no Store.
 	bootMark chan struct{}
+	// relayStartReads counts the relay starts that have read the log their first cursor comes
+	// from (firstRelayCursor) and gone on to wait for the horizon. Nothing in production reads it;
+	// a test that commits an event such a start must find above its cursor waits for the count
+	// rather than a span, since nothing else the start does says it has read.
+	relayStartReads atomic.Uint64
 	// eventMarks is the event log marks the relay's generation starts and GET /auth/whoami bound
 	// the ids a writer can still hold open by (event_marks.go).
 	eventMarks eventMarks

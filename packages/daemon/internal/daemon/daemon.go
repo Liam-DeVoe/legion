@@ -1414,6 +1414,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
+	sup.observe = p.observe
 	if p.supervising != nil {
 		p.supervising(sup.quiet)
 	}

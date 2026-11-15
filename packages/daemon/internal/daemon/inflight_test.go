@@ -892,6 +892,7 @@ func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
 	rec := &built{}
 	o := fakeRuntime(rt, rec)
 	o.stopBudget = time.Second
+	obs := observing(&o)
 	cancel, done, logs := runLogging(t, cfg, o)
 	reached(t, "the boot to reconcile orphans", rt.reconciling, done, logs)
 	rec.mu.Lock()
@@ -906,11 +907,12 @@ func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The hello is held inside the daemon: the resolver reads the claim and holds the frame until
-	// restoration is over, and says so nowhere — no state of the daemon's names a held hello, no
-	// later action of this test's has an effect that waits on one, and synctest reaches neither
-	// the daemon's goroutines nor this socket. So the hello is given a span to be held in before
-	// the stop comes.
-	testwait.Span(t, 500*time.Millisecond, "nothing the daemon serves or logs names a hello its resolver holds, and no later action of the test's waits on one, so only a span puts the stop after the hold")
+	// restoration is over, which the stalled reconciliation keeps from ending, and reports the hold
+	// to the test's observer; the stop comes only once it has.
+	obs.next(t, "the daemon's report that it holds the planner's hello for restoration", func(e observation) bool {
+		held, ok := e.(observedHelloHeld)
+		return ok && held.claim == token
+	})
 
 	_, stopLog := stopRun(t, cancel, done, logs)
 

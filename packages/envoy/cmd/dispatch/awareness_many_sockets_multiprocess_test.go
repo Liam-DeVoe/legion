@@ -15,9 +15,9 @@ import (
 // Two hundred sockets on A, each within its own bound of four awareness clients
 // (MaxAwarenessClientsPerSocketForTest), keep their clients alive, re-announcing them every ten
 // seconds as a tab's heartbeat does: 800 clients, as many tabs as one user may open, every one of
-// them a client a socket is allowed and no flood. Alice, opening the document on A a second
-// later, is seen at once by carol on A; she must be seen by bob on B within a second too, as she
-// would be were all three on one process. A room bound below what the sockets a process admits
+// them a client a socket is allowed and no flood. Alice, opening the document on A once A's room
+// tracks them, is seen at once by carol on A; she must be seen by bob on B within a second too, as
+// she would be were all three on one process. A room bound below what the sockets a process admits
 // may hold - the connection cap times maxAwarenessClientsPerSocket - fills and leaves neither
 // room a place for her: A refuses the clients its own sockets are allowed, and B's room, full of
 // the ones it was relayed, refuses her client id, so the reader carol sees on A is seen by nobody
@@ -61,9 +61,6 @@ func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t 
 			}
 		}
 	}()
-	testwait.Span(t, time.Second, "the sockets must be announcing into A's room before the reader joins, and a "+
-		"flood in flight writes nothing that says it has begun: both processes are children so synctest does not "+
-		"reach them, and the reader's own join is the later action this span makes meaningful")
 
 	// Every socket's four clients are in A's room before the reader opens the document, so the
 	// room she joins is as full as those sockets can make it: a room that refused these clients

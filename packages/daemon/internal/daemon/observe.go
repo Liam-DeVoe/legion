@@ -5,15 +5,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // observation is one thing the daemon tells a test that observes it (overrides.observe): that it
 // is ready to serve, that an admission pass or a pass of a periodic loop ended, that an outbox row
-// settled, or that the boot's report of the claims nothing will wake finished. The set is closed:
-// the five observed types below. A test waits on these rather than polling an endpoint, a row
-// count or a log for the work they report.
+// settled, that the boot's report of the claims nothing will wake finished, or that it holds a
+// shim's hello for restoration. The set is closed: the six observed types below. A test waits on
+// these rather than polling an endpoint, a row count or a log for the work they report.
 type observation interface{ isObservation() }
 
 // reportTo hands o to observe, the observer a test set (overrides.observe), and does nothing when
@@ -122,11 +123,20 @@ const (
 // it said waits for this rather than for observedReady.
 type observedStranded struct{}
 
+// observedHelloHeld is a shim's hello whose boot token the first resolve found real, as the
+// resolver begins to hold it until restoration is over (helloResolver): the claim the token was
+// minted for. The hold says so nowhere else, so a test that needs a hello held before its next
+// step waits for this.
+type observedHelloHeld struct {
+	claim claim.Token
+}
+
 func (observedReady) isObservation()         {}
 func (observedAdmissionPass) isObservation() {}
 func (observedPass) isObservation()          {}
 func (observedOutboxSettled) isObservation() {}
 func (observedStranded) isObservation()      {}
+func (observedHelloHeld) isObservation()     {}
 
 // admissionObserver is the handler run adds after the deciding handlers when a test observes the
 // daemon (overrides.observe), and only then: it reports each fact's admission pass once the fact's

@@ -42,6 +42,10 @@ type supervisor struct {
 	// durableState is the one callback every machine of this supervisor reports its durable
 	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
+	// observe is the test's observer (overrides.observe), set by openSupervision before the worker
+	// stream listens; nil, in production, reports to nobody. The hello resolver reports to it each
+	// hello it holds for restoration (observedHelloHeld).
+	observe func(observation)
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -415,7 +419,8 @@ func (s *supervisor) wait() {
 // first resolve's generation and Stale flag are only ever as fresh as the moment they were read.
 // Judging the hold by that first result would accept a generation its claim has left meanwhile,
 // taking the stream slot the new generation's own hello then finds "already bound to a live
-// stream".
+// stream". A hello whose first resolve found it real is reported to a test's observer as it
+// begins that hold (observedHelloHeld), since nothing the daemon serves or logs names it.
 //
 // A store that fails either read answers the hello with that error, never as an unknown token: the
 // failure says nothing about the token, and the listener closes the connection unrefused for the
@@ -429,9 +434,11 @@ func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration
 		return tokens.Resolve(ctx, bootToken)
 	}
 	return func(bootToken string) (claim.Token, uint64, bool, bool, error) {
-		if _, known, err := resolve(bootToken); err != nil || !known {
+		first, known, err := resolve(bootToken)
+		if err != nil || !known {
 			return "", 0, false, false, err
 		}
+		reportTo(s.observe, observedHelloHeld{claim: first.Claim})
 		select {
 		case <-s.restored:
 		case <-s.ctx.Done():
