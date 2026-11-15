@@ -640,8 +640,8 @@ class RaceJob(NamedTuple):
 # taken, and it is what makes the number settle, since a later pair moves it only by reading
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
 # call's slowest package takes at most half of it: internal/bus 452.963 s -> 16m (run
-# 42863916685, job 129997210948), internal/dispatch/api 812.770 s -> 28m (attempt 2 of run
-# 43099751798, job 130805659979), and internal/dispatch/docs 1651.0 s -> 56m (run 43174763194,
+# 42863916685, job 129997210948), internal/dispatch/api 955.770 s -> 32m (run 43657875798, job
+# 132640445932), and internal/dispatch/docs 1651.0 s -> 56m (run 43174763194,
 # job 131036282782). Each figure is read from that job's own `go test -json` artifact, the
 # largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
 # 6224bb0e).
@@ -651,7 +651,7 @@ ENVOY_RACE_LANE = (
             "16m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "28m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "32m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "56m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}

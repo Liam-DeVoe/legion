@@ -215,7 +215,7 @@ go test -timeout 20m ./internal/dispatch/api
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
-`envoy-go-race-api`, the job that runs it by itself, which gives it 28 minutes (`-timeout 28m`,
+`envoy-go-race-api`, the job that runs it by itself, which gives it 32 minutes (`-timeout 32m`,
 `.github/workflows/ci.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which gives it
 56 (`-timeout 56m`). Of those two packages `envoy-go` keeps only the few tests the race build
 cannot make, by name, in the race-impossible call of its unit step.

@@ -5851,13 +5851,13 @@ jobs:
     runs-on: ubuntu-24.04
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
-    # package takes at most half of it: internal/dispatch/api, this job's one package, 812.770 s
-    # (attempt 2 of run 43099751798, job 130805659979), 812.770 / 30 = 27.09, so 28m, which it
-    # fills to 48.4 per cent (27m, the limit it ran under, it would fill to 50.2). The job's own
-    # bound follows its largest measured time of a green run, 1001 s in that same job, 16.68
-    # minutes, plus that -timeout plus 6: 16.68 + 28 + 6 = 50.68, so 51. The limit must fire
-    # before the runner cancels the job, so a hung test prints the dump that names it.
-    timeout-minutes: 51
+    # package takes at most half of it: internal/dispatch/api, this job's one package, 955.770 s
+    # (run 43657875798, job 132640445932), 955.770 / 30 = 31.86, so 32m, which it fills to 49.8
+    # per cent (28m, the limit it ran under, it would fill to 56.9). The job's own bound follows
+    # its largest measured time of a green run, 1,136 s in that same job, 18.93 minutes, plus
+    # that -timeout plus 6: 18.93 + 32 + 6 = 56.93, so 57. The limit must fire before the runner
+    # cancels the job, so a hung test prints the dump that names it.
+    timeout-minutes: 57
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5902,7 +5902,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 28m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
+          go test -json -race -count=1 -timeout 32m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-api.json"
           else
