@@ -1,19 +1,24 @@
 import {
+  BLOCK_ATTRIBUTE_LABELS,
   EMPTY_STATE_LINES,
   NODE_FACT_LABELS,
   NODE_STATE_WORDS,
   RESULT_STANDS_WORDS,
+  RESULT_VERDICT_WORDS,
 } from "../web/src/features/issue/page-words";
 import { blockNodeId } from "../web/src/features/issue/tree-drafts";
 import {
   createIssue,
   createIssueArtifact,
   createProject,
+  editArtifact,
+  getArtifactText,
   putRepoProject,
   recordCheckResult,
   retractCheckResult,
 } from "./api";
-import { seedFakeGithub } from "./fake-github-helpers";
+import { connectedDot, documentEditor, paste, placeCaret } from "./editor";
+import { fakeGithubCheckRunReads, seedFakeGithub } from "./fake-github-helpers";
 import {
   branchMoreRows,
   type DrawnFact,
@@ -26,6 +31,7 @@ import {
   unfoldEveryBranch,
   visibleText,
 } from "./issue-page";
+import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -433,6 +439,268 @@ test("an issue with no Verification document says the preset holds no check", as
     // and never what the reader should do about it (`EMPTY_STATE_LINES`).
     expect(await visibleText(page)).toContain(EMPTY_STATE_LINES.checks);
     await expect(rowsOfType(page, "check")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The CI run a `ci_check` check below names. */
+const ciRun = "ci-ok";
+
+/** Seeds an issue whose Verification document holds one check CI proves, `c-ci`, which names
+ *  the CI run `ciRun`, and the issue's open pull request 7 at `secondHead`, whose head carries
+ *  the one check run `run` in the fake GitHub. The harness runs with NATS disabled and the
+ *  results read only reads the heads Dispatch holds, so the head is staged as the
+ *  `pull_request` envelope would have stored it: one `pull_request_heads` row, attributed to the
+ *  issue by its title. */
+async function seedCICheck(
+  title: string,
+  run: { conclusion: string; output: { title: string; summary: string } }
+) {
+  await createProject({ key: "VER", name: "Verification" });
+  await putRepoProject(repository, { default: true, project: "VER" });
+  const issue = await createIssue({ project: "VER", spec, title });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.
+
+:::check{#c-ci serves="dispatch://${issue.key}/spec#b-r1" surface="cli" ci_check="${ciRun}" negative_control="Break the list and the run fails."}
+Every check of the document is listed.
+:::
+`,
+    name: "verification.md",
+  });
+  await seedFakeGithub({
+    [repository]: {
+      check_runs: {
+        [secondHead]: [
+          {
+            check_suite_id: 41,
+            completed_at: "2026-11-12T10:00:00Z",
+            conclusion: run.conclusion,
+            html_url: `https://github.com/${repository}/actions/runs/40/job/9001`,
+            id: 9001,
+            name: ciRun,
+            output: run.output,
+            status: "completed",
+          },
+        ],
+      },
+      contents: "read",
+      installation_id: 256,
+      pull_requests: "read",
+      pulls: { "7": { head_sha: secondHead, state: "open", title: `${issue.key} the tab` } },
+    },
+  });
+  await sql(
+    `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, checked_at)
+     VALUES ('${repository}', 7, '${secondHead}', 'open', '${issue.key}', 'title_body', '${issue.key} the tab', now())`
+  );
+  return issue;
+}
+
+// SLOW(>=2s): 2.6 s - a project, its default repository, a Verification document, a staged pull
+// request head and a seeded fake GitHub, before one load of the page, whose results read mints a
+// token and reads the head's check runs from that fake. The floor the first row of this file
+// pays is most of it.
+test("a check with ci_check shows the pass its CI run concluded at the issue's open head", async ({
+  browser,
+}) => {
+  const issue = await seedCICheck("CI proves it", {
+    conclusion: "success",
+    output: { summary: "41 passed", title: "ci-ok passed" },
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const answers: string[] = [];
+    page.on("response", (response) => {
+      if (new URL(response.url()).pathname === `/api/v1/issues/${issue.key}/results`) {
+        answers.push(response.url());
+      }
+    });
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    // A check whose pass stands is behind the fold, as the first row of this file says.
+    await unfoldEveryBranch(page);
+    await expect(rowsOfType(page, "check")).toHaveCount(1);
+    const id = blockNodeId(verification, "c-ci");
+
+    // A pass of the check stands, from the run CI concluded, and the check names that run under
+    // the label its document draws `ci_check` under.
+    const drawn = (await drawnRows(page)).find((row) => row.id === id);
+    expect(drawn?.state).toBe("passed");
+    expect(await factsIn(page, id)).toContainEqual({
+      label: BLOCK_ATTRIBUTE_LABELS.ci_check,
+      value: ciRun,
+    });
+
+    // Its one result is the one derived from that run, a node under the check drawn as a
+    // recorded one is: its verdict, where its commit stands, its role, its run and its commit.
+    await openResults(page);
+    const results = (await drawnRows(page)).filter((row) => row.type === "result");
+    expect(results).toHaveLength(1);
+    expect(results[0]?.firstLine).toContain("conclusion: success");
+    const facts = await factsIn(page, results[0]?.id ?? "");
+    for (const fact of [
+      { label: NODE_FACT_LABELS.verdict, value: RESULT_VERDICT_WORDS.pass },
+      { label: NODE_FACT_LABELS.stands, value: RESULT_STANDS_WORDS.at_basis },
+      { label: NODE_FACT_LABELS.role, value: "ci" },
+      { label: NODE_FACT_LABELS.commit, value: secondHead },
+    ]) {
+      expect(facts).toContainEqual(fact);
+    }
+    expect(await bodyOf(page, results[0]?.id ?? "")).toContain(ciRun);
+
+    // Each answer of the results route read the head's check runs once, one page of one run.
+    await expect
+      .poll(
+        async () => (await fakeGithubCheckRunReads())[repository]?.[secondHead] === answers.length
+      )
+      .toBe(true);
+    expect(answers.length).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): 2.6 s - the same seeding and the same one load of the page as the row above, with
+// the fake's run skipped rather than passed.
+test("a check with ci_check whose CI run was skipped says its run proved nothing", async ({
+  browser,
+}) => {
+  const issue = await seedCICheck("CI skipped it", {
+    conclusion: "skipped",
+    output: { summary: "", title: "" },
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    await unfoldEveryBranch(page);
+    const id = blockNodeId(verification, "c-ci");
+
+    // No pass of it stands and no result is under it, and in place of a body that says nothing
+    // of why, the check draws the server's own sentence saying what its run showed.
+    const drawn = (await drawnRows(page)).find((row) => row.id === id);
+    expect(drawn?.state).toBe("no-result");
+    const facts = await factsIn(page, id);
+    expect(facts).toContainEqual({ label: BLOCK_ATTRIBUTE_LABELS.ci_check, value: ciRun });
+    expect(facts).toContainEqual({
+      label: NODE_FACT_LABELS.ci_unproved,
+      value: `CI run ${ciRun} concluded skipped at ${secondHead}, the head of ${repository}#7, which proves nothing.`,
+    });
+    await openResults(page);
+    expect((await drawnRows(page)).filter((row) => row.type === "result")).toHaveLength(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The four check blocks a person can paste that each break one rule of a check CI proves, by
+ *  block id, with the rule's own words. `c-old` reuses the id of a check that held a recorded
+ *  result, which was deleted from the document before the paste. */
+const brokenCIChecks = [
+  {
+    block: `:::check{#c-run ci_check="${ciRun}" run="bun test web/src" negative_control="Break it and the run fails."}\nA check CI proves that names a run.\n:::\n`,
+    id: "c-run",
+    rule: "a check proved by CI carries no run",
+  },
+  {
+    block: `:::check{#c-when ci_check="${ciRun}" when="after_merge" negative_control="Break it and the run fails."}\nA check CI proves after the merge.\n:::\n`,
+    id: "c-when",
+    rule: "ci_check takes when of before_merge",
+  },
+  {
+    block: `:::check{#c-control ci_check="${ciRun}"}\nA check CI proves with no negative control.\n:::\n`,
+    id: "c-control",
+    rule: "a check proved by CI names its negative control",
+  },
+  {
+    block: `:::check{#c-old ci_check="${ciRun}" negative_control="Break it and the run fails."}\nA check that already holds a result.\n:::\n`,
+    id: "c-old",
+    rule: "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one",
+  },
+] as const;
+
+// SLOW(>=2s): 4.6 s - a project, its default repository, a pull request in the fake GitHub, a
+// Verification document, a recorded result reading through to that fake and a block deletion,
+// then a load of the document that opens its live room, the paste, the room's settlement and its
+// repair reaching the editor, and a second load, of the Activity tab.
+// The live editor writes through the document socket, which refuses no update, so the four rules
+// reach a browser's write at the room's settlement: it deletes the `ci_check` of each block that
+// breaks one and posts one block.invalid naming the block and the rule, which the issue's
+// Activity reads as the refusal. A valid check pasted on a fresh id keeps its `ci_check`.
+test("a pasted check block whose ci_check breaks a rule loses it, and the Activity names the rule", async ({
+  browser,
+}) => {
+  const issue = await seedIssue("CI refusals", secondHead);
+  const created = await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.
+
+:::check{#c-old serves="dispatch://${issue.key}/spec#b-r1" surface="cli" run="bun test web/src" negative_control="Break the list and the run fails."}
+A check a role ran.
+:::
+
+End.
+`,
+    name: "verification.md",
+  });
+  const artifactId = created.artifact.id;
+  await recordCheckResult(issue.key, {
+    check: "c-old",
+    commit: secondHead,
+    observed: "41 passed",
+    role: "tester",
+    verdict: "pass",
+  });
+  await editArtifact(artifactId, { ops: [{ block: "c-old", op: "delete" }] });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/artifacts/${created.artifact.slug}`);
+    await expect(connectedDot(page)).toHaveText("connected");
+    await placeCaret(page, "after", "End.");
+    const valid = `:::check{#c-fresh ci_check="${ciRun}" negative_control="Break it and the run fails."}\nA check CI proves under a new id.\n:::\n`;
+    await paste(page, {
+      html: "",
+      text: [...brokenCIChecks.map(({ block }) => block), valid].join("\n"),
+    });
+
+    // Once the room has settled, the stored document holds all five blocks, and only the valid
+    // one carries a ci_check.
+    await expect
+      .poll(async () => {
+        const { markdown } = await getArtifactText(artifactId);
+        const blocks = [...markdown.matchAll(/^:::check\{#([a-z-]+)([^}]*)\}/gm)];
+        return Object.fromEntries(blocks.map(([, id, rest]) => [id, rest?.includes("ci_check")]));
+      })
+      .toEqual({
+        "c-control": false,
+        "c-fresh": true,
+        "c-old": false,
+        "c-run": false,
+        "c-when": false,
+      });
+
+    // The editor shows the same: no broken block draws a ci_check, and the valid one does.
+    const editor = documentEditor(page);
+    const ciCheckOf = (id: string) =>
+      editor.locator(`[data-block-id="${id}"] [data-proof-block-attribute="ci_check"]`);
+    for (const { id } of brokenCIChecks) {
+      await expect(editor.locator(`[data-block-id="${id}"]`)).toBeVisible();
+      await expect(ciCheckOf(id)).toHaveCount(0);
+    }
+    await expect(ciCheckOf("c-fresh")).toHaveText(ciRun);
+
+    // The Activity names each refusal, by block and rule, and none for the valid block.
+    await page.goto(`/issues/${issue.key}/activity`);
+    const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
+    for (const { id, rule } of brokenCIChecks) {
+      await expect(rows.filter({ hasText: `refused check ${id}: ${rule}` })).toHaveCount(1);
+    }
+    await expect(rows.filter({ hasText: "refused check c-fresh" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

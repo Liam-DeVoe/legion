@@ -9,6 +9,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useMarginDrawsSlot } from "../margin/margin-slot";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
@@ -153,6 +154,11 @@ export function IssueMarginPanel({
           resolvedRepo={issue.resolved_repo}
         />
         <IssueComponentsLine issue={issue} />
+        {/* The priorities the issue advances and the control that adds and removes one
+            (dispatch://INFRA-2947 R3, R16), which this panel holds rather than the identity
+            block (dispatch://INFRA-1196 R13): an issue that advances none draws the control
+            alone. */}
+        <IssuePriorityLine disabled={isClosed} issue={issue} />
         <BlockedByControl issue={issue} />
         {(issue.external_links ?? []).length === 0 ? null : (
           <Property label={PROPERTY_LABELS.external_links}>

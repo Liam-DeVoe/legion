@@ -118,24 +118,28 @@ account granted it. The mint reads that second set before each token and asks fo
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
 permission. The daemon itself reads
-GitHub with the implement App too, in a pass as it starts and every two minutes after: it reads
-each open pull request's base branch and the checks that branch requires (its rulesets and its
-branch protection), since only those decide whether CI is red at a head, and so where Legion sends
-the issue. Whether the merge happens is GitHub's to decide, under those same rules.
+GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts,
+which covers what arrived while the daemon was down, and once an agent's handoff has been recorded,
+the moment the daemon next decides on that pull request's state. It runs on no timer, and it reads
+one issue's own pull request rather than a listing of every open one, so a handoff costs the reads
+of its own pull request alone.
+It reads no repository ruleset, no branch protection and no check run: whether CI is red at a head
+reaches the daemon as Envoy's settled observation of that head's checks, and the checks a base
+branch requires the daemon never reads at all, so it names no required check that has never run.
+Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-The same pass applies what a GitHub event lost, or still waiting behind the daemon's GitHub
-consumer, would have carried, so such an event leaves the record behind for at most one pass:
+Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
+lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
+the next of them:
 
-- **An opened or reopened pull request, in any phase.** Every pass lists each served repository's
-  open pull requests, a request per hundred of them. One on an issue's branch, `legion/<KEY>`, of
+- **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
+  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
   the repository itself (not a fork's) that the daemon does not record open is applied as its
   opened webhook would be, a reopen when the record holds the same pull request: the workflow
   records it in whatever phase the issue is, and moves an implementing issue whose implementer
   completed on to testing.
 
-The daemon reads GitHub with the implement App too, but on no timer: no pass comes round over the
-served repositories, and the checks a base branch requires the daemon never reads at all, since
-whether the merge happens is GitHub's to decide under that branch's own rules.
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
   `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
@@ -266,8 +270,10 @@ Dispatch read them, delete the files, then install every App from
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
-  the daemon has started rather than the pods, since an issue keeps its pod past the slot — on to
-  its own close — and an issue that only waits keeps both,
+  the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
+  its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
+  review keeps both, unless it waits on another issue, when it keeps only its pod
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
@@ -421,15 +427,16 @@ What each part is for:
   ```
 
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
-  every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
-  commits carry, so a squash landing that branch carries the issue key in its message — which is
-  what a base branch that requires the key in the commit it lands reads.
+  every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
+  lines every pane's commits carry, so a squash landing that branch carries the issue key in its
+  message — which is what a base branch that requires the key in the commit it lands reads.
+  A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
   A repository the key names must be one [Dispatch maps to the
   project](#the-projects-repositories): the mapping is what the project serves, and this key only
   selects among it, so a name the project does not serve stamps nothing and the boot log says so
   once, naming the repository and the project.
   A pane of a repository the key does not name is told no key, and its commits carry the session
-  line alone, as does a commit that pane's shell makes in any other jj repository.
+  and role lines alone, as does a commit that pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so `runtime.kubernetes.pod.env` and
   `runtime.tmux.pane_env` are refused for setting it.
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
@@ -580,12 +587,28 @@ What each part is for:
   ([Start the controller](#start-the-controller)).
 - Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
   closed issue's production check runs before its last look, 14 days by default,
-  decimals allowed), `pod_update_retask_hours` (1: how long an update round waits before it asks
-  a worker that has not answered again, decimals allowed), `pod_update_notice_hours` (4: how long
-  an update round runs before the controller is told it is not finishing, decimals allowed),
+  decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
+  update round ends and the pod is replaced, whatever the roles answered and unless an operator's
+  suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
-  absent key is no limit at all, `review_round_cap` (3),
+  absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
+  may be quiet — no issue of it moving and no agent of it stepping — before the project's
+  controller is told once about that tree, decimals allowed; a tree with a role at work is never
+  told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
+  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
+  at work, or an issue of the line that waits on no other issue can start — nor, whether or not
+  the line can move, one whose only quiet issues gave their slot back to wait on work outside
+  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
+  daemon has released. A wait on a child its architect has not released is no such wait. Where
+  the issue waited on is in this project and its own tree has stopped, that tree is told; a
+  wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
+  and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
+  under `admission.blocked` and in the tick notice's `blocked` list.
+  No value turns the notice off,
+  so a deployment that wants fewer notices raises the number, to 596 at most),
+  `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
   (3), `prompt_failure_limit` (3) and `prompt_retire_limit` (2).
   `controller_wake_interval_seconds` also sets the period of the daemon's status repair, which
@@ -1073,10 +1096,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue takes a slot when the daemon starts it and keeps it
-  until it is done or leaves the workflow,
-  so a tree of four started issues holds four of them, and the `live
-  trees` count is the trees that run whether or not any issue of theirs holds one.
+  issue takes a slot when the daemon starts it and gives it back as the admission rule says
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
+  so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
+  trees that run whether or not any issue of theirs holds one.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: the issues whose work came back first, oldest first by the moment it
@@ -1184,7 +1207,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   read; a daemon below contract 58 serves none), beside which the line's own members say where
   that place came from and what it means for the slot the issue waits for:
   `part`, `returned` for an issue whose work came back or `starting` for one that has not
-  started; `kind`, `returning`, `answered`, `queued_root` or `first_phase`; `partPlace` and
+  started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
+  issue that gave its slot back to wait on another issue,
+  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `partPlace` and
   `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
@@ -1194,8 +1219,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
   holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
-  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
-  whose open children hold its own first phase reads `blocked`, and an issue at work whose
+  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, and an issue at work whose
   worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
   answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
@@ -1251,6 +1275,6 @@ controller does through its `legion` tool's `set_status`:
 legion status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
 ```
 
-`backlog` or `icebox` takes the tree out of the workflow: its agents are suspended and the slots
+A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
 its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
 architect.

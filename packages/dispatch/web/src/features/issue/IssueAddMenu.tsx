@@ -10,6 +10,7 @@ import {
   secondaryButtonText,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { assigneeControlName } from "./AssigneeControl";
 import { blockedByControlName } from "./BlockedByControl";
 import { componentsControlName } from "./IssueComponentsLine";
@@ -24,12 +25,13 @@ import { repoControlName } from "./RepoControl";
  * the panel's sections - so nothing is hidden behind this; what it lists is exactly what is not
  * there yet, and picking one opens the control that sets it.
  *
- * Four of the fields it lists are edited by a control drawn elsewhere on the page (the
- * assignee, the issues this one waits on, the repository and the components), so the menu
- * presses those rather than holding a second copy of them. It finds each by the name that
- * control exports - `assigneeControlName`, `blockedByControlName`, `repoControlName`,
- * `componentsControlName` - so the two sides cannot drift apart, and lists one only while the
- * page draws it: a project that maps no repository offers no repository to set.
+ * Five of the fields it lists are edited by a control drawn elsewhere on the page (the
+ * assignee, the issues this one waits on, the repository, the components and the priorities it
+ * advances), so the menu presses those rather than holding a second copy of them. It finds each
+ * by the name that control exports - `assigneeControlName`, `blockedByControlName`,
+ * `repoControlName`, `componentsControlName`, `addPriorityControlName` - so the two sides
+ * cannot drift apart, and lists one only while the page draws it: a project that maps no
+ * repository offers no repository to set.
  */
 export function IssueAddMenu({
   isClosed,
@@ -156,6 +158,12 @@ export function IssueAddMenu({
       fields.push({
         label: PROPERTY_LABELS.components,
         ...atControl(componentsControlName(details.key)),
+      });
+    }
+    if ((details.advances ?? []).length === 0) {
+      fields.push({
+        label: PROPERTY_LABELS.advances,
+        ...atControl(addPriorityControlName(details.key)),
       });
     }
     return fields;

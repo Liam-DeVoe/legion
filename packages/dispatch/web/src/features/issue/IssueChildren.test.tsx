@@ -28,6 +28,8 @@ const child: IssueChild = {
 
 function issueWith(children: readonly IssueChild[]): IssueDetails {
   return {
+    advances: [],
+    advances_revision: 0,
     artifacts: [],
     assignee: null,
     blocked_by: [],

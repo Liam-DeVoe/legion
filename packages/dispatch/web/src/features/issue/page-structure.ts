@@ -55,6 +55,10 @@ export const authorText: Readonly<Record<string, string>> = freeze({
  * is the author's and carries `AUTHOR_TEXT_ATTRIBUTE`.
  */
 export const PROPERTY_LABELS = freeze({
+  /** The priorities the issue advances, its own and those an issue above it states
+   *  (dispatch://INFRA-2947 R4, R16), which the panel's Development section draws with the
+   *  control that adds and removes one (dispatch://INFRA-1196 R13). */
+  advances: "Advances",
   assignee: "Assignee",
   /** The issues this one waits on (`blocked_by`). */
   blocked_by: "Blocked by",

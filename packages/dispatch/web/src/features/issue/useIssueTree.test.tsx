@@ -54,6 +54,8 @@ const task: ArtifactBlock = {
 };
 
 const issue: IssueDetails = {
+  advances: [],
+  advances_revision: 0,
   artifacts: [plan],
   assignee: null,
   blocked_by: [],

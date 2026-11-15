@@ -27,7 +27,7 @@
  * component all read the same list.
  */
 
-import { MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
 
 import type { Actor } from "../../api/types";
 import { ASK_RESOLUTION_WORDS } from "../refs/actor";
@@ -369,15 +369,18 @@ export const PROGRESS_NOUNS = freeze({
 } as const);
 
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
- *  issue, whose writes the identity block refuses. One line, saying what is so. */
+ *  issue, whose writes the identity block refuses, and an issue that advances as many
+ *  priorities as one may, whose priority row offers no control that adds another
+ *  (`features/priorities/IssuePriorityLine.tsx`). One line each, saying what is so. */
 export const STATE_LINES = freeze({
+  advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
   closed: "This issue is closed.",
 } as const);
 
 /**
- * What the page says in answer to the reader's own act, and never on load: a copy they pressed
- * and a write of theirs still out (dispatch://INFRA-1196 R22). The page's other answers are
- * tables of their own -
+ * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
+ * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
+ * R22). The page's other answers are tables of their own -
  * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
  * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
@@ -388,6 +391,13 @@ export const ANSWER_LINES = freeze({
   copied: "Copied",
   copy_failed: "Copy failed",
   copy_failed_hint: "Copy failed - select the text",
+  /** What the priority picker says while the list it offers is still being read
+   *  (`features/priorities/IssuePriorityLine.tsx`). */
+  loading_priorities: "Loading priorities…",
+  /** What the panel's priority row says when the priorities could not be read, and when a
+   *  write of what the issue advances failed and the server gave no reason of its own. */
+  priorities_unreadable: "Could not load the priorities.",
+  priorities_not_saved: "Could not save what this issue advances.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -502,6 +512,12 @@ export function approvalStateWord(token: string): string {
 export const CONTROL_LABELS = freeze({
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
+  /** The control that places an issue under a priority, where the issue advances none: the
+   *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
+  add_priority: "Add a priority",
+  /** What the priority row says of a priority the issue advances because an issue above it
+   *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
+  advances_inherited: "inherited",
   /** The other parents a transcluded node is also drawn under (R1, R4). */
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
@@ -519,6 +535,8 @@ export const CONTROL_LABELS = freeze({
   children: "Children",
   /** The direct children done of total, labelled on the collapsed header (R10). */
   children_done: "Children done",
+  /** The priority picker's first choice, which picks nothing. */
+  choose_priority: "Choose a priority",
   /** Closes the document opened in place of the outline and draws the outline again (R3); the
    *  key that does the same is Escape. */
   close_document: "Back to the conversation",
@@ -614,6 +632,8 @@ export const CONTROL_LABELS = freeze({
   other_nodes: "Files and documents",
   /** The row of five queries over the one tree, as a reader of it hears it named (R3). */
   presets: "Issue presets",
+  /** The priority picker, named by what the issue will do with the one picked. */
+  priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
   release_claim: "Release",
   /** What reopening does, as the control's own words rather than a tooltip (R11). */
@@ -710,6 +730,9 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   answer: "answer",
   answered_at: "answered at",
   answered_by: "answered by",
+  /** The CI run whose conclusion at the pull request's head is a check's result, read in place
+   *  of one a role records. "CI" keeps its capitals: it is an initialism, not a word. */
+  ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
@@ -750,6 +773,9 @@ export function blockAttributeLabel(name: string): string {
  * A label is lowercase, like the attribute labels it sits beside, and the row draws the colon.
  */
 export const NODE_FACT_LABELS = freeze({
+  /** Why a check CI proves has no result: the server's own sentence for what its run showed at
+   *  the head it read (`CheckBlock.ci.detail`), drawn where an ordinary check draws none. */
+  ci_unproved: "why no result",
   commit: "commit",
   excluded: "excluded",
   failed: "failed",

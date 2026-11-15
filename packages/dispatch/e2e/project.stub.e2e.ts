@@ -158,7 +158,11 @@ filterTest(
 referencesTest(
   "an issue's Artifacts tab lists its reference closure and a document page lists its referrers @pr",
   async ({ page, scene }, testInfo) => {
-    await page.goto(`/issues/${scene.issue}/artifacts`);
+    // The issue's reference closure is drawn on each of its artifacts' own pages, where the
+    // Artifacts tab's list went (dispatch://INFRA-1196, the Design's "Where each thing goes";
+    // `features/artifacts/IssueReferenceClosure.tsx`): `/issues/<key>/artifacts` opens the node
+    // menu, which carries no closure.
+    await page.goto(`/issues/${scene.issue}/artifacts/source-doc`);
     await page.getByText(/References \(\d+\)/).click();
     const references = page.getByRole("region", { name: "References" });
     await expect(references.getByRole("link", { name: "Design notes" })).toHaveAttribute(
@@ -174,7 +178,9 @@ referencesTest(
       await expect(tabs.nth(index)).toHaveAccessibleName(name);
     }
     await expect(page.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-    await page.getByRole("link", { name: "Design notes" }).click();
+    // The opened document draws its own mention of Design notes as a chip too, so the link the
+    // row follows is the closure's.
+    await references.getByRole("link", { name: "Design notes" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents/design-notes");
     await expect(page.getByRole("region", { name: "Referenced by" })).toContainText(
       `Comment · ${scene.issue}`

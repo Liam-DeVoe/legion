@@ -57,6 +57,8 @@ function artifact(id: string, slug: string, name: string, primary = false): Arti
 
 function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
   return {
+    advances: [],
+    advances_revision: 0,
     artifacts: [...artifacts],
     assignee: null,
     blocked_by: [],

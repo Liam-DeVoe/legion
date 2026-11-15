@@ -56,6 +56,8 @@ const issue = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [
     {
       created_at: "2026-09-09T00:00:00Z",
@@ -2815,6 +2817,87 @@ test("IssuePage draws its panel in its own column wherever the margin draws none
     expect(within(panel).getByText("Opened by:")).toBeInTheDocument();
     expect(within(panel).getByRole("link", { name: "CORE-9" })).toBeInTheDocument();
     expect(within(panel).getByRole("listbox", { name: "Conversation" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The priorities an issue advances and the control that adds and removes one, which
+// dispatch://INFRA-2947 drew on the old header's details rail, are the Details panel's now
+// (dispatch://INFRA-1196 R13, the Design's "Where each thing goes"): its Development section draws
+// them beside the repository and the components, in the page's own words, and the identity block
+// draws neither.
+test("IssuePage draws the priorities an issue advances in the panel's Development section", async () => {
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue({
+    priorities: [
+      {
+        description: "",
+        id: "evals-now",
+        made_at: "2026-11-01T00:00:00Z",
+        made_by: { id: "alice", kind: "user" },
+        owner: "alice",
+        rank: "a",
+        state: "live",
+        title: "Evals collecting data now",
+        work: {
+          by_status: {},
+          claimed: 0,
+          closed_last_7_days: 0,
+          newest_event_at: null,
+          open_asks: 0,
+        },
+      },
+    ],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  const restore = stubIssuePage({ ...issue, advances: [{ id: "evals-now", inherited: false }] });
+  const view = renderIssuePage();
+
+  try {
+    const panel = await screen.findByTestId("issue-margin");
+    const development = panel.querySelector<HTMLElement>('[data-margin-section="development"]');
+    expect(development).not.toBeNull();
+    const row = within(development as HTMLElement).getByTestId("issue-advances");
+    expect(
+      await within(row).findByRole("link", { name: "P1 Evals collecting data now" })
+    ).toHaveAttribute("href", "/priorities/evals-now");
+    expect(within(row).getByText("Advances:")).toHaveAttribute("data-page-chrome", "");
+    expect(
+      within(row).getByRole("button", { name: "Remove P1 Evals collecting data now from CORE-1" })
+    ).toBeEnabled();
+    expect(within(row).getByRole("button", { name: "Add a priority to CORE-1" })).toBeEnabled();
+    expect(
+      within(screen.getByTestId("issue-header")).queryByTestId("issue-advances")
+    ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listPriorities.mockRestore();
+    restore();
+  }
+});
+
+// An issue that advances none draws no such row, only the control that places it under one, and
+// the identity block's one add control lists the field and opens that control (R13: a field with
+// no value is reachable from one add control).
+test("IssuePage offers a priority from its one add control while the issue advances none", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    const row = await screen.findByTestId("issue-advances");
+    expect(row).not.toHaveTextContent("Advances");
+    expect(within(row).getByRole("button", { name: "Add a priority to CORE-1" })).toHaveTextContent(
+      "Add a priority"
+    );
+    const header = screen.getByTestId("issue-header");
+    await user.click(within(header).getByRole("button", { name: "Add" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Advances" }));
+    expect(
+      await within(row).findByRole("combobox", { name: "Priority to advance" })
+    ).toBeInTheDocument();
   } finally {
     view.unmount();
     restore();

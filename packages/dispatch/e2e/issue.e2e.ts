@@ -784,7 +784,9 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     // including the actions control that close and reopen sit behind; and the properties that
     // are not the issue's identity are in the panel (dispatch://INFRA-1196 R11, R12).
     const stateRow = await top(page.getByLabel("Status"));
-    expect(await top(page.getByLabel("Priority"))).toBe(stateRow);
+    // `Priority of <KEY>` is the issue's own grade; the control that adds a priority the issue
+    // advances is in the panel and names that word too.
+    expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
     await expect(page.getByTestId("issue-state-actions").getByTestId("issue-labels")).toBeVisible();
     expect(await top(page.getByRole("button", { name: "Issue actions" }))).toBeLessThan(stateRow);
     await expect(panel).toHaveCount(1);

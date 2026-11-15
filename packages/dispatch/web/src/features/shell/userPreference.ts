@@ -20,6 +20,7 @@ export type UserPreference =
   | "issue.children-section"
   /** Which of the issue panel's property sections this reader has collapsed. */
   | "issue.margin-sections"
+  | "priorities.margin"
   | "project.board-edges"
   | "project.board-lanes"
   | "project.issue-filters"

@@ -62,7 +62,7 @@ const schemas: Record<string, z.ZodType> = {
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
   "ready.json": LegionReadyRequest,
-  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update task, saying it has
+  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update message, saying it has
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
@@ -118,6 +118,15 @@ const schemas: Record<string, z.ZodType> = {
   // cause set is the daemon's, word for word" below. A word the enum does not name fails the
   // parse of this fixture, which is what the gate above reports.
   "failure-causes.json": z.strictObject({ causes: z.array(z.enum(LEGION_FAILURE_CAUSES)) }),
+  // Nor this one: the code of a completion refused for its phase entry and the words that
+  // refusal tells the worker to act on (`staleEntryCode` and `staleEntryInstruction` in
+  // `internal/api/handoff.go`), written by `internal/api`'s TestStaleEntryInstructionGolden so
+  // that `packages/pi-shared/src/legion-phase-ops.test.ts` can hold the `legion` tool's
+  // description for that code to the daemon's own text, word for word.
+  "stale-entry.json": z.strictObject({
+    code: z.literal("HANDOFF_STALE_ENTRY"),
+    instruction: z.string().min(1),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -501,7 +510,7 @@ test("a backward move rejects future read-only phases", () => {
   ).toBeFalse();
 });
 
-// Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
+// Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production

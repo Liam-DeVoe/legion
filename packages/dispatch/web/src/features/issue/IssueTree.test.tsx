@@ -498,6 +498,8 @@ function fullyReadIssue(): TreeNode {
     slug: "spec",
   };
   const details = {
+    advances: [],
+    advances_revision: 0,
     artifacts: [spec, decisionsDocument],
     assignee: null,
     blocked_by: [],

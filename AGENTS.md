@@ -276,7 +276,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   The operator's: relaunch a failed architect on its session with fresh budgets, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
   `--claim` reaches a claim an operator stopped as well as a failed one, because `legion claims stop` retires the claim it stops, and starts a phase worker on the task of the phase its issue stands in now;
-  `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session, and it reaches a claim whose agent is registered, ready or idle as well as one that is suspended, failed or retired, with no suspension held over it, a root architect included;
+  `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session;
+  it reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that the read of its process at the request finds nothing behind, which is the dead role a project's controller has no other way back from, with no suspension held over it, a root architect included;
+  it suspends a live agent and the claim no process stands behind alike, where the request arrives, and that last claim comes back with the task its dead turn held;
+  of the other claims stored working, one whose process that read finds running, or whose session is being compacted, is refused `CLAIM_IN_A_TURN`, and one whose process the runtime would not answer for, one that records no process to read, and one that moved under the request and that a second read finds no longer working or gone once more are refused `CLAIM_UNSETTLED`, each left exactly as the request found it, a claim that moved being otherwise answered as that second read finds it;
+  a forget or a start the machine refuses after the claim was stopped is answered 200, with that refusal and the state it left the claim in printed under the claim's line, because the request changed the claim: a suspended claim is started by running the same command again, and a claim left in another state, such as `launching` with its launch tried again at the probe interval, starts by itself;
   `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux");
   a failed claim carries the one cause word the daemon failed it under, which `legion claims list` prints after the claim's state word, `-` where the daemon holds none, and which `--json` gives with the sentence beside it, the moment and the four counts;
   a held issue has a release that costs nothing besides this retry: `legion status <KEY> todo` on a tree's own root releases the hold, returning the issue to the phase it was held from and starting that phase's worker at the same generation, in the same pod and at the same place in the admission line
@@ -284,7 +288,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion claims compact --operator-token-file <file> --claim <token>`
 
   The recovery to try before a fresh session for a claim whose provider keeps refusing its session: the daemon has Oh My Pi write a text summary of that session and then sends the claim whatever task it owed again, so the session, its workspace and everything the worker knows of its issue stay and only the transcript gets shorter;
-  it reaches a claim whose agent is ready or idle, a root architect included, and refuses a suspended, failed or retired claim naming what starts it again, which is `--fresh-session` for a workflow role and, for the project's own controller claim, the daemon's controller keeper, whose resume an operator's own suspension holds, a claim the daemon records as working, which may be in a turn, a claim whose launch is in flight, a claim whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim a suspension is held over, which that hold may stop rather than give back, a claim left working under a relaunch the daemon's wake pacing parked, a claim left working over a process the daemon's last report of it found gone, which is in no turn at all, and a claim whose role runs on Claude Code, which has no Oh My Pi session;
+  it reaches a claim whose agent is ready or idle, a root architect included, and refuses a suspended, failed or retired claim naming what starts it again, which is `--fresh-session` for a workflow role and, for the project's own controller claim, the daemon's controller keeper, whose resume an operator's own suspension holds, a claim whose launch is in flight, a claim whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim a suspension is held over, which that hold may stop rather than give back, a claim left working under a relaunch the daemon's wake pacing parked, and a claim whose role runs on Claude Code, which has no Oh My Pi session;
+  for a claim the daemon records as working it reads that claim's process at the runtime, at the moment of the request, rather than its own memory of an older report, which a restart forgets, and that read records what it finds as the sweep's report of the process would: where it finds the process running and clears a death charge, it writes the claim as the daemon holds it, as that report's write does, and it stops, suspends, forgets, takes back and starts nothing: a process that read finds running is refused `CLAIM_IN_A_TURN`, as is a claim whose session is being compacted, a claim whose process the runtime would not answer for, a claim that records no process to read and a claim that moved out of working while the request was made are refused `CLAIM_UNSETTLED`, each left exactly as the request found it, and a claim stored working that no process stands behind is refused `CLAIM_NOT_RUNNING` naming `--fresh-session`, which reaches it, or, for the project's own controller claim, which `--fresh-session` refuses and its keeper leaves alone while it is stored working, naming `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`;
   each refusal says what the claim is doing and which operation reaches each state `legion claims list` shows, and names no moment to come back at;
   a compaction Oh My Pi refused or skipped is printed with its reason rather than failing the command, because the claim is back and whatever task it owed has gone again all the same
 
@@ -309,7 +314,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   --provider-env-dir exports each mounted secret file as NAME=contents into the OMP child's environment only (skipping a NAME the pod already consumes through a NAME_FILE pointer, e.g. DISPATCH_TOKEN;
   and refusing to start — exit 1 naming the key and its file, Oh My Pi never spawned
   — when a key's name is already a variable of the shim's own environment, since the export would override it silently (LEGION-186));
-  the shim also answers the daemon's `adopt-working-copy` frame by running the shared `jj metaedit --update-author` in its workspace;
+  the shim also answers the daemon's `adopt-working-copy` frame by running the shared `jj metaedit --update-author` in its workspace, which fills an empty author that `jj git push` refuses;
   with `--pod-safety` (the Sandbox runtime passes it; a tmux pane never does), the shim starts Oh My Pi on Legion's pod baseline (`packages/daemon/internal/podsafety`), which names no model, provider or route and holds nothing of a repository's settings off:
   `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file`, each set only when the pod leaves it unset (the runtime refuses both in an operator's pod, since they place the sessions a resume reads), and nothing else — Legion writes no settings overlay of its own, so `PI_CONFIG_FILES` rides through as the runtime composed it, the operator's own overlays with the role's own (`role_config_files`) after them, and `OTEL_RESOURCE_ATTRIBUTES` the same, the operator's attributes then the launch's issue and role, and background work is on for every role, the pinned binary's own default under `--mode rpc`;
   with `--warm-codegraph` (the Sandbox runtime passes it for a role in an issue pod;
@@ -368,6 +373,30 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the real gh runs with GH_PATH at that wrapper, so the git gh runs itself (a clone, a fork's parent, `pr checkout`) asks `legion gh auth git-credential`, which answers as `legion git-credential` does, and with gh's update check and prompts off;
   it sends nothing when only gh's help or `gh --version` alone runs;
   it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one naming two owners (an option or another repository naming one owner while gh acts on another's repository among them), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are")
+
+- `legion gh`'s visibility guard, rate-limit wait and call log
+
+  the guard keeps public repository visibility answers for the pod and reads private or internal visibility on every call;
+  where GitHub says its rate limit is spent, it waits once only when the stated reset is at most two minutes away, otherwise refusing with that reset in UTC;
+  the exact `gh api rate_limit` read bypasses that guard, while a different endpoint or any option remains guarded;
+  each user-initiated wrapped call appends a line to a 1 MiB-bounded log, `$XDG_STATE_HOME/legion-gh/calls.log` (`appendGhCallLog`, `packages/daemon/cmd/legion/gh.go`), serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source and exit status, never argument text or a response body
+
+- `legion git --real <git> -- <git argument>…` and `legion git --after <directory> -- <git argument>…`
+
+  A git wrapper runs it, never a person.
+  The pod's `/opt/legion/bin/git` (`packages/daemon/docker/git`) hands it a `git commit` with `--real /usr/bin/git`.
+  On a host, `workerbin.Install` writes a `git` into the launcher directory of a tmux daemon's panes and of `legion controller start`, and that `git` hands it every command with `--after` and that directory.
+  `workerbin.Install` writes no `git` where the first git on the inherited PATH is the image's wrapper, which hands a commit to `legion git` itself.
+  For a `git commit` it adds two trailers: `Omp-Session`, with the session id that the `dispatch` command acts as, and `Legion-Role`, with `LEGION_ROLE`.
+  It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  It then runs the real git (`--real`) or the next git on PATH after the directory (`--after`), a host's own git wrapper included, and it runs every other command unchanged.
+  Where a host's git wrapper runs the `--after` form again, that second run goes on past each git the earlier runs ran, a script or a compiled program, and adds nothing, so the loop ends.
+  Where the git programs on PATH only run one another and the `--after` form, it stops them with exit 127 and says so.
+  The trailers need git 2.32 or later (`git commit --trailer`).
+  `legion git` reads the version of one git: the real git (`--real`), or the first git on PATH after the directory that is a compiled program and not a script (`--after`).
+  When that git is older than 2.32, the commit gets neither line.
+  A host's git wrapper script can run a different git, and `legion git` does not read the version of that git.
+  When that different git is older than 2.32, it refuses the two `--trailer` options with its unknown-option error, so the commit fails, although the same commit succeeds without `legion git`.
 
 - `legion git-credential get|store|erase`
 
@@ -469,7 +498,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `bash scripts/e2e/stage1-skeleton.sh`
 
-  Stage 1's live proof: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
+  Stage 1's live proof: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, answers GET /readyz 200 once it serves, at each of its two boots, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
 
 - `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/stage2-tmux-supervision.sh`
 
@@ -513,7 +542,7 @@ LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic 
   this is the aws-private-ip/gateway shape
   — LEGION_E2E_PLATFORM=gke-autopilot LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernetes-service-account LEGION_E2E_POD_REACHABILITY=bridge LEGION_E2E_MODEL_ROUTE=key-file (no LEGION_E2E_MODEL_GATEWAY_URL/AUDIENCE) proves the same runtime against a cluster whose pods cannot reach the devbox at all (scripts/e2e/README.md)
 
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage4b-sandbox-tree.sh`
+- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE=<email of a person who has signed in to that Dispatch> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage4b-sandbox-tree.sh`
 
   Stage 4b's live proof, devbox only: the Go daemon drives three real issue trees on the Agent Sandbox runtime in the production cluster (namespace legion), against production Dispatch (project LEGSMOKE), Envoy and NATS, with real agents, every pod keeping its Oh My Pi session in a scratch Postgres of the run's own at `LEGION_E2E_SESSION_DB_PORT` (required, no default:
   the lane's third port) — admission under the cap, specs, the daemon bound to every interface with every pod dialing its advertise_host, issue independence (a root and two of its children at once, each pod on a disk of its own with no affinity, none able to read another's workspace) and a done child's release of its Sandbox, its pod and the disk that pod owned, while its parent runs, the repository-configuration fixture, the whole workflow to done with the review pair and a review round no review decides until the architect asks, then a changes-requested round whose approval does not wait for its thread to resolve, and a merge with every thread resolved, a head that starts conflicting with its base mid-test starting the implementer at once while the tester's turn, its background job and its session run on untouched, with the tester told on its own role topic that its phase ended, every worker's phase completion answered in the live session it keeps in its first pod until its issue closes, a finished role answering while another phase runs, token rotation, kill and fence, a daemon restart mid-tree relaunching nothing, a restart with only `envoy_url` respelled relaunching every role in its own issue pod and one with the worker stream and API moved replacing every issue pod, the operator's controller, a worker that dies with its task outstanding, a merge that leaves the root open while two children of its tree still run, told to its architect once and closing the root on the last of their parks, each park taking the child's Sandbox, pod and disk, the close suspending every role and taking each pod with its disk, node release, linger close, a re-admission that comes back on a pod and disk of its own with no lost-volume line anywhere in the daemon's log, every pod's shape and reservation, the pod watch, and an audit that the run wrote nothing outside LEGSMOKE;
@@ -642,7 +671,7 @@ Each item below names a task and where its code is, then notes on it.
 
   The one guard every Legion write passes before it writes:
   the shared public leak check, resolved again at each call, and this repository's own four private-name rules in `private-names.toml`, which the `legion` binary embeds and the gitleaks engine linked into it reads in process.
-  Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the rescue helper's push, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
+  Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
   See `docs/kubernetes.md`;
   the live proof of the image's half is `scripts/e2e/leak-guard-image-job.sh`
 
@@ -852,26 +881,30 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
 **Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
 
 **Admission:** an admission slot is one issue the daemon has started, not one tree.
-Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase — and keeps it until it is done or leaves the workflow.
-So the row goes in three cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; or it belongs to a tree whose root closed or a tree the daemon no longer runs.
-Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `retro`, `merging`, `accepting`, `held` and `awaiting_person` — so an issue waiting on a person, on a blocker, on its children or on its review keeps its place against the cap and wins none back from the line when the wait ends.
-The admission pass that sees one of those three states deletes the slot row.
+Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase.
+An issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while it waits on another issue before that point (see the paragraph on started issues that wait, below).
+So the row goes in five cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; it belongs to a tree whose root closed or a tree the daemon no longer runs; it stands in `accepting`, `retro` or `merging`; or it waits on another issue before its review and is not one of the three roots that keep their slot through such a wait.
+Where it stands is its own phase, or, where that phase is `held` and the record names the phase the hold came from, that phase (`record.StandsAt`), so an issue held from its retro or its merge holds no row either.
+Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `awaiting_person` and `held`, a hold the record names no phase past the review for — so an issue waiting on a person or on its review keeps its place against the cap and wins none back from the line when the wait ends.
+A wait on a blocker or on its children is the exception: the issue gives its slot back, as the paragraph on started issues that wait says.
+Past its review an issue holds no slot, so a wait there has none to give back.
+The admission pass that sees one of those five cases deletes the slot row.
 `admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
 An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
 every worker of a waiting issue stays live in the issue's pod and answers questions until the issue closes.
-A transition applies at once — the phase, the Dispatch status, the new assignment and the notices — and only the outbox row that delivers the worker's start waits for a slot;
-when a second transition happens before the slot, its start replaces the first one, so one worker starts and a completion of the earlier assignment is refused.
+A transition applies at once — the phase, the Dispatch status, the role's phase entry raised by one with that entry's work written beside it, and the notices — and only the outbox row that delivers the worker's start waits for a slot;
+when a second transition happens before the slot, it writes a start of its own that takes the earlier row's place in the waiting line and takes that row out, so one worker starts and a completion of the earlier entry is refused.
 The waiting line is a line of issues:
-first the issues whose work came back, oldest first by the time it came back — one owed its worker a start, which holds no row and waits here for one, and two that hold the row they were started with: an answered `awaiting_person` root and a tree's own root at `admitted` whose design gate has opened;
+first the issues whose work came back, oldest first by the time it came back — one owed its worker a start, which holds no row and waits here for one; one `waiting_on_issue`, a started issue that gave its slot back for a wait, which holds no row and waits here for one; and two that hold the row they were started with: an answered `awaiting_person` root and a tree's own root at `admitted` whose design gate has opened;
 then the issues whose first phase can start, by the Dispatch rank of their tree's root and then by their own, most of which hold no row; two kinds hold one already, a root another tree handed over with the row it held there and a child the daemon started that a person set back to `todo`.
 An issue holding a row stands in `admission.active` and `admission.waiting` at once until the pass that promotes it, and that promotion takes no second row.
 A tree is live while its lifecycle is open and it does not linger, or while its root waits in the line or on a person, whether or not any issue of it holds a slot.
 `legion state` counts the slot holders against the cap and prints the live trees;
-its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
+its JSON lists the slot holders under `admission.active`, which holds an issue at work, one `held` and one waiting on a person too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
-So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that has no open child.
+So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that waits on no other issue, neither an open child nor an unfinished `blocked_by` link.
 `sign_off` and `close_root` are refused while an issue beneath is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), and `release_children` and `rerun_child` refuse a child whose ancestor is in `retro` or `merging` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor);
 a person's own move of such a child to `todo` is recorded and held at `admitted` until that ancestor closes, with a `child-status` notice that says so.
 One issue beneath is left out of the `sign_off` refusal, the `close_root` refusal and a merged issue's wait for the issues beneath it: one the daemon itself holds at `admitted` under that same accepted ancestor, since otherwise that hold and those three deadlock.
@@ -889,8 +922,8 @@ The architect's `catch-up` at each launch names, in its `reason`, every issue of
 
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
 A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
-a root's close frees the slot and lingers the tree.
-A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, no slot freed, and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
+a root's close lingers the tree, and every slot a member of it still holds is freed.
+A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot, since `merging` stands past its review and holds none, so no blocker has a slot to take back — and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
 — and closes that way once the last open member of the tree is done or parked.
 A person's own close of a root from the Dispatch dashboard lingers the tree at once, children and all.
 The architect does nothing after the merge.
@@ -928,7 +961,7 @@ issue-update`.
 A person's `legion` label on an unrecorded root in `triage` is queued by the daemon: the daemon writes the root's `todo` through its outbox (a `dispatch_status` row marked a person's handover), and no agent's write admits it.
 A session's label on such a root wakes the controller with `triage`, and the daemon writes nothing for it.
 A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled root with no parent and no live tree is queued by the daemon the same way, which re-admits a root that ran before as a new generation.
-A carried approval (the review Dispatch writes in the person's name when their answer to a decision block was the whole change) queues nothing.
+A carried approval (the review Dispatch writes in the person's name, with a reason that begins `Carried forward from the approval of version`, when their answer to a decision block was the whole change since the version they approved or a later version's text is the text they approved) queues nothing.
 Each such write holds only while the status it answered and the label still stand when it is delivered.
 A recorded root a person moved back to `triage` is never queued again.
 The controller starts no other work on its own:
@@ -968,7 +1001,7 @@ the expiry reads the child's own state rather than the reason it waited, so ever
 A child a person has taken out of the workflow, and one the architect has filed and not released, is in no such state and stays where it is.
 A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
 the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, and its merger merges the head it reads, whose merge closes it.
-Park such a child too when its merge should wait with its parked root.
+Ask the person whether that child's merge must wait for its parked root.
 A child whose old root had no gate (cleared by a reopen in its linger) carries none:
 its architect registers its own spec while the child is before its merge (after that the work is already through every gate), and decomposes nothing anew, since its workers already run their phases.
 A role of a carried child still in a turn under its old tree stops first:
@@ -985,15 +1018,25 @@ Outside the two exemptions below, Legion admits no root and starts no child whil
 a blocker in `backlog` or `icebox` has stopped rather than finished, and one the daemon has never seen counts as unfinished too.
 A blocked root keeps its place in the waiting line and takes no slot, so it hides no free capacity
 — the daemon's `slot-free` wake to the controller counts it as taking none, and `legion state` shows fewer issues holding a slot than its cap while every waiting root is on its `blocked on Dispatch links:` line
-— admission passes over it before any tree of its own is opened and admits the next unblocked root in rank order, then admits it at its own rank position once its last blocker closes;
+— admission passes over it before any tree of its own is opened and admits the next unblocked root in rank order, then admits it at its own rank position once the daemon sees its last blocker closed;
 it stays the live tree of its children, which are no orphans.
 A child is the same: `release_children` accepts the whole request whatever the links say and answers which children it released, which it started and which it held, each held one with the issues it waits on.
-A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot when the last blocker closes, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the tree's architect with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
-A child the daemon has already started holds a slot while a link holds it, which is the one case that takes capacity: a person's `todo` on such a child re-enters it at `admitted` inside its live tree, and it keeps the slot it took there, since an issue keeps its admission slot from the moment the daemon starts it until it is done or leaves the workflow.
-The state then names it under `admission.active` and under `admission.blocked` at once, and it is in no waiting line until its last blocker closes, which starts its first phase on the slot it already holds, or its tree's close hands it over as a root of its own, which releases that slot and puts it in the line.
-Work already under way is never stopped or re-checked, and those are the two exemptions:
+A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot once it sees the last blocker closed, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the tree's architect with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
+An issue the daemon has already started holds no admission slot while it waits on another issue before its work is past its review: the daemon takes its slot back on the pass that reads the wait, and stands it in the waiting line, among the issues whose work came back, oldest first.
+An issue past its review holds no slot whatever it waits on, so the wait takes nothing from it and it never stands in the line for one.
+Once the daemon has seen the wait end, the issue takes the next free slot by itself, ahead of every issue that has not started; under a full cap it waits for a free slot.
+The daemon sees a same-project blocker close as a live event, and a close of a blocker in another project only at its periodic turn's re-read: the first turn comes about a minute after the daemon starts, then one every `controller_wake_interval_seconds`, an hour by default.
+Two waits count: Dispatch shows the issue blocked by an issue that is not `done`, and the issue's own first phase waits on an open child under it.
+Three started issues keep their slot although a wait names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never opened, whose architect is writing the design, since releasing it would take the slot of the one issue of the tree that is working; and a root that arrived from another tree carrying the row it held there, which the waiting line judges by its queued-root rule, the one that starts a root carrying a run whatever its links say, so a release here would be undone by the promotion of the same pass.
+Such a wait is a wait by design, in any project, when nothing in the issue's own tree moves it: a `blocked_by` link to an issue that is not `done`, whether that issue is in another project or in this one, run by a Legion tree or by none, or an open child the daemon has released into the tree and runs.
+A wait on an open child the architect filed and has not released is not one, because releasing that child is the tree's own work.
+Nothing of the work stops: no claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
+The worker at work goes on, but every start of a phase worker of the issue up to its review, its next phase's or a restart of its current one, waits until the issue holds a slot again; a start of a phase past the review (`retro`, `merging`) takes no slot and runs at once.
+The state names such an issue under `admission.waiting` and under `admission.blocked`, never under `admission.active`, which is how a reader tells it from an issue a person parked, which is in none of the three.
+A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took, unless a wait of the two above takes that slot back.
+Work already under way is never stopped, and no link undoes its admission, though a wait gives its slot back as above; those are the two exemptions:
 an issue that carries a run into a tree of its own is admitted whatever its links say, and so is a tree that ran, taken back after it finished and lingered, which starts again at its person's `todo`;
-a blocker added to a running tree's issue changes nothing for it.
+a blocker added to a running tree's issue starts nothing over and stops nothing: the worker at work goes on, the issue gives its slot back before its review unless it is one of the three roots above, and the start of its next phase up to the review waits until it holds a slot again.
 Two backstops catch a close no event brought:
 the daemon's boot reads the whole project listing, and its periodic turn (`controller_wake_interval_seconds`, an hour by default) re-reads from Dispatch the issues anything is waiting on and looks again.
 `legion state` prints the waits as `blocked on Dispatch links:`, the state's JSON carries them under `admission.blocked`, and the periodic wake to the project's controller carries the same list (the tick notice's `blocked`), for the day's report.
@@ -1052,14 +1095,14 @@ so does a session's reply that hands the last item still with the person back to
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
 the resume takes no further slot, since an answered root holds the one it took when the daemon started it, so it resumes however full the cap is, whether or not its design gate has ever opened;
-the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds, while a child it releases holds none and waits in the line by the Dispatch rank of its tree's root;
+the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds unless it waits on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`, which gives that row back as the Admission paragraph says, while a child it releases holds none and waits in the line by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.
 Taking the `legion` label off a waiting root, or a person or a session outside the tree claiming it, takes it out of the workflow with an `unslotted` notice;
 it is never resumed under another owner.
 A session outside the tree writing a lifecycle status on a waiting root is set back, as on a root holding its slot, and its live architect is told.
-A root whose Dispatch claim a person or outside session already holds keeps its slot at `admitted` while its architect asks that holder to release it, and so does an admitted root whose label was taken off, since only a labelled root is resumed.
+A root whose Dispatch claim a person or outside session already holds stays at `admitted` while its architect asks that holder to release it, and so does an admitted root whose label was taken off, since only a labelled root is resumed; each keeps its slot unless a wait under **Admission** takes it back.
 Deliveries out of Dispatch's order can decide otherwise than the same events in order, each decision being right for the record it read:
 a person's act around the hand-back — say the architect's request that a person release the root's claim, the person's answer, then the release
 — applied in the order release, then answer, starts the wait and gives the live architect its answer task, where in order the answer is taken in and the slot kept;
@@ -1075,7 +1118,8 @@ A tree the operator holds is left alone as well, whoever holds the claim, since 
 A boot releases the ones parked before, one release for each issue of its listing that still carries a claim while the daemon's own record says it stopped.
 The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
-One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
+One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label, keeps no Dispatch parent and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
+A carried approval, the review Dispatch writes in the person's name with a reason that begins `Carried forward from the approval of version` (when their answer to a decision block was the whole change since the version they approved, or when a later version's text is the text of the version they approved), is no such handover and is relayed as any other approval.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
 That tree's next architect start names each one: admission's start task, or the catch-up of a later launch (a `legion claims retry` relaunch), with both spec versions when the approved one is no longer the current one.
 Each kept decision is claimed by the one start or catch-up that names it, in the transaction that queues it, and a start whose task the architect's claim queues leaves it to that delivery, which holds it until the turn that takes the task starts: the write recording that confirmation is what tells it, and a published catch-up tells what it named itself.
@@ -1088,11 +1132,12 @@ A decision on a lingering root someone moved back to a status of the workflow (`
 A decision no person made (a deployment that gates no step) is not relayed.
 A session's reply on such an ask is not relayed either: the daemon logs `workflow: a session's reply on a parked tree is not relayed`, the reply stays on the Dispatch ask for the person who asked, and the controller's walk skips it.
 The controller sets the root `todo` when the park is its own hold and a decision gives its work a next step.
-Its own hold is a park by `session legion-daemon:<PROJECT>` with the controller's comment `Parked by Legion while it waits on: …` beside it, which the controller posts when it parks a tree for a hold.
-Every other park stays parked until whoever made it sets the root to `todo`: a person's, another session's, and an operator's `legion status`, which the daemon writes under the same session with no mark.
+Its own hold is a park by `session legion-daemon:<PROJECT>` with the controller's comment `Parked by Legion while it waits on: …` beside it, which the controller posts when it parks a tree on a person's `Park it` answer to its ask about a hold, a failed architect or an event outside Legion.
+Every other park — a person's, another session's, and an operator's `legion status`, which the daemon writes under the same session with no mark — stays parked until a person sets the root to `todo`, the daemon queues a person's approval of its spec (above), or a person asks the controller to start it.
 The controller says so in a comment, and the start task names the decision then.
 The controller answers a question on the question's own ask, from the record when the record holds the answer, and otherwise says that `todo` on the root brings its architect back to answer.
 Its parked-root walk, at its start and on each `tick`, finds a decision sent while no controller ran.
+The walk also sets the root of the controller's own hold back to `todo` when its mark, the `Parked by Legion while it waits on:` comment, names a cause that is gone or an event that has happened, with a comment that cites the mark.
 The machinery's notices to a stopped tree (a child's status or close, a dead worker) stay dropped.
 
 **Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
@@ -1107,7 +1152,7 @@ A later version of a step's document closes that step until someone approves the
 register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate (`GATE_STEP_NOT_CONFIGURED`, 409) and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
 It reads the issue's Dispatch event sequence, then the document's approval, and refuses a version above the latest one Dispatch shows (`VERSION_NOT_IN_DISPATCH`), since no person's review could open a gate on a version Dispatch never wrote;
 the gate is registered at the newer of the caller's version and Dispatch's.
-A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts planning at its next slot, once no open child stands under it;
+A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts planning once it waits on no other issue, neither an open child under it nor an unfinished `blocked_by` link;
 one Dispatch shows changes requested at its latest version closes it with the architect told.
 A registration that finds the gate of its document already open at that version tells the architect nothing again.
 A registration older than the gate's newest version changes nothing but still queues the gate seed at the gate's version, and one whose read of Dispatch began before the review the gate already holds at that version is the older reader
@@ -1141,14 +1186,18 @@ on a base with a merge queue it enqueues the pull request with GraphQL `enqueueP
 Merging at a named head is how bors and Prow's Tide merge only what they tested.
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting of any pull request.
 When a merge fails, the merger decides what to do: wait for what GitHub waits for, try again at the head it re-reads, send the issue back, or tell the architect what only a person can change.
+When GitHub reports that the pull request of an issue in `merging` left the merge queue without a merge, the daemon tells the merger, and the merger reads the reason on GitHub, since the event names none.
+The daemon's message wakes the merger's pod if the idle release took it, but not while the root's design gate is closed: the message then waits for the gate to open.
 The merge queue taking the pull request out is the merger's to read, and no end in itself: a removal for a conflict (`merge_conflict`) is decided by the pull request's merge state, which GitHub computes once the entry is no longer queued.
 A head GitHub still merges (every state but dirty and unknown) conflicted with an entry ahead of it in the queue rather than with the base, so the merger enqueues that head once more, spends that one further enqueue, records what it did on the Dispatch issue, and leaves the issue in `merging` with nothing told to the architect.
 A dirty head conflicts with the base itself, which sends the issue back to `implementing` and tells the architect; an unknown merge state is asked again on the merger's own backoff for up to five minutes and then read the same way; and a second conflict removal of the same head, its one further enqueue already spent, sends the issue back too.
 A round such a conflict costs counts against no `review_round_cap`.
 The repository's required reviews and checks decide when a pull request merges; Legion bypasses none, and a review only a person can give is waited for.
-The merge carries a message the merger writes itself, `--subject '<pull request title> (#<n>)' --body ''`, because GitHub's default squash message (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch and would put the tree's Dispatch keys and its `Omp-Session:` trailers on the default branch;
+The merge carries a message the merger writes itself, `--subject '<pull request title> (#<n>)' --body ''`, because GitHub's default squash message (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch and would put the tree's Dispatch keys and its `Omp-Session:` and `Legion-Role:` trailers on the default branch;
 `enqueuePullRequest` can pass no message, so on a merge-queue base whose setting reads `COMMIT_MESSAGES` the merger enqueues nothing and tells the architect, since only a person can change that setting.
 The merger's completion records its phase row and moves nothing; what closes the issue is the daemon's own reading of the merged pull request.
+The first boot of this release queues, once, a start for each merger that the `awaiting_merge` cutover left stopped, whose pod the idle release of a build before `legion-v20.5.0` took while its issue waited in `awaiting_merge`.
+That merger starts when its tree's design gate allows it, since `merging` holds no admission slot.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
 A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's architect, the worker of the issue's current phase and the implementer, and judges none of them.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
@@ -1167,6 +1216,32 @@ No lifecycle labels carry worker state.
 
 - Learnings: a retro's `dispatch comment` on its issue, for the skill librarian (`skills/legion-retro/references/learnings.md`).
   `docs/solutions/` holds the learnings written before that and stays as history; no role writes there.
+
+- Commit attribution in `docs/solutions/`: the trailer rule of `skills/legion-worker/references/default-branch-check.md` replaces the rule of the eleven pages below, which tell a worker to check the GitHub App of a commit's author or committer.
+  A commit's `Omp-Session` and `Legion-Role` trailers name the session and the role that made it, and its App fields name no role.
+  The pages keep their text, because no role writes under `docs/solutions/`:
+
+  - `docs/solutions/delegation/a-shared-issue-workspace-hands-your-commit-another-roles-app-check-the-author-next-to-the-commit-INFRA-42.md`
+
+  - `docs/solutions/legion/a-child-of-two-open-pull-requests-waits-for-main-re-verifies-every-cited-symbol-and-treats-the-pane-as-a-surface-to-check.md`
+
+  - `docs/solutions/legion/a-commit-made-outside-your-assignment-or-outside-your-panes-shell-carries-the-wrong-author-check-author-and-trailer-before-every-push-LEGION-631.md`
+
+  - `docs/solutions/legion/a-forward-merge-of-a-feature-whose-premise-the-branch-removed-drops-the-callerless-method-and-the-premiseless-test-and-adapts-the-rest-and-main-can-move-again-before-github-reads-the-head-LEGION-632.md`
+
+  - `docs/solutions/legion/fixing-a-defect-that-is-live-in-your-own-pane.md`
+
+  - `docs/solutions/legion/jj-commit-identity-is-per-process-and-the-working-copy-is-adopted-at-assignment.md`
+
+  - `docs/solutions/legion/shared-main-repo-hazards-for-concurrent-issue-workspaces.md`
+
+  - `docs/solutions/legion/the-authorship-guard-reads-false-once-you-have-edited-and-an-unpushed-mis-authored-commit-is-rebuilt-not-recorded-INFRA-127.md`
+
+  - `docs/solutions/legion/the-issue-workspace-outlives-your-turn-INFRA-31.md`
+
+  - `docs/solutions/legion/template-names-a-ci-check-the-repository-never-produces.md`
+
+  - `docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-INFRA-92.md`
 
 > Many docs in `docs/plans/` and `docs/solutions/` predate the TypeScript rewrite and contain Python-era references.
 > These are marked with `[HISTORICAL]` headers.
