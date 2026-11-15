@@ -337,6 +337,21 @@ const legionPhaseView = z.object({
   backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
+/** `record.MergeState` — GitHub's own merge state for a pull request's head, in GitHub's
+ * lowercase spelling, the eight words GitHub answers in `mergeable_state`: the daemon records
+ * what it read and spells none of its own. The unread state is no word at all, so every field
+ * that carries one is absent rather than empty while the record holds no state. */
+const legionMergeState = z.enum([
+  "clean",
+  "unstable",
+  "has_hooks",
+  "blocked",
+  "dirty",
+  "behind",
+  "draft",
+  "unknown",
+]);
+
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.
  * `reviewDecision` is the latest review round's decision, the one the workflow ends the round on
  * when the reviewer completes. It shows from the review that decided it until the next round
@@ -358,10 +373,49 @@ const legionPullRequestView = z.object({
    * read of the pull request found it (`record.MergeState`); absent until that read has run. It
    * says whether GitHub would merge the head now (`clean`) or holds it on a check or a review the
    * repository requires (`blocked`). */
-  mergeState: z
-    .enum(["clean", "unstable", "has_hooks", "blocked", "dirty", "behind", "draft", "unknown"])
-    .optional(),
+  mergeState: legionMergeState.optional(),
   reviewDecision: nonEmptyString.optional(),
+});
+
+/** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 133). It is
+ * present only while the round waits on GitHub's merge state for the pull request's head
+ * (`classify.RoundWaitsOnMergeState`): a reviewer's approval stands on the head the pull request
+ * is at, and the merge state the record holds for that head is not one the issue may advance on.
+ * It stands for the round waiting for a first answer and for the stuck round alike — both wait on
+ * GitHub's next answer about the same head — and `toldHead` with `toldState` say what the architect
+ * and the reviewer were last told of for it. The merge state alone rides on `pullRequest`, but
+ * neither when it was read nor what the round's own wait is, which is what this carries. */
+const legionMergeWaitView = z.object({
+  /** The head the round waits on, the pull request's current head: the head the approval stands
+   * on, and the head GitHub's answer is about. */
+  waitsOn: nonEmptyString,
+  /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
+   * word `pullRequest.mergeState` carries. Absent while the record holds no state for this head:
+   * beside no `stateReadAt` the record holds no read of this head, and beside a `stateReadAt` it
+   * holds a read whose answer carried no state. */
+  mergeState: legionMergeState.optional(),
+  /** `record.PullRequest.StateReadAt`, the moment GitHub's last answer about this head was in
+   * hand, a confirming answer included. Absent when the record holds none; absent beside a
+   * recorded `mergeState`, the record holds a state with no read time. */
+  stateReadAt: timestamp.optional(),
+  /** The newest `updated_at` GitHub gave among the pull request's lifecycle observations: a
+   * reopen at the same head moves it, and a push whose event carried no clock does not raise it.
+   * Absent while the record holds none. */
+  headUpdatedAt: timestamp.optional(),
+  /** How many of the fence's check runs are stamped with the current head
+   * (`record.PullRequest.CheckRuns`): the runs a CI settlement has applied for this head. The
+   * listener settles a head only once every check it has seen there is terminal, so 0 is no
+   * evidence of what GitHub holds: CI still running, no check at all, and runs that concluded with
+   * their settlement not yet arrived all read 0, so read the head's runs and their status on
+   * GitHub before acting. Written whatever its value, so 0 is that reading and not a gap. */
+  checkRuns: z.number().int().nonnegative(),
+  /** The head and the merge state the architect and the reviewer were told of
+   * (`record.ReviewDecision.ToldStuckHead` and `ToldStuckState`, the marks workflow's
+   * `tellStuckMergeState` leaves). They name what the reviewer's decision last records as told,
+   * whatever the merge state and the read time say now, and a later answer may have moved past
+   * them; absent when that decision records none. */
+  toldHead: nonEmptyString.optional(),
+  toldState: legionMergeState.optional(),
 });
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
@@ -693,6 +747,12 @@ const legionIssue = z.object({
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
+  /** `mergeWait` is what this issue's review round waits on from GitHub (contract 133): present
+   * only while the round waits on GitHub's merge state for the pull request's head, so every
+   * issue whose round waits on nothing from GitHub has none, and a daemon before `mergeWait`'s
+   * contract 133 writes none at all (`api.stateFor`, `withoutMergeWait`), which is why a reader
+   * takes it as optional. */
+  mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
    * memory overlays and instructions, `none` for one that runs without them, with the project's
    * `memory.mode` in force when the group was drawn and the instant of that draw. The three are
@@ -1048,7 +1108,7 @@ const taskReadingFields = {
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 138). */
+ * (contract 139). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1110,7 +1170,7 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 138). */
+ * the wait before its value is written again (contract 139). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1187,20 +1247,20 @@ function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
 const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 138). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 139). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 138). */
+ * finished, 0 for none (contract 139). */
 export const LegionTaskResponse = z.object(taskReadingFields);
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 138). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 139). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1209,7 +1269,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * host is idle, to take the task its value names. A take with no answer — a refused, reset or
  * closed connection, a DNS failure, no answer in 5 minutes, or a 502, 503 or 504 that names no
  * `code` — is sent again unchanged, and a take of a number already accepted whose turn has not
- * started is answered the same text again (contract 138). */
+ * started is answered the same text again (contract 139). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1221,7 +1281,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `adoption`), since a worker acts
  * on none of them by name and a hold a later daemon adds must not refuse the answer (contract
- * 138). */
+ * 139). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),

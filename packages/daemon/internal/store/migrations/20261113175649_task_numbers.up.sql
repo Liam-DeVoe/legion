@@ -130,12 +130,13 @@
 -- merge-queue removal's outbox delete; the five statements of the release whose update round ends
 -- at its bound, whose 20261113110610_drop_claim_update_answer_marks dropped two columns contract
 -- 87's claim read names; the steps of contract 111's slot past review and of contract 98's held
--- list; and last the phase entry's own block. Contract 132's 20261111214351_issue_released_for_wait
--- has no way back of its own and adds one nullable column no earlier release names, contract
--- 123's 20261113090512_phase_entry_moved_back needs no statement on the way back, and contract
--- 104 adds no migration. The release before the phase entry reads the three marks as the
--- release before this one does, and the phase entry's
--- block leaves this migration's columns alone. The roll-forward after them applies again, in
+-- list; and last the phase entry's own block. Contract 133's
+-- 20261112070503_pull_request_state_read_at and contract 132's
+-- 20261111214351_issue_released_for_wait have no way back of their own, and each adds one column no
+-- earlier release names; contract 123's 20261113090512_phase_entry_moved_back needs no statement on
+-- the way back, and contract 104 adds no migration. The release before the phase entry reads the
+-- three marks as the release before this one does, and the phase entry's block leaves this
+-- migration's columns alone. The roll-forward after them applies again, in
 -- version order, every migration those ways back re-armed, the phase entry's first and this one
 -- last, so this fill reads the served_entry the phase entry's second fill wrote.
 alter table claims add column task_written bigint not null default 0;

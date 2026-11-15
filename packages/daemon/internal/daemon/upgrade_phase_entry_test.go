@@ -56,13 +56,16 @@ const (
 // as Store.Migrate applies one — the migration's SQL, the widening of schema_version for a
 // timestamped version, and the version row — and the withheld ones left for the test's own
 // Store.Migrate to run, in version order, the phase entry first. It answers how many it withheld,
-// which is how many that Migrate applies. The migrations between the two are the fixture's too,
-// because the release before this one records them: the one standing there,
-// 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a database that
-// release migrated holds its row and its claims.leak_check_cause before the phase entry runs. That
-// column is one no statement of the phase entry reads or writes. The ones above it are not the
-// fixture's: 20261113175649_task_numbers fills claims from served_entry, which the phase entry
-// adds, and drops the pending delivery's read marks, which the release before it still writes.
+// which is how many that Migrate applies. The migrations between the two are the fixture's too.
+// Two stand there. 20261112180548_claim_leak_check_cause is the contract 87 release's own, so a
+// database that release migrated holds its row and its claims.leak_check_cause before the phase
+// entry runs. 20261112070503_pull_request_state_read_at (dispatch://INFRA-3027) is applied first
+// as well, because it stands below preEntryNewestMigration; that is harmless here, since it adds
+// pull_requests.state_read_at and the phase entry touches no pull_requests column. Neither column
+// is one any statement of the phase entry reads or writes. The ones above preEntryNewestMigration
+// are not the fixture's: 20261113175649_task_numbers fills claims from served_entry, which the
+// phase entry adds, and drops the pending delivery's read marks, which the release before it still
+// writes.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
