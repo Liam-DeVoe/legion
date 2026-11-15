@@ -869,9 +869,9 @@ go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$
 go vet ./...
 ```
 
-`internal/dispatch/api` is the module's largest Postgres-backed package and ran close to `go
-test`'s default ten-minute package deadline on its own, so every command that includes it passes
-`-timeout 20m` (`docs/testing.md`, "Go's package deadline").
+`internal/dispatch/api` is the module's largest Postgres-backed package by its number of tests
+and ran close to `go test`'s default ten-minute package deadline on its own, so every command that
+includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
 It no longer runs first or by itself: its independent tests run in parallel, as the other
 packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
 

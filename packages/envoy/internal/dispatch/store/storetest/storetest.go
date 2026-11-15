@@ -31,9 +31,9 @@ const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 // that server bounds them all: the Postgres services of .github/workflows/ci.yaml start with
 // max_connections=500, less the 3 slots it reserves for superusers, and the envoy-go job's unit
 // call runs eight package binaries at once, each running up to twelve of its tests at once
-// (`go test -p 8 -parallel 12`), so the live stores are many, not one. Sixteen is above what any
-// one test is known to hold at once: the deepest lock-wait rig queues three writers behind a held
-// transaction while the rest of the pool serves the test's reads (WaitForLockWaiters's callers).
+// (`go test -p 8 -parallel 12`), so the live stores are many, not one. Sixteen is the fewest one
+// test passes with: TestConcurrentSendsUnderOneKeyMakeOneMessage holds every connection of the
+// pool at once (below). A larger pool would let each of those many stores ask the server for more.
 // The pools Pool.separate opens - the rooms, lease, outbox, listener, health, compaction and
 // horizon pools - keep their own sizes, so this bounds the shared pool alone.
 //

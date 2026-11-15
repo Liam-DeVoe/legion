@@ -20,10 +20,14 @@
 # Why the settings are read back: they are the service's command: line, which makes the server
 # start with them. A command: the runner did not pass through would leave the server up on the
 # image's defaults rather than failing, and the job would then refuse connections under load
-# (max_connections), skip the event log's floor test (max_prepared_transactions) and pay for the
-# forced checkpoints the other three make cheap, with nothing saying so. A setting the server
-# itself refuses never reaches this script: postgres exits, and the service's health check fails
-# the job before its first step. ci.yaml's envoy-go service says what each setting buys.
+# (max_connections) and pay for the forced checkpoints that fsync, full_page_writes and
+# synchronous_commit make cheap, with nothing saying so. max_prepared_transactions is the fifth:
+# envoy-go-race-api's event log floor test prepares a transaction, and in CI it fails on a server
+# that can prepare none. No test of the other jobs prepares one. Every service carries the setting
+# all the same, because this one list of five is what each of the fourteen steps reads back. A
+# setting the server itself refuses never reaches this script: postgres exits, and the service's
+# health check fails the job before its first step.
+# ci.yaml's envoy-go service says what each setting buys.
 #
 # What it prints: one line, `<label>: <container id>: fsync=off full_page_writes=off ...`, the
 # five as the server reported them, and before it an ::error:: for each setting the server

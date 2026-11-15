@@ -280,8 +280,11 @@ jobs:
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # The eight slow suites, whose runner time dwarfs every other job's. The merge queue runs
-      # them on the tree the change lands as, and that is where their result normally comes from;
+      # The eight slow suites, whose runner time dwarfs every other job's: envoy-go, the three
+      # race jobs, envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess and
+      # envoy-smoke, under seven outputs, since envoy-go-docs-finalizers reads
+      # envoy_go_race_docs. The merge queue runs them on the tree the change lands as, and that
+      # is where their result normally comes from;
       # a pull request runs them only when it carries the label `full-ci`. Each is false on a
       # pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
       # it reads any other output, and no job's `if:` knows about the label. The label is read
@@ -295,7 +298,8 @@ jobs:
       # term, only the dispatched one above.
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_go }}
-      # Six slow suites, gated as the comment above `envoy_go` says.
+      # Six slow suites under five outputs, gated as the comment above `envoy_go` says:
+      # envoy_go_race_docs starts envoy-go-docs-finalizers as well as envoy-go-race-docs.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
@@ -1455,8 +1459,8 @@ jobs:
               # The claim list its fence reads: internal/broker/oauth/claims_doc_test.go:211.
               - 'docs/kubernetes.md'
               - '.github/actions/pull-test-images/**'
-              # Its unit step takes the test list of its two natslive calls from this script at
-              # run time.
+              # Its unit step's natslive call takes the test lists of its two go test commands
+              # from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               # Its five read-back steps run this script, one per Postgres service.
               - '.github/scripts/postgres-service-settings.sh'
@@ -5006,9 +5010,10 @@ jobs:
           job-status: ${{ job.status }}
 
   # The slow half: the unit tests of every package of the envoy module but the race lane's, which
-  # the three race jobs below run under the detector, the container-backed NATS matrix and the
-  # integration suite, all against this job's Postgres. Its format, generated-code, shell-script,
-  # build and pack steps are envoy-go-checks' above.
+  # the three race jobs below run under the detector, with the container-backed NATS matrix and
+  # the integration suite beside them. The unit tests run against this job's five Postgres
+  # services; the NATS matrix and the integration suite open no database. Its format,
+  # generated-code, shell-script, build and pack steps are envoy-go-checks' above.
   envoy-go:
     needs: changes
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5102,12 +5107,15 @@ jobs:
         # (storetest's testPoolSize), could ask for 1,536 at once, and 512 even at four tests a
         # binary, the runner's cores.
         #
-        # max_prepared_transactions is raised with it, from the image's default of 0, because a
-        # server that can prepare no transaction makes the event log's floor test skip, and a skip
-        # is a pass that proves nothing:
-        # TestNoPreparedTransactionHoldsAnEventIDAndTheFloorTrailsOneAnyway prepares a transaction
-        # holding the lock an insert into events takes, which is the one writer pg_locks shows with
-        # no backend pid (dispatch://INFRA-1075).
+        # max_prepared_transactions is raised with it, from the image's default of 0, though no
+        # test of this job prepares a transaction. The one test that does is the event log's floor
+        # test, TestNoPreparedTransactionHoldsAnEventIDAndTheFloorTrailsOneAnyway, which only
+        # envoy-go-race-api runs: it prepares a transaction holding the lock an insert into events
+        # takes, which is the one writer pg_locks shows with no backend pid, and in CI it fails on
+        # a server that can prepare none. This job carries the setting because every Postgres
+        # service of this file starts on the same five settings, and
+        # .github/scripts/postgres-service-settings.sh holds each of them to all five
+        # (dispatch://INFRA-1075).
         command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         # --shm-size: a service container gets 64 MB of /dev/shm by default, and Postgres puts a
         # parallel worker's shared memory there. With the module's packages running at once the
@@ -5153,9 +5161,9 @@ jobs:
         # host port. The container's own port is 5432 either way.
         ports: ["5433:5432"]
         # The five settings of the service above, for the reasons given there: this server is
-        # as disposable as that one, one package's binary opens as many connections per store,
-        # and the event log's floor test prepares a transaction. The read-back step below holds
-        # this server to every one of them too.
+        # as disposable as that one, and one package's binary opens as many connections per
+        # store. No routes test prepares a transaction: max_prepared_transactions is here because
+        # the read-back step below holds this server to every one of the five too.
         command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --shm-size=1g
@@ -5292,10 +5300,12 @@ jobs:
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # The settings each service's command: asks for, read back from the server itself, because a
       # command the runner does not pass through leaves the server up on the image's defaults
-      # rather than failing: the job would then refuse connections under load, skip the event
-      # log's floor test, and pay for the forced checkpoints it meant to make cheap. A setting the
-      # server itself refuses never reaches these steps - postgres exits and the service's health
-      # check fails the job before its first step. .github/scripts/postgres-service-settings.sh
+      # rather than failing: the job would then refuse connections under load and pay for the
+      # forced checkpoints it meant to make cheap. No test of this job needs the fifth setting,
+      # max_prepared_transactions: envoy-go-race-api's floor test does, and fails in CI on a
+      # server without it. A setting the server itself refuses never reaches these steps -
+      # postgres exits and the service's health check fails the job before its first step.
+      # .github/scripts/postgres-service-settings.sh
       # holds the five settings and reads them, for these steps and every step like them in this
       # file; its head says why it is a script. There is a step for each of this job's five
       # services, because each is a server of its own started from a command: line of its own,
@@ -5312,7 +5322,7 @@ jobs:
       - name: Read the events service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_events.id }}" postgres_events
       # Every image the tests here start: testnats.Image and testnats.HubImage, which the
-      # natslive calls of the unit step below run the two-image matrix on, and tests3.Image,
+      # natslive call of the unit step below runs the two-image matrix on, and tests3.Image,
       # pulled first for the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
@@ -5321,25 +5331,24 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # The step below runs the module's packages in the background and, beside them, five calls
-      # that were steps of their own around it until dispatch://INFRA-1075: the plain run of what
-      # the race build cannot make, the routes package, the container-backed NATS matrix, the
-      # integration suite and the agentloop vet. The package list uses about half this runner's
-      # four cores - 595.7 s of CPU over 104 test binaries against 4 x 284 s of wall - and ends
-      # on one package's serial tail, and those five steps ran one after another on cores it had
-      # left idle: on the slower of the two attempts measured, the race-impossible step 60 s,
-      # routes 13 s, natslive 12 s, integration 3 s and the vet 8 s, the 90 s this job spent on
-      # test steps running one at a time. All nine calls this step runs now are started in the
-      # background at its head, longest first, so the step costs the longest of them rather than
-      # their sum.
-      # The race-impossible call joined those five last, once the measurement
-      # dispatch://INFRA-985 asked for had been made; the comment on that call says what was
-      # measured and what it came back with. The shutdown feed test, internal/pgmigrate and
-      # internal/dispatch/events came after it, each taken out of the package list onto a
-      # Postgres service of its own, for the reasons their own calls and services give.
+      # The step below runs the module's packages in the background and, beside them, eight other
+      # calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
+      # package, internal/dispatch/events, the shutdown feed test, the container-backed NATS
+      # matrix, the integration suite and the agentloop vet. The package list runs 110 test
+      # binaries. In the pair at fae4eab5 (runs 43654965125 and 43657875798, jobs 132631426228
+      # and 132640445955) it took 581.0 s and 449.4 s from the first event of its stream to the
+      # last, and every other stream had ended before it did. All nine calls are started in the
+      # background at the step's head, longest first, so the step costs the longest of them
+      # rather than their sum.
+      # The race-impossible call runs here since the measurement dispatch://INFRA-985 asked for
+      # was made; the comment on that call says what was measured and what it came back with.
+      # The shutdown feed test, internal/pgmigrate and internal/dispatch/events are each out of
+      # the package list on a Postgres service of its own, for the reasons their own calls and
+      # services give.
       #
-      # Each call writes its own `go test -json` stream to a file under $RUNNER_TEMP/go-test-json,
-      # which the upload step below publishes as one artifact per run attempt.
+      # Each call but the vet writes a `go test -json` stream to a file of its own under
+      # $RUNNER_TEMP/go-test-json - the natslive call's two go test commands write one between
+      # them - which the upload step below publishes as one artifact per run attempt.
       # .github/scripts/go-test-times.py ranks the tests and packages of such a stream, and
       # compares two of them, which is how this job's time is measured (dispatch://INFRA-1075).
       # The stream is a file rather than the log because `go test -json` is verbose: the step
@@ -5409,15 +5418,15 @@ jobs:
           # was 543 s and the package list was its critical path at 448 s: it started 76.4 s in,
           # after three other calls had begun building and were competing for the cores, and
           # internal/dispatch/pmdoc, its own longest package, started with it. So the list is
-          # started first and the race-impossible call, 361 s and the next longest, second; the
-          # short calls follow, each of them many times over inside those two
+          # started first and the race-impossible call, 361 s and the next longest, second
           # (dispatch://INFRA-1075). The `go list` that builds the list's arguments runs ahead of
           # every call for the same reason: what the longest call needs waits on nothing.
-          # The pgmigrate call is third, at the head of the short ones. The run above had its
-          # package inside the package list, where the lane's own CPU measurement found it
-          # 375.5 s (run 42774209109); against a server of its own it is 53.7 s of wall on four
-          # idle cores, which puts it with routes and the shutdown call rather than with the two
-          # calls above it.
+          # The pgmigrate call is third because it is the third longest. The run above had its
+          # package inside the package list; on a server of its own it took 298.8 s and 223.3 s
+          # in the pair at fae4eab5 (runs 43654965125 and 43657875798), against the
+          # race-impossible call's 381.3 s and 292.5 s, each from the first event of its stream
+          # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
+          # and 65.6 s in that pair.
           #
           # -timeout 18m. A call's limit is the smallest whole minute at which its slowest
           # package takes at most half of it, measured on the largest reading this branch
@@ -5438,7 +5447,7 @@ jobs:
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
           # internal/bus counts HoldsSeed's allocations, which the race runtime's own
-          # allocations would be counted into; the API's two guards read the module's source, to
+          # allocations would be counted into; the API's three guards read the module's source, to
           # which the detector adds nothing; and the documents package measures the heap a room
           # keeps, which the detector's shadow memory and instrumentation move. Those are out of
           # the race build altogether (//go:build !race), and the two render-reuse storms run
@@ -5544,10 +5553,11 @@ jobs:
           # above, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
           # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
           # source at run time, and no test name is spelled here. Each assignment is a line of
-          # its own and runs before the call it feeds: under bash -e it carries the script's exit
-          # status, so an empty or refused list fails the step instead of running -run "", which
-          # matches every test. -timeout 1m on each call, the smallest whole minute there is;
-          # each package's largest reading and the run it came from are in the table on this job.
+          # its own and runs before the command it feeds: under bash -e it carries the script's
+          # exit status, so an empty or refused list fails the step instead of running -run "",
+          # which matches every test. -timeout 1m on each command, the smallest whole minute
+          # there is; each package's largest reading and the run it came from are in the table
+          # on this job.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           { go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
@@ -5725,10 +5735,11 @@ jobs:
   # shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
   # envoy-go because -race runs these packages several times slower, and each job carries a
   # package deadline of its own, since go test's ten-minute default is a whole package's.
-  # envoy-go runs none of these packages plain any more (INFRA-1408): its unit step leaves out
-  # exactly what the lane runs, and the one plain run it keeps of them is the race-impossible
-  # call of its unit step, which runs the handful of assertions the detector makes impossible
-  # or shrinks and nothing else.
+  # envoy-go's package list runs none of these packages (INFRA-1408): its unit step leaves out
+  # exactly what the lane runs. Two calls of that step run tests of them plain: the
+  # race-impossible call, which runs the handful of assertions the detector makes impossible or
+  # shrinks and nothing else, and the natslive call, which runs the one test the natslive tag
+  # adds to internal/bus.
   #
   # The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
   # the registry store, the session cache and kvwatch), envoy-go-race-api and envoy-go-race-docs,
@@ -5760,7 +5771,7 @@ jobs:
   # Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and
   # kvwatch share this runner. The Dispatch store's tests (store_test.go:30-32) and delivery's
   # (internal/dispatch/delivery/intake_test.go:46-49, through storetest.Open,
-  # storetest.go:69-72) read DISPATCH_TEST_DATABASE_URL and skip without it, and
+  # storetest.go:60-63) read DISPATCH_TEST_DATABASE_URL and skip without it, and
   # cmd/listener/dispatch_resolution_test.go:179 gets its database through internal/testpg, so
   # the job carries the lane's Postgres service; the registry store itself is the NATS KV view
   # and needs none.
@@ -5773,11 +5784,12 @@ jobs:
     # package takes at most half of it: internal/bus, 452.963 s (run 42863916685, job
     # 129997210948), 452.963 / 30 = 15.10, so 16m, which it fills to 47.2 per cent (15m, the
     # limit it ran under, it would fill to 50.3). The job's own bound follows its largest
-    # measured time, 615 s in run 43507133544 (job 132167720910), 10.25 minutes, plus that
-    # largest -timeout plus 6: 10.25 + 16 + 6 = 32.25, so 33. A job of this lane varies by a
-    # minute between two attempts of one commit, so a bound follows the largest reading rather
-    # than the newest. The limit must fire before the runner cancels the job, so a hung test
-    # prints the dump that names it.
+    # measured time of a green run, 615 s in run 43507133544 (job 132167720910), 10.25 minutes,
+    # plus that largest -timeout plus 6: 10.25 + 16 + 6 = 32.25, so 33. The red one of run
+    # 43640601453, 633 s (job 132587189318), would ask the same 33. A job of this lane varies
+    # by a minute between two attempts of one commit, so a bound follows the largest reading
+    # rather than the newest. The limit must fire before the runner cancels the job, so a hung
+    # test prints the dump that names it.
     timeout-minutes: 33
     services:
       postgres:
@@ -5851,8 +5863,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
-    # package takes at most half of it: internal/dispatch/api, this job's one package, 955.770 s
-    # (run 43657875798, job 132640445932), 955.770 / 30 = 31.86, so 32m, which it fills to 49.8
+    # package takes at most half of it: internal/dispatch/api, this job's one package, 955.794 s
+    # (run 43657875798, job 132640445932), 955.794 / 30 = 31.86, so 32m, which it fills to 49.8
     # per cent (28m, the limit it ran under, it would fill to 56.9). The job's own bound follows
     # its largest measured time of a green run, 1,136 s in that same job, 18.93 minutes, plus
     # that -timeout plus 6: 18.93 + 32 + 6 = 56.93, so 57. The limit must fire before the runner
@@ -5943,12 +5955,15 @@ jobs:
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/dispatch/docs, this job's one package,
-    # 1651.0 s (run 43174763194, job 131036282782), 1651.0 / 30 = 55.03, so 56m, which it
-    # fills to 49.1 per cent, where 55m it would fill to 50.0. The job's own bound follows its
-    # largest measured time, 1755 s in that same run, 29.25 minutes, plus that largest -timeout
-    # plus 6: 29.25 + 56 + 6 = 91.25, so 92. The limit must fire before the runner cancels the
-    # job, so a hung test prints the dump that names it.
-    timeout-minutes: 92
+    # 1695.219 s (run 43640601453, job 132587189297, its envoy-go-race-docs-test-json artifact),
+    # 1695.219 / 30 = 56.51, so 57m, which it fills to 49.6 per cent (56m, the limit it ran
+    # under, it would fill to 50.5). The pair at fae4eab5 read less: 1523.812 s and 1675.755 s
+    # (runs 43654965125 and 43657875798, jobs 132631426253 and 132640446087). The job's own
+    # bound follows its largest measured time, 1801 s in that same job 132587189297, which is
+    # 30.02 minutes, plus that largest -timeout plus 6: 30.02 + 57 + 6 = 93.02, so 94; the pair's
+    # jobs took 1620 s and 1764 s. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it.
+    timeout-minutes: 94
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5968,7 +5983,7 @@ jobs:
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
     # (internal/dispatch/docs/persistence_test.go:31-32), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (internal/dispatch/store/storetest/storetest.go:69-72). A skip is a pass, so without the
+    # (internal/dispatch/store/storetest/storetest.go:60-63). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -6022,7 +6037,7 @@ jobs:
       # this sampler at -parallel 2 peaked at 1,534,288 kB, and the rest of the package at
       # -parallel 2 reached 6,240,116 kB, so even added as though nothing were reused they stay
       # under 8388608 kB. What it costs is this step's own time, about twice the 965 s the run
-      # above spent at four slots, which the -timeout 56m below and the job's 92 minutes hold.
+      # above spent at four slots, which the -timeout 57m below and the job's 94 minutes hold.
       # No -p beside it: one package is one build lane, so go test's package parallelism has
       # nothing to divide. No GOMEMLIMIT either: two slots leave the heap it would bound below
       # the 2 GiB this step once set, so it would only make the detector's work slower.
@@ -6036,7 +6051,7 @@ jobs:
       - name: Race-test the document service
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
-          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 56m ./internal/dispatch/docs/
+          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 57m ./internal/dispatch/docs/
         working-directory: packages/envoy
       # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
       - name: Upload the go test -json stream
@@ -6102,7 +6117,7 @@ jobs:
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
     # (internal/dispatch/docs/persistence_test.go:31-32), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (internal/dispatch/store/storetest/storetest.go:69-72). A skip is a pass, so without the
+    # (internal/dispatch/store/storetest/storetest.go:60-63). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

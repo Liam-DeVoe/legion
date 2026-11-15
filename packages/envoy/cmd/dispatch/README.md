@@ -571,11 +571,11 @@ cd packages/envoy
 ./scripts/dev-postgres.sh
 ```
 
-It prints the `DATABASE_URL` to use for development and tests.
+It prints the `DATABASE_URL` to use for development.
 Run again, it starts or reuses the same `dispatch-pg` container, which runs its pinned image:
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
 It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
-The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test clones a database of its own on the same server from a migrated template and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
+The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test copies a database of its own on the same server, from a migrated template or, for a test of the migration runner itself, from `template1`, and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
 The test commands under Tests run against a throwaway server instead (`./scripts/dev-postgres.sh --throwaway`), which runs them faster and serves more connections at once; Tests says why.
 
 ## A large test database
@@ -4169,7 +4169,7 @@ go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$
 go vet ./...
 ```
 
-`internal/dispatch/api` is the module's largest Postgres-backed package and ran close to `go test`'s default ten-minute package deadline on its own, so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
+`internal/dispatch/api` is the module's largest Postgres-backed package by its number of tests and ran close to `go test`'s default ten-minute package deadline on its own, so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
 It no longer runs first or by itself: its independent tests run in parallel, as the other packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
 
 The commands run against the throwaway server `./scripts/dev-postgres.sh --throwaway` starts, not the `dispatch-pg` container on 55432:

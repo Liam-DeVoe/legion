@@ -15,22 +15,26 @@
 // migration set a run there has tested, which `drop database` by hand reclaims (docs/testing.md).
 //
 // A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
-// wal_log, writes every page of the template into the write-ahead log instead: 6.4 MB of the
-// 12.7 MB Dispatch template per clone, 16 GiB over one run of the api and docs packages. A file
-// copy writes a few hundred bytes of log; Postgres forces a checkpoint before and after the copy,
-// and the drop at the end of the test forces one more. What makes that affordable is the server
-// rather than any machinery here: the Postgres services of .github/workflows/ci.yaml run with
-// fsync, full_page_writes and synchronous_commit off, where a forced checkpoint writes nothing
-// durable (dispatch://INFRA-1075).
+// wal_log, writes every page of the template into the write-ahead log instead: 7.1 MB per clone
+// of the Dispatch template, measured against `dev-postgres.sh --throwaway` on a pod at 0fbf8a3a.
+// That template holds about 14.2 MB (TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate's log in
+// runs 43654965125 and 43657875798). A file copy writes a few hundred bytes of log, 446 in each of
+// those runs; Postgres forces a checkpoint before and after the copy, and the drop at the end of
+// the test forces one more. What makes that affordable is the server rather than any machinery
+// here: the Postgres services of .github/workflows/ci.yaml run with fsync, full_page_writes and
+// synchronous_commit off, where a forced checkpoint writes nothing durable (dispatch://INFRA-1075).
 //
 // The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the
 // whole server, which can hold other databases (the container dev-postgres.sh runs holds the local
 // Dispatch's), and a change to them outlives the run.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
-// drops before it returns, so no test database outlives the package. Dropping a database forces a
-// checkpoint and waits for it, and every package testing against the same server queues on its
-// one checkpointer: a test that waited for its own drop spent that queue's time on its clock.
+// drops before it returns, so a package that runs to its end leaves no test database behind
+// unless a drop fails, which Main reports by name and fails the package for. A test binary that
+// go test kills at its -timeout never reaches that wait, and leaves every database not yet
+// dropped. Dropping a database forces a checkpoint and waits for it, and every package testing
+// against the same server queues on its one checkpointer: a test that waited for its own drop
+// spent that queue's time on its clock.
 package pgtemplate
 
 import (

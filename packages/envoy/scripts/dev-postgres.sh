@@ -17,11 +17,13 @@
 # `--throwaway [port]` starts the other server this script knows, which is not that container: a
 # PostgreSQL cluster of its own under TMPDIR, from this host's server binaries, on port 55433
 # unless another is named, with the five settings every Postgres service of
-# .github/workflows/ci.yaml runs with. It prints the DATABASE_URL it serves, its data directory
-# and the pid to stop it by. Its data dies with it, so nothing it holds has to survive a crash,
-# which is what makes the forced checkpoints a Go test's database costs cheap, and what keeps those
-# settings off the container above, which holds the local Dispatch's databases and keeps its
-# durability (docs/testing.md, "A test Postgres's five settings").
+# .github/workflows/ci.yaml runs with. It prints the DATABASE_URL it serves, its data directory,
+# the pid to stop it by, and a `kill` of that pid with an `rm -rf` of the directory that holds the
+# data directory and the server's log. The cluster is thrown away after the run, so nothing it
+# holds has to survive a crash, which is what makes the forced checkpoints a Go test's database
+# costs cheap, and what keeps those settings off the container above, which holds the local
+# Dispatch's databases and keeps its durability (docs/testing.md, "A test Postgres's five
+# settings").
 set -euo pipefail
 
 container="dispatch-pg"
@@ -83,8 +85,8 @@ if [ "${1:-}" = --throwaway ]; then
   # UTF8 whatever the host's locale is, since a C locale would otherwise give initdb SQL_ASCII.
   # The collation stays the host's: it is the server's own locales that decide it, and a host
   # with only C locales orders by bytes, which one api test refuses by its own message.
-  # --no-sync for the same reason the settings below are what they are: this cluster's data dies
-  # with the server, so nothing it writes has to survive a crash, and initdb would otherwise
+  # --no-sync for the same reason the settings below are what they are: this cluster is thrown
+  # away after the run, so nothing it writes has to survive a crash, and initdb would otherwise
   # fsync the whole fresh data directory before it returns.
   if ! "${bindir}/initdb" -D "${root}/data" -U postgres -A trust -E UTF8 --no-sync >"${root}/initdb.log" 2>&1; then
     refuse "initdb failed in ${root}; its output:" "$(cat "${root}/initdb.log")"
