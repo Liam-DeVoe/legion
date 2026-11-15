@@ -140,7 +140,8 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		insertNodeRow(t, ctx, holder, node)
 
 		conn, pid, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			return Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
+			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
+			return err
 		})
 		requireQueued(t, holder, conn, done, "Reached of a new session")
 		t.Logf("held at the session's node, Reached waits on: %s", runningStatement(t, ctx, database, pid))
@@ -168,7 +169,8 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		}
 
 		_, pid, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			return Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
+			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
+			return err
 		})
 		requireUnblockedBy(t, ctx, database, holder, pid, done, "Reached while another transaction holds a copy of its base attributes",
 			"its attributes carry the sentinel, which no repeat key covers, so appending them locks no row and waits on no other writer")
@@ -184,13 +186,15 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
 		node := SessionNode("reached-again", who, peopleLockAt, NoEvent)
 		runPeopleWrite(t, ctx, database, "the session's first Reached", func(ctx context.Context, tx pgx.Tx) error {
-			return Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
+			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
+			return err
 		})
 		holder, release := beginHolder(t, ctx, database)
 		lockNodeRow(t, ctx, holder, node)
 
 		_, pid, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			return Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt.Add(time.Hour))
+			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt.Add(time.Hour))
+			return err
 		})
 		requireUnblockedBy(t, ctx, database, holder, pid, done, "Reached of a known session while another transaction holds its row",
 			"the node arm upserts `do nothing`, which locks no row that is already there")

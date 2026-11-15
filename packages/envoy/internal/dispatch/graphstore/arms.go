@@ -152,9 +152,20 @@ graph_node_attributes as (
 // A claim with no far end (ToID empty) retracts what the node holds and asserts nothing in its
 // place, which is a role read unclaimed. where is the condition its insert reads its rows under,
 // as tupleInsert takes it.
+//
+// A claim is stated whole or not at all. Its rows carry its event, and the repeat key admits one
+// row per (far end, event, asserted) (D5), so a claim whose event the log already holds one of
+// those rows under is that event stated again: the publisher dates a role's holder by the event
+// that resolved it, and an event retried after a later one resolved the role again reads the
+// store as the later event left it. Appended row by row, such a claim would lose its assertion to
+// the repeat key and keep its retraction - event 10 resolves s1, event 11 resolves s2, the retry
+// of event 10 resolves s1 again, and nobody holds the role. So a claim any row of which its event
+// has already stated appends no row at all, and the node keeps the far end the later write left
+// it at until a newer event resolves it again. A claim at the sentinel is outside the repeat key
+// and is always stated.
 func claimArms(first int, where string) string {
 	if where != "" {
-		where = "\n\twhere " + where
+		where = "\n\t  and " + where
 	}
 	return `graph_claims as (
 	select * from unnest(` + claimArrays(first) + `)
@@ -171,25 +182,34 @@ graph_claims_held as (
 		order by held.to_kind, held.to_id, held.seq desc
 	) held on held.asserted
 ),
+graph_claims_stated (` + tupleWriteColumns + `, position, step) as (
+	select claim.from_kind, claim.from_id, claim.kind, held.to_kind, held.to_id, claim.at, claim.who,
+	       claim.source_event, null::bigint, false, claim.position, 0
+	from graph_claims claim
+	join graph_claims_held held on held.position = claim.position
+	where (held.to_kind, held.to_id) <> (claim.to_kind, claim.to_id)
+	union all
+	select claim.from_kind, claim.from_id, claim.kind, claim.to_kind, claim.to_id, claim.at, claim.who,
+	       claim.source_event, null::bigint, true, claim.position, 1
+	from graph_claims claim
+	where claim.to_id <> '' and not exists (
+		select 1 from graph_claims_held held
+		where held.position = claim.position
+			and held.to_kind = claim.to_kind and held.to_id = claim.to_id
+	)
+),
 graph_claims_written as (
 	insert into graph_tuples (` + tupleWriteColumns + `)
-	select ` + tupleWriteColumns + ` from (
-		select claim.from_kind, claim.from_id, claim.kind, held.to_kind, held.to_id, claim.at, claim.who,
-		       claim.source_event, null::bigint as legacy_source_seq, false as asserted,
-		       claim.position, 0 as step
-		from graph_claims claim
-		join graph_claims_held held on held.position = claim.position
-		where (held.to_kind, held.to_id) <> (claim.to_kind, claim.to_id)
-		union all
-		select claim.from_kind, claim.from_id, claim.kind, claim.to_kind, claim.to_id, claim.at, claim.who,
-		       claim.source_event, null::bigint, true, claim.position, 1
-		from graph_claims claim
-		where claim.to_id <> '' and not exists (
-			select 1 from graph_claims_held held
-			where held.position = claim.position
-				and held.to_kind = claim.to_kind and held.to_id = claim.to_id
-		)
-	) stated (` + tupleWriteColumns + `, position, step)` + where + `
+	select ` + tupleWriteColumns + ` from graph_claims_stated stated
+	where not exists (
+		select 1 from graph_claims_stated restated
+		join graph_tuples once
+			on once.from_kind = restated.from_kind and once.from_id = restated.from_id
+			and once.kind = restated.kind and once.to_kind = restated.to_kind and once.to_id = restated.to_id
+			and once.source_event = restated.source_event and once.asserted = restated.asserted
+			and once.to_kind <> '` + KindValue + `' and once.source_event <> 0
+		where restated.position = stated.position
+	)` + where + `
 	order by position, step` + relationRepeatKey + `
 )`
 }

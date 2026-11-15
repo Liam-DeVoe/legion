@@ -446,6 +446,9 @@ func (s *server) completeCommentDelivery(
 	sent := recorded
 	sent.State, sent.Error = deliveryOutcome(deliveryError)
 	sent.Duplicate, sent.EnvelopeID = duplicate, envelopeID
+	// The session the settle records, where this settle made its node: the node is made before
+	// the receipt exists and moves onto it once it is appended (caused below).
+	var reached []graphstore.Node
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
@@ -470,7 +473,8 @@ func (s *server) completeCommentDelivery(
 			if settled.SessionID != nil {
 				session = *settled.SessionID
 			}
-			return settled, graphstore.Reached(ctx, tx, settled.State, session, actor, settled.CreatedAt)
+			reached, err = graphstore.Reached(ctx, tx, settled.State, session, actor, settled.CreatedAt)
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -483,6 +487,9 @@ func (s *server) completeCommentDelivery(
 		},
 		func(answered model.CommentDelivery) model.Event {
 			return commentDeliveryReceipt(comment, actor, answered)
+		},
+		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
+			return graphstore.Caused(ctx, tx, reached, receipt)
 		},
 	)
 }
@@ -534,6 +541,7 @@ func (s *server) supersedeCommentDelivery(
 		func(answered model.CommentDelivery) model.Event {
 			return commentDeliveryReceipt(comment, actor, answered)
 		},
+		nil,
 	)
 }
 
@@ -1232,8 +1240,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	waitingOn := thread.waitingOnAfter(turn)
+	// A session replying in an ask's thread follows the ask, and is a node of the store from this
+	// write on; its node learns the comment.answered event below once that is appended.
+	var followed asks.Followed
 	if thread.AskID != nil {
-		if err := asks.FollowAuthor(r.Context(), tx, *thread.AskID, actor); err != nil {
+		if followed, err = asks.FollowAuthor(r.Context(), tx, *thread.AskID, actor, createdAt, graphstore.NoEvent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1281,6 +1292,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// What the reply states, under the event that stored it: its node's cause, its two base
 	// attributes, and the artifact it is owned by.
 	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := followed.Caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

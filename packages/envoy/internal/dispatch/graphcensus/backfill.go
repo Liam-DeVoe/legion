@@ -72,7 +72,10 @@ type BackfillReport struct {
 // written before the node and tuple store existed: every row of the three projected tables
 // that names no node (migration 20261109022248 added the columns and filled none of them). It
 // then gives every role the store census holds to a node and that has none its node and its page
-// (backfillRoles), since the publisher writes those only for the events it publishes from then on.
+// (backfillRoles), since the publisher writes those only for the events it publishes from then on,
+// and every session the census holds to a node and that has none its node (backfillSessions): a
+// session that only asked, followed or was reached before the store existed was recorded by no
+// write of the store, and the followed_by edge to it would otherwise answer no node.
 //
 // It walks each kind in batches, writing a batch's nodes, its tuples and the projection
 // columns that name them in one transaction, so a row and its node commit together or not at
@@ -118,7 +121,7 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
 	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
-		backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles,
+		backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
 	} {
 		done, err := write(ctx, database)
 		if err != nil {
@@ -815,7 +818,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 	var tuples []graphstore.Tuple
 	ids := make([]string, 0, len(batch))
 	addresses := make([]string, 0, len(batch))
-	authors := map[[2]string]struct{}{}
+	written := map[[2]string]struct{}{}
 	for _, row := range batch {
 		node := graphstore.Node{
 			Kind: commentNodeKind, ID: row.id, Supertag: commentSupertag,
@@ -840,11 +843,14 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		states(tupleAnchoredTo, "artifact", row.anchor)
 		states(tupleOwnedBy, "artifact", row.owner)
 		// One write writes a node once, so an author several comments of the batch name is made
-		// by the first of them; each comment still states its own authored_by and aliases.
-		if author, facts, named := graphstore.AuthorFacts(commentNodeKind, row.id, row.author, row.createdAt, row.event); named {
-			if _, made := authors[[2]string{author.Kind, author.ID}]; !made {
-				authors[[2]string{author.Kind, author.ID}] = struct{}{}
-				nodes = append(nodes, author)
+		// by the first of them, and so is the owner a proved session names; each comment still
+		// states its own authored_by and aliases.
+		if authors, facts, named := graphstore.AuthorFacts(commentNodeKind, row.id, row.author, row.createdAt, row.event); named {
+			for _, author := range authors {
+				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
+					written[[2]string{author.Kind, author.ID}] = struct{}{}
+					nodes = append(nodes, author)
+				}
 			}
 			tuples = append(tuples, facts...)
 		}
@@ -989,4 +995,98 @@ func writeRoleBatch(ctx context.Context, database *store.Store, batch []roleRow)
 		return 0, 0, fmt.Errorf("write the nodes of a role batch: %w", err)
 	}
 	return int64(len(nodes)), 2*int64(len(nodes)) + int64(len(claims)), nil
+}
+
+// sessionRow is one session the store census holds to a node (recordedSessions) whose node the
+// store does not hold: its id, and the cause and the time its node is made at.
+type sessionRow struct {
+	id    string
+	event int64
+	at    time.Time
+}
+
+// backfillSessions writes the node of every session the store census holds to one and that the
+// store holds no node of: the sessions that asked, followed or were reached before the store
+// existed, or wrote a comment the comment pass could not give a node. Its input is
+// recordedSessions, the census's own session row side, so the sessions this gives a node are
+// exactly the sessions the census holds to one, as backfillRoles's input is the census's role row
+// side.
+//
+// A session has no projection row, so there is no row to name the node on and no fence to take.
+// It walks only the sessions that carry no node, and a node another write made meanwhile is
+// written `do nothing` (graphstore.WriteArms), so a second run, and a run beside a live server,
+// writes nothing for a session the store already holds. The writer is the run (backfillActor);
+// the cause is the first ask.follower_added event that named the session, or the sentinel for a
+// session only a row names, and the time is that event's, or the earliest row's that names it.
+//
+// No arm of graph_edges answers a session, so its Complete switches nothing off: it reads whether
+// every session the census names holds its node.
+func backfillSessions(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: graphstore.KindSession}
+	missing, err := readSessionRows(ctx, database)
+	if err != nil {
+		return done, err
+	}
+	for start := 0; start < len(missing); start += backfillBatch {
+		batch := missing[start:min(start+backfillBatch, len(missing))]
+		nodes, tuples, err := writeSessionBatch(ctx, database, batch)
+		if err != nil {
+			return done, err
+		}
+		done.Rows += int64(len(batch))
+		done.Nodes += nodes
+		done.Tuples += tuples
+	}
+	left, err := readSessionRows(ctx, database)
+	if err != nil {
+		return done, err
+	}
+	done.Remaining = int64(len(left))
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// readSessionRows reads every session recordedSessions names whose node the store does not hold
+// and whose id fits the store's bound, in id order. A session past the bound is no node of the
+// store, so it is neither written here nor counted as remaining (graphstore.SessionRecorded).
+func readSessionRows(ctx context.Context, database *store.Store) ([]sessionRow, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select recorded.id, coalesce(recorded.event, $1), coalesce(e.created_at, recorded.at)
+		from (`+recordedSessions+`) recorded
+		left join events e on e.id = recorded.event
+		left join graph_nodes node on node.kind = $2::text and node.id = recorded.id
+		where node.id is null and octet_length(recorded.id) <= $3
+		order by recorded.id
+	`, graphstore.NoEvent, graphstore.KindSession, graphstore.MaxAddressBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read the sessions the store holds no node of: %w", err)
+	}
+	defer rows.Close()
+	var missing []sessionRow
+	for rows.Next() {
+		var row sessionRow
+		if err := rows.Scan(&row.id, &row.event, &row.at); err != nil {
+			return nil, fmt.Errorf("read a session the store holds no node of: %w", err)
+		}
+		missing = append(missing, row)
+	}
+	return missing, rows.Err()
+}
+
+// writeSessionBatch writes one batch's session nodes in one statement, and answers the nodes it
+// wrote and, as the upper bound the report states, the tuples: the two base attributes of each
+// node, which the write appends only for a node its insert made.
+func writeSessionBatch(ctx context.Context, database *store.Store, batch []sessionRow) (int64, int64, error) {
+	nodes := make([]graphstore.Node, 0, len(batch))
+	for _, row := range batch {
+		nodes = append(nodes, graphstore.SessionNode(row.id, backfillActor, row.at, row.event))
+	}
+	arms, params, err := graphstore.WriteArms(1, nodes, nil, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	if _, err := database.Pool.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
+		return 0, 0, fmt.Errorf("write the nodes of a session batch: %w", err)
+	}
+	return int64(len(nodes)), 2 * int64(len(nodes)), nil
 }

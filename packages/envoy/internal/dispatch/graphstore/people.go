@@ -115,19 +115,25 @@ func AuthorOf(actor model.Actor) (kind, id string, ok bool) {
 // aliases the server proved of them. named is false for an actor that names nobody (AuthorOf),
 // of whom nothing is held.
 //
+// A session the server proved its owner's is tied to that person by an alias_of tuple, and the
+// person is a node of the store from that same write on (provedOwner): a tuple whose far end
+// names no node would leave a person with deliveries on no page, since the page of a login the
+// store holds no person of answers nothing (api's listPersonNodes). So nodes is the author's node
+// and, for such a session, its owner's node after it.
+//
 // It is the one statement of these facts. Authored writes them on their own; a writer that
-// writes the thing's own node in a write of its own puts this node beside that one and these
+// writes the thing's own node in a write of its own puts these nodes beside that one and these
 // tuples beside its own, so the write takes every node row before it appends a tuple, as the
 // lock order on api/inbox_read.go's markInboxReadThreads has it (graphcensus's
 // writeCommentBatch).
-func AuthorFacts(kind, id string, actor model.Actor, at time.Time, event int64) (node Node, tuples []Tuple, named bool) {
+func AuthorFacts(kind, id string, actor model.Actor, at time.Time, event int64) (nodes []Node, tuples []Tuple, named bool) {
 	authorKind, authorID, ok := AuthorOf(actor)
 	// A session id carries no length bound (R14), so a comment whose author is a session past
 	// the store's address bound names an author the store cannot key beside the thing: its node
 	// is not written, nor the authored_by tuple nor any alias, and named is false. The comment
 	// keeps its own row, which the old comments arm answers (api's commentStoreWrite).
 	if !ok || !AddressFits(authorID) {
-		return Node{}, nil, false
+		return nil, nil, false
 	}
 	tuples = []Tuple{{
 		FromKind: kind, FromID: id, Kind: TupleAuthoredBy,
@@ -135,7 +141,38 @@ func AuthorFacts(kind, id string, actor model.Actor, at time.Time, event int64) 
 		At: at, Who: actor, SourceEvent: event, Asserted: true,
 	}}
 	tuples = append(tuples, aliases(authorKind, authorID, actor, at, event)...)
-	return agentNode(authorKind, authorID, actor, at, event), tuples, true
+	nodes = []Node{agentNode(authorKind, authorID, actor, at, event)}
+	if authorKind == KindSession {
+		if owner, proved := provedOwner(authorID, actor); proved {
+			nodes = append(nodes, PersonNode(owner, actor, at, event))
+		}
+	}
+	return nodes, tuples, true
+}
+
+// provedOwner is the person a session author's credential proved the session belongs to: a token
+// the secrets broker scoped to a person, recorded as the session it proved with that session on
+// its Act and the person as its Owner (api.bearerSessionActor). A session named in a body carries
+// no Act, and so has no owner here.
+func provedOwner(session string, actor model.Actor) (string, bool) {
+	if actor.Act == nil || actor.Act.Session != session || actor.Owner == nil {
+		return "", false
+	}
+	owner := model.CanonicalLogin(*actor.Owner)
+	return owner, owner != ""
+}
+
+// provedSession is the session a person's act names where the server itself proved it: the
+// session a broker-issued token is bound to, which api.actingPerson copies onto the act and which
+// no request can name otherwise. A personal token proves no session, so the one its act names is
+// whatever the caller claimed - a `?session=` parameter (api.actingPerson) or a body actor
+// (api.actSessionFromBody) - and the act says so by naming the token: only a personal token's act
+// carries a TokenID.
+func provedSession(actor model.Actor) (string, bool) {
+	if actor.Act == nil || actor.Act.TokenID != "" || actor.Act.Session == "" {
+		return "", false
+	}
+	return actor.Act.Session, true
 }
 
 // Authored writes who wrote one thing, inside the caller's transaction and beside the event that
@@ -152,11 +189,11 @@ func AuthorFacts(kind, id string, actor model.Actor, at time.Time, event int64) 
 // role, and whether a run holds a role is resolved where the roles are read (outbox.recordBatch),
 // never here.
 func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor, at time.Time, event int64) error {
-	node, tuples, named := AuthorFacts(kind, id, actor, at, event)
+	nodes, tuples, named := AuthorFacts(kind, id, actor, at, event)
 	if !named {
 		return nil
 	}
-	arms, params, err := WriteArms(1, []Node{node}, tuples, nil)
+	arms, params, err := WriteArms(1, nodes, tuples, nil)
 	if err != nil {
 		return err
 	}
@@ -171,41 +208,68 @@ func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor
 const DeliverySent = "sent"
 
 // Reached records the session a delivery attempt reached, inside the transaction that settles
-// that attempt. R14 gives the store writer two first writes of a session id, and this is the
-// second of them: "a comment whose author is a session, or a delivery attempt that reached one"
-// (graphstore.Authored is the first). The moment an attempt reaches a session is the moment its
-// send landed, which is where its settling transaction writes `sent`, so that transaction is
-// where the node belongs.
+// that attempt. R14 gives the store writer three first writes of a session id: "a comment whose
+// author is a session, an ask a session opened or follows, or a delivery attempt that reached
+// one" (graphstore.Authored and asks.Follow are the other two). The moment an attempt reaches a
+// session is the moment its send landed, which is where its settling transaction writes `sent`,
+// so that transaction is where the node belongs.
 //
 // A pending or failed attempt is passed over, and so is an attempt that resolved no session:
 // neither reached anybody, so neither records one. That is the same sentence the store census
 // binds its session row side with (graphcensus's recordedSessions), so the writer and the census
 // read one rule and a reader of either finds the other.
 //
-// It writes the node alone, through the same arms every other write of this store splices in
-// (WriteArms): the node row is upserted `do nothing`, and the base attributes are stated only
-// for a row that insert returned, so a resend of one attempt - and a second attempt reaching the
-// same session - appends nothing. One node, so the ascending (kind, id) order a multi-node write
-// takes is kept by having nothing to order. The write takes no event: the attempt's settle
-// appends its receipt after this, so the node is made at the sentinel (NoEvent), under which a
-// repeat appends nothing because the node row is already there.
-func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) error {
-	session = strings.TrimSpace(session)
-	// A session id carries no length bound, and a session past the store's address bound is no
-	// node the store can key: the attempt's settle records no node for it, as the comment path
-	// records none for a session author past the bound (AuthorFacts). The census leaves such a
-	// session out of both sides (graphcensus's recordedSessions).
-	if state != DeliverySent || session == "" || !AddressFits(session) {
-		return nil
+// It writes the node alone (SessionRecorded). The settle appends its receipt after this, so the
+// node is made at the sentinel and answered: the settle moves it onto the receipt once that is
+// appended (graphstore.Caused), as a comment's node learns the event that stored it. A resend of
+// one attempt, and a second attempt reaching the same session, finds the node there and answers
+// none, so the settle moves nothing another write made.
+func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) ([]Node, error) {
+	if state != DeliverySent {
+		return nil, nil
 	}
-	arms, params, err := WriteArms(1, []Node{SessionNode(session, who, at, NoEvent)}, nil, nil)
+	made, err := SessionRecorded(ctx, tx, strings.TrimSpace(session), who, at, NoEvent)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("record the session %s a delivery reached: %w", session, err)
 	}
-	if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
-		return fmt.Errorf("record the session %s a delivery reached: %w", session, err)
+	return made, nil
+}
+
+// SessionRecorded writes the node of a session a write records, inside that write's transaction,
+// and answers the node when this write made it and nothing when the store held it already.
+// An attempt that reached a session records it here (Reached). A follow of an ask records it
+// with the same node arm spliced into its follower insert (asks.Follow), so that a follow costs
+// one statement.
+//
+// It goes through the same arms every other write of this store splices in (WriteArms): the node
+// row is upserted `do nothing`, which locks no row that is already there, and the base
+// attributes are stated only for a row that insert returned, under the node's own cause. One
+// node, so the ascending (kind, id) order a multi-node write takes is kept by having nothing to
+// order. A writer whose event is appended after this passes NoEvent and moves the node it was
+// answered onto that event once it is (Caused): a node it was not answered is another write's,
+// and keeps that write's cause.
+//
+// A session id carries no length bound, and a session past the store's address bound is no node
+// the store can key: nothing is written for it, as the comment path writes none for a session
+// author past the bound (AuthorFacts). The census leaves such a session out of both sides
+// (graphcensus's recordedSessions).
+func SessionRecorded(ctx context.Context, tx pgx.Tx, session string, who model.Actor, at time.Time, event int64) ([]Node, error) {
+	if session == "" || !AddressFits(session) {
+		return nil, nil
 	}
-	return nil
+	node := SessionNode(session, who, at, event)
+	arms, params, err := WriteArms(1, []Node{node}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var made int
+	if err := tx.QueryRow(ctx, "with "+arms+"\nselect count(*) from graph_nodes_written", params...).Scan(&made); err != nil {
+		return nil, fmt.Errorf("record the session %s: %w", session, err)
+	}
+	if made == 0 {
+		return nil, nil
+	}
+	return []Node{node}, nil
 }
 
 // aliases are the tuples that tie a person to how this write names them: the session the server
@@ -225,7 +289,8 @@ func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Ac
 //     a delivery to that session reach its person (api's personNodesQuery).
 //
 // A credential that proved no session carries no Act, so a body-named session - a personal
-// token's, the shared bearer's - is no alias of anybody.
+// token's, the shared bearer's - is no alias of anybody, and nor is the session a personal
+// token's act names, which its caller claimed (provedSession).
 func aliases(authorKind, authorID string, actor model.Actor, at time.Time, event int64) []Tuple {
 	alias := func(session, person string) Tuple {
 		return Tuple{
@@ -235,11 +300,11 @@ func aliases(authorKind, authorID string, actor model.Actor, at time.Time, event
 		}
 	}
 	if authorKind == KindSession {
-		if actor.Act == nil || actor.Act.Session != authorID || actor.Owner == nil ||
-			model.CanonicalLogin(*actor.Owner) == "" {
+		owner, proved := provedOwner(authorID, actor)
+		if !proved {
 			return nil
 		}
-		return []Tuple{alias(authorID, model.CanonicalLogin(*actor.Owner))}
+		return []Tuple{alias(authorID, owner)}
 	}
 	if authorKind != KindPerson {
 		return nil
@@ -249,8 +314,8 @@ func aliases(authorKind, authorID string, actor model.Actor, at time.Time, event
 	// store's address bound is not written: the session is no node of the store either, and a
 	// delivery to it reaches its person by no alias (api's personNodesQuery). The author remains
 	// a named person, so its node and its authored_by tuple still stand.
-	if actor.Act != nil && actor.Act.Session != "" && AddressFits(actor.Act.Session) {
-		tuples = append(tuples, alias(actor.Act.Session, authorID))
+	if session, proved := provedSession(actor); proved && AddressFits(session) {
+		tuples = append(tuples, alias(session, authorID))
 	}
 	if actor.ID != "" && actor.ID != authorID {
 		tuples = append(tuples, Tuple{

@@ -450,10 +450,18 @@ var indexPasses = map[string]string{
 	// A delivery attempt's settle states the session it reached (graphstore.Reached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
+	// A follow of an ask writes the follower row and the following session's node in one
+	// statement (graphstore.WriteArms), and Caused moves the node that follow made onto the event
+	// its caller appended after it. Neither reads a row of either side: the follow writes the
+	// session its caller names, and Caused the node the follow answered.
+	"asks/followers.go#Follow": "the ask and the session its caller names",
+	"asks/followers.go#Caused": "the node its follow made and the event its caller appended after the follow",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
-	"docs/block_index.go#stampVersionEvent":          "the event that recorded the version",
+	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
+	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
+	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
 	// The backfill of the rows written before the store existed. Each pass reads the rows of
 	// its own kind and nothing else: a row's own content - its time, its author, the
 	// document it is in, its own source_seq - is what it writes into the store, and the
@@ -469,6 +477,11 @@ var indexPasses = map[string]string{
 	// addressed (addressedRoles), and it writes the nodes the store lacks of them, leaving a node
 	// another write made alone rather than mending it.
 	"graphcensus/backfill.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
+	// The backfill of the sessions, the same case as the roles': a session has no projection
+	// row, and the batch's input is the sessions the store census holds to a node, which a row
+	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
+	// the store lacks of them, and a node another write made it leaves alone.
+	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through
@@ -492,12 +505,15 @@ var indexPasses = map[string]string{
 	"graphstore/write.go#Caused": "the nodes its caller stated and the event that recorded the write",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
-	"outbox/publisher.go#recordBatch":      "the batch of events the publisher sent and the destinations each reached",
-	"refs/blocks.go#Caused":                "the facts the version's index pass stated and the event that recorded the version",
-	"refs/blocks.go#IndexBlocks":           "the version's render",
-	"refs/blocks.go#reconcileBlockParents": "the version's render",
-	"refs/blocks.go#replaceBlockRefs":      "the version's render",
-	"refs/refs.go#Stamp":                   "the event that recorded the write",
+	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
+	// The record of a fallback pass splices in the same arms for each copy the pass published:
+	// the copy's delivered_to and the session its topic names.
+	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
+	"refs/blocks.go#Caused":                   "the facts the version's index pass stated and the event that recorded the version",
+	"refs/blocks.go#IndexBlocks":              "the version's render",
+	"refs/blocks.go#reconcileBlockParents":    "the version's render",
+	"refs/blocks.go#replaceBlockRefs":         "the version's render",
+	"refs/refs.go#Stamp":                      "the event that recorded the write",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

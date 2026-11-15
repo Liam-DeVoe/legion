@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -723,9 +724,6 @@ func (s *server) openApprovalAsk(
 	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval).Scan(&ask.CreatedAt); err != nil {
 		return nil, model.Event{}, err
 	}
-	if err := asks.FollowAuthor(ctx, tx, ask.ID, actor); err != nil {
-		return nil, model.Event{}, err
-	}
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
 	askChanges, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
 	if err != nil {
@@ -746,6 +744,14 @@ func (s *server) openApprovalAsk(
 		return nil, model.Event{}, err
 	}
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return nil, model.Event{}, err
+	}
+	// The requester follows the request it opened, once the ask.opened that records it is
+	// appended, so a session requester's node is caused by that event in the follow's own
+	// statement and the request pays no second statement to move it there. Nothing before the
+	// event reads the follower row: its payload's logins are the thread's (events.ThreadLogins),
+	// and the outbox reads the followers after the commit.
+	if _, err := asks.FollowAuthor(ctx, tx, ask.ID, actor, ask.CreatedAt, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
 	ask.OpenedEventID = &event.ID
@@ -809,7 +815,15 @@ func (s *server) renewApprovalAsk(
 		}
 		events = append(events, handedBack)
 	}
-	if err := asks.FollowAuthor(ctx, tx, open.ID, actor); err != nil {
+	// The requester follows the request again. Its events are appended by now, so a session
+	// requester's node is caused by the last of them; a retry appends none, and the node it
+	// makes, if the store holds none yet, stays at the sentinel.
+	cause, at := graphstore.NoEvent, open.CreatedAt
+	if len(events) > 0 {
+		last := events[len(events)-1]
+		cause, at = last.ID, last.CreatedAt
+	}
+	if _, err := asks.FollowAuthor(ctx, tx, open.ID, actor, at, cause); err != nil {
 		return nil, err
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {

@@ -632,16 +632,19 @@ want_value G10 "no tuple stands on the message (the comment G9 delivered stands 
 want_value G10 "the message is no node of this child" 0 \
   "select count(*) from graph_nodes where id = '$message'"
 
-# G11: a session the store never recorded answers no node at all, read through the server's own
-# node reader. An ask's followers are the one edge of graph_edges whose far end is a session, so
-# the read answers a session the store holds - this run's own, which wrote the comments of G2 -
-# and leaves out the one the store never saw.
+# G11: an ask a session follows records that session, and a session the store never recorded
+# answers no node at all, read through the server's own node reader. An ask's followers are the
+# one edge of graph_edges whose far end is a session. A session that follows through the API is a
+# node from that follow on (R14: "an ask a session opened or follows"), the one that never wrote
+# anything among them; a follower row written as the release before the store writes one, with no
+# node, is the session the store never saw, and the read leaves it out and writes no node for it.
 send POST "/api/v1/issues/$key/asks" "$(jq -cn --arg s "$session" \
   '{question: "Which sessions does the store hold?", actor: {kind: "session", id: $s}}')"
 want_status 201 G11 "open an ask"
 ask="$(jq -er '.id' "$work/body")" || fail G11 "open an ask" "no ask id: $(body)"
+readonly followed_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
 readonly unseen_session="019a1c09-5555-7000-8000-$(printf '%012d' "$$")"
-for follower in "$session" "$unseen_session"; do
+for follower in "$session" "$followed_session"; do
   request "person:$person" PUT "/api/v1/asks/$ask/followers/$follower"
   [[ "$status" == 200 || "$status" == 201 || "$status" == 204 ]] ||
     fail G11 "follow the ask as $follower" "HTTP $status: $(body)"
@@ -649,12 +652,18 @@ done
 pass G11 "both sessions follow the ask"
 want_value G11 "the store holds a node of the session that wrote" 1 \
   "select count(*) from graph_nodes where kind = 'session' and id = '$session'"
+want_value G11 "the store holds a node of the session that only follows" 1 \
+  "select count(*) from graph_nodes where kind = 'session' and id = '$followed_session'"
+query G11 "write a follower row as the release before the store writes one" \
+  "insert into ask_followers (ask_id, session_id) values ('$ask', '$unseen_session')"
 want_value G11 "the store holds no node of the session it never recorded" 0 \
   "select count(*) from graph_nodes where kind = 'session' and id = '$unseen_session'"
 get "/api/v1/references?from=$(q "dispatch://$key/ask/$ask")&kind=followed_by"
 want_status 200 G11 "read the ask's followers through the graph"
-expect G11 "the recorded session answers a node" "[\"$session\"]" \
-  --arg id "$session" '[.edges[] | select(.node.id == $id) | .node.id]'
+for recorded in "$session" "$followed_session"; do
+  expect G11 "the recorded session $recorded answers a node" "[\"$recorded\"]" \
+    --arg id "$recorded" '[.edges[] | select(.node.id == $id) | .node.id]'
+done
 expect G11 "a session the store never recorded answers no node at all" "[]" \
   --arg id "$unseen_session" '[.edges[] | select(.node.id == $id) | .node.id]'
 want_value G11 "the read wrote no node" 0 \

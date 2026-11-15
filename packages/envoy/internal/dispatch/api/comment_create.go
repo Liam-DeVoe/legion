@@ -822,8 +822,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	waitingOn := threadTarget.waitingOnAfter(turn)
+	// A session writing in an ask's thread follows the ask, and is a node of the store from this
+	// write on; its node learns the comment.created event below once that is appended.
+	var followed asks.Followed
 	if input.AskID != nil {
-		if err := asks.FollowAuthor(r.Context(), tx, *input.AskID, actor); err != nil {
+		if followed, err = asks.FollowAuthor(r.Context(), tx, *input.AskID, actor, createdAt, graphstore.NoEvent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -998,6 +1001,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// What the comment states, under the event that stored it: its node's cause, its two base
 	// attributes, and the artifacts it is anchored to and owned by.
 	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := followed.Caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

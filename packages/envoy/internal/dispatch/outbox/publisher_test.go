@@ -13,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -1916,16 +1919,37 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 	`, issueKey, authorJSON, question).Scan(&id); err != nil {
 		t.Fatalf("create ask: %v", err)
 	}
-	if err := asks.FollowAuthor(context.Background(), database.Pool, id, author); err != nil {
-		t.Fatalf("follow ask: %v", err)
-	}
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.FollowAuthor(context.Background(), tx, id, author, time.Now(), graphstore.NoEvent)
+		return err
+	})
 	return id
 }
 
 func seedFollower(t *testing.T, database *store.Store, askID, sessionID string) {
 	t.Helper()
-	if _, err := asks.Follow(context.Background(), database.Pool, askID, sessionID); err != nil {
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, askID, sessionID,
+			model.Actor{Kind: "session", ID: sessionID}, time.Now(), graphstore.NoEvent)
+		return err
+	})
+}
+
+// inFollowTransaction runs follow in a transaction of its own and commits it: a follow writes
+// its session's node beside the follower row, and the store writes only inside a transaction.
+func inFollowTransaction(t *testing.T, database *store.Store, follow func(pgx.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the follow: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := follow(tx); err != nil {
 		t.Fatalf("follow ask: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the follow: %v", err)
 	}
 }
 

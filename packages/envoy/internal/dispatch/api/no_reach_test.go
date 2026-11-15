@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -58,6 +60,7 @@ func TestTheStoreAddsNoReachAndNoReadChangesShape(t *testing.T) {
 	t.Run("a declared shape is not an authorization", threeBadRequests)
 	t.Run("a build that cannot address the new kinds reads what it read before", olderBuildReadsTheGraph)
 	t.Run("the comment read and the block read are unchanged, in answer and in plan", readsUnchanged)
+	t.Run("an ask's followers who never commented read the same before and after the backfill", followersAcrossTheBackfill)
 }
 
 // onePersonRead: the store's one new read is one row of the table, with its own description and
@@ -172,6 +175,122 @@ func personReadReach(t *testing.T) {
 	}
 	if body := unknown.Body.String(); strings.Contains(body, "nobody-at-all") || strings.Contains(body, "person") {
 		t.Fatalf("the 404 tells the caller something: %s", body)
+	}
+
+	// The caller's own login is the one login with no node that is no 404: a person who has
+	// written nothing and been reached by nothing opens their own page from the signed-in login
+	// and reads it empty, which tells them nothing they did not know. Another person's credential
+	// still reads that same login as the 404 above.
+	carol := personalTokenOwnedBy(t, database, "carol", model.ScopePerson)
+	for _, own := range []*httptest.ResponseRecorder{
+		personPageRequest(t, handler, "/api/v1/people/carol/nodes", carol),
+		dispatchRequest(t, handler, http.MethodGet, "/api/v1/people/Carol/nodes", nil, "carol"),
+	} {
+		if own.Code != http.StatusOK {
+			t.Fatalf("carol reading her own page with no node: status=%d body=%s, want 200", own.Code, own.Body.String())
+		}
+		if read := decodeBody[personNodes](t, own); read.Person != "carol" || read.Total != 0 || len(read.Rows) != 0 {
+			t.Fatalf("carol's own page with no node = %+v, want carol's page with no rows", read)
+		}
+	}
+	if other := personPageRequest(t, handler, "/api/v1/people/carol/nodes", personal); other.Code != http.StatusNotFound ||
+		other.Body.String() != unknown.Body.String() {
+		t.Fatalf("alice reading carol's page with no node: status=%d body=%s, want the same 404 an unknown login reads",
+			other.Code, other.Body.String())
+	}
+}
+
+// followersAcrossTheBackfill: an ask opened by a session that never commented, and followed by a
+// second such session, answers the same followed_by edges from GET /api/v1/references and the
+// same Follower rows (GET /api/v1/asks/{id}/followers) before and after the backfill. A session
+// is a node of the store from the first write that records it, and an ask it opened or follows is
+// such a write, so neither follower edge needs a comment to answer a node. The case is seeded
+// twice, so each path is proved on its own: one ask opened and followed through this release's
+// API, which proves the node the follow writes (asks.Follow), and one written as the previous
+// release writes it, rows alone, which proves the backfill. The previous release built each
+// follower's node out of its row's session id, so what it answered for the second ask is one
+// followed_by edge per follower row, and that is what this release answers once the backfill has
+// given those sessions their nodes.
+func followersAcrossTheBackfill(t *testing.T) {
+	ctx := context.Background()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Followers", "Spec.\n")
+	asker := map[string]any{"kind": "session", "id": "019a1c0c-1111-7000-8000-000000000001"}
+	follower := "019a1c0c-1111-7000-8000-000000000002"
+	opened := decodeBody[model.Ask](t, created(t, "a session's ask", sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+issue.Key+"/asks", map[string]any{"question": "Who follows?", "actor": asker})))
+	if followed := sessionRequest(t, handler, http.MethodPut, "/api/v1/asks/"+opened.ID+"/followers/"+follower,
+		map[string]any{"actor": map[string]any{"kind": "session", "id": follower}}); followed.Code != http.StatusNoContent {
+		t.Fatalf("follow the ask as %s: status=%d body=%s", follower, followed.Code, followed.Body.String())
+	}
+
+	// The second ask as the previous release writes it: the ask row and its two follower rows,
+	// and no node of either session.
+	previousAsker, previousFollower := "019a1c0c-2222-7000-8000-000000000001", "019a1c0c-2222-7000-8000-000000000002"
+	var previous string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into asks (issue_key, author, question) values ($1, $2, 'Who followed before?') returning id::text
+	`, issue.Key, `{"kind":"session","id":"`+previousAsker+`"}`).Scan(&previous); err != nil {
+		t.Fatalf("write the previous release's ask: %v", err)
+	}
+	for _, session := range []string{previousAsker, previousFollower} {
+		if _, err := database.Pool.Exec(ctx,
+			`insert into ask_followers (ask_id, session_id) values ($1, $2)`, previous, session); err != nil {
+			t.Fatalf("write the previous release's follower %s: %v", session, err)
+		}
+	}
+
+	type answer struct{ edges, followers string }
+	read := func(ask string) answer {
+		t.Helper()
+		edges := readGraph(t, handler, url.Values{"from": {"dispatch://" + issue.Key + "/ask/" + ask}, "kind": {"followed_by"}}).Edges
+		encodedEdges, err := json.Marshal(edges)
+		if err != nil {
+			t.Fatalf("encode the followed_by edges of %s: %v", ask, err)
+		}
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+ask+"/followers", nil, "alice")
+		if listed.Code != http.StatusOK {
+			t.Fatalf("list the followers of %s: status=%d body=%s", ask, listed.Code, listed.Body.String())
+		}
+		return answer{edges: string(encodedEdges), followers: listed.Body.String()}
+	}
+	followedBy := func(ask string) []string {
+		t.Helper()
+		var sessions []string
+		for _, edge := range readGraph(t, handler, url.Values{"from": {"dispatch://" + issue.Key + "/ask/" + ask}, "kind": {"followed_by"}}).Edges {
+			sessions = append(sessions, edge.Node.Kind+":"+edge.Node.ID)
+		}
+		sort.Strings(sessions)
+		return sessions
+	}
+	followerRows := func(ask string) []string {
+		t.Helper()
+		var sessions []string
+		for _, row := range decodeBody[askFollowersRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+ask+"/followers", nil, "alice")).Followers {
+			sessions = append(sessions, "session:"+row.SessionID)
+		}
+		sort.Strings(sessions)
+		return sessions
+	}
+
+	apiBefore, previousBefore := read(opened.ID), read(previous)
+	if got, want := followedBy(opened.ID), []string{"session:" + asker["id"].(string), "session:" + follower}; !slices.Equal(got, want) {
+		t.Fatalf("the ask opened and followed through the API answers followed_by %v before the backfill, want %v", got, want)
+	}
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	apiAfter, previousAfter := read(opened.ID), read(previous)
+	if apiAfter != apiBefore {
+		t.Fatalf("the ask opened through the API reads differently after the backfill:\nbefore %+v\nafter  %+v", apiBefore, apiAfter)
+	}
+	if previousAfter.followers != previousBefore.followers {
+		t.Fatalf("the previous release's ask lists other Follower rows after the backfill:\nbefore %s\nafter  %s",
+			previousBefore.followers, previousAfter.followers)
+	}
+	if got, want := followedBy(previous), followerRows(previous); len(want) != 2 || !slices.Equal(got, want) {
+		t.Fatalf("the previous release's ask answers followed_by %v after the backfill, want one edge per Follower row %v, as the previous release answered them",
+			got, want)
 	}
 }
 

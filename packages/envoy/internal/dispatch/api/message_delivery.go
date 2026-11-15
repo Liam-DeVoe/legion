@@ -660,6 +660,9 @@ func (s *server) completeMessageDelivery(
 		MessageID: message.ID, Attempt: pending.attempt, Delivery: pending.resolved.Delivery,
 		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: duplicate, Error: failure,
 	}, pending.resolved.title)
+	// The session the settle records, where this settle made its node: the node is made before
+	// the receipt exists and moves onto it once it is appended (caused below).
+	var reached []graphstore.Node
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
 			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
@@ -674,7 +677,8 @@ func (s *server) completeMessageDelivery(
 			// The session this attempt reached, in the transaction that records that it did
 			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
 			// this moment, a pending or failed one reached nobody and writes nothing.
-			return settled, graphstore.Reached(ctx, tx, settled.State, settled.SessionID, actor, settled.CreatedAt)
+			reached, err = graphstore.Reached(ctx, tx, settled.State, settled.SessionID, actor, settled.CreatedAt)
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool
@@ -686,6 +690,9 @@ func (s *server) completeMessageDelivery(
 		},
 		func(answered model.MessageDelivery) model.Event {
 			return messageDeliveryReceipt(message, actor, answered, pending.resolved.title)
+		},
+		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
+			return graphstore.Caused(ctx, tx, reached, receipt)
 		},
 	)
 }

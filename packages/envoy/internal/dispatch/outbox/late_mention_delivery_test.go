@@ -201,7 +201,7 @@ func settleMention(t *testing.T, database *store.Store, broker *events.Broker, c
 		&receipt.Target, &receipt.Attempt, &receipt.Delivery, &receipt.SessionID, &createdAt); err != nil {
 		t.Fatalf("settle the mention of %s %s: %v", session, state, err)
 	}
-	if err := graphstore.Reached(ctx, tx, state, session, actor, createdAt); err != nil {
+	if _, err := graphstore.Reached(ctx, tx, state, session, actor, createdAt); err != nil {
 		t.Fatalf("record the session the mention of %s reached: %v", session, err)
 	}
 	event := owner

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -234,7 +235,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := asks.FollowAuthor(r.Context(), tx, rowID, actor); err != nil {
+	// The asker follows the ask it opened, and a session asker is a node of the store from this
+	// write on; its node learns the ask.opened event below once that is appended.
+	followed, err := asks.FollowAuthor(r.Context(), tx, rowID, actor, ask.CreatedAt, graphstore.NoEvent)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -301,6 +305,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "ask", ask.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := followed.Caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

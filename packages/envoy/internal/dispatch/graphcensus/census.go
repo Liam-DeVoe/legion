@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
@@ -214,7 +215,8 @@ var projections = []projection{{
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
 	table:    "comments.author",
-	note:     "no table projects a person, so the row side is the people the projected tables name as authors",
+	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
+		" and the owner of each session the server proved that wrote one",
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
 		from (` + commentPeople + `) p`,
@@ -223,8 +225,9 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindSession,
 	nodeKind: graphstore.KindSession,
-	table:    "comments.author, comment_deliveries, message_deliveries",
-	note:     "no table projects a session, so the row side is the sessions those tables name as authors and as reached",
+	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, events.payload",
+	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
+		" as askers and as followers, and every session an ask.follower_added event named",
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
 		from (` + recordedSessions + `) s where octet_length(s.id) <= ` + addressBound,
@@ -319,8 +322,12 @@ const commentAuthor = `case
 // commentPeople are the people the projected tables name as the author of a row, as
 // graphstore.AuthorOf reads an actor: the login an actor of kind user carries, or the owner a
 // personal token's actor carries, each canonicalised the way user_threads_login canonicalises a
-// login (migration 0095, which is model.CanonicalLogin in SQL).
-const commentPeople = `
+// login (migration 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the
+// sessions the server proved that wrote a comment: the comment's author is the session, whose act
+// names that same session and whose owner is the person it belongs to, and the write that ties
+// the two with an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except
+// for a session past the store's bound, of which nothing is written.
+var commentPeople = `
 	select distinct user_threads_login(author.login) as login
 	from (
 		select case
@@ -329,31 +336,60 @@ const commentPeople = `
 			when coalesce(c.author->>'owner', '') <> '' then c.author->>'owner'
 		end as login
 		from comments c
+		union all
+		select c.author->>'owner'
+		from comments c
+		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
+		  and c.author->'act'->>'session' = c.author->>'id'
+		  and octet_length(c.author->>'id') <= ` + addressBound + `
 	) author
 	where author.login is not null and user_threads_login(author.login) <> ''`
 
-// recordedSessions are the sessions the projected tables and the delivery records name: a
-// comment a session wrote (graphstore.AuthorOf), and every session a delivery reached - a
-// comment mention's and a targeted message's alike, whether the outbox's record states it
-// (outbox.deliveredGraph) or the attempt's own settle does (graphstore.Reached).
+// recordedSessions are the sessions a row of the store names, each once, with the first event
+// that named it (null for a session only a row names) and the earliest time a row or an event
+// names it. They are every write R14 records a session from: a comment a session wrote
+// (graphstore.AuthorOf); every session a delivery reached - a comment mention's and a targeted
+// message's attempt alike, whether the outbox's record states it (outbox.deliveredGraph) or the
+// attempt's own settle does (graphstore.Reached), and a fallback copy the outbox published to a
+// session's own topic (outbox.fallbackDelivered); an ask a session opened, every session that
+// follows an ask now, and every session an ask.follower_added event ever named (asks.Follow), so a
+// follower added and removed before the store existed is held to a node as well. A node is
+// history and never goes, so a session that once followed still owes it.
 //
-// R14 is exact about which attempt that is: "a sent attempt is a delivery; a pending or failed
-// one is not". So this binds `state = 'sent'`, the test the writer binds too: an attempt still
-// pending has reached nobody yet and a failed one never will, and counting either here would
-// hold the store to a node no writer is meant to have written.
-const recordedSessions = `
-	select distinct id from (
-		select case when c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
-		            then c.author->>'id' end as id
+// R14 is exact about which attempt is a delivery: "a sent attempt is a delivery; a pending or
+// failed one is not". So this binds `state = 'sent'`, the test the writer binds too: an attempt
+// still pending has reached nobody yet and a failed one never will, and counting either here
+// would hold the store to a node no writer is meant to have written.
+//
+// It is one definition read by two: the census's session row side and the backfill's session
+// pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the
+// census holds to one, as addressedRoles is for roles.
+var recordedSessions = `
+	select id, min(event) as event, min(at) as at from (
+		select c.author->>'id' as id, null::bigint as event, c.created_at as at
 		from comments c
-		union
-		select d.session_id from comment_deliveries d
+		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
+		union all
+		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state = '` + graphstore.DeliverySent + `'
-		union
-		select d.session_id from message_deliveries d
+		union all
+		select d.session_id, null, d.created_at from message_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state = '` + graphstore.DeliverySent + `'
+		union all
+		select substring(f.destination from ` + strconv.Itoa(len(contracts.AgentTopicPrefix)+1) + `), null, f.created_at
+		from comment_fallback_copies f
+		where f.published and f.destination like '` + contracts.AgentTopicPrefix + `%'
+		union all
+		select a.author->>'id', null, a.created_at from asks a
+		where a.author->>'kind' = 'session' and coalesce(a.author->>'id', '') <> ''
+		union all
+		select f.session_id, null, f.since from ask_followers f
+		union all
+		select e.payload->>'session_id', e.id, e.created_at from events e
+		where e.type = 'ask.follower_added'
 	) sessions
-	where id is not null and id <> ''`
+	where id is not null and id <> ''
+	group by id`
 
 // addressedRoles are the roles a row of the store addresses now or an event of the log has ever
 // addressed (R19), each once, with the first event that named it, null for a role only a row

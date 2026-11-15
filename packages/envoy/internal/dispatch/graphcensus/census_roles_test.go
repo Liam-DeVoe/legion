@@ -246,7 +246,7 @@ func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, read
 		`, commentID, target, graphstore.DeliverySent).Scan(&attemptedAt); err != nil {
 			return model.Event{}, err
 		}
-		if err := graphstore.Reached(ctx, tx, graphstore.DeliverySent, reader, by, attemptedAt); err != nil {
+		if _, err := graphstore.Reached(ctx, tx, graphstore.DeliverySent, reader, by, attemptedAt); err != nil {
 			return model.Event{}, err
 		}
 		return model.Event{

@@ -22,7 +22,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -127,12 +129,15 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	// ───── before the migration: the older build writes the rows ─────
 	before := startDispatchProcessWith(t, databaseURL, dispatchOptions{
 		Binary: older, SigningKey: censusSigningKey,
+		Env: map[string]string{"ENVOY_URL": censusListener(t)},
 	})
 	before.waitHealthy(t)
 	seeded := seedThroughTheOlderBuild(t, before)
+	waitForTheCensusDelivery(t, ctx, before, databaseURL)
 	inventory := readInventory(t, ctx, databaseURL)
 	keepInventory(t, inventory)
 	requireInventoryCarriesEveryKind(t, inventory)
+	sessions := readSessionInventory(t, ctx, databaseURL)
 	before.Cmd.Process.Signal(os.Interrupt)
 	<-before.Exited
 
@@ -175,6 +180,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 
 	// ───── every row naming its node, asserted before any row is compared with a tuple ─────
 	requireEveryRowNamesItsNode(t, ctx, databaseURL, censusProjectedKinds)
+	requireEverySessionOfTheInventoryHoldsItsNode(t, ctx, databaseURL, sessions)
 
 	// ───── every projection row against the tuple that answers it ─────
 	projectionRowsAgainstTheirTuples(t, ctx, databaseURL)
@@ -372,6 +378,11 @@ func seedThroughTheOlderBuild(t *testing.T, server *dispatchProcess) seededRows 
 	server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/asks",
 		`{"question":"Does the census read every row?","options":[{"label":"It does"},{"label":"It does not"}]}`,
 		http.StatusCreated)
+	// The sessions a database of the older build names that no write of that build recorded in
+	// a store: a session that opened an ask, a second one that follows it, and one a comment's
+	// mention was delivered to. None of them wrote a comment.
+	seedCensusFollowers(t, server, issue)
+	seedCensusDelivery(t, server, issue)
 	// Every comment above hangs under the issue, so comments.artifact_id is null on each and the
 	// parent the inventory reads for it is empty. A comment on a document of the project's own,
 	// which no issue holds, is the one the older build records under that document, so the
@@ -468,6 +479,147 @@ func censusSessionComment(t *testing.T, server *dispatchProcess, issue, body str
 		t.Fatalf("read the session's comment back: %v: %s", err, answer.body)
 	}
 	return comment.ID
+}
+
+// The sessions the older build records and never as a comment's author: the session that opens an
+// ask, the session that follows it, and the session a comment's mention is delivered to.
+const (
+	censusAsker    = "019a1c0b-3333-7000-8000-000000000002"
+	censusFollower = "019a1c0b-3333-7000-8000-000000000003"
+	censusReached  = "019a1c0b-3333-7000-8000-000000000004"
+)
+
+// censusAgentCall sends body to the older build on the shared agent bearer, which names the
+// session it writes as in the body, and fails unless it answers status.
+func censusAgentCall(t *testing.T, server *dispatchProcess, method, path string, body any, status int) []byte {
+	t.Helper()
+	input, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode %s %s: %v", method, path, err)
+	}
+	answer := server.send(t, method, path, string(input), http.Header{"Authorization": {"Bearer " + dispatchTestAgentToken}})
+	if answer.status != status {
+		t.Fatalf("%s %s: %s, want %d", method, path, answer, status)
+	}
+	return answer.body
+}
+
+// seedCensusFollowers opens an ask as censusAsker, which follows it, and follows it as
+// censusFollower through the follower route, as each session's own act.
+func seedCensusFollowers(t *testing.T, server *dispatchProcess, issue string) {
+	t.Helper()
+	asked := censusAgentCall(t, server, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
+		"question": "Which sessions follow this ask?",
+		"actor":    map[string]string{"kind": "session", "id": censusAsker},
+	}, http.StatusCreated)
+	var ask struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(asked, &ask); err != nil || ask.ID == "" {
+		t.Fatalf("read the session's ask back: %v: %s", err, asked)
+	}
+	censusAgentCall(t, server, http.MethodPut, "/api/v1/asks/"+ask.ID+"/followers/"+censusFollower, map[string]any{
+		"actor": map[string]string{"kind": "session", "id": censusFollower},
+	}, http.StatusNoContent)
+}
+
+// seedCensusDelivery writes a comment on issue mentioning censusReached, which the older build
+// delivers through censusListener once the comment has committed (waitForTheCensusDelivery).
+func seedCensusDelivery(t *testing.T, server *dispatchProcess, issue string) {
+	t.Helper()
+	server.mention(t, issue, "A comment delivered to a session before the store existed.", "session:"+censusReached)
+}
+
+// waitForTheCensusDelivery waits until the older build has settled the attempt that delivered a
+// comment to censusReached sent.
+func waitForTheCensusDelivery(t *testing.T, ctx context.Context, server *dispatchProcess, databaseURL string) {
+	t.Helper()
+	conn := censusConnect(t, ctx, databaseURL)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var sent bool
+		if err := conn.QueryRow(ctx, `
+			select exists (select 1 from comment_deliveries where session_id = $1 and state = 'sent')
+		`, censusReached).Scan(&sent); err != nil {
+			t.Fatalf("read the delivery to %s: %v", censusReached, err)
+		}
+		if sent {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the older build did not deliver the comment to %s:\n%s", censusReached, server.Output.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// censusListener is a stand-in Envoy listener for the older build: every session it is asked
+// about is live and takes a steer, and every send is handed over at once.
+func censusListener(t *testing.T) string {
+	t.Helper()
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch session, lookup := strings.CutPrefix(r.URL.Path, "/v1/registry/"); {
+		case r.Method == http.MethodGet && lookup:
+			_, _ = fmt.Fprintf(w, `{"session_id":%q,"title":"agent","capabilities":["steer"]}`, session)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			_, _ = w.Write([]byte(`{"event_id":"census-envelope","recipient":"` + censusReached + `"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(listener.Close)
+	return listener.URL
+}
+
+// readSessionInventory reads, with this test's own SQL over the older build's own columns, the
+// sessions that build recorded as an ask's author, as an ask's follower and as the session a sent
+// delivery reached, and fails unless the three this run wrote are among them: no code of this
+// branch produces it.
+func readSessionInventory(t *testing.T, ctx context.Context, databaseURL string) []string {
+	t.Helper()
+	conn := censusConnect(t, ctx, databaseURL)
+	rows, err := conn.Query(ctx, `
+		select a.author->>'id' from asks a where a.author->>'kind' = 'session'
+		union select f.session_id from ask_followers f
+		union select d.session_id from comment_deliveries d where d.state = 'sent' and d.session_id is not null
+		order by 1
+	`)
+	if err != nil {
+		t.Fatalf("read the sessions of the inventory: %v", err)
+	}
+	sessions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the sessions of the inventory: %v", err)
+	}
+	for _, want := range []string{censusAsker, censusFollower, censusReached} {
+		if !slices.Contains(sessions, want) {
+			t.Fatalf("the older build recorded the sessions %v, which leave out %s, so the inventory proves nothing about it", sessions, want)
+		}
+	}
+	t.Logf("the inventory holds %d session(s) the older build recorded and no comment names: %v", len(sessions), sessions)
+	return sessions
+}
+
+// requireEverySessionOfTheInventoryHoldsItsNode holds the store to the session inventory after the
+// backfill: each session the older build recorded is a live node, so the followed_by edge to it and
+// the delivery it received are answered from the store as the older build answered them.
+func requireEverySessionOfTheInventoryHoldsItsNode(t *testing.T, ctx context.Context, databaseURL string, sessions []string) {
+	t.Helper()
+	conn := censusConnect(t, ctx, databaseURL)
+	rows, err := conn.Query(ctx, `select id from graph_nodes where kind = 'session' and state = 'live' and id = any($1)`, sessions)
+	if err != nil {
+		t.Fatalf("read the nodes of the inventory's sessions: %v", err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the nodes of the inventory's sessions: %v", err)
+	}
+	requireADenominator(t, "the session inventory against the store", len(sessions))
+	for _, session := range sessions {
+		if !slices.Contains(held, session) {
+			t.Errorf("the store holds no live node of the session %s the older build recorded", session)
+		}
+	}
 }
 
 // ───── the inventory ──────────────────────────────────────────────────────

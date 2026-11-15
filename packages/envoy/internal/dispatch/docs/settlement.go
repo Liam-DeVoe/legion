@@ -761,6 +761,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// The follows of the asks this settlement opened wait for those asks' ask.opened events, which
+	// are among st.published now; causeFollows finds each by the ask its payload names.
+	if err := st.reconciliation.causeFollows(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
 	// settlement that writes no version takes out none.

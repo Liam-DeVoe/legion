@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // Wait bounds each wait of a lock-step test: for the writer to queue behind the next hold once the
@@ -276,4 +277,63 @@ func WaitingStatement(t testing.TB, database *store.Store, pid uint32) string {
 		t.Fatalf("read the statement backend %d waits at: %v", pid, err)
 	}
 	return strings.Join(strings.Fields(statement), " ")
+}
+
+// Follow follows a writer already running on backend pid, whose result arrives on done, through
+// holds: it lets go of each hold the writer queues behind, one at a time, reads where the writer
+// waits each time (RequireStoppedAt), and once the writer answers holds the order it queued in to
+// the store's lock order (RequireTheStoreLockOrder) and fails on the writer's own error. A
+// statement waits on one lock at a time, so a writer queued behind two holds at once is a failure
+// of the test's own reading, and a writer that queues behind none and does not answer is waiting
+// on something the test does not hold. It answers the holds in the order the writer queued behind
+// them.
+func Follow(t testing.TB, database *store.Store, run string, pid uint32, done <-chan error, holds []*Hold) []*Hold {
+	t.Helper()
+	ctx := context.Background()
+	t.Cleanup(func() {
+		for _, hold := range holds {
+			hold.Release()
+		}
+	})
+	var queued []*Hold
+	deadline := time.Now().Add(Wait)
+	for {
+		select {
+		case err := <-done:
+			RequireTheStoreLockOrder(t, run, holds, queued)
+			if err != nil {
+				t.Fatalf("%s failed after it queued behind %s: %v", run, HoldNames(queued), err)
+			}
+			return queued
+		default:
+		}
+		var behind []*Hold
+		for _, hold := range holds {
+			if hold.Released() {
+				continue
+			}
+			waits, err := storetest.QueuedBehind(ctx, hold.Tx, pid)
+			if err != nil {
+				t.Fatalf("read what %s waits on: %v", run, err)
+			}
+			if waits {
+				behind = append(behind, hold)
+			}
+		}
+		switch len(behind) {
+		case 0:
+			if time.Now().After(deadline) {
+				t.Fatalf("%s queued behind none of the holds still held and did not answer within %s (it queued behind %s so far)",
+					run, Wait, HoldNames(queued))
+			}
+			time.Sleep(2 * time.Millisecond)
+		case 1:
+			RequireStoppedAt(t, ctx, database, pid, run, behind[0])
+			queued = append(queued, behind[0])
+			behind[0].Release()
+			deadline = time.Now().Add(Wait)
+		default:
+			t.Fatalf("%s queued behind %d holds at once (%s), which one statement cannot do", run, len(behind), HoldNames(behind))
+		}
+	}
 }

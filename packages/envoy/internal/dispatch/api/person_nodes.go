@@ -132,7 +132,9 @@ var personNodesQuery = `
 //
 // A login the store holds no person node for is 404, with the body an address nobody holds
 // answers: the read says nothing about whether that person exists, has signed in or wrote
-// anything.
+// anything. The caller's own login is the one exception, answered 200 with no rows: a person who
+// has written nothing and been reached by nothing opens their own page from the signed-in login,
+// and telling them they are who they signed in as tells them nothing new.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -157,7 +159,11 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !held {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+		if login != caller.ID {
+			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+			return
+		}
+		WriteJSON(w, http.StatusOK, personNodes{Person: login, Rows: []personNode{}, Limit: limit, Offset: offset})
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), personNodesQuery, login, seen, limit, offset)

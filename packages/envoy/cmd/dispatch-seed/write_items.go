@@ -49,6 +49,8 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 	return r.inBatches(ctx, "asks", len(r.plan.asks), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("ask")
 		followers := make([][]any, 0, to-from)
+		followerNodes := make([]graphstore.Node, 0, to-from)
+		followed := map[string]struct{}{}
 		opened := make([][]any, 0, to-from)
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
@@ -118,6 +120,11 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, serverURL)), ask.CreatedAt)
 			if index < r.sizes.AskFollowers {
 				followers = append(followers, []any{ask.ID, ask.Follower, ask.CreatedAt})
+				if _, written := followed[ask.Follower]; !written {
+					followed[ask.Follower] = struct{}{}
+					followerNodes = append(followerNodes,
+						graphstore.SessionNode(ask.Follower, seedAuthor, ask.CreatedAt, graphstore.NoEvent))
+				}
 			}
 			opening := model.Ask{
 				ID:              ask.ID,
@@ -162,6 +169,9 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				"ask.opened", seedActor, payload, false, ask.CreatedAt, ask.CreatedAt,
 			})
 		}
+		if err := writeFollowerNodes(ctx, tx, followerNodes); err != nil {
+			return err
+		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"ask_followers"},
 			[]string{"ask_id", "session_id", "since"}, pgx.CopyFromRows(followers)); err != nil {
 			return fmt.Errorf("ask followers: %w", err)
@@ -171,6 +181,22 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
+// that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
+// batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
+// node beside that copy, at the sentinel, as every write of the seed's is, and a follower an
+// earlier batch wrote moves nothing. Without it a seeded ask's followed_by edges would answer no
+// node in any read, and the census would report every follower. The nodes go in one
+// graphstore.Write, which takes their rows in ascending (kind, id) and appends their base
+// attributes after them; the follower rows carry no foreign key into the store, so where the copy
+// falls beside this moves no lock of the store's order.
+func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+		return fmt.Errorf("the ask followers' nodes: %w", err)
+	}
+	return nil
 }
 
 // askAnswer is the answer an answered ask holds, in the shape the answer route writes
@@ -358,7 +384,7 @@ const (
 func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
 	nodes := make([]graphstore.Node, 0, to-from+1)
 	tuples := make([]graphstore.Tuple, 0, 3*(to-from))
-	var author graphstore.Node
+	var authors []graphstore.Node
 	for index := from; index < to; index++ {
 		comment := r.plan.comments[index]
 		node := graphstore.Node{
@@ -377,7 +403,7 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 		states("state", graphstore.KindValue, graphstore.StateLive)
 		made, facts, _ := graphstore.AuthorFacts(commentNodeKind, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
-			author = made
+			authors = made
 		}
 		tuples = append(tuples, facts...)
 		if comment.Document >= 0 {
@@ -390,7 +416,7 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 			states("owned_by", "artifact", address)
 		}
 	}
-	nodes = append(nodes, author)
+	nodes = append(nodes, authors...)
 	return nodes, tuples
 }
 

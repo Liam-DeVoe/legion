@@ -80,6 +80,14 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 	// The writes, each through the route a caller of that identity uses.
 	proved := rig.created(t, "the proved session's comment", rig.serve(caller.presenting(t, http.MethodPost,
 		"/api/v1/issues/"+issue+"/comments", token, map[string]any{"body": "Written by the session the broker proved."})))
+	// The proved session's comment is the first write that names alice at all, and it makes her
+	// a person of the store beside the alias it ties her session to (graphstore.AuthorFacts): her
+	// page is a page another person can open before she has written anything herself, and not
+	// the 404 of a login the store holds no person for.
+	if early := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/"+brokerTestPerson+"/nodes", nil, identityTwin); early.Code != http.StatusOK {
+		t.Fatalf("%s reading %s's page once only %s's proved session has written: status=%d body=%s, want 200",
+			identityTwin, brokerTestPerson, brokerTestPerson, early.Code, early.Body.String())
+	}
 	byPerson := rig.created(t, "the person's comment", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+issue+"/comments", map[string]any{"body": "Written by the person herself."}, brokerTestPerson))
 	byTwin := rig.created(t, "the twin's comment", dispatchRequest(t, rig.handler, http.MethodPost,
