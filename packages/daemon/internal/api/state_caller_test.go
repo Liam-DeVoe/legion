@@ -198,6 +198,26 @@ func withoutQuietKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutAssignmentKeys is a state body with no issue carrying `assignments`, which is what a
+// caller below assignmentsContract is served of a state that carries them (api's
+// withoutAssignments). It serves the table below as withoutQuietKeys does: a row's baseline is
+// the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutAssignmentKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		delete(issue.(map[string]any), "assignments")
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its assignments: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutMergeWaitKey is a state body with no issue carrying `mergeWait`, which is what a caller
 // below mergeWaitContract is served of a state (api's withoutMergeWait). It serves the table
 // below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
@@ -355,14 +375,14 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
 // pacing holds, the count of claims the refresh lane has left, the gated steps, the claim
 // views' step record, the places in the admission line, the workers' counts of the moves back,
-// each issue's two entry numbers, the issues the record holds in the workflow and each issue's
-// tree quiet time among the keys it is served without, since such a pod is below every row of
-// stateNarrowings. The measure of a tree that has stopped is read in finer grain by
-// quiet_time_test.go. A pod at this contract, and a caller in no pod — the operator's
-// `legion state`, whose open-rounds line reads both fields, whose queue line reads those wakes
-// and whose tool-call line reads the step records — are served everything. The claims are the
-// state snapshot's own, so there is no readable state whose caller's contract is unknown: a
-// snapshot without them is no state, and the route refuses it.
+// each issue's two entry numbers, the issues the record holds in the workflow, each issue's
+// tree quiet time and each issue's experiment assignments among the keys it is served without,
+// since such a pod is below every row of stateNarrowings. The measure of a tree that has
+// stopped is read in finer grain by quiet_time_test.go. A pod at this contract, and a caller in
+// no pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
+// line reads those wakes and whose tool-call line reads the step records — are served
+// everything. The claims are the state snapshot's own, so there is no readable state whose
+// caller's contract is unknown: a snapshot without them is no state, and the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -406,14 +426,18 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// plugin is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added), so a pod at
-		// 111 or above is served the measure and a pod still running an older plugin is not. The
-		// two leave together (withoutQuietTime), so one column answers for both.
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added), so a pod
+		// at it or above is served the measure and a pod still running an older plugin is not.
+		// The two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// wait is whether the caller is served what each reviewing issue's round waits on from
 		// GitHub, `mergeWait` (mergeWaitContract, the contract that added it), so a pod at it or
 		// above is served the object and every older pod is not.
 		wait bool
+		// assigned is whether the caller is served each issue's experiment assignments
+		// (assignmentsContract, the contract that added them), so a pod at it or above is served
+		// them and a pod still running an older plugin is not.
+		assigned bool
 		// release is whether the caller is served the project's newest project release,
 		// `projectRelease` (projectReleaseContract, the contract that added it).
 		release bool
@@ -440,17 +464,24 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band from heldContract to below quietTimeContract: the held list is served too,
 		// and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
-		// The band from quietTimeContract to below mergeWaitContract: the tree quiet time is
-		// served too, and `mergeWait` is held back. waitingOnIssueContract stands inside it, and its
-		// strip takes a word of the line's `kind` and no key, so the band reads alike on either side
-		// of it; waiting_on_issue_test.go reads that word.
+		// The band from quietTimeContract to below waitingOnIssueContract: the tree quiet time is
+		// served too, and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		// The band from mergeWaitContract to below projectReleaseContract: `mergeWait` is served
-		// too, and the project's release is held back.
+		// The band from waitingOnIssueContract to below mergeWaitContract: that contract's strip
+		// takes a word of the line's `kind` and no key, so this row and the one before it read
+		// alike here (waiting_on_issue_test.go reads that word), and `mergeWait`, the assignments
+		// and the project's release are still held back.
+		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served
+		// too, and the assignments and the project's release are held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, release: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, release: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, release: true},
+		// The band from assignmentsContract to below projectReleaseContract, the last band under
+		// the declared contract: the assignments are served too, and the project's release is
+		// the one key held back.
+		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, release: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, release: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, release: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -497,6 +528,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.wait {
 					want = withoutMergeWaitKey(t, want)
 				}
+				if !tc.assigned {
+					want = withoutAssignmentKeys(t, want)
+				}
 				if !tc.release {
 					want = withoutProjectReleaseKey(t, want)
 				}
@@ -538,10 +572,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), with
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
-			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with what each reviewing issue's
-			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait).
-			// Every row that reaches here is below all of them, so every one of them goes whatever
-			// the row is.
+			// `treeMovedAt` and `quietHours` (withoutQuietTime), with what each reviewing issue's
+			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait), and
+			// with each issue's `assignments` gone, the experiment answers contract 141 added
+			// (withoutAssignments). Every row that reaches here is below all of them, so every one
+			// of them goes whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -609,6 +644,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "assignments")
 				delete(issue, "why")
 				delete(issue, MergeWaitField)
 			}

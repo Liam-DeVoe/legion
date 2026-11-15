@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
-  The daemon API contract is 138. `legion-api.ts` gains `LegionProjectReleaseRequest` and
+  The daemon API contract is 148. `legion-api.ts` gains `LegionProjectReleaseRequest` and
   `LegionProjectReleaseResponse`, the bodies of `POST` and `GET /legion/v1/operator/project/release`,
   and the state's optional `projectRelease`, the project's newest project release, which a caller
-  in a pod below contract 138 is not served. A claim's `suspendedBy` gains `project_release`, a
+  in a pod below contract 148 is not served. A claim's `suspendedBy` gains `project_release`, a
   claim the project release stopped, which the daemon's next boot starts again.
