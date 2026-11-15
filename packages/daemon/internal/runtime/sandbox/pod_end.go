@@ -33,7 +33,8 @@ const podEndRecordLife = 10 * time.Minute
 // to account for it. The daemon deletes no pod itself — it patches or deletes the pod's Sandbox,
 // and the Agent Sandbox controller deletes the pod — so every end the daemon makes carries a
 // deletion timestamp the daemon did not write, and this reading is made only where no record of
-// an intended end answers for the pod (capturePodEnd).
+// an intended end answers for the pod. It is made only of a pod not yet terminal: a terminal pod
+// is read from its status alone, whatever deletion timestamp it carries (capturePodEnd).
 const deletedByAnother = "the pod was being deleted with no act of the daemon's to account for it"
 
 // clusterEndedReasons are the reasons a pod's own status carries when the cluster ended it, and
@@ -69,6 +70,12 @@ const evictedReason = "Evicted"
 // sizeLimit, or a node under pressure refused it at admission (clusterEndedReasons). Such an end
 // is read neither way and charged.
 const evictedForItsOwnUse = "the kubelet evicted the pod with no DisruptionTarget condition: over a limit of its own, or refused at admission"
+
+// terminalWithNoClusterEnd is the reading of a pod already terminal whose status names neither an
+// end the cluster made (disruption) nor an eviction (selfEvicted): a reason outside
+// clusterEndedReasons, UnexpectedAdmissionError among them, or no reason at all. Such an end is
+// read neither way and charged, whatever deletion timestamp the pod carries (capturePodEnd).
+const terminalWithNoClusterEnd = "the pod was terminal and its status names no end the cluster made"
 
 // disruption is whether the cluster says it ended pod, with the words the daemon read that from
 // and the reason the cluster gave: the DisruptionTarget condition the control plane and the
@@ -142,6 +149,11 @@ func (e podEnd) detail() string {
 // end it was written for is read (takeIntendedEnd) and by its expiry when no end comes
 // (podEndRecordLife): a record left standing would have the pod's next genuine end read as an end
 // of the daemon's own. Every write prunes what has expired, so the map cannot grow without bound.
+//
+// The record is held in memory alone. A daemon that restarts between the act and the pod's end
+// has lost it, so an end the daemon itself made is then read as an end from outside the pod and
+// its roles are relaunched uncharged. The run limit bounds that as it bounds every end from
+// outside a pod (launch_failure_limit, supervise's endedFromOutside).
 func (r *Runtime) meanToEndPod(uid, act string) {
 	if uid == "" {
 		return
@@ -200,23 +212,40 @@ func (r *Runtime) prunePodEnds() {
 // (stranded).
 //
 // An end the daemon's own record names is the daemon's own (takeIntendedEnd), whatever the cluster
-// made of it; otherwise what the cluster says ended the pod (disruption), and then a deletion
-// timestamp no act of the daemon's accounts for (deletedByAnother), are each an end from outside
-// the pod. A pod the kubelet evicted with no DisruptionTarget condition (selfEvicted) is read
-// neither way, before the deletion timestamp is read: the controller's delete of that failed pod
-// can reach the informer in the same event as its eviction, and read as deletedByAnother it would
-// continue a pod that fills its own disk for ever. Its words and reason are kept for the line
-// (logPodEnd), and no caller is answered with them (podEndOf).
+// made of it, and an end the cluster says it made (disruption) is an end from outside the pod.
+// Past those two, a pod already terminal — in the phase the kubelet sets on a pod it has ended
+// (terminal) — is read from its status alone, and a deletion timestamp counts only on a pod not
+// yet terminal. A terminal pod is read neither way, whatever its reason and whatever deletion
+// timestamp it carries: `Evicted` with no DisruptionTarget condition (selfEvicted), a reason
+// outside the cluster's own such as UnexpectedAdmissionError, or no reason at all. Its words
+// (evictedForItsOwnUse, terminalWithNoClusterEnd) and its reason are kept for the line
+// (logPodEnd), and no caller is answered with them (podEndOf). A pod not yet terminal that
+// carries a deletion timestamp no act of the daemon's accounts for is an end from outside it
+// (deletedByAnother). A pod the informer delivers as deleted is read by the same rule from the
+// last state it carries.
 //
-// An end of neither reading is charged as it always was, and is recorded all the same, with an
-// empty reading: the record is what makes the first end event the one that decides. A pod whose
-// first end carries a reason outside the cluster's own — UnexpectedAdmissionError, a node
-// refusing the pod before it ran, which is exactly the end that must be charged — is followed by
-// another event for the same uid, the controller's delete, pod garbage collection or an
-// operator's own `kubectl delete pod`; with nothing recorded, that event's deletion timestamp
-// would read as deletedByAnother and every role of the pod would be continued uncharged. The
-// empty reading is answered to no caller (podEndOf), so it decides nothing it did not read.
-// Called with r.mu held.
+// The rule reads a pod's failure the same however the informer delivers its facts. The controller
+// deletes a pod the kubelet has failed, and the informer can deliver the terminal status and the
+// deletion timestamp in one event or in two. Read from the deletion timestamp wherever there is
+// one, the same failure would be continued uncharged when both came in one event and charged when
+// the status came first, and a pod a node keeps refusing, or a task that fills its own disk, would
+// be relaunched for ever whenever the two came together.
+//
+// The rule has one cost: an outside delete the daemon first sees when the pod is already terminal
+// is charged a death. That is rare. The informer hands notify each watch event in order, and a
+// graceful delete sets the deletion timestamp on the running pod before the kubelet makes it
+// terminal, so the daemon sees the running pod's deletion first and reads it as an end from
+// outside. It sees the terminal pod first only when its watch missed that update and a relist
+// delivered only the later state: that is inferred from how client-go's watch and relist behave,
+// and no test here proves the order the informer delivers in.
+//
+// Every reading is kept, an end of neither reading too, which is kept with an empty reading and
+// charged as it always was. The record is what makes the first event that shows a pod's end the
+// one that decides: a deletion read from outside stays so when the kubelet's terminal status
+// follows it, and no later event of the same end — the controller's delete, pod garbage
+// collection, an operator's own `kubectl delete pod`, the informer's delete — is read again or
+// gets a line of its own. The empty reading is answered to no caller (podEndOf), so it decides
+// nothing it did not read. Called with r.mu held.
 func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 	uid := string(pod.UID)
 	if uid == "" || !podEnding(pod, gone) {
@@ -233,8 +262,10 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 		end.reading, end.cause, end.reason = runtime.PodEndOurs, act, pod.Status.Reason
 	case disrupted:
 		end.reading, end.cause, end.reason = runtime.PodEndNotOurs, cause, reason
-	case selfEvicted(pod):
+	case terminal(pod) && selfEvicted(pod):
 		end.cause, end.reason = evictedForItsOwnUse, pod.Status.Reason
+	case terminal(pod):
+		end.cause, end.reason = terminalWithNoClusterEnd, pod.Status.Reason
 	case pod.DeletionTimestamp != nil:
 		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
 	}
@@ -252,13 +283,15 @@ func podEnding(pod *corev1.Pod, gone bool) bool {
 
 // podEndLine is the one line a pod's end gets, written where the end is first read and naming the
 // pod, which reading was made, the words it was made from, the reason the cluster gave where it
-// gave one, and every role of that pod the runtime watches, each of which the end ended. It says
-// what the end was read as and nothing of what any role is charged for it: the supervisor decides
-// that for each claim, continuing a pod_end_not_ours end uncharged until such ends reach
-// launch_failure_limit in a row, a count this runtime does not keep. One line per pod end and not
-// one per role: a pod's six roles end together, and the runtime knows every watched claim whose
-// locator names the pod. A reader of the line tells a restart an eviction caused from one an
-// out-of-memory kill caused.
+// gave one, and, as ended, the roles whose processes the end ended: every role of that pod the
+// runtime watches. The line names what ended and nothing of what any claim got for it. It is
+// written before any claim is decided, and the supervisor decides each claim on its own,
+// continuing a pod_end_not_ours end uncharged until such ends reach launch_failure_limit in one of
+// the claim's runs, a count this runtime does not keep, and charging it from there; so each
+// claim's own supervise line says what that claim got (supervise's endedFromOutside). One line
+// per pod end and not one per role: a pod's six roles end together, and the runtime knows every
+// watched claim whose locator names the pod. A reader of the line tells a restart an eviction
+// caused from one an out-of-memory kill caused.
 const podEndLine = "sandbox runtime: read what ended a watched pod"
 
 // logPodEnd writes that line for end, the reading just made of pod's end: at warning level for an
@@ -270,29 +303,29 @@ const podEndLine = "sandbox runtime: read what ended a watched pod"
 // an end ended, and a pod no claim of this runtime runs in ends none: the pods informer carries
 // the image probe's pod and each repository cache's pod beside the issue and controller pods, and
 // every one of those ends — a probe pod ends at every boot — would otherwise write, at warning
-// level, a line for an end from outside the pod that names roles=[]. The reading itself is kept
+// level, a line for an end from outside the pod that names ended=[]. The reading itself is kept
 // whether or not the line is written: a claim of the pod may be watched by the time the end is
 // evaluated. Called with r.mu held.
 func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
-	roles := make([]string, 0, len(r.watch))
+	ended := make([]string, 0, len(r.watch))
 	for token, loc := range r.watch {
 		if loc.Sandbox == nil || loc.Sandbox.PodUID != string(pod.UID) {
 			continue
 		}
 		if role, ok := token.Role(); ok {
-			roles = append(roles, string(role))
+			ended = append(ended, string(role))
 		}
 	}
-	if len(roles) == 0 {
+	if len(ended) == 0 {
 		return
 	}
-	slices.Sort(roles)
+	slices.Sort(ended)
 	write := r.log.Info
 	if end.reading == runtime.PodEndNotOurs {
 		write = r.log.Warn
 	}
 	write(podEndLine, "pod", pod.Name, "uid", string(pod.UID), "reading", string(end.reading),
-		"cause", end.cause, "reason", end.reason, "roles", roles)
+		"cause", end.cause, "reason", end.reason, "ended", ended)
 }
 
 // podEndOf is what the daemon read about the end of the pod uid, and whether it read anything at

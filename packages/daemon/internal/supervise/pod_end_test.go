@@ -12,6 +12,8 @@ package supervise
 // before the reading existed — which is what keeps these cases from being an amnesty.
 
 import (
+	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -258,6 +260,94 @@ func TestEvictionsInARowWithNoCompletedTurnAreChargedADeathAtTheLimitAndFailTheC
 			}
 		})
 	}
+}
+
+// The two lines an end from outside a claim's pod ends in, as an operator and a production check
+// read them: whole, and not as the constants that carry them, so a reword turns this test red
+// rather than leaving a search for what each claim got counting nothing.
+const (
+	continuedLine = "supervise: the claim's pod ended from outside it; continued in its own session and charged nothing"
+	chargedLine   = "supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts"
+)
+
+// Each claim of a pod that ended from outside it says, in a line of its own, what it got for that
+// end (endedFromOutside). The runtime's line for the pod's end is written before any claim is
+// decided and names every role the end ended, so it cannot say which were continued and which
+// charged. An end below launch_failure_limit writes the continued line at Info, naming the run
+// that counted it, its count, the limit and the observation's detail; the end that reaches the
+// limit writes the charge line at Warn instead, and no continued line. A claim whose agent is
+// still starting names the run of a start's ends.
+func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	const detail = "the cluster marked the pod a disruption target (TerminationByKubelet)"
+	endFromOutside := func(h *harness) {
+		h.t.Helper()
+		h.must(RuntimeObservation{Observation: runtime.Observation{
+			Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), PodEnd: runtime.PodEndNotOurs, Detail: detail,
+		}})
+	}
+	// wantContinued fails unless the continued line was written lines times, the last of them at
+	// Info naming run, its count and the limit, and carrying the observation's detail.
+	wantContinued := func(h *harness, lines int, run string, count int) {
+		h.t.Helper()
+		continued := h.records.of(continuedLine)
+		if len(continued) != lines {
+			h.t.Fatalf("%q was written %d times, want %d", continuedLine, len(continued), lines)
+		}
+		r := continued[lines-1]
+		if r.level != slog.LevelInfo {
+			h.t.Fatalf("%q is %s, want INFO", continuedLine, r.level)
+		}
+		for _, want := range []struct{ key, value string }{
+			{"run", run}, {"count", strconv.Itoa(count)}, {"limit", strconv.Itoa(limit)}, {"detail", detail},
+		} {
+			if got, ok := r.attr(want.key); !ok || got.String() != want.value {
+				h.t.Errorf("%q carries %s=%v (present %v), want %q", continuedLine, want.key, got, ok, want.value)
+			}
+		}
+	}
+
+	t.Run("an agent ready with work outstanding", func(t *testing.T) {
+		h := owingTask(t, queuedClaim(), owedTask)
+		for end := 1; end < limit; end++ {
+			endFromOutside(h)
+
+			h.wantState(StateLaunching)
+			h.wantBudgets(Budgets{PodEndsNotOurs: end})
+			wantContinued(h, end, "podEndsNotOurs", end)
+			h.relaunched()
+			h.wantOwed(owedTask)
+		}
+		if charged := h.records.of(chargedLine); len(charged) != 0 {
+			t.Fatalf("%q was written %d times below the limit, want never", chargedLine, len(charged))
+		}
+
+		endFromOutside(h)
+
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1, PodEndsNotOurs: limit})
+		if continued := h.records.of(continuedLine); len(continued) != limit-1 {
+			t.Fatalf("%q was written %d times, want the %d of the ends below the limit: the end the limit charges was logged as continued",
+				continuedLine, len(continued), limit-1)
+		}
+		charged := h.records.of(chargedLine)
+		if len(charged) != 1 {
+			t.Fatalf("%q was written %d times, want once, for the end that reached the limit", chargedLine, len(charged))
+		}
+		if charged[0].level != slog.LevelWarn {
+			t.Fatalf("%q is %s, want WARN", chargedLine, charged[0].level)
+		}
+	})
+	t.Run("an agent still starting", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim())
+		h.launch()
+		h.wantState(StateLaunching)
+
+		endFromOutside(h)
+
+		h.wantBudgets(Budgets{StartEndsNotOurs: 1})
+		wantContinued(h, 1, "startEndsNotOurs", 1)
+	})
 }
 
 // A turn the claim completes between two ends from outside its pod starts the run again: the

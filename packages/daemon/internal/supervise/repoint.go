@@ -136,12 +136,18 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // with nothing pending, would find the dead turn open and be counted against it. An agent not yet
 // ready was in no turn, so an end counted in the second run records none. At the limit the turn
 // is left for died's charge to end, since that charge reads the same open turn.
+//
+// Each end counted in a run writes one line for the claim saying what the claim got for it: the
+// continue below the limit (continuedFromOutsideLine) and the charge at it
+// (chargedFromOutsideLine). The runtime's line for the pod's end is written before any claim is
+// decided and names every role the end ended, so these lines, one per claim, are what tell a role
+// continued from one charged. An end with no work outstanding writes displaced's line alone.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
 	starting := slices.Contains(unready, m.claim.State)
-	run := &m.claim.Budgets.PodEndsNotOurs
+	run, runName := &m.claim.Budgets.PodEndsNotOurs, "podEndsNotOurs"
 	switch {
 	case starting:
-		run = &m.claim.Budgets.StartEndsNotOurs
+		run, runName = &m.claim.Budgets.StartEndsNotOurs, "startEndsNotOurs"
 	case !m.workOutstanding():
 		return m.displaced(ctx, observation)
 	}
@@ -149,17 +155,33 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 		*run++
 	}
 	if *run >= m.deps.Limits.LaunchFailures {
-		m.log.Warn("supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts",
+		m.log.Warn(chargedFromOutsideLine,
 			"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
 			"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail)
 		return m.died(ctx, observation)
 	}
+	m.log.Info(continuedFromOutsideLine,
+		"run", runName, "count", *run, "limit", m.deps.Limits.LaunchFailures, "detail", observation.Detail)
 	m.claim.DeathCharged = true
 	if !starting {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()
 	}
 	return errors.Join(m.persist(ctx), m.displaced(ctx, observation))
 }
+
+// continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod that is
+// continued: counted in one of the two runs and below launch_failure_limit, so the claim's own
+// session is resumed and nothing is charged (endedFromOutside). It names the run that counted the
+// end, its count and the limit. It is pinned as a constant, beside chargedFromOutsideLine, because
+// an operator and a production check read the two whole and together: the runtime's line for the
+// pod's end says what ended, and each claim's line says what that claim got.
+const continuedFromOutsideLine = "supervise: the claim's pod ended from outside it; continued in its own session and charged nothing"
+
+// chargedFromOutsideLine is the line, at Warn, of an end from outside the claim's pod that
+// reached launch_failure_limit in its run and is charged as the claim's own death, or as a launch
+// failure while its agent starts (endedFromOutside, died). It is pinned for the reason
+// continuedFromOutsideLine gives.
+const chargedFromOutsideLine = "supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts"
 
 // ProcessEnd is what a replacement did to the claim's process (replaceProcess): the end the
 // machine reached, which is not always the one it set out to make. It is read from the claim the

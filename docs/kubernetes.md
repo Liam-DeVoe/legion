@@ -4586,16 +4586,23 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 
 **An end from outside the pod.**
 The daemon reads what ended each watched pod once, where its informer delivers the end, and writes one line for it (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
-`sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and every role of the pod it ended.
-The line says what the end was read as and nothing of what any role is charged for it, which the daemon decides for each claim (below).
+`sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
+The line is written before any claim is decided and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
 Two readings say something outside the pod ended it:
 
-- the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for.
-  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and it records each such act of its own before it makes it, so an end no record of its own answers for was made by something else;
+- the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for, while the pod was not yet terminal.
+  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and it records each such act of its own before it makes it, so an end no record of its own answers for was made by something else.
+  That record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged, which the run limit below bounds;
 
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
   `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
   A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
+
+A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
+So a failed pod the cluster did not end is charged whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
+The rule has one cost: an outside delete the daemon first sees when the pod is already terminal is charged a death.
+That is rare: the informer hands the daemon each watch event in order, and a graceful delete sets the deletion timestamp on the running pod before the kubelet makes it terminal, so the daemon sees the running pod's deletion first.
+It sees the terminal pod first only when its watch missed that update and a relist delivered only the later state, which is an inference from how client-go's watch and relist behave that no test proves.
 
 An end of either reading costs its roles nothing.
 The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
@@ -4605,6 +4612,8 @@ The third such end in a row is charged all the same.
 The daemon counts these ends in two runs, by whether the claim's agent was ready when its pod ended: the third end of either run is charged, and so is every end of that run after it until the run is reset (`launch_failure_limit`, 3 by default).
 A pod that uses more memory than it requested can drive its own node into pressure, its start as much as its work, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
 Both runs are kept in the claim's row (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), so a daemon restart starts neither again.
+Each claim writes its own line for what it got:
+`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing` at info for an end below the limit, naming the run that counted it (`podEndsNotOurs` or `startEndsNotOurs`), its `count` and the `limit`, and, for the end that reaches the limit, `supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts` at warn in its place.
 
 The first run counts the ends that find the claim's agent ready with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
 When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own.

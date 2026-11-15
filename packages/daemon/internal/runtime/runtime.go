@@ -429,9 +429,10 @@ type PodEndReading string
 const (
 	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
 	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
-	// an end; the kubelet's `Evicted` counts only with the condition), or the pod was deleted
-	// under a deletion timestamp that no intent of the daemon's accounts for. The process did
-	// nothing the daemon can see wrong, so the supervisor continues each role of that pod in its
+	// an end; the kubelet's `Evicted` counts only with the condition), or the pod, not yet
+	// terminal, was deleted under a deletion timestamp that no intent of the daemon's accounts
+	// for; a pod already terminal is read from its status alone. The process did nothing the
+	// daemon can see wrong, so the supervisor continues each role of that pod in its
 	// own session, charging neither a death nor a launch failure, and sends each the task it owed
 	// again (supervise's judge, endedFromOutside, displaced) — until such ends come
 	// launch_failure_limit times in a row, with no turn completed between them on a ready agent

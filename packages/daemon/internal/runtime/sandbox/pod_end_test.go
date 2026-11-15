@@ -292,36 +292,67 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 	})
 }
 
-// A pod the kubelet evicted with no DisruptionTarget condition is read as neither reading even
-// when the first event the informer delivers of its end already carries a deletion timestamp: the
-// Agent Sandbox controller deletes a failed pod, and that delete can reach the informer with the
-// eviction. Read from the deletion timestamp alone, the end would be one no act of the daemon's
-// accounts for, and a task that fills its own disk would be continued uncharged in pod after pod.
-// The words the end was read from are kept for the pod's line, and no caller is answered with them.
-func TestAPodEvictedOverItsOwnLimitIsObservedAsNeitherReadingUnderADeletionTimestamp(t *testing.T) {
-	g := runningIssuePod(t)
-	name := SandboxName(workerToken)
-	deleted := metav1.NewTime(rigNow)
-	g.update(g.pod(name), func(p *corev1.Pod) {
-		p.Status = endedPodStatus(evictedReason)
-		p.DeletionTimestamp = &deleted
-	})
+// A pod already terminal is read from its status alone, whatever deletion timestamp the event that
+// first shows its end carries (capturePodEnd): the Agent Sandbox controller deletes a failed pod,
+// and that delete can reach the informer in the same event as the terminal status. Read from the
+// deletion timestamp, the end would be one no act of the daemon's accounts for, and a failure the
+// supervisor charges when its status comes alone (TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason)
+// would be continued uncharged whenever the two came together: a task that fills its own disk, the
+// kubelet's `Evicted` with no DisruptionTarget condition, or a pod a node keeps refusing,
+// UnexpectedAdmissionError, would be relaunched pod after pod for ever. The words the end was read
+// from are kept for the pod's line, and no caller is answered with them. What the cluster says
+// ended the pod is read first, and is an end from outside it with a deletion timestamp beside it
+// as without one.
+func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  corev1.PodStatus
+		reading runtime.PodEndReading
+		// cause is the words the end must be read from, where a case names them; reason is the
+		// reason it must carry, which is the cluster's own where the cluster gave one.
+		cause, reason string
+	}{
+		{name: "Evicted over a limit of its own, no disruption target", status: endedPodStatus(evictedReason),
+			cause: evictedForItsOwnUse, reason: evictedReason},
+		{name: "a reason that is none of the cluster's own", status: endedPodStatus("UnexpectedAdmissionError"),
+			cause: terminalWithNoClusterEnd, reason: "UnexpectedAdmissionError"},
+		{name: "no reason at all", status: endedPodStatus(""), cause: terminalWithNoClusterEnd},
+		{name: "a disruption target", status: endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet")),
+			reading: runtime.PodEndNotOurs, reason: "TerminationByKubelet"},
+		{name: "one of the cluster's own reasons", status: endedPodStatus("Preempted"),
+			reading: runtime.PodEndNotOurs, reason: "Preempted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := runningIssuePod(t)
+			name := SandboxName(workerToken)
+			deleted := metav1.NewTime(rigNow)
+			g.update(g.pod(name), func(p *corev1.Pod) {
+				p.Status = tc.status
+				p.DeletionTimestamp = &deleted
+			})
 
-	end := g.podEndHeld(recorded)
-	if end.reading != "" || end.cause != evictedForItsOwnUse || end.reason != evictedReason {
-		t.Fatalf("read %+v of the pod evicted with no disruption target, want no reading, the words %q and the reason %q",
-			end, evictedForItsOwnUse, evictedReason)
-	}
-	if _, answered := g.r.podEndOf(recorded); answered {
-		t.Fatal("an end read neither way is answered to a caller; it must read as nothing was read")
-	}
-	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-		t.Fatal(err)
-	}
-	g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
-	obs := g.observed(rolesLocator(workerToken, recorded))
-	if obs.Kind != runtime.Gone || obs.PodEnd != "" {
-		t.Fatalf("observed %s PodEnd=%q (%s), want Gone read neither way, which the supervisor charges", obs.Kind, obs.PodEnd, obs.Detail)
+			end := g.podEndHeld(recorded)
+			if end.reading != tc.reading || end.reason != tc.reason || tc.cause != "" && end.cause != tc.cause {
+				t.Fatalf("read %+v of the terminal pod under a deletion timestamp, want the reading %q, the reason %q and the words %q",
+					end, tc.reading, tc.reason, tc.cause)
+			}
+			if _, answered := g.r.podEndOf(recorded); answered != (tc.reading != "") {
+				t.Fatalf("the end was answered to a caller: %v, want %v; an end read neither way must read as nothing was read",
+					answered, tc.reading != "")
+			}
+			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+				t.Fatal(err)
+			}
+			g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+			obs := g.observed(rolesLocator(workerToken, recorded))
+			if obs.Kind != runtime.Gone || obs.PodEnd != tc.reading {
+				t.Fatalf("observed %s PodEnd=%q (%s), want Gone PodEnd=%q: a pod already terminal is read from its status alone",
+					obs.Kind, obs.PodEnd, obs.Detail, tc.reading)
+			}
+			if strings.Contains(obs.Detail, deletedByAnother) {
+				t.Errorf("the observation's detail is %q, want nothing of a deletion no act of the daemon's accounts for", obs.Detail)
+			}
+		})
 	}
 }
 
@@ -406,9 +437,11 @@ func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) 
 }
 
 // One line per pod end, not one per role: it names the pod, which of the two readings was made,
-// the reason the cluster gave, and every role of that pod the runtime watches, each of which the
-// end ended. Both roles of this issue pod run in the one container, so both are named by the one
-// line their shared pod's end gets.
+// the reason the cluster gave, and, as ended, every role of that pod the runtime watches, each of
+// which the end ended. The field names what ended and nothing of what any role got for it, which
+// each claim's own supervise line says: named roles, it read as the roles continued, where at the
+// run limit a role on it is charged. Both roles of this issue pod run in the one container, so
+// both are named by the one line their shared pod's end gets.
 func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) {
 	logs := &lockedLog{}
 	g := newRig(t, nil, withLog(logs))
@@ -435,50 +468,90 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 	}
 	for _, want := range []string{
 		"pod=" + tester.Sandbox.Name, "uid=" + tester.Sandbox.PodUID, "reading=" + string(runtime.PodEndNotOurs),
-		"reason=TerminationByKubelet", string(claim.RoleTester), string(claim.RoleReviewer),
+		"reason=TerminationByKubelet",
 	} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("the pod's end line is %q, want %q in it", lines[0], want)
 		}
 	}
+	_, ended, ok := strings.Cut(lines[0], " ended=")
+	if !ok {
+		t.Fatalf("the pod's end line is %q, want the roles the end ended under ended", lines[0])
+	}
+	for _, role := range []claim.Role{claim.RoleTester, claim.RoleReviewer} {
+		if !strings.Contains(ended, string(role)) {
+			t.Errorf("the pod's end line names ended=%s, want the %s it ended among them", ended, role)
+		}
+	}
+	if strings.Contains(lines[0], " roles=") {
+		t.Errorf("the pod's end line is %q, want no roles field, which reads as the roles continued", lines[0])
+	}
 }
 
-// A pod whose first end event is read neither way is remembered as such, so the next event for
-// the same pod cannot be read as something else. The end that must be charged is exactly this
-// one: a reason outside the cluster's own three — UnexpectedAdmissionError, a node refusing the
-// pod before it ran — which the roles of the next pod would meet again, and which an uncharged
-// continue would relaunch for ever. The event after it is the deletion the controller, pod
-// garbage collection or an operator makes, and with nothing recorded that deletion timestamp
-// would read as one no act of the daemon's accounts for and continue every role of the pod
-// uncharged.
-func TestAnEndReadNeitherWayIsRememberedSoALaterDeletionIsNotObservedAsOneFromOutsideThePod(t *testing.T) {
-	g := runningIssuePod(t)
-	name := SandboxName(workerToken)
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("UnexpectedAdmissionError") })
-	if end := g.podEndHeld(recorded); end.reading != "" {
-		t.Fatalf("read %+v of the refused pod, want it recorded with no reading: it is neither the daemon's own end nor one the cluster says it made", end)
-	}
-	if _, answered := g.r.podEndOf(recorded); answered {
-		t.Fatal("an end read neither way is answered to a caller; it must read as nothing was read")
-	}
-
-	// The controller's own delete of the pod, the event that follows every end.
+// One pod's end is read by the rule (capturePodEnd) whichever of two facts the informer delivers
+// first, a terminal status or a deletion timestamp, and the first event that shows the end decides
+// it. The two cases carry the same two facts and differ in their order alone. A pod the kubelet
+// failed with a reason outside the cluster's own — UnexpectedAdmissionError, a node refusing the
+// pod before it ran, which the roles of the next pod would meet again — is read neither way, and
+// the deletion that follows every end, the controller's, pod garbage collection's or an
+// operator's, leaves it so: read as an end from outside the pod, that failure would be continued
+// uncharged and relaunched for ever. A running pod deleted with no act of the daemon's behind it
+// is read as an end from outside it, and the terminal status the kubelet then gives it leaves it
+// so: read from that status, an eviction's delete would be charged a death.
+func TestAPodsEndIsObservedByTheRuleWhicheverOfItsTerminalStatusAndItsDeletionComesFirst(t *testing.T) {
+	const refused = "UnexpectedAdmissionError"
 	deleted := metav1.NewTime(rigNow)
-	g.update(g.pod(name), func(p *corev1.Pod) { p.DeletionTimestamp = &deleted })
-	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-		t.Fatal(err)
-	}
-	g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+	fail := func(p *corev1.Pod) { p.Status = endedPodStatus(refused) }
+	markDeleted := func(p *corev1.Pod) { p.DeletionTimestamp = &deleted }
+	for _, tc := range []struct {
+		name          string
+		first, second func(*corev1.Pod)
+		reading       runtime.PodEndReading
+		cause, reason string
+	}{
+		{name: "the terminal status first", first: fail, second: markDeleted,
+			cause: terminalWithNoClusterEnd, reason: refused},
+		{name: "the deletion of the running pod first", first: markDeleted, second: fail,
+			reading: runtime.PodEndNotOurs, cause: deletedByAnother},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := runningIssuePod(t)
+			name := SandboxName(workerToken)
+			wantRead := func(when string) {
+				t.Helper()
+				if end := g.podEndHeld(recorded); end.reading != tc.reading || end.cause != tc.cause || end.reason != tc.reason {
+					t.Fatalf("%s the pod's end reads %+v, want the reading %q from the words %q and the reason %q",
+						when, end, tc.reading, tc.cause, tc.reason)
+				}
+				if _, answered := g.r.podEndOf(recorded); answered != (tc.reading != "") {
+					t.Fatalf("%s the end was answered to a caller: %v, want %v; an end read neither way must read as nothing was read",
+						when, answered, tc.reading != "")
+				}
+			}
 
-	if end := g.podEndHeld(recorded); end.reading != "" {
-		t.Fatalf("the pod's end now reads %+v, want the first end event's reading of nothing: the delete that follows an end is no reading of its own", end)
-	}
-	obs := g.observed(rolesLocator(workerToken, recorded))
-	if obs.Kind != runtime.Gone || obs.PodEnd != "" {
-		t.Fatalf("observed %s PodEnd=%q (%s), want Gone read neither way, which the supervisor charges", obs.Kind, obs.PodEnd, obs.Detail)
-	}
-	if strings.Contains(obs.Detail, deletedByAnother) {
-		t.Errorf("the observation's detail is %q, want nothing of a deletion no act of the daemon's accounts for", obs.Detail)
+			g.update(g.pod(name), tc.first)
+			wantRead("after the first event,")
+
+			g.update(g.pod(name), tc.second)
+			g.eventually("the pod store to see both facts", func() bool {
+				pod := g.r.storedPod(name)
+				return pod != nil && terminal(pod) && pod.DeletionTimestamp != nil
+			})
+			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+				t.Fatal(err)
+			}
+			g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+			wantRead("after the second event and the informer's delete,")
+
+			obs := g.observed(rolesLocator(workerToken, recorded))
+			if obs.Kind != runtime.Gone || obs.PodEnd != tc.reading {
+				t.Fatalf("observed %s PodEnd=%q (%s), want Gone PodEnd=%q", obs.Kind, obs.PodEnd, obs.Detail, tc.reading)
+			}
+			if named := strings.Contains(obs.Detail, deletedByAnother); named != (tc.cause == deletedByAnother) {
+				t.Errorf("the observation's detail is %q; it names a deletion no act of the daemon's accounts for: %v, want %v",
+					obs.Detail, named, tc.cause == deletedByAnother)
+			}
+		})
 	}
 }
 
