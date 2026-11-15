@@ -1391,8 +1391,9 @@ jobs:
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
             # The reference rows' preview (dispatch-references): the eleven spec files
-            # dispatch://INFRA-1702's Verification document names, which dispatch-browser.yaml's
-            # `references` lane runs on Chromium, and what they test. Narrow on purpose: unlike
+            # dispatch://INFRA-1702's Verification document names and the nine of the reading
+            # list's walk, which dispatch-browser.yaml's `references` lane runs on Chromium, and
+            # what they test. Narrow on purpose: unlike
             # every gate's filter here it names less than its job reads (the Bun install, the
             # Dispatch server's whole closure, the rest of the dashboard, the e2e harness every
             # spec shares, this file). That job gates nothing, so a change this list misses loses
@@ -1425,6 +1426,10 @@ jobs:
               - 'packages/dispatch/e2e/refetch-budget.e2e.ts'
               - 'packages/dispatch/e2e/writing-surfaces.e2e.ts'
               - 'packages/dispatch/e2e/search.e2e.ts'
+              # The reading list's walk, one spec per world of surfaces (R9), and the world and
+              # check they share.
+              - 'packages/dispatch/e2e/reading-*.e2e.ts'
+              - 'packages/dispatch/e2e/reading-rows.ts'
               - 'packages/dispatch/e2e/reference-surfaces.ts'
               - 'packages/dispatch/e2e/search.ts'
               - 'packages/dispatch/e2e/writing-boxes.ts'
@@ -4863,11 +4868,12 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The reference rows' preview: every Chromium row of the eleven spec files
-  # dispatch://INFRA-1702's Verification document names, through dispatch-browser.yaml's
-  # `references` lane - its binaries job, its four shard legs and its merge job, and none of its
-  # alone, two-process, embedder or visual jobs. The pull-request lane above runs only the 5 of
-  # those 77 rows that carry `@pr`, so without this job a change to the reference framework got
-  # the other 72 from a run by hand.
+  # dispatch://INFRA-1702's Verification document names and the nine of the reading list's
+  # walk, through dispatch-browser.yaml's `references` lane - its binaries job, its four shard
+  # legs and its merge job, and none of its
+  # alone, two-process, embedder or visual jobs. The pull-request lane above runs only the few of
+  # those rows that carry `@pr`, so without this job a change to the reference framework got the
+  # rest from a run by hand.
   #
   # Outside ci-ok on purpose: CI_OK_EXEMPT names it, ci-ok does not need it, and it passes no
   # `ci-ok-changes`, so its merge job posts no ci-ok report. What a required check runs is the

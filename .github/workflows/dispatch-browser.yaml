@@ -18,7 +18,7 @@ name: Dispatch browser suite
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
 # run pay for the rest, each of which has the wall time for them. `references` runs the
 # `chromium` project over every row of the eleven spec files dispatch://INFRA-1702's
-# Verification document names, on the four shard machines and the merge job alone, so a pull
+# Verification document names and the nine of the reading list's walk, on the four shard machines and the merge job alone, so a pull
 # request that changes the reference framework gets those rows from CI at its head rather than
 # from a run by hand. It gates nothing: ci.yaml's head comment on the dispatch-references job
 # says why.
@@ -70,7 +70,7 @@ on:
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
           and the two stubbed projects, held to the rows tagged `@pr`; `full` for every
           project, the `-alone` ones and the two-process job among them, over every row; or
-          `references` for `chromium` alone, over every row of the eleven spec files the shard
+          `references` for `chromium` alone, over every row of the twenty spec files the shard
           job's browser step names, on the shard and merge jobs alone. The shard job reads it
           for the projects it runs; no job reads it for a
           browser to install any more, since the image the shard and alone jobs run in carries
@@ -594,7 +594,8 @@ jobs:
               ;;
             references)
               # The eleven spec files dispatch://INFRA-1702's Verification document names, and
-              # the one place they are written: ci.yaml's dispatch-references job runs them on
+              # the nine of the reading list's walk (e2e/reading-rows.ts), and the one place they
+              # are written: ci.yaml's dispatch-references job runs them on
               # a pull request that changes what they test, so that document's checks read CI
               # at the head rather than a run of an hour and a half by hand. Every Chromium row
               # of them, `@pr` or not, so no grep. Each is a Playwright file filter, a regular
@@ -608,7 +609,10 @@ jobs:
               lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts
               e2e/mention-reference.e2e.ts e2e/reference-kinds.e2e.ts e2e/reference-naming.e2e.ts
               e2e/reference-picker.e2e.ts e2e/reference-titles.e2e.ts e2e/refetch-budget.e2e.ts
-              e2e/writing-surfaces.e2e.ts e2e/search.e2e.ts"
+              e2e/writing-surfaces.e2e.ts e2e/search.e2e.ts
+              e2e/reading-agents.e2e.ts e2e/reading-answers.e2e.ts e2e/reading-broadcasts.e2e.ts
+              e2e/reading-conversation.e2e.ts e2e/reading-documents.e2e.ts e2e/reading-inbox-asks.e2e.ts
+              e2e/reading-inbox-threads.e2e.ts e2e/reading-pages.e2e.ts e2e/reading-references.e2e.ts"
               ;;
             *)
               echo "::error::lane must be pull-request, full or references, not '${{ inputs.lane }}'"

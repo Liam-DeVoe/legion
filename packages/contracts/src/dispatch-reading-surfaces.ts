@@ -116,10 +116,11 @@ const SETTINGS_REASON =
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
-  // resolution reason, or the body of a comment or a message.
+  // resolution reason, or the body of a comment or a message. The tab lists each event's line;
+  // its body is drawn once the event is pinned, in the margin's Pinned tab.
   {
     files: ["packages/dispatch/web/src/features/activity/EventBody.tsx"],
-    reach: "/issues/<ISSUE>/activity, an event's `.dispatch-markdown`",
+    reach: "/issues/<ISSUE>/activity, pin an event, then the margin's Pinned tab",
     record: true,
     rendered: true,
     surface: "activity-event-body",
@@ -177,7 +178,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/agents/BroadcastSends.tsx"],
-    reach: "/agents, the Writes indicator's broadcast send row",
+    reach: "/agents, the Sends strip's row for a send Dispatch refused",
     reason: `${BROADCAST_REASON} A send still queued has not reached the server at all.`,
     record: false,
     rendered: true,
@@ -355,11 +356,11 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "issue-decision",
   },
-  // A document's margin: the decision card, the pinned conversations, a suggestion's two sides
-  // and a thread's comments.
+  // A document's margin: the decision card and the pinned conversations, which an issue's page
+  // shows beside its spec, a suggestion's two sides and a thread's comments.
   {
     files: ["packages/dispatch/web/src/features/margin/DecisionCard.tsx"],
-    reach: "/projects/<PROJECT>/documents/<SLUG>, a margin decision card's passage",
+    reach: "/issues/<ISSUE>/spec, a margin decision card's passage",
     reason:
       "This is a passage of the issue's `decisions.md`, and the decisions view names that document by its address alone (`IssueDecisions.document`) - never by the artifact id a `TextSource` is - so no record reaches this surface. The Decisions panel draws the same passages with theirs (`issue-decision`).",
     record: false,
@@ -368,7 +369,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/margin/PinnedTab.tsx"],
-    reach: "/projects/<PROJECT>/documents/<SLUG>, the margin's Pinned tab",
+    reach: "/issues/<ISSUE>/conversation, pin a turn, then the margin's Pinned tab",
     record: true,
     rendered: true,
     surface: "margin-pinned-conversation",
