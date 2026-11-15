@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1248,12 +1249,26 @@ func TestAClockPassRemovesALockWhileAnotherGitRunsInTheContainer(t *testing.T) {
 		_ = stdin.Close()
 		_ = git.Wait()
 	})
-	// What the walk reads that process as, so a row whose git had already exited would fail here
-	// rather than pass for the wrong reason.
-	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(git.Process.Pid), "comm"))
-	if err != nil || strings.TrimSpace(string(comm)) != "git" {
-		t.Fatalf("the row's own git reads its comm as %q (%v)", comm, err)
-	}
+	// What the walk reads that process as. Start returns after the fork, and the child reads as
+	// this binary until it has run git, so the row waits for the comm to read git. A git that had
+	// already exited is a zombie until the cleanup's Wait, its state Z beside the same comm, which
+	// fails the row at once rather than letting it pass for the wrong reason.
+	proc := filepath.Join("/proc", strconv.Itoa(git.Process.Pid))
+	testwait.Until(t, "the row's own git to read its comm as git once it has run", func() (string, bool) {
+		comm, err := os.ReadFile(filepath.Join(proc, "comm"))
+		if err != nil {
+			t.Fatalf("the row's own git has no comm to read: %v", err)
+		}
+		stat, err := os.ReadFile(filepath.Join(proc, "stat"))
+		if err != nil {
+			t.Fatalf("the row's own git has no stat to read: %v", err)
+		}
+		// The state is the first field after the comm's closing parenthesis.
+		if state := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:])); len(state) > 0 && state[0] == "Z" {
+			t.Fatalf("the row's own git exited before the pass (comm %q)", comm)
+		}
+		return string(comm), strings.TrimSpace(string(comm)) == "git"
+	})
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, git.Process.Pid, os.Getpid()))
 	clockPass(t, s)
