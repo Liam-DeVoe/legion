@@ -30,7 +30,7 @@ Its paths are held to the docs filter below.
 
 A new job joins the router in seven places:
 a filter in `changes` that names every file the job reads, an output of `changes` for that filter, the job's `needs: changes` and an `if:` on that output carrying the term that skips it on a re-run attempt of a merge-group run (the comment above `changes` says why every job needs its own), an entry in CI_OK_SELECTED_BY (this file's env) mapping the job to that output (and in CI_OK_PULL_REQUEST_ONLY when its `if:` admits only pull_request), the ci-ok-report step as the job's last step (a job that calls a workflow passes `ci-ok-changes` to it, and that workflow's job ends with the step, as docs-site.yaml's and worker-image.yaml's do), the job's id in the ci-ok job's `needs:`, without which the verdict is reached before that job ends and says nothing about it, and a gate in .github/scripts/ci_job_reads.py.
-An output an event must force is written in `changes`' outputs rather than left to its filter, as every output's workflow_dispatch case is, and so is one an event must hold back, as the eight slow suites' pull-request case is (the comment on them below).
+An output an event must force is written in `changes`' outputs rather than left to its filter, as every output's workflow_dispatch case is, and so is one an event must hold back, as the nine slow suites' pull-request case is (the comment on them below).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate, CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and `pr-title`:
 each of those two is named for a check main's ruleset requires, where a skip is a passing required check, so each refuses such an attempt in a step of its own instead.
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
@@ -91,6 +91,16 @@ packages/daemon 81 s, packages/envoy 77 s, each on an empty module cache on 2026
 That last bound is the tightest of the four against its measurement, and it is the one that can afford to be:
 an attempt its bound kills leaves what it fetched in the module cache and the next attempt resumes from there, so a `go mod download` heals itself across a retry where a tarball fetch starts its bytes over.
 Every other bound is derived from its own step's measured maximum and names it beside the call.
+The test job's tmux install retries both apt phases through .github/scripts/ci-retry.sh, in e2e.yaml's spelling for the same runner image and the same indexes: five attempts, the last starting 150 s after the first.
+What bounds an attempt is the inner `sudo timeout`, not `timeout sudo`, so the signal reaches apt-get itself rather than a sudo holding it;
+retry_fetch's own bound sits five seconds above it and backstops the sudo alone.
+90 s for the index read and 120 s for one package of a few megabytes, both derived in .github/workflows/e2e.yaml's own apt step, which names the jobs those rates were measured in;
+that derivation was .github/scripts/playwright-install.sh's head until the browser suite moved into an image this repository builds and took the script with it (cybermonklabs/legion#2938), and e2e.yaml is where it lives now.
+The tmux step cites it rather than repeating it.
+The unpack after the download takes no network and stays bare, so an attempt the bound kills never stops a dpkg run part way.
+The index read carries `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the command instead of warning and exiting 0:
+without it retry_fetch has nothing to retry.
+.github/scripts/check-download-retry.sh's rule 5 is the whole reason.
 A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a bound:
 each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families this note's Caches section lists, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
@@ -100,13 +110,19 @@ download-retry runs each of those sites — a curl of a release asset, `mise ins
 download-retry-images does the same for the inline retries of the three Dockerfiles.
 Their filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose own downloads run under that fault, and nothing those downloads read:
 a manifest, a lockfile, a pin or a module file moves what comes down the wire, not whether it survives a faulting host, so a change that touches none of those files selects neither job.
+So the download_retry filter holds no bun_install and no go_workspace anchor, no pin and no worker Dockerfile:
+each of those is what an ordinary change touches, and a filter holding them would select a job of about two hours on every dependency bump.
+The job that proves a version is the one that builds with it.
 Both filters also name this file, because the two jobs' own steps, bounds and budgets are written here:
 a change that touches ci.yaml at all selects both of them, and that pull request's run waits for the lane, about two hours of it, however small the edit.
 That cost is taken on purpose, so that a change to a bound or a budget is proved against the fault by the run that makes it.
 Neither job runs in a merge group, whatever the change touches
-— the `changes` job's two outputs for them are 'false' there, and the comment above them says why a skip has to come from the output rather than from the job's `if:`.
-A queue that waited for download-retry's two hours would hold every group behind it that long;
+— the `changes` job's two outputs for them are 'false' there.
+download-retry took 116.5 minutes at this branch's head, and a queue that waited for download-retry's two hours would hold every group behind it that long;
 the pull request's own run proves the machinery, on the same files the group merges.
+The event test is in those two outputs rather than in either job's `if:` because an `if:` that declines a merge group leaves the job selected and skipped, and .github/scripts/ci-ok.sh:122 fails a selected job whose result is not success
+— :99 reads that skip as a disagreement between the filter and the `if:` the author must fix.
+Only :124 admits a skip, and only for a job `changes` did not select, which is what 'false' there makes these two.
 
 ## The Budgets note
 
@@ -212,6 +228,13 @@ What a run that does exhaust those ladders ends on is that step's own budget, an
 the ladder's per-attempt bound is the row's `max_time`, a variable it cannot read, so its DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl` writes what one call of that helper costs, 1281 s, and the passes of a loop it cannot count are not multiplied into it.
 The step below carries the next whole minute above that figure, and the nine requests a row really makes are why this job's ceiling is not raised to meet them.
 
+The package step's own budget, and with it the job's ceiling, are held by hand in `.github/workflows/ci.yaml`, because .github/scripts/check-download-retry.sh prices none of that step's reads:
+those reads are urllib's and subprocess's, inside the Python that .github/scripts/check-ci-images.sh runs, and rule 8 puts a figure on no Python at all.
+Its rule 6 does read a `urlopen` written in a heredoc of a `.sh` under .github/scripts, which is what holds these reads to the floor.
+Python anywhere else
+— a `.py` file, or a heredoc in a workflow's or an action's `run:`
+— is read by no rule of that check, the floor included.
+
 ## The tool-fallback-arm job
 
 The same two halves of the Bun install, proved again on an arm64 runner. .github/actions/setup-bun's bun-second-source step selects a row from `uname -m` — `bun-linux-aarch64` here
@@ -233,6 +256,33 @@ The `tool_fallback` filter selects this job, as it selects that one:
 both drive the same action over the same manifest through the same helper, so one filter decides both and neither can drift from the other.
 CI_OK_SELECTED_BY maps this job to that filter, and .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
 It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job fills, so it has no reason to wait for that job as tool-fallback does.
+
+The budget its key carries is added up from the slowest run this job can have rather than copied from another job:
+the checkout and the runner's download of the actions (1), the healthy install of the 34 MB release zip (2), the fault and its probe, whose two requests are bounded at 15 s each (1), the faulted install
+— oven-sh/setup-bun's own download against a proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, whose `--retry-max-time 300` allows new attempts for five minutes, then takes the last 64 s wait a decision made just under that limit still sleeps, and then one last attempt of the row's `max_time` 60 s: 424 s at worst, written as 427 s, the ceiling the fetch helper ci-tools.sh derives in its block on that option (8)
+— the 107 MB npm tarball, its gunzip and the write (3), the two readings, each a sha256 of that binary (2), the report step (1), and the machine watch's start and its report (1).
+That is 19 minutes, 1140 s, and this job's unretried term;
+a job its own limit cuts off reports `cancelled`, which ci-ok fails.
+That ladder was (5) at the 120 s bound this change replaced, where it was 247 s, and the term was 16 minutes.
+The comment above the job's key in `.github/workflows/ci.yaml` adds the job's slowest retried step to that term.
+
+Measured, this job sits far inside the 62 minutes its key carries, and the ladder those 427 s allow for is not driven in the runs measured.
+In five green runs on 2026-11-10 it took 41 s, 41 s, 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
+The reason is the shape of this job's faulted install.
+It reads ci_tools_fetch_fallback (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does not try is fetched by oven-sh/setup-bun, a Node action that calls no curl.
+The one fetch the helper makes here is of npm, which answers.
+In the step list of job 129743510021 one step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
+The 427 s above stay as the headroom of the run where npm does not answer at once.
+This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
+a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs drive no such ladder, must not move.
+What moves here is the ceiling and not the measurement:
+15 minutes stood under this job's own slowest retried step, so the job would have cut that step before it could name its fetch (dispatch://INFRA-1545).
+
+Each of the job's two install steps declares `timeout-minutes: 43`, its own `ci_tools_fetch` arithmetic of 2562 s with the whole minute that figure takes.
+Neither carries `continue-on-error`, so a held install here is loud by itself:
+the bound fails the job, the steps after it are skipped, and the job uploads its log.
+The job's own limit reaches that install first only when the steps before it took more than about sixteen minutes, which the 41 s to 50 s measured above says they do not.
+The reading either way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give and why their clock exists.
 
 ## The dispatch-browser job's two lanes
 
@@ -339,7 +389,49 @@ The stall half's reports hold that cleaning to account — a site that fetched n
 No matrix, though two lanes would halve the wall time:
 ci-ok's report is one artifact per job id (`ci-ok-<job>-<run attempt>-<status>`, .github/actions/ci-ok-report), so two lanes would upload one name twice, and ci-ok.sh refuses a reported job CI_OK_SELECTED_BY does not map, which a lane's name can never be (check-ci-filters.sh holds that map to ci.yaml's jobs).
 
+The recover half of the job's derivation moved from 3640 s to 6740 s in round 30, when its arms were priced at the ladder their retry guarantees rather than at two bounds.
+THE JOB'S KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that 221 came from 11310 + 1932 = 13242 s
+— the measured term before the stall arm's budget grew by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to 1281 s.
+The lane is the one job whose cancellation this whole issue exists to prevent, and its derivation is written above the job's id in `.github/workflows/ci.yaml` rather than above its key.
+Rule 8 reads it there since round 35, from the block that prices that key, and refuses a key that does not strictly exceed the sum that block states;
+it also refuses any job holding a retried step whose comments price none.
+
+Each site's budget in that job carries 20 s more than it did before the probe:
+`report` measures a site from the moment its proxy started, and the probe's two requests are made between the two, each bounded at 10 s by the rig's PROBE_BOUND.
+Only a stalling fault spends a whole bound
+— a 504 and the proxy's own 502 are both immediate
+— but the term is the bound either way, since what a budget may not do is depend on the fault answering quickly.
+
+A recover site's budget is the ladder its own retry guarantees, the same figure its stall twin carries:
+every attempt at its bound, the sleeps between them, the probe and a minute.
+THE RECOVER ARM CHECKS THAT THE RETRY RECOVERS - the step succeeds through the fault - AND NOT HOW FAST A SITE RECOVERS, nor that each attempt holds its bound, which the stall arms check.
+Its report also holds the step's time to this budget, and in six of the seven arms that can never fire:
+the faulted step's own `timeout-minutes` and the 20 s probe come to no more than the budget (install-omp 500 s against 530 s; install-claude-code, the workspace install and the Go download 1100 s against 1130 s; Playwright 1700 s against 1730 s; the gh read 380 s against 380 s), so the step's own key ends it first.
+Only install-changie's 22 minutes, 1340 s with the probe, can run past its 710 s.
+
+The rule the recover arms' budgets were written to until round 30 of dispatch://INFRA-1545 was that an attempt in flight when the window closes runs to its bound and the next one succeeds, so each carried two bounds.
+Two readings of the workspace install broke it:
+250 s at round 29's head, one hung attempt more than that model allows, and 616 s in run 43357362345, where attempts 1, 2 and 3 each reached their 180 s bound
+— attempts 2 and 3 having started after the fault had cleared, on a healthy network
+— and attempt 4 installed.
+The step succeeded both times, so the retry held; what was false was the arm's model of recovery.
+All seven recover arms carried that rule, and each now carries its stall twin's budget.
+
+Each stall site ends at its own bound instead of hanging: five attempts of the helper's loop, or curl's eight, and then the step fails.
+The floor is what the sleeps between the attempts cost on their own (10 + 20 + 40 + 80 for the helper, curl's 127 for its eight), so a step that ended under it did not make its attempts;
+the budget is the attempts at their bounds plus those sleeps plus the probe's two bounded requests plus a minute, so a step that ended over it did not hold its bounds.
+The probe is in the budget because `report` measures a site from the moment its proxy started, and the probe is made between the two;
+under the stalling fault its faulted request spends its whole 10 s bound, which is the reading
+— a host that answers at once is the proxy bypassed.
+
 ## The ten stalls of install-changie
+
+Ten stalls, and they are TWO LADDERS OF FIVE rather than one ladder of ten:
+install-changie fetches through `ci_tools_fetch`, which reads the release asset first and the copy in the package second, and the stalling fault meets both halves (the asset on github.com, the blob behind ghcr.io's redirect to pkg-containers.githubusercontent.com, faulted by suffix in .github/scripts/ci-fault-proxy.py).
+Against a host that spends every attempt's whole bound each ladder is five attempts, at 0, 62, 124, 188 and 256 s, the set .github/scripts/ci-tools.sh's own block derives;
+against the RECOVERING fault an attempt ends the instant the proxy answers, so all eight are made, which is what the recovering arm reads.
+THE STEP'S ASSERTIONS ARE READ FROM THIS BRANCH'S OWN RUN, not the 120 s bound's:
+ten reaches from +15 s to +586 s and 646 s of step (run 43202546798, job 131129681795), against a floor of 640 s and the budget its own rule's 710 s.
 
 640 s is the mechanism's own minimum and not a measurement, which is why it sits a few seconds under the readings and is no timing bet.
 Every term of it is a bound this fault forces to be spent in full - the probe's faulted request to its 10 s PROBE_BOUND, then each stalled attempt to its `max_time` and each wait between them - so the floor is 10 + 2 x (5 x 60 + 15) s:
@@ -415,6 +507,25 @@ The host this route has to use is api.github.com, which the merge-base drive sho
 These three are the hosts this issue's check names.
 The last step's tally of what the proxy passed through is where every other host the installs reach shows.
 
+## The pi-legion job's ceiling
+
+The budget, added up part by part from the slowest run the pi-legion job can have rather than copied from another job:
+the job's set-up with the NATS service started and the checkout (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the workspace install and contracts' build (14), the lint and the typecheck (16), the test step (708), the pack, the upload and the ci-ok report (4), the post steps with the containers stopped (5), and the seconds the job's own clock holds over the sum of its steps (5).
+That is 804 s, 13 m 24 s, the floor a ceiling here has to clear.
+The test step is added up from its rows at their slowest over the four most recent runs of the whole suite rather than from one total:
+legion-stall-watchdog 232 s, controller-start 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-commit-trailers 62 s, legion-session-activity 28 s, daemon-pane 21 s and legion-role-tools 11 s are 682 of the 708, and the 25 rows left the other 26.
+The 62 s of legion-commit-trailers is the slowest of three runs of the file in a Legion pod on 2026-11-14 (26 s, 30 s and 62 s, the last with other work on the pod), before a CI run measured it.
+The stall watchdog's suites among them are cybermonklabs/legion#2922's, merged 2026-11-08T18:46:47Z, and the 10 minutes that stood on the job's key came from #2512 (a limit above each job's slowest green run, 2026-10-30), which is before them.
+A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job concluded `success`.
+A ceiling a little above today's sum is back inside the test step's own spread at the next file that lands:
+five stall-watchdog files and two model-fallback files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
+The key carried 43 rather than the next minute above today's sum: #2918 (dispatch://INFRA-1545) makes install-jj retry on a 3012 s ladder and gates a job's ceiling above its slowest retried step, so that ladder and not this suite is what decides the key.
+The 2 s above is a cold-Bun figure, measured before this branch:
+it is the release asset setup-bun downloaded when its own cache was the only one and no-cache held it off every ref but main.
+This branch restores ~/.bun/bin from a key of its own on every ref, so a pull request's run and a merge group's both start from a hit where main saved one, which moves that term down rather than up.
+dispatch://INFRA-2125 shortens the suite and is the fix; the job's key is the stopgap.
+The two terms that key carries are derived in the comment above it in `.github/workflows/ci.yaml`.
+
 ## The merge queue's cancel act
 
 The merge queue's cancel act.
@@ -483,6 +594,11 @@ That failure names the remedy — marking the pull request ready for review star
 `checks: write` and nothing else: the verdict step makes no GitHub call, and the step after it reads this head's ci-ok check runs and PATCHes them with that scope.
 The checkout needs no `contents: read`, as `cancel-started`'s does not
 — this repository is public, and GitHub serves a public repository's git data to any valid token.
+
+The budget of the step after the verdict, which sets every other ci-ok on the head to this job's conclusion, matters more than most.
+ci-ok-reconcile.sh's own header says a refused PATCH only warns, because failing that step would turn a passing verdict red;
+a step the runner cuts does exactly that, since a cut step fails this job and ci-ok is the check main's ruleset requires.
+So that step's figure is written for the head it can meet rather than for the one it usually meets.
 
 ## The size a workflow file may be
 
@@ -560,6 +676,29 @@ What one ladder costs, and how it is derived, is in the comment above ci_tools_c
 What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the one case that still drives the real ladder measured 63 s inside it, at the 60 s bound those jobs ran under. #3470 set this limit to 22 minutes on those durations alone, and a measured duration is only the first term of the rule below:
 the second is the job's slowest retried step, which at 22 minutes would be cut before it could name its fetch - the gate refuses that job six ways, naming `bun-second-source`'s ladder, 2 x 1281 = 2562 s at this change's bound, against 1320 s.
 So the durations above stand and the limit does not (dispatch://INFRA-1545).
+
+The rule every other budget of `.github/workflows/ci.yaml` is written to (the Budgets note)
+— a job carries its measured duration plus the arithmetic of its single slowest retried step
+— is not what the tool-fallback job's key holds:
+the job's 28.7-minute run, job 129478173535, is 1722 s, and 1722 s and the staging step's 5124 s come to 6846 s, 6 s over the 6840 s of 114 minutes.
+The key is the construction this section gives, and what keeps the job's retried steps diagnosable is their position, which the paragraph after this one gives.
+The slowest retried step there is the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either setup-bun step's 2562 s, the blob read's 2015 s and the ci-ok report's 600 s.
+The three minutes of steps this section counts for the job are all that runs before it
+— measured at 0.3 minutes in job 129478173535, a 28.7-minute run of the job
+— so a staging step that spends its whole ladder ends on its own budget at about 86 minutes with the job's limit unspent, and that step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
+
+THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the arithmetic above does not give it.
+A retried step is diagnosable only where its whole ladder fits before the job's limit, so a step whose ladder is N minutes has to START before minute 114 - N:
+the staging step's 5124 s needs to begin before minute 28, and a 22-minute install starting after minute 92 would be cut by the limit and would report GitHub's bare line rather than its own.
+What keeps every retried step of the tool-fallback job diagnosable is that the long ones run early:
+the staging step first, and no retried step of job 129478173535 reached past 41.6 minutes.
+A step added late with a ladder of its own has to be read against the job's limit rather than assumed safe by it.
+
+THE STAGING STEP'S BUDGET IS HELD BY HAND AND NO CHECK REFUSES IT, which is worth its own sentence:
+rule 8 prices that step at one `ci_tools_fetch` of 1281 s, far under its key, because it reads a call of ci_tools_fetch as a call of that function and not as a call of the file defining it, so the loop around this one is not multiplied
+— the miscount list in .github/scripts/check-download-retry.sh says so where the reading is described.
+At the 120 s bound this change replaced, the same derivation gave twelve ladders of 247 s, 2964 s, and that step's key read 50;
+nothing but the bound moved it, and test round 39 of dispatch://INFRA-1545 is what found it standing 36 minutes under its own worst case.
 
 ## What the tool-fallback job's eleven-minute installs are derived from
 
