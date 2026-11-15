@@ -51,6 +51,8 @@ var classesDerived = map[string]string{
 	"StallLimits.CallBound":        "read from the daemon's own environment: LEGION_STALL_CALL_BOUND_MS",
 	"StallLimits.CallGrace":        "read from the daemon's own environment: LEGION_STALL_CALL_GRACE_MS",
 	"StallLimits.Step":             "read from the daemon's own environment: LEGION_STALL_STEP_MS",
+	"Variant.ConfigFilesField":     "derived: the key an arm's config_files were written under, which Project.ExperimentsDeclared fills as it builds the declared list and no key of the file writes",
+	"Variant.MemoryBlock":          "derived: whether the arm is the `memory` block's own, which Project.ExperimentsDeclared sets as it maps the block in and no key of the file writes",
 }
 
 // Every exported field of every struct the walk reaches is in the class table or in
@@ -172,24 +174,12 @@ func TestPathsIsTheSortedCensus(t *testing.T) {
 	}
 }
 
-// loaderTopLevelKeys is every top-level key readKeys reads, read from the loader's own tables and
-// from the source of its switch, so a key added there with no class fails this test.
+// loaderTopLevelKeys is every top-level key readKeys reads, read from the key table it dispatches
+// every key through (topLevelKeys), so a key added there with no class fails this test.
 func loaderTopLevelKeys() []string {
-	keys := []string{
-		"project", "bind", "advertise_host", "postgres_dsn", "state_dir", "port", "admission_cap",
-		"runtime", "daemon_url", "omp_invocation", "omp_launch_prefix", "provider_keys",
-		"instructions", "worker_stream_port", "operator_token_file", "envoy_url", "nats_urls",
-		"envoy_token_file", "nats_nkey_seed_file", "nats_daemon_nkey_seed_file", "dispatch_url",
-		"dispatch_token_file", "projects", "gates", "github_apps", "linger_hours",
-		"production_check_hours", "pod_update_grace_minutes",
-		"review_round_cap", "controller", "capabilities", "worker_backends",
-		"role_config_files", repositoryRenamesKey, hooksKey,
-	}
-	for _, duration := range durationKeys {
-		keys = append(keys, duration.key)
-	}
-	for _, count := range countKeys {
-		keys = append(keys, count.key)
+	keys := make([]string, 0, len(topLevelKeys))
+	for _, row := range topLevelKeys {
+		keys = append(keys, row.Name)
 	}
 	return keys
 }
@@ -232,11 +222,12 @@ func TestClassOfReadsTheTemplatedPaths(t *testing.T) {
 // project token, the runtime the daemon's processes run in), or a value boot settled into
 // something the daemon never builds again (the idle release, in the workflow's idle pass and the
 // outbox's backstop; a project's memory mode and instructions, in admission, the API server and
-// the launch specs; the wake pacing, in the one limiter the engine and every machine reserve
-// from; whether the daemon launches its controller, in the keeper and the API; the review App,
-// whose login the engine and the review checks judge by). A new fixed path belongs in this list
-// deliberately, with a reason an operator can act on: the alternative is a key the route answers
-// `rebuilt` for and that reaches nothing.
+// the launch specs; a project's experiments, in admission, the workflow engine, the API server and
+// the copies boot makes of their instructions; the wake pacing, in the one limiter the engine and
+// every machine reserve from; whether the daemon launches its controller, in the keeper and the
+// API; the review App, whose login the engine and the review checks judge by). A new fixed path
+// belongs in this list deliberately, with a reason an operator can act on: the alternative is a
+// key the route answers `rebuilt` for and that reaches nothing.
 func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 	var fixed []string
 	for _, row := range Classes {
@@ -252,7 +243,13 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 		"github_apps.review.token_command", "hooks", "hooks[].every", "hooks[].moves", "hooks[].name", "hooks[].on",
 		"hooks[].prompt", "hooks[].prompt_file", "hooks[].roles",
 		"pod_update_grace_minutes", "pod_update_max_open_rounds", "pod_update_rounds_per_minute", "port",
-		"postgres_dsn", "project", "projects.<KEY>.memory",
+		"postgres_dsn", "project", "projects.<KEY>.experiments", "projects.<KEY>.experiments.<NAME>",
+		"projects.<KEY>.experiments.<NAME>.mode", "projects.<KEY>.experiments.<NAME>.on_variant",
+		"projects.<KEY>.experiments.<NAME>.unit", "projects.<KEY>.experiments.<NAME>.variants",
+		"projects.<KEY>.experiments.<NAME>.variants[].config_files",
+		"projects.<KEY>.experiments.<NAME>.variants[].instructions",
+		"projects.<KEY>.experiments.<NAME>.variants[].name",
+		"projects.<KEY>.experiments.<NAME>.variants[].weight", "projects.<KEY>.memory",
 		"projects.<KEY>.memory.instructions", "projects.<KEY>.memory.mode", "runtime",
 		"runtime.kubernetes", "runtime.kubernetes.idle_release",
 		"runtime.kubernetes.idle_release.backstop_minutes",

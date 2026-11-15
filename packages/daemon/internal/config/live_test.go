@@ -1233,7 +1233,7 @@ func TestAMemoryChangeInsideTheProjectsBlockIsRefusedByName(t *testing.T) {
 			name: "mode", path: "projects.DEMO.memory.mode",
 			block:        `{memory: {mode: "on", config_files: [/etc/legion/memory.json]}}`,
 			blockOverlay: map[string]any{"mode": "on", "config_files": []any{"/etc/legion/memory.json"}},
-			moved:        func(m Memory) bool { return m.Word() != MemoryOff },
+			moved:        func(m Memory) bool { return m.Word() != ExperimentOff },
 		},
 		{
 			name: "instructions", path: "projects.DEMO.memory.instructions",
@@ -1354,7 +1354,7 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			// dropped block does: its overlays, its trailer repositories and its production
 			// check are the operator's to drop. PLAIN, whose entry holds no fixed member that
 			// moved, stays dropped.
-			want: Project{Memory: Memory{Mode: MemoryOn, InstructionsPath: instructions}},
+			want: Project{Memory: Memory{Mode: ExperimentOn, InstructionsPath: instructions}},
 			gone: []string{"PLAIN"},
 		},
 		{
@@ -1369,7 +1369,7 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			// are dropped.
 			want: Project{
 				CommitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/gadgets")},
-				Memory:                  Memory{Mode: MemoryOn, InstructionsPath: instructions},
+				Memory:                  Memory{Mode: ExperimentOn, InstructionsPath: instructions},
 				ProductionCheck:         "tester",
 			},
 		},
@@ -1391,7 +1391,7 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			reading: projectsFile(`  OTHER: {memory: {mode: "on", config_files: [` + overlay + "]}}\n"),
 			refused: []Refusal{{Path: "projects.OTHER.memory.mode", Reason: whyMemory}},
 			want: Project{
-				Memory:          Memory{Mode: MemoryOff, ConfigFiles: []string{overlay}},
+				Memory:          Memory{Mode: ExperimentOff, ConfigFiles: []string{overlay}},
 				ProductionCheck: "tester",
 			},
 		},

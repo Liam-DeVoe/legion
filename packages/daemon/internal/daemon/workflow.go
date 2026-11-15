@@ -465,14 +465,22 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 		return nil, err
 	}
 	// The hook list is no decision-class value either, and it is built once, here, from the
-	// configuration the daemon booted on, as the project's memory block below is read once
-	// (admission's UseMemory). `hooks` is fixed for the process (config's whyHooks), and the
-	// words of a hook that names a `prompt_file` are in no configuration at all: boot read them
-	// into hookPrompts, keyed by hook name, and nothing reads such a file again. Built at every
-	// decision from the settings holder instead, a file reload that added, renamed or repointed
-	// a hook would put that hook in front of the roles it names with no words at all — which is
-	// what the loader refuses a hook written that way at boot (config's readHook).
+	// configuration the daemon booted on, as the project's declared experiments below are read
+	// once. `hooks` is fixed for the process (config's whyHooks), and the words of a hook that
+	// names a `prompt_file` are in no configuration at all: boot read them into hookPrompts, keyed
+	// by hook name, and nothing reads such a file again. Built at every decision from the
+	// settings holder instead, a file reload that added, renamed or repointed a hook would put
+	// that hook in front of the roles it names with no words at all — which is what the loader
+	// refuses a hook written that way at boot (config's readHook).
 	hooks := engineHooks(cfg.Hooks, hookPrompts)
+	// The project's declared experiments decide what each unit the engine and admission record
+	// is drawn for. A project whose file writes neither the `memory` block nor an `experiments`
+	// key declares the memory experiment all the same, at mode off, whose draw records each new
+	// tree at no variant (config.Project.ExperimentsDeclared). The list is read once, here, as
+	// the hooks are: the `experiments` key and the `memory` block's mode are fixed for the
+	// process (config's whyExperim and whyMemory), so a decision composed from the settings
+	// holder would read the same list again at every fact.
+	experiments := cfg.ExperimentsDeclared()
 	// Every decision-class value the engine and admission read — the review round cap, the
 	// linger, the production-check bound, the design gate, the admission cap — is read as the
 	// decision is made, from the settings holder, and never copied into either: each is built on
@@ -488,6 +496,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 		// a hook with no words at all. The settle pins `hooks` back to the list boot read
 		// (config's pinFixed), which makes this line a second defence rather than the only one.
 		settings.Hooks = hooks
+		settings.Experiments = experiments
 		// The one wake the engine causes is the catch-up a start writes in place of a launch
 		// (workflow's claimReady), and it is paced with the launches it stands among. A
 		// deployment that paces nothing passes no reserve at all, which is the pacing off: the
@@ -496,9 +505,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 		return settings
 	}, log)
 	w.admission = admit.NewReading(w.records, w.engine, func() int { return live.Snapshot().AdmissionCap }, cfg.Project, log)
-	// The project's `memory` block decides what each tree admission opens is drawn: a project the
-	// file names no entry for is the zero block, which is off.
-	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	w.admission.UseExperiments(experiments)
 	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
 	// has stopped at: the loader gives six hours to a file that names no key, so the pass
 	// always runs under a number somebody chose.
@@ -622,7 +629,9 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // login from its boot lease: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none). The daemon composes it at every decision, from the
 // settings holder's configuration as it stands then, so a live change of any key it reads here
-// reaches the next decision.
+// reaches the next decision. Its own project's declared experiments, which each issue the engine
+// records is drawn for, are no key it reads here: they are fixed for the process, and openWorkflow
+// hands the engine the list boot read.
 //
 // `project` is the one key here no change reaches: it is fixed for the process — every claim,
 // every record and the daemon's own registry entry are named by it — and the snapshot carries

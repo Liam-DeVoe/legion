@@ -39,7 +39,7 @@ func launchFixture() *config.Config {
 		// pod's launch reads (podLaunchPath, issueLaunchPaths).
 		Projects: map[string]config.Project{"LEGION": {
 			CommitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
-			Memory:                  config.Memory{Mode: config.MemoryOn, ConfigFiles: []string{"/etc/legion-operator/memory.yml"}},
+			Memory:                  config.Memory{Mode: config.ExperimentOn, ConfigFiles: []string{"/etc/legion-operator/memory.yml"}},
 		}},
 		Runtime: config.Runtime{
 			Name: "kubernetes",
@@ -516,7 +516,7 @@ func TestALaunchKeyOfAProjectDriftsTheIssuePod(t *testing.T) {
 		cfg := launchFixture()
 		cfg.Projects = map[string]config.Project{"LEGION": {
 			CommitIssueTrailerRepos: trailer,
-			Memory:                  config.Memory{Mode: config.MemoryOn, ConfigFiles: overlays},
+			Memory:                  config.Memory{Mode: config.ExperimentOn, ConfigFiles: overlays},
 		}}
 		return cfg
 	}

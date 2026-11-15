@@ -168,6 +168,7 @@ const (
 	whyTakeOve  = "it is read once at boot, when the daemon adopts the claims of the tmux server it takes over; a later change has nothing left to adopt"
 	whyIdleRel  = "the idle release is settled at boot into the workflow's idle pass and the outbox's backstop, and the daemon builds neither again: a change of it reaches the next boot and nothing before it"
 	whyMemory   = "a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn"
+	whyExperim  = "each unit is drawn once, as the daemon opens a tree or first records an issue, under the experiments admission, the workflow engine and the API server were given at boot, and each arm's instructions are copied into the state directory at boot, where every launch reads them: a change of any of them reaches the next boot and no unit already drawn"
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
 	whyPodGrace = "an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role a round asks within one boot is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
@@ -436,10 +437,10 @@ var Classes = []Row{
 	// running on and a pod launched on the old one is compared against the new.
 	//
 	// It is the one keyed row: the file names the entries itself, and the walk and the pin of
-	// the fixed paths descend into them, project by project, so the two fixed rows below
-	// (`memory.mode` and `memory.instructions`) are pinned and refused under the key the file
-	// chose while every other member of the entry settles under its own class (live.go's
-	// pinKeyed).
+	// the fixed paths descend into them, project by project, so the fixed rows below
+	// (`memory.mode`, `memory.instructions` and `experiments`) are pinned and refused under the
+	// key the file chose while every other member of the entry settles under its own class
+	// (live.go's pinKeyed).
 	{Field: "Config.Projects", Path: "projects", Class: ClassRebuild, Holder: HolderLaunchSpecs,
 		Also: []string{HolderRuntime}, Keyed: true},
 	{Field: "Project.SlackChannels", Path: "projects.<KEY>.slack_channels", Class: ClassRebuild, Holder: HolderLaunchSpecs,
@@ -463,15 +464,34 @@ var Classes = []Row{
 	{Field: "Project.ProductionCheck", Path: "projects.<KEY>.production_check", Class: ClassDecision},
 	// The project's memory block: the overlays a memory-group role's Oh My Pi loads reach that
 	// role at its next launch, through the runtime that builds its pod (sandboxOptions'
-	// MemoryConfigFiles) and records the daemon's own project's overlays in each issue pod's
-	// launch settings (runtime/sandbox's LaunchSettings), while the mode and the instructions are
-	// settled at boot — admission draws each tree it opens under the mode it was given, the API
-	// server's own spawn reads that same value, and the instructions file is read once into the
-	// launch specs.
+	// ExperimentVariants, which carries the block's own arm) and records the daemon's own
+	// project's overlays in each issue pod's launch settings (runtime/sandbox's LaunchSettings),
+	// while the mode and the instructions are settled at boot — admission draws each tree it
+	// opens under the mode it was given, the API server's own spawn reads that same value, and
+	// the instructions file is copied once into the state directory the launch specs read it
+	// from.
 	{Field: "Project.Memory", Path: "projects.<KEY>.memory", Class: ClassFixed, Why: whyMemory, Block: true},
 	{Field: "Memory.Mode", Path: "projects.<KEY>.memory.mode", Class: ClassFixed, Why: whyMemory},
 	{Field: "Memory.ConfigFiles", Path: "projects.<KEY>.memory.config_files", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Memory.InstructionsPath", Path: "projects.<KEY>.memory.instructions", Class: ClassFixed, Why: whyMemory},
+	// The project's declared experiments beside the block (Project.ExperimentsDeclared, which
+	// maps the block in as the experiment named memory): admission draws each tree it opens, the
+	// workflow engine each issue it first records and the API server's own spawn each tree it
+	// opens, all under the list each was handed at boot (internal/daemon's openWorkflow and
+	// serve), and boot copies every arm's instructions into the state directory once, which is
+	// where a launch reads them from (experiment.Launch). So the whole key is settled at boot, as
+	// `hooks` is: the list is one value the walk compares whole, and the rows of its members
+	// below are what ClassOf answers a caller that names one.
+	{Field: "Project.Experiments", Path: "projects.<KEY>.experiments", Class: ClassFixed, Why: whyExperim},
+	{Field: "Experiment.Name", Path: "projects.<KEY>.experiments.<NAME>", Class: ClassFixed, Why: whyExperim},
+	{Field: "Experiment.Mode", Path: "projects.<KEY>.experiments.<NAME>.mode", Class: ClassFixed, Why: whyExperim},
+	{Field: "Experiment.Unit", Path: "projects.<KEY>.experiments.<NAME>.unit", Class: ClassFixed, Why: whyExperim},
+	{Field: "Experiment.OnVariant", Path: "projects.<KEY>.experiments.<NAME>.on_variant", Class: ClassFixed, Why: whyExperim},
+	{Field: "Experiment.Variants", Path: "projects.<KEY>.experiments.<NAME>.variants", Class: ClassFixed, Why: whyExperim},
+	{Field: "Variant.Name", Path: "projects.<KEY>.experiments.<NAME>.variants[].name", Class: ClassFixed, Why: whyExperim},
+	{Field: "Variant.Weight", Path: "projects.<KEY>.experiments.<NAME>.variants[].weight", Class: ClassFixed, Why: whyExperim},
+	{Field: "Variant.ConfigFiles", Path: "projects.<KEY>.experiments.<NAME>.variants[].config_files", Class: ClassFixed, Why: whyExperim},
+	{Field: "Variant.InstructionsPath", Path: "projects.<KEY>.experiments.<NAME>.variants[].instructions", Class: ClassFixed, Why: whyExperim},
 	// Each App's credential: the manager mints every role's token from it. The diff compares each
 	// App whole — neither GitHubApps field is a Block row — so the member rows below are what
 	// ClassOf answers a caller naming one member, and each names its App's path rather than a

@@ -687,7 +687,7 @@ func TestTheProjectsBlockIsAnsweredWithTheValueTheDaemonHolds(t *testing.T) {
 		t.Fatalf("the answer for projects.DEMO.memory.mode = %+v, want it refused: this proves nothing", got)
 	}
 	held := live.Snapshot().Projects
-	if held["DEMO"].Memory.Word() != config.MemoryOff || len(held["DEMO"].Memory.ConfigFiles) != 1 {
+	if held["DEMO"].Memory.Word() != config.ExperimentOff || len(held["DEMO"].Memory.ConfigFiles) != 1 {
 		t.Fatalf("the holder holds %+v, want mode off and the one config file: this proves nothing", held["DEMO"].Memory)
 	}
 	if got, want := answer["projects"].New, config.Render(reflect.ValueOf(held)); got != want {

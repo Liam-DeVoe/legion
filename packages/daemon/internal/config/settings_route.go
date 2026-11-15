@@ -55,7 +55,7 @@ func readSettingsRoute(value *yaml.Node, key string) (*SettingsRoute, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	found, err := members(value, key, "oidc_issuer", "audience", "service_accounts")
+	found, err := describedMembers(value, key, settingsRouteKey)
 	if err != nil {
 		return nil, err
 	}

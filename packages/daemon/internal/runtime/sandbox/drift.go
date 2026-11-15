@@ -269,7 +269,8 @@ func LaunchSettings(cfg *config.Config) string {
 // A member of the `projects` map (config.Row.Keyed, whose walk writes the entry's name into the
 // path) is read at the daemon's own project and at no other: every launch reads
 // `cfg.Projects[cfg.Project]` and nothing else of the map — the launch specs' trailer
-// repositories and the runtime's MemoryConfigFiles (internal/daemon's specs and sandboxOptions)
+// repositories and the runtime's experiment variants, the overlays a drawn role's Oh My Pi loads
+// (internal/daemon's specs and sandboxOptions)
 // — so `projects.OTHER.commit_issue_trailer_repos` is a key no pod of this daemon reads, and
 // recorded it would open an update round over every issue pod for a value none of them is handed.
 func podLaunchPath(project, path string, row config.Row) bool {
