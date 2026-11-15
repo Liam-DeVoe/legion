@@ -376,11 +376,11 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), bus.SOCKS5ProxyEnvVar) {
 				t.Fatalf("%s with %s=%q: %v, want a refusal naming %s", name, bus.SOCKS5ProxyEnvVar, value, err, bus.SOCKS5ProxyEnvVar)
 			}
-			// The check's own refusal, word for word: a value a dial was attempted with comes
-			// back as the dial's failure instead, which names the proxy's address and nats.go's
-			// reason beside the setting.
-			if want := bus.CheckSOCKS5Proxy(value); want == nil || err.Error() != want.Error() {
-				t.Fatalf("%s with %s=%q = %v, want the check's own refusal %v: it dialled", name, bus.SOCKS5ProxyEnvVar, value, err, want)
+			// The check's own refusal, word for word, after the setting's name: a value a dial
+			// was attempted with comes back as the dial's failure instead, which names the
+			// proxy's address and nats.go's reason beside the setting.
+			if want := bus.CheckSOCKS5Proxy(value); want == nil || err.Error() != bus.SOCKS5ProxyEnvVar+" "+want.Error() {
+				t.Fatalf("%s with %s=%q = %v, want the check's own refusal after the setting's name, %s %v: it dialled", name, bus.SOCKS5ProxyEnvVar, value, err, bus.SOCKS5ProxyEnvVar, want)
 			}
 		}
 	}
@@ -523,10 +523,10 @@ func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 					if !strings.Contains(err.Error(), bus.SOCKS5ProxyEnvVar) || printsSome(err.Error(), row.seed) {
 						t.Errorf("%s with %v: %v, want a refusal naming %s and printing none of the seed", name, environment, err, bus.SOCKS5ProxyEnvVar)
 					}
-					if optedIn && (refusal == nil || err.Error() != refusal.Error()) {
-						// The check's own refusal, word for word: a value a dial was attempted
-						// with comes back as the dial's failure instead.
-						t.Errorf("%s with %v: %v, want the check's own refusal %v: it dialled", name, environment, err, refusal)
+					if optedIn && (refusal == nil || err.Error() != bus.SOCKS5ProxyEnvVar+" "+refusal.Error()) {
+						// The check's own refusal, word for word, after the setting's name: a value
+						// a dial was attempted with comes back as the dial's failure instead.
+						t.Errorf("%s with %v: %v, want the check's own refusal after the setting's name, %s %v: it dialled", name, environment, err, bus.SOCKS5ProxyEnvVar, refusal)
 					}
 				}
 			}

@@ -19,11 +19,11 @@ func WithBeforeRequestFlush(before func()) ConnectOption {
 }
 
 // The production spans the tests outside the package move a clocktest.Fake past, rather than
-// shortening them: a window's send and a Request's default timeout, a publish's bound, the reconnect
-// wait's recheck, the keeper's period and the part of Drain's timeout its hooks keep.
+// shortening them: a window's send and a Request's default timeout, the reconnect wait's recheck,
+// the keeper's period and the part of Drain's timeout its hooks keep. A publish's bound is the
+// package's own PublishBound.
 const (
 	PublishAcknowledgementTimeout = publishAcknowledgementTimeout
-	PublishBound                  = publishBound
 	ReconnectRecheck              = reconnectRecheck
 	DefaultKeepInterval           = defaultKeepInterval
 	DrainHookReserve              = drainHookReserve

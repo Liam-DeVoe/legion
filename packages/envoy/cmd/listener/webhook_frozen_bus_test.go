@@ -175,10 +175,24 @@ func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T) {
 	// The bus client's own publish bound runs on a fake clock this test never moves, so a route
 	// that ignored its caller's dropped request and waited the bus's bound would hang on a timer
-	// that never fires rather than answer late. The Slack route's own answer budget runs on a fake
-	// of its own, which the test fires.
+	// that never fires rather than answer late. The bound is armed on the client's clock for a core
+	// publish and on its acknowledgement clock for a JetStream one (bus.PublishBound), so busClock
+	// is both. The Slack route's own answer budget runs on a fake of its own, which the test fires.
 	busClock := clocktest.New(time.Now())
-	frozen := newFrozenWebhookBus(t, bus.WithClock(busClock))
+	frozen := newFrozenWebhookBus(t, bus.WithClock(busClock), bus.WithPublishAcknowledgementClock(busClock))
+	// publishBounds reads the deadlines armed on busClock and how many of them stand at the moment
+	// a publish arms its bound for. The client arms its keeper's period and its refresh of the
+	// stream's subjects on busClock from its connect, at other moments, so only a publish's bound
+	// stands there.
+	publishBounds := func() ([]time.Time, int) {
+		armed, bound, at := busClock.Armed(), busClock.Now().Add(bus.PublishBound), 0
+		for _, deadline := range armed {
+			if deadline.Equal(bound) {
+				at++
+			}
+		}
+		return armed, at
+	}
 	slackClock := clocktest.New(time.Now())
 	slack := webhook.SlackHandler(webhookSecret, frozen.client, webhook.WithClock(slackClock))
 	ghostWispr := webhook.GhostWisprHandler(webhookSecret, frozen.client)
@@ -219,11 +233,16 @@ func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T)
 		{"a GitHub issue_comment", github, githubDelivery("issue_comment", "delivery-comment-frozen", comment("102"))},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			// The caller drops its request at the point this test chooses; the route must answer
-			// then, not wait the bus's own publish bound (on busClock, which this test never moves).
+			// The caller drops its request at the point this test chooses: once the route's publish
+			// has armed its own bound on busClock, which this test never moves. The route must answer
+			// then, not wait that bound.
+			_, before := publishBounds()
 			ctx, cancel := context.WithCancel(context.Background())
 			recorder, done := serveDeliveryOnGoroutine(route.handler, route.req.WithContext(ctx))
-			busClock.AwaitArmed(t, route.name+"'s publish bound on the frozen bus", 1)
+			testwait.Until(t, route.name+"'s publish to arm its bound on the frozen bus, "+bus.PublishBound.String()+" out", func() ([]time.Time, bool) {
+				armed, at := publishBounds()
+				return armed, at > before
+			})
 			cancel()
 			testwait.Receive(t, route.name+"'s answer once its caller gave up", done)
 			wantDeliveryFailed(t, route.name, recorder)

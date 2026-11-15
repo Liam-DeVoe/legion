@@ -161,7 +161,10 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 	forwards := make(chan error, 2)
 	started := make(chan struct{}, 2)
 	drainBegun := make(chan struct{})
-	t.Cleanup(sync.OnceFunc(func() { close(drainBegun) }))
+	// beginDrain opens the handlers' gate once the drain has begun, and the cleanup opens it for a
+	// row that failed before then, so no handler is left blocked on it.
+	beginDrain := sync.OnceFunc(func() { close(drainBegun) })
+	t.Cleanup(beginDrain)
 	lane, err := client.SubscribeCore("notifications.role.drain-test", func(message *natsgo.Msg) {
 		started <- struct{}{}
 		<-drainBegun
@@ -197,7 +200,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 
 	drained := drainOn(client, listenerDrain)
 	testwait.Eventually(t, "Drain to drain the role lane", lane.IsDraining)
-	close(drainBegun)
+	beginDrain()
 	if err := testwait.Receive(t, "the drain to end once the forwards finished", drained); err != nil {
 		t.Fatalf("drain: %v", err)
 	}

@@ -262,6 +262,18 @@ func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 	if len(answered) != 0 {
 		t.Fatalf("the raise answered %v just short of its %s deadline, want it still waiting", <-answered, bucketAppliedDeadline)
 	}
+	// The start fails on the read it takes once the clock is past the deadline, and names what that
+	// read reported. The watcher holds a copy back only in a read that names the stream's leader and
+	// its other copies; a read taken before the cluster has elected the raised stream's leader says
+	// only that it has none. The clock moves only at the row's word, so that read comes as fast as
+	// the row moves it, and the row first waits for the cluster to name them.
+	testwait.Until(t, "the cluster to name the raised stream's leader and its two other copies", func() (*nats.ClusterInfo, bool) {
+		info, err := js.StreamInfo("KV_" + catchupBucket)
+		if err != nil || info.Cluster == nil {
+			return nil, false
+		}
+		return info.Cluster, info.Cluster.Leader != "" && len(info.Cluster.Replicas) == 2
+	})
 	clock.Set(last)
 	err := testwait.Receive(t, "the raise to fail once its deadline has passed", answered)
 	if err == nil {

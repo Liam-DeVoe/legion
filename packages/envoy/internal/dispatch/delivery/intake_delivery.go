@@ -43,7 +43,7 @@ type intakeDelivery struct {
 	handling context.Context
 	abandon  context.CancelFunc
 	// clock is the intake's stop clock (heldDurable.clock), which the stop's drain wait reads.
-	clock intakeClock
+	clock    intakeClock
 	stopping atomic.Bool
 	stopped  sync.Once
 

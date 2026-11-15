@@ -33,9 +33,10 @@ func (c *Client) armBound(ctx context.Context, bound time.Duration) (context.Con
 	if left, ok := timeLeft(ctx); ok && left < bound {
 		bound = left
 	}
-	at := c.clock.Now().Add(bound)
-	ctx, cancel := c.clock.WithDeadline(ctx, at)
-	return context.WithValue(ctx, armedBoundKey{}, armedBound{at: at, clock: c.clock}), cancel
+	clk := c.timers()
+	at := clk.Now().Add(bound)
+	ctx, cancel := clk.WithDeadline(ctx, at)
+	return context.WithValue(ctx, armedBoundKey{}, armedBound{at: at, clock: clk}), cancel
 }
 
 // timeLeft is how long ctx has left: the bound a publish armed on it (armBound), read on the clock

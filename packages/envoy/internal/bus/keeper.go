@@ -49,7 +49,7 @@ func (c *Client) startKeeper(cfg nats.StreamConfig, buckets []string) {
 // ended, so a test that sees it armed knows the pass before it is done.
 func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []string) {
 	defer close(done)
-	period := c.clock.NewTimer(defaultKeepInterval)
+	period := c.timers().NewTimer(defaultKeepInterval)
 	defer period.Stop()
 	for {
 		select {

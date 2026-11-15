@@ -16,7 +16,7 @@ import (
 
 // publishAcknowledgementTimeout bounds each send of a publish window (Client.WindowUntil): its wait
 // for a connection, a JetStream send's acknowledgement (the stream context's PublishAsyncTimeout),
-// and a Request's answer when its options set no timeout of their own. Publish takes publishBound
+// and a Request's answer when its options set no timeout of their own. Publish takes PublishBound
 // instead.
 const publishAcknowledgementTimeout = 5 * time.Second
 
@@ -208,7 +208,7 @@ func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
 	defer w.pinning.Unlock()
 	if w.conn == nil {
-		ctx, cancel := w.client.clock.WithTimeout(context.Background(), wait)
+		ctx, cancel := w.client.timers().WithTimeout(context.Background(), wait)
 		defer cancel()
 		if err := w.client.ensureConnWithContext(ctx); err != nil {
 			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
@@ -227,7 +227,7 @@ func (w *window) pin(wait time.Duration) error {
 // expired answers ErrWindowDeadline once the window's deadline has passed on the client's clock
 // (WithClock), and nil before it or when the window has none.
 func (w *window) expired() error {
-	if w.deadline != nil && !w.client.clock.Now().Before(w.deadline()) {
+	if w.deadline != nil && !w.client.timers().Now().Before(w.deadline()) {
 		return fmt.Errorf("bus: %w", ErrWindowDeadline)
 	}
 	return nil
@@ -241,7 +241,7 @@ func (w *window) pinToSend() error {
 	if w.deadline == nil {
 		return w.pin(publishAcknowledgementTimeout)
 	}
-	remaining := w.deadline().Sub(w.client.clock.Now())
+	remaining := w.deadline().Sub(w.client.timers().Now())
 	if remaining <= 0 {
 		return fmt.Errorf("bus: %w", ErrWindowDeadline)
 	}
@@ -365,7 +365,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		_ = inboxSub.Unsubscribe()
 		return nil, w.unsent(err, len(data))
 	}
-	timer := w.client.clock.NewTimer(timeout)
+	timer := w.client.timers().NewTimer(timeout)
 	return func() error {
 		defer inboxSub.Unsubscribe()
 		defer timer.Stop()

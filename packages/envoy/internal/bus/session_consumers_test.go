@@ -866,7 +866,9 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 }
 
 // InProgress restarts a message's ack wait: a message kept in progress past several ack waits is
-// not delivered again, and once InProgress stops it is, a wait later.
+// not delivered again, and once InProgress stops it is, a wait later. Each InProgress comes a
+// quarter of an ack wait after the one before it, well inside the ack wait that one restarted, and
+// the six of them together outlast the ack wait a message nothing kept in progress is held for.
 func TestInProgressExtendsTheAckWait(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = 2 * time.Second
@@ -888,9 +890,10 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 		}
 		// Whether the ack wait schedules a redelivery is nats-server's own timer, which no clock
 		// of this test reaches, and the absence of that redelivery is what InProgress buys: no
-		// state, no later action of the test's shows it, so the row holds the span its ack wait
-		// would have fired in.
-		testwait.Span(t, consumers.ackWait, "the redelivery InProgress holds off is scheduled by nats-server's ack wait, "+
+		// state, no later action of the test's shows it, so the row holds a span inside the ack
+		// wait this InProgress restarted. A span as long as the ack wait would end as the
+		// redelivery comes due, before the next InProgress could hold it off.
+		testwait.Span(t, consumers.ackWait/4, "the redelivery InProgress holds off is scheduled by nats-server's ack wait, "+
 			"a timer of the server's own that neither this process's clock nor any report of it reaches")
 		requireNoMessage(t, consumers, pull, session)
 	}

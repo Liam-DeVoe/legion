@@ -111,7 +111,7 @@ func TestSubOK_NoSubscription(t *testing.T) {
 	}
 }
 
-// A publish while NATS is unreachable is bounded: its wait for a connection ends at publishBound,
+// A publish while NATS is unreachable is bounded: its wait for a connection ends at PublishBound,
 // which it arms on the client's clock, for either transport. The test moves the clock to the bound
 // once the publish has armed it, and the publish ends there with its deadline passed.
 func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {

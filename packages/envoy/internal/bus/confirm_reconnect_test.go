@@ -251,8 +251,8 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 
 	// publishConfirmed flushes within its context's deadline and reads a context with none as a
 	// window already spent, so the test gives it the deadline PublishCoreContext gives it in
-	// production, publishBound, under the shared wait's own context.
-	ctx, cancel := context.WithTimeout(testwait.Context(t), publishBound)
+	// production, PublishBound, under the shared wait's own context.
+	ctx, cancel := context.WithTimeout(testwait.Context(t), PublishBound)
 	defer cancel()
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {

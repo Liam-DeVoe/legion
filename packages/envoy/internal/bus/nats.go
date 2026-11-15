@@ -266,7 +266,8 @@ type Client struct {
 	connectionSettings          nats.Option
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
-	// clock is what the client's own timers wait on (WithClock): clock.Real outside tests.
+	// clock is what the client's own timers wait on (WithClock): clock.Real outside tests. Read it
+	// through timers, which a Client built without one (a test's &Client{Conn: conn}) also has.
 	clock             clock.Clock
 	reconnectErrClock func() time.Time
 	// reconnectWaitPass, when not nil, runs at each pass of ensureConnWithContext's wait for a
@@ -677,11 +678,11 @@ const streamInfoSubject = "$JS.API.STREAM.INFO." + Stream
 // the clock's armed deadlines and then the reports finds a report for every refresh it saw armed.
 func (c *Client) followDeployedSubjects() {
 	for {
-		due := c.clock.Now().Add(streamSubjectsRefresh)
+		due := c.timers().Now().Add(streamSubjectsRefresh)
 		if c.subjectsRefreshArmed != nil {
 			c.subjectsRefreshArmed(due)
 		}
-		refresh, cancel := c.clock.WithDeadline(context.Background(), due)
+		refresh, cancel := c.timers().WithDeadline(context.Background(), due)
 		select {
 		case <-c.stopCh:
 			cancel()
@@ -833,6 +834,14 @@ func (c *Client) now() time.Time {
 		return time.Now()
 	}
 	return c.reconnectErrClock()
+}
+
+// timers is the clock the client's own timers wait on (WithClock), clock.Real when it took none.
+func (c *Client) timers() clock.Clock {
+	if c.clock == nil {
+		return clock.Real()
+	}
+	return c.clock
 }
 
 // markHooksDueLocked counts a connection event the reconnect hooks have yet to cover, under mu,
@@ -1372,7 +1381,7 @@ func (c *Client) Close() {
 // the registry of live clients (forgetClient), as Close does, since the connection it owns is
 // going.
 func (c *Client) Drain(timeout time.Duration) error {
-	deadline := c.clock.Now().Add(timeout)
+	deadline := c.timers().Now().Add(timeout)
 	deliveriesDeadline := deadline.Add(-min(drainHookReserve, timeout*3/10))
 	c.subscriptionsMu.Lock()
 	if c.stopMode == clientRunning {
@@ -1417,7 +1426,7 @@ func (c *Client) Drain(timeout time.Duration) error {
 	if err := conn.Drain(); err != nil {
 		return err
 	}
-	expired := c.clock.NewTimer(deadline.Sub(c.clock.Now()))
+	expired := c.timers().NewTimer(deadline.Sub(c.timers().Now()))
 	defer expired.Stop()
 	select {
 	case <-closed:
@@ -1452,7 +1461,7 @@ func (c *Client) drainDeliveries(deadline time.Time) error {
 		return nil
 	}
 	expired := make(chan struct{})
-	timer := c.clock.AfterFunc(deadline.Sub(c.clock.Now()), func() { close(expired) })
+	timer := c.timers().AfterFunc(deadline.Sub(c.timers().Now()), func() { close(expired) })
 	defer timer.Stop()
 	poll := time.NewTicker(drainDeliveryPoll)
 	defer poll.Stop()
@@ -1545,7 +1554,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 				default:
 				}
 			}
-			recheck := c.clock.NewTimer(reconnectRecheck)
+			recheck := c.timers().NewTimer(reconnectRecheck)
 			select {
 			case <-ctx.Done():
 				recheck.Stop()
@@ -1763,13 +1772,15 @@ func (c *Client) refused(err error, size int) error {
 	return err
 }
 
-// publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
+// PublishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
 // PublishCoreContext of a caller that passed no deadline of its own: their wait for a reconnect
 // and their flush or JetStream acknowledgement together. A publish window's sends take
 // publishAcknowledgementTimeout instead. It is also the HTTP client's per-attempt deadline
 // (packages/envoy-client/src/transport.ts), which a publish that spends the whole bound can never
-// be answered inside, and that is what the Within forms below exist for.
-const publishBound = 5 * time.Second
+// be answered inside, and that is what the Within forms below exist for. A publish arms it on the
+// client's clocks (WithClock for a core publish, WithPublishAcknowledgementClock for a JetStream
+// one), so a test that holds those clocks tells a publish's bound by the moment it is armed for.
+const PublishBound = 5 * time.Second
 
 // Publish routes role lanes, their delivery-exception lanes and every topic the stream does not
 // capture through core NATS (UsesCoreTransport); every notification the stream captures retains
@@ -1782,7 +1793,7 @@ func (c *Client) Publish(item contracts.Envelope) error {
 }
 
 // PublishWithin publishes as Publish does, with ctx as the whole publish's bound - the wait for a
-// reconnect, the flush and the JetStream acknowledgement all end with it - instead of publishBound.
+// reconnect, the flush and the JetStream acknowledgement all end with it - instead of PublishBound.
 // The listener's HTTP handlers publish this way, so a bus they cannot reach is answered inside the
 // deadline their own caller gave them.
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
@@ -1802,14 +1813,14 @@ func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) err
 // have landed, so the very publish that put the message on the subject can come
 // back a duplicate.
 func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error) {
-	ctx, cancel := c.armBound(context.Background(), publishBound)
+	ctx, cancel := c.armBound(context.Background(), PublishBound)
 	defer cancel()
 	return c.PublishReportingDuplicateWithin(ctx, item)
 }
 
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
 // duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
-// publishBound.
+// PublishBound.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return false, c.PublishCoreContext(ctx, item.Topic, item)
@@ -1840,8 +1851,8 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // the envelope earns one, is the dedupe key and the topic together, because one upstream event can
 // be published on several topics under one key - a GitHub comment that mentions the trigger is
 // published on its mention topic beside its comment topic - and each of those must be retained.
-// The bound below is the earlier of the caller's own deadline and publishBound, since WithTimeout
-// keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
+// The bound below is the earlier of the caller's own deadline and PublishBound, since WithTimeout
+// keeps the parent's deadline when that is the earlier one; PublishBound is what bounds a caller
 // that passed none. The acknowledgement wait is still taken from publishAcknowledgementClock, the
 // seam a test uses to expire that bound without spending it.
 //
@@ -1887,7 +1898,7 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, PublishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return false, err
@@ -1971,7 +1982,7 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	if err := checkSubject(subject); err != nil {
 		return nil, err
 	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, PublishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
@@ -2001,8 +2012,8 @@ func cursorMoved(err error) error {
 // ctx is the whole publish's bound, so it is both what the wait for a reconnect ends with and the
 // window publishConfirmed flushes and confirms within, and a caller answering inside a deadline
 // of its own (the listener's routes: a publish through PublishWithin) is never held past it.
-// The bound taken below is the earlier of ctx's own deadline and publishBound, since WithTimeout
-// keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
+// The bound taken below is the earlier of ctx's own deadline and PublishBound, since WithTimeout
+// keeps the parent's deadline when that is the earlier one; PublishBound is what bounds a caller
 // that passed none.
 //
 // A ctx that has ended puts nothing on the wire: ensureConnWithContext returns its error rather
@@ -2018,7 +2029,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	if err != nil {
 		return err
 	}
-	ctx, cancel := c.armBound(ctx, publishBound)
+	ctx, cancel := c.armBound(ctx, PublishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return err

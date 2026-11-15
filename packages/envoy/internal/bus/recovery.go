@@ -203,7 +203,7 @@ func (c *Client) runDrainHooks(conn *nats.Conn, deadline time.Time) {
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	ctx, cancelDeadline := c.clock.WithDeadline(ctx, deadline)
+	ctx, cancelDeadline := c.timers().WithDeadline(ctx, deadline)
 	defer cancelDeadline()
 	lost := conn.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CLOSED)
 	defer conn.RemoveStatusListener(lost)

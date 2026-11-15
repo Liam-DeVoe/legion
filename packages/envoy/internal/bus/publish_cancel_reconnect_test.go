@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -18,19 +19,30 @@ import (
 // reconnectWaitFixture is a client that reaches NATS through a proxy the test can cut, a subscriber
 // on topic connected to NATS directly, and the envelope to publish there. onPass is what the
 // client's reconnect wait runs at each of its passes (bus.WithReconnectWaitPass); nil runs nothing.
+//
+// The client's clock is a clocktest.Fake the rows never move (WithClock), so a publish's bound
+// (bus.PublishBound) never ends a publish, however long the reconnect it waits for takes: each
+// publish ends by its caller's cancel, which the bound's context reads at once, or by the
+// reconnect. The reconnect wait's recheck (bus.ReconnectRecheck) is armed on the same fake and
+// never fires either, so the wait reads the connection again only at a connection event
+// (ConnectionChanged).
 type reconnectWaitFixture struct {
 	proxy    *relayProxy
 	client   *bus.Client
 	received *nats.Subscription
 	envelope contracts.Envelope
 	onPass   atomic.Pointer[func()]
+	// cut says startPublishWhileReconnecting has cut the link before, and hookedAtCut is how many
+	// connection events the client's reconnect hooks had run for when it last did.
+	cut         bool
+	hookedAtCut uint64
 }
 
 func newReconnectWaitFixture(t *testing.T, name string) *reconnectWaitFixture {
 	t.Helper()
 	uri := testnats.URL(t)
 	f := &reconnectWaitFixture{proxy: startRelayProxy(t, uri)}
-	client, err := bus.ConnectOwningStream([]string{f.proxy.url()}, bus.WithReconnectWaitPass(func() {
+	client, err := bus.ConnectOwningStream([]string{f.proxy.url()}, bus.WithClock(clocktest.New(fakeStart)), bus.WithReconnectWaitPass(func() {
 		if pass := f.onPass.Load(); pass != nil {
 			(*pass)()
 		}
@@ -66,8 +78,21 @@ func newReconnectWaitFixture(t *testing.T, name string) *reconnectWaitFixture {
 // startPublishWhileReconnecting cuts the link so the client is reconnecting, sets onPass as what
 // the reconnect wait runs at each pass, and starts the publish under ctx, returning where its
 // answer arrives. onPass runs on the publish's goroutine, so it must not fail the test itself.
+//
+// A cut after an earlier one first waits for the client's reconnect hooks to have run for the
+// reconnect that followed it. Those hooks run on nats.go's one callback goroutine and ask the
+// server for the stream (ConnectOwningStream), and a cut while that request is in flight loses it:
+// the goroutine then waits out the JetStream context's ten-second wait before it reports this cut
+// or the reconnect after it, so the reconnect wait, which reads the connection again only at such
+// a report, and the pass that waits for it (ConnectionChanged) would wait those ten seconds out.
 func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx context.Context, onPass func()) <-chan error {
 	t.Helper()
+	if f.cut {
+		testwait.Eventually(t, "the reconnect hooks to have run for the reconnect after the last cut", func() bool {
+			return f.client.HookedConnectionEvents() > f.hookedAtCut
+		})
+	}
+	f.cut, f.hookedAtCut = true, f.client.HookedConnectionEvents()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
 	testwait.Eventually(t, "the client to start reconnecting", f.client.Conn.IsReconnecting)
@@ -144,9 +169,9 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		return err
 	}
 
-	// The shared wait's context is far later than publishBound, so publishBound's 5 s is the bound
-	// PublishCoreContext keeps: still ahead when the cancel lands one pass into the wait and when
-	// the reconnect follows about a second later.
+	// The shared wait's context is far later than PublishBound, so PublishBound is the bound
+	// PublishCoreContext keeps, on the client's fake clock, which never moves: still ahead when the
+	// cancel lands one pass into the wait and when the reconnect follows.
 	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	publishErr := publishDuringReconnect(ctx, cancel)
@@ -179,9 +204,12 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 
 	// publishAsTheReconnectCompletes publishes under ctx while the client is reconnecting; the
 	// wait's first pass reconnects the client and then calls release. The pass runs on the
-	// publish's goroutine and waits for the reconnect through the client's connection events, so it
-	// tells the test it saw the client reconnected on reconnected; the test waits for that before it
-	// takes the publish's answer.
+	// publish's goroutine and waits for the reconnect through the client's connection events, and
+	// closes reconnected once it saw the client reconnected, before release. The publish answers
+	// only after its pass has returned, so the test takes the answer first and then reads
+	// reconnected: a pass that saw the reconnect has closed it by then. Reading the two at once
+	// would let a test that looks late, when both are ready, take the answer for one that came
+	// without the pass.
 	publishAsTheReconnectCompletes := func(ctx context.Context, release func()) error {
 		t.Helper()
 		var once sync.Once
@@ -198,22 +226,18 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 				release()
 			})
 		})
-		testwait.Eventually(t, "the client to reconnect inside the wait's first pass", func() bool {
-			select {
-			case <-reconnected:
-				return true
-			case err := <-answer:
-				t.Fatalf("the publish answered %v without its wait's first pass seeing the client reconnect", err)
-			default:
-			}
-			return false
-		})
-		return f.awaitAnswer(t, answer)
+		err := f.awaitAnswer(t, answer)
+		select {
+		case <-reconnected:
+		default:
+			t.Fatalf("the publish answered %v without its wait's first pass seeing the client reconnect", err)
+		}
+		return err
 	}
 
-	// The shared wait's context is far later than publishBound, so publishBound's 5 s is the bound
-	// PublishCoreContext keeps, and it is still ahead when the reconnect completes about a second
-	// into the wait.
+	// The shared wait's context is far later than PublishBound, so PublishBound is the bound
+	// PublishCoreContext keeps, on the client's fake clock, which never moves: still ahead when the
+	// reconnect completes inside the wait.
 	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	publishErr := publishAsTheReconnectCompletes(ctx, cancel)
