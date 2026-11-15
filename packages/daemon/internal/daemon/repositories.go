@@ -860,7 +860,7 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	held, unheld, err := w.holdLimited(ctx, limited, mapped)
+	held, unheld, err := w.holdLimited(ctx, limited)
 	if err != nil {
 		return err
 	}
@@ -941,15 +941,11 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// A read GitHub's rate limit refuses is served on the default branch the daemon holds, or
 	// left out for now and read again on installReadRetry when it holds none: the refresher never
 	// waits a limit out, since it holds mappingMu, which every later read of the mapping waits on.
-	// The records are matched to what this read will serve, the installations it accepted and the
-	// repositories kept on their last answer, not to the mapping as last published: this read can
-	// be the one that finds a configured rename's transfer.
-	serves := append(slices.Clone(accepted), kept...)
 	var limited []limitedRead
 	if accepted, limited, err = nameAccepted(ctx, accepted, w.defaultBranches); err != nil {
 		return err
 	}
-	held, unheld, err := w.holdLimited(ctx, limited, serves)
+	held, unheld, err := w.holdLimited(ctx, limited)
 	if err != nil {
 		return err
 	}
@@ -1574,10 +1570,20 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)
 	}
 	for _, issue := range issues {
-		if _, ok := heard[strings.ToLower(issue.GitHubRepo)]; ok {
+		// A record the boot's backfill could not name, GitHub's rate limit refusing its read
+		// (backfillRead), is heard under the spelling it keeps until a later boot names it, and
+		// one it could not fill names no repository to hear yet.
+		spelled := issue.GitHubRepo
+		if spelled == "" {
+			spelled = issue.Repo
+		}
+		if spelled == "" {
 			continue
 		}
-		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo)
+		if _, ok := heard[strings.ToLower(spelled)]; ok {
+			continue
+		}
+		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, spelled)
 		if err != nil {
 			return nil, err
 		}

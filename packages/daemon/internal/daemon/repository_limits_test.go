@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -406,14 +407,12 @@ func TestABootRefusesADefaultBranchRead404AndRetriesA500AsBefore(t *testing.T) {
 	}
 }
 
-// A record keeps the name its repository had when it was recorded, so the branch it holds is the
-// fallback for the repository GitHub holds it under now, as the read of the mapping that met the
-// limit serves it, before that read is published: here the published mapping still serves the
-// old name alone, and the read finds the transfer. A record on the old name then holds the branch
-// of the new one, served in the spelling this read accepted, not the pair's configured spelling
-// nor the record's; when the read serves both names, they are two repositories, the record holds
-// the branch of the old one alone, in its own spelling, GitHub's, and the new one holds none.
-func TestARecordedDefaultBranchIsHeldForTheRepositoryTheReadServesUnderAConfiguredRename(t *testing.T) {
+// A record holds a branch only for the repository it names itself, in its own spelling, GitHub's:
+// a limited read of the name a record's repository moved to under a configured rename is not held
+// from that record, since neither the record nor the mapping, which can hold the pair's spelling as
+// configured, holds GitHub's spelling of it, and intake's subjects are case-sensitive. It is waited
+// out or left out as any repository with nothing held is.
+func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -424,33 +423,28 @@ func TestARecordedDefaultBranchIsHeldForTheRepositoryTheReadServesUnderAConfigur
 	}
 	renames := ghrepo.MustRenames(ghrepo.MustRename("old/widgets", "New/Widgets"))
 	for _, tc := range []struct {
-		name   string
-		serves []string
-		read   string
-		held   string
+		name string
+		read string
+		held string
 	}{
-		{name: "the read finds the transfer", serves: []string{"new/widgets"}, read: "new/widgets", held: "new/widgets"},
-		{name: "the read serves both names, the old one limited", serves: []string{"new/widgets", "old/widgets"}, read: "old/widgets", held: "Old/Widgets"},
-		{name: "the read serves both names, the new one limited", serves: []string{"new/widgets", "old/widgets"}, read: "new/widgets"},
+		{name: "the name the record keeps, in another case", read: "old/widgets", held: "Old/Widgets"},
+		{name: "the name a configured rename moved it to, as configured", read: "New/Widgets"},
+		{name: "the name a configured rename moved it to, in another case", read: "new/widgets"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repos := newRepositories("LEGION", renames)
-			repos.set([]mappedRepository{{Repo: ghrepo.MustParse("old/widgets")}}, nil)
+			repos.set([]mappedRepository{{Repo: ghrepo.MustParse(tc.read)}}, nil)
 			w := &workflowRuntime{pool: pool, records: records, repositories: repos, log: quietLogger(),
 				defaultBranches: newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)}
-			var serves []mappedRepository
-			for _, name := range tc.serves {
-				serves = append(serves, mappedRepository{Repo: ghrepo.MustParse(name)})
-			}
 			limited := limitedRead{mapped: mappedRepository{Repo: ghrepo.MustParse(tc.read)}, answer: &githubrest.Answer{Status: http.StatusForbidden},
 				wait: time.Minute, until: time.Now().Add(time.Minute)}
-			held, unheld, err := w.holdLimited(ctx, []limitedRead{limited}, serves)
+			held, unheld, err := w.holdLimited(ctx, []limitedRead{limited})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if tc.held == "" {
-				if len(held) != 0 || len(unheld) != 1 {
-					t.Fatalf("held %v, unheld %d; want %s unheld", held, len(unheld), tc.read)
+				if _, kept := w.defaultBranches.Kept(tc.read); len(held) != 0 || len(unheld) != 1 || kept {
+					t.Fatalf("held %v, unheld %d, kept %v; want %s unheld and nothing kept", held, len(unheld), kept, tc.read)
 				}
 				return
 			}
@@ -461,6 +455,56 @@ func TestARecordedDefaultBranchIsHeldForTheRepositoryTheReadServesUnderAConfigur
 				t.Fatalf("the branch held for %s = %+v, %v; want %s at main", tc.read, kept, ok, tc.held)
 			}
 		})
+	}
+}
+
+// The boot's backfill of records from before the record carried its repository takes GitHub's rate
+// limit as every default-branch read of the boot does: a repository GitHub's limit refuses is
+// waited out and read once more, and if GitHub still refuses it, only that record is left unfilled,
+// in one line naming the issue and the repository, while the record on a repository GitHub answers
+// for is filled, and the boot goes on to subscribe to what its records name. Before, the limit
+// refused the whole boot here.
+func TestABootsBackfillThroughARateLimitLeavesOnlyThatRecordUnfilled(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		for _, key := range []string{"LEGION-7", "LEGION-9"} {
+			if _, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+				values ($1, $1, 'LEGION', $1, 'planning', 1, 'in_progress', 'A', 1)`, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
+		if repo != "zeta/tools" {
+			return false
+		}
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+		return true
+	})
+	logs := &syncBuffer{}
+	w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, repositories: newRepositories("LEGION", ghrepo.Renames{}),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: slog.New(slog.NewJSONHandler(logs, nil))}
+	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
+	if err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, w.log); err != nil {
+		t.Fatalf("backfill = %v, want the boot to go on", err)
+	}
+	if unfilled := unfilledKeys(t, w); !slices.Equal(unfilled, []string{"LEGION-7"}) {
+		t.Fatalf("unfilled after the backfill = %v, want LEGION-7 alone", unfilled)
+	}
+	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Sub(reads[0]) < time.Second || reads[1].Sub(reads[0]) > 6*time.Second {
+		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more a second later, as Retry-After asked", reads)
+	}
+	if left := loggedLines(t, logs.String(), "so the boot leaves the record as it is"); len(left) != 1 || left[0]["issue"] != "LEGION-7" || left[0]["repo"] != "zeta/tools" {
+		t.Fatalf("left-unfilled lines = %v, want one naming LEGION-7 and zeta/tools", left)
+	}
+	if _, err := w.heardAtBoot(ctx); err != nil {
+		t.Fatalf("the boot's subscription with LEGION-7 unfilled = %v, want what the records name heard", err)
 	}
 }
 

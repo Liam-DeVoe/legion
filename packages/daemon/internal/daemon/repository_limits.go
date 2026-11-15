@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -99,27 +100,27 @@ func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repos
 // about the repository, and the branch a record holds is the one GitHub named when the issue was
 // recorded, which a read after the limit corrects if GitHub has since renamed it. limited is only
 // ever repositories the daemon held no read of, since Named answers a limited read of one it holds
-// from what it holds; the records are read once, and only when a read was refused, and matched to
-// the repositories this read of the mapping serves (serves: every one it will publish, limited
-// ones among them), which is not yet the mapping published (recordedBranches). Each held one
+// from what it holds; the records are read once, and only when a read was refused. Each held one
 // stands until the limit's reset (defaultBranches.hold), so nothing reads it inside the limit, and
 // every later read GitHub's limit refuses is answered from it too, the boot's own included
 // (defaultBranches.Named); heldThroughLimit says so and has the mapping read again then.
 //
-// A record gives the branch, and the spelling only of a repository it names itself: the record's
-// is GitHub's own, as it named the repository when the issue was recorded. A record that names the
-// repository only under the other name of a configured rename gives no spelling, since GitHub's
-// spelling of the name the repository moved to is neither that record's nor the pair's as
-// configured; the repository is served as this read accepted it, and intake hears it so
-// (heardRepositories), as it hears it once GitHub answers.
+// A record holds a branch only for the repository it names itself, without case, and gives it in
+// the record's own spelling, GitHub's as recorded, which is what intake's case-sensitive subjects
+// are built from. A record recorded before a configured rename's transfer names the repository as
+// it was, and gives nothing for the name it moved to: neither the record nor the mapping holds
+// GitHub's spelling of that name (the mapping can hold the pair's spelling as configured), and a
+// wrong case would leave intake deaf to the repository for as long as the hold stands. Such a
+// repository is held only from a read of it the daemon made itself (Named), and otherwise waited
+// out or left out as any repository with nothing held is.
 //
 // held is each so served; unheld is each no record holds a branch for, for the caller to wait out
 // (the boot's waitOutLimits) or to leave out for now (refreshMapping).
-func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead, serves []mappedRepository) (held []mappedRepository, unheld []limitedRead, err error) {
+func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead) (held []mappedRepository, unheld []limitedRead, err error) {
 	if len(limited) == 0 {
 		return nil, nil, nil
 	}
-	recorded, err := w.recordedBranches(ctx, serves)
+	recorded, err := w.recordedBranches(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,9 +130,6 @@ func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead
 			unheld = append(unheld, read)
 			continue
 		}
-		if !strings.EqualFold(branch.Name.String(), read.mapped.Repo.String()) {
-			branch.Name = read.mapped.Repo
-		}
 		w.defaultBranches.hold(read.mapped.Repo, branch, read.until)
 		w.heldThroughLimit(read, branch)
 		held = append(held, mappedRepository{Repo: branch.Name, Default: read.mapped.Default})
@@ -140,24 +138,12 @@ func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead
 }
 
 // recordedBranches is the default branch the project's records hold for each repository a record
-// names (record.Issue.GitHubRepo, in GitHub's spelling, and DefaultBranch), keyed by the repository
-// GitHub holds it under now, lowercased, read in one read-only transaction bounded by
-// appMintAttempt. A record keeps the name it was recorded under for its whole life, so one recorded
-// before a configured rename's transfer names the repository as it was: the rename's serving rule
-// (ghrepo.Renames.Serving, the rule repositories.serving reads) maps it to the name it moved to
-// when serves, the repositories the caller's read of the mapping serves, holds that name and not
-// the old one, and leaves it under its own name when serves holds both, which are then two
-// repositories. serves is the read's own set rather than the mapping as last published, since a
-// read of the mapping can be the one that finds the transfer. A repository several records name
-// takes the first record in the store's order: each holds the default branch GitHub named when its
-// issue was recorded, and the one taken is served only until GitHub answers a read of it again. A
-// record from before the record carried its repository holds nothing.
-func (w *workflowRuntime) recordedBranches(ctx context.Context, serves []mappedRepository) (map[string]ghbranch.Repository, error) {
-	served := make(map[string]bool, len(serves))
-	for _, mapped := range serves {
-		served[strings.ToLower(mapped.Repo.String())] = true
-	}
-	isServed := func(repo ghrepo.Repository) bool { return served[strings.ToLower(repo.String())] }
+// names (record.Issue.GitHubRepo, in GitHub's spelling, and DefaultBranch), keyed by that name
+// lowercased, read in one read-only transaction bounded by appMintAttempt. A repository several
+// records name takes the first record in the store's order: each holds the default branch GitHub
+// named when its issue was recorded, and the one taken is served only until GitHub answers a read
+// of it again. A record from before the record carried its repository holds nothing.
+func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbranch.Repository, error) {
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	var issues []record.Issue
@@ -177,7 +163,7 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context, serves []mappedR
 		if err != nil {
 			return nil, err
 		}
-		key := strings.ToLower(w.repositories.renames.Serving(name, isServed).String())
+		key := strings.ToLower(name.String())
 		if _, taken := recorded[key]; !taken {
 			recorded[key] = ghbranch.Repository{Name: name, DefaultBranch: issue.DefaultBranch}
 		}
@@ -271,4 +257,44 @@ func limitAttributes(read limitedRead) []any {
 	limit := read.answer.Limit
 	return []any{"wait", read.wait.String(), "budget", string(read.answer.Budget), "rateLimit", limit.Limit, "rateLimitRemaining", limit.Remaining,
 		"rateLimitReset", limit.Reset, "rateLimitResource", limit.Resource, "retryAfter", limit.RetryAfter, "error", read.err}
+}
+
+// backfillRead is named's read of repo for the boot's backfill of key's record (fillRepositories,
+// nameRepositories), on the path every default-branch read of the boot takes through GitHub's rate
+// limit, so the limit never ends the boot here either: a read of a repository read or held before
+// is answered from that (defaultBranches.Named); one GitHub's limit refuses with nothing held is
+// waited out as GitHub asks (defaultBranchLimit) and read once more; and one GitHub still does not
+// answer gives no fill (ok false), said in one line naming the issue and the repository, so the
+// record keeps what it has, its issue alone goes without, and the next boot fills it. No record's
+// branch stands in for the read, since what the backfill reads GitHub for is GitHub's spelling of
+// the repository the record will carry. Any other failure of the first read, and GitHub's answer
+// about the repository on the second (answeredRefusal), is returned, refusing the boot as before.
+func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (_ ghbranch.Repository, ok bool, _ error) {
+	read, err := named.Named(ctx, repo)
+	answer, wait, limited := defaultBranchLimit(err)
+	if !limited {
+		return read, err == nil, err
+	}
+	log.Warn("workflow backfill: GitHub's rate limit refused the read of a record's repository, so the boot waits as long as GitHub asks and reads it once more",
+		append([]any{"issue", key, "repo", repo.String(), "waitUntil", time.Now().Add(wait).UTC().Format(time.RFC3339)},
+			limitAttributes(limitedRead{answer: answer, err: err, wait: wait})...)...)
+	select {
+	case <-ctx.Done():
+		return ghbranch.Repository{}, false, ctx.Err()
+	case <-time.After(wait):
+	}
+	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, err = named.Named(attempt, repo)
+	cancel()
+	switch {
+	case err == nil:
+		return read, true, nil
+	case ctx.Err() != nil:
+		return ghbranch.Repository{}, false, ctx.Err()
+	case answeredRefusal(err):
+		return ghbranch.Repository{}, false, err
+	}
+	log.Warn("workflow backfill: GitHub did not answer the read of a record's repository after its rate limit, so the boot leaves the record as it is and goes on; the next boot fills it",
+		"issue", key, "repo", repo.String(), "error", err)
+	return ghbranch.Repository{}, false, nil
 }
