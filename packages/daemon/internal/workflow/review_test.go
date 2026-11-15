@@ -499,10 +499,10 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 // asks for a merge-state read of every open pull request on that base whose issue sits in a phase a
 // conflict with the base is acted on: testing, reviewing, accepting, retro, merging alike
 // (mergeability, TriggerConflict in every later phase). Only that read finds a head that went
-// conflicting under the move. Reviewing keeps its own rule, that the read is asked for when the
-// round waits on GitHub's answer (reviewRound); the later phases, where no round reads the state,
-// are read for whenever a base moved under an open head. Implementing is not read for: a conflict
-// there needs work that is already where it is read.
+// conflicting under the move. Reviewing is read for with no approval standing too: the round's own
+// rule asks only where an approval waits on GitHub's answer (reviewRound), which would leave the
+// conflict of a round still being reviewed unread until a completion. Implementing is not read
+// for: a conflict there needs work that is already where it is read.
 func TestABasePushAsksForAMergeStateReadInEveryPhaseAConflictIsActedOn(t *testing.T) {
 	for _, tc := range []struct {
 		phase  phase.Phase
@@ -510,6 +510,7 @@ func TestABasePushAsksForAMergeStateReadInEveryPhaseAConflictIsActedOn(t *testin
 		want   bool
 	}{
 		{phase.Testing, "testing", true},
+		{phase.Reviewing, "needs_review", true},
 		{phase.Accepting, "needs_review", true},
 		{phase.Retro, "retro", true},
 		{phase.Merging, "retro", true},

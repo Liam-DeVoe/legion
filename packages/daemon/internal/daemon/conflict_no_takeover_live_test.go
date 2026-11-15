@@ -1,33 +1,38 @@
 //go:build e2e
 
-// The live proof's driver for the rule a CI red follows: it takes nobody's turn over. The
-// start it makes acts at once — the role the new phase belongs to takes its task while the role
-// whose phase ended is still working a turn it has not ended — nothing is sent to that role's
-// connection to end its turn, the role is told its phase is over by one message on its own Envoy
-// role topic, and a completion the old turn reports once the issue has handed the phase out again
-// is refused HANDOFF_STALE_ENTRY, where the completion of the new phase entry, in the turn that
-// entry's task starts, is taken. scripts/e2e/conflict-no-takeover.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// The live proof's driver for the rule a phase move the daemon makes on its own follows — a head
+// that starts conflicting with its base sends the issue back to implementing — it takes nobody's
+// turn over. The start it makes queues the new phase's role its task at once, while the role whose
+// phase ended is still working a turn it has not ended; nothing is sent to that role's connection
+// to end its turn, and its process is neither stopped nor launched again; that role is told its
+// phase is over by one message on its own Envoy role topic; and the new role's take of its task is
+// accepted once that turn ends, since a take that adopts the working copy the issue's roles share
+// waits for any turn of another role of the issue (supervise's take, hold issue-in-turn). A
+// completion the old phase's role then reports from a turn of its own, once the issue has handed
+// the phase out again, is refused HANDOFF_STALE_ENTRY, where the completion of the new phase entry,
+// in the turn that entry's task starts, is taken. scripts/e2e/conflict-no-takeover.sh builds this
+// driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes — the
 // phase-ended lane (record.LaneRoleMessage) among them. Facts enter only as production's do:
-// GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the settlements, the pushes and the
-// synchronizes; the daemon's own HTTP routes for each role's registration, readiness, task takes,
+// GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the pushes, the synchronizes and the
+// pushes onto the base; the daemon's own HTTP routes for each role's registration, readiness, task takes,
 // grants and completions; and the daemon's worker stream for each role's turns, which this driver
 // speaks as `legion worker-shim` does (shimwire frames), each role's plugin taking its task as the
 // package's takeDriver does. Every assertion is a read of GET /legion/v1/state,
-// of the operator's claim listing, of what the daemon published to the Envoy listener stand-in, of
-// what it sent — or did not send — to a role's own connection, or of what the fake runtime was
-// asked to launch and suspend. The store is read only for the one thing no route shows: whether
-// the outbox still holds the phase-ended row of step 5.
+// of the operator's claim listing, of the value a role's worker reads through claims/task, of what
+// the daemon published to the Envoy listener stand-in, of what it sent — or did not send — to a
+// role's own connection, or of what the fake runtime was asked to launch, suspend and release.
+// The store is read only for the one thing no route shows: whether the outbox still holds the
+// phase-ended row of step 4.
 //
 // The RPC carries no abort frame, and the daemon has no quiesce of a claim and no abort of a
 // connection, so the proof holds the stronger fact that leaves — that the role's connection is
-// sent nothing at all while the start acts, and that the start acts while that role's claim is
-// still `working` on a delivery it confirmed — rather than the absence of one frame type.
+// sent nothing at all while the start acts, and that the start queues its task while that role's
+// claim is still `working` on a delivery it confirmed — rather than the absence of one frame type.
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
@@ -35,7 +40,7 @@
 // requires the check `ci` (conflictBranchRules). Dispatch is the board the package's whole-daemon
 // live proofs share (liveDispatch, in live_proof_test.go). Envoy's listener is
 // conflictListener, the package's noticeListener with the listener's own "no live session holds the
-// role" refusal (notify.ErrNoHolder) added for the topics step 5 names, which noticeListener never
+// role" refusal (notify.ErrNoHolder) added for the topics step 4 names, which noticeListener never
 // gives. The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim
 // is launched by the package's fake runtime, which says it provisions each workspace in the claim's
 // own pod, as the Agent Sandbox runtime does, so the daemon clones nothing from GitHub, and each
@@ -102,19 +107,20 @@ type conflictNoTakeoverLive struct {
 	reviewer  claim.Token
 }
 
-// TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive drives the five steps of the proof
+// TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive drives the four steps of the proof
 // against one booted daemon, in the order each step's state follows from the last: the tester
-// working the assignment its phase handed it, the red that starts the implementer while that turn
-// runs on, the message that tells the tester its phase ended, the old turn's completion refused
-// and the new assignment's taken, and last a red whose phase-ended message reaches a topic no
-// session holds, which finishes the row and leaves the start acting all the same.
+// working the assignment its phase handed it; the conflict that queues the implementer's task at
+// once while that turn runs on untouched, tells the tester its phase ended, and whose task the
+// implementer takes once that turn ends; the completion the tester reports from a turn of its own
+// refused as of the entry before and the new assignment's taken; and last a conflict whose
+// phase-ended message reaches a topic no session holds, which finishes the row and leaves the start
+// acting all the same.
 func TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 	r := newConflictNoTakeoverLive(t)
 	r.step("step1-the-tester-works-the-assignment-its-phase-handed-it", r.testerWorksItsAssignment)
-	r.step("step2-the-red-starts-the-implementer-while-the-testers-turn-runs-on", r.redStartsAtOnce)
-	r.step("step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic", r.testerIsToldItsPhaseEnded)
-	r.step("step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken", r.staleEntryRefused)
-	r.step("step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts", r.noHolderFinishesTheRow)
+	r.step("step2-the-conflict-queues-the-implementers-task-and-takes-no-turn-over", r.conflictTakesNoTurnOver)
+	r.step("step3-the-old-entrys-completion-is-refused-and-the-new-assignments-is-taken", r.staleEntryRefused)
+	r.step("step4-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts", r.noHolderFinishesTheRow)
 }
 
 // newConflictNoTakeoverLive boots the daemon over the script's broker with the issue already
@@ -166,20 +172,24 @@ func (c *liveClaimant) silent(within time.Duration) {
 	}
 }
 
-// Step 1. The seeded implementer completes implementing at its first head, naming the implement
-// handoff record it wrote, which hands the testing phase to the tester with an assignment of its
-// own and starts it. The tester registers, takes that task and works it: a claim working a
-// delivery it confirmed, which is the turn the red of step 2 must leave alone.
+// Step 1. The seeded implementer registers and takes the task its readiness left pending, as its
+// plugin takes a value at once while it is idle, and in that task's turn completes implementing at
+// its first head, naming the implement handoff record it wrote; that hands the testing phase to the
+// tester with an assignment of its own and starts it. The tester registers, takes that task and
+// works it: a claim working a delivery it confirmed, which is the turn the conflict of step 2 must
+// leave alone. The implementer leaves this step holding nothing, so the task the conflict queues for
+// it is the next one it is offered.
 func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	t := r.t
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
-	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
-	r.imp.startTurn()
+	resume := r.imp.takeTask("Phase: implementing")
+	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch, and took the task its readiness left pending (%s)",
+		firstLine(resume.Text))
 	if status, failure := r.imp.complete("implemented it", conflictFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
-	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, then its agent_end: 200", conflictFirstHead)
+	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, then its agent_end and the turn's report: 200", conflictFirstHead)
 	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
@@ -194,96 +204,142 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 		working.State, working.Pending.ID, working.Pending.Phase, working.Pending.ConfirmedAt.UTC().Format(time.RFC3339Nano))
 }
 
-// Step 2. CI settles the tester's head red. The issue goes back to implementing and the
-// implementer takes its fix task at once — while the tester is still working the turn it
-// started in step 1, which the daemon neither ends nor asks after: its connection is sent nothing
-// at all, its claim stays working on the delivery it confirmed, and its process is not suspended.
-// The start waits for no turn: it acts in the drain that moved the phase.
-func (r *conflictNoTakeoverLive) redStartsAtOnce() {
+// Step 2. A push onto the base turns the head the tester is testing conflicting with the base while
+// the tester still works the turn it began in step 1, and the issue goes back to implementing. The
+// step holds four facts of that move and nothing more:
+//
+//   - the conflict queues the implementer's fix task at once, in the drain that moved the phase,
+//     while the tester's turn runs;
+//   - the tester's turn, its process and its session run on untouched: its claim stays working on
+//     the delivery it confirmed, in the same session at the same launch, its connection is sent
+//     nothing at all, and the runtime is asked neither to stop nor to launch it, so what its turn
+//     started in that process — a background job among it — runs on;
+//   - the tester is told its phase ended, once, on its own Envoy role topic: the phase-ended row
+//     (record.PhaseEnded) the move enqueued on the outbox's role-message lane, the conflict behind
+//     the `Reason:` label that marks it off from the daemon's own sentences;
+//   - the implementer's take of that task is accepted once the tester's turn ends. A take that
+//     adopts the working copy the issue's roles share is refused while another role of the issue
+//     is in a turn (supervise's take, hold issue-in-turn), so the tester ends its turn here, as an
+//     agent told its phase is over does, and the implementer then takes, as behind-entry-fence's
+//     implementer takes once the tester's turn ends.
+func (r *conflictNoTakeoverLive) conflictTakesNoTurnOver() {
 	t := r.t
 	before := r.d.claim(r.test.token)
-	if before.State != string(supervise.StateWorking) {
-		t.Fatalf("the tester is %s before the red, want working: the proof turns on a turn that is running", before.State)
+	if before.State != string(supervise.StateWorking) || before.Pending == nil || before.Locator == nil {
+		t.Fatalf("the tester is %s holding %+v before the conflict, want working on a process: the proof turns on a turn that is running",
+			before.State, before.Pending)
 	}
-	suspendsBefore := len(r.rt.CallsOf("Suspend"))
+	stopsBefore, launchesBefore := r.stopsOf(r.test.token), len(launchesOf(r.rt, r.test.token))
 	r.driveConflict()
 	r.note("drove the base of %s past %s, so GitHub answers its head conflicting, while the tester's turn runs", r.key, conflictFirstHead)
 
-	// The start's own act, read where production reads it: the implementer's take. The take is
-	// bounded by mustTake's minute of polling (take_driver), so a start that waited for the
-	// tester's turn to end would fail here rather than hang.
-	fix := r.imp.takeTask("the head conflicts with " + conflictBase)
-	r.note("read back: the implementer took its fix task while the tester's turn ran (%s)", firstLine(fix.Text))
-	got := r.issue(r.key)
-	if got.Phase != phase.Implementing {
-		t.Fatalf("%s is in %s after the red, want implementing", r.key, got.Phase)
+	// The conflict queues the implementer's fix task at once, while the tester's turn runs: read
+	// on the implementer's claim, and as the value its worker reads through claims/task.
+	want := "the head conflicts with " + conflictBase
+	var queued api.OperatorClaim
+	testwait.Eventually(t, "the implementer's fix task queued", func() bool {
+		queued = r.d.claim(r.imp.token)
+		return queued.Pending != nil && strings.Contains(queued.Pending.Task, want)
+	})
+	if queued.Pending.ConfirmedAt != nil {
+		t.Fatalf("the implementer holds %+v, want its fix task queued and not yet taken", queued.Pending)
 	}
-	r.note("read back: %s is in %s, status %s, merge state %s", r.key, got.Phase, got.Status, got.PullRequest.MergeState)
+	value, err := r.imp.worker.task()
+	if err != nil || value.Task == nil {
+		t.Fatalf("the implementer's worker read its task value as %+v, %v, want the value the queue wrote", value, err)
+	}
+	if got := r.issue(r.key); got.Phase != phase.Implementing {
+		t.Fatalf("%s is in %s once the implementer's fix task is queued, want implementing", r.key, got.Phase)
+	}
+	if running := r.d.claim(r.test.token); running.State != string(supervise.StateWorking) || running.Pending == nil ||
+		running.Pending.ID != before.Pending.ID {
+		t.Fatalf("the tester is %s holding %+v when the implementer's task was queued, want it still working the delivery %s it confirmed",
+			running.State, running.Pending, before.Pending.ID)
+	}
+	r.note("read back: %s is in implementing, and the implementer's fix task is queued as task %d and not yet taken (%s), while the tester is still working delivery %s",
+		r.key, value.Task.Number, firstLine(queued.Pending.Task), before.Pending.ID)
 
-	held := r.d.claim(r.test.token)
-	if held.State != string(supervise.StateWorking) || held.Pending == nil || held.Pending.ConfirmedAt == nil ||
-		before.Pending == nil || held.Pending.ID != before.Pending.ID {
-		t.Fatalf("the tester is %s holding %+v when the start acted, want it still working the delivery %+v it confirmed",
-			held.State, held.Pending, before.Pending)
-	}
-	r.note("read back: when the start acted the tester was still %s on delivery %s, the one it confirmed before the red",
-		held.State, held.Pending.ID)
-	r.test.silent(liveSettle)
-	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown", liveSettle)
-	after := r.d.claim(r.test.token)
-	if after.State != string(supervise.StateWorking) || after.Pending == nil || after.Pending.ID != before.Pending.ID {
-		t.Fatalf("the tester is %s holding %+v after the red settled, want it still working its own delivery", after.State, after.Pending)
-	}
-	if suspends := r.rt.CallsOf("Suspend"); len(suspends) != suspendsBefore {
-		t.Fatalf("the red suspended %d claims, want none: no role is stopped by it", len(suspends)-suspendsBefore)
-	}
-	r.note("read back: the tester's claim is still %s, and the fake runtime was asked to suspend nothing (%d suspensions, as before the red)",
-		after.State, suspendsBefore)
-}
-
-// Step 3. The tester is told, once, on its own Envoy role topic, that its phase ended: the
-// phase-ended row (record.PhaseEnded) the red enqueued on the outbox's role-message lane, the red
-// itself behind the `Reason:` label that marks it off from the daemon's own sentences. It is
-// not the architect's checks-red notice, which the same red sends to another topic altogether.
-func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
-	t := r.t
+	// The tester is told its phase ended, once, on its own role topic.
 	topic := notify.RoleTopicPrefix + string(r.test.token)
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
+		Reason: conflictReason}.Message(r.key)
 	var told []listenerPublish
 	testwait.Eventually(t, "the phase-ended message on the tester's role topic", func() bool {
 		told = r.notices.acceptedOn(topic)
-		return len(told) == 1
+		return len(told) > 0
 	})
-	want := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
-		Reason: conflictReason}.Message(r.key)
-	if told[0].Message != want {
-		t.Fatalf("the tester was told %q on %s, want %q", told[0].Message, topic, want)
+	if len(told) != 1 || told[0].Message != ended {
+		t.Fatalf("the tester's topic %s took %+v, want the one message %q", topic, told, ended)
 	}
 	r.note("read back: one message on %s — %s", topic, told[0].Message)
-	architect := r.architectNotices(r.key, "checks-red")
-	if len(architect) != 1 {
-		t.Fatalf("the architect was told %d checks-red notices, want the red's one", len(architect))
+
+	// The tester's turn, its process and its session run on untouched, and the message is not
+	// told again. The process is the one the locator's incarnation names, which a stop and a
+	// launch would each change.
+	r.test.silent(liveSettle)
+	after := r.d.claim(r.test.token)
+	if after.State != string(supervise.StateWorking) || after.Pending == nil || after.Pending.ID != before.Pending.ID ||
+		after.Session != before.Session || after.Generation != before.Generation || after.Locator == nil ||
+		after.Locator.Incarnation != before.Locator.Incarnation {
+		t.Fatalf("after the conflict settled the tester is %s holding %+v in session %s at generation %d on process %+v, want it still working delivery %s in session %s at generation %d on process %s",
+			after.State, after.Pending, after.Session, after.Generation, after.Locator, before.Pending.ID, before.Session, before.Generation, before.Locator.Incarnation)
 	}
-	r.note("read back: the architect's own topic took the red's one checks-red notice (%s), a different message on a different topic",
-		architect[0].Payload)
-	// Nothing repeats either of them, and nothing else reaches the tester's topic.
-	time.Sleep(liveSettle)
+	if stops, launches := r.stopsOf(r.test.token), len(launchesOf(r.rt, r.test.token)); stops != stopsBefore || launches != launchesBefore {
+		t.Fatalf("since the conflict the runtime was asked to stop the tester %d times and to launch it %d times, want neither",
+			stops-stopsBefore, launches-launchesBefore)
+	}
 	if again := r.notices.acceptedOn(topic); len(again) != 1 {
 		t.Fatalf("the tester's topic took %d messages over %s, want the one", len(again), liveSettle)
 	}
-	r.note("read back over %s: the tester's topic has taken that one message and no other", liveSettle)
+	r.note("read back over %s: the daemon sent the tester's connection nothing at all; its claim is still %s on delivery %s in session %s at generation %d on process %s; the runtime was asked neither to stop nor to launch it; and its topic took that one message and no other",
+		liveSettle, after.State, after.Pending.ID, after.Session, after.Generation, after.Locator.Incarnation)
+
+	// The implementer's take is accepted once the tester's turn ends.
+	r.test.endTurn()
+	r.note("the tester ended the turn it began in step 1")
+	fix := r.imp.takeTask(want)
+	if fix.Number != value.Task.Number {
+		t.Fatalf("the implementer took task %d, want task %d, the one the conflict queued", fix.Number, value.Task.Number)
+	}
+	r.note("read back: once the tester's turn ended, the implementer's take of task %d was accepted (%s)", fix.Number, firstLine(fix.Text))
 }
 
-// Step 4. The implementer fixes and completes, which hands testing out again with a phase entry of
-// its own. The tester's first turn is still running and still serving the entry before it, so
-// the completion it reports from that turn — its verdict on the head before the fix, in the record
-// that turn wrote — is refused HANDOFF_STALE_ENTRY and records nothing, and the refusal sends it to
-// the new task's own work: the completion naming the record that task's turn writes, at the head
-// the fix pushed, is taken.
+// stopsOf is how many times the runtime was asked to stop token's process: its suspensions and
+// its releases, the two ways the daemon ends a role's process (launchesOf counts the other way).
+func (r *conflictNoTakeoverLive) stopsOf(token claim.Token) int {
+	n := 0
+	for _, call := range r.rt.CallsOf("Suspend") {
+		if call.Locator.Claim == token {
+			n++
+		}
+	}
+	for _, call := range r.rt.CallsOf("Release") {
+		if call.Released.Claim == token {
+			n++
+		}
+	}
+	return n
+}
+
+// Step 3. The tester goes on working: it begins a turn of its own while the implementer works, as
+// an agent that goes on working does, before it has taken any task of a later entry. The
+// implementer merges the base forward and completes, which hands testing out again with a phase
+// entry of its own. The tester's claim still serves the entry before it — the last task whose turn
+// it ran is the first testing phase's — so the completion it reports from its own turn, its verdict
+// on the head before the merge in a record that turn wrote, is refused HANDOFF_STALE_ENTRY and
+// records nothing, and the refusal sends it to the new task's own work: the completion naming the
+// record that task's turn writes, at the head the merge pushed, is taken.
 func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	t := r.t
-	r.push(conflictFirstHead, conflictSecondHead, "fix the red")
-	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", conflictSecondHead, conflictFirstHead, r.number)
-	if status, failure := r.imp.complete("fixed the red", conflictSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	r.test.startTurn()
+	r.note("the tester began a turn of its own while the implementer works, before it has taken any task of a later entry")
+	// The push is the merge forward the conflict asked for, so GitHub answers its head mergeable:
+	// the read the implementer's completion makes then finds no conflict to send the issue back for.
+	r.github.conflicts(false)
+	r.push(conflictFirstHead, conflictSecondHead, "merge main forward")
+	r.note("drove the implementer's merge forward: its push of %s onto %s, which GitHub answers mergeable, and GitHub's synchronize of #%d to it",
+		conflictSecondHead, conflictFirstHead, r.number)
+	if status, failure := r.imp.complete("merged main forward", conflictSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -291,30 +347,30 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	got := r.waitFor("the issue back in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	r.note("read back: %s is in %s again — a second testing phase, with a second assignment for the tester", r.key, got.Phase)
 
-	// The tester's first turn has run throughout, and still serves the assignment the first testing
-	// phase handed it: its completion is of that assignment, not this one — the verdict on the head
-	// that assignment named, in the handoff record that turn wrote.
+	// The tester's own turn has run throughout, and the tester still serves the assignment the
+	// first testing phase handed it: its completion is of that assignment, not this one — the
+	// verdict on the head that assignment named, in a handoff record that turn wrote.
 	stale := r.d.claim(r.test.token)
 	if stale.State != string(supervise.StateWorking) {
-		t.Fatalf("the tester is %s, want it still working the turn it began in step 1", stale.State)
+		t.Fatalf("the tester is %s, want it still working the turn of its own it began in this step", stale.State)
 	}
 	status, failure := r.test.complete("tested it", conflictFirstHead, "pass", r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
-		t.Fatalf("the completion from the tester's old turn = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
+		t.Fatalf("the completion from the tester's own turn = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
-	r.note("read back: the completion the tester reported from its first turn = 409 %s — %s", failure.Code, failure.Error)
+	r.note("read back: the completion the tester reported from its own turn = 409 %s — %s", failure.Code, failure.Error)
 	if after := r.issue(r.key); after.Phase != phase.Testing {
 		t.Fatalf("%s is in %s after the refused completion, want testing: a refusal records nothing", r.key, after.Phase)
 	}
 	r.note("read back: %s is still in testing — the refusal recorded nothing", r.key)
 
-	// The turn ends; the task of the new assignment, waiting for it, is sent. That task is work of
-	// its own — the head the fix pushed — so the tester completes it with a handoff record it
+	// The turn ends; the task of the new assignment, waiting for it, is taken. That task is work of
+	// its own — the head the merge pushed — so the tester completes it with a handoff record it
 	// writes for that work, at that head, never with the record or the head the refused completion
 	// named, and it is taken.
 	r.test.endTurn()
 	task := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester's first turn ended and it took the second assignment's task (%s)", firstLine(task.Text))
+	r.note("read back: the tester's own turn ended and it took the second assignment's task (%s)", firstLine(task.Text))
 	second := r.test.handoff("test")
 	if status, failure := r.test.complete("tested the fix", conflictSecondHead, "pass", second); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
@@ -325,11 +381,11 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 		second, conflictSecondHead, r.key, moved.Phase)
 }
 
-// Step 5. The reviewer's claim was started by the tester's pass and nothing registered it, so no
-// session holds its role topic. A red in reviewing ends the reviewer's phase: the phase-ended row
-// is published to a topic the listener answers "no live session holds the role" (notify.ErrNoHolder),
-// which finishes the row rather than retrying it for ever, and the start acts all the same — the
-// implementer takes the new fix task.
+// Step 4. The reviewer's claim was started by the tester's pass and nothing registered it, so no
+// session holds its role topic. A conflict in reviewing ends the reviewer's phase: the phase-ended
+// row is published to a topic the listener answers "no live session holds the role"
+// (notify.ErrNoHolder), which finishes the row rather than retrying it for ever, and the start acts
+// all the same — the implementer takes the new fix task, no other role of the issue being in a turn.
 func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	t := r.t
 	topic := notify.RoleTopicPrefix + string(r.reviewer)

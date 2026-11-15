@@ -935,12 +935,14 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	return e.askMergeStateFor(ctx, tx, pr, false)
 }
 
-// askMergeStateFor queues the read for one pull request. In reviewing the read is asked for when
-// the round waits on GitHub's answer (reviewRound), for a base push as for every other fact. A
-// base push (basePush) moved the base under a head GitHub recomputes with no event of its own, so
-// it also asks in every other phase a conflict with the base is acted on - testing, accepting,
-// retro, merging (conflictReadPhase) - where no round reads the state and this read is the only
-// thing that would find the conflict (mergeability, TriggerConflict in every later phase). The
+// askMergeStateFor queues the read for one pull request. Every fact but a base push asks for it
+// only where the reviewing round waits on GitHub's answer (reviewRound). A base push (basePush)
+// moved the base under a head GitHub recomputes with no event of its own, so it asks in every
+// phase a conflict with the base is acted on - testing, reviewing, accepting, retro, merging
+// (conflictReadPhase) - since this read is the only thing that would find the conflict
+// (mergeability, TriggerConflict in every later phase). In reviewing that is a superset of the
+// round's own rule: an approval waiting on GitHub's answer is read for as before, and so is a
+// round no approval stands in, whose conflict would otherwise go unread until a completion. The
 // guard on a daemon with no reader is here as well as in askMergeState, because a base push
 // reaches this from its handler's walk rather than through that switch (basePush).
 func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, basePush bool) error {
@@ -968,12 +970,12 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 }
 
 // conflictReadPhase is whether a base push asks for a merge-state read of an open pull request
-// whose issue sits in p: the later phases but reviewing, where a conflict with the base is acted
-// on (mergeability, TriggerConflict) yet no round reads the state. Reviewing has its own rule
-// (reviewRound) and is left to it, so the reviewing case asks exactly as it did before.
+// whose issue sits in p: every phase a conflict with the base sends back to implementing
+// (mergeability, TriggerConflict). Implementing is not one: the work a conflict needs is already
+// where the read would send it.
 func conflictReadPhase(p phase.Phase) bool {
 	switch p {
-	case phase.Testing, phase.Accepting, phase.Retro, phase.Merging:
+	case phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging:
 		return true
 	default:
 		return false

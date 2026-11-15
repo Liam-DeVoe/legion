@@ -130,6 +130,59 @@ func TestACleanTurnBetweenRefusalsStartsTheRunAgain(t *testing.T) {
 	h.wantRefusedRun(2)
 }
 
+// Both producers report a turn a provider failed as refused, with the failure beside it
+// (pi-legion's turn-outcome, the Claude bridge's turnEnded). Such a turn is the provider-error
+// ladder's, which has no attempt limit (dispatch://INFRA-956 R2): a run of them longer than the
+// launch failure limit never fails the claim, the run of refused turns that limit reads stays at
+// zero, and every one of them takes the task back and writes it again after the ladder's wait,
+// until the run reaches the turn the project's controller is told at (providerErrorRunTold). A
+// refused turn that carries no provider error is still the launch budget's: the same claim,
+// refused that way up to the limit, fails.
+func TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure(t *testing.T) {
+	h := workingClaim(t)
+	limit := testLimits().LaunchFailures
+	if providerErrorRunTold <= limit {
+		t.Fatalf("the controller is told at a run of %d, which the launch failure limit of %d reaches first: this case proves nothing",
+			providerErrorRunTold, limit)
+	}
+	sent := 1
+	for turn := 1; turn <= providerErrorRunTold; turn++ {
+		pe := ProviderError{Message: "overloaded_error", Status: 529}
+		number := h.pending().Number
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.worker.sequence++
+		if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+			Task: number, Refused: true, Message: pe.Message, ProviderError: &pe}); err != nil {
+			t.Fatalf("turn %d: report the turn refused with its provider error: %v", turn, err)
+		}
+		h.m.Wait()
+		h.workerAsks()
+		if state := h.state(); state == StateFailed {
+			t.Fatalf("turn %d: the claim failed with %q, want it on the ladder: a provider error is no launch failure", turn, h.claim().Failure)
+		}
+		h.wantRefusedRun(0)
+		if got := h.claim().ProviderErrorRun; got != turn {
+			t.Fatalf("turn %d: the run of provider errors is %d, want %d", turn, got, turn)
+		}
+		if message := h.climbs(sent, promptRetryDelay(turn)); !strings.HasSuffix(message, providerErrorTaskText) {
+			t.Fatalf("turn %d: the ladder sent %q, want the task again", turn, message)
+		}
+		sent++
+	}
+
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	for turn := 1; turn <= limit; turn++ {
+		h.report(h.worker.sequence+uint64(turn), true, "the provider ended the turn with an error")
+		if turn < limit {
+			h.wantRefusedRun(turn)
+		}
+	}
+	h.wantState(StateFailed)
+	if want := "the provider refused 3 turns in a row: the provider ended the turn with an error"; h.claim().Failure != want {
+		t.Fatalf("failure %q, want %q: a refused turn with no provider error is still the launch budget's", h.claim().Failure, want)
+	}
+}
+
 // A turn no report arrived for — the process died before it could send one — counts neither way:
 // the run is of the reports the daemon holds, so the turns around a missing one are a run of two,
 // not three, and the claim goes on.
