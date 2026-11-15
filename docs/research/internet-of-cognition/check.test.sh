@@ -1300,6 +1300,41 @@ else
     printf 'SKIP the replay of m-ctl-our-row-count with no Go module cache: go is missing\n'
 fi
 
+# 77. --landed on a fresh checkout reads a proof that cannot run as no proof of the step.
+# The committed proof of a landed step, (cd packages/pi-legion && bun test ...), needs the
+# packages `bun install` writes, which --help's list of prerequisites does not name. At
+# 9959ca5563 a checkout with no node_modules ended --landed exit 1 with "FAIL landed-proof:
+# the committed proof of the page ... exits non-zero" (bun: 'Could not resolve: "zod".
+# Maybe you need to "bun install"?'), which blames the landed step for a step of setup.
+# Test round 25 met it on a pod that had just been replaced. The case clones this checkout's
+# own history at its HEAD, with no node_modules, and runs that clone's --landed. It passes
+# when the run ends in a verdict on the step (exit 0), or in exit 2 with the reason last as a
+# mode that cannot run. The honest form beside it is the same clone after `bun install
+# --frozen-lockfile`, which passes --landed. It needs bun, git and Dispatch, and prints SKIP
+# when bun is missing.
+if command -v bun >/dev/null 2>&1; then
+    fresh_checkout="$WORK/fresh-checkout"
+    git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$fresh_checkout" &&
+        git -C "$fresh_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" || {
+        printf 'FAIL the fresh checkout of HEAD could not be made\n'
+        exit 1
+    }
+    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" bash "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed 2>&1)"
+    status=$?
+    if [ "$status" -eq 0 ] || { [ "$status" -eq 2 ] && printf '%s\n' "$out" | tail -1 | grep -q '^check\.sh cannot run --landed: '; }; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS --landed on a checkout with no node_modules ends in a verdict on the step, or cannot run\n'
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL --landed on a checkout with no node_modules ends in a verdict on the step, or cannot run: exit %s, %s\n' "$status" "$(printf '%s\n' "$out" | grep '^FAIL' | head -1)"
+    fi
+    (cd "$fresh_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
+    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" bash "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed 2>&1)"
+    ending_result "--landed on the same checkout after bun install passes" 0 '^all 5 assertions passed$' "$?" "$out"
+else
+    printf 'SKIP --landed on a checkout with no node_modules: bun is missing\n'
+fi
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
