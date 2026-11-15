@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -291,6 +292,8 @@ func (h *publisherHolder) DeleteSession(ctx context.Context, session string, con
 // such holder: there is nothing the configuration would build again.
 type appsHolder struct {
 	current atomic.Pointer[appauth.Tokens]
+	// log is what every manager this holder builds is given, the boot's own.
+	log *slog.Logger
 }
 
 var (
@@ -301,13 +304,15 @@ var (
 )
 
 // buildApps is the App token manager of one configuration: boot's and the holder's rebuild both
-// build it here.
-func buildApps(cfg config.Config) appauth.Tokens {
-	return appauth.New(cfg.GitHubApps, appauth.Options{})
+// build it here. log is the manager's own, so a rebuilt manager logs what the boot's logged
+// (appauth.Options.Log, main's #4043, which logs a read GitHub's rate limit refused).
+func buildApps(cfg config.Config, log *slog.Logger) appauth.Tokens {
+	return appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
 }
 
-func newAppsHolder(tokens appauth.Tokens) *appsHolder {
-	h := &appsHolder{}
+// newAppsHolder holds one manager, and the logger every manager it builds again is given.
+func newAppsHolder(tokens appauth.Tokens, log *slog.Logger) *appsHolder {
+	h := &appsHolder{log: log}
 	h.current.Store(&tokens)
 	return h
 }
@@ -327,7 +332,7 @@ func (h *appsHolder) credentials(cfg *config.Config) string {
 }
 
 func (h *appsHolder) rebuild(cfg *config.Config) error {
-	tokens := buildApps(*cfg)
+	tokens := buildApps(*cfg, h.log)
 	replaced := h.current.Swap(&tokens)
 	// The manager the new one replaces owns a token_command's goroutine, so a rebuild that left
 	// it open would leak one per changed App credential.

@@ -279,7 +279,7 @@ func TestARereadRebuildsTheAppTokenManagerOnlyWhenItsAppCredentialsMoved(t *test
 	}}
 	rebuild := newRebuilder(quietLogger(), config.Settled(*cfg))
 	held := &closingTokens{}
-	rebuild.register(newAppsHolder(held))
+	rebuild.register(newAppsHolder(held, quietLogger()))
 
 	// A wake of the watcher with the App credentials where they were.
 	rebuild.rereadCredentials(cfg)
@@ -352,7 +352,7 @@ func TestARouteChangeOfAnAppCredentialIsNotBuiltAgainAtTheNextWake(t *testing.T)
 		Review:    config.GitHubApp{AppID: "2", PrivateKey: "review-key"},
 	}}
 	rebuild := newRebuilder(quietLogger(), config.Settled(*cfg))
-	apps := &countingApps{appsHolder: newAppsHolder(&closingTokens{})}
+	apps := &countingApps{appsHolder: newAppsHolder(&closingTokens{}, quietLogger())}
 	rebuild.register(apps)
 
 	cfg.GitHubApps.Implement.PrivateKey = "rotated-implement-key"
@@ -687,7 +687,7 @@ func (t *closingTokens) Close() { t.closed = true }
 // holder is what must answer Close: without it the stop closed nothing at all.
 func TestTheStopClosesTheAppTokenManagerThroughItsHolder(t *testing.T) {
 	tokens := &closingTokens{}
-	holder := newAppsHolder(tokens)
+	holder := newAppsHolder(tokens, quietLogger())
 
 	closeTokens(holder)
 
