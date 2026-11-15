@@ -84,6 +84,32 @@ const SUITE_TMP = temporaryTmpdir("gate-suite");
 const snapshotDirs = () =>
   fs.readdirSync(SUITE_TMP).filter((name) => /^askgate-[A-Za-z0-9]{6}$/.test(name));
 /**
+ * Pidfiles a row's subprocess writes its pid to, each recorded before the row runs it: the
+ * afterEach below kills every pid it finds in them, so a process the code under test fails to kill
+ * is collected whether the row returns or the runner abandons it at its limit.
+ */
+const childPidFiles: string[] = [];
+// The first `afterEach` of this file on purpose: bun runs same-scope hooks in registration order
+// and skips the rest once one throws, so the kill must not sit behind the call ends below. It is
+// synchronous, so no hook limit can cut it short.
+afterEach(() => {
+  for (const pidFile of childPidFiles.splice(0)) {
+    let pid = 0;
+    try {
+      pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+    } catch {
+      // The process was killed before it wrote its pid.
+    }
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // The expected path: the code under test killed it first.
+      }
+    }
+  }
+});
+/**
  * Ends every call a test's gates were handed, as the runner ends a call's tool, so the gate releases
  * the marker each one took: a test that never ends its call would otherwise leave it behind.
  */
@@ -3402,12 +3428,19 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     // `sleep 300 & wait` leaves two processes in the group, bash and the `sleep` that holds the
     // child's pipes: a kill narrowed to bash alone leaves that `sleep` holding `child.stdout`, so
     // the call cannot return inside any limit this row sets. 300 s is far above the row's limit,
-    // so a run that kills nothing cannot return either.
-    const result = await core.spawnDryRun("sleep 300 & wait", {
-      cwd: work,
-      env: { PATH: process.env.PATH ?? "", HOME: work },
-      timeoutMs: 100,
-    });
+    // so a run that kills nothing cannot return either. Bash writes the `sleep`'s pid to a
+    // pidfile `childPidFiles` holds, so a group the runner fails to kill does not leave it running
+    // after the row.
+    const pidFile = path.join(fs.mkdtempSync(path.join(tmpdir(), "dry-run-kill-")), "pid");
+    childPidFiles.push(pidFile);
+    const result = await core.spawnDryRun(
+      `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`,
+      {
+        cwd: work,
+        env: { PATH: process.env.PATH ?? "", HOME: work },
+        timeoutMs: 100,
+      }
+    );
     expect(result.timedOut).toBe(true);
     // Bun reports exitCode null (signalCode "SIGKILL") for a group killed at the limit, and a
     // number for a child that exits on its own: this is the kill, not an exit of bash's own.
