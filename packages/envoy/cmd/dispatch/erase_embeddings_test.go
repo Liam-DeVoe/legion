@@ -14,7 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -84,7 +84,7 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 		t.Fatalf("before the erase the search of every column finds the secret in %v and not in public.embeddings.text_snapshot, so it would prove nothing there afterwards", places)
 	}
 
-	erasure, err := graphcensus.Erase(ctx, databaseURL, "comment", comment, true, eraseStores(eraseTestWindow))
+	erasure, err := grapherase.Erase(ctx, databaseURL, "comment", comment, true, eraseTestWindow)
 	if err != nil {
 		t.Fatalf("erase %s: %v", comment, err)
 	}

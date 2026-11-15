@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // preStoreDocument is one document as a build before the node and tuple store left it: its id,
@@ -111,18 +112,6 @@ func awaitBackfill(t *testing.T, answered <-chan backfillAnswer) BackfillReport 
 	return BackfillReport{}
 }
 
-// waitingStatement is the statement backend pid is running, read through the test's own pool:
-// once the backend has queued behind a lock, that is the statement it waits at.
-func waitingStatement(t *testing.T, database *store.Store, pid uint32) string {
-	t.Helper()
-	var statement string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select query from pg_stat_activity where pid = $1`, pid).Scan(&statement); err != nil {
-		t.Fatalf("read the statement backend %d waits at: %v", pid, err)
-	}
-	return strings.Join(strings.Fields(statement), " ")
-}
-
 // blockKind is the block kind's line of a backfill report.
 func blockKind(t *testing.T, report BackfillReport) KindBackfill {
 	t.Helper()
@@ -175,7 +164,7 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the version write's locks", early.report, early.err)
 	}
-	waited := waitingStatement(t, database, pid)
+	waited := lockstep.WaitingStatement(t, database, pid)
 	t.Logf("the backfill waits behind the version write at: %s", waited)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the version write: %v", err)
@@ -251,7 +240,7 @@ func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the owed row", early.report, early.err)
 	}
-	waited := waitingStatement(t, database, pid)
+	waited := lockstep.WaitingStatement(t, database, pid)
 	t.Logf("the backfill waits behind the owed row at: %s", waited)
 	if !strings.Contains(waited, "document_block_versions") {
 		t.Errorf("the backfill waited behind the owed row at %q, want its lock of document_block_versions", waited)
@@ -326,7 +315,7 @@ func TestTheBackfillStatesNoMentionAVersionDeletedWhileItWaited(t *testing.T) {
 	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the version write's locks", early.report, early.err)
 	}
-	waited := waitingStatement(t, database, pid)
+	waited := lockstep.WaitingStatement(t, database, pid)
 	t.Logf("the backfill waits behind the version write at: %s", waited)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the version write: %v", err)

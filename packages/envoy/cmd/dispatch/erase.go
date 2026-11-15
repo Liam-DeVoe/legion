@@ -6,13 +6,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 )
 
 // erase is `envoy-dispatch erase --node <kind>:<id>`, the one path in Dispatch that deletes a
@@ -52,12 +48,12 @@ func erase(ctx context.Context, args []string, databaseURL string, out, errOut i
 		fmt.Fprintln(errOut, "erase: DATABASE_URL is required")
 		return 2
 	}
-	kind, id, err := graphcensus.ParseNode(*node)
+	kind, id, err := grapherase.ParseNode(*node)
 	if err != nil {
 		fmt.Fprintf(errOut, "erase: %v\n", err)
 		return 2
 	}
-	erasure, err := graphcensus.Erase(ctx, databaseURL, kind, id, *confirm, eraseStores(api.StoreTreesTimeout))
+	erasure, err := grapherase.Erase(ctx, databaseURL, kind, id, *confirm, api.StoreTreesTimeout)
 	if erasure != nil {
 		erasure.Write(out)
 	}
@@ -81,38 +77,4 @@ func erase(ctx context.Context, args []string, databaseURL string, out, errOut i
 		return 1
 	}
 	return 0
-}
-
-// eraseStores are the writers the erase reaches in docs and api (graphcensus.Stores), which
-// graphcensus cannot import: a document's live state is replaced through the statements a rebuild
-// writes (docs.ReadErasedLiveText), and the term statistics are counted again by the pass that
-// counts a project in full (api.RecountSearchTermStatsTx). Both run inside the erase's own
-// transaction. treeStoreBound is how long a read's detached store of its display trees can run
-// (api.StoreTreesTimeout), which the erase waits out after its commit; a test passes a shorter
-// one.
-func eraseStores(treeStoreBound time.Duration) graphcensus.Stores {
-	return graphcensus.Stores{
-		TreeStoreBound: treeStoreBound,
-		LiveText: func(ctx context.Context, tx pgx.Tx, artifactID string, texts []string, marker string) (*graphcensus.LiveText, error) {
-			live, err := docs.ReadErasedLiveText(ctx, tx, artifactID, texts, marker)
-			if err != nil || live == nil {
-				return nil, err
-			}
-			return &graphcensus.LiveText{
-				Held: live.Held, Left: live.Left, Updates: live.Updates, AnchorMarks: live.AnchorMarks,
-				MarginRecords: live.MarginRecords, Text: live.Text,
-				Replace: func(ctx context.Context, tx pgx.Tx) (graphcensus.ReplacedHistory, error) {
-					report, err := live.Replace(ctx, tx)
-					return graphcensus.ReplacedHistory{
-						Updates: report.RemovedUpdates, Checkpoints: report.RemovedCheckpoints,
-						Snapshots: report.RemovedSnapshots,
-					}, err
-				},
-			}, nil
-		},
-		TermStatistics: func(ctx context.Context, tx pgx.Tx, projects []string) (graphcensus.TermRecount, error) {
-			counted, queued, err := api.RecountSearchTermStatsTx(ctx, tx, projects)
-			return graphcensus.TermRecount{Projects: counted, Queued: queued}, err
-		},
-	}
 }

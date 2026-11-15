@@ -782,7 +782,7 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 // deletes under its own transaction and asserts no current set, and the item block pass, which
 // writes no store row in this child. Each is named by its file and its `func` line.
 var outsideTheFence = []struct{ file, function string }{
-	{"graphcensus/erase.go", "func (e *Erasure) apply("},
+	{"grapherase/erase.go", "func (e *Erasure) apply("},
 	{"refs/item_blocks.go", "func IndexOwedItemBlocks("},
 }
 

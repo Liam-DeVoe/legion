@@ -1,4 +1,4 @@
-package graphcensus
+package grapherase
 
 import (
 	"context"
@@ -9,14 +9,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // ownerLockStatement is how the statement that takes an issue's owner row starts, the erase's own
-// (lockOwnerRows) and the one docs.ReadErasedLiveText takes it with (lockArtifactOwner) alike.
+// (events.LockOwnerRows) and the one docs.ReadErasedLiveText takes it with (lockArtifactOwner)
+// alike.
 const ownerLockStatement = "select closed_at is null from issues where key = $1 for no key update"
 
 // untouchedBeforeTheNode are the tables the erase reads nothing of before it holds the node's row:
@@ -30,9 +31,9 @@ var untouchedBeforeTheNode = []string{"graph_tuples", "graph_erasures", "events"
 const commentLockStatement = "select 1 from comments where node_kind = $1 and node_address = $2 order by id for update"
 
 // TestTheEraseTakesTheStoreLockOrder is the erase's half of dispatch://INFRA-1149's
-// c-lock-order. `envoy-dispatch erase` writes graph_tuples and graph_nodes with statements of
-// its own (apply), which graphstore's TestEveryStoreWriteCallSiteIsListed lists as
-// graphcensus/erase.go#apply and leaves the proof of its lock steps to this package.
+// c-lock-order. `envoy-dispatch erase` deletes graph_tuples and graph_nodes rows through
+// graphstore.EraseNode (apply), which graphstore's TestEveryStoreWriteCallSiteIsListed lists as
+// grapherase/erase.go#apply and leaves the proof of its lock steps to this package.
 //
 // The run erases the comment seedAgreeingStore writes on a document of issue CORE-1, whose text a
 // version of a document of a second issue, ACME-1, quotes. So it writes under two owner rows: the
@@ -40,18 +41,18 @@ const commentLockStatement = "select 1 from comments where node_kind = $1 and no
 // belong to. It takes them in the order of their owner keys (lockInStoreOrder), issue:ACME-1
 // before issue:CORE-1, the other way round from the comment's own owner first; then the comment's
 // node row; then its comments row, `for update`, before it reads under its locks or writes
-// anything (lockProjectionRows). Its LiveText is docs.ReadErasedLiveText, the writer cmd/dispatch
-// hands it, which takes the document's owner row again after the node row and has to find this
-// transaction holding it already.
+// anything (lockProjectionRows). It reads a document's live state through
+// docs.ReadErasedLiveText, which takes the document's owner row again after the node row and has
+// to find this transaction holding it already.
 //
 // Each of those four rows is held in a transaction of its own while the real Erase runs on its
 // own connection (followTheErase). The test lets go of each hold the run queues behind, one at a
-// time, reads where the run waits and the tables it holds a lock on each time (requireStoppedAt),
-// and holds the order it queued in to the store's lock order (requireTheStoreLockOrder): every
-// owner row before the node row, the node row before the projection row, and so no owner row
-// after the node row. The owner rows themselves come in ascending owner key
-// (requireOwnersAscending). It then reads what the run removed, so the run it followed is the one
-// that committed.
+// time, reads where the run waits and the tables it holds a lock on each time
+// (lockstep.RequireStoppedAt), and holds the order it queued in to the store's lock order
+// (lockstep.RequireTheStoreLockOrder): every owner row before the node row, the node row before
+// the projection row, and so no owner row after the node row. The owner rows themselves come in
+// ascending owner key (requireOwnersAscending). It then reads what the run removed, so the run it
+// followed is the one that committed.
 func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedAgreeingStore(t, database)
@@ -62,28 +63,28 @@ func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 	// their text and the embedding rows that do, and no more: the node row comes next and
 	// everything it writes after that. While it waits at the node row it holds the owner rows and
 	// has still read nothing of the tuples or the event log.
-	acme := holdRow(t, database, &batchHold{
-		name: "issue ACME-1's row", step: stepOwner, taken: true, kind: "issue", id: "ACME-1",
-		statement: ownerLockStatement,
-		unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
+	acme := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "issue ACME-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "ACME-1",
+		Statement: ownerLockStatement,
+		Unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
 	}, `select 1 from issues where key = $1 for update`, "ACME-1")
-	core := holdRow(t, database, &batchHold{
-		name: "issue CORE-1's row", step: stepOwner, taken: true, kind: "issue", id: "CORE-1",
-		statement: ownerLockStatement,
-		unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
+	core := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "CORE-1",
+		Statement: ownerLockStatement,
+		Unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
 	}, `select 1 from issues where key = $1 for update`, "CORE-1")
-	node := holdRow(t, database, &batchHold{
-		name: "the comment's node row", step: stepNode, taken: true, kind: commentNodeKind, id: seeded.comment,
-		statement: "select supertag from graph_nodes where kind = $1 and id = $2 for update",
-		unlocked:  untouchedBeforeTheNode,
+	node := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the comment's node row", Step: lockstep.StepNode, Taken: true, Kind: commentNodeKind, ID: seeded.comment,
+		Statement: "select supertag from graph_nodes where kind = $1 and id = $2 for update",
+		Unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, commentNodeKind, seeded.comment)
-	projection := holdRow(t, database, &batchHold{
-		name: "the comment's comments row", step: stepProjection, taken: true, names: node,
-		statement: commentLockStatement,
-		unlocked:  untouchedBeforeTheNode,
+	projection := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the comment's comments row", Step: lockstep.StepProjection, Taken: true, Names: node,
+		Statement: commentLockStatement,
+		Unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from comments where id = $1::uuid for update`, seeded.comment)
 
-	erasure := followTheErase(t, database, seeded.comment, []*batchHold{acme, core, node, projection})
+	erasure := followTheErase(t, database, seeded.comment, []*lockstep.Hold{acme, core, node, projection})
 	requireTheQuoteErased(t, database, erasure, seeded.comment, quoting)
 }
 
@@ -121,10 +122,10 @@ func TestTheEraseTakesTheCommentsRowBeforeItTouchesItsWindows(t *testing.T) {
 		t.Fatalf("hold comment %s's row as the window arm does: %v", seeded.comment, err)
 	}
 	pid, answered := startErase(t, database, commentNodeKind, seeded.comment)
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, batchLockWait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, lockstep.Wait); done {
 		t.Fatalf("the erase answered (err %v) without waiting on the comment's row, which the window arm held", early.err)
 	}
-	waited := strings.ToLower(waitingStatement(t, database, pid))
+	waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid))
 	written := tablesWrittenBy(t, ctx, database, pid)
 	t.Logf("the erase waits behind the window arm at %q, holding more than a read's lock on %v", waited, written)
 	if !strings.HasPrefix(waited, commentLockStatement) {
@@ -147,8 +148,8 @@ func TestTheEraseTakesTheCommentsRowBeforeItTouchesItsWindows(t *testing.T) {
 	var answer eraseAnswer
 	select {
 	case answer = <-answered:
-	case <-time.After(batchLockWait):
-		t.Fatalf("the erase did not answer within %s of the window arm's commit", batchLockWait)
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the erase did not answer within %s of the window arm's commit", lockstep.Wait)
 	}
 	if answer.err != nil {
 		t.Fatalf("the erase failed once the window arm committed: %v", answer.err)
@@ -236,10 +237,10 @@ const blockLockStatement = "select 1 from document_blocks where node_kind = $1 a
 // The block is seedAgreeingStore's inner block, which holds the document's one block reference,
 // with its text written into document_block_texts as a version's index writes it. A transaction
 // holds the block's document_blocks row `for update`, as the block index writers under the
-// revision fence take it (heldBlockRows), and the erase starts: the test reads that it waits at
-// the statement that takes that row having written nothing, so no block text and no embedding
-// row. Once the row is let go the erase removes the block whole: its document_blocks row, its
-// block_refs row, its block text, every tuple out of it and into it, and its node.
+// revision fence take it (graphcensus's heldBlockRows), and the erase starts: the test reads that
+// it waits at the statement that takes that row having written nothing, so no block text and no
+// embedding row. Once the row is let go the erase removes the block whole: its document_blocks
+// row, its block_refs row, its block text, every tuple out of it and into it, and its node.
 func TestTheEraseTakesABlocksRowsBeforeItTouchesItsText(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -269,10 +270,10 @@ func TestTheEraseTakesABlocksRowsBeforeItTouchesItsText(t *testing.T) {
 		t.Fatalf("hold the document_blocks row of block %s: %d rows, %v", seeded.inner, tag.RowsAffected(), err)
 	}
 	pid, answered := startErase(t, database, refs.BlockNodeKind, seeded.inner)
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, batchLockWait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, lockstep.Wait); done {
 		t.Fatalf("the erase answered (err %v) without waiting on the block's document_blocks row, which another transaction held", early.err)
 	}
-	waited := strings.ToLower(waitingStatement(t, database, pid))
+	waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid))
 	written := tablesWrittenBy(t, ctx, database, pid)
 	t.Logf("the erase waits behind the block's document_blocks row at %q, holding more than a read's lock on %v", waited, written)
 	if !strings.HasPrefix(waited, blockLockStatement) {
@@ -290,8 +291,8 @@ func TestTheEraseTakesABlocksRowsBeforeItTouchesItsText(t *testing.T) {
 	var answer eraseAnswer
 	select {
 	case answer = <-answered:
-	case <-time.After(batchLockWait):
-		t.Fatalf("the erase did not answer within %s of the release of the block's document_blocks row", batchLockWait)
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the erase did not answer within %s of the release of the block's document_blocks row", lockstep.Wait)
 	}
 	if answer.err != nil {
 		t.Fatalf("the erase failed once the block's document_blocks row was let go: %v", answer.err)
@@ -350,31 +351,31 @@ func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testi
 	quoteTheCommentInABlock(t, database, excerpted, seeded.comment)
 	quoteTheCommentInAWindow(t, database, windowed, seeded.comment)
 
-	ownerHold := func(issue string) *batchHold {
-		return holdRow(t, database, &batchHold{
-			name: "issue " + issue + "'s row", step: stepOwner, taken: true, kind: "issue", id: issue,
-			statement: ownerLockStatement,
-			unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
+	ownerHold := func(issue string) *lockstep.Hold {
+		return lockstep.HoldRow(t, database, &lockstep.Hold{
+			Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+			Statement: ownerLockStatement,
+			Unlocked:  append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
 		}, `select 1 from issues where key = $1 for update`, issue)
 	}
 	acme, beta, core := ownerHold("ACME-1"), ownerHold("BETA-1"), ownerHold("CORE-1")
-	node := holdRow(t, database, &batchHold{
-		name: "the comment's node row", step: stepNode, taken: true, kind: commentNodeKind, id: seeded.comment,
-		statement: "select supertag from graph_nodes where kind = $1 and id = $2 for update",
-		unlocked:  untouchedBeforeTheNode,
+	node := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the comment's node row", Step: lockstep.StepNode, Taken: true, Kind: commentNodeKind, ID: seeded.comment,
+		Statement: "select supertag from graph_nodes where kind = $1 and id = $2 for update",
+		Unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, commentNodeKind, seeded.comment)
-	comment := holdRow(t, database, &batchHold{
-		name: "the comment's comments row", step: stepProjection, taken: true, names: node,
-		statement: commentLockStatement,
-		unlocked:  untouchedBeforeTheNode,
+	comment := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the comment's comments row", Step: lockstep.StepProjection, Taken: true, Names: node,
+		Statement: commentLockStatement,
+		Unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from comments where id = $1::uuid for update`, seeded.comment)
-	block := holdRow(t, database, &batchHold{
-		name: "the block row of " + excerpted.refKey + " quoting the comment", step: stepProjection, taken: true,
-		statement: "update document_blocks held set excerpt =",
-		unlocked:  []string{"graph_erasures"},
+	block := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the block row of " + excerpted.refKey + " quoting the comment", Step: lockstep.StepProjection, Taken: true,
+		Statement: "update document_blocks held set excerpt =",
+		Unlocked:  []string{"graph_erasures"},
 	}, `select 1 from document_blocks where artifact_id = $1::uuid and block_id = 'quote' for update`, excerpted.artifactID)
 
-	erasure := followTheErase(t, database, seeded.comment, []*batchHold{acme, beta, core, node, comment, block})
+	erasure := followTheErase(t, database, seeded.comment, []*lockstep.Hold{acme, beta, core, node, comment, block})
 
 	if !erasure.Applied || len(erasure.Versions) != 0 || len(erasure.Documents) != 0 {
 		t.Errorf("the erase answered applied %t, the versions %+v and the documents %+v, want it applied with neither: the text stands in no version and no document's live state",
@@ -401,40 +402,40 @@ func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testi
 // the comment then commits, and ACME-1's row is held before CORE-1's is let go. Under its locks
 // the run reads ACME-1's document as one it rewrites, under an owner it did not take. A run that
 // went on would take ACME-1's row after the comment's node row, when it reads that document's live
-// state (Stores.LiveText), and queue behind it holding graph_nodes. This one rolls back and starts
-// again, so it queues behind ACME-1's row at the start of its next try, having read nothing of the
-// store, and once let go it erases the quoting version with the rest.
+// state (docs.ReadErasedLiveText), and queue behind it holding graph_nodes. This one rolls back and
+// starts again, so it queues behind ACME-1's row at the start of its next try, having read nothing
+// of the store, and once let go it erases the quoting version with the rest.
 func TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
 	quoting := seedQuotingDocument(t, database, "ACME")
 
-	core := holdRow(t, database, &batchHold{name: "issue CORE-1's row", step: stepOwner, statement: ownerLockStatement},
+	core := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CORE-1's row", Step: lockstep.StepOwner, Statement: ownerLockStatement},
 		`select 1 from issues where key = $1 for update`, "CORE-1")
 	pid, answered := startErase(t, database, commentNodeKind, seeded.comment)
-	if early, done := storetest.WaitForQueuedBehind(t, core.tx, pid, answered, batchLockWait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, core.Tx, pid, answered, lockstep.Wait); done {
 		t.Fatalf("the erase answered (err %v) without waiting on issue CORE-1's row, which another transaction held", early.err)
 	}
-	requireStoppedAt(t, ctx, database, pid, "the erase", core)
+	lockstep.RequireStoppedAt(t, ctx, database, pid, "the erase", core)
 	quoteTheComment(t, database, quoting, seeded.comment)
-	acme := holdRow(t, database, &batchHold{
-		name: "issue ACME-1's row", step: stepOwner, statement: ownerLockStatement,
-		unlocked: append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
+	acme := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "issue ACME-1's row", Step: lockstep.StepOwner, Statement: ownerLockStatement,
+		Unlocked: append([]string{"graph_nodes"}, untouchedBeforeTheNode...),
 	}, `select 1 from issues where key = $1 for update`, "ACME-1")
-	core.release()
-	if early, done := storetest.WaitForQueuedBehind(t, acme.tx, pid, answered, batchLockWait); done {
+	core.Release()
+	if early, done := storetest.WaitForQueuedBehind(t, acme.Tx, pid, answered, lockstep.Wait); done {
 		t.Fatalf("the erase answered (err %v) without waiting on issue ACME-1's row, the owner of %s, which came to quote the comment once the erase had read its owner rows",
 			early.err, quoting.refKey)
 	}
-	requireStoppedAt(t, ctx, database, pid, "the erase", acme)
-	acme.release()
+	lockstep.RequireStoppedAt(t, ctx, database, pid, "the erase", acme)
+	acme.Release()
 
 	var answer eraseAnswer
 	select {
 	case answer = <-answered:
-	case <-time.After(batchLockWait):
-		t.Fatalf("the erase did not answer within %s of the release of issue ACME-1's row", batchLockWait)
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the erase did not answer within %s of the release of issue ACME-1's row", lockstep.Wait)
 	}
 	if answer.err != nil {
 		t.Fatalf("the erase failed once issue ACME-1's row was let go: %v", answer.err)
@@ -552,64 +553,57 @@ type eraseAnswer struct {
 
 // startErase runs a confirmed Erase of node kind:id off the test's goroutine, on the connection the
 // erase opens for itself, and answers that connection's backend process id and the channel the
-// run's answer arrives on. Its LiveText is docs.ReadErasedLiveText, the writer cmd/dispatch hands
-// the erase, which takes a document's owner row and then its room's lock; the documents here hold
-// no stored history, so it answers nil for each once it holds them. Its count of the term
-// statistics counts nothing, which no lock step here rests on.
+// run's answer arrives on. The erase reads each document's live state through
+// docs.ReadErasedLiveText, which takes a document's owner row and then its room's lock; the
+// documents here hold no stored history, so it answers nil for each once it holds them, and the
+// erase lists no document whose history it replaces. Its sweep of the display trees waits a
+// millisecond, which no lock step here rests on.
 func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <-chan eraseAnswer) {
 	t.Helper()
-	stores := Stores{
-		LiveText: func(ctx context.Context, tx pgx.Tx, artifactID string, texts []string, marker string) (*LiveText, error) {
-			live, err := docs.ReadErasedLiveText(ctx, tx, artifactID, texts, marker)
-			if err != nil || live == nil {
-				return nil, err
-			}
-			t.Errorf("document %s has a stored history, which this test never writes", artifactID)
-			return nil, nil
-		},
-		TermStatistics: func(context.Context, pgx.Tx, []string) (TermRecount, error) {
-			return TermRecount{}, nil
-		},
-		TreeStoreBound: time.Millisecond,
-	}
 	answered := make(chan eraseAnswer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, true, stores)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, true, time.Millisecond)
+		if erasure != nil {
+			for _, document := range erasure.Documents {
+				t.Errorf("document %s has a stored history, which this test never writes", document.Document)
+			}
+		}
 		answered <- eraseAnswer{erasure, err}
 	}()
 	return eraseBackendIn(t, context.Background(), database), answered
 }
 
 // followTheErase runs Erase over comment while holds hold their rows (startErase), and follows it
-// as followTheBackfill follows the backfill: it lets go of each hold the run's backend queues
-// behind, one at a time, reading where the run waits each time (requireStoppedAt), holds the order
-// the run queued in to the store's lock order (requireTheStoreLockOrder) and its owner rows to
-// ascending owner key (requireOwnersAscending), and answers what the run answered. The order is
-// read before a failed run fails the test, since a run that takes a step out of order can fail on
-// it, and the order is what names the step.
-func followTheErase(t *testing.T, database *store.Store, comment string, holds []*batchHold) *Erasure {
+// as graphcensus's followTheBackfill follows the backfill: it lets go of each hold the run's
+// backend queues behind, one at a time, reading where the run waits each time
+// (lockstep.RequireStoppedAt), holds the order the run queued in to the store's lock order
+// (lockstep.RequireTheStoreLockOrder) and its owner rows to ascending owner key
+// (requireOwnersAscending), and answers what the run answered. The order is read before a failed
+// run fails the test, since a run that takes a step out of order can fail on it, and the order is
+// what names the step.
+func followTheErase(t *testing.T, database *store.Store, comment string, holds []*lockstep.Hold) *Erasure {
 	t.Helper()
 	ctx := context.Background()
 	pid, answered := startErase(t, database, commentNodeKind, comment)
-	var queued []*batchHold
-	deadline := time.Now().Add(batchLockWait)
+	var queued []*lockstep.Hold
+	deadline := time.Now().Add(lockstep.Wait)
 	for {
 		select {
 		case answer := <-answered:
-			requireTheStoreLockOrder(t, "the erase", holds, queued)
+			lockstep.RequireTheStoreLockOrder(t, "the erase", holds, queued)
 			requireOwnersAscending(t, queued)
 			if answer.err != nil {
-				t.Fatalf("the erase failed after it queued behind %s: %v", holdNames(queued), answer.err)
+				t.Fatalf("the erase failed after it queued behind %s: %v", lockstep.HoldNames(queued), answer.err)
 			}
 			return answer.erasure
 		default:
 		}
-		var behind []*batchHold
+		var behind []*lockstep.Hold
 		for _, hold := range holds {
-			if hold.released {
+			if hold.Released() {
 				continue
 			}
-			waits, err := storetest.QueuedBehind(ctx, hold.tx, pid)
+			waits, err := storetest.QueuedBehind(ctx, hold.Tx, pid)
 			if err != nil {
 				t.Fatalf("read what the erase waits on: %v", err)
 			}
@@ -621,16 +615,16 @@ func followTheErase(t *testing.T, database *store.Store, comment string, holds [
 		case 0:
 			if time.Now().After(deadline) {
 				t.Fatalf("the erase queued behind none of the holds still held and did not answer within %s (it queued behind %s so far)",
-					batchLockWait, holdNames(queued))
+					lockstep.Wait, lockstep.HoldNames(queued))
 			}
 			time.Sleep(2 * time.Millisecond)
 		case 1:
-			requireStoppedAt(t, ctx, database, pid, "the erase", behind[0])
+			lockstep.RequireStoppedAt(t, ctx, database, pid, "the erase", behind[0])
 			queued = append(queued, behind[0])
-			behind[0].release()
-			deadline = time.Now().Add(batchLockWait)
+			behind[0].Release()
+			deadline = time.Now().Add(lockstep.Wait)
 		default:
-			t.Fatalf("the erase queued behind %d holds at once (%s), which one statement cannot do", len(behind), holdNames(behind))
+			t.Fatalf("the erase queued behind %d holds at once (%s), which one statement cannot do", len(behind), lockstep.HoldNames(behind))
 		}
 	}
 }
@@ -638,17 +632,17 @@ func followTheErase(t *testing.T, database *store.Store, comment string, holds [
 // requireOwnersAscending holds the owner rows the run queued behind to the order lockInStoreOrder
 // takes several of them in, ascending owner key as events.lockOwners spells it. The store's lock
 // order puts the owner rows first and leaves their order among themselves to the writer, so
-// requireTheStoreLockOrder does not read it.
-func requireOwnersAscending(t *testing.T, queued []*batchHold) {
+// lockstep.RequireTheStoreLockOrder does not read it.
+func requireOwnersAscending(t *testing.T, queued []*lockstep.Hold) {
 	t.Helper()
-	var previous *batchHold
+	var previous *lockstep.Hold
 	for _, hold := range queued {
-		if hold.step != stepOwner {
+		if hold.Step != lockstep.StepOwner {
 			continue
 		}
-		if previous != nil && hold.kind+":"+hold.id < previous.kind+":"+previous.id {
+		if previous != nil && hold.Kind+":"+hold.ID < previous.Kind+":"+previous.ID {
 			t.Errorf("the erase took %s before %s: it takes its owner rows in ascending owner key, so %s:%s before %s:%s (queued in order: %s)",
-				previous.name, hold.name, hold.kind, hold.id, previous.kind, previous.id, holdNames(queued))
+				previous.Name, hold.Name, hold.Kind, hold.ID, previous.Kind, previous.ID, lockstep.HoldNames(queued))
 		}
 		previous = hold
 	}
@@ -660,7 +654,7 @@ func requireOwnersAscending(t *testing.T, queued []*batchHold) {
 // this run's.
 func eraseBackendIn(t *testing.T, ctx context.Context, database *store.Store) uint32 {
 	t.Helper()
-	deadline := time.Now().Add(batchLockWait)
+	deadline := time.Now().Add(lockstep.Wait)
 	for {
 		var pid uint32
 		err := database.Pool.QueryRow(ctx, `
@@ -674,7 +668,7 @@ func eraseBackendIn(t *testing.T, ctx context.Context, database *store.Store) ui
 			t.Fatalf("read the erase's backend: %v", err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the erase opened no connection within %s", batchLockWait)
+			t.Fatalf("the erase opened no connection within %s", lockstep.Wait)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

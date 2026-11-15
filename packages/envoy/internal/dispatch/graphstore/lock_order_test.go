@@ -649,7 +649,7 @@ var storeLockOrderClauses = []string{
 	"the event is appended before the tuples whose cause it is",
 	"a graph_nodes write touching several nodes takes them in ascending (kind, id)",
 	"a writer under the revision fence",
-	"takes the document's owner row, through lockartifactowner or the backfill's copy of it (graphcensus's lockdocumentowner), then the document's document_block_versions row `for no key update`",
+	"takes the document's owner row, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
 	"appending a tuple locks no row of another table",
 	"takes no owner row at all",
 }

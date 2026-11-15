@@ -357,7 +357,7 @@ func rebuildSearchTermStats(ctx context.Context, tx pgx.Tx, project string) (int
 // RecountSearchTermStatsTx counts again, inside tx, the term statistics of projects and of every
 // project a search_term_queue row tx itself wrote names, and answers the projects it counted, in
 // key order, and how many of those queue rows it deleted. It is the erase's
-// (`envoy-dispatch erase`, graphcensus.Erase), whose deletes and rewrites of items queue each
+// (`envoy-dispatch erase`, grapherase.Erase), whose deletes and rewrites of items queue each
 // item's old vector, which holds the erased words, while the statistics may count those words
 // already: projects names the projects whose documents' search rows the erase moved, which a
 // document_search row deleted queues nothing for.

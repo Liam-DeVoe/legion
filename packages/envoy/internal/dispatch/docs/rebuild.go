@@ -246,7 +246,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks}, nil
 }
 
-// ErasedLiveText is what `envoy-dispatch erase` (graphcensus.Erase) leaves of the live state of a
+// ErasedLiveText is what `envoy-dispatch erase` (grapherase.Erase) leaves of the live state of a
 // document whose text, or whose stored history, holds the bytes it erases: the live text with each
 // erased text replaced by the erase's marker, seeded as the document's one stored update in place
 // of every update it holds, through the statements a rebuild writes (RebuildTx). The rows are
@@ -266,7 +266,7 @@ type ErasedLiveText struct {
 	// them where its markdown spells them otherwise than the erased text is written - an escaped
 	// `*` or `_`, for one - so the replacement, which reads the markdown byte for byte, found no
 	// place for the marker there. The erase refuses such a document rather than report success
-	// over the bytes it would leave (graphcensus.Erase).
+	// over the bytes it would leave (grapherase.Erase).
 	Left bool
 	// Updates is how many stored updates the history holds, every one of which the seed replaces.
 	Updates int64

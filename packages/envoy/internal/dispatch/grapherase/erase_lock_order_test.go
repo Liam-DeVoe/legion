@@ -1,4 +1,4 @@
-package graphcensus
+package grapherase
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // R17: every store write takes one lock order, and the first of its invariants is that a store
@@ -24,9 +25,9 @@ import (
 // writer that takes the node row first queues there holding nothing of the owner. The test reads
 // which of the two the erase is by trying the owner row with nowait while the erase waits.
 //
-// This is the writer TestEveryStoreWriteCallSiteIsListed cannot see: its six function names are
-// how every other writer reaches the store, and the erase writes graph_tuples and graph_nodes
-// with statements of its own (erase.go, apply), so no test of this tree holds it to the order.
+// The erase deletes graph_tuples and graph_nodes rows through graphstore.EraseNode (erase.go,
+// apply), which TestEveryStoreWriteCallSiteIsListed lists, and leaves the proof of its lock order
+// to this package: this test holds it to taking the owner row first.
 func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -44,22 +45,13 @@ func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 		t.Fatalf("hold the node row of comment %s: %v", seeded.comment, err)
 	}
 
-	stores := Stores{
-		LiveText: func(context.Context, pgx.Tx, string, []string, string) (*LiveText, error) {
-			return nil, nil
-		},
-		TermStatistics: func(context.Context, pgx.Tx, []string) (TermRecount, error) {
-			return TermRecount{}, nil
-		},
-		TreeStoreBound: time.Millisecond,
-	}
 	type answer struct {
 		erasure *Erasure
 		err     error
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, true, stores)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, true, time.Millisecond)
 		answered <- answer{erasure, err}
 	}()
 
@@ -67,7 +59,7 @@ func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
 		t.Fatalf("the erase answered (err %v) without waiting on the comment's node row, which another transaction held", early.err)
 	}
-	waited := waitingStatement(t, database, pid)
+	waited := lockstep.WaitingStatement(t, database, pid)
 	t.Logf("the erase waits behind the held node row at: %s", waited)
 
 	// The owner row: free to take while the erase waits means the erase does not hold it.

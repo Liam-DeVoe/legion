@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,35 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
-
-// batchLockWait bounds each wait of TestEveryBackfillBatchTakesTheStoreLockOrder: for the run to
-// queue behind the next hold once the one before it let go, and for the run to answer once it has
-// queued behind the last. It is far above what the work takes; a wait that passes it is the run
-// waiting on something the test does not hold.
-const batchLockWait = 30 * time.Second
-
-// The steps a hold stands for, named as a failure names them: the owner row; the two steps a
-// writer under the revision fence (R23) adds after it, the document's document_block_versions row
-// and the projection rows it reads again under those two locks, `for update`, before it writes
-// anything (heldBlockRows, heldBlockRefRows); the node rows; the tuple append; the projection rows
-// a batch writes; and the project of an event. requireTheStoreLockOrder holds the order a run
-// takes them in to the invariants on api/inbox_read.go's markInboxReadThreads, not to one sequence
-// of these steps.
-const (
-	stepOwner      = "the owner row"
-	stepFence      = "the revision fence's document_block_versions row"
-	stepHeld       = "the projection rows, read again under the fence"
-	stepNode       = "the node rows"
-	stepTuple      = "the tuple append"
-	stepProjection = "the projection rows"
-	stepEvent      = "the project of the event"
-)
-
-// fencedSteps are the steps whose rows the revision fence guards: a writer under it takes the
-// document's document_block_versions row before it reads a projection row again under it, or
-// writes a node, a tuple or a projection row.
-var fencedSteps = []string{stepHeld, stepNode, stepTuple, stepProjection}
 
 // TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
 // c-lock-order for the three batches backfill_fence_test.go does not prove: writeBlockRefBatch,
@@ -60,8 +31,8 @@ var fencedSteps = []string{stepHeld, stepNode, stepTuple, stepProjection}
 // pg_locks, the tables the run's transaction holds a lock on, so a step the run took ahead of one
 // an invariant puts first shows as a lock on that step's table. The run must never queue behind a
 // step's row the batch does not take, must take every step it does take, and must take them as the
-// invariants on markInboxReadThreads have them (requireTheStoreLockOrder). The subtest then reads
-// what the run wrote, so the run it followed is the one that committed.
+// invariants on markInboxReadThreads have them (lockstep.RequireTheStoreLockOrder). The subtest
+// then reads what the run wrote, so the run it followed is the one that committed.
 func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeBlockRefBatch takes the owner row, the fence, its block_refs rows, then the tuple append, and no node row", requireTheBlockRefBatchLockOrder)
 	t.Run("writeCommentBatch takes no owner row, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
@@ -103,33 +74,33 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 		t.Fatalf("write the block's reference to CORE-1: %v", err)
 	}
 
-	owner := holdRow(t, database, &batchHold{
-		name: "issue CORE-1's row", step: stepOwner, taken: true,
-		statement: "select closed_at is null from issues where key = $1 for no key update",
-		unlocked:  []string{"document_block_versions", "block_refs", "graph_nodes", "graph_tuples"},
+	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Taken: true,
+		Statement: "select closed_at is null from issues where key = $1 for no key update",
+		Unlocked:  []string{"document_block_versions", "block_refs", "graph_nodes", "graph_tuples"},
 	}, `select 1 from issues where key = $1 for update`, "CORE-1")
-	fence := holdRow(t, database, &batchHold{
-		name: "the document's document_block_versions row", step: stepFence, taken: true,
-		statement: "select 1 from document_block_versions where artifact_id = $1 for no key update",
-		unlocked:  []string{"block_refs", "graph_nodes", "graph_tuples"},
+	fence := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the document's document_block_versions row", Step: lockstep.StepFence, Taken: true,
+		Statement: "select 1 from document_block_versions where artifact_id = $1 for no key update",
+		Unlocked:  []string{"block_refs", "graph_nodes", "graph_tuples"},
 	}, `select 1 from document_block_versions where artifact_id = $1::uuid for update`, document.artifactID)
-	row := holdRow(t, database, &batchHold{
-		name: "the block_refs row", step: stepHeld, taken: true,
-		statement: "select r.artifact_id::text, r.block_id, r.kind, r.to_kind, r.to_id from block_refs r",
+	row := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the block_refs row", Step: lockstep.StepHeld, Taken: true,
+		Statement: "select r.artifact_id::text, r.block_id, r.kind, r.to_kind, r.to_id from block_refs r",
 	}, `select 1 from block_refs where artifact_id = $1::uuid and block_id = 'only' for no key update`, document.artifactID)
-	tuple := holdWrite(t, database, &batchHold{
-		name: "the reference's mentions tuple", step: stepTuple, taken: true,
-		statement: "insert into graph_tuples (",
+	tuple := holdWrite(t, database, &lockstep.Hold{
+		Name: "the reference's mentions tuple", Step: lockstep.StepTuple, Taken: true,
+		Statement: "insert into graph_tuples (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: refs.BlockNodeKind, FromID: block, Kind: "mentions", ToKind: "issue", ToID: "CORE-1",
 		At: time.Now(), Who: backfillActor, SourceEvent: sourceSeq, Asserted: true,
 	}})
-	node := holdRow(t, database, &batchHold{name: "the block's node row", step: stepNode},
+	node := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "the block's node row", Step: lockstep.StepNode},
 		`select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, refs.BlockNodeKind, block)
-	project := holdRow(t, database, &batchHold{name: "project CORE's row", step: stepEvent},
+	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CORE's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CORE")
 
-	report := followTheBackfill(t, database, "writeBlockRefBatch", []*batchHold{owner, fence, row, tuple, node, project})
+	report := followTheBackfill(t, database, "writeBlockRefBatch", []*lockstep.Hold{owner, fence, row, tuple, node, project})
 
 	var nodeKind, nodeAddress *string
 	var tuples int64
@@ -218,16 +189,16 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 	// what its insert waits on; the hold's own base attributes are at the sentinel, which no repeat
 	// key covers, so the hold holds the node's row and nothing else. Every node goes in one
 	// statement, which reads no tuple and touches no comments row.
-	nodeHold := func(name, kind, id string, node graphstore.Node) *batchHold {
-		return holdWrite(t, database, &batchHold{
-			name: name, step: stepNode, taken: true, kind: kind, id: id,
-			statement: "with incoming as (",
+	nodeHold := func(name, kind, id string, node graphstore.Node) *lockstep.Hold {
+		return holdWrite(t, database, &lockstep.Hold{
+			Name: name, Step: lockstep.StepNode, Taken: true, Kind: kind, ID: id,
+			Statement: "with incoming as (",
 		}, []graphstore.Node{node}, nil)
 	}
 
-	owner := holdRow(t, database, &batchHold{name: "issue CENS-1's row", step: stepOwner},
+	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CENS-1's row", Step: lockstep.StepOwner},
 		`select 1 from issues where key = $1 for update`, "CENS-1")
-	project := holdRow(t, database, &batchHold{name: "project CENS's row", step: stepEvent},
+	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CENS's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CENS")
 	firstComment := nodeHold("comment c1's node row", commentNodeKind, c1.id, commentNode(c1.id))
 	secondComment := nodeHold("comment c2's node row", commentNodeKind, c2.id, commentNode(c2.id))
@@ -237,27 +208,27 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		graphstore.PersonNode("zed", backfillActor, now, graphstore.NoEvent))
 	sessionNode := nodeHold("session ses_lock_steps's node row", graphstore.KindSession, session.ID,
 		graphstore.SessionNode(session.ID, backfillActor, now, graphstore.NoEvent))
-	state := holdWrite(t, database, &batchHold{
-		name: "comment c1's state tuple", step: stepTuple, taken: true,
-		statement: "insert into graph_tuples (",
+	state := holdWrite(t, database, &lockstep.Hold{
+		Name: "comment c1's state tuple", Step: lockstep.StepTuple, Taken: true,
+		Statement: "insert into graph_tuples (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: commentNodeKind, FromID: c1.id, Kind: tupleState, ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
 		At: now, Who: c1.by, SourceEvent: c1.event, Asserted: true,
 	}})
-	amyAuthored := holdWrite(t, database, &batchHold{
-		name: "comment c3's authored_by tuple", step: stepTuple, taken: true,
-		statement: "insert into graph_tuples (",
+	amyAuthored := holdWrite(t, database, &lockstep.Hold{
+		Name: "comment c3's authored_by tuple", Step: lockstep.StepTuple, Taken: true,
+		Statement: "insert into graph_tuples (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: commentNodeKind, FromID: c3.id, Kind: graphstore.TupleAuthoredBy, ToKind: graphstore.KindPerson, ToID: "amy",
 		At: now, Who: c3.by, SourceEvent: c3.event, Asserted: true,
 	}})
-	row := holdRow(t, database, &batchHold{
-		name: "comment c1's comments row", step: stepProjection, taken: true, names: firstComment,
-		statement: "update comments c set node_kind",
+	row := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "comment c1's comments row", Step: lockstep.StepProjection, Taken: true, Names: firstComment,
+		Statement: "update comments c set node_kind",
 	}, `select 1 from comments where id = $1::uuid for no key update`, c1.id)
 
 	report := followTheBackfill(t, database, "writeCommentBatch",
-		[]*batchHold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
+		[]*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
 
 	for _, seeded := range comments {
 		authorKind, authorID, _ := graphstore.AuthorOf(seeded.by)
@@ -308,30 +279,30 @@ func requireTheRoleBatchLockOrder(t *testing.T) {
 	}
 	now := time.Now()
 
-	owner := holdRow(t, database, &batchHold{name: "issue CENS-1's row", step: stepOwner},
+	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CENS-1's row", Step: lockstep.StepOwner},
 		`select 1 from issues where key = $1 for update`, "CENS-1")
-	project := holdRow(t, database, &batchHold{name: "project CENS's row", step: stepEvent},
+	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CENS's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CENS")
 	// The batch is one statement, and Postgres takes the table locks of every arm when the statement
 	// starts, so the tables it holds say nothing about which arm it has run: the order it queues in
 	// is what proves the order of its arms.
-	pageNode := holdWrite(t, database, &batchHold{
-		name: "the role's page's node row", step: stepNode, taken: true, kind: graphstore.KindPage, id: page,
-		statement: "with graph_nodes_written as (",
+	pageNode := holdWrite(t, database, &lockstep.Hold{
+		Name: "the role's page's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindPage, ID: page,
+		Statement: "with graph_nodes_written as (",
 	}, []graphstore.Node{graphstore.PageNode(page, backfillActor, now, graphstore.NoEvent)}, nil)
-	roleNode := holdWrite(t, database, &batchHold{
-		name: "the role's node row", step: stepNode, taken: true, kind: graphstore.KindRole, id: role,
-		statement: "with graph_nodes_written as (",
+	roleNode := holdWrite(t, database, &lockstep.Hold{
+		Name: "the role's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindRole, ID: role,
+		Statement: "with graph_nodes_written as (",
 	}, []graphstore.Node{graphstore.RoleNode(role, backfillActor, now, graphstore.NoEvent)}, nil)
-	partOf := holdWrite(t, database, &batchHold{
-		name: "the page's part_of tuple", step: stepTuple, taken: true,
-		statement: "with graph_nodes_written as (",
+	partOf := holdWrite(t, database, &lockstep.Hold{
+		Name: "the page's part_of tuple", Step: lockstep.StepTuple, Taken: true,
+		Statement: "with graph_nodes_written as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindPage, FromID: page, Kind: graphstore.TuplePartOf, ToKind: graphstore.KindRole, ToID: role,
 		At: now, Who: backfillActor, SourceEvent: routed.ID, Asserted: true,
 	}})
 
-	report := followTheBackfill(t, database, "writeRoleBatch", []*batchHold{owner, project, pageNode, roleNode, partOf})
+	report := followTheBackfill(t, database, "writeRoleBatch", []*lockstep.Hold{owner, project, pageNode, roleNode, partOf})
 
 	requireBackfilledRole(t, database, role, routed.ID)
 	if done := reportedKind(t, report, graphstore.KindRole); done.Rows != 1 || done.Nodes != 2 || !done.Complete {
@@ -357,9 +328,9 @@ const (
 //
 // Each of the four rows is held in a transaction of its own while the real Backfill runs
 // (followTheBackfill), and the order the run queues behind them in is held to the invariants
-// (requireTheStoreLockOrder): the owner rows first and in ascending owner key, the fence rows
-// before the rows they guard and in document id order. The test then reads that both blocks name
-// their nodes, so the run it followed is the one that committed.
+// (lockstep.RequireTheStoreLockOrder): the owner rows first and in ascending owner key, the fence
+// rows before the rows they guard and in document id order. The test then reads that both blocks
+// name their nodes, so the run it followed is the one that committed.
 func TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -368,22 +339,22 @@ func TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow(t *testing.T) {
 	seedPreStoreBlock(t, database, core, "only")
 	seedPreStoreBlock(t, database, acme, "only")
 
-	ownerHold := func(issue string) *batchHold {
-		return holdRow(t, database, &batchHold{
-			name: "issue " + issue + "'s row", step: stepOwner, taken: true, kind: "issue", id: issue,
-			statement: "select closed_at is null from issues where key = $1 for no key update",
-			unlocked:  []string{"document_block_versions", "document_blocks", "graph_nodes", "graph_tuples"},
+	ownerHold := func(issue string) *lockstep.Hold {
+		return lockstep.HoldRow(t, database, &lockstep.Hold{
+			Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+			Statement: "select closed_at is null from issues where key = $1 for no key update",
+			Unlocked:  []string{"document_block_versions", "document_blocks", "graph_nodes", "graph_tuples"},
 		}, `select 1 from issues where key = $1 for update`, issue)
 	}
-	fenceHold := func(document preStoreDocument) *batchHold {
-		return holdRow(t, database, &batchHold{
-			name: document.refKey + "'s document_block_versions row", step: stepFence, taken: true,
-			kind: "document", id: document.artifactID,
-			statement: "select 1 from document_block_versions where artifact_id = $1 for no key update",
-			unlocked:  []string{"document_blocks", "graph_nodes", "graph_tuples"},
+	fenceHold := func(document preStoreDocument) *lockstep.Hold {
+		return lockstep.HoldRow(t, database, &lockstep.Hold{
+			Name: document.refKey + "'s document_block_versions row", Step: lockstep.StepFence, Taken: true,
+			Kind: "document", ID: document.artifactID,
+			Statement: "select 1 from document_block_versions where artifact_id = $1 for no key update",
+			Unlocked:  []string{"document_blocks", "graph_nodes", "graph_tuples"},
 		}, `select 1 from document_block_versions where artifact_id = $1::uuid for update`, document.artifactID)
 	}
-	holds := []*batchHold{ownerHold("ACME-1"), ownerHold("CORE-1"), fenceHold(core), fenceHold(acme)}
+	holds := []*lockstep.Hold{ownerHold("ACME-1"), ownerHold("CORE-1"), fenceHold(core), fenceHold(acme)}
 
 	report := followTheBackfill(t, database, "writeBlockBatch", holds)
 
@@ -399,89 +370,6 @@ func TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow(t *testing.T) {
 	}
 	if done := reportedKind(t, report, refs.BlockNodeKind); done.Rows != 2 {
 		t.Errorf("the backfill reports %#v for blocks, want 2 rows", done)
-	}
-}
-
-// TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish is the deadlock the owner order spares a block
-// batch and an erase that share two documents of two issues. The erase is of a comment on issue
-// CORE-1's document whose text a version of issue ACME-1's document quotes, so it writes under both
-// owner rows and takes them in owner-key order, ACME-1's first (lockInStoreOrder); the batch
-// backfills a block of each document. Another transaction holds CORE-1's document's
-// document_block_versions row while the batch starts, so the batch stops there holding what it
-// took before it; the erase then starts and queues behind the batch. Once that row is let go both
-// have to finish.
-//
-// A batch that took the documents' rows document by document, in id order, would stop at that row
-// holding CORE-1's row alone; the erase would take ACME-1's row and wait for CORE-1's, and the
-// batch, let go, would wait for ACME-1's, each holding the row the other waits for, until Postgres
-// ended one of them with `deadlock detected`. Taking both owner rows first, in the erase's order,
-// the batch holds both while it waits, and the erase waits behind it holding neither.
-func TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish(t *testing.T) {
-	database := storetest.Open(t)
-	ctx := context.Background()
-	core := seedIssueDocument(t, database, "CORE", coreDocumentID, "Written before the store existed.")
-	var comment string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into comments (artifact_id, author, body, anchor)
-		values ($1::uuid, '{"kind":"user","id":"alice"}', 'A remark on the spec.', jsonb_build_object('artifact_id', $1::text))
-		returning id::text
-	`, core.artifactID).Scan(&comment); err != nil {
-		t.Fatalf("write the comment on %s: %v", core.refKey, err)
-	}
-	acme := seedIssueDocument(t, database, "ACME", acmeDocumentID, "Alice wrote: A remark on the spec.")
-	// The first run gives the comment its node, which the erase needs; the blocks are written
-	// after it, so the run under test has them to backfill.
-	if _, err := Backfill(ctx, database, io.Discard); err != nil {
-		t.Fatalf("backfill the comment: %v", err)
-	}
-	seedPreStoreBlock(t, database, core, "only")
-	seedPreStoreBlock(t, database, acme, "only")
-
-	fence := holdRow(t, database, &batchHold{name: core.refKey + "'s document_block_versions row", step: stepFence},
-		`select 1 from document_block_versions where artifact_id = $1::uuid for update`, core.artifactID)
-	backfillPID, backfilled := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, fence.tx, backfillPID, backfilled, batchLockWait); done {
-		t.Fatalf("the backfill answered (err %v) without waiting on %s's document_block_versions row, which another transaction held", early.err, core.refKey)
-	}
-	t.Logf("the backfill waits behind %s at %q, holding locks on %v", fence.name,
-		waitingStatement(t, database, backfillPID), tablesLockedBy(t, ctx, database, backfillPID))
-	erasePID, erased := startErase(t, database, commentNodeKind, comment)
-	waitBlockedBy(t, ctx, database, erasePID, backfillPID, erased)
-	t.Logf("the erase waits behind the backfill at %q", waitingStatement(t, database, erasePID))
-	fence.release()
-
-	deadline := time.After(batchLockWait)
-	for backfilled != nil || erased != nil {
-		select {
-		case answer := <-backfilled:
-			if answer.err != nil {
-				t.Errorf("the backfill failed once %s was let go: %v", fence.name, answer.err)
-			}
-			backfilled = nil
-		case answer := <-erased:
-			if answer.err != nil {
-				t.Errorf("the erase failed once %s was let go: %v", fence.name, answer.err)
-			} else if !answer.erasure.Applied {
-				t.Errorf("the erase removed nothing once %s was let go: %+v", fence.name, answer.erasure)
-			}
-			erased = nil
-		case <-deadline:
-			t.Fatalf("the backfill and the erase did not both answer within %s of the release of %s", batchLockWait, fence.name)
-		}
-	}
-	if t.Failed() {
-		return
-	}
-	var named, commentStands int64
-	if err := database.Pool.QueryRow(ctx, `
-		select (select count(*) from document_blocks
-		        where artifact_id = any($1::uuid[]) and block_id = 'only' and node_kind = $2 and node_address is not null),
-		       (select count(*) from comments where id::text = $3)
-	`, []string{core.artifactID, acme.artifactID}, refs.BlockNodeKind, comment).Scan(&named, &commentStands); err != nil {
-		t.Fatalf("read what the two runs left: %v", err)
-	}
-	if named != 2 || commentStands != 0 {
-		t.Errorf("after both runs %d of the two blocks name their node and %d comment row(s) stand, want both blocks and none", named, commentStands)
 	}
 }
 
@@ -532,111 +420,28 @@ func seedPreStoreBlock(t *testing.T, database *store.Store, document preStoreDoc
 	}
 }
 
-// waitBlockedBy waits until backend waiter waits on a lock backend blocker holds, which
-// pg_blocking_pids answers, and fails the test if the waiter's run answers first or the wait
-// passes batchLockWait.
-func waitBlockedBy(t *testing.T, ctx context.Context, database *store.Store, waiter, blocker uint32, answered <-chan eraseAnswer) {
-	t.Helper()
-	deadline := time.Now().Add(batchLockWait)
-	for {
-		select {
-		case answer := <-answered:
-			t.Fatalf("the erase answered (err %v) without waiting on the backfill", answer.err)
-		default:
-		}
-		var blocked bool
-		if err := database.Pool.QueryRow(ctx,
-			`select $2::int = any(pg_blocking_pids($1::int))`, int32(waiter), int32(blocker)).Scan(&blocked); err != nil {
-			t.Fatalf("read what backend %d waits on: %v", waiter, err)
-		}
-		if blocked {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("backend %d did not wait on backend %d within %s", waiter, blocker, batchLockWait)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-// batchHold is one row of a step of the store's lock order, held in a transaction of its own while
-// the backfill runs, and what the test expects of the run while it waits behind it.
-type batchHold struct {
-	// name is the row as a failure names it, and step the step of the lock order it stands for.
-	name, step string
-	// taken is whether the batch takes the row. A row it does not take is held for the whole run,
-	// and the run must never queue behind it.
-	taken bool
-	// kind and id order the row among the run's other rows of its step: a node's kind and id, an
-	// owner row's owner key split at its colon ("issue", "CORE-1"), a fence row's document id.
-	kind, id string
-	// names is, for a projection row the run writes, the hold of the node row its foreign key
-	// names, when the run writes that node, and nil otherwise.
-	names *batchHold
-	// statement is how the statement the run waits at behind this hold starts, lower-cased with its
-	// whitespace collapsed: the statement that takes the step.
-	statement string
-	// unlocked are the tables the run's transaction may not hold a lock on while it waits behind
-	// this hold: those of the batch's later steps, and those of a step it does not take.
-	unlocked []string
-
-	tx       pgx.Tx
-	released bool
-}
-
-// beginBatchHold opens the transaction hold holds its row in. Its release is registered as a
-// cleanup too, so a failed assertion never leaves the run queued on a lock nothing will drop.
-func beginBatchHold(t *testing.T, database *store.Store, hold *batchHold) {
-	t.Helper()
-	tx, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin the transaction holding %s: %v", hold.name, err)
-	}
-	hold.tx = tx
-	t.Cleanup(hold.release)
-}
-
-func (h *batchHold) release() {
-	if h.released {
-		return
-	}
-	h.released = true
-	_ = h.tx.Rollback(context.Background())
-}
-
-// holdRow holds a row that is already there, with statement, which locks it.
-func holdRow(t *testing.T, database *store.Store, hold *batchHold, statement string, args ...any) *batchHold {
-	t.Helper()
-	beginBatchHold(t, database, hold)
-	tag, err := hold.tx.Exec(context.Background(), statement, args...)
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("hold %s: %d rows, %v", hold.name, tag.RowsAffected(), err)
-	}
-	return hold
-}
-
 // holdWrite holds a row the batch inserts, by writing the same key through the store's own writer
-// in a transaction left open: the batch's insert of that key then waits to learn whether the hold's
-// row commits. A node is the same (kind, id), and a tuple the same repeat key, which `on conflict
-// do nothing` cannot pass until the hold ends.
-func holdWrite(t *testing.T, database *store.Store, hold *batchHold, nodes []graphstore.Node, tuples []graphstore.Tuple) *batchHold {
+// in a transaction left open (lockstep.Begin): the batch's insert of that key then waits to learn
+// whether the hold's row commits. A node is the same (kind, id), and a tuple the same repeat key,
+// which `on conflict do nothing` cannot pass until the hold ends.
+func holdWrite(t *testing.T, database *store.Store, hold *lockstep.Hold, nodes []graphstore.Node, tuples []graphstore.Tuple) *lockstep.Hold {
 	t.Helper()
-	beginBatchHold(t, database, hold)
-	if err := graphstore.Write(context.Background(), hold.tx, nodes, tuples); err != nil {
-		t.Fatalf("hold %s: %v", hold.name, err)
+	lockstep.Begin(t, database, hold)
+	if err := graphstore.Write(context.Background(), hold.Tx, nodes, tuples); err != nil {
+		t.Fatalf("hold %s: %v", hold.Name, err)
 	}
 	return hold
 }
 
 // followTheBackfill runs Backfill on a connection of its own while holds hold their rows, lets go
 // of each hold the run's backend queues behind, one at a time, holds the order the run queued
-// behind them in to the store's lock order (requireTheStoreLockOrder), and answers the run's
-// report. A statement waits on one lock at a time, so a run queued behind two holds at once is a
-// failure of the test's own reading, and a run that queues behind none and does not answer is
-// waiting on something the test does not hold. The order is read before a failed run fails the
+// behind them in to the store's lock order (lockstep.RequireTheStoreLockOrder), and answers the
+// run's report. A statement waits on one lock at a time, so a run queued behind two holds at once
+// is a failure of the test's own reading, and a run that queues behind none and does not answer
+// is waiting on something the test does not hold. The order is read before a failed run fails the
 // test, since a batch that takes a step too early can fail on it: a projection row written before
 // its node is refused by the foreign key, and the order is what names the step.
-func followTheBackfill(t *testing.T, database *store.Store, batch string, holds []*batchHold) BackfillReport {
+func followTheBackfill(t *testing.T, database *store.Store, batch string, holds []*lockstep.Hold) BackfillReport {
 	t.Helper()
 	ctx := context.Background()
 	pid, answered := startBackfill(t, database)
@@ -645,27 +450,27 @@ func followTheBackfill(t *testing.T, database *store.Store, batch string, holds 
 	// close waiting on a run queued behind a hold.
 	t.Cleanup(func() {
 		for _, hold := range holds {
-			hold.release()
+			hold.Release()
 		}
 	})
-	var queued []*batchHold
-	deadline := time.Now().Add(batchLockWait)
+	var queued []*lockstep.Hold
+	deadline := time.Now().Add(lockstep.Wait)
 	for {
 		select {
 		case answer := <-answered:
-			requireTheStoreLockOrder(t, batch, holds, queued)
+			lockstep.RequireTheStoreLockOrder(t, batch, holds, queued)
 			if answer.err != nil {
-				t.Fatalf("the backfill failed after %s queued behind %s: %v", batch, holdNames(queued), answer.err)
+				t.Fatalf("the backfill failed after %s queued behind %s: %v", batch, lockstep.HoldNames(queued), answer.err)
 			}
 			return answer.report
 		default:
 		}
-		var behind []*batchHold
+		var behind []*lockstep.Hold
 		for _, hold := range holds {
-			if hold.released {
+			if hold.Released() {
 				continue
 			}
-			waits, err := storetest.QueuedBehind(ctx, hold.tx, pid)
+			waits, err := storetest.QueuedBehind(ctx, hold.Tx, pid)
 			if err != nil {
 				t.Fatalf("read what %s waits on: %v", batch, err)
 			}
@@ -677,167 +482,18 @@ func followTheBackfill(t *testing.T, database *store.Store, batch string, holds 
 		case 0:
 			if time.Now().After(deadline) {
 				t.Fatalf("%s queued behind none of the holds still held and the backfill did not answer within %s (it queued behind %s so far)",
-					batch, batchLockWait, holdNames(queued))
+					batch, lockstep.Wait, lockstep.HoldNames(queued))
 			}
 			time.Sleep(2 * time.Millisecond)
 		case 1:
-			requireStoppedAt(t, ctx, database, pid, batch, behind[0])
+			lockstep.RequireStoppedAt(t, ctx, database, pid, batch, behind[0])
 			queued = append(queued, behind[0])
-			behind[0].release()
-			deadline = time.Now().Add(batchLockWait)
+			behind[0].Release()
+			deadline = time.Now().Add(lockstep.Wait)
 		default:
-			t.Fatalf("%s queued behind %d holds at once (%s), which one statement cannot do", batch, len(behind), holdNames(behind))
+			t.Fatalf("%s queued behind %d holds at once (%s), which one statement cannot do", batch, len(behind), lockstep.HoldNames(behind))
 		}
 	}
-}
-
-// requireStoppedAt reads where the run is while it waits behind hold: the statement it waits at,
-// which has to be the statement that takes hold's step, and the tables its transaction holds a lock
-// on, none of which may be a table of a later step. Postgres keeps every table lock a transaction
-// takes until it ends, so a step the run has already taken shows as a lock on its table, where the
-// statement alone names only the step the run is stopped at.
-func requireStoppedAt(t *testing.T, ctx context.Context, database *store.Store, pid uint32, batch string, hold *batchHold) {
-	t.Helper()
-	running := strings.ToLower(waitingStatement(t, database, pid))
-	locked := tablesLockedBy(t, ctx, database, pid)
-	// The statement is shown by its head, which names it; pg_stat_activity keeps at most its first
-	// track_activity_query_size bytes anyway.
-	shown := running
-	if len(shown) > 120 {
-		shown = shown[:120] + "..."
-	}
-	t.Logf("%s waits behind %s (%s) at %q, holding locks on %v", batch, hold.name, hold.step, shown, locked)
-	if hold.statement != "" && !strings.HasPrefix(running, hold.statement) {
-		t.Errorf("%s waits behind %s (%s) at %q, which is not the statement that takes that step (it starts %q)",
-			batch, hold.name, hold.step, shown, hold.statement)
-	}
-	for _, table := range hold.unlocked {
-		if slices.Contains(locked, table) {
-			t.Errorf("%s already holds a lock on %s while it waits behind %s (%s): it ran a statement on %s, a table of a later step or of a step it does not take, before it took %s (it holds locks on %v)",
-				batch, table, hold.name, hold.step, table, hold.step, locked)
-		}
-	}
-}
-
-// requireTheStoreLockOrder holds the order the run queued behind holds in to the invariants written
-// on api/inbox_read.go's markInboxReadThreads, as api's requireTheWrittenOrderAdmits holds that
-// package's writers to them, and not to one sequence of steps: those invariants leave a tuple
-// append wherever its writer puts it, before a node row of the same write as the comment path puts
-// its comment's tuples before its author's node, or after a projection row. It holds the run to:
-//
-//   - no row of a step the batch does not take queued behind: the owner row comes first or not at
-//     all, and a batch that queued behind one took it after a step it had already taken;
-//   - every row of a step the batch takes queued behind once, or the step was not shown to be
-//     taken while it was held;
-//   - the owner row first: no row of another step taken before an owner row;
-//   - the revision fence's row (R23) after the owner row, which the rule before says, and before
-//     the rows it guards (fencedSteps);
-//   - a node's row before the projection row whose foreign key names it (batchHold.names);
-//   - the project of the event last;
-//   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
-//     rows in ascending owner key and fence rows in document id order, the order every writer of
-//     several documents takes them in (lockBlockDocuments, the erase's lockInStoreOrder,
-//     events.lockOwners).
-//
-// The third invariant, the event before the tuples it causes, holds of a batch with nothing to
-// read: a batch appends no event, and every cause its tuples carry is an event the log already
-// holds.
-func requireTheStoreLockOrder(t *testing.T, batch string, holds, queued []*batchHold) {
-	t.Helper()
-	order := holdNames(queued)
-	t.Logf("%s queued behind, in order: %s", batch, order)
-	at := func(hold *batchHold) int { return slices.Index(queued, hold) }
-	for _, hold := range holds {
-		position := at(hold)
-		switch {
-		case !hold.taken && position >= 0:
-			t.Errorf("%s queued behind %s (%s), a step it does not take, after %s: it took %s after a step it had already taken, out of the store's lock order (queued in order: %s)",
-				batch, hold.name, hold.step, holdNames(queued[:position]), hold.step, order)
-		case hold.taken && position < 0:
-			t.Errorf("%s never queued behind %s (%s) (queued in order: %s): the step was not taken while its row was held",
-				batch, hold.name, hold.step, order)
-		}
-	}
-	// before fails the run when it queued behind later, a row it takes, without having queued
-	// behind earlier, another row it takes, first: the invariant rule puts earlier first. A row of
-	// a step the run takes and never queued behind at all did not come first either, so it counts
-	// as taken after.
-	before := func(earlier, later *batchHold, rule string) {
-		t.Helper()
-		first, second := at(earlier), at(later)
-		if second >= 0 && (first < 0 || first > second) {
-			t.Errorf("%s took %s (%s) before %s (%s): %s (queued in order: %s)",
-				batch, later.name, later.step, earlier.name, earlier.step, rule, order)
-		}
-	}
-	for _, hold := range holds {
-		if !hold.taken {
-			continue
-		}
-		for _, other := range holds {
-			if !other.taken || other.step == hold.step {
-				continue
-			}
-			switch {
-			case hold.step == stepOwner:
-				before(hold, other, "the owner row comes first")
-			case hold.step == stepFence && slices.Contains(fencedSteps, other.step):
-				before(hold, other, "the revision fence's row comes before the rows it guards")
-			case other.step == stepEvent:
-				before(hold, other, "the project of the event comes last")
-			}
-		}
-		if hold.names != nil && hold.names.taken {
-			before(hold.names, hold, "a node's row comes before the projection row whose foreign key names it")
-		}
-	}
-	for _, ascending := range []struct{ step, rule string }{
-		{stepOwner, "several owner rows are taken in ascending owner key"},
-		{stepFence, "several documents' fence rows are taken in document id order"},
-		{stepNode, "several node rows are taken in ascending (kind, id)"},
-	} {
-		var previous *batchHold
-		for _, hold := range queued {
-			if !hold.taken || hold.step != ascending.step {
-				continue
-			}
-			if previous != nil && (hold.kind < previous.kind || hold.kind == previous.kind && hold.id < previous.id) {
-				t.Errorf("%s took %s before %s: %s, so %s %s before %s %s (queued in order: %s)",
-					batch, previous.name, hold.name, ascending.rule, hold.kind, hold.id, previous.kind, previous.id, order)
-			}
-			previous = hold
-		}
-	}
-}
-
-// holdNames names holds in their order, for a failure or a log line.
-func holdNames(holds []*batchHold) string {
-	names := make([]string, len(holds))
-	for index, hold := range holds {
-		names[index] = hold.name
-	}
-	return "[" + strings.Join(names, ", ") + "]"
-}
-
-// tablesLockedBy names every table backend pid holds or asks a lock on, in name order, which for a
-// run stopped on a lock is every table its transaction has read or written so far. It reads
-// pg_locks through the pool, a fresh view on each read, and leaves indexes and sequences out: a
-// step is named by the table it writes.
-func tablesLockedBy(t *testing.T, ctx context.Context, database *store.Store, pid uint32) []string {
-	t.Helper()
-	rows, err := database.Pool.Query(ctx, `
-		select distinct c.relname::text from pg_locks l
-		join pg_class c on c.oid = l.relation
-		where l.pid = $1 and c.relkind in ('r', 'p')
-		order by 1`, pid)
-	if err != nil {
-		t.Fatalf("read the tables backend %d has locked: %v", pid, err)
-	}
-	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read the tables backend %d has locked: %v", pid, err)
-	}
-	return tables
 }
 
 // reportedKind is one kind's line of a backfill report.

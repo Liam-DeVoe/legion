@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -67,12 +67,12 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	sum := sha256.Sum256([]byte(body))
 
 	type erased struct {
-		erasure *graphcensus.Erasure
+		erasure *grapherase.Erasure
 		err     error
 	}
 	done := make(chan erased, 1)
 	go func() {
-		erasure, err := graphcensus.Erase(ctx, databaseURL, "comment", comment, true, eraseStores(eraseTestWindow))
+		erasure, err := grapherase.Erase(ctx, databaseURL, "comment", comment, true, eraseTestWindow)
 		done <- erased{erasure, err}
 	}()
 	// The tree a read that began before the commit stores after it: planted the moment the
@@ -190,7 +190,7 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 		t.Fatalf("no stored update of the notes holds the text's bytes, so the refusal proves nothing")
 	}
 
-	erasure, err := graphcensus.Erase(ctx, databaseURL, "comment", comment, true, eraseStores(eraseTestWindow))
+	erasure, err := grapherase.Erase(ctx, databaseURL, "comment", comment, true, eraseTestWindow)
 	if err != nil {
 		t.Fatalf("erase %s: %v", comment, err)
 	}

@@ -313,7 +313,7 @@ key="$(jq -er '.key' "$work/body")" || fail E2 "create the issue" "no key: $(bod
 pass E2 "created $key in $project"
 
 # The comment's whole body is one paragraph of the document, so the erase finds it in the
-# version's markdown (graphcensus.erasedVersions matches the stored body inside it).
+# version's markdown (grapherase.erasedVersions matches the stored body inside it).
 readonly leak="The passphrase is $secret and nobody else may read it."
 send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg s "$session" --arg leak "$leak" \
   '{name: "leaked-notes.md", content: ("# Leaked notes\n\n" + $leak + "\n"), actor: {kind: "session", id: $s}}')"
@@ -529,7 +529,7 @@ printf '%s\n' "$answer" | grep -Eq "^pg_temp_[0-9]+\.erase_control\.body 1\$" ||
   fail E5 "the search finds the control row planted beside it" "the search answered: $(printf '%s' "$answer" | tr '\n' ';')"
 pass E5 "no column of any table holds the erased text ($(printf '%s\n' "$answer" | sed -n 's/^columns //p') columns searched), and the same search found the control row planted in it"
 # What the event log holds instead, which the four lines above cannot say: the marker naming the
-# erase (graphcensus.eraseMarker, one constant), through which a reader of a redacted payload
+# erase (grapherase.eraseMarker, one constant), through which a reader of a redacted payload
 # reaches the `graph_erasures` row recording the run. The rows are the rows E3 read, each with
 # the id, the time and the actor it had then, because R5 moves the payload and nothing else.
 marker="[erased by envoy-dispatch erase $node, recorded in graph_erasures]"
@@ -547,7 +547,7 @@ grep -Eq "^  redacted: events [1-9][0-9]*\$" "$work/erase" ||
   fail E5 "the run says how many rows it redacted" "no redacted events line in: $(<"$work/erase")"
 pass E5 "envoy-dispatch erase reported the rows it redacted"
 # The erase waits out the bound of a read's detached store of its display trees after its commit
-# and deletes once more the trees it deleted (graphcensus's sweepTrees), so a read that began
+# and deletes once more the trees it deleted (grapherase's sweepTrees), so a read that began
 # before the commit cannot leave the tree of an erased text behind; the report says how many it
 # found then.
 grep -Eq "^  text_trees swept after the commit: [0-9]+\$" "$work/erase" ||

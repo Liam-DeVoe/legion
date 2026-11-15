@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,12 +27,13 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same six docs' register of the tree's passes scans for
+// package goes through, the same seven docs' register of the tree's passes scans for
 // (storeWriterCall): Write, WriteStating and Caused in a caller's transaction, WriteArms spliced
-// into a caller's statement, and Authored and Reached, which run WriteArms for the writers that
-// record an author and a reached session. A write that holds a statement of its own instead is
-// found by rawStoreWrite.
-var storeWriteFunctions = []string{"Write", "WriteStating", "WriteArms", "Caused", "Authored", "Reached"}
+// into a caller's statement, Authored and Reached, which run WriteArms for the writers that
+// record an author and a reached session, and EraseNode, the erase's delete of a node and its
+// tuples. A write that holds a statement of its own instead is found by rawStoreWrite, and none
+// outside this package may hold one.
+var storeWriteFunctions = []string{"Write", "WriteStating", "WriteArms", "Caused", "Authored", "Reached", "EraseNode"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -39,12 +41,11 @@ var storeWriteFunctions = []string{"Write", "WriteStating", "WriteArms", "Caused
 var rawStoreWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+from)\s+(?:public\s*\.\s*)?graph_(?:nodes|tuples)\b`)
 
 // storeWriteCallSites is every function outside the tests that calls one of storeWriteFunctions,
-// or that outside this package holds a statement rawStoreWrite matches, named as docs' register
-// names a pass: the file, from internal/dispatch where it lives under it, and the function,
-// without its receiver. TestEveryStoreWriteTakesOneLockOrder proves the lock order on this
-// package's own writers, and each site listed here has its lock steps proven in its own package
-// against that order; a site that is not listed has had nobody prove its steps, so it fails here
-// until it joins this list.
+// named as docs' register names a pass: the file, from internal/dispatch where it lives under it,
+// and the function, without its receiver. TestEveryStoreWriteTakesOneLockOrder proves the lock
+// order on this package's own writers, and each site listed here has its lock steps proven in its
+// own package against that order; a site that is not listed has had nobody prove its steps, so it
+// fails here until it joins this list.
 var storeWriteCallSites = []string{
 	// The comment path: the comment's node before the comments row that names it, then its
 	// tuples and its cause under the event appended after both, and who wrote it.
@@ -66,11 +67,10 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeBlockRefBatch",
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
-	// The erase, the one writer that deletes from the store, with statements of its own rather
-	// than through a writer: the tuples on both sides of the node, then the node's row. It takes
-	// the owner rows it writes under before that row, and its projection rows after it
-	// (graphcensus's TestTheEraseTakesTheStoreLockOrder).
-	"graphcensus/erase.go#apply",
+	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
+	// sides of the node, then the node's row. It takes the owner rows it writes under before that
+	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
+	"grapherase/erase.go#apply",
 	// This package's own writers that run another of them: Write is WriteStating and the
 	// append of what it states, and Authored and Reached are arms of one statement.
 	"graphstore/people.go#Authored",
@@ -88,13 +88,15 @@ var storeWriteCallSites = []string{
 // and finds each function that names one of storeWriteFunctions, called or passed on as a value,
 // and each function outside this package whose string literals hold a statement writing
 // graph_nodes or graph_tuples (rawStoreWrite). It fails on a site storeWriteCallSites does not
-// list, naming the site and the call or the statement, so a new writer of the store cannot appear
-// without its lock steps being proven, and on a listed site the source no longer holds, so the
-// list never names a writer that is gone. It parses the source rather than matching its text, so
-// a call written over two lines, a comment that names a writer or spells a statement, and a
-// method of another type that shares a writer's name are each read for what they are.
+// list, naming the site and the call, so a new writer of the store cannot appear without its lock
+// steps being proven, and on a listed site the source no longer holds, so the list never names a
+// writer that is gone. It fails on every statement outside this package that writes the store,
+// naming the site and the statement: this package is the one place that writes those tables, so
+// such a statement moves behind a writer here. It parses the source rather than matching its
+// text, so a call written over two lines, a comment that names a writer or spells a statement,
+// and a method of another type that shares a writer's name are each read for what they are.
 func TestEveryStoreWriteCallSiteIsListed(t *testing.T) {
-	found := map[string][]string{}
+	found, raw := map[string][]string{}, map[string][]string{}
 	parsed := 0
 	err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -133,13 +135,11 @@ func TestEveryStoreWriteCallSiteIsListed(t *testing.T) {
 			t.Fatalf("parse %s: %v", relative, err)
 		}
 		parsed++
-		for _, sites := range []map[string][]string{
-			storeWriteSitesIn(relative, files, file),
-			rawStoreWritesIn(relative, files, file),
-		} {
-			for site, calls := range sites {
-				found[site] = append(found[site], calls...)
-			}
+		for site, calls := range storeWriteSitesIn(relative, files, file) {
+			found[site] = append(found[site], calls...)
+		}
+		for site, statements := range rawStoreWritesIn(relative, files, file) {
+			raw[site] = append(raw[site], statements...)
 		}
 		return nil
 	})
@@ -167,6 +167,10 @@ func TestEveryStoreWriteCallSiteIsListed(t *testing.T) {
 		if _, ok := found[site]; !ok {
 			t.Errorf("storeWriteCallSites lists %s, and no file of the module holds a call of a store writer or a statement writing the store there any more: take it off the list, since the proofs of the writers rest on it naming the ones there are", site)
 		}
+	}
+	for _, site := range slices.Sorted(maps.Keys(raw)) {
+		t.Errorf("%s writes the store with a statement of its own (%s): graphstore is the one place that writes graph_nodes and graph_tuples, so the statement moves behind one of its writers (storeWriteFunctions) and the site calls that writer",
+			site, strings.Join(raw[site], ", "))
 	}
 }
 

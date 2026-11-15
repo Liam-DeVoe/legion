@@ -1,11 +1,9 @@
-package graphcensus
+package grapherase
 
 import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -43,8 +41,8 @@ func readTypeNode(t *testing.T, database *store.Store, kind, id string) typeNode
 // no erasure recorded.
 //
 // The supertag is `callout`, which holds attributes, so tuples run into it as well as out of
-// it; the attribute is one of its own. The erase is handed writers that would fail the test if
-// the run reached a document, since a type node is on none.
+// it; the attribute is one of its own. The test fails if the run read the live state of a
+// document, since a type node is on none.
 func TestTheEraseRefusesATypeNodeAndLeavesItWhole(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -53,15 +51,6 @@ func TestTheEraseRefusesATypeNodeAndLeavesItWhole(t *testing.T) {
 		`select id from graph_nodes where kind = $1 and id like 'callout/%' order by id limit 1`,
 		schemanodes.KindAttribute).Scan(&attribute); err != nil {
 		t.Fatalf("read an attribute node of the callout supertag: %v", err)
-	}
-	stores := Stores{
-		LiveText: func(_ context.Context, _ pgx.Tx, artifactID string, _ []string, _ string) (*LiveText, error) {
-			t.Errorf("the erase of a type node read the live text of document %s", artifactID)
-			return nil, nil
-		},
-		TermStatistics: func(context.Context, pgx.Tx, []string) (TermRecount, error) {
-			return TermRecount{}, nil
-		},
 	}
 	const refusal = "a type node is data the block schema seeds, and no command deletes it"
 	for _, node := range []struct{ kind, id string }{
@@ -75,10 +64,15 @@ func TestTheEraseRefusesATypeNodeAndLeavesItWhole(t *testing.T) {
 		if node.kind == schemanodes.KindSupertag && before.in == 0 {
 			t.Fatalf("no tuple runs into %s:%s, so this test would not read the tuples an erase deletes from the far side", node.kind, node.id)
 		}
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), node.kind, node.id, true, stores)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), node.kind, node.id, true, 0)
 		if err == nil || !strings.Contains(err.Error(), refusal) {
 			t.Errorf("erase --node %s:%s --confirm answered %v (applied %t), want the refusal %q",
 				node.kind, node.id, err, erasure != nil && erasure.Applied, refusal)
+		}
+		if erasure != nil {
+			for _, document := range erasure.Documents {
+				t.Errorf("the erase of a type node read the live text of document %s", document.Document)
+			}
 		}
 		if after := readTypeNode(t, database, node.kind, node.id); after != before {
 			t.Errorf("erase --node %s:%s --confirm left the store holding %+v of it, want %+v as before the run",

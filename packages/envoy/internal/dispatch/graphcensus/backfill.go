@@ -7,11 +7,11 @@ import (
 	"io"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -322,14 +322,14 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 // document: the document's owner row, then its document_block_versions row `for no key update`.
 //
 // Over several documents it takes every owner row first, each once, in the order of its owner
-// key (lockOwnerRows, which takes each through lockDocumentOwner): the one order over owner rows,
-// in which the erase takes the owner rows it writes under (lockInStoreOrder) and events.lockOwners
-// the owners of several events, "artifact:<id>" for a document no issue owns before
-// "issue:<key>". Only then does it take each document's document_block_versions row, in document
-// id order. Taking one document's owner and fence rows before the next document's owner would
-// put an issue at a different place for each set of its documents: a batch over two documents of
-// two issues whose ids sort the other way round from their owner keys, and an erase writing under
-// both, could each hold the owner row the other waits for.
+// key (events.LockOwnerRows): the one order over owner rows, in which the erase takes the owner
+// rows it writes under (grapherase's lockInStoreOrder) and events.lockOwners the owners of several
+// events, "artifact:<id>" for a document no issue owns before "issue:<key>". Only then does it
+// take each document's document_block_versions row, in document id order. Taking one document's
+// owner and fence rows before the next document's owner would put an issue at a different place
+// for each set of its documents: a batch over two documents of two issues whose ids sort the
+// other way round from their owner keys, and an erase writing under both, could each hold the
+// owner row the other waits for.
 //
 // A document deleted since its batch was read has no owner row left to take, and its block rows
 // and its document_block_versions row went with it (each cascades from artifacts), so there is
@@ -351,11 +351,11 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 	if err != nil {
 		return fmt.Errorf("load the owners of a batch's documents: %w", err)
 	}
-	owners := erasedOwners{}
+	owners := events.OwnerRows{}
 	for _, document := range owned {
-		owners.add(document[1], document[0], "document "+document[0])
+		owners.Add(document[1], document[0], "document "+document[0])
 	}
-	if err := lockOwnerRows(ctx, tx, owners); err != nil {
+	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return err
 	}
 	for _, document := range documents {
@@ -364,31 +364,6 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 		`, document); err != nil {
 			return fmt.Errorf("lock the block index row of document %s: %w", document, err)
 		}
-	}
-	return nil
-}
-
-// lockDocumentOwner takes one owner row, named by its owner key (erasedOwners), with the
-// statements docs' lockArtifactOwner runs, which the version write and the reconciliation tick
-// take it with: an issue's row, or a project document's own artifact row while no issue owns it,
-// `for no key update`. what is what stands under it, for an error to name. This package cannot
-// import docs (Stores says why), so the statements are written here again, and a change to how
-// that function locks is a change to make here too. A row gone since its key was read, or a
-// document an issue has taken since, locks nothing.
-func lockDocumentOwner(ctx context.Context, tx pgx.Tx, owner, what string) error {
-	if issue, ok := strings.CutPrefix(owner, "issue:"); ok {
-		if _, err := tx.Exec(ctx, `
-			select closed_at is null from issues where key = $1 for no key update
-		`, issue); err != nil {
-			return fmt.Errorf("lock issue %s, the owner of %s: %w", issue, what, err)
-		}
-		return nil
-	}
-	artifact := strings.TrimPrefix(owner, "artifact:")
-	if _, err := tx.Exec(ctx, `
-		select true from artifacts where id = $1 and issue_key is null for no key update
-	`, artifact); err != nil {
-		return fmt.Errorf("lock document %s, the owner of %s: %w", artifact, what, err)
 	}
 	return nil
 }
