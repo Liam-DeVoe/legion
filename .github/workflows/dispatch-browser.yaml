@@ -162,9 +162,10 @@ jobs:
     # and about 30 s against the go build's 104 s in run 42809067358). No step here carries a
     # budget, so
     # the rule in this file's head gave this job the measured maximum of every step,
-    # 84 + 81 = 165 s, rounded up: three minutes. At this shape, over the 26 green binaries
-    # jobs of this branch's runs of 2026-11-15, the step maxima sum to 239 s (the build step
-    # 154 s, job 132738250756), which the rule rounds up to four. The figure below is larger than that
+    # 84 + 81 = 165 s, rounded up: three minutes. At this shape the build step took 154 s in job
+    # 132738250756 (run 43689921885), and the step maxima of the green binaries jobs of this
+    # branch's runs of 2026-11-15 that concluded by 20:50Z summed to 239 s, which the rule rounds
+    # up to four minutes. The figure below is larger than that
     # on purpose and is not that arithmetic. Every run of that sample restored the Go cache; a
     # run that misses it builds four commands cold, which the planner measured at 3m37s for
     # ./cmd/dispatch alone, and three minutes would cancel it. So the budget carries the cold
@@ -2193,10 +2194,12 @@ jobs:
       # The verdict, which readings two to four do not give: they report, and this fails. Two of
       # the job's failures are here - an upstream job that neither succeeded nor was skipped, the
       # binaries job among them, and a failed row in the merged report. The others fail where they
-      # are found: the merge step on no blob to merge or no JSON report written, reading one on
-      # no leg to hold the report against, a missing blob, or a merged report that dropped rows
-      # the legs ran, and reading five on a lane over its machine-time budget, because a budget
-      # nothing fails on refuses nothing.
+      # are found: the merge step on no blob to merge or no JSON report written; reading one on
+      # jobs it could not read (.github/scripts/dispatch-browser-run-reads.sh's `jobs` mode), no
+      # leg to hold the report against, a missing blob, or a merged report that dropped rows the
+      # legs ran; and reading five on a jobs file that is missing, is not a list of jobs or holds
+      # no job that concluded with a duration, and on a lane over its machine-time budget,
+      # because a budget nothing fails on refuses nothing.
       - name: Fail when a leg failed or the merged report holds a failed row
         if: always()
         run: |

@@ -2159,9 +2159,12 @@ The `full` lane's leg names all eight parallel projects and the two stubbed ones
 those four, and passes no `--grep`.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
-projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
-wall-clock time has nothing to gain from a second attempt, and the two-process job writes no blob
-report, so a retried row there would be published nowhere.
+projects, the two-process project, the two `visual` projects and the two stubbed projects, which
+set `retries: 0` of their own: a row whose claim is a wall-clock time has nothing to gain from a
+second attempt, the two-process job writes no blob report, so a retried row there would be
+published nowhere, a screenshot comparison that passes on a second attempt is a tolerance or a
+page this layer exists to find, and a stubbed row reaches no server, so a second answer would be
+a defect of its recording rather than a flake.
 That retry is what makes a flaky row reportable: a row that fails and then passes is `flaky` in
 the merged report rather than failed, and the rate the `merge` job publishes counts those rows.
 The rate is of the sharded and `-alone` legs' rows; the two-process rows are in no rate, and one
