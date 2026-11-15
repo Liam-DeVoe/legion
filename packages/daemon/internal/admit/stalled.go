@@ -144,9 +144,14 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // needed it, and are built here otherwise, so the pass builds the set at most once and makes
 // its one read at most once, and the clause is answered only once a root has come through the
 // bound, the measure and the registration above.
+//
+// cap is the pass's one reading of the admission cap, taken by the caller before this step and
+// read again by nothing: the clause and the promotion that follows it judge one number, so a
+// change of the cap under a running pass can neither name a tree the promotion then starts nor
+// hide a stall that stands (promoteHolds, capLets).
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row,
+	rows map[string]blockers.Row, cap int,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -259,7 +264,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 			return err
 		}
 	}
-	canMove := a.lineCanMove(issues, holds, working, rows)
+	canMove := a.lineCanMove(issues, holds, working, rows, cap)
 	var stopped []record.Issue
 	named := 0
 	for _, root := range stalled {
@@ -723,9 +728,11 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 // says.
 //
 // It is answered once per pass, by the caller, and never per tree: the question is the
-// project's and its answer is the same for every tree of the pass.
+// project's and its answer is the same for every tree of the pass. cap is that pass's one
+// reading of the admission cap, handed down rather than read here, so this clause and the
+// promotion that follows it judge one number (tellStalledTrees).
 func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working map[string]struct{},
-	rows map[string]blockers.Row,
+	rows map[string]blockers.Row, cap int,
 ) bool {
 	if len(working) > 0 {
 		return true
@@ -743,7 +750,6 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 		// the slot back, so the project's line can move.
 		return true
 	}
-	cap := a.readCap()
 	for _, entry := range holds.line {
 		if len(blockers.LineWaitsOn(rows, entry)) == 0 && capLets(entry, held, cap) {
 			// An entry the promotion of this very pass starts: the line moves.

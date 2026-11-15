@@ -1693,10 +1693,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows); err != nil {
+	// One read of the cap for the whole pass, taken before the clause and handed to it, so the
+	// stall it reports and the promotion below judge the same number: a change of
+	// `admission_cap` through the settings route between the two reads would otherwise have the
+	// clause find no free slot and name a tree the promotion then starts, which is the false
+	// notice capLets exists to stop, or leave a real stall unnamed for one pass.
+	cap := a.readCap()
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, cap); err != nil {
 		return 0, released, err
 	}
-	cap := a.readCap()
 	if cap <= 0 {
 		return 0, released, nil
 	}
