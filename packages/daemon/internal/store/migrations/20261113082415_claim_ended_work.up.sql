@@ -2,14 +2,15 @@
 -- work its agent had running, for the next process to be told (dispatch://INFRA-3276 R3).
 --
 -- claims.ended_work is supervise.Claim.EndedWork: recorded where the daemon lets a claim's process
--- go — every relaunch, every suspension, and a failure (supervise's letGo and recordEnd) — from
--- that process's activity report, which is read before the write that moves the generation clears
--- it; for a launch, that very write carries the record. It holds when, the cause in the daemon's
--- words, whether a turn was cut off and whether it was the pending task's, the background kinds
--- that process's own report named, whether a report of that process covers its last turn, the
--- launch it records, whether a later process has been told it, and the delivery whose
--- confirmation told it. A relaunch can be a wake and a daemon restart away from the prompt that
--- tells it, so the record is durable rather than held in the machine's memory.
+-- go — every relaunch, every suspension, a failure, and a stop of the claim, under the cause "its
+-- claim was stopped" (supervise's letGo and recordEnd) — from that process's activity report,
+-- which is read before the write that moves the generation clears it; for a launch, that very
+-- write carries the record. It holds when, the cause in the daemon's words, whether a turn was cut
+-- off and whether it was the pending task's, the background kinds that process's own report named,
+-- whether a report of that process covers its last turn, the launch it records, whether a later
+-- process has been told it, and the delivery whose confirmation told it. A relaunch can be a wake
+-- and a daemon restart away from the prompt that tells it, so the record is durable rather than
+-- held in the machine's memory.
 --
 -- jsonb on the claim's own row, as the abandoned session and the turn outcomes are, because it is
 -- written in the same decision as the let-go it records. Every existing row takes null, which is

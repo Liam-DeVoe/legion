@@ -1245,10 +1245,11 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   a relaunch, a suspension, a failure or a stop that ended the process while work of its agent
   ran. A stop is `legion claims stop`, the operator's close of a tree stopping its other claims,
   or the daemon stopping a controller it launched, and its cause is `its claim was stopped`:
-  `legion claims retry` without `--fresh-session` resumes the stopped claim's session, which is
-  told what the stop ended. A suspension that lands over a process the daemon had already found
-  gone, as a fresh session over a dead role does, records the death in the runtime's words, not
-  the suspension. The claim
+  every retry that keeps the session resumes the stopped claim's session, which is told what the
+  stop ended. That is `legion claims retry` without `--fresh-session`, the daemon's own retry of
+  a retired controller it keeps, and the daemon's start of a retired worker's phase. A suspension
+  that lands over a process the daemon had already found gone, as a fresh session over a dead
+  role does, records the death in the runtime's words, not the suspension. The claim
   records it (the `ended_work` column of its row), and the first prompt the next process is sent
   carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
   none, alone
