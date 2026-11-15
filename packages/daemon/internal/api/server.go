@@ -22,9 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -179,15 +179,17 @@ type Options struct {
 	// Trees is the store's durable tree barrier, which the operator routes open a root's tree
 	// through and reserve and finish a closed tree's cleanup through.
 	Trees TreeLifecycles
-	// Memory is the project's `memory` block (config.Project.Memory), under whose mode the
-	// operator's spawn draws the memory group of a tree it opens for the first time
-	// (memorygroup.DrawAndRecord). The zero block is a project that names none, which draws
-	// every tree `none`. MemoryCoin is the coin the `random` mode is drawn with; nil is
-	// memorygroup.CryptoCoin, and a test pins it. Now is the clock that draw's instant is read
+	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// of which the operator's spawn draws every tree-unit one for a tree it opens for the first
+	// time (drawExperiments). Every project the loader reads declares the memory experiment, at
+	// mode off where the file writes no `memory` block, and a draw at mode off records the tree
+	// at no variant; the empty list, which draws nothing, is a caller that declared none.
+	// ExperimentSource is the random source a `random` mode is drawn with; nil is
+	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
 	// from; nil is time.Now, and a test pins it.
-	Memory     config.Memory
-	MemoryCoin func() (bool, error)
-	Now        func() time.Time
+	Experiments      []config.Experiment
+	ExperimentSource func(uint64) (uint64, error)
+	Now              func() time.Time
 	// GitHubAPI is GitHub's REST root, which the daemon's own reads of a pull request and its
 	// compares go under; empty, in production, is https://api.github.com, and a
 	// test points it at a stand-in.
@@ -268,7 +270,7 @@ type Options struct {
 // an operator root opens its tree's lifecycle before its claim is stored, and the tree's close
 // reserves the tree's cleanup, then finishes it once every claim of the tree has retired. The
 // open's created runs in the open's own transaction where it created the tree's row, and is where
-// the tree's memory group is drawn (store.Store.OpenOperatorTreeLifecycle).
+// the tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle).
 type TreeLifecycles interface {
 	OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
 		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
@@ -335,20 +337,21 @@ type server struct {
 	grants    *credential.Grants
 	releaser  store.TreeReleaser
 	trees     TreeLifecycles
-	// memory, coin and now are Options.Memory, Options.MemoryCoin and Options.Now: what the
-	// spawn's own draw of a tree it opens for the first time reads (drawMemory).
-	memory     config.Memory
-	coin       func() (bool, error)
-	now        func() time.Time
-	pool       *store.Pool
-	handlers   []intake.Handler
-	prepare    func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
-	unread     func(resolved string) bool
-	await      func(repo, tree, child, parent string)
-	roleFor    func(phase.Phase) claim.Role
-	records    record.Store
-	dispatch   dispatch.Client
-	claimReady func(c supervise.Claim)
+	// experiments, source and now are Options.Experiments, Options.ExperimentSource and
+	// Options.Now: what the spawn's own draw for a tree it opens for the first time reads
+	// (drawExperiments).
+	experiments []config.Experiment
+	source      func(uint64) (uint64, error)
+	now         func() time.Time
+	pool        *store.Pool
+	handlers    []intake.Handler
+	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
+	unread      func(resolved string) bool
+	await       func(repo, tree, child, parent string)
+	roleFor     func(phase.Phase) claim.Role
+	records     record.Store
+	dispatch    dispatch.Client
+	claimReady  func(c supervise.Claim)
 	// handoffCompleted is Options.HandoffCompleted.
 	handoffCompleted func(issue string)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
@@ -408,8 +411,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		githubAPI:          opts.GitHubAPI,
 		releaser:           opts.Releaser,
 		trees:              opts.Trees,
-		memory:             opts.Memory,
-		coin:               opts.MemoryCoin,
+		experiments:        opts.Experiments,
+		source:             opts.ExperimentSource,
 		now:                opts.Now,
 		grants:             opts.Grants,
 		pool:               opts.Pool,
@@ -439,8 +442,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if s.stateBound == 0 {
 		s.stateBound = stateReadBound
 	}
-	if s.coin == nil {
-		s.coin = memorygroup.CryptoCoin
+	if s.source == nil {
+		s.source = experiment.CryptoSource
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -806,7 +809,9 @@ func statementBound(bound time.Duration) int64 {
 // contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
 // kind without its `kind` (withoutWaitingOnIssue), a word and not a key; a caller below
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
-// GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below
+// GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
+// assignmentsContract, the contract that added the experiment answers each issue runs under, is
+// served every issue without `assignments` (withoutAssignments); and a caller below
 // gateBasisContract, the contract that let a root's gated step stand open on an ancestor's
 // approval or wait on an ancestor's approval request, served each root whether its tree runs and
 // added the phase awaiting_children, is served it without `treeRuns`, without the `gatedSteps` of
@@ -943,6 +948,7 @@ var stateNarrowings = []stateNarrowing{
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
 		"of every member waiting on another issue"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
+	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, the gatedSteps " +
 		"of every issue with a step open or pending on an ancestor's basis, and the awaiting_children " +
 		"phase and held word read as admitted and children_first"},
@@ -1080,10 +1086,11 @@ const phaseEntriesContract = 94
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. waitingOnIssueContract,
-// mergeWaitContract and gateBasisContract stand above it, and the first one's strip takes a word
-// of the line's `kind` and no key, so a caller in a pod at 111 through 146 is served the measure
-// and neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis, and
-// one at 111 through 132 no `mergeWait` either.
+// mergeWaitContract, assignmentsContract and gateBasisContract stand above it, and the first
+// one's strip takes a word of the line's `kind` and no key, so a caller in a pod at 111 through
+// 146 is served the measure and neither `treeRuns` nor the gated steps of an issue a step of
+// which stands on a basis, one at 111 through 140 no `assignments` either, and one at 111 through
+// 132 no `mergeWait` either.
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1093,9 +1100,10 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. mergeWaitContract and gateBasisContract stand above it, so a caller in a pod at 132
-// through 146 is served the word and neither `treeRuns` nor the gated steps of an issue a step of
-// which stands on a basis, and one at 132 no `mergeWait` either.
+// optional. mergeWaitContract, assignmentsContract and gateBasisContract stand above it, so a
+// caller in a pod at 132 through 146 is served the word and neither `treeRuns` nor the gated
+// steps of an issue a step of which stands on a basis, one at 132 through 140 no `assignments`
+// either, and one at 132 no `mergeWait` either.
 const waitingOnIssueContract = 132
 
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
@@ -1108,6 +1116,15 @@ const waitingOnIssueContract = 132
 // below it is served the state without `mergeWait`, whatever else the contracts it does reach
 // give it.
 const mergeWaitContract = 133
+
+// assignmentsContract is the daemon contract that added each issue's experiment assignments to
+// the state (version.go's 141). A plugin before it is served the state without the field: one
+// built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
+// for a key it does not name, and one built after strips the key instead. The three memory
+// fields keep their own gate at memoryContract beside this one, so a caller from memoryContract
+// to below this one is served the one experiment's answer in the three keys it has read since 49
+// and no assignments, whatever else its own band gives it, and a caller below 49 neither.
+const assignmentsContract = 141
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
 // ancestor's approval or wait on an ancestor's approval request (version.go's 147,
@@ -1154,13 +1171,28 @@ func carriesMemory(state State) bool {
 	return false
 }
 
+// carriesAssignments is whether any issue of state carries the experiment answers it runs under,
+// the field assignmentsContract added. It is asked of the state rather than answered true, as
+// carriesMemory is: a deployment that declares nothing of its own still draws the memory
+// experiment for each tree it opens, so its states do carry the key, but an issue no draw has
+// reached — one of a tree opened before this release — holds no answer, and a state of such
+// issues alone carries the key on none of them.
+func carriesAssignments(state State) bool {
+	for _, issue := range state.Issues {
+		if len(issue.Assignments) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // carriesTrees is whether state carries either key treeContract added: `admission.trees` or an
 // issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside every other row of
-// `stateNarrowings` all the same, because stateFor puts the same question to every row
-// and because a later contract that stops writing `trees` on every body answers it here.
+// is true of every state the route writes; it is asked beside the other rows' questions all the
+// same, because stateFor puts the same question to every row of stateNarrowings and because a
+// later contract that stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesHeld is whether state carries the key heldContract added: `admission.held`, the issues
@@ -1168,18 +1200,18 @@ func carriesTrees(State) bool { return true }
 // carries that key whatever the daemon holds, since the admission block writes it on every body,
 // empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
 // refuses the empty key as surely as one naming an issue. So this is true of every state the
-// route writes; it is asked beside every other row of `stateNarrowings` all the same, because
-// stateFor puts the same question to every row and because a later contract that stops writing
-// `held` on every body answers it here.
+// route writes; it is asked beside the other rows' questions all the same, because stateFor
+// puts the same question to every row of stateNarrowings and because a later contract that
+// stops writing `held` on every body answers it here.
 func carriesHeld(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside every other row of
-// `stateNarrowings` all the same, because stateFor puts the same question to every row
-// and because a later contract that stops writing `wakesWaiting` on every body answers it here.
+// every state the route writes; it is asked beside the other rows' questions all the same,
+// because stateFor puts the same question to every row of stateNarrowings and because a later
+// contract that stops writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesClaimsToRefresh is whether state carries the key claimsToRefreshContract added:
@@ -1187,8 +1219,8 @@ func carriesWakesWaiting(State) bool { return true }
 // whatever the daemon holds, since the state writes the number on every body, 0 rather than
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
-// carriesWakesWaiting is; it is asked beside every other row of `stateNarrowings` all the
-// same, because stateFor puts the same question to every row and because a later contract
+// carriesWakesWaiting is; it is asked beside the other rows' questions all the same, because
+// stateFor puts the same question to every row of stateNarrowings and because a later contract
 // that stops writing `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
@@ -1216,12 +1248,11 @@ func carriesStallRecord(state State) bool {
 // `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
 // stateFor writes it on every body before it narrows one (ContractView), and the strict reader
 // before the contract refuses that key as surely as the nine. So this is true of every state the
-// route puts the question to; it is asked beside every other row of
-// `stateNarrowings` all the same, because stateFor puts the same question to every row
-// and because a later contract that stops writing the mark on every body answers it here, as
-// carriesTrees answers for `admission.trees`. The question the mark pre-empts is
-// issueCarriesRecordFields, which that contract would ask of every issue here and which the
-// strip below reads one issue at a time.
+// route puts the question to; it is asked beside the other rows' questions all the same,
+// because stateFor puts the same question to every row of stateNarrowings and because a later
+// contract that stops writing the mark on every body answers it here, as carriesTrees answers for
+// `admission.trees`. The question the mark pre-empts is issueCarriesRecordFields, which that
+// contract would ask of every issue here and which the strip below reads one issue at a time.
 func carriesRecordFields(State) bool { return true }
 
 // issueCarriesRecordFields is whether a claim view of this one issue carries any key the record
@@ -1538,6 +1569,21 @@ func withoutMemory(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.MemoryGroup, issue.MemoryDrawMode, issue.MemoryDrawnAt = "", "", nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// withoutAssignments is state with no issue carrying `assignments`, the one field
+// assignmentsContract added to the state; nothing else of that contract is on the route but
+// `settings` keys, which every plugin reads loosely. The three memory fields are left where they
+// are: they are the gate of memoryContract and a caller above it reads them whatever it reads
+// here. The issue map is copied, so the state the source answered is left as it was.
+func withoutAssignments(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.Assignments = nil
 		issues[key] = issue
 	}
 	state.Issues = issues

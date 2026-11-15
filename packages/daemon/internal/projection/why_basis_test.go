@@ -48,7 +48,7 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 				lifecycles: []string{"LEGION-100"},
 				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": tc.gates},
 			}
-			projected, err := Project(context.Background(), nil, store, "LEGION", tc.steps, nil, nil, nil, projectedAt)
+			projected, err := Project(context.Background(), nil, store, "LEGION", tc.steps, nil, nil, nil, nil, projectedAt)
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}

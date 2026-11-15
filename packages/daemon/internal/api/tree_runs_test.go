@@ -33,7 +33,7 @@ type projectedState struct{}
 
 func (projectedState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	state, err := projection.Project(ctx, tx, record.NewStore(), treeRunsProject, config.DesignGateRootIssues.Steps(),
-		nil, nil, nil, treeRunsNow)
+		nil, nil, nil, nil, treeRunsNow)
 	return state, nil, err
 }
 

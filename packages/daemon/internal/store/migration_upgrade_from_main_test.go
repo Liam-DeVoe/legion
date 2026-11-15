@@ -19,14 +19,16 @@ import (
 // which leaves the table as main has it, the resume's own anchor (20261111181500), and the pull
 // request's read stamp (20261112070503), which dispatch://INFRA-3027 adds on top of this branch
 // and which a database the main before this branch migrated lacks as surely as this branch's own,
-// so the upgrade applies it after them. The nine versions of main's above the claim-death
+// so the upgrade applies it after them. The eleven versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
 // (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of a phase past its review (20261110233602), the kind of the rule that wrote a
-// release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
-// (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
-// (20261111212544), are
-// main's own and are applied as main's run applied them. Every version of this branch's but twelve
+// unmarked start of a phase past its review (20261110233602), the design gates' publish kind
+// (20261110235320), the kind of the rule that wrote a release mark (20261111001612), the issue's
+// movement time (20261111010031), the declined ask (20261111021610), the tree-stalled mark
+// (20261111041503), the experiment assignments (20261111045636, dispatch://INFRA-2566, which
+// creates a table of its own and rewrites neither outbox_kind_check nor issues_phase_check) and
+// the claim's failure cause (20261111212544), are main's own and are applied as main's run
+// applied them. Every version of this branch's but twelve
 // stands below main's newest: a migration's version is a timestamp rather than a place in a line,
 // and the twelve above it are the phase entry's own (20261111225552, dispatch://INFRA-2800), which
 // this branch wrote after main's claim-failure cause, and the eleven the next paragraph names.

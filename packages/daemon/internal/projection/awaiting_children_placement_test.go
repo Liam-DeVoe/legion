@@ -54,7 +54,7 @@ func TestAWaitingParentStandsInBlockedWithItsOpenChildrenAlone(t *testing.T) {
 				gates:      map[string]map[record.DesignStep]record.DesignGate{parent: openGate(parent, projectedAt.Add(-3*time.Hour))},
 				mirror:     tc.mirror,
 			}
-			projected, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
+			projected, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}
