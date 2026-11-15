@@ -491,7 +491,7 @@ type HostTitle = { name?: string; source?: "auto" | "user"; readonly set: string
  * the session runs now; `unresolvable` are the selectors `ctx.models.resolve` answers nothing
  * for; `suppressed` are the ones the host itself holds suppressed; and `changes` are the
  * `model_change` entries each accepted switch appended, as the host appends one with the
- * ordinary role (`session/model-controls.ts:249-252` at the pinned tag). */
+ * ordinary role (`session/model-controls.ts:322-325` at the pinned tag). */
 type HostModels = {
   readonly set: HostModel[];
   answers: boolean;
