@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 )
 
@@ -67,10 +68,7 @@ func (rig *recordsRig) job(stand *modeltest.Model, from time.Time) *wordrecords.
 // run runs job under its lease until the test ends.
 func (rig *recordsRig) run(job *wordrecords.Job) {
 	rig.t.Helper()
-	leases, err := rig.database.Pool.Leases()
-	if err != nil {
-		rig.t.Fatalf("open the lease pool: %v", err)
-	}
+	leases := storetest.Leases(rig.t, rig.database.Pool)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {

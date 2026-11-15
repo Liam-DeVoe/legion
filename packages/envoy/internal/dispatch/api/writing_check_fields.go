@@ -175,8 +175,10 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[messageReplyInput](): {
 		"body": markProse, "error": markProse, "in_reply_to_block": markIdentifier,
 	},
-	reflect.TypeFor[createBroadcastInput](): {"body": markProse, "delivery": markEnum, "session_ids": markPerson},
-	reflect.TypeFor[createDeliveryInput]():  {"delivery": markEnum},
+	reflect.TypeFor[createBroadcastInput](): {
+		"body": markProse, "delivery": markEnum, "session_ids": markPerson, "idempotency_key": markIdentifier,
+	},
+	reflect.TypeFor[createDeliveryInput](): {"delivery": markEnum},
 
 	// Reads and the person's own state, which write no prose.
 	reflect.TypeFor[relatedRequest](): {

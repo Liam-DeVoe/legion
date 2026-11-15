@@ -1,6 +1,11 @@
 import type { WritingRulesSettings } from "@legion/contracts";
 import { commandName } from "./dispatch-command";
-import { type DispatchClient, DispatchWriteHeld, isNoRoute } from "./dispatch-http";
+import {
+  type DispatchClient,
+  DispatchNoRouteError,
+  DispatchWriteHeld,
+  isNoRoute,
+} from "./dispatch-http";
 import {
   readWritingRules,
   updateWritingRules,
@@ -106,7 +111,7 @@ export async function writingRulesRefusal(call: WritingRulesCall): Promise<strin
       })
     ).text;
   } catch (error) {
-    if (isNoRoute(error)) return undefined;
+    if (isNoRoute(error) || error instanceof DispatchNoRouteError) return undefined;
     rules = `Dispatch did not send the rules for this write: ${messageFor(error)}. Read skill://plain-words, which holds the same rules.`;
   }
   try {
