@@ -247,6 +247,40 @@ describe("health: rule 13, off-world network, files written then run (door 3)", 
   });
 });
 
+// Catches: a jj revision that names a remote-tracking bookmark with a path (`main@origin:<path>`)
+// read as a git remote in scp form, so a run that read a file of main from its own repository was
+// called off-world (round 23's world-health run reviewer-text-findings-defect-base-1, which ran
+// this command verbatim); and a remote in scp form where a command does take one read as no reach.
+describe("health: rule 13, off-world network, a remote in scp form", () => {
+  test("a jj command naming a bookmark of a remote with a path reaches no host", () => {
+    expect(
+      reach(
+        bash(
+          `cd /tmp/ws && git rev-parse --short=8 HEAD 2>/dev/null; echo "---base cli.md---"; jj -R . file show main@origin:docs/cli.md 2>&1`
+        )
+      )
+    ).toBeUndefined();
+    expect(reach(bash("jj file show -r main@origin docs/cli.md"))).toBeUndefined();
+    expect(reach(bash("jj diff --from main@origin --to legion/LWEVAL-1@origin"))).toBeUndefined();
+  });
+
+  test("a remote in scp form that git or jj clones, fetches or adds is off-world", () => {
+    const remote = "git@github.com:cybermonklabs/legion.git";
+    for (const command of [
+      `git clone ${remote} src`,
+      `git fetch ${remote} main`,
+      `git push ${remote} HEAD:main`,
+      `git remote add upstream ${remote}`,
+      `jj git clone ${remote} src`,
+      `jj git remote add upstream ${remote}`,
+      `jj git remote set-url origin ${remote}`,
+    ])
+      expect(reach(bash(command))).toBe(
+        `off-world network: a bash call in ${SESSION} reaches github.com (${remote}), no host of the run's world (127.0.0.1, localhost, ::1)`
+      );
+  });
+});
+
 // Catches: a tool rule 13 names no reading for read as reaching nothing, so a URL handed to a
 // tool nobody listed goes unread; and the text a writing tool sends (an Envoy message, a Dispatch
 // comment, a subagent's prompt) read as a reach.
