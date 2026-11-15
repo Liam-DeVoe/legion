@@ -1579,7 +1579,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 
 	// The handler deletes through the bucket and the cache the registry reads follows by watcher,
 	// so the read is retried until the delete has reached the cache.
-	waitFor(t, 5*time.Second, "the watcher to propagate the delete to the cache", func() bool {
+	waitFor(t, listenerWait, "the watcher to propagate the delete to the cache", func() bool {
 		_, err := registry.Get(context.Background(), "ses_delete_target")
 		return err != nil
 	})
@@ -1649,7 +1649,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 			t.Fatalf("failed to upsert interest for %s: %v", sessionID, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the interest cache to hold every row", func() bool {
+	waitFor(t, listenerWait, "the interest cache to hold every row", func() bool {
 		listed, err := registry.List()
 		return err == nil && len(listed) == len(interests)
 	})
@@ -2683,7 +2683,7 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 	if err != nil {
 		t.Fatalf("bind the durable as the old task: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the old task's durable to become push-bound", func() bool {
+	waitFor(t, listenerWait, "the old task's durable to become push-bound", func() bool {
 		info, err := old.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && info.PushBound
 	})
@@ -4654,7 +4654,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 		t.Fatal("the registry still answered after its connection closed")
 	}
 
-	monitorUntilRecovered(t, "the registry on the live connection", 5*time.Second, time.Millisecond,
+	monitorUntilRecovered(t, "the registry on the live connection", listenerWait, time.Millisecond,
 		registry.Ping,
 		func(err error) bool { return errors.Is(err, natsgo.ErrConnectionClosed) },
 		client.Connected,
@@ -4722,7 +4722,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 	}
 
 	var rebuilds atomic.Int32
-	monitorUntilRecovered(t, "the session watcher", 5*time.Second, time.Millisecond,
+	monitorUntilRecovered(t, "the session watcher", listenerWait, time.Millisecond,
 		sessions.Ping,
 		func(err error) bool {
 			return isUnrecoverableSelfHealthFailure(err, client, []listenerCache{{name: "session", cache: sessions}})

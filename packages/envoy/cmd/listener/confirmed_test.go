@@ -28,7 +28,7 @@ import (
 // agent subjects, so a forward copy published to one is stored there.
 func publishTo(t *testing.T, client *bus.Client, subject string, item contracts.Envelope) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := client.PublishCoreContext(ctx, subject, item); err != nil {
 		t.Fatalf("publish %s to %s: %v", item.Topic, subject, err)

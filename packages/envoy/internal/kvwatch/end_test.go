@@ -56,7 +56,7 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
@@ -95,7 +95,7 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
@@ -146,7 +146,7 @@ func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}

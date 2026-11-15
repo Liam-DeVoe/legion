@@ -135,7 +135,7 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 			flush:     client.Conn.FlushWithContext(ctx),
 		}
 	})
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	close(ran)

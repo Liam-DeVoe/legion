@@ -75,7 +75,7 @@ func connectWithHeldHandler(t *testing.T) *bus.Client {
 func TestDrainLetsAnInFlightDeliveryFinish(t *testing.T) {
 	t.Parallel()
 	client, finished := connectWithHandler(t, 300*time.Millisecond)
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	if !finished.Load() {
@@ -112,7 +112,7 @@ func TestDrainDoesNotReconnect(t *testing.T) {
 	if _, err := client.SubscribeCore("notifications.role.>", func(*natsgo.Msg) {}, "drain-test"); err != nil {
 		t.Fatalf("subscribe role lane: %v", err)
 	}
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	time.Sleep(2 * time.Second)
@@ -151,7 +151,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 			Topic:         "notifications.role.drain-test",
 			DedupeKey:     "drain-" + string(message.Data),
 			IssuedAt:      contracts.NowMillis(),
-		}, bus.ForwardMsgID("drain-"+string(message.Data), holderSubject), 2*time.Second)
+		}, bus.ForwardMsgID("drain-"+string(message.Data), holderSubject), busWait)
 		if err != nil {
 			forwards <- err
 			return
@@ -177,7 +177,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 		t.Fatal("the first role message never reached its handler")
 	}
 
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	for index := range 2 {
@@ -197,7 +197,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 func TestAPublishAfterDrainDoesNotReconnect(t *testing.T) {
 	t.Parallel()
 	client, _ := connectWithHandler(t, 0)
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	err := client.Publish(contracts.Envelope{

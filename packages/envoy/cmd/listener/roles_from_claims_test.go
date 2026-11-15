@@ -128,7 +128,7 @@ func TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics(t *testing
 			t.Fatalf("store %s's claim naming %s: %v", role, session, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the claims to reach the registry's view", func() bool {
+	waitFor(t, listenerWait, "the claims to reach the registry's view", func() bool {
 		a, errA := registry.RolesHeldBy(holder)
 		b, errB := registry.RolesHeldBy(bare)
 		return errA == nil && errB == nil && slices.Equal(a, []string{"reviewer"}) && slices.Equal(b, []string{"planner"})

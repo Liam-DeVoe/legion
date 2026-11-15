@@ -104,12 +104,12 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 
 			// The control: a live context publishes, the subscriber receives it, and the stream
 			// retains it where it captures the topic.
-			live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)
+			live, cancelLive := context.WithTimeout(context.Background(), busWait)
 			defer cancelLive()
 			if err := client.PublishWithin(live, envelope); err != nil {
 				t.Fatalf("publish under a live context: %v", err)
 			}
-			if _, err := received.NextMsg(5 * time.Second); err != nil {
+			if _, err := received.NextMsg(busWait); err != nil {
 				t.Fatalf("the subscriber received nothing from the live publish: %v", err)
 			}
 			if !tc.core {
@@ -165,7 +165,7 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 		}
 	}
 
-	live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)
+	live, cancelLive := context.WithTimeout(context.Background(), busWait)
 	defer cancelLive()
 	if err := client.publishConfirmed(live, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish); err != nil {
 		t.Fatalf("publishConfirmed with a deadline ahead: %v", err)

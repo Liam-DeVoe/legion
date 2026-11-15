@@ -59,11 +59,11 @@ func publish(t *testing.T, client *bus.Client, item contracts.Envelope) {
 	}
 }
 
-// awaitDurableState waits up to 5 s for durable to hold pending messages for an ack with every
-// message through floor acked.
+// awaitDurableState waits up to listenerWait for durable to hold pending messages for an ack with
+// every message through floor acked.
 func awaitDurableState(t *testing.T, client *bus.Client, durable string, pending int, floor uint64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		info, err := client.JS().ConsumerInfo(bus.Stream, durable)
 		if err != nil {

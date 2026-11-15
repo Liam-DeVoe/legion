@@ -141,7 +141,7 @@ func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 	// been accepted.
 	thaw := server.Freeze(t)
 	err = answerOf(t, window.Request("notifications.role.request-unconfirmed", forwardEnvelope("unconfirmed"),
-		bus.RequestOptions{MsgID: bus.ForwardMsgID("unconfirmed", "notifications.role.request-unconfirmed"), Timeout: 500 * time.Millisecond}), 5*time.Second)
+		bus.RequestOptions{MsgID: bus.ForwardMsgID("unconfirmed", "notifications.role.request-unconfirmed"), Timeout: 500 * time.Millisecond}), busWait)
 	connected := client.Connected()
 	thaw()
 	if !connected {
@@ -286,7 +286,7 @@ func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			name := fmt.Sprintf("many-%d", index)
-			request := window.Request(subject, forwardEnvelope(name), bus.RequestOptions{MsgID: bus.ForwardMsgID(name, subject), Timeout: 5 * time.Second})
+			request := window.Request(subject, forwardEnvelope(name), bus.RequestOptions{MsgID: bus.ForwardMsgID(name, subject), Timeout: busWait})
 			publish := window.PublishAsync(numberedEnvelope(orderedStreamTopic, index))
 			if err := <-request; err != nil {
 				failures <- fmt.Errorf("request %s: %w", name, err)

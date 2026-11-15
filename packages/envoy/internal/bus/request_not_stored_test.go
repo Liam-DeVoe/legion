@@ -70,7 +70,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		}
 		return info.State.Subjects[subject]
 	}
-	// answer waits for outcome's answer, far longer than any request's own timeout here.
+	// answer waits for outcome's answer, failing the test when none comes.
 	answer := func(outcome <-chan error) error {
 		t.Helper()
 		select {
@@ -101,7 +101,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 
 	holder := contracts.AgentSubject("ses_forward_stored")
 	item := forward("stored")
-	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder), Timeout: 2 * time.Second}
+	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder), Timeout: busWait}
 	refused(1, holder, item, opts)
 	if err := answer(client.WindowUntil(nil).Request(holder, item, opts)); err != nil {
 		t.Fatalf("the forward retried once the stream had room = %v, want nil", err)

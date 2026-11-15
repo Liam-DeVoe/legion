@@ -84,11 +84,11 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	written, floor := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), written)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), written)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 	holdNext.Store(true)
 	held, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
 	return rig, sessionID, standIn, held, floor
 }

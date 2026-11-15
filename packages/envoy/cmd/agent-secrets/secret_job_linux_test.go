@@ -242,7 +242,7 @@ func TestPromptJobHelper(t *testing.T) {
 		// Started with &: start the prompt only once bash's line editor holds the
 		// terminal (canonical mode off), which a prompt in the background must
 		// neither take as its baseline nor show its label over.
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
 			tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
 			if err != nil {
 				t.Fatal(err)

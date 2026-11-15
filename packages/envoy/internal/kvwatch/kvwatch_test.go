@@ -620,11 +620,7 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 	if err := w.Rewatch(liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the Rewatch's scan never reached the held key")
-	}
+	wait(t, entered, "the Rewatch's scan to reach the held key")
 
 	w.Start()
 	time.Sleep(300 * time.Millisecond)
@@ -1428,11 +1424,7 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 
 	doneA := make(chan error, 1)
 	go func() { err := w.Rewatch(conn); doneA <- err }()
-	select {
-	case <-slow.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Rewatch A never stopped the replaced watcher")
-	}
+	wait(t, slow.entered, "Rewatch A to stop the replaced watcher")
 	if !into.has("ghost") {
 		t.Fatal("the old bucket's key was dropped when A's read began, before any read of the new bucket completed")
 	}
@@ -1521,11 +1513,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", held.handle(), into)
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first watch never armed its watcher")
-	}
+	wait(t, held.watched, "the first watch to arm its watcher")
 
 	js, err := conn.JetStream()
 	if err != nil {
@@ -1583,11 +1571,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", held.handle(), into)
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first watch never armed its watcher")
-	}
+	wait(t, held.watched, "the first watch to arm its watcher")
 	updates := held.watcher.Updates()
 	eventually(t, "the held watcher's buffer to fill", func() bool { return len(updates) == cap(updates) })
 

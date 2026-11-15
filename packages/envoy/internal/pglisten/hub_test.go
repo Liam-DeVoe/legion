@@ -223,10 +223,10 @@ func TestAHubNotificationSignalsItsChannelsWakes(t *testing.T) {
 	runHub(t, hub)
 
 	waitSignal(t, connected, 5*time.Second, "first connection")
-	waitSignal(t, first, time.Second, "first wake of hub_test_a after the LISTEN")
-	waitSignal(t, second, time.Second, "second wake of hub_test_a after the LISTEN")
-	waitSignal(t, other, time.Second, "wake of hub_test_b after the LISTEN")
-	waitSignal(t, after, time.Second, "wake of hub_test_c after the LISTEN")
+	recv(t, first, "first wake of hub_test_a after the LISTEN")
+	recv(t, second, "second wake of hub_test_a after the LISTEN")
+	recv(t, other, "wake of hub_test_b after the LISTEN")
+	recv(t, after, "wake of hub_test_c after the LISTEN")
 
 	// One connection sends both, so the listener reports them in that order: once hub_test_c's
 	// wake is signalled, hub_test_a's notification has been handled in full.
@@ -271,8 +271,8 @@ func TestAHubSignalsEveryWakeAgainAfterAReconnect(t *testing.T) {
 	runHub(t, hub)
 
 	waitSignal(t, connected, 5*time.Second, "first connection")
-	waitSignal(t, a, time.Second, "wake of hub_test_a after the first LISTEN")
-	waitSignal(t, b, time.Second, "wake of hub_test_b after the first LISTEN")
+	recv(t, a, "wake of hub_test_a after the first LISTEN")
+	recv(t, b, "wake of hub_test_b after the first LISTEN")
 	killed := dialer.lastPID(t)
 
 	terminateBackend(t, database, killed)
@@ -280,8 +280,8 @@ func TestAHubSignalsEveryWakeAgainAfterAReconnect(t *testing.T) {
 	if pid := dialer.lastPID(t); pid == killed {
 		t.Fatalf("the hub reconnected on backend %d, the one that was killed", pid)
 	}
-	waitSignal(t, a, time.Second, "wake of hub_test_a after the redial")
-	waitSignal(t, b, time.Second, "wake of hub_test_b after the redial")
+	recv(t, a, "wake of hub_test_a after the redial")
+	recv(t, b, "wake of hub_test_b after the redial")
 
 	notifyChannel(t, database, "hub_test_b", "after")
 	waitSignal(t, b, 5*time.Second, "wake of hub_test_b after a NOTIFY on the new connection")
