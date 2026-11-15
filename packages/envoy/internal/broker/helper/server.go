@@ -858,14 +858,14 @@ func (s *Server) drain() Response {
 // login starts (or reports the running) machine login and returns its human-facing
 // confirmation code and the page where a person types it (the broker's verification_uri). A
 // broker-call op (brokerCall): it needs no registered session and no peer. A login whose outcome
-// the helper does not know (Broker.Login sent the device authorization and got no result it could
-// read) answers LOGIN_FAILED with an error that says so (loginUnknown); any other failure answers
-// LOGIN_FAILED with the failure as it came.
+// the helper does not know (Broker.Login's device authorization may have reached the broker, and
+// no result the helper could read came back) answers LOGIN_FAILED with an error that says so
+// (loginUnknown); any other failure answers LOGIN_FAILED with the failure as it came.
 func (s *Server) login(ctx context.Context) Response {
 	code, err := s.Broker.Login(ctx, s.Hostname)
 	if err != nil {
 		if outcomeUnknown(err) {
-			return loginUnknown(sentCause(err))
+			return loginUnknown(mayHaveReachedCause(err))
 		}
 		return Response{Code: CodeLoginFailed, Error: err.Error()}
 	}
@@ -973,7 +973,7 @@ func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 			s.Log.Error(cannotEnrollMsg, "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
 		}
 		if outcomeUnknown(err) {
-			return enrollUnknown(sentCause(err))
+			return enrollUnknown(mayHaveReachedCause(err))
 		}
 		return Response{Code: CodeEnrollFailed, Error: err.Error()}
 	}
@@ -990,7 +990,7 @@ func (s *Server) unenrollSessionKey(ctx context.Context, enrollmentID string) Re
 	}
 	if err := s.Broker.Revoke(ctx, enrollmentID); err != nil {
 		if outcomeUnknown(err) {
-			return unenrollUnknown(sentCause(err))
+			return unenrollUnknown(mayHaveReachedCause(err))
 		}
 		return Response{Code: CodeUnenrollFailed, Error: err.Error()}
 	}
@@ -998,9 +998,9 @@ func (s *Server) unenrollSessionKey(ctx context.Context, enrollmentID string) Re
 }
 
 // enrollUnknown, unenrollUnknown and loginUnknown answer a broker-call op whose outcome the
-// helper does not know, with cause saying why it does not: sentCause, or the bound the op did
-// not end within (brokerCall). An agent-secrets from before these answers prints the code and
-// the error as they come, so the error itself says that the outcome is unknown and what to do
+// helper does not know, with cause saying why it does not: mayHaveReachedCause, or the bound the
+// op did not end within (brokerCall). An agent-secrets from before these answers prints the code
+// and the error as they come, so the error itself says that the outcome is unknown and what to do
 // next.
 func enrollUnknown(cause string) Response {
 	return Response{Code: CodeEnrollUnknown, Error: "the outcome is unknown: " + cause + "; the broker may have made the enrollment; run the same enroll again: it answers the enrollment the broker made, if there is one"}
@@ -1014,10 +1014,12 @@ func loginUnknown(cause string) Response {
 	return Response{Code: CodeLoginFailed, Error: "the outcome is unknown: " + cause + "; no confirmation code was shown, so nobody can approve this login; it is safe to run: agent-secrets machine login, again"}
 }
 
-// sentCause is the cause of an unknown outcome whose request the helper sent, with err, the
-// failure that came after it.
-func sentCause(err error) string {
-	return "the helper sent the request to the broker, but did not get its result (" + err.Error() + ")"
+// mayHaveReachedCause is the cause of an unknown outcome that requestReach.settle marked, with
+// err, the failure of the request. It says only that the request may have reached the broker,
+// because settle marks a request whose context ended while the transport held a connection for it
+// as well as one the transport sent, and such a request may not have been written in full.
+func mayHaveReachedCause(err error) string {
+	return "the request may have reached the broker, but the helper did not get its result (" + err.Error() + ")"
 }
 
 // adopt starts the two goroutines every session has: enrollment with renewal, and the exit

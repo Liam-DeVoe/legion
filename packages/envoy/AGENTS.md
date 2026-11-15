@@ -5936,6 +5936,9 @@ An unknown outcome answers `ENROLL_OUTCOME_UNKNOWN` (`helper.CodeEnrollUnknown`)
 A login whose outcome is unknown answers `LOGIN_FAILED`, with an error that starts `the outcome is unknown:` (`loginUnknown`).
 It has no code of its own, because no caller can act on one: nobody saw a confirmation code, so nobody can approve a device authorization that the broker may hold, and that authorization expires by itself.
 Each unknown answer's error says that the outcome is unknown and what to do next, so an `agent-secrets` from before these codes, which prints `<CODE>: <error>` as it comes, says it too.
+The error of an outcome that `settle` marked unknown gives its cause as `the request may have reached the broker, but the helper did not get its result (<error>)` (`mayHaveReachedCause`).
+It says only "may have", because `settle` also marks unknown a request whose context ended while the transport held a connection for it, and that request may not have been written in full.
+The timer's answer gives `the operation did not end in <bound>, so the helper does not know if the broker got the request` instead.
 The same enroll again answers the enrollment that the broker made, if it made one, because the broker gives the same key under the same launcher credential and runtime id its live enrollment back (`enroll.Service.Create`).
 An unenroll is safe to run again, because the helper counts the broker's 204 and 404 as done, and a login is safe to run again too.
 An op can wait past the bound plus 1 s only on a lock that the helper holds across an HTTP request and that does not watch the op's context (a sign-in's trade, a login in progress, a refresh that `clearOnInvalid` waits for).

@@ -233,9 +233,10 @@ type BrokerError struct {
 
 // Error names only the fields it has: the status always, then the code where there is one, then
 // ": " and the message where there is one. A front door's 502 with no JSON body reads "broker 502",
-// not "broker 502 : ", and an unknown outcome's answer shows that text to an operator (sentCause,
-// server.go). With both fields set it reads "broker 403 SESSION_HELD: the session … belongs to …",
-// which nocredential_test.go matches as a prefix ("broker 401 LAUNCHER_INVALID").
+// not "broker 502 : ", and an unknown outcome's answer shows that text to an operator
+// (mayHaveReachedCause, server.go). With both fields set it reads "broker 403 SESSION_HELD: the
+// session … belongs to …", which nocredential_test.go matches as a prefix ("broker 401
+// LAUNCHER_INVALID").
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
 	if e.Code != "" {

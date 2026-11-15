@@ -146,29 +146,29 @@ const (
 	// or changed while the helper was identifying it.
 	CodeUnidentified = "PEER_UNIDENTIFIED"
 	// CodeLoginFailed answers a login the helper could not start with the broker; the error says
-	// why. When the helper does not know the outcome (it sent the request to the broker and got no
-	// answer it could read, or the login did not end within the helper's bound), the error says
-	// that the outcome is unknown and that `agent-secrets machine login` is safe to run again: no
-	// confirmation code was shown, so nobody can approve a login the broker may hold, and it
-	// expires by itself.
+	// why. When the helper does not know the outcome (the request may have reached the broker and
+	// no answer the helper could read came back, or the login did not end within the helper's
+	// bound), the error says that the outcome is unknown and that `agent-secrets machine login` is
+	// safe to run again: no confirmation code was shown, so nobody can approve a login the broker
+	// may hold, and it expires by itself.
 	CodeLoginFailed = "LOGIN_FAILED"
 	// CodeEnrollFailed answers an enroll-session-key whose outcome is known: the broker refused it,
 	// or the helper never asked the broker (it holds no launcher credential, could not read a
 	// sign-in, or could not send the request). This request made no enrollment; the error says why.
 	CodeEnrollFailed = "ENROLL_FAILED"
-	// CodeEnrollUnknown answers an enroll-session-key whose outcome the helper does not know: it
-	// wrote the request to the broker and no answer it could read came back, or the operation did
-	// not end within the helper's bound. So the broker may have made the enrollment. The same
-	// enroll again answers the enrollment the broker made, if it made one; the error says why the
-	// outcome is unknown.
+	// CodeEnrollUnknown answers an enroll-session-key whose outcome the helper does not know: the
+	// request may have reached the broker and no answer the helper could read came back, or the
+	// operation did not end within the helper's bound. So the broker may have made the enrollment.
+	// The same enroll again answers the enrollment the broker made, if it made one; the error says
+	// why the outcome is unknown.
 	CodeEnrollUnknown = "ENROLL_OUTCOME_UNKNOWN"
 	// CodeUnenrollFailed answers an unenroll-session-key whose outcome is known: the broker refused
 	// it, or the helper never asked the broker. This request revoked nothing; the error says why.
 	CodeUnenrollFailed = "UNENROLL_FAILED"
-	// CodeUnenrollUnknown answers an unenroll-session-key whose outcome the helper does not know: it
-	// wrote the request to the broker and no answer it could read came back, or the operation did
-	// not end within the helper's bound. So the broker may have revoked the enrollment. An unenroll
-	// is safe to run again; the error says why the outcome is unknown.
+	// CodeUnenrollUnknown answers an unenroll-session-key whose outcome the helper does not know:
+	// the request may have reached the broker and no answer the helper could read came back, or the
+	// operation did not end within the helper's bound. So the broker may have revoked the
+	// enrollment. An unenroll is safe to run again; the error says why the outcome is unknown.
 	CodeUnenrollUnknown = "UNENROLL_OUTCOME_UNKNOWN"
 	// CodeKeygen answers a register the helper could not make the new session's signing key for;
 	// the error says why.
