@@ -17,13 +17,29 @@
       "types": "./src/metadata-identity.ts",
       "bun": "./src/metadata-identity.ts"
     },
+    "./person-identity": {
+      "types": "./src/person-identity.ts",
+      "bun": "./src/person-identity.ts"
+    },
+    "./pool-identity": {
+      "types": "./src/pool-identity.ts",
+      "bun": "./src/pool-identity.ts"
+    },
     "./projected-token": {
       "types": "./src/projected-token.ts",
       "bun": "./src/projected-token.ts"
     },
+    "./signins": {
+      "types": "./src/signins.ts",
+      "bun": "./src/signins.ts"
+    },
     "./source": {
       "types": "./src/source.ts",
       "bun": "./src/source.ts"
+    },
+    "./test/sign-ins": {
+      "types": "./test/sign-ins.ts",
+      "bun": "./test/sign-ins.ts"
     },
     "./token-client": {
       "types": "./src/token-client.ts",
@@ -40,7 +56,7 @@
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test --timeout 5000 --preload @legion/test-fixtures/row-deadline",
-    "lint": "bunx biome check src/"
+    "lint": "bunx biome check src/ test/"
   },
   "dependencies": {
     "@legion/contracts": "workspace:*",
