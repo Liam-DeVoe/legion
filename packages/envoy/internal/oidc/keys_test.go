@@ -181,6 +181,125 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 	}
 }
 
+// spacedCalls is how many Key calls a spacing test makes, the fifty tokens the broker's spacing is
+// measured against.
+const spacedCalls = 50
+
+// TestAKeySetThatCannotBeReadIsReadOncePerSpacing pins the broker's spacing of failed key-set
+// reads: against a key set that answers 503, fifty Key calls spread over five seconds, with the
+// spacing the broker sets (discoveryRetrySpacing), read the set at most twice, each call answering
+// ErrKeySet. A Keys with no spacing reads the set at every call, as it did before the spacing.
+func TestAKeySetThatCannotBeReadIsReadOncePerSpacing(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		spacing     time.Duration
+		gap         time.Duration
+		least, most int
+	}{
+		{name: "spaced five seconds", spacing: discoveryRetrySpacing, gap: discoveryRetrySpacing / spacedCalls, least: 1, most: 2},
+		{name: "with no spacing", least: spacedCalls, most: spacedCalls},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer := oidctest.New(t)
+			keys, _ := keysFor(t, issuer, "exchange-key")
+			keys.FailureSpacing = c.spacing
+			issuer.FailKeys(http.StatusServiceUnavailable)
+			for call := 1; call <= spacedCalls; call++ {
+				if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
+					t.Fatalf("Key, call %d, against a key set answering 503 = %v, want ErrKeySet", call, err)
+				}
+				time.Sleep(c.gap)
+			}
+			if fetches := issuer.JWKSFetches(); fetches < c.least || fetches > c.most {
+				t.Fatalf("%d Key calls read the failing key set %d times, want %d to %d", spacedCalls, fetches, c.least, c.most)
+			}
+		})
+	}
+}
+
+// TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing pins the other half of the spacing: a set
+// whose lifetime is over, whose issuer's key set then fails, goes on answering the key it holds,
+// and with the spacing only the first of the Key calls after the failure reads the set. With no
+// spacing every call reads it, as before.
+func TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		spacing time.Duration
+		fetches int
+	}{
+		{name: "spaced five seconds", spacing: discoveryRetrySpacing, fetches: 2},
+		{name: "with no spacing", fetches: 1 + spacedCalls},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer := oidctest.New(t)
+			keys, signing := keysFor(t, issuer, "exchange-key")
+			keys.FailureSpacing = c.spacing
+			// Every Key finds the set stale, so the cached set is only ever the fallback.
+			keys.Lifetime = 0
+			if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+				t.Fatalf("Key(the published key): %v", err)
+			}
+			token := issuer.Mint(t, signing, issuer.Claims("system:serviceaccount:example-ns:example-worker", "broker"))
+			issuer.FailKeys(http.StatusServiceUnavailable)
+			for call := 1; call <= spacedCalls; call++ {
+				key, err := keys.Key(context.Background(), "exchange-key", testAlgorithm)
+				if err != nil || !signs(t, token, key) {
+					t.Fatalf("Key, call %d, with the key set failing = %v, %v; want the cached key", call, key, err)
+				}
+			}
+			if fetches := issuer.JWKSFetches(); fetches != c.fetches {
+				t.Fatalf("the key set was read %d times, want %d", fetches, c.fetches)
+			}
+		})
+	}
+}
+
+// TestTheSpacingEndsAndTheNextKeyReadsTheSet: within the spacing a Key answers the failed read's
+// error without reading, even once the key set answers again; past it, the next Key reads the set
+// and answers the key.
+func TestTheSpacingEndsAndTheNextKeyReadsTheSet(t *testing.T) {
+	const spacing = 300 * time.Millisecond
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FailureSpacing = spacing
+	issuer.FailKeys(http.StatusServiceUnavailable)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("Key against a key set answering 503 = %v, want ErrKeySet", err)
+	}
+
+	issuer.FailKeys(0)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("Key within the spacing = %v, want the failed read's ErrKeySet, naming its 503", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("the key set was read %d times within the spacing, want once", fetches)
+	}
+
+	time.Sleep(spacing)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key past the spacing, the key set answering again: %v", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Fatalf("the key set was read %d times, want twice: the failed read and the one past the spacing", fetches)
+	}
+}
+
+// TestACallerThatHungUpStartsNoSpacing: a read that failed because its caller's own context ended
+// says nothing of the issuer, so the next caller reads the set.
+func TestACallerThatHungUpStartsNoSpacing(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FailureSpacing = discoveryRetrySpacing
+	hungUp, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := keys.Key(hungUp, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("Key for a caller that hung up = %v, want ErrKeySet", err)
+	}
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key for the next caller: %v, want the key: a caller hanging up starts no spacing", err)
+	}
+}
+
 func TestNewKeysRefusesAnIssuerThatDoesNotDiscover(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.FailDiscovery(http.StatusInternalServerError)

@@ -166,10 +166,35 @@ type LazyVerifier struct {
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify.
-func NewLazyVerifier(issuer, audience string) *LazyVerifier {
+func NewLazyVerifier(issuer, audience string, options ...LazyVerifierOption) *LazyVerifier {
+	var settings lazyVerifierSettings
+	for _, option := range options {
+		option(&settings)
+	}
 	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
-		return New(ctx, issuer, audience)
+		keys, err := NewKeys(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
+		keys.FailureSpacing = settings.keyFailureSpacing
+		return NewWithKeys(issuer, audience, keys), nil
 	})}
+}
+
+// LazyVerifierOption changes how a LazyVerifier made by NewLazyVerifier reads its issuer.
+type LazyVerifierOption func(*lazyVerifierSettings)
+
+// lazyVerifierSettings are what the options of one NewLazyVerifier set; the zero value is a
+// verifier read as New reads one.
+type lazyVerifierSettings struct {
+	keyFailureSpacing time.Duration
+}
+
+// WithKeyFailureSpacing sets the FailureSpacing of the verifier's key set (Keys), so that while
+// the issuer's key set cannot be read, the tokens that arrive cost it one read per spacing rather
+// than one each. A verifier made without it reads the key set again at every token that needs it.
+func WithKeyFailureSpacing(spacing time.Duration) LazyVerifierOption {
+	return func(settings *lazyVerifierSettings) { settings.keyFailureSpacing = spacing }
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not

@@ -78,6 +78,10 @@ type Account struct {
 	// Name is what the caller calls as, the identity a handler logs when it acts.
 	Name   string
 	powers power
+	// Issuers names, by their names in BROKER_K8S_OIDC_ISSUER, the issuers whose tokens a
+	// Kubernetes caller's ServiceAccount is taken from: its entry's own, or the first issuer's
+	// alone where the entry names none, as config.Load fills it. A Google caller's is empty.
+	Issuers []string
 }
 
 // may reports whether this caller holds p. noPower is held by nobody, so a route that declares

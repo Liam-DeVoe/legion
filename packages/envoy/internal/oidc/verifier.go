@@ -1,7 +1,10 @@
-// Package oidc verifies OIDC tokens against one issuer and one audience — a
-// Kubernetes pod's projected service-account token, for the Dispatch server and
-// the Envoy listener — and signs a person in to Dispatch with the authorization
-// code flow against its sign-in issuer (CodeFlow).
+// Package oidc verifies OIDC tokens — a Kubernetes pod's projected service-account
+// token among them — against one issuer and one audience (Verifier, LazyVerifier),
+// as the Dispatch server and the Envoy listener do, or against a set of named
+// issuers that share one audience (IssuerSet), as the secrets broker does for the
+// clusters it trusts, each token checked by the issuer it names. It also signs a
+// person in to Dispatch with the authorization code flow against its sign-in
+// issuer (CodeFlow).
 package oidc
 
 import (

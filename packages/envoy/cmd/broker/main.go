@@ -426,7 +426,7 @@ func main() {
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
-		Store: st, Lease: lease, Pod: pod, ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
+		Store: st, Lease: lease, Pod: pod, ServiceLogins: serviceLoginServices(cfg.ServiceLogins), ServicesByAccount: cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
@@ -466,7 +466,7 @@ func main() {
 		// The key source the account verifier already reads: a subject token is the same
 		// cluster's projected token, for an audience of its own (BROKER_EXCHANGE_K8S_AUDIENCE),
 		// and BROKER_EXCHANGE_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, so this is never nil.
-		exchangeConfig.Kubernetes = oauth.IssuerConfig{Issuer: cfg.K8sOIDCIssuer, Audience: cfg.ExchangeK8sAudience, Keys: discovered.K8sKeys}
+		exchangeConfig.Kubernetes = oauth.IssuerConfig{Issuer: firstK8sIssuer(cfg), Audience: cfg.ExchangeK8sAudience, Keys: discovered.K8sKeys}
 	}
 	if cfg.GoogleOIDCAudience != "" {
 		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
@@ -1108,13 +1108,13 @@ type verifiers struct {
 // broker registers no Google subject token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
-	if cfg.K8sOIDCIssuer != "" {
-		keys, err := keysFor(ctx, cfg.K8sOIDCIssuer)
+	if issuer := firstK8sIssuer(cfg); issuer != "" {
+		keys, err := keysFor(ctx, issuer)
 		if err != nil {
 			return verifiers{}, err
 		}
 		found.K8sKeys = keys
-		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience, keys)}
+		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer, cfg.K8sOIDCAudience, keys)}
 	}
 	if cfg.GoogleOIDCAudience == "" {
 		return found, nil
@@ -1133,6 +1133,28 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	// metadata server already hands it.
 	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, googleKeys)
 	return found, nil
+}
+
+// firstK8sIssuer is the URL of the first issuer BROKER_K8S_OIDC_ISSUER names, the one issuer
+// whose keys this boot reads, or "" for a broker told about no cluster.
+func firstK8sIssuer(cfg config.Config) string {
+	if len(cfg.K8sOIDCIssuers) == 0 {
+		return ""
+	}
+	return cfg.K8sOIDCIssuers[0].URL
+}
+
+// serviceLoginServices is BROKER_SERVICE_LOGINS as the enrollment service reads it: each
+// ServiceAccount subject answering the service it logs in as.
+func serviceLoginServices(logins map[string]config.ServiceLogin) map[string]string {
+	if logins == nil {
+		return nil
+	}
+	services := make(map[string]string, len(logins))
+	for subject, login := range logins {
+		services[subject] = login.Service
+	}
+	return services
 }
 
 // machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the
