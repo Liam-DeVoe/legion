@@ -480,15 +480,25 @@ func acquireTracerOf(tracer pgx.QueryTracer) *acquireTracer {
 	return nil
 }
 
-// idleInTransactionParam is the session setting Postgres ends an idle transaction by, which only
-// the request pool's connections carry (configurePool, RequestIdleInTransactionTimeout).
+// idleInTransactionParam is the session setting Postgres ends an idle transaction by, which the
+// connections of the request, background, outbox and room-appends pools carry (configurePool),
+// and the transactions of a settlement's write, a compaction's write and the compaction sweep's
+// removal of a document from its list set for themselves (BoundIdleInTransaction), all at one
+// value (RequestIdleInTransactionTimeout).
 const idleInTransactionParam = "idle_in_transaction_session_timeout"
 
+// idleInTransactionSetting is the idle bound (requestIdleInTransaction) as idleInTransactionParam's
+// value: a count of milliseconds, the setting's own unit.
+func idleInTransactionSetting() string {
+	return strconv.FormatInt(requestIdleInTransaction.Milliseconds(), 10)
+}
+
 // configurePool names config's connections dispatch-<name> in application_name
-// (applicationNamePrefix), bounds an idle transaction on them where they are the request pool's
-// (idleInTransactionParam), and sets the pool's acquire tracer, bounded at bound (zero is none)
-// and composed with any tracer config already carries. A configuration copied from another pool's
-// is re-configured from that pool's original tracer, not stacked on its acquire tracer.
+// (applicationNamePrefix), bounds an idle transaction on them where every transaction of the pool
+// can take that bound (idleInTransactionParam; the comment below names those pools), and sets the
+// pool's acquire tracer, bounded at bound (zero is none) and composed with any tracer config
+// already carries. A configuration copied from another pool's is re-configured from that pool's
+// original tracer, not stacked on its acquire tracer.
 func configurePool(config *pgxpool.Config, name string, bound time.Duration) *acquireTracer {
 	inner := config.ConnConfig.Tracer
 	if configured := acquireTracerOf(inner); configured != nil {
@@ -499,15 +509,35 @@ func configurePool(config *pgxpool.Config, name string, bound time.Duration) *ac
 		config.ConnConfig.RuntimeParams = map[string]string{}
 	}
 	config.ConnConfig.RuntimeParams["application_name"] = applicationNamePrefix + name
-	// Only the request pool's connections are bounded. Every separate pool's configuration is a
-	// copy of the request pool's (Pool.newSeparate), so each of them deletes the setting here,
-	// and a background loop, a settlement, a live reader, a room load or append, a compaction,
-	// the event horizon, a lease, the outbox, the registry and the listener may each sit in a
-	// transaction for as long as its own work takes. A connection string that sets the
-	// parameter itself is replaced either way, as its application_name is.
-	if name == RequestsPool {
-		config.ConnConfig.RuntimeParams[idleInTransactionParam] = strconv.FormatInt(requestIdleInTransaction.Milliseconds(), 10)
-	} else {
+	// An idle transaction is bounded wherever it can hold a lock a request's write waits on - an
+	// issue row, a document's advisory lock - since no request's write sets a lock_timeout: a
+	// transaction orphaned there, its connection abandoned and its close never reaching
+	// Postgres, holds those locks until Postgres ends it, and this bound is what ends it. Every
+	// separate pool's configuration is a copy of the request pool's (Pool.newSeparate), so each
+	// pool sets the setting here or deletes it.
+	//
+	// The request, background, outbox and room-appends pools carry it on every connection,
+	// since none of their transactions sits idle longer by design. A request's longest wait is
+	// one cold read (RequestIdleInTransactionTimeout). A background writer does its slow work - a
+	// GitHub or listener call, a document read - before it begins its transaction
+	// (task progress, block-index and reference-excerpt reconciliation, the edit-notice sweep, a
+	// pull request's heads, the delivery resume's claims and settles), and the two that wait
+	// inside one wait within a bound of their own below this one: the issue ask repair's document
+	// writes wait out at most one cold read at a time, as a request's do, and the fleet build
+	// announcer's publishes are bounded at ten seconds each and thirty a pass. The outbox and a
+	// room's appends hold a batch's few round trips. The settlements and compaction pools carry none,
+	// though their writes take those locks: each also runs a fold's repeatable-read read, which
+	// may sit idle in its transaction for longer while it folds a large stored history, so a
+	// settlement's write, a compaction's write and the compaction sweep's removal of a document
+	// from its list each bound their own transaction instead (BoundIdleInTransaction). The rooms
+	// pool's loads are read-only, and the live, leases, horizon, text-trees, registry, listen and
+	// health pools take nothing a request's write waits on, so none of them carries it. A
+	// connection string that sets the parameter itself is replaced either way, as its
+	// application_name is.
+	switch name {
+	case RequestsPool, BackgroundPool, OutboxPool, RoomAppendsPool:
+		config.ConnConfig.RuntimeParams[idleInTransactionParam] = idleInTransactionSetting()
+	default:
 		delete(config.ConnConfig.RuntimeParams, idleInTransactionParam)
 	}
 	if inner == nil {

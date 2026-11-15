@@ -764,9 +764,14 @@ const ColdReadBound = 60 * time.Second
 const requestIdleMargin = 5 * time.Second
 
 // RequestIdleInTransactionTimeout is the idle_in_transaction_session_timeout every request-pool
-// connection carries, and no other pool's (configurePool): the longest a request transaction may
-// sit idle by design, plus the bound on the rollback that ends it, plus a margin - computed from
-// those three, so a raised cold-read bound raises this with it.
+// connection carries: the longest a request transaction may sit idle by design, plus the bound on
+// the rollback that ends it, plus a margin - computed from those three, so a raised cold-read
+// bound raises this with it. The background, outbox and room-appends pools' connections carry the
+// same bound, and a settlement's write, a compaction's write and the compaction sweep's removal
+// of a document from its list set it for their own transaction
+// (configurePool says why those and no others, BoundIdleInTransaction): each of those
+// transactions does its slow work before it begins and then runs its statements one after
+// another, so the one bound serves them all and no second one is kept.
 //
 // Postgres is the only thing that can end an orphaned request transaction: one whose pgx
 // connection was abandoned, and whose close reached Postgres late or not at all, holds the rows
@@ -775,10 +780,26 @@ const requestIdleMargin = 5 * time.Second
 // proxy can stretch much further. This bound ends it instead.
 const RequestIdleInTransactionTimeout = ColdReadBound + RollbackTimeout + requestIdleMargin
 
-// requestIdleInTransaction is the bound configurePool writes onto a request pool's connections.
-// Tests in this package shorten it so a transaction outlasts it in milliseconds rather than in
-// the seventy seconds production runs; nothing else moves it.
+// requestIdleInTransaction is the bound configurePool writes onto the bounded pools' connections
+// and BoundIdleInTransaction sets for one transaction. Tests in this package shorten it so a
+// transaction outlasts it in milliseconds rather than in the seventy seconds production runs;
+// nothing else moves it.
 var requestIdleInTransaction = RequestIdleInTransactionTimeout
+
+// BoundIdleInTransaction bounds tx's own idle time at the bound a request-pool connection carries
+// (RequestIdleInTransactionTimeout), for tx alone: set_config's third argument makes it local to
+// the transaction, so the connection carries nothing once tx ends. It is the first statement of a
+// transaction that takes a lock a request's write waits on, on a pool whose connections carry no
+// bound because another of its transactions - a fold's read - legitimately sits idle for longer:
+// a settlement's write on the settlements pool, and a compaction's write and the compaction
+// sweep's removal of a document from its list (docs' forgetCompactionCandidate) on the compaction
+// pool.
+func BoundIdleInTransaction(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select set_config($1, $2, true)`, idleInTransactionParam, idleInTransactionSetting()); err != nil {
+		return fmt.Errorf("bound the transaction's idle time: %w", err)
+	}
+	return nil
+}
 
 // RollbackContext is the context a transaction rolls back on: ctx's values without its
 // cancellation or deadline, bounded at RollbackTimeout. pgconn refuses a statement on a context

@@ -242,6 +242,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if r.Context().Err() != nil {
+			// The browser left while its document loaded, which ends the load with the request's
+			// own cancellation (loadTree): nothing refused the socket, and nobody is left to read
+			// an answer, so none is written and the line carries the client gone, as a request
+			// whose client left in admission's queue does (accesslog.ClientGone).
+			accesslog.ClientGone(r.Context())
+			return
+		}
 		// The 503 alone names neither the room nor what refused it, so a refusal that reached a
 		// person could be placed only from a neighbouring line: the reason is logged here, with
 		// the pool the admission's load read through (loadPoolName).

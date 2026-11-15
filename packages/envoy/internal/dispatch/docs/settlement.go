@@ -388,18 +388,13 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	if step, outcome := pass.take(); step != settleOn {
 		return step, outcome
 	}
-	// The version's display tree is stored on the settlements pool too (treePool), once the commit
-	// has given the transaction's connection back, so the store takes no connection admission
-	// counts for requests (commitSettlement).
-	ledger := &Ledger{service: s.service, ownTx: true, treePool: s.settlements}
-	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), pass.cursor)
-	tx, err := s.settlements.Begin(ctx)
+	ctx, err := pass.begin(parent)
 	if err != nil {
-		return settleDone, s.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
+		return settleDone, s.stoppedShort(err)
 	}
+	tx := pass.tx
 	// Rolled back apart from ctx: one the settlement's deadline ended still rolls back.
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	pass.ledger, pass.tx = ledger, tx
 	owner, open, err := lockArtifactOwner(ctx, tx, s.room)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -458,6 +453,33 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 		return pass.planRepairs(ctx)
 	}
 	return pass.commitVersion(ctx)
+}
+
+// begin opens the pass's transaction, on the settlements pool the settlement opened for every
+// read and write of its own (settleRoomWithin), with the pass's ledger and the context the stages
+// after take read and write through, which it answers. The version's display tree is stored on
+// the settlements pool too (treePool), once the commit has given the transaction's connection
+// back, so the store takes no connection admission counts for requests (commitSettlement).
+//
+// The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction). It
+// takes the document's owner row and advisory lock, which every request writing the document waits
+// on with no lock_timeout, so one orphaned with its connection would hold them until Postgres
+// noticed; the settlements pool's connections carry no bound of their own, because the
+// settlement's warm-up load folds on that pool in a read that may sit idle for longer. A
+// transaction it could not bound is rolled back here.
+func (p *settlementPass) begin(parent context.Context) (context.Context, error) {
+	ledger := &Ledger{service: p.service, ownTx: true, treePool: p.settlements}
+	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), p.cursor)
+	tx, err := p.settlements.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin document transaction: %w", err)
+	}
+	if err := store.BoundIdleInTransaction(ctx, tx); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	p.ledger, p.tx = ledger, tx
+	return ctx, nil
 }
 
 // take is what the pass takes of its room before it opens a transaction, under no lock of the

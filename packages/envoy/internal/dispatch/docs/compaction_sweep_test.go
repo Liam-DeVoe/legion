@@ -241,6 +241,58 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 	requireRowsAsStored(t, database, young, youngRows)
 }
 
+// Taking a document off the sweep's list deletes its entry under the document's advisory lock,
+// which every request writing the document waits on, so that transaction bounds its own idle time
+// as a compaction's write does: inside it, idle_in_transaction_session_timeout reads
+// store.RequestIdleInTransactionTimeout. A trigger on the delete reads it, since a trigger runs in
+// the deleting transaction. The bound is the transaction's and not the compaction pool's: a fold's
+// read-only transaction on that pool, on the connection the delete ran on, carries none once the
+// delete has committed.
+func TestForgettingACompactionCandidateBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	emptied := storeAgedRows(t, database, 2, time.Hour)
+	if _, err := database.Pool.Exec(ctx, `delete from doc_updates where artifact_id = $1`, emptied); err != nil {
+		t.Fatalf("delete the document's rows: %v", err)
+	}
+	requireOwed(t, database, "the document whose rows were deleted", emptied)
+	for _, statement := range []string{
+		`create table forget_seen (bound interval not null, pid integer not null)`,
+		`create function forget_seen() returns trigger language plpgsql as $$
+		begin
+			insert into forget_seen
+			values (current_setting('idle_in_transaction_session_timeout')::interval, pg_backend_pid());
+			return null;
+		end $$`,
+		`create trigger forget_seen after delete on doc_compaction_owed
+			for each statement execute function forget_seen()`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("install the trigger that reads the delete's transaction: %v", err)
+		}
+	}
+	pool, err := database.Pool.Compaction()
+	if err != nil {
+		t.Fatalf("open the compaction pool: %v", err)
+	}
+
+	removed, err := forgetCompactionCandidate(ctx, pool, emptied)
+	if err != nil || !removed {
+		t.Fatalf("forget the document's compaction entry = %v (%v), want it removed", removed, err)
+	}
+
+	var bound time.Duration
+	var pid int32
+	if err := database.Pool.QueryRow(ctx, `select bound, pid from forget_seen`).Scan(&bound, &pid); err != nil {
+		t.Fatalf("read what the delete's transaction carried: %v", err)
+	}
+	if bound != store.RequestIdleInTransactionTimeout {
+		t.Errorf("the transaction that took the document off the sweep's list reads idle_in_transaction_session_timeout = %v, want %v",
+			bound, store.RequestIdleInTransactionTimeout)
+	}
+	requireFoldsCarryNoIdleBound(t, pool, pid)
+}
+
 // compactionOwedDocuments is every document doc_compaction_owed names, sorted.
 func compactionOwedDocuments(t *testing.T, database *store.Store) []string {
 	t.Helper()

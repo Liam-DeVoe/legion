@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -53,28 +54,27 @@ func stageSettlement(t *testing.T, service *Service, artifactID string) *settlem
 	return settle
 }
 
-// openStageTransaction opens what settlePass opens between take and readLocked: the pass's ledger
-// and a transaction of the settlements pool holding the document's owner row, and the context the
-// stages after take read and write through. The transaction is rolled back when the test ends, and
-// what the pass wrote into the room is discarded with it, as abandon discards it, so a pass left
-// half-run holds neither the document's advisory lock nor the room's persistence worker. A pass
-// whose own stage committed or rolled back the transaction finished its writes itself.
+// openStageTransaction opens what settlePass opens between take and readLocked (begin): the pass's
+// ledger and a transaction of the settlements pool, its idle time bounded, holding the document's
+// owner row, and the context the stages after take read and write through. The transaction is
+// rolled back when the test ends, and what the pass wrote into the room is discarded with it, as
+// abandon discards it, so a pass left half-run holds neither the document's advisory lock nor the
+// room's persistence worker. A pass whose own stage committed or rolled back the transaction
+// finished its writes itself.
 func openStageTransaction(t *testing.T, pass *settlementPass, parent context.Context) context.Context {
 	t.Helper()
 	service, artifactID := pass.service, pass.room
-	ledger := &Ledger{service: service, ownTx: true, treePool: pass.settlements}
-	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), pass.cursor)
-	tx, err := pass.settlements.Begin(ctx)
+	ctx, err := pass.begin(parent)
 	if err != nil {
 		t.Fatalf("begin the settlement's transaction: %v", err)
 	}
+	tx := pass.tx
 	t.Cleanup(func() {
 		if err := tx.Rollback(context.Background()); errors.Is(err, pgx.ErrTxClosed) {
 			return
 		}
 		service.discardSuppressedPersistence(artifactID, pass.slots...)
 	})
-	pass.ledger, pass.tx = ledger, tx
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		t.Fatalf("lock the document's owner row: %v", err)
@@ -164,6 +164,89 @@ func TestSettlementTakeCopiesTheRoomsTreeAndRendersIt(t *testing.T) {
 	if pass.cursor == nil || pass.taken.heldThrough != pass.cursor.heldThrough() {
 		t.Fatalf("take stands at update %d, want the instance's %v", pass.taken.heldThrough, pass.cursor)
 	}
+}
+
+// begin opens the pass's transaction with its own idle time bounded as a request connection's is:
+// its first statement sets idle_in_transaction_session_timeout to
+// store.RequestIdleInTransactionTimeout for that transaction alone (store.BoundIdleInTransaction),
+// since the transaction takes the owner row and the document lock every request writing the
+// document waits on. The bound is the transaction's and not the settlements pool's: a fold's
+// read-only transaction on that pool, as the settlement's warm-up load reads in (loadStored),
+// carries none, on the very connection the settlement's transaction ran on once it has ended.
+func TestSettlementBeginBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "Context.\n")
+	settleCurrentGeneration(t, service, artifactID)
+
+	settle := stageSettlement(t, service, artifactID)
+	pass := &settlementPass{settlement: settle}
+	step, outcome := pass.take()
+	requireStageGoesOn(t, "take", step, outcome)
+	ctx := openStageTransaction(t, pass, context.Background())
+	if got := idleSetting(t, ctx, pass.tx); got != store.RequestIdleInTransactionTimeout {
+		t.Errorf("the settlement's transaction reads idle_in_transaction_session_timeout = %v, want %v",
+			got, store.RequestIdleInTransactionTimeout)
+	}
+	pid := transactionPID(t, ctx, pass.tx)
+	// Committed rather than rolled back, though it wrote nothing: a rollback undoes even a
+	// session-wide SET made inside the transaction, so only a commit shows the bound was the
+	// transaction's own.
+	if err := pass.tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the settlement's transaction: %v", err)
+	}
+	requireFoldsCarryNoIdleBound(t, settle.settlements, pid)
+}
+
+// idleSetting is idle_in_transaction_session_timeout as tx reads it inside itself
+// (current_setting, whose formatted value - "70s", "0" - reads as an interval); zero is no bound.
+func idleSetting(t *testing.T, ctx context.Context, tx pgx.Tx) time.Duration {
+	t.Helper()
+	var bound time.Duration
+	if err := tx.QueryRow(ctx, `select current_setting('idle_in_transaction_session_timeout')::interval`).Scan(&bound); err != nil {
+		t.Fatalf("read idle_in_transaction_session_timeout inside the transaction: %v", err)
+	}
+	return bound
+}
+
+// transactionPID is the Postgres backend tx runs on.
+func transactionPID(t *testing.T, ctx context.Context, tx pgx.Tx) int32 {
+	t.Helper()
+	var pid int32
+	if err := tx.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the transaction's backend pid: %v", err)
+	}
+	return pid
+}
+
+// foldPool is a pool a fold reads on (txSource) whose size the caller can read.
+type foldPool interface {
+	txSource
+	Config() *pgxpool.Config
+}
+
+// requireFoldsCarryNoIdleBound opens on pool, one after another and each held until the test
+// ends, the read-only repeatable-read transaction a fold reads in (loadStored, readCompaction), and
+// requires each to carry no idle bound, until one runs on backend pid: the connection a bounded
+// write ran on, its transaction ended since. Held, each takes a connection the pool has not handed
+// out yet, so one reaches pid within the pool's size.
+func requireFoldsCarryNoIdleBound(t *testing.T, pool foldPool, pid int32) {
+	t.Helper()
+	for range pool.Config().MaxConns {
+		ctx := store.WithTransactionTracking(context.Background())
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatalf("begin a fold's read-only transaction: %v", err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		if got := idleSetting(t, ctx, tx); got != 0 {
+			t.Fatalf("a fold's read-only transaction reads idle_in_transaction_session_timeout = %v, want none: the bound is the write's transaction's alone", got)
+		}
+		if transactionPID(t, ctx, tx) == pid {
+			return
+		}
+	}
+	t.Fatalf("no fold transaction ran on the write's connection (pid %d), so nothing here is tested", pid)
 }
 
 // readLocked reads what a version of the pass is compared against and credited to, under the

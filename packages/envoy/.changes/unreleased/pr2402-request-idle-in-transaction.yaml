@@ -1,16 +1,21 @@
 kind: Changed
 body: |-
-  Postgres now ends a request transaction left idle for 70 seconds, and only a request
-  connection's: every connection of Dispatch's request pool carries
-  `idle_in_transaction_session_timeout`, and the background, live, settlement, rooms,
-  room-appends, compaction, text-trees, horizon, lease, outbox, registry, listen and health pools
-  carry none,
-  so work that is meant to sit in a transaction for as long as it takes still can.
-  Without it an orphaned request transaction — one whose connection was abandoned and whose
-  close reached Postgres late or not at all — held the rows it locked and the event horizon until
-  Postgres noticed the socket was gone, which a stall run measured at over two seconds past every
-  request that could have owned it.
+  Postgres now ends a transaction left idle for 70 seconds wherever that transaction can hold a
+  lock a request's write waits on: every connection of Dispatch's request, background, outbox
+  and room-appends pools carries `idle_in_transaction_session_timeout`, and a document
+  settlement's write, a document compaction's write and the compaction sweep's removal of a
+  document from its list each set it for their own transaction.
+  The settlements and compaction pools' connections carry none, since those pools also run folds
+  whose read-only transactions may sit idle for longer, and the live, rooms, text-trees, horizon,
+  lease, registry, listen and health pools carry none, since they take nothing a request's write
+  waits on.
+  Without it an orphaned transaction — one whose connection was abandoned and whose close
+  reached Postgres late or not at all — held the issue rows and document locks it took, and a
+  request's the event horizon too, until Postgres noticed the socket was gone, and no request's
+  write sets a lock timeout to give up on them; a stall run measured an orphaned request
+  transaction outliving every request that could have owned it by over two seconds.
   The 70 seconds is computed rather than chosen, from the longest a request transaction sits idle
   by design (one cold read of a document's stored history, 60 seconds, which a check-result write
   waits out under two issue row locks), the 5 seconds the rollback that ends it is bounded by, and
-  a 5-second margin; raising the cold read's bound raises this one with it.
+  a 5-second margin; raising the cold read's bound raises this one with it, and every bounded
+  pool and transaction takes that one figure.

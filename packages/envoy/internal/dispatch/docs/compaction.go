@@ -246,6 +246,12 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *store.RawPool, r
 // writeCompaction writes folded back under the room's lock, on a connection of pool, when the rows
 // at or below its fold point are still the ones it folded (compactRoom), and takes the document off
 // the sweep's list (doc_compaction_owed) when no row stands above the fold point.
+//
+// Its transaction's first statement bounds its own idle time (store.BoundIdleInTransaction): it
+// takes the document's advisory lock, which every request writing the document waits on with no
+// lock_timeout, so one orphaned with its connection would hold that lock until Postgres noticed.
+// The compaction pool's connections carry no bound of their own, because a compaction's read
+// (readCompaction) may sit idle in its transaction for longer while it folds a large log.
 func (p *PgVersioned) writeCompaction(ctx context.Context, pool *store.RawPool, room string, wait bool, folded compactFold) (compactResult, error) {
 	result := compactResult{outcome: compactDropped}
 	point := folded.point()
@@ -255,8 +261,14 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *store.RawPool, 
 			return fmt.Errorf("begin compact document: %w", err)
 		}
 		defer tx.Rollback(ctx)
+		if err := store.BoundIdleInTransaction(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockDocumentRoom(ctx, tx, room); err != nil {
 			return err
+		}
+		if p.duringCompactionWrite != nil {
+			p.duringCompactionWrite(room, tx)
 		}
 		recovered, err := p.recoverPruneTx(ctx, tx, room)
 		if err != nil {

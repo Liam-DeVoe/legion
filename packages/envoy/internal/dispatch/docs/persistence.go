@@ -69,6 +69,10 @@ type PgVersioned struct {
 	// takes the room's lock to write the fold back. Nil outside tests; tests use it to hold a
 	// compaction inside its fold while another writer changes the document.
 	duringCompactionFold func(room string)
+	// duringCompactionWrite runs inside a compaction's write transaction (writeCompaction), once
+	// that transaction has bounded its idle time and taken the document's lock and before it runs
+	// anything else. Nil outside tests; tests read the transaction's own settings there.
+	duringCompactionWrite func(room string, tx pgx.Tx)
 	// beforeFold runs as a load or a compaction starts to fold a room's rows (foldRead): once its
 	// read transaction has committed when it read them into memory, inside that transaction when
 	// it streams them. Nil outside tests; tests use it to see which connection a fold holds.

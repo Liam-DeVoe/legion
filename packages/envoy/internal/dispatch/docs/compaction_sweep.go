@@ -126,12 +126,20 @@ const warnCompactionForget = "dispatch: take a document with nothing to fold off
 // (lockDocumentRoom), which every append that names a document takes too, so an append committing
 // meanwhile either committed before the delete reads the rows, which then keeps the entry, or
 // names the document again after it.
+//
+// The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction), as a
+// compaction's write does (writeCompaction): the document's lock is one every request writing the
+// document waits on with no lock_timeout, and the compaction pool's connections carry no bound of
+// their own.
 func forgetCompactionCandidate(ctx context.Context, pool *store.RawPool, room string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin forget the document's compaction entry: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := store.BoundIdleInTransaction(ctx, tx); err != nil {
+		return false, err
+	}
 	if err := lockDocumentRoom(ctx, tx, room); err != nil {
 		return false, err
 	}

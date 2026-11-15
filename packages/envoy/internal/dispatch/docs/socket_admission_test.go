@@ -20,6 +20,7 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -910,4 +911,107 @@ func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
 			t.Fatalf("the refused socket's line %q does not carry %q", line, want)
 		}
 	}
+}
+
+// A browser that leaves while its socket's document loads is a client gone, not a refused socket:
+// its going ends the load with the request's own cancellation (loadTree hands context.Canceled
+// back as the store answered it), so the service logs no WARN, writes no answer nobody is left to
+// read, and the socket's access-log line carries the 499 of a client that went away
+// (accesslog.ClientGone) rather than a 503. The admission's load is held until the browser's
+// request has ended (leavingDuringLoadStore), and the browser leaves by dropping its connection.
+func TestASocketWhoseClientLeavesDuringTheLoadIsAGoneClientAndNoRefusal(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	loading := make(chan struct{})
+	service := New(Deps{
+		Store:       database,
+		Persistence: &leavingDuringLoadStore{VersionedStore: NewPgVersioned(database), loading: loading},
+		Events:      events.NewBroker(),
+		Identity:    headerIdentity(database),
+	})
+	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	served := make(chan struct{})
+	logged := accesslog.Handler("/ws/doc/{room}", http.HandlerFunc(service.ServeHTTP))
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(served)
+		logged.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	browser, leave := context.WithCancel(context.Background())
+	defer leave()
+	request, err := http.NewRequestWithContext(browser, http.MethodGet,
+		httpServer.URL+"/ws/doc/"+artifactID+"?schema_version="+strconv.Itoa(pmdoc.SchemaVersion()), nil)
+	if err != nil {
+		t.Fatalf("build the socket's request: %v", err)
+	}
+	request.Header.Set("X-Dispatch-User", "alice")
+	answered := make(chan error, 1)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		answered <- err
+	}()
+	select {
+	case <-loading:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the socket's admission never loaded its document, so nothing here is tested")
+	}
+	// The browser leaves: the client drops the connection, and the server ends the request's
+	// context once it reads that.
+	leave()
+	if err := <-answered; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the browser's request ended with %v, want it cancelled by the browser", err)
+	}
+	select {
+	case <-served:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the socket's request never ended after its browser left")
+	}
+
+	lines := logs.String()
+	if strings.Contains(lines, "level=WARN") {
+		t.Fatalf("a socket whose browser left during the load logged a WARN, want none; the log was:\n%s", lines)
+	}
+	access := ""
+	for _, line := range strings.Split(lines, "\n") {
+		if strings.Contains(line, `msg="`+accesslog.Message+`"`) {
+			access = line
+		}
+	}
+	if access == "" {
+		t.Fatalf("the socket's request wrote no access-log line; the log was:\n%s", lines)
+	}
+	if want := "status=" + strconv.Itoa(accesslog.StatusClientClosedRequest); !strings.Contains(access, want) {
+		t.Fatalf("the socket's access-log line %q does not carry %s, the client gone", access, want)
+	}
+}
+
+// leavingDuringLoadStore holds its first Load until the context it loads on has ended - the
+// browser that asked for the load has left - and then loads on that ended context, which the
+// store answers context.Canceled (loadStored), as it would had the browser left mid-read. It
+// closes loading as that first Load begins.
+type leavingDuringLoadStore struct {
+	VersionedStore
+	loading chan struct{}
+	once    sync.Once
+}
+
+func (s *leavingDuringLoadStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
+	first := false
+	s.once.Do(func() {
+		first = true
+		close(s.loading)
+	})
+	if first {
+		<-ctx.Done()
+	}
+	return s.VersionedStore.Load(ctx, room)
 }

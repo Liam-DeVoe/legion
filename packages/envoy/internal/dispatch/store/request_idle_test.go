@@ -18,7 +18,7 @@ type idleBoundReader interface {
 
 // readIdleBound is idle_in_transaction_session_timeout as the connection q hands out carries it.
 // pg_settings reports the value in its own unit, which the unit column names, so the reading is a
-// number rather than Postgres's formatted "1min10s".
+// number rather than Postgres's formatted "70s".
 func readIdleBound(t *testing.T, ctx context.Context, q idleBoundReader) time.Duration {
 	t.Helper()
 	var milliseconds int64
@@ -34,59 +34,119 @@ func readIdleBound(t *testing.T, ctx context.Context, q idleBoundReader) time.Du
 	return time.Duration(milliseconds) * time.Millisecond
 }
 
-// The request pool's connections carry the bound this package computes - one cold read, the
-// rollback that ends the transaction after it, and a margin (RequestIdleInTransactionTimeout) -
-// and the pools opened from a copy of that configuration carry none, wrapped (Background) and
-// separate (Rooms) alike: a background loop, a room load, a settlement or a lease may sit in a
-// transaction for as long as its own work takes.
-func TestOnlyTheRequestPoolsConnectionsCarryTheComputedIdleBound(t *testing.T) {
+// The connections of every pool whose transactions take the locks a request's write waits on, and
+// none of which sits idle longer by design, carry the bound this package computes - one cold read,
+// the rollback that ends the transaction after it, and a margin (RequestIdleInTransactionTimeout):
+// the request pool's, the background loops', the outbox's and the rooms' appends'. The pools that
+// take nothing a request's write waits on carry none, wrapped (Live, TextTrees) and separate
+// (Rooms, Leases) alike: a room load, a live reader, a lease and the display tree fill may sit in
+// a transaction for as long as their own work takes. The settlements and compaction pools carry
+// none either; their writes bound their own transactions (docs' rows hold those).
+func TestTheIdleBoundIsOnTheRequestBackgroundOutboxAndRoomAppendsConnections(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 
-	if got := readIdleBound(t, ctx, database.Pool); got != RequestIdleInTransactionTimeout {
-		t.Errorf("a request connection's %s = %v, want the computed %v (%v cold read + %v rollback + margin)",
-			idleInTransactionParam, got, RequestIdleInTransactionTimeout, ColdReadBound, RollbackTimeout)
-	}
 	background, err := database.Pool.Background()
 	if err != nil {
 		t.Fatalf("open the background pool: %v", err)
 	}
-	if got := readIdleBound(t, ctx, background); got != 0 {
-		t.Errorf("a background connection's %s = %v, want none", idleInTransactionParam, got)
+	outbox, err := database.Pool.Outbox()
+	if err != nil {
+		t.Fatalf("open the outbox pool: %v", err)
+	}
+	roomAppends, err := database.Pool.RoomAppends()
+	if err != nil {
+		t.Fatalf("open the room-appends pool: %v", err)
 	}
 	rooms, err := database.Pool.Rooms()
 	if err != nil {
 		t.Fatalf("open the rooms pool: %v", err)
 	}
-	if got := readIdleBound(t, ctx, rooms); got != 0 {
-		t.Errorf("a rooms connection's %s = %v, want none", idleInTransactionParam, got)
+	live, err := database.Pool.Live()
+	if err != nil {
+		t.Fatalf("open the live pool: %v", err)
+	}
+	leaseCallers, err := database.Pool.Leases()
+	if err != nil {
+		t.Fatalf("open the lease pool: %v", err)
+	}
+	leases, err := leaseCallers.For("the idle bound's reading")
+	if err != nil {
+		t.Fatalf("reserve a connection of the lease pool: %v", err)
+	}
+	textTrees, err := database.Pool.TextTrees()
+	if err != nil {
+		t.Fatalf("open the text-trees pool: %v", err)
+	}
+
+	for _, bounded := range []struct {
+		pool string
+		q    idleBoundReader
+	}{
+		{RequestsPool, database.Pool},
+		{BackgroundPool, background},
+		{OutboxPool, outbox},
+		{RoomAppendsPool, roomAppends},
+	} {
+		if got := readIdleBound(t, ctx, bounded.q); got != RequestIdleInTransactionTimeout {
+			t.Errorf("the %s pool's connection carries %s = %v, want the computed %v (%v cold read + %v rollback + margin)",
+				bounded.pool, idleInTransactionParam, got, RequestIdleInTransactionTimeout, ColdReadBound, RollbackTimeout)
+		}
+	}
+	for _, unbounded := range []struct {
+		pool string
+		q    idleBoundReader
+	}{
+		{RoomsPool, rooms},
+		{LivePool, live},
+		{LeasesPool, leases},
+		{TextTreesPool, textTrees},
+	} {
+		if got := readIdleBound(t, ctx, unbounded.q); got != 0 {
+			t.Errorf("the %s pool's connection carries %s = %v, want none", unbounded.pool, idleInTransactionParam, got)
+		}
 	}
 }
 
 // Postgres ends a request transaction left idle past that bound, so an orphaned one - a
 // transaction whose pgx connection was abandoned, whose close reached Postgres late or never -
 // cannot hold the rows it locked and the event horizon until Postgres notices the socket is gone.
-// A background connection idle just as long keeps its transaction.
+// A rooms connection's transaction idle just as long keeps its transaction.
 //
-// The bound is shortened here (requestIdleInTransaction) rather than waited out, so the test
-// takes seconds and not the seventy production runs.
+// The bound is shortened here (shortenIdleBound) rather than waited out, so the test takes
+// seconds and not the seventy production runs.
 func TestPostgresEndsARequestTransactionLeftIdlePastItsBound(t *testing.T) {
 	const bound = 300 * time.Millisecond
-	production := requestIdleInTransaction
-	requestIdleInTransaction = bound
-	t.Cleanup(func() { requestIdleInTransaction = production })
-
+	shortenIdleBound(t, bound)
 	database := openTestStore(t)
 	ctx := context.Background()
 
-	// Each transaction is marked on a context of its own, as two callers' transactions are: one
-	// context holding both would refuse the second pool's connection (ErrNestedAcquire).
 	request, err := database.Pool.Begin(WithTransactionTracking(ctx))
 	if err != nil {
 		t.Fatalf("begin the request transaction: %v", err)
 	}
 	defer request.Rollback(ctx)
 	requestPID := backendPID(t, ctx, request)
+	load, loadPID := beginRoomsTransaction(t, ctx, database)
+	defer load.Rollback(ctx)
+
+	// Both sit idle in their transactions well past the bound.
+	time.Sleep(10 * bound)
+
+	requireEndedByPostgres(t, ctx, database, "request", request, requestPID, bound)
+	requireKept(t, ctx, database, "rooms", load, loadPID)
+}
+
+// Postgres ends a background-pool transaction left idle past that same bound. A background writer
+// takes the issue rows and the document locks a request's write waits on, and no request's write
+// sets a lock_timeout, so an orphaned background transaction would hold them until Postgres
+// noticed its socket was gone. A rooms connection's transaction idle just as long keeps its
+// transaction.
+func TestPostgresEndsABackgroundTransactionLeftIdlePastItsBound(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	shortenIdleBound(t, bound)
+	database := openTestStore(t)
+	ctx := context.Background()
 
 	background, err := database.Pool.Background()
 	if err != nil {
@@ -98,26 +158,65 @@ func TestPostgresEndsARequestTransactionLeftIdlePastItsBound(t *testing.T) {
 	}
 	defer loop.Rollback(ctx)
 	loopPID := backendPID(t, ctx, loop)
+	load, loadPID := beginRoomsTransaction(t, ctx, database)
+	defer load.Rollback(ctx)
 
-	// Both sit idle in their transactions well past the request pool's bound.
 	time.Sleep(10 * bound)
 
-	_, err = request.Exec(ctx, "select 1")
-	if err == nil {
-		t.Errorf("a request transaction idle %v past its %v bound still runs statements, want it ended by Postgres",
-			9*bound, bound)
-	} else if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code != "25P03" {
-		t.Errorf("a request transaction idle past its bound answered SQLSTATE %s (%s), want 25P03", pgErr.Code, pgErr.Message)
-	}
-	if alive(t, ctx, database.Pool, requestPID) {
-		t.Errorf("the request connection (pid %d) is still in pg_stat_activity, want its session ended", requestPID)
-	}
+	requireEndedByPostgres(t, ctx, database, "background", loop, loopPID, bound)
+	requireKept(t, ctx, database, "rooms", load, loadPID)
+}
 
-	if _, err := loop.Exec(ctx, "select 1"); err != nil {
-		t.Errorf("a background transaction idle just as long: %v, want it still open", err)
+// shortenIdleBound has the pools opened from here on carry bound in place of production's
+// seventy seconds (requestIdleInTransaction), until t ends. A pool takes the bound as it opens
+// (configurePool), so it is shortened before the store opens.
+func shortenIdleBound(t *testing.T, bound time.Duration) {
+	t.Helper()
+	production := requestIdleInTransaction
+	requestIdleInTransaction = bound
+	t.Cleanup(func() { requestIdleInTransaction = production })
+}
+
+// beginRoomsTransaction opens a transaction on a connection of the rooms pool, which carries no
+// idle bound, and answers it with its backend pid.
+func beginRoomsTransaction(t *testing.T, ctx context.Context, database *Store) (pgx.Tx, int32) {
+	t.Helper()
+	rooms, err := database.Pool.Rooms()
+	if err != nil {
+		t.Fatalf("open the rooms pool: %v", err)
 	}
-	if !alive(t, ctx, database.Pool, loopPID) {
-		t.Errorf("the background connection (pid %d) is gone from pg_stat_activity, want it untouched", loopPID)
+	load, err := rooms.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the rooms transaction: %v", err)
+	}
+	return load, backendPID(t, ctx, load)
+}
+
+// requireEndedByPostgres requires the pool's transaction tx, on backend pid, left idle past bound,
+// to have been ended by Postgres: its next statement refused with SQLSTATE 25P03 and its session
+// gone from pg_stat_activity.
+func requireEndedByPostgres(t *testing.T, ctx context.Context, database *Store, pool string, tx pgx.Tx, pid int32, bound time.Duration) {
+	t.Helper()
+	_, err := tx.Exec(ctx, "select 1")
+	if err == nil {
+		t.Errorf("a %s transaction idle %v past its %v bound still runs statements, want it ended by Postgres",
+			pool, 9*bound, bound)
+	} else if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code != "25P03" {
+		t.Errorf("a %s transaction idle past its bound answered SQLSTATE %s (%s), want 25P03", pool, pgErr.Code, pgErr.Message)
+	}
+	if alive(t, ctx, database.Pool, pid) {
+		t.Errorf("the %s connection (pid %d) is still in pg_stat_activity, want its session ended", pool, pid)
+	}
+}
+
+// requireKept requires the pool's transaction tx, on backend pid, to be open still.
+func requireKept(t *testing.T, ctx context.Context, database *Store, pool string, tx pgx.Tx, pid int32) {
+	t.Helper()
+	if _, err := tx.Exec(ctx, "select 1"); err != nil {
+		t.Errorf("a %s transaction idle just as long: %v, want it still open", pool, err)
+	}
+	if !alive(t, ctx, database.Pool, pid) {
+		t.Errorf("the %s connection (pid %d) is gone from pg_stat_activity, want it untouched", pool, pid)
 	}
 }
 
