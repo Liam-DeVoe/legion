@@ -23,9 +23,9 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
  * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
  * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
- * `bun run build:web` at this head writes an entry of 486,666 bytes (the one
+ * `bun run build:web` at this head writes an entry of 486,684 bytes (the one
  * `web/dist/assets/index-*.js` that `dist/index.html` names, measured 2026-11-15), which leaves
- * 13,334 bytes of room under this budget. The split itself wrote 491,264; the 5,909 bytes after
+ * 13,316 bytes of room under this budget. The split itself wrote 491,264; the 5,909 bytes after
  * it are what lets an issue page wait for its document rather than fetch beside it: the loaders
  * of the issue page's tab chunks (`features/issue/tab-chunks.ts`), the shell's hold on its
  * extras (`features/shell/content-drawn.ts`), and the chunk component that draws a chunk already
@@ -33,10 +33,13 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * default branch then put 3,047 more in the shell's path, and this budget refused that build at
  * 500,220 bytes, as it is here to. The boundary that answered it is the headless Markdown
  * engine, whose one importer in the entry was the warm every page starts at boot: fetched there
- * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out.
+ * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out,
+ * and the commits and forward merges after it moved the entry by less than a hundred bytes.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
- * under two names. A change that adds to what every page parses spends that room and then fails
+ * under two names. The id is in the entry too, so CI's build, whose id is the 40-character
+ * commit, writes an entry 27 bytes longer than a local build's, whose id is 13 digits of the
+ * clock. A change that adds to what every page parses spends that room and then fails
  * `bun run check:asset-sizes`, which is the point: the next shell boundary is cheaper to find
  * now than the 233,923 bytes above were.
  *

@@ -68,9 +68,10 @@ name: Dispatch browser suite
 # were the newest readings, 2,400 s once the machines got slower and this suite did not, and
 # 2,700 s once one slow afternoon showed what an absolute figure near the measurement costs:
 # on 2026-11-15 two runs of one tree cost 2,252 and 2,450 s (43664675139, 43667557013) with
-# real-stack row medians of 2,746 and 3,126 ms, while the day's four green merge-queue runs of
-# the default branch cost 3,038, 3,059, 3,122 and 3,173 s. The head's lane stayed 0.73 to 0.79
-# of that day's median, so the suite is as cheap as it was and the ceiling is what moved.
+# real-stack row medians of 2,746 and 3,126 ms, while the day's thirteen green merge-queue runs
+# of the default branch up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126 s. Those two
+# runs were 0.72 and 0.78 of that median, so the suite is as cheap as it was and the ceiling is
+# what moved.
 # .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
 # carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 # a run that cost more than the one before it, which is how this suite went from about 25
@@ -356,22 +357,25 @@ jobs:
     # three runs of 2026-11-11, 745 s in run 43251567200 and 769 s in run 43347417247. Shard 2's
     # read 532 to 636 s on 2026-11-11 and 750 s in run 43251567200, about a quarter more. So the
     # budget takes the maximum over every run, as the rule says, and not a median. The maximum
-    # each step reached over the 18 legs, in seconds:
+    # each step reached over those 18 legs and the 20 green legs of this branch's ten full runs
+    # of 2026-11-15 (43672161759, 43674112121, 43676043057, 43687205491, 43689921885,
+    # 43692383387, 43716814270, 43720076901, 43723836932 and 43731214579), read the same way,
+    # in seconds:
     #
     #   step                                                 max
-    #   Set up job                                             1
-    #   Initialize containers                                 45
+    #   Set up job                                             2
+    #   Initialize containers                                 47
     #   actions/checkout                                      13
     #   Start an S3-compatible server for uploaded files       1
     #   actions/download-artifact, the binaries                6
     #   Make the downloaded binaries executable                1
     #   ./.github/actions/setup-bun                            4
-    #   bun install --frozen-lockfile                         11
+    #   bun install --frozen-lockfile                         12
     #   Build contracts for dispatch e2e                       1
-    #   actions/download-artifact, the dashboard               2
+    #   actions/download-artifact, the dashboard               3
     #   Read the lanes' PostgreSQL and time its provider       6
-    #   Wait for the S3-compatible server                      8
-    #   Browser-test dispatch dashboard                      769   (carries its own budget)
+    #   Wait for the S3-compatible server                     10
+    #   Browser-test dispatch dashboard                      810   (carries its own budget)
     #   upload-artifact, this leg's blob report                3
     #   What the run left behind                               1
     #   upload-artifact, the record directory                  2
@@ -379,21 +383,21 @@ jobs:
     #   Post Run ./.github/actions/setup-bun                   1
     #   Post Run actions/checkout                              1
     #   Stop containers                                        1
-    #   Complete job                                           0
-    #   the whole job                                        835
+    #   Complete job                                           1
+    #   the whole job                                        892
     #
-    # The rule is in this file's head. The step's maximum at this tree is 792 s: shard 1 of run
-    # 43674112121 (job 132690968751, 2026-11-15), above the 761 s of run 43676043057 (job
-    # 132697146313) and the 725 s of 43672161759 (job 132685197177), and above every earlier
+    # The rule is in this file's head. The step's maximum is 810 s: shard 2 of run 43692383387
+    # (job 132746399858, 2026-11-15), above the 792 s of shard 1 of run 43674112121 (job
+    # 132690968751), the most any other leg of those ten runs read, and above every earlier
     # reading - 769 s in shard 1 of run 43347417247 (job 131631089585), 750 s in shard 2 (job
     # 131300609469, run 43251567200), and the 780 s floor of job 131642902948, which the old
-    # 13 minutes stopped before its end. Taken at 792 s: 792 x 1.15 = 910.8 s -> 16 min. The
+    # 13 minutes stopped before its end. Taken at 810 s: 810 x 1.15 = 931.5 s -> 16 min. The
     # job's budget is that 960 s plus the maxima above of every step without a budget, which
-    # sum to 112 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
-    # 960 + 112 = 1,072 s, 17 min 52 s, rounded up to the 18 minutes below. That is a backstop
-    # above the sum of the step budgets, as this file's head says a job budget is, and above
-    # the 862 s the slowest leg took whole at this tree (job 132690968751), and the 860 s of
-    # job 131642902948, the leg the old 13 minutes stopped.
+    # sum to 120 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
+    # 960 + 120 = 1,080 s, which is the 18 minutes below exactly. That is a backstop above the
+    # sum of the step budgets, as this file's head says a job budget is, and above the 892 s the
+    # slowest leg took whole (job 132746399858), and the 860 s of job 131642902948, the leg the
+    # old 13 minutes stopped.
     #
     # The readings these replace were taken at other shapes, and no number here rests on them
     # now. The browser step's 13 minutes were derived by halving the browser steps of four legs,
@@ -587,10 +591,10 @@ jobs:
         # reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 16 minutes the job's head gives this step by the rule in this
-        # file's head: the step's maximum at this tree is 792 s, shard 1 of run 43674112121
-        # (job 132690968751), above the 761 s and 725 s of the other two full runs and above
-        # every earlier reading, the 780 s floor of job 131642902948 among them, and
-        # 792 x 1.15 = 910.8 s, which rounds up to 16 min. The job's head lists the runs and
+        # file's head: the step's maximum is 810 s, shard 2 of run 43692383387 (job
+        # 132746399858), above every other leg of this branch's ten full runs of 2026-11-15 and
+        # above every earlier reading, the 780 s floor of job 131642902948 among them, and
+        # 810 x 1.15 = 931.5 s, which rounds up to 16 min. The job's head lists the runs and
         # how the legs' times moved.
         timeout-minutes: 16
         run: |
@@ -1541,17 +1545,19 @@ jobs:
   # every run is 183 s, and 183 x 1.15 = 211 s -> 4 min, the step budget below. Those runs are of
   # main's shape, where e2e/run-server.sh built the Dispatch server inside this step; at this
   # shape it builds nothing (DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR below), and
-  # its own runs read 37 to 77 s, at most 77 s (job 132697146265, run 43676043057). The rule
+  # its own runs read 37 to 78 s, at most 78 s (job 132830691048, run 43720076901). The rule
   # takes the maximum over every run all the same, so 4 minutes stands, with room.
   #
-  # The job's sum is taken over every step of the job as it is now, each at its maximum over all
-  # fourteen runs this shape and the five columns above have, in seconds: `Set up job` 1, the
-  # checkout 9, the binaries download 7 (job 130609653873), the chmod 0, the dashboard download
-  # 3, setup-bun 218 (job 128713801668), bun install 13 (job 131300609202), the contracts build
-  # 1, the image pull 44 (job 130712354441), the upload 3, `Post Run ./.github/actions/setup-bun`
-  # 1, `Post Run actions/checkout` 0 and `Complete job` 0. Those sum to 300 s - setup-go, the go
-  # cache restore and the dashboard build left this job (dispatch://INFRA-1109), which is why it
-  # is not the 314 s of the five columns - and 240 + 300 = 540 s, which is the 9 minutes below.
+  # The job's sum is taken over every step of the job as it is now, each at its maximum over
+  # every run this shape and the five columns above have, this branch's ten full runs of
+  # 2026-11-15 among them (43672161759 to 43731214579), in seconds: `Set up job` 2 (job
+  # 132730913819), the checkout 9, the binaries download 7 (job 130609653873), the chmod 0, the
+  # dashboard download 3, setup-bun 218 (job 128713801668), bun install 13 (job 131300609202),
+  # the contracts build 1, the image pull 46 (job 132730913819, run 43687205491), the upload 3,
+  # `Post Run ./.github/actions/setup-bun` 1, `Post Run actions/checkout` 1 (job 132830691048)
+  # and `Complete job` 0. Those sum to 304 s - setup-go, the go cache restore and the dashboard
+  # build left this job (dispatch://INFRA-1109), which is why it is not the 314 s of the five
+  # columns - and 240 + 304 = 544 s, 9 min 4 s, rounded up to the 10 minutes below.
   #
   # The first run of the five columns was the only one this job had when these budgets were
   # first written, and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's
@@ -1570,7 +1576,7 @@ jobs:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 9
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

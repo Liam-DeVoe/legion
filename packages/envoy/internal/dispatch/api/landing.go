@@ -114,7 +114,7 @@ type landingPage struct {
 
 // landingIssuePage is what the issue page draws before it paints, each field naming its route.
 type landingIssuePage struct {
-	// Issue is GET /api/v1/issues/{key}; null for a key that is no issue the caller may read.
+	// Issue is GET /api/v1/issues/{key}; null for a key that is no issue, or a read that failed.
 	Issue *issueDetail `json:"issue"`
 	// UserState is GET /api/v1/me/state.
 	UserState userState `json:"user_state"`
