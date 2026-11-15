@@ -1,4 +1,9 @@
-import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import type { BlockSchema, LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
+import { schemaCreatable } from "../web/src/features/doc/schema-creatable";
 import {
   baseUrl,
   createAsk,
@@ -56,108 +61,115 @@ const builds: Record<DispatchProcess, string> = {
 
 const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
 
-/** A build's schema numbers: V, the schema version it reads, and R, the highest `since` among the
- *  elements it may create, both of the manifest it was built with (`pmdoc/schema/blocks.json`).
- *  A page presents its build's as `schema_version` and `schema_creatable` on a document socket
- *  (web/src/features/doc/connection.ts), and a process registers its build's in its
- *  `server_processes` row. */
-interface SchemaNumbers {
-  readonly version: number;
-  readonly creatable: number;
-}
+/** packages/envoy, and the directory build-dispatch-build.sh wrote the previous build into: the
+ *  binary's own, which also holds that build's `pmdoc/schema/blocks.json`. Its `web/` dist is
+ *  `webDistOf`'s to name, which this spec and e2e/two-builds.multiprocess.e2e.ts share. */
+const envoyDir = fileURLToPath(new URL("../../envoy", import.meta.url));
+const buildB = binaryB === undefined ? undefined : dirname(binaryB);
 
-/** The numbers a page presented on the document socket `url` names, read as a server reads them
- *  (`schemaPageOf` in packages/envoy/internal/dispatch/docs): a page that sends no
- *  `schema_creatable` is of a build before the manifest, whose R is 1. */
-function presentedNumbers(url: string): SchemaNumbers {
-  const query = new URL(url).searchParams;
-  const version = query.get("schema_version");
-  const creatable = query.get("schema_creatable") ?? "1";
-  if (version === null || !/^\d+$/.test(version) || !/^\d+$/.test(creatable)) {
-    throw new Error(`the page's document socket ${url} presents no schema numbers`);
+/** The schema manifest a build's server reads and admits a page by, and its page carries. A
+ *  manifest before the typed blocks names no `types`, which reads here as none. */
+function manifestOf(process: DispatchProcess): BlockSchema {
+  const path =
+    process === "b" && buildB !== undefined
+      ? resolve(buildB, "pmdoc", "schema", "blocks.json")
+      : resolve(envoyDir, "internal", "dispatch", "pmdoc", "schema", "blocks.json");
+  const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (
+    manifest === null ||
+    typeof manifest !== "object" ||
+    !("version" in manifest) ||
+    typeof manifest.version !== "number"
+  ) {
+    throw new Error(`${path} declares no schema version`);
   }
-  return { version: Number(version), creatable: Number(creatable) };
+  const schema = manifest as BlockSchema;
+  return { ...schema, types: schema.types ?? [] };
 }
 
-/** One live process: the entry chunk of the dashboard build it registered, which names its build
- *  (`entryChunkOf`), and the schema numbers it registered. */
-interface FleetProcess extends SchemaNumbers {
-  readonly entry: string | null;
-}
-
-/** How long after its last heartbeat a registry row counts as a live process: `LiveWindow` of
- *  packages/envoy/internal/dispatch/processes, by which a server reads its fleet. */
-const liveWindowSeconds = 15;
-
-/** The fleet as a server reads it to admit a document socket (`docs.readSchemaFleet`): every
- *  `server_processes` row whose heartbeat is inside the live window, with its numbers. */
-async function liveFleet(): Promise<FleetProcess[]> {
-  const answer = await sql(
-    `select coalesce(json_agg(json_build_object('entry', b.entry, 'version', p.schema_version,
-       'creatable', p.schema_creatable) order by p.started_at), '[]')
-     from server_processes p left join dashboard_builds b on b.build = p.dashboard_build
-     where p.heartbeat_at > now() - make_interval(secs => ${liveWindowSeconds})`
+/** Whether a build's page carries the manifest it was built with, which it presents as
+ *  `schema_version` and `schema_creatable` (web/src/features/doc/schema.ts). A page of a build
+ *  before that reads the schema from the server it talks to and sends `schema_version` alone. */
+function pageCarriesManifest(process: DispatchProcess): boolean {
+  if (process !== "b" || buildB === undefined) {
+    return true;
+  }
+  const assets = resolve(buildB, "web", "assets");
+  return readdirSync(assets).some(
+    (file) =>
+      file.endsWith(".js") &&
+      readFileSync(resolve(assets, file), "utf8").includes("schema_creatable")
   );
-  return JSON.parse(answer) as FleetProcess[];
 }
 
-/** `numbers` as a message names them. */
-const named = (numbers: SchemaNumbers): string => `V ${numbers.version}, R ${numbers.creatable}`;
-
-/**
- * Refuses, naming the fleet's numbers and the page's, unless `fleet` holds a live process of each
- * build that registered its numbers. A fleet missing either build is not two builds at once, and a
- * process registering version 0 is of a build before #2461, whose server holds a page by its own
- * version alone (`schemaReadOnly` in that build) rather than by the rule `pageWritable` states: in
- * either case the row cannot say what its page is admitted as.
- */
-function requireBothBuildsLive(fleet: readonly FleetProcess[], page: SchemaNumbers): void {
-  const numbers =
-    `live processes: ${fleet.map((process) => `${process.entry ?? "no dashboard"} (${named(process)})`).join("; ") || "none"}; ` +
-    `the page presents ${named(page)}`;
-  for (const process of dispatchProcesses) {
-    const entry = entryChunkOf(webDistOf(process));
-    const own = fleet.filter((live) => live.entry === entry);
-    if (own.length === 0) {
-      throw new Error(
-        `the fleet holds no live process of ${builds[process]} (dashboard entry ${entry}), so it is not two builds at once; ${numbers}`
-      );
-    }
-    if (own.some((live) => live.version === 0)) {
-      throw new Error(
-        `a live process of ${builds[process]} registers schema version 0, so it is of a build before #2461, whose server admits a page by its own version and not by the fleet's numbers; ${numbers}`
-      );
-    }
+/** The two numbers a page presents on its document socket: V, the schema version it reads, and
+ *  R, the highest `since` among what it may create (`schemaCreatable`). A page that carries no
+ *  manifest of its own takes V from the schema route of the server it talks to and presents an R
+ *  of 1, since every element before the manifest has `since` 1. */
+function pageNumbers(
+  pageProcess: DispatchProcess,
+  server: DispatchProcess
+): { version: number; creatable: number } {
+  if (!pageCarriesManifest(pageProcess)) {
+    return { creatable: 1, version: manifestOf(server).version };
   }
+  const manifest = manifestOf(pageProcess);
+  return { creatable: schemaCreatable(manifest), version: manifest.version };
 }
 
-/** The highest `since` among the elements the row's document holds: a heading and paragraphs,
- *  which every manifest reads from version 1. */
-const documentSince = 1;
+/** The numbers the live server processes register (`docs.readSchemaFleet`): the lowest V and the
+ *  highest R among the rows whose heartbeat is inside the registry's 15 s live window, a copy of
+ *  `processes.LiveWindow` (`packages/envoy/internal/dispatch/processes/processes.go`), which the
+ *  servers read. A row of a build before the fleet columns holds no numbers, and its zeros are
+ *  what it counts as. */
+async function liveFleet(): Promise<{ minVersion: number; maxCreatable: number }> {
+  const read = await sql(
+    `select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
+     from server_processes where heartbeat_at > now() - make_interval(secs => 15)`
+  );
+  const [live, minVersion, maxCreatable] = read.split("|").map(Number);
+  if (!(live > 0) || Number.isNaN(minVersion) || Number.isNaN(maxCreatable)) {
+    throw new Error(`the registry's live rows read ${JSON.stringify(read)}, which names no fleet`);
+  }
+  return { maxCreatable, minVersion };
+}
 
 /**
- * Whether a page presenting `page` may write the row's document while `fleet` is live.
+ * Whether a page of `pageProcess` may write a document on the server of `server`, read from the
+ * registry the two servers write, so the row holds for any previous build CI picks.
  *
- * This is the page admission both builds' servers run (`docs.schemaFleet.admits`, stated once in
- * packages/envoy/cmd/dispatch/README.md, "Two builds at once"): a page is writable when every
- * live process reads what it creates (R_page <= min V), some live process creates what it creates
- * (R_page <= max R), and it reads what every live process creates and what the document holds
- * (V_page >= max(max R, D)); otherwise it is read-only. Both servers read the one fleet, so the
- * answer is the same whichever build's server the page talks to.
+ * A server of a build with the fleet columns admits a page by the whole fleet's numbers
+ * (`packages/envoy/cmd/dispatch/README.md`, "Two builds at once"; `schemaFleet.admits`): the
+ * page's R is at most every live process's V and at most the highest live R, and its V is at
+ * least the highest live R (the document holds a heading and a paragraph, whose `since` is 1).
+ * This tree's server is one, and it registers its own numbers, so a live row of V 0 is the
+ * previous build's: a build before the fleet columns, which registers none. That V of 0 is under
+ * every page's R, so every page of either build is read-only on this tree's server while that
+ * build is live. A previous build that registers numbers equal to this tree's leaves every page of
+ * either build writable on either server.
  *
- * So the rule holds a page read-only only while a live process reads below the page's numbers or
- * creates above them. Every release from #2461 on registers its numbers, and at this writing this
- * tree's manifest and the previous build's (legion-envoy-v30.21.1) are both version 4 with R 4,
- * and each process registers 4 and 4: no page creates above what a live process reads, so the
- * rule admits both rows' pages writable. A release that raises the schema above the previous
- * build's makes both rows read-only by the same rule, and the row takes that branch then.
+ * A server of a build before the fleet columns knows no fleet: it compares the page's V with its
+ * own manifest version exactly (`schemaReadOnly` in that build), so it admits a page of its own
+ * version and holds a page of any other version read-only.
+ *
+ * With no previous build - both processes run this tree - the fleet is two processes of one
+ * build, and a page of that build is writable on either.
  */
-function pageWritable(page: SchemaNumbers, fleet: readonly SchemaNumbers[]): boolean {
-  const minVersion = Math.min(...fleet.map((process) => process.version));
-  const maxCreatable = Math.max(...fleet.map((process) => process.creatable));
+async function pageWritable(
+  pageProcess: DispatchProcess,
+  server: DispatchProcess
+): Promise<boolean> {
+  if (binaryB === undefined) {
+    return true;
+  }
+  const page = pageNumbers(pageProcess, server);
+  const fleet = await liveFleet();
+  if (server === "b" && fleet.minVersion === 0) {
+    return page.version === manifestOf("b").version;
+  }
   return (
-    page.creatable <= Math.min(minVersion, maxCreatable) &&
-    page.version >= Math.max(maxCreatable, documentSince)
+    page.creatable <= Math.min(fleet.minVersion, fleet.maxCreatable) &&
+    page.version >= fleet.maxCreatable
   );
 }
 
@@ -267,28 +279,18 @@ for (const pageProcess of dispatchProcesses) {
         .poll(async () => ((await getAsk(ask.id, { process: pageProcess })).answers ?? []).length)
         .toBe(1);
 
-      // The issue's document, admitted by the numbers the page presents on its document socket and
-      // the fleet's, read here as the other build's server reads them (pageWritable). Where they
-      // admit this page writable, an edit typed here is saved by that server, then read from the
-      // store by this page's own server, and shown below in a context of the other build's page.
-      // Where they hold it read-only - a live process reads below what the page creates, or
-      // creates above what it reads - the page says so, takes no edit, and the stored document is
+      // The issue's document. Where the other build's server admits this page writable
+      // (pageWritable), an edit typed here is saved by that server, then read from the store by
+      // this page's own server, and shown below in a context of the other build's page. Where it
+      // admits the page read-only - a page whose version a server before the fleet admission does
+      // not match, or any page at all on a server of this tree while a process of a build before
+      // the fleet columns is live - the page says so, takes no edit, and the stored document is
       // untouched.
-      const documentSocket = page.waitForEvent("websocket", {
-        predicate: (socket) => new URL(socket.url()).pathname.startsWith("/ws/doc/"),
-      });
       await page.goto(`/issues/${issue.key}/spec`);
       await expect(documentEditor(page)).toContainText("Written before the edit.");
       await expect(connectedDot(page)).toHaveText("connected");
-      const numbers = presentedNumbers((await documentSocket).url());
-      const fleet = await liveFleet();
-      requireBothBuildsLive(fleet, numbers);
-      const writable = pageWritable(numbers, fleet);
-      test.info().annotations.push({
-        type: "schema admission",
-        description: `${builds[pageProcess]}'s page (${named(numbers)}) is ${writable ? "writable" : "read-only"} beside ${fleet.map(named).join("; ")}`,
-      });
       const edit = `Typed on ${builds[pageProcess]}'s page.`;
+      const writable = await pageWritable(pageProcess, server);
       if (writable) {
         await typeAtEnd(page, edit);
       } else {
@@ -309,10 +311,7 @@ for (const pageProcess of dispatchProcesses) {
       }
 
       // The Delivery page on the fixture's day: the page's live socket subscribes to the timeline
-      // view, and the other build's server answers that subscription with a snapshot, whatever
-      // other view of the page it refuses on that socket: a server of a build before INFRA-1077
-      // answers `INVALID_FRAME` to the Pipeline section's view of this tree's page, which names a
-      // window (web/src/api/live-socket.ts).
+      // view, and the other build's server answers that subscription with a snapshot.
       await page.goto(`/delivery?${deliveryWindow}`);
       await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
       await expect
