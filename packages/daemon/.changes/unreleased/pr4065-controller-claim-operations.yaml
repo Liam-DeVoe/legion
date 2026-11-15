@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The daemon serves the controller four claim operations, `POST /legion/v1/claims/stop`,
+  `retry`, `suspend` and `resume`, behind the controller's grant and refused for the controller's
+  own claim. A controller's suspension is recorded under its own source, `controller`: it holds
+  against every daemon rule, the controller's resume or the operator's lifts it, and
+  `legion claims list` prints it as `suspended:controller`. While the operator's own suspension
+  holds a claim, the controller's `stop`, `retry`, `suspend`, `resume` and `fresh_session` are
+  refused `409 SUSPENDED_BY_OPERATOR` and nothing of the claim changes; before this, the
+  controller's `fresh_session` resumed such a claim. A store migration widens
+  `claims_suspended_by_check`.
