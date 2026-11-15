@@ -25,7 +25,7 @@ type BlockRef struct {
 // logUnindexedAskBlocks logs each ask block with no ask row that a write to issueKey's
 // documents marked resolved: it is not an ask yet, so it has no record to show. A settlement
 // while the issue is closed keeps it resolved and opens no ask for it, and once the issue
-// reopens, which marks its document owed (MarkUnindexedAskDocumentsOwed), a settlement indexes it
+// reopens, which marks its document owed (MarkReopenOwedAskDocuments), a settlement indexes it
 // as a new open ask. WriteIssueAskStates and RebuildDocument each log the blocks they mark
 // themselves, so every caller sees them logged once, whatever it does with them.
 func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
@@ -97,7 +97,7 @@ func isLifecycleWrite(ctx context.Context) bool {
 // has an ask of its own on its document nor is a copy of another document's ask: a block no
 // settlement has indexed yet, which no longer reads open once its issue has closed. A settlement
 // while the issue is closed keeps it resolved with no ask, and once the issue reopens, which marks
-// its document owed (MarkUnindexedAskDocumentsOwed), a settlement indexes it as a new open ask.
+// its document owed (MarkReopenOwedAskDocuments), a settlement indexes it as a new open ask.
 // Once every document is written, it logs each such block it changed (logUnindexedAskBlocks), so
 // no caller logs them again, and returns them for a caller that counts them. Among these is every
 // readable ask block that repeats the id an earlier ask block of its document holds and does not
@@ -204,14 +204,19 @@ func (s *Service) writeDocumentAskStates(
 
 // reopenOwedAskDocuments lists, in id order, the documents of the issue $1 whose ask blocks a
 // settlement after the issue's reopen has to reconcile: one that holds an ask block no settlement
-// has indexed, the blocks doc_ask_block_authors keeps an author for, and one that is the block
-// document of an ask a settlement retracted. The retraction is settlementRetraction's, read off the
-// stored resolution: kind "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens
-// with $4 (SettlementActor, SettlementRetractionReason).
+// has indexed, the blocks doc_ask_block_authors keeps an author for; one that is the block
+// document (asks.block_artifact_id) of an open ask, read once the reopen has restored the asks the
+// close withdrew; and one that is the block document of an ask a settlement retracted. The
+// retraction is settlementRetraction's rule in SQL, read off the stored resolution: kind
+// "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens with $4
+// (SettlementActor, SettlementRetractionReason), so the two change together.
 const reopenOwedAskDocuments = `
 	select a.id::text from artifacts a
 	where a.issue_key = $1 and a.kind = 'doc'
 		and (exists (select from doc_ask_block_authors b where b.artifact_id = a.id)
+			or exists (
+				select from asks k
+				where k.block_artifact_id = a.id and k.block_id is not null and k.state = 'open')
 			or exists (
 				select from asks k
 				where k.block_artifact_id = a.id and k.block_id is not null and k.state = 'resolved'
@@ -220,25 +225,33 @@ const reopenOwedAskDocuments = `
 						or starts_with(k.resolution->>'reason', $4))))
 	order by a.id`
 
-// MarkUnindexedAskDocumentsOwed marks owing a settlement each document of issueKey whose ask
-// blocks a settlement of the closed issue left for the reopen. The issue's reopen calls it after
-// its own ask-state write (WriteIssueAskStates), which marks owed only a document it writes, one
-// holding a block of an ask the close withdrew. A settlement of a closed issue's document changes
-// no ask and deletes the document's pending row, as every settlement that commits does
-// (reconcileAskBlocks, clearSettlementPending), so without this mark the documents below would get
-// no settlement until their next edit:
+// MarkReopenOwedAskDocuments marks owing a settlement each document of issueKey whose ask blocks a
+// settlement after the issue's reopen has to reconcile. The issue's reopen calls it once it has
+// restored the asks the close withdrew and written their state into their blocks
+// (WriteIssueAskStates), which marks owed only a document it writes: one holding a block of a
+// restored ask, or a copy of one. A settlement of a closed issue's document changes no ask and
+// deletes the document's pending row, as every settlement that commits does (reconcileAskBlocks,
+// clearSettlementPending), so without this mark the documents below would get no settlement until
+// their next edit:
 //
 //   - one that holds an ask block no settlement has indexed, a document with a row in
 //     doc_ask_block_authors, the durable record of those blocks and their authors
 //     (ask_authors.go): the closed issue's settlement saved such a block resolved and recorded its
 //     author, and the settlement after the reopen opens its ask, credited to that author;
+//   - one that is the block document of an open ask, the document asks.block_artifact_id names,
+//     where settlement reads the ask's own block (loadAskBlocks): when the block of an ask the
+//     close withdrew left that document while the issue was closed, the closed issue's settlement
+//     left the ask withdrawn, the reopen restored it with no block to write, and the settlement
+//     after the reopen retracts it, as it retracts an open ask whose block left on an open issue.
+//     A copy of the block in another document of the issue is no block of the ask's own: the
+//     reopen's ask-state write writes it, and the retraction settles it again (owedCopiesOf);
 //   - one that is the block document of an ask a settlement retracted when its block left
 //     (settlementRetracted): when the block came back while the issue was closed, the closed
 //     issue's settlement left the ask retracted, and the settlement after the reopen restores it,
 //     as it restores a returning block's ask on an open issue.
 //
-// A document marked for a retracted ask whose block has not come back gets a settlement that
-// finds nothing to change and writes no version.
+// A document marked for an open ask whose block it still holds, or for a retracted ask whose block
+// has not come back, gets a settlement that finds nothing to change and writes no version.
 //
 // The mark sets marked_at to now, which a new row takes as its default, and leaves the latest
 // edit source and the latest person sender a row names as they are (settlementPendingStatement).
@@ -247,8 +260,9 @@ const reopenOwedAskDocuments = `
 //
 // It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
 // row, as a settlement of each of the issue's documents holds it, so no settlement reads or
-// changes the rows this lists between the list and the mark.
-func (s *Service) MarkUnindexedAskDocumentsOwed(ctx context.Context, issueKey string) error {
+// changes the rows this lists between the list and the mark. It reads the asks as that
+// transaction has written them, so the restored asks read open.
+func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error {
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return errUnjoined

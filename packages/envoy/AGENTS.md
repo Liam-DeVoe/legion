@@ -2476,8 +2476,8 @@ The document's next settlement saves these block writes, and it writes a version
 That settlement runs whether or not the issue is closed, and on a closed issue it opens no ask and wakes nobody (`settlement.issueClosed`).
 The close's final sweep writes `state="resolved"` into an ask block that still has no ask row, records nothing and logs the block.
 A settlement while the issue is closed keeps such a block resolved, opens no ask for it, and records its author in `doc_ask_block_authors`.
-The reopen marks owed each document that holds such a block, or holds the block of an ask that a settlement retracted when the block left (`docs.Service.MarkUnindexedAskDocumentsOwed`).
-The settlement after the reopen opens the block's ask, credited to the recorded author, and restores the retracted ask.
+The reopen marks owed each document that holds such a block, the block document of each open block ask once the reopen has restored the withdrawn asks, and each document that holds the block of an ask that a settlement retracted when the block left (`docs.Service.MarkReopenOwedAskDocuments`).
+The settlement after the reopen opens the block's ask, credited to the recorded author, retracts a restored ask whose block left its document while the issue was closed, and restores the retracted ask.
 A document of the issue whose stored history does not load (`docs.ErrDocumentUnloadable`), like one outside the schema, is left as it is and logged at WARN naming the issue and the document:
 nothing can read or open it, so the close, the reopen and the repair go on without it rather than answer `409 DOCUMENT_UNLOADABLE` for good;
 a failed room's `503` and a database error still fail them.
@@ -2695,7 +2695,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   both are checked on every request, including one that opens nothing, and a request without one gets the bare question.
   An open approval ask follows every document version in the same transaction, preserving its thread and summary:
   the move rewords its question to the new version, stamps `edited_at` and appends `ask.edited`, while `requested_version` remains the version the agent last handed to the human, so a moved request is Waiting on agents.
-  The one exception is a document that waits on the human (its `requested_version` is the version the request names) whose new version stores byte for byte the text of that version (`docs.sameStoredText`):
+  The one exception is a document that waits on the human (its `requested_version` is the version the request names) whose new version stores byte for byte the text of that version (`docs.restoresApprovedText`):
   the move then sets `requested_version` to the new version too and carries `quiet: true`, so the request keeps its turn as if it had not moved, because the text the person was asked about did not change.
   Only the first move since the request was opened or handed back wakes anyone, even when a thread reply had already left the request waiting on the agent:
   a later move, while `requested_version` is already below the version it named, carries `quiet: true` (`model.AskEditEventPayload.Quiet`), so `events.Broker.Notify` records it with `notify` false and the outbox routes it to no follower, as a human's unnamed `artifact.version` is recorded;

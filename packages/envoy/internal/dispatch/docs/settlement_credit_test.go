@@ -48,7 +48,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 // unavailable. The restarted service's resumption settles the document on the closed issue, unless
 // the old service's shutdown drain already did: either way the block gets no ask, the version
 // shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
-// marks the document owed (MarkUnindexedAskDocumentsOwed), and the resumption after it opens the
+// marks the document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the
 // block's ask, credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
@@ -1326,10 +1326,12 @@ func closeTestIssue(t *testing.T, service *Service) {
 
 // reopenTestIssue reopens DOC-1 as the API's reopen does (api.restoreIssueAsksTx): in one
 // transaction joined with Service.Join (joinedWrite), which holds the issue's row once it clears
-// closed_at, it marks owing a settlement each document of the issue that holds an ask block no
-// settlement has indexed, or the block of an ask a settlement retracted
-// (MarkUnindexedAskDocumentsOwed). Once that commits, the reopen is recorded on this service's
-// rooms, as room sync records it on the reopen's notification.
+// closed_at, it marks owing a settlement each document of the issue whose ask blocks a settlement
+// after the reopen has to reconcile (MarkReopenOwedAskDocuments): one that holds an ask block no
+// settlement has indexed, the block document of an open ask, or one holding the block of an ask
+// a settlement retracted. It restores no ask: a test that wants an ask the close withdrew open
+// again writes its row itself. Once that commits, the reopen is recorded on this service's rooms,
+// as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	if err := joinedWrite(service, func(ctx context.Context) error {
@@ -1337,9 +1339,9 @@ func reopenTestIssue(t *testing.T, service *Service) {
 		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 			return fmt.Errorf("clear the issue's closed_at: %w", err)
 		}
-		return service.MarkUnindexedAskDocumentsOwed(ctx, "DOC-1")
+		return service.MarkReopenOwedAskDocuments(ctx, "DOC-1")
 	}); err != nil {
-		t.Fatalf("reopen the issue and mark owed its documents that hold an ask block no settlement has indexed, or the block of an ask a settlement retracted: %v", err)
+		t.Fatalf("reopen the issue and mark owed its documents whose ask blocks wait for the reopen: %v", err)
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 }

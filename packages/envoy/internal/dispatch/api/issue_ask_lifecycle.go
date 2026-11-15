@@ -138,12 +138,15 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // gets one ask.opened event whose actor is actor, the reopener, as settlement's own restoration
 // of an ask appends.
 //
-// It also marks owing a settlement each document of the issue whose ask blocks a settlement while
-// the issue was closed left for the reopen (docs.MarkUnindexedAskDocumentsOwed): one that holds an
-// ask block no settlement has indexed, which that settlement saved resolved with no ask, recording
-// its author, and one holding the block of an ask a settlement retracted, which came back while
-// the issue was closed and stayed retracted. The settlement this mark leaves owed opens the first
-// kind's ask, credited to its recorded author, and restores the second. Its pending rows come
+// It also marks owing a settlement each document of the issue whose ask blocks a settlement after
+// the reopen has to reconcile (docs.MarkReopenOwedAskDocuments), once the rows read open: one that
+// holds an ask block no settlement has indexed, which a settlement while the issue was closed
+// saved resolved with no ask, recording its author; the block document of each open block ask,
+// among them a restored ask whose block left that document while the issue was closed, which the
+// ask-state write found no block of and so did not write; and one holding the block of an ask a
+// settlement retracted, which came back while the issue was closed and stayed retracted. The
+// settlement this mark leaves owed opens the first kind's ask, credited to its recorded author,
+// retracts a restored ask whose block left, and restores the retracted ask. Its pending rows come
 // after the ask-state write and before the first event, and no copy lock comes after them
 // (docs.lockProjectCopies).
 //
@@ -180,7 +183,7 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
 		return nil, nil, err
 	}
-	if err := s.deps.Docs.MarkUnindexedAskDocumentsOwed(ctx, issueKey); err != nil {
+	if err := s.deps.Docs.MarkReopenOwedAskDocuments(ctx, issueKey); err != nil {
 		return nil, nil, err
 	}
 	appended := make([]model.Event, 0, len(restored))

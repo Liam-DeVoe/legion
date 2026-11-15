@@ -201,7 +201,7 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 // no ask row names it, and doc_ask_block_authors records its author. The document holds no block
 // of an ask the close withdrew, so the reopen's ask-state write leaves its text and its stored
 // updates as they were, and the reopen marks it owing a settlement instead
-// (docs.MarkUnindexedAskDocumentsOwed). The resumption after the reopen opens the block's ask,
+// (docs.MarkReopenOwedAskDocuments). The resumption after the reopen opens the block's ask,
 // credited to the recorded author.
 func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.T) {
 	handler, database, documentService := newClosedSettlementHandler(t)

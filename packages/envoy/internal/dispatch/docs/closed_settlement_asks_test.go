@@ -358,7 +358,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 // nothing telling the room, so the store's close margin admits alice's undo, which brings the
 // block back (observedBeforeClose). The settlement the resumption runs on the closed issue leaves
 // the ask retracted and saves its block resolved, and deletes the document's pending row. The
-// reopen marks the document owed (MarkUnindexedAskDocumentsOwed), and one resumption pass settles
+// reopen marks the document owed (MarkReopenOwedAskDocuments), and one resumption pass settles
 // it on the open issue, which restores the ask as a returning block's ask is restored.
 func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testing.T) {
 	service, artifactID := newTestService(t)

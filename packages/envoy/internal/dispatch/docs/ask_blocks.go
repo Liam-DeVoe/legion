@@ -235,7 +235,8 @@ func settlementRetracted(ask model.Ask) bool {
 }
 
 // settlementRetraction reports whether resolution is a retraction settlement wrote when its ask's
-// block left the document (settlementRetracted).
+// block left the document (settlementRetracted). reopenOwedAskDocuments holds this rule in SQL,
+// for the reopen's mark, so a change to one is a change to the other.
 func settlementRetraction(resolution model.AskResolution) bool {
 	return resolution.Kind == "retracted" &&
 		(resolution.Actor.SameAs(SettlementActor) || strings.HasPrefix(resolution.Reason, SettlementRetractionReason))
@@ -260,13 +261,14 @@ func settlementRetraction(resolution model.AskResolution) bool {
 // writes such a block (resolveUnindexedAskBlock), and its author is recorded in tx
 // (recordAskAuthors, the first registration winning): this settlement deletes the document's
 // pending row, whose latest edit source would otherwise name the author. The reopen marks the
-// document owed (MarkUnindexedAskDocumentsOwed), and the settlement after it opens the block's
+// document owed (MarkReopenOwedAskDocuments), and the settlement after it opens the block's
 // ask, credited to that author. A block whose observer has not run is left as it is here too. An
 // ask a settlement retracted stays retracted when its block comes back, and its block shows it
 // resolved: the reopen marks its document owed too, and the settlement after the reopen restores
 // it, as a returning block's ask is restored on an open issue. No open ask whose block left is
 // retracted, and no open ask takes its block's new wording; a copy shows its source's state as on
-// an open issue.
+// an open issue. An ask the close withdrew whose block left stays withdrawn: the reopen restores
+// it and marks its block document owed, and the settlement after the reopen retracts it.
 func (s *Service) reconcileAskBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
