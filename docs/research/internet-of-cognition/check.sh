@@ -24,12 +24,13 @@
 # each declared assertion reported: one that reported a FAIL failed, and one that
 # reported nothing, because its code crashed, exited or was skipped, is a FAIL naming it,
 # so no assertion is passed by its silence; each prints its PASS only after all its parts
-# have run. A mode cannot run when a tool is missing, the GitHub budget is spent, env.sh or
-# the install reader cannot load or does not run to its end, or a live source does not
-# answer; the reason is then the last line. Any other ending, no output at all included,
-# is a failed check: a run that was killed prints nothing and exits non-zero for a reason
-# that is not this deliverable's. Read the run by its last line and not by the exit
-# status alone.
+# have run. A mode cannot run when a prerequisite its table declares is missing, the GitHub
+# budget is spent, env.sh or the install reader cannot load or does not run to its end, or a
+# live source does not answer; the reason is then the last line, and for a missing
+# prerequisite it names what is missing and, at its end, what provides it. Any other ending,
+# no output at all included, is a failed check: a run that was killed prints nothing and
+# exits non-zero for a reason that is not this deliverable's. Read the run by its last line
+# and not by the exit status alone.
 #
 # Two rules hold what every mode reads, and this is the one place they are stated.
 #
@@ -61,24 +62,48 @@
 # each published page's live address, which reports an address that does not answer
 # rather than stopping, as the Verification document asks of it.
 #
-# Prerequisites, because nothing in CI runs this script and a gate nobody else can start
-# passes by default:
+# Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
+# default, so each mode declares what it needs in one table, prerequisite_table below: the
+# tools on PATH, the installed dependencies, the history, the clones and the environment
+# variables, each with what provides it. One step, prerequisites, checks every line of the
+# mode before its first live read and its first assertion, and one that is missing ends the
+# mode exit 2, naming it and, at the end of the line, what provides it. --help prints the
+# same table after this header, from the same function, so the list a reader reads is the
+# list the mode checks. --self-test needs its own lines and every line of --replay, --shape,
+# --citations and --landed, since it runs each of them.
 #
-#   git        resolves every citation into one of the projects and into this repository
-#   curl       reads a published page's live address and the Dispatch API
-#   jq         reads claims.jsonl and the Dispatch answers
-#   python3    runs citations.py, the one extraction rule
-#   uv         installs what a recorded command needs, under $TMPDIR
-#   go         runs the two recorded commands that count rows of our own table
-#   gh         reads the review bodies of our own repository, which one recorded search
-#              reads; no citation of a project is ever resolved through it
-#   dispatch   reads the judgement, the two records under check and this issue
-#   $DISPATCH_TOKEN_FILE   the Dispatch bearer this pod already holds
+# --landed's committed proof runs bun test in packages/pi-legion, which needs what
+# `bun install --frozen-lockfile` writes at the root of the repository. The check tells
+# "not installed" from "installed and the proof fails" by that package's own package.json:
+# when a package it names in dependencies or devDependencies has no
+# node_modules/<name>/package.json in packages/pi-legion or in a directory above it up to the
+# root, the install is missing and the mode cannot run; when every one is there, the proof
+# runs, and a proof that fails is the step failing, a FAIL of landed-proof. The check reads
+# that the install is there and not that it is the lock's, so an install of another lock
+# that breaks the proof fails the step too. A tree that holds no packages/pi-legion needs
+# nothing installed, which is how the self-test's fixture, whose proof is `true`, runs.
 #
 # It reaches GitHub with git and the REST API and never with gh, which in a Legion pod is
-# scoped to this project's owners and refuses ioc-project. It clones what it needs under
-# the directory IOC_CLONES names, $TMPDIR/ioc-clones by default, at the commits
-# sources.json pins. It writes nothing outside that directory and its own scratch.
+# scoped to this project's owners and refuses ioc-project.
+#
+# Where it writes. It clones under the directory IOC_CLONES names, $TMPDIR/ioc-clones by
+# default, at the commits sources.json pins. Everything env.sh builds is under IOC_CACHE,
+# $TMPDIR/infra3134 by default, and so is every cache a tool of a recorded command writes:
+# env.sh's ioc_env_cache_table names one variable per cache (go's GOMODCACHE and GOCACHE,
+# uv's cache and the interpreters it downloads, pip's, huggingface's, bun's, npm's and
+# XDG_CACHE_HOME), env.sh exports each, and --replay exports them by the same table when its
+# fixture builds nothing. No row names a cache of its own, so a fresh IOC_CACHE is a machine
+# that never ran the replay; --help prints that table. Each recorded command runs with TMPDIR
+# set to an empty directory of its own under the run's scratch, so no row reads what an
+# earlier run or an earlier row left under $TMPDIR, and a row reads every input through
+# env.sh's variables. Its scratch, each run's and the fixtures of --self-test, is under
+# $TMPDIR and is removed when the run ends. It writes nothing else, but for what a tool
+# writes outside every cache, which no cache variable moves, measured on 2026-11-15 over
+# rows of every tool the replay runs at a fresh IOC_CACHE and over --landed: dispatch writes
+# the state of the session that runs it (answers.json, results.jsonl and state.json) under
+# DISPATCH_STATE_DIR on each read, and go keeps its telemetry counters under the user's
+# configuration directory (go env GOTELEMETRYDIR), which its first run on a machine makes.
+# No row reads either.
 #
 # No recorded command may read the scratch of the pod this reading was made in, because
 # that pod's disk died with it. --replay therefore sources env.sh once, before it runs the
@@ -98,7 +123,8 @@
 # branch holds none of them, so both modes read IOC_HISTORY_REF in place of HEAD when it
 # is set: a ref that holds the pull request's history, such as the one a reader makes with
 #   git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771
-# and names as IOC_HISTORY_REF=refs/remotes/origin/pr-3771.
+# and names as IOC_HISTORY_REF=refs/remotes/origin/pr-3771. A ref that names no commit of
+# this repository is a missing prerequisite of both modes.
 #
 # --landed runs no text it reads from Dispatch. The proof of each landed step is committed
 # in the landed list of sources.json, one entry per landed page with the page's title, its
@@ -130,6 +156,13 @@
 #                  not-externally-checkable, supported, unsupported and unreleased.
 #                  expect holds exactly one of equals, contains, matches, exit, at_most,
 #                  at_least and one_of. A predicate written as a sentence fails here.
+#                  A predicate reads the line the row measures, never what a tool prints
+#                  of its own progress: where a tool can write download, build or install
+#                  lines into the stream a predicate reads on a machine whose caches are
+#                  cold (go, uv, pip, bun, npm, curl without -s, git clone, huggingface),
+#                  the row sends them where the predicate does not look, or its predicate
+#                  matches the measured line, as {"matches":"^rows 38$"} does beside go's
+#                  "go: downloading" lines.
 #   questions.md   the question list, which every candidate page answers from
 #   judgement.md   read live from Dispatch, the document the reader reads
 #
@@ -214,8 +247,177 @@ declared_assertions() {
 }
 
 usage() {
-    # The header, down to the first line that is not a comment.
+    # The header, down to the first line that is not a comment, then the two tables a
+    # reader needs before a run: what each mode needs, and where every tool cache lives.
     awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+    prerequisites_report
+    caches_report
+}
+
+# mode | kind | name | what needs it | what provides it. The one table of what each mode
+# needs before it judges anything: prerequisites reads it before the mode's first live
+# read and first assertion, and --help prints it, so the two cannot drift. --self-test
+# needs its lines and those of the four modes it runs (prerequisite_rows). The last column
+# is what a reader runs to provide it, and may hold a |. How each kind is checked:
+#   tool       the program is on PATH
+#   variable   the variable is set, and one whose name ends _FILE names a readable file
+#   installed  each package the directory's package.json names in dependencies or
+#              devDependencies has its node_modules/<name>/package.json in that directory
+#              or in one above it up to the root of the repository; a tree that holds no
+#              such package.json needs nothing installed
+#   history    the history ref, IOC_HISTORY_REF or else HEAD, names a commit of this
+#              repository
+#   clone      the directory IOC_CLONES names can be made, under which the mode clones each
+#              repository at the commit sources.json pins; a fetch that fails is a live
+#              source that did not answer
+prerequisite_table() {
+    cat <<'TABLE'
+replay|tool|git|reads our own history and runs the recorded git commands|apt-get install git
+replay|tool|jq|reads claims.jsonl and runs the recorded jq commands|apt-get install jq
+replay|tool|python3|runs the reader of every recorded command and the recorded python3 commands|apt-get install python3
+replay|tool|curl|reads the GitHub budget and runs the recorded reads of the Dispatch API and of GitHub|apt-get install curl
+replay|tool|uv|builds env.sh's python environments and runs the recorded uv commands|curl -LsSf https://astral.sh/uv/0.13.5/install.sh | sh
+replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
+replay|tool|gh|reads the review corpus env.sh fetches and runs the two recorded gh reads|apt-get install gh, then gh auth login
+replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
+replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
+replay|clone|IOC_CLONES|env.sh clones mas-lab, scope and cognition-protocols under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+shape|tool|git|reads the history of this pull request|apt-get install git
+shape|tool|jq|reads sources.json|apt-get install jq
+shape|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+shape|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
+citations|tool|git|resolves every citation into a clone or into this repository|apt-get install git
+citations|tool|jq|reads claims.jsonl and sources.json|apt-get install jq
+citations|tool|python3|runs citations.py, the one extraction rule|apt-get install python3
+citations|tool|curl|reads each published page's live address|apt-get install curl
+citations|tool|dispatch|resolves each dispatch:// reference|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+landed|tool|git|reads the commits of this pull request|apt-get install git
+landed|tool|jq|reads the landed list of sources.json|apt-get install jq
+landed|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+landed|tool|bun|runs the committed proof of a landed step, bun test in packages/pi-legion|curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4
+landed|installed|packages/pi-legion|the committed proof of a landed step imports its packages|bun install --frozen-lockfile, run at the root of the repository
+landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
+published|tool|git|fetches the default branch into the run's scratch|apt-get install git
+published|tool|jq|reads sources.json|apt-get install jq
+published|tool|curl|reads the Dispatch API|apt-get install curl
+published|variable|DISPATCH_URL|the address of the Dispatch API|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
+published|variable|DISPATCH_TOKEN_FILE|the bearer the reads of the Dispatch API send|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
+admitted|tool|python3|runs the classifier over every row|apt-get install python3
+self-test|tool|git|builds the fixture deliverable's repository|apt-get install git
+self-test|tool|jq|builds and reads the fixture's sources.json and claims.jsonl|apt-get install jq
+self-test|tool|python3|runs the reader over the fixture's rows|apt-get install python3
+TABLE
+}
+
+# prerequisite_rows <mode>; the lines of prerequisite_table the mode needs, without the
+# mode, as kind|name|what needs it|what provides it, each kind and name once.
+prerequisite_rows() {
+    local modes=" $1 " mode kind name why provides seen=" "
+    [ "$1" = self-test ] && modes=" self-test replay shape citations landed "
+    while IFS='|' read -r mode kind name why provides; do
+        case "$modes" in *" $mode "*) ;; *) continue ;; esac
+        case "$seen" in *" $kind:$name "*) continue ;; esac
+        seen="$seen$kind:$name "
+        printf '%s|%s|%s|%s\n' "$kind" "$name" "$why" "$provides"
+    done < <(prerequisite_table)
+}
+
+# prerequisite_missing <kind> <name>; prints what is missing and returns 0 when the
+# prerequisite is missing, and returns 1 when it is there, by the rule of its kind above.
+prerequisite_missing() {
+    local kind="$1" name="$2" value dir deps dep up missing=""
+    case "$kind" in
+    tool)
+        command -v "$name" >/dev/null 2>&1 && return 1
+        printf 'the tool %s is not on PATH' "$name"
+        ;;
+    variable)
+        value="${!name:-}"
+        if [ -z "$value" ]; then
+            printf 'the variable %s is not set' "$name"
+        elif [[ "$name" == *_FILE ]] && [ ! -r "$value" ]; then
+            printf 'the variable %s names %s, which is no readable file' "$name" "$value"
+        else
+            return 1
+        fi
+        ;;
+    installed)
+        dir="$ROOT/$name"
+        [ -e "$dir/package.json" ] || return 1
+        deps="$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' "$dir/package.json" 2>/dev/null)" || {
+            printf '%s/package.json does not read, so what it needs installed is unknown' "$name"
+            return 0
+        }
+        while IFS= read -r dep; do
+            [ -n "$dep" ] || continue
+            up="$dir"
+            while :; do
+                [ -r "$up/node_modules/$dep/package.json" ] && continue 2
+                [ "$up" = "$ROOT" ] || [ "$up" = / ] && break
+                up="$(dirname "$up")"
+            done
+            missing="$missing, $dep"
+        done <<<"$deps"
+        [ -n "$missing" ] || return 1
+        printf 'the packages %s/package.json names are not installed (%s)' "$name" "${missing#, }"
+        ;;
+    history)
+        git -C "$ROOT" rev-parse --verify --quiet "$(history_ref)^{commit}" >/dev/null && return 1
+        printf "the history ref '%s' names no commit of this repository" "$(history_ref)"
+        ;;
+    clone)
+        mkdir -p "$CLONES" 2>/dev/null && return 1
+        printf '%s names %s, which this run cannot make' "$name" "$CLONES"
+        ;;
+    *)
+        printf 'prerequisite_table names the kind %s, which no rule here checks' "$kind"
+        ;;
+    esac
+}
+
+# prerequisites <mode>; the one step that checks what the mode needs, run by run_mode
+# before the mode's first live read and first assertion. A mode that lacks one cannot run:
+# its last line names each missing prerequisite, each followed by what provides it.
+prerequisites() {
+    local kind name _why provides detail missing=""
+    while IFS='|' read -r kind name _why provides; do
+        detail="$(prerequisite_missing "$kind" "$name")" || continue
+        missing="$missing; $detail; provided by: $provides"
+    done < <(prerequisite_rows "$1")
+    [ -z "$missing" ] || cannot_run " --$1: ${missing#; }"
+}
+
+# prerequisites_report; prerequisite_table as --help prints it, one block per mode.
+prerequisites_report() {
+    local mode kind name why provides
+    printf '\nWhat each mode needs (prerequisite_table). A mode checks its own before it reads or\n'
+    printf 'judges anything, and one that is missing ends the mode exit 2, naming it and, last,\n'
+    printf 'what provides it. --self-test needs its own and those of --replay, --shape,\n'
+    printf -- '--citations and --landed, which it runs. --coverage and --help need nothing.\n'
+    for mode in replay shape citations landed published admitted self-test; do
+        printf '\n--%s\n' "$mode"
+        while IFS='|' read -r kind name why provides; do
+            printf '  %-9s %-20s %s\n' "$kind" "$name" "$why"
+            printf '  %-9s %-20s provided by: %s\n' '' '' "$provides"
+        done < <(prerequisite_table | awk -F'|' -v mode="$mode" '$1 == mode { sub(/^[^|]*\|/, ""); print }')
+    done
+}
+
+# caches_report; env.sh's ioc_env_cache_table, the one list of where every tool cache
+# lives, as --help prints it.
+caches_report() {
+    local name dir what
+    printf '\nWhere every tool cache lives (env.sh, ioc_env_cache_table): each variable is\n'
+    printf 'exported for every recorded command, under IOC_CACHE, $TMPDIR/infra3134 by default.\n\n'
+    if ! env_functions; then
+        printf '  env.sh did not load, so the table is not read\n'
+        return 0
+    fi
+    while IFS='|' read -r name dir what; do
+        printf '  %-22s $IOC_CACHE/%-16s %s\n' "$name" "$dir" "$what"
+    done < <(ioc_env_cache_table)
 }
 
 pass() {
@@ -274,22 +476,15 @@ cannot_run() {
     exit 2
 }
 
-# run_mode <mode>; runs the mode in a subshell, so that however its code ends the verdict
-# still reads what it reported, then ends the run: exit 2 with the mode's reason when it
-# could not run, and otherwise the verdict of finish, exit 0 or 1.
+# run_mode <mode>; runs the mode in a subshell, after the one check of its prerequisites,
+# so that however its code ends the verdict still reads what it reported, then ends the
+# run: exit 2 with the mode's reason when it could not run, and otherwise the verdict of
+# finish, exit 0 or 1.
 run_mode() {
     MODE="$1"
-    ("mode_${1//-/_}")
+    (prerequisites "$1" && "mode_${1//-/_}")
     [ -s "$RUN_SCRATCH/cannot-run" ] && exit 2
     finish "$1"
-}
-
-need() {
-    local missing=""
-    for tool in "$@"; do
-        command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
-    done
-    [ -z "$missing" ] || cannot_run ": this pod has no$missing. --help lists what it needs."
 }
 
 claims_file() { printf '%s/claims.jsonl' "$EVIDENCE"; }
@@ -569,9 +764,15 @@ GAPS
 # env.sh prepares every input a recorded command reads that this tree cannot hold and
 # exports one variable per input. Sourcing it here puts those variables in this shell's
 # environment, so that each recorded command reads them beside IOC_CLONES. The fixture of
-# --self-test builds a deliverable whose rows need none of them and sets IOC_NO_ENV=1.
+# --self-test builds a deliverable whose rows need none of them and sets IOC_NO_ENV=1; its
+# rows' tools still keep every cache under IOC_CACHE, by env.sh's one table of them, so a
+# row planted there runs as cold as the tree's own.
 prepare_env() {
-    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    if [ "${IOC_NO_ENV:-0}" = 1 ]; then
+        env_functions || cannot_run ": env.sh, which names where every tool cache of a recorded command lives, did not load."
+        ioc_env_caches
+        return 0
+    fi
     [ -r "$EVIDENCE/env.sh" ] ||
         cannot_run ": $EVIDENCE/env.sh is missing, and every recorded command needs what it prepares."
     # shellcheck source=env.sh
@@ -615,9 +816,7 @@ prepare_env() {
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    13  $( ) in a word, its code admitted by this table
 #   assigns ACCORD_MODEL_DIR          10  a name the rows assign
-#   assigns GOCACHE                    1  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
-#   assigns GOMODCACHE                 1  a name the rows assign
 #   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
@@ -691,7 +890,10 @@ prepare_env() {
 # variable are admitted only to a name the table holds an entry "assigns <name>" for, one
 # per name the rows assign, which --admitted counts like every entry; every other name is
 # refused by name, the shell's own among them, such as PATH, IFS, FUNCNEST, BASH_ENV and
-# LC_ALL, which change how the runner's functions find, call or record a program.
+# LC_ALL, which change how the runner's functions find, call or record a program. No tool
+# cache is on the list, GOMODCACHE and GOCACHE among them: env.sh's ioc_env_cache_table sets
+# each under IOC_CACHE, so a row reads its cache from there and one that assigns it is
+# refused.
 # printf -v, which would assign its target, is refused whole, since no row writes it, so
 # no printf -v target is on the list. IOC_EXPECT_STATUS=<n> is admitted only before one
 # command word and as its last prefix, since bash expands prefixes from left to right and
@@ -844,7 +1046,9 @@ program_shims() {
 
 run_recorded() {
     # run_recorded <command> <output-file>; the variables env.sh exported are already in
-    # this shell's environment and reach the command through it.
+    # this shell's environment and reach the command through it. The command runs with
+    # TMPDIR set to <output-file>.tmp, an empty directory of its own beside its output, so
+    # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR.
     #
     # Every program the command runs records its own status when it fails, as one line of
     # <output-file>.failed, the status first and then the program and its arguments. Each
@@ -879,9 +1083,10 @@ run_recorded() {
         printf '%s\n' 'exit "${__ioc_stages[${#__ioc_stages[@]}-1]}"'
     } >"$script"
     printf '%s' "$command" >"$out.command"
+    rm -rf "$out.tmp" && mkdir -p "$out.tmp"
     (
         cd "$ROOT" || exit 1
-        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" bash "$script" 9>"$out.pipe"
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bash "$script" 9>"$out.pipe"
     ) >"$out" 2>&1
     printf '%s' "$?" >"$out.status"
 }
@@ -1426,8 +1631,9 @@ PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", 
 # an entry "assigns <name>" of ADMITTED, and an assignment or a loop to any other name is
 # refused by name, the shell's own names among them. IOC_EXPECT_STATUS is admitted as the
 # last prefix of one command word alone, and UV_REQUIRE_HASHES as the prefix 0 of the one
-# install hash_exemption reads.
-ASSIGNED_NAMES = ("ACCORD_MODEL_DIR", "GOCACHE", "GOFLAGS", "GOMODCACHE", "IOC_EXPECT_STATUS",
+# install hash_exemption reads. No tool cache is here: env.sh's ioc_env_cache_table sets
+# each, so a row that assigns one is refused.
+ASSIGNED_NAMES = ("ACCORD_MODEL_DIR", "GOFLAGS", "IOC_EXPECT_STATUS",
                   "UV_REQUIRE_HASHES", "VIRTUAL_ENV", "W", "c", "f", "g", "m", "n", "o", "p", "r")
 HASH_EXEMPT = "UV_REQUIRE_HASHES"
 
@@ -2720,11 +2926,12 @@ mode_admitted() {
 }
 
 mode_replay() {
-    local work
-    work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-replay.XXXXXX")"
-    # The scratch is removed at the end of this function rather than in a RETURN trap,
-    # which bash would also fire in the functions this one calls. env.sh clones the three
-    # repositories at the commits sources.json pins, so nothing clones them here.
+    local work="$RUN_SCRATCH/replay"
+    mkdir -p "$work"
+    # The scratch of the rows, each row's output and its own empty TMPDIR, is under the
+    # run's scratch, which the EXIT trap removes however the run ends, and this function
+    # removes it at its end too. env.sh clones the three repositories at the commits
+    # sources.json pins, so nothing clones them here.
     # The budget is read before the environment is prepared, so a run that cannot carry
     # those commands refuses at once rather than after an install.
     github_budget
@@ -2736,7 +2943,8 @@ mode_replay() {
         record_load "$label"
     done
     judgement_load
-    # The header file every recorded curl of the Dispatch API reads; a pod with no bearer
+    # The header file every recorded curl of the Dispatch API reads. The prerequisites read
+    # that DISPATCH_TOKEN_FILE names a readable file; a header that still cannot be written
     # leaves it unset, and those rows then fail on the read they could not make.
     IOC_DISPATCH_HEADER="$(dispatch_header)" && export IOC_DISPATCH_HEADER
 
@@ -3242,10 +3450,6 @@ shape_triage() {
 shape_order() {
     local questions_commit history
     history="$(history_ref)"
-    if ! git -C "$ROOT" rev-parse --verify --quiet "$history^{commit}" >/dev/null; then
-        fail order-of-work "the history ref '$history' names no commit of this repository; IOC_HISTORY_REF names a ref that holds the pull request's history"
-        return
-    fi
     questions_commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' "$history" -- docs/research/internet-of-cognition/questions.md | tail -1)"
     if [ -z "$questions_commit" ]; then
         fail order-of-work "no commit of this history adds the question list"
@@ -3753,8 +3957,6 @@ mode_landed() {
     local bad_proof=0 bad_refutation=0 page title commit command landed=0 history entry want_commit want_command named
     local read_pages=0 found="$RUN_SCRATCH/landed-titles"
     history="$(history_ref)"
-    git -C "$ROOT" rev-parse --verify --quiet "$history^{commit}" >/dev/null ||
-        cannot_run " --landed: the history ref '$history' names no commit of this repository; IOC_HISTORY_REF names a ref that holds the pull request's history."
     judgement_load
     : >"$found"
     while IFS= read -r -d $'\f' page; do
@@ -4386,7 +4588,6 @@ MD
 }
 
 mode_self_test() {
-    need git jq python3
     local work baseline
     work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-selftest.XXXXXX")"
     fixture_build "$work/base"
@@ -4470,13 +4671,13 @@ main() {
     case "$mode" in
     --help | -h) usage ;;
     --coverage) coverage_report ;;
-    --replay) need git jq python3 && run_mode replay ;;
-    --shape) need git jq && run_mode shape ;;
-    --citations) need git jq curl python3 && run_mode citations ;;
-    --landed) need git jq && run_mode landed ;;
-    --published) need git jq curl && run_mode published ;;
-    --admitted) need python3 && run_mode admitted ;;
-    --self-test) need git jq python3 && run_mode self-test ;;
+    --replay) run_mode replay ;;
+    --shape) run_mode shape ;;
+    --citations) run_mode citations ;;
+    --landed) run_mode landed ;;
+    --published) run_mode published ;;
+    --admitted) run_mode admitted ;;
+    --self-test) run_mode self-test ;;
     *)
         usage
         exit 2

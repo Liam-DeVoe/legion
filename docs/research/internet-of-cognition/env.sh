@@ -16,11 +16,15 @@
 # re-installs nothing and re-reads Dispatch only when the copy is missing. Delete the
 # cache directory to build it again from nothing.
 #
-# Everything it writes is under one directory, IOC_CACHE, which defaults to
-# $TMPDIR/infra3134. It writes nothing anywhere else, and it writes nothing into this
-# repository. It clones under a second directory, IOC_CLONES, which defaults to
-# $TMPDIR/ioc-clones. No recorded command and no script it runs names either default root:
-# each reads them through these variables, so a reader may move either one.
+# It builds under one directory, IOC_CACHE, which defaults to $TMPDIR/infra3134, and it
+# clones under a second, IOC_CLONES, which defaults to $TMPDIR/ioc-clones; it writes nothing
+# into this repository. Every tool cache, its own and a recorded command's, is under
+# IOC_CACHE, one variable per cache, which ioc_env_cache_table below names and
+# ioc_env_caches exports. Where the gate writes, the empty TMPDIR each recorded command runs
+# with, and what a tool still writes outside both roots are stated once, in check.sh's
+# header ("Where it writes"). No recorded command and no script it runs names either
+# default root or a cache of its own: each reads them through these variables, so a reader
+# may move either root, and a fresh IOC_CACHE is a machine that never ran the replay.
 #
 # What it exports, one line per input:
 #
@@ -53,7 +57,7 @@
 #                   base branch merged since, and the claims are of the pinned commit
 #   IOC_TM_OVERLAY  the go overlay of tm-our-count, written for IOC_OUR_TREE
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
-#   UV_CACHE_DIR PIP_CACHE_DIR HF_HOME XDG_CACHE_HOME   every cache, under IOC_CACHE
+#   the variables of ioc_env_cache_table   every tool cache, each under IOC_CACHE
 #
 # Every package env.sh installs comes from a committed, hashed file under evidence/,
 # resolved as the package index stood at 2026-11-12T07:55:56Z, the instant sources.json
@@ -114,17 +118,32 @@ ioc_env_clone() {
     fi
 }
 
+# Every tool cache, one line each: the variable the tool reads, the directory under
+# IOC_CACHE it names, and what the tool keeps there. This is the one list of them:
+# ioc_env_caches exports each, check.sh exports them by it when its fixture builds nothing,
+# and check.sh --help prints it.
+ioc_env_cache_table() {
+    cat <<'TABLE'
+UV_CACHE_DIR|cache/uv|uv: every package it downloads or builds, and each environment uv run makes
+UV_PYTHON_INSTALL_DIR|cache/uv-python|uv: the interpreter it downloads when no python of the version asked for is on PATH
+PIP_CACHE_DIR|cache/pip|pip: every package it downloads or builds
+HF_HOME|cache/hf|huggingface_hub: every snapshot it downloads, IOC_MODEL_DIR among them
+XDG_CACHE_HOME|cache/xdg|every other tool that keeps its cache by the XDG base directories
+GOMODCACHE|cache/go/mod|go: every module it downloads
+GOCACHE|cache/go/build|go: what it builds
+BUN_INSTALL_CACHE_DIR|cache/bun|bun: every package it installs
+npm_config_cache|cache/npm|npm and npx: every package they fetch
+TABLE
+}
+
+# ioc_env_caches; exports IOC_CACHE, $TMPDIR/infra3134 unless it is set, and each variable
+# of ioc_env_cache_table under it. It makes no directory, since each tool makes its own.
 ioc_env_caches() {
-    export UV_CACHE_DIR="$IOC_CACHE/cache/uv"
-    export PIP_CACHE_DIR="$IOC_CACHE/cache/pip"
-    export HF_HOME="$IOC_CACHE/cache/hf"
-    export XDG_CACHE_HOME="$IOC_CACHE/cache/xdg"
-    # uv checks every hash a lock, a constraints file or a build constraints file carries,
-    # unless this is set; no run of the replay sets it.
-    unset UV_NO_VERIFY_HASHES
-    ioc_env_enforce || return 1
-    mkdir -p "$UV_CACHE_DIR" "$PIP_CACHE_DIR" "$HF_HOME" "$XDG_CACHE_HOME" ||
-        ioc_env_refuse "the caches" "mkdir under $IOC_CACHE failed"
+    local name dir _what
+    export IOC_CACHE="${IOC_CACHE:-${TMPDIR:-/tmp}/infra3134}"
+    while IFS='|' read -r name dir _what; do
+        export "$name=$IOC_CACHE/$dir"
+    done < <(ioc_env_cache_table)
 }
 
 # The variables uv and pip enforce the locks by, exported into every row's environment
@@ -134,6 +153,9 @@ IOC_ENV_ENFORCED="UV_REQUIRE_HASHES UV_BUILD_CONSTRAINT PIP_REQUIRE_HASHES"
 
 ioc_env_enforce() {
     local name value
+    # uv checks every hash a lock, a constraints file or a build constraints file carries,
+    # unless this is set; no run of the replay sets it.
+    unset UV_NO_VERIFY_HASHES
     for name in $IOC_ENV_ENFORCED; do
         case "$name" in
         UV_REQUIRE_HASHES | PIP_REQUIRE_HASHES) value=1 ;;
@@ -636,7 +658,7 @@ ioc_env_working_files() {
 ioc_env_main() {
     IOC_ENV_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     IOC_ENV_ROOT="${IOC_ROOT:-$(cd "$IOC_ENV_HERE/../../.." && pwd)}"
-    export IOC_CACHE="${IOC_CACHE:-${TMPDIR:-/tmp}/infra3134}"
+    ioc_env_caches
     export IOC_CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
     export IOC_EVID="$IOC_ENV_HERE/evidence"
     export ACCORD_SRC="$IOC_CLONES/cognition-protocols"
@@ -650,7 +672,7 @@ ioc_env_main() {
         ioc_env_clone "$name" || return 1
     done
 
-    ioc_env_caches || return 1
+    ioc_env_enforce || return 1
     ioc_env_records || return 1
     ioc_env_python || return 1
     ioc_env_model || return 1
@@ -666,8 +688,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     ioc_env_main || exit 1
     for ioc_env_name in IOC_CACHE IOC_CLONES IOC_EVID IOC_DESIGN IOC_COMMENT IOC_VENV IOC_PY \
         IOC_MODEL_DIR IOC_MASLAB_VENV IOC_MASLAB_WHEEL_VENV IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_SCOPE_SHAPES IOC_SCOPE_MAS_SHAPES \
-        IOC_TC_WORK IOC_CONCORD_WHEEL IOC_REVIEWS IOC_OUR_TREE IOC_TM_OVERLAY ACCORD_SRC UV_CACHE_DIR PIP_CACHE_DIR HF_HOME \
-        XDG_CACHE_HOME; do
+        IOC_TC_WORK IOC_CONCORD_WHEEL IOC_REVIEWS IOC_OUR_TREE IOC_TM_OVERLAY ACCORD_SRC \
+        $(ioc_env_cache_table | cut -d'|' -f1); do
         printf '%s=%s\n' "$ioc_env_name" "${!ioc_env_name}"
     done
 elif [ "${IOC_ENV_FUNCTIONS_ONLY:-0}" = 1 ]; then

@@ -1335,6 +1335,209 @@ else
     printf 'SKIP --landed on a checkout with no node_modules: bun is missing\n'
 fi
 
+# 78-83 come from test round 25 and the architect's decision on it. Each mode declares what
+# it needs in one table, prerequisite_table, which one step checks before the mode reads or
+# judges anything, so a prerequisite that is missing ends the mode exit 2, naming it and,
+# at the end of the line, what provides it, rather than reading as a failure of the
+# deliverable. The gate makes the replay cold itself: every tool cache is under IOC_CACHE by
+# env.sh's one table of them, and each recorded command runs with an empty TMPDIR of its
+# own. A predicate reads the measured line, not what a tool prints of its progress. Each
+# fault passed at 533506542a, or ended there in a verdict on the deliverable or in a reason
+# that named nothing that provides what was missing; each honest form beside it passes
+# there and here.
+#
+# missing_result <name> <mode> <what is missing> <what provides it> <status read> <gate
+# output>; the second and third are extended regular expressions. It passes when the mode
+# cannot run, exit 2, and its last line names what is missing and ends with what provides it.
+missing_result() {
+    ending_result "$1" 2 "^check\\.sh cannot run --$2: $3; provided by: $4\$" "$5" "$6"
+}
+# path_without <tool>; makes $WORK/path-without-<tool>, a directory to set PATH to that
+# holds a link to each program of this PATH, the first of each name, but <tool>, so that a
+# run with it lacks that one tool. It stops when the tool is still found there.
+path_without() {
+    local bin="$WORK/path-without-$1" d
+    if [ ! -d "$bin" ]; then
+        mkdir -p "$bin"
+        while IFS= read -r d; do
+            [ -d "$d" ] && ln -s "$d"/* "$bin/" 2>/dev/null
+        done < <(printf '%s\n' "$PATH" | tr ':' '\n')
+        rm -f "$bin/$1"
+    fi
+    if (PATH="$bin" && command -v "$1" >/dev/null 2>&1); then
+        printf 'FAIL %s could not be taken off PATH\n' "$1"
+        exit 1
+    fi
+}
+
+# 78. A tool missing from PATH. At 533506542a --replay, --shape and --landed read no tool
+# their recorded commands, their judgement or their proof need before they judged, so each
+# went on to a verdict, and --citations, --published, --admitted and --self-test named the
+# tool with no word of what provides it. Each mode runs here, over the fixture or, for
+# --admitted, over this tree, with PATH lacking one tool its table names, and cannot run,
+# naming the tool and, last, what provides it. The honest form is the fixture with PATH
+# whole, which passes each mode it judges.
+missing_tool() {
+    # missing_tool <mode> <tool> <what provides it, an extended regular expression>
+    local dir out status
+    path_without "$2"
+    dir="$(fresh "missing-$2-$1")"
+    if [ "$1" = admitted ]; then
+        out="$(PATH="$WORK/path-without-$2" bash "$HERE/check.sh" --admitted 2>&1)"
+    else
+        out="$(PATH="$WORK/path-without-$2" fixture_run "$dir" "--$1")"
+    fi
+    status=$?
+    missing_result "--$1 with no $2 on PATH cannot run, naming $2 and what provides it" "$1" "the tool $2 is not on PATH" "$3" "$status" "$out"
+}
+missing_tool replay go 'curl -fsSL https://go\.dev/dl/go1\.27\.3\.linux-amd64\.tar\.gz \| tar -xzC /usr/local, then PATH=/usr/local/go/bin:\$PATH'
+missing_tool shape dispatch 'the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH'
+missing_tool citations python3 'apt-get install python3'
+missing_tool landed bun 'curl -fsSL https://bun\.sh/install \| bash -s bun-v1\.4\.4'
+missing_tool published curl 'apt-get install curl'
+missing_tool admitted python3 'apt-get install python3'
+missing_tool self-test jq 'apt-get install jq'
+dir="$(fresh tools-whole)"
+out="$(fixture_run "$dir" --replay)"
+ending_result "--replay with every tool of its table on PATH passes the fixture" 0 '^all 16 assertions passed$' "$?" "$out"
+out="$(fixture_run "$dir" --shape)"
+ending_result "--shape with every tool of its table on PATH passes the fixture" 0 '^all 9 assertions passed$' "$?" "$out"
+out="$(fixture_run "$dir" --landed)"
+ending_result "--landed with every tool of its table on PATH passes the fixture" 0 '^all 5 assertions passed$' "$?" "$out"
+
+# 79. An environment variable missing. At 533506542a --replay with no DISPATCH_TOKEN_FILE
+# exported no header, so every recorded read of the Dispatch API would fail as a row of
+# the deliverable, and --published with a token file that is not there ended as Dispatch
+# not answering. Each now cannot run, naming the variable and how to set it. The honest
+# form is the fixture's --replay with the variable as this pod sets it.
+dir="$(fresh variable-missing)"
+out="$(DISPATCH_TOKEN_FILE='' fixture_run "$dir" --replay)"
+missing_result "--replay with DISPATCH_TOKEN_FILE unset cannot run, naming it" replay 'the variable DISPATCH_TOKEN_FILE is not set' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$?" "$out"
+out="$(DISPATCH_TOKEN_FILE="$dir/no-such-token" fixture_run "$dir" --published)"
+missing_result "--published whose DISPATCH_TOKEN_FILE names no file cannot run, naming it" published 'the variable DISPATCH_TOKEN_FILE names .*/no-such-token, which is no readable file' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$?" "$out"
+out="$(fixture_run "$dir" --replay)"
+ending_result "--replay with DISPATCH_TOKEN_FILE naming a readable file passes the fixture" 0 '^all 16 assertions passed$' "$?" "$out"
+
+# 80. --landed tells a missing install from a proof that fails. Case 77 runs this tree's
+# own --landed on a checkout with no node_modules; this case holds the rule on the fixture,
+# offline. The fixture gains packages/pi-legion/package.json naming two packages. With no
+# node_modules, and with node_modules holding one of the two, the mode cannot run and names
+# bun install --frozen-lockfile; at 533506542a the fixture's proof, `true`, passed both.
+# With both installed the mode judges the step and passes; with both installed and the
+# committed proof `false` it fails landed-proof, exit 1, because a proof that fails once
+# its install is there is the step failing.
+dir="$(fresh landed-install)"
+mkdir -p "$dir/repo/packages/pi-legion"
+printf '{"name": "@legion/pi-legion", "private": true, "devDependencies": {"typescript": "^5.3.0", "zod": "4.3.6"}}\n' >"$dir/repo/packages/pi-legion/package.json"
+out="$(fixture_run "$dir" --landed)"
+missing_result "--landed with no node_modules cannot run, naming bun install --frozen-lockfile" landed 'the packages packages/pi-legion/package\.json names are not installed \(typescript, zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$?" "$out"
+mkdir -p "$dir/repo/node_modules/typescript"
+printf '{"name": "typescript", "version": "5.9.3"}\n' >"$dir/repo/node_modules/typescript/package.json"
+out="$(fixture_run "$dir" --landed)"
+missing_result "--landed with one of two packages installed cannot run, naming the other" landed 'the packages packages/pi-legion/package\.json names are not installed \(zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$?" "$out"
+mkdir -p "$dir/repo/packages/pi-legion/node_modules/zod"
+printf '{"name": "zod", "version": "4.3.6"}\n' >"$dir/repo/packages/pi-legion/node_modules/zod/package.json"
+out="$(fixture_run "$dir" --landed)"
+ending_result "--landed with every package installed judges the step" 0 '^all 5 assertions passed$' "$?" "$out"
+sed -i 's/"command": "true"/"command": "false"/' "$dir/repo/docs/research/internet-of-cognition/sources.json"
+sed -i 's/^- \*\*Proven by:\*\* `true`$/- **Proven by:** `false`/' "$dir/judgement.md"
+grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sources.json" && grep -qF '**Proven by:** `false`' "$dir/judgement.md" || {
+    printf 'FAIL the failing proof could not be planted\n'
+    exit 1
+}
+out="$(fixture_run "$dir" --landed)"
+ending_result "--landed with every package installed and a proof that fails is a FAIL of the step" 1 '^1 of 5 assertions failed: landed-proof$' "$?" "$out"
+
+# 81. The history and the clone root. At 533506542a --shape with an IOC_HISTORY_REF that
+# names no commit failed order-of-work, blaming the deliverable for a fetch the reader had
+# not made, and --landed and --citations ended without naming what provides it. Each now
+# cannot run, naming the ref or the directory and what provides it. The honest forms are
+# the fixture's own branch and the default clone root.
+dir="$(fresh history-missing)"
+out="$(IOC_HISTORY_REF=refs/heads/no-such-history fixture_run "$dir" --shape)"
+missing_result "--shape whose IOC_HISTORY_REF names no commit cannot run, naming it" shape "the history ref 'refs/heads/no-such-history' names no commit of this repository" 'git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771' "$?" "$out"
+out="$(IOC_HISTORY_REF=refs/heads/no-such-history fixture_run "$dir" --landed)"
+missing_result "--landed whose IOC_HISTORY_REF names no commit cannot run, naming it" landed "the history ref 'refs/heads/no-such-history' names no commit of this repository" 'git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771' "$?" "$out"
+out="$(IOC_HISTORY_REF=refs/heads/main fixture_run "$dir" --shape)"
+ending_result "--shape whose IOC_HISTORY_REF names the fixture's branch passes" 0 '^all 9 assertions passed$' "$?" "$out"
+out="$(IOC_CLONES="$dir/judgement.md/clones" fixture_run "$dir" --citations)"
+missing_result "--citations whose IOC_CLONES cannot be made cannot run, naming it" citations 'IOC_CLONES names .*/judgement\.md/clones, which this run cannot make' 'export IOC_CLONES=<a directory this user can write>, or leave it unset for \$TMPDIR/ioc-clones' "$?" "$out"
+out="$(fixture_run "$dir" --citations)"
+ending_result "--citations with the default clone root passes the fixture" 0 '^all 5 assertions passed$' "$?" "$out"
+
+# 82. Each recorded command runs with an empty TMPDIR of its own. At 533506542a a row ran
+# with the caller's TMPDIR, so a row that read what an earlier run had left there, as
+# m-ctl-our-row-count read go's caches at $TMPDIR/gomod, passed on the machine that left it
+# and nowhere else. The fault reads a file the caller's TMPDIR holds and fails; the honest
+# form writes into its own TMPDIR and reads it back.
+dir="$(fresh tmpdir-left-behind)"
+mkdir -p "$dir/outer-tmp"
+printf 'ran once\n' >"$dir/outer-tmp/left-behind"
+plant_behaviour "$dir" 'cat "$TMPDIR/left-behind"' '{"contains":"ran once"}'
+case_result "a row that reads what the caller's TMPDIR holds fails" "replay-command: f-behaviour-1 ran its command and a read inside it failed: 'cat [^']*/left-behind ?' exited 1" "$(TMPDIR="$dir/outer-tmp" fixture_run "$dir" --replay)"
+dir="$(fresh tmpdir-own)"
+mkdir -p "$dir/outer-tmp"
+plant_behaviour "$dir" "printf 'ran once\\n' >\"\$TMPDIR/own\" && cat \"\$TMPDIR/own\"" '{"contains":"ran once"}'
+honest_result "a row that writes into its own TMPDIR and reads it back passes" replay-command "$(TMPDIR="$dir/outer-tmp" fixture_run "$dir" --replay)"
+
+# 83. A row whose tool writes progress into the stream on a cold cache is held to its
+# measured line, and the gate makes the cache cold. At 533506542a a row's tool read the
+# caller's module cache, so a cache a machine had filled before stayed warm at a fresh
+# IOC_CACHE and go printed "rows 38" alone; a predicate over the whole output passed there
+# and failed on a machine that never ran it. The case serves a module from a file proxy
+# offline, fills a module cache outside IOC_CACHE with it as such a machine would have, and
+# runs a row that counts with go at a fresh IOC_CACHE. The gate keeps go's caches under
+# IOC_CACHE, so go downloads the module and prints "go: downloading" before "rows 38": the
+# predicate {"equals":"rows 38"} fails, by name, and the module stands under IOC_CACHE
+# afterwards; {"matches":"^rows 38$"}, the measured line, passes. It needs go, and prints
+# SKIP when go is missing.
+if command -v go >/dev/null 2>&1; then
+    gocold="$WORK/go-cold"
+    mkdir -p "$gocold/src/example.com/ioccount@v1.0.0" "$gocold/proxy/example.com/ioccount/@v"
+    printf 'module example.com/ioccount\n\ngo 1.21\n' >"$gocold/src/example.com/ioccount@v1.0.0/go.mod"
+    printf 'package ioccount\n\n// Rows is the count the row prints.\nconst Rows = 38\n' >"$gocold/src/example.com/ioccount@v1.0.0/count.go"
+    (cd "$gocold/src" && python3 -c 'import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+for name in sys.argv[2:]:
+    z.write(name)
+z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccount@v1.0.0/go.mod example.com/ioccount@v1.0.0/count.go)
+    cp "$gocold/src/example.com/ioccount@v1.0.0/go.mod" "$gocold/proxy/example.com/ioccount/@v/v1.0.0.mod"
+    printf 'v1.0.0\n' >"$gocold/proxy/example.com/ioccount/@v/list"
+    printf '{"Version":"v1.0.0"}\n' >"$gocold/proxy/example.com/ioccount/@v/v1.0.0.info"
+    export GOPROXY="file://$gocold/proxy" GOSUMDB=off GOTOOLCHAIN=local GOMODCACHE="$gocold/warm-mod" GOCACHE="$gocold/warm-build"
+    (cd "$gocold" && go mod download example.com/ioccount@v1.0.0) || {
+        printf 'FAIL the module cache outside IOC_CACHE could not be filled from the file proxy\n'
+        exit 1
+    }
+    for form in fault honest; do
+        dir="$(fresh "go-cold-$form")"
+        mkdir -p "$dir/repo/gocount/cmd/count"
+        printf 'module example.com/gocount\n\ngo 1.21\n\nrequire example.com/ioccount v1.0.0\n' >"$dir/repo/gocount/go.mod"
+        printf 'package main\n\nimport (\n\t"fmt"\n\n\t"example.com/ioccount"\n)\n\nfunc main() { fmt.Println("rows", ioccount.Rows) }\n' >"$dir/repo/gocount/cmd/count/main.go"
+        if [ "$form" = fault ]; then
+            plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"equals":"rows 38"}'
+            out="$(IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
+            case_result "a row whose go downloads on a cold cache fails a predicate over the whole output" 'replay-command: f-behaviour-1 ran .* does not meet \{"equals":"rows 38"\}: go: downloading example\.com/ioccount v1\.0\.0' "$out"
+            if [ -d "$dir/cache/cache/go/mod/example.com/ioccount@v1.0.0" ]; then
+                CASES_PASSED=$((CASES_PASSED + 1))
+                printf 'PASS the module a row downloads stands under IOC_CACHE, in the module cache env.sh names\n'
+            else
+                CASES_FAILED=$((CASES_FAILED + 1))
+                printf 'FAIL the module a row downloads stands under IOC_CACHE, in the module cache env.sh names: %s holds no example.com/ioccount@v1.0.0\n' "$dir/cache/cache/go/mod"
+            fi
+        else
+            plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"matches":"^rows 38$"}'
+            out="$(IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
+            ending_result "a row whose go downloads on a cold cache meets the measured line, ^rows 38\$" 0 '^all 16 assertions passed$' "$?" "$out"
+        fi
+    done
+    unset GOPROXY GOSUMDB GOTOOLCHAIN GOMODCACHE GOCACHE
+    # go writes its module cache read-only, and the EXIT trap removes $WORK.
+    chmod -R u+w "$WORK"
+else
+    printf 'SKIP the replay of a go row on a cold cache: go is missing\n'
+fi
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
