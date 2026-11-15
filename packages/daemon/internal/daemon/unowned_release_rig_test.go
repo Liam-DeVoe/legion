@@ -333,6 +333,19 @@ func idleRigReleasable(state string) bool {
 	return state == string(supervise.StateReady) || state == string(supervise.StateIdle)
 }
 
+// idleRigPodBack is what the wait in idleRigPodMadeAgain reads each time it asks: how often the
+// issue's role has registered, the state of its claim, and whether its pod, its Sandbox and its
+// disk stand. The wait returns it, so a wait that gives up prints this reading after the pod it
+// waited for ("last read:"), which is what says whether the start never ran, ran and failed, or
+// ran and left the claim short of working.
+type idleRigPodBack struct {
+	registered int
+	claim      string
+	pod        bool
+	sandbox    bool
+	disk       bool
+}
+
 // idleRigPodMadeAgain waits for the start to have made the issue's pod again: the same Sandbox,
 // the same pod and a disk, with the role registered for the registrations-th time and its claim
 // live. The pod's name is the claim's (sandbox.SandboxName), so a pod made again is the pod
@@ -349,10 +362,26 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 			t.Log(rig.diagnose())
 		}
 	}()
-	testwait.Eventually(t, "the pod of "+issue.key+" made again with its role registered", func() bool {
-		return rig.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
-			idleRigWorking(rig.api.claim(token).State)
-	})
+	testwait.Until(t, fmt.Sprintf("the pod of %s made again with its role registered %d times", issue.key, registrations),
+		func() (idleRigPodBack, bool) {
+			// The registration count, the pod, its Sandbox and its disk are the rig's own
+			// stand-ins, read in this process. The claim is a GET of the daemon's API, so it is
+			// read only once the role has registered, which is the order the condition always
+			// had: a GET still in flight when the wait's deadline passes fails on its own
+			// context and fails the test there, which would take this wait's message with it.
+			back := idleRigPodBack{
+				registered: rig.agents.role(issue.key, string(issue.role)).Registered,
+				claim:      "not read: the role has not registered again",
+				pod:        rig.kube.pod(issue.pod),
+				sandbox:    rig.kube.sandbox(issue.pod) != nil,
+				disk:       rig.kube.disk(issue.pod),
+			}
+			if back.registered < registrations {
+				return back, false
+			}
+			back.claim = rig.api.claim(token).State
+			return back, idleRigWorking(back.claim)
+		})
 	if !rig.kube.pod(issue.pod) || rig.kube.sandbox(issue.pod) == nil || !rig.kube.disk(issue.pod) {
 		t.Fatalf("%s's role is registered again with pod %t, sandbox %t, disk %t; want the Sandbox, the pod and the disk the release took all made again",
 			issue.key, rig.kube.pod(issue.pod), rig.kube.sandbox(issue.pod) != nil, rig.kube.disk(issue.pod))
