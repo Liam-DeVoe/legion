@@ -8,8 +8,9 @@
 // phase is refused HANDOFF_NOT_CURRENT_PHASE while the root waits; and once the child is done, the
 // root goes back to the start it held, implementing, and its implementer is started with a task
 // that asks it to merge the default branch forward. scripts/e2e/parent-waits.sh builds this driver
-// with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against, through the run
-// lib/live-daemon-proof.sh makes around every whole-daemon live proof.
+// with `-tags e2e` and owns the nats-server it runs against, through the run
+// lib/live-daemon-proof.sh makes around every whole-daemon live proof. The PostgreSQL is the one
+// LEGION_TEST_PG_DSN names, and the script starts none.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // whole-daemon harness (startDaemonWithin, by way of liveIssueProof's boot), so the proof exercises

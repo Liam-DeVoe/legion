@@ -30,8 +30,9 @@
 -- again, and the check 20261114031356 leaves refuses both kinds.
 --
 -- A daemon of an earlier release refuses neither row at the database, since this list admits
--- them, but its strict decoder knows neither kind, so a row of either it finds pending fails its
--- decode on every attempt.
+-- them, and runs neither: none of its outbox lanes lists either kind (record.LaneKinds), and its
+-- sweep wakes no lane for a kind in no lane (record.Store.UnfinishedLanes), so a row of either
+-- stays queued until this release runs it.
 --
 -- There is no down file: migrations here are forward-only.
 alter table outbox drop constraint if exists outbox_kind_check;

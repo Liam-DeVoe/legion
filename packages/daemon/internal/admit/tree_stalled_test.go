@@ -607,8 +607,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		// child of its own that nobody has released (dispatch://INFRA-3320 R9). The measure reads
 		// that phase as it reads a first phase that waits on its children (R13): a wait on a child
 		// nobody released is a wait by design while the project's line can move, which this
-		// project's can, so its tree is not told. Before R9 such an issue stood in implementing and
-		// its open child was no wait of the daemon's; the admission pass now moves it here.
+		// project's can, so its tree is not told.
 		const working, workingChild = "LEGION-550", "LEGION-551"
 		seedQuietRoot(t, pool, working, "F", phase.AwaitingChildren)
 		seedMirror(t, pool, working, "in_progress")

@@ -301,13 +301,14 @@ no new run of the tree. A root you parked, by contrast, starts a new run when yo
 ## The design gate
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
-spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
-summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
-architect shows you that page first — pictures, or a page you can click — and gets your answer
-before it asks you to approve the spec; a small change, such as a label or a style fix, usually
-carries no pictures, unless the architect is unsure what you want. You approve from the document's
-header or from the approval question in your Dispatch Inbox; **Request changes** sends it back with
-your reason.
+spec, or the ancestor's spec that the root's spec is a view on (the last paragraph of this
+section). The architect settles the spec's decision blocks with you first, then asks for approval
+with a summary of what the tree will do. Where the tree builds a page you open, or changes one a
+lot, the architect shows you that page first — pictures, or a page you can click — and gets your
+answer before it asks you to approve the spec; a small change, such as a label or a style fix,
+usually carries no pictures, unless the architect is unsure what you want. You approve from the
+document's header or from the approval question in your Dispatch Inbox; **Request changes** sends
+it back with your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
 approves the new version. Your own answer to a decision block in the approved spec is the one
@@ -322,9 +323,16 @@ answer is yours, in your name.
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
 `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
 its primary document. The daemon keeps one gate record for each step listed, and the tree starts
-only once a person has approved every one of them; each closes on its own document's next
-version. A deployment that does not want the gate sets `gates.design: []`, and the tree starts as
-soon as the architect has written its spec.
+only once each of them is open on a person's approval, of its own document or of an ancestor's;
+each closes on its own document's next version. A deployment that does not want the gate sets
+`gates.design: []`, and the tree starts as soon as the architect has written its spec.
+
+A root under an approved ancestor can have a spec that is a view on the ancestor's spec: it
+delivers parts of the ancestor's requirements and states none of its own. Its architect then
+registers the step on your approval of the ancestor's version, and the step opens with no approval
+of the root's own spec. Where that version still waits for your approval, the step opens when you
+approve it. `legion state` shows such a step as `open_on_basis` or `pending_on_basis`
+([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)).
 
 ## Handoffs on the Dispatch issue
 
@@ -382,9 +390,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **A head that conflicts with its base** does move the issue. GitHub computes no merge ref for
   such a head and runs no check on it, so no CI result would ever arrive: the daemon takes the
   issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging`,
-  starts the implementer with the base to merge forward, and tells the architect. A parent with
-  an open child under it goes to `awaiting_children` instead, and its worker is told to commit and
-  push what it has.
+  starts the implementer with the base to merge forward, and tells the architect. A parent in
+  `testing`, `reviewing` or `accepting` with an open child under it goes to `awaiting_children`
+  instead, and its worker is told to commit and push what it has. Out of `retro` or `merging` the
+  issue goes to `implementing` whatever its children are.
   No role's turn is interrupted: the tester, a reviewer whose round is not yet completed, or the
   merger keeps its turn, its background jobs, its process and its session, and the implementer's
   start acts at once. Each of them is told on its own Envoy role topic that its phase has ended,

@@ -4930,6 +4930,9 @@ jq -e --arg i "$tree1" --arg c3 "$child3" --arg c4 "$child4" '
   fail "$tree1 in awaiting_children reads $(jq -c --arg i "$tree1" '{active: (.admission.active | index($i)), waiting: (.admission.waiting | index($i)), blocked: [.admission.blocked[] | select(.issue == $i)], held: [.admission.held[]? | select(.issue == $i)]}' "$evidence/awaiting-children.json"), want no slot, no place in the line, blocked by $child3 and $child4 and held as awaiting_children"
 until_true 120 "the daemon's in_progress status for $tree1 on the Dispatch board" dispatch_status_is "$tree1" in_progress
 until_true 300 "the awaiting-children notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle awaiting-children "$tree1")"
+awaiting_notices=$(notice_deliveries "$tree1" architect "$(notice_needle awaiting-children "$tree1")")
+[ "$awaiting_notices" = 1 ] ||
+  fail "$tree1's architect holds $awaiting_notices awaiting-children notices, want one: the move into awaiting_children tells it once"
 waiting_notice=$(notice_line "$tree1" architect "$(notice_needle awaiting-children "$tree1")")
 for want in "holding the start of accepting" "$child3" "$child4"; do
   grep -qF -- "$want" <<<"$waiting_notice" ||
@@ -4982,11 +4985,17 @@ issue_phase "$tree1" awaiting_children >/dev/null ||
   fail "$tree1 left awaiting_children while $child4 was still open: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
 note "with $child3 parked the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_waiting | paste -sd '; ' -)): the wait is for every open child, not any"
 # A file on the base, so the forward merge the return asks for brings something in. It goes under
-# docs/solutions/, which clean_smoke_main takes off the smoke main after the merge.
-children_base_path="docs/solutions/stage4b-children-merged-${project,,}.md"
-children_base_sha=$(jq -cn --arg branch "$pr_base" \
+# docs/solutions/, which clean_smoke_main takes off the smoke main after the merge, and is named
+# after tree 1, so an earlier run that failed before that cleanup leaves no file at this run's
+# path. The PUT still sends the blob's sha when the base holds the file, as the conflict step's
+# does: GitHub refuses an update of an existing file that names none.
+children_base_path="docs/solutions/stage4b-children-merged-${tree1,,}.md"
+children_base_blob=$(timeout 60 gh api "repos/$repo/contents/$children_base_path?ref=$pr_base" --jq .sha 2>/dev/null) ||
+  children_base_blob=
+children_base_sha=$(jq -cn --arg branch "$pr_base" --arg sha "$children_base_blob" \
   --arg content "$(printf 'Stage 4b proof: on the base while %s waited on its children\n' "$tree1" | base64 -w0)" \
-  '{message: "Stage 4b proof: a base commit for the children-merged round", content: $content, branch: $branch}' |
+  '{message: "Stage 4b proof: a base commit for the children-merged round", content: $content, branch: $branch}
+   + (if $sha == "" then {} else {sha: $sha} end)' |
   timeout 60 gh api --method PUT "repos/$repo/contents/$children_base_path" --input - --jq .commit.sha) ||
   fail "the proof human could not commit $children_base_path to $pr_base"
 note "the proof human committed $children_base_path to $pr_base as $children_base_sha while $tree1 waited on $child4"
@@ -5001,14 +5010,29 @@ returned=$(log_lines "workflow: a parent's open children are finished, so it goe
 on_tree "$tree1" wait_for_worker "$tree1" implementer
 on_tree "$tree1" until_true 300 "the implementer's forward-merge task to reach its session" session_contains "$tree1" implementer "children merged: full test round"
 note "once $child4 left, $tree1 went back to implementing in place of the acceptance it held, and the implementer's task asks for the forward merge ending with \`children merged: full test round\`"
+# children_merged_comment: the implementer App posted a comment on the pull request that holds the
+# children-merged line. A comment of any other author proves nothing of the implementer's round.
 children_merged_comment() {
   local bodies
-  bodies=$(timeout 60 gh api --paginate "repos/$repo/issues/$pr_number/comments" --jq '.[].body') || return 1
+  bodies=$(timeout 60 gh api --paginate "repos/$repo/issues/$pr_number/comments" \
+    --jq ".[] | select(.user.login == \"$implement_app\") | .body") || return 1
   grep -qF -- 'children merged: full test round' <<<"$bodies"
 }
 on_tree "$tree1" send_agent "$tree1" implementer "Stage 4b proof children-merged round: do the task the daemon gave you. Merge $pr_base forward into legion/$tree1 as your skill's forward-merge procedure says (\`jj new legion/$tree1 <destination>\`, never a rebase), push the issue branch, post the forward-merge comment ending with the line \`children merged: full test round\`, record the implementation handoff, then call the legion tool's handoff_complete. Do not merge the pull request."
 on_tree "$tree1" wait_for_phase "$tree1" testing 1800
-on_tree "$tree1" until_true 120 "the implementer's forward-merge comment ending with the children-merged line on pull request #$pr_number" children_merged_comment
+on_tree "$tree1" until_true 120 "$implement_app's forward-merge comment ending with the children-merged line on pull request #$pr_number" children_merged_comment
+# The forward merge brought the base in: the head the implementer completed at contains the base
+# commit, which GitHub's compare of the two reads as ahead (or identical, where the head is that
+# very commit).
+children_merged_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
+  fail "read pull request #$pr_number's head after the children-merged round"
+children_merged_compare=$(timeout 60 gh api "repos/$repo/compare/$children_base_sha...$children_merged_head" --jq .status) ||
+  fail "compare the base commit $children_base_sha with pull request #$pr_number's head $children_merged_head"
+case "$children_merged_compare" in
+  ahead | identical) ;;
+  *) fail "pull request #$pr_number's head $children_merged_head reads $children_merged_compare against the base commit $children_base_sha, want ahead or identical: the forward merge did not bring the base in" ;;
+esac
+note "pull request #$pr_number's head $children_merged_head contains the base commit $children_base_sha (GitHub's compare reads $children_merged_compare), and $implement_app's comment on it ends with the children-merged line"
 # The return and the forward merge count nothing: the round stays where the review left it.
 assert_handoff_record "$tree1" implementer implementing 2
 on_tree "$tree1" wait_for_worker "$tree1" tester
@@ -6482,8 +6506,12 @@ phase_change_logged "$tree1" merging "done" pull_request_merged ||
 close_waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
 [ "$close_waited" = 0 ] ||
   fail "the daemon logged \"a merged issue's close waits for the issues beneath it\" for $tree1 $close_waited times, want none: nothing of its tree was in the workflow at the merge"
+# The count reads the architect's session, and notice_deliveries counts 0 for a session it cannot
+# read, so the read is proven first: a count of 0 then comes from a session that holds none.
+claim_session_text "$tree1" architect >/dev/null ||
+  fail "tree 1's architect has no readable session, so its pr-merged notices cannot be counted"
 merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-[ "${merged_notices:-0}" = 0 ] ||
+[ "$merged_notices" = 0 ] ||
   fail "$tree1's architect holds $merged_notices pr-merged notices, want none: the merge closed the root at once"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed

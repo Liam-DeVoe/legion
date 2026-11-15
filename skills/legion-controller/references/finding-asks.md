@@ -113,11 +113,11 @@ is not a link. Only a Dispatch `child_of` link is one.
 A class root that must take new members is a Legion root with no code of its own
 (`skill://legion-architect/references/decomposition.md#a-root-with-no-code-of-its-own`), as
 dispatch://INFRA-3118 and dispatch://INFRA-3418 are, and not an issue that holds only a design.
-Your deployment's intake takes no issue under an ancestor that is not `done`, so a member under an
-issue that holds only a design never runs. So file such a class root with `--label legion`, and
-write in its spec that it has no code of its own. Do this also when a request or a proposal asks
-for an issue that holds only a design, and say why in its spec and in your reply. A request for a
-class root whose members Legion runs asks Legion to run that root.
+A member under an issue that holds only a design never runs, for the reason above. So file such a
+class root with `--label legion`, and write in its spec that it has no code of its own. Do this
+also when a request or a proposal asks for an issue that holds only a design, and say why in its
+spec and in your reply. A request for a class root whose members Legion runs asks Legion to run
+that root.
 
 An issue already filed that belongs to an approved root, with no `child_of` link to it, goes where
 a new issue goes, by the list above. Where it runs as a root of its own (`issues.<KEY>.tree` is

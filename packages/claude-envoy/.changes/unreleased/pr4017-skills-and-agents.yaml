@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The `dispatch-writing-specs` outline says that a view holds no requirement block and that its
+  `Delivers:` line names the ancestor's requirements its checks serve. The `dispatch-first` table
+  no longer sends a Legion architect to `skill://legion-architect`, because the architect's own
+  prompt already does. In the generated `legion` plugin, the architect, worker and controller
+  skills say that the daemon holds a parent's phase starts while a child of it is open, in
+  `awaiting_children`, and that the parent comes back with a forward merge and a full test round.
+  They also tell an architect how to write a root as a view on an approved ancestor and register
+  it on that ancestor's approval. The `plan-reviewer` and `plan-gap-analyst` agents ask for no task
+  and no check of a requirement whose text starts `Delivered by` and names a root, since that
+  root's checks serve it.
+custom:
+    Issue: pr4017

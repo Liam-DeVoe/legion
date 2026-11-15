@@ -33,11 +33,11 @@ current. That check stands in the issue's own Verification document, or in the V
 document of an issue under it on Dispatch's `child_of` chain, a root of another tree included. Read
 them before you decide:
 
-1. Read the issue's coverage:
-   `curl -sS -H "Authorization: Bearer $(cat $DISPATCH_TOKEN_FILE)" "$DISPATCH_URL/api/v1/issues/<KEY>/coverage"`.
-   It names each requirement that no check of those issues serves (`<block id> has no check`).
-2. List the issues under it with `dispatch issues --project <PROJECT> --parent <KEY>`, and again
-   for each issue that lists.
+1. Read the issue's coverage with `dispatch read --issue <KEY>`. Each `Coverage:` line that reads
+   `<block id> has no check` names a requirement that no check of those issues serves, and
+   `Coverage: unavailable` is a failed read: read again.
+2. List the issues under it with `dispatch issues --project <PROJECT> --parent <KEY> --all`, and
+   again for each issue that lists.
 3. Read the checks and results of each of them with `dispatch results --issue <key>`.
 4. A check of an issue under it counts only once that issue is `done`, with its result at that
    issue's final head. A check that runs `after_merge` counts with its result after that merge. An
@@ -207,9 +207,11 @@ Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 the issue was taken out of and whose reason reads
 `the head conflicts with <base>: GitHub runs no checks on it; merge <base> forward`. You start
 nothing for it.
-On a parent with an open child under it, the daemon moves the issue to `awaiting_children`
-instead, holding that start of `implementing`, and tells you with an `awaiting-children` notice in
-place of `checks-red`.
+On a parent in `testing`, `reviewing` or `accepting` with an open child under it, the daemon moves
+the issue to `awaiting_children` instead, holding that start of `implementing`, and tells you with
+an `awaiting-children` notice in place of `checks-red`. Out of `retro` or `merging` it moves the
+issue to `implementing` whatever its children are, and an open child holds the next start after
+that round.
 
 The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
 with the destination and pushes it (the procedure in

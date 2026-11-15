@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The planner's role prompt says that a requirement whose text starts `Delivered by` and names a
+  root is that root's, so the plan gives it no task.
+custom:
+    Issue: pr4017

@@ -437,10 +437,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// above is served the object and every older pod is not.
 		wait bool
 		// basis is whether the caller is served what gateBasisContract added, which is this
-		// daemon's own contract, so the only pod served it is one at it: every root's
-		// `treeRuns`, and the gated steps of a root one of whose steps stands open or pending
-		// on an ancestor's basis. They leave together (withoutGateBasis), so one column answers
-		// for both.
+		// daemon's own contract, so of the pods whose claims record a contract only one at it is
+		// served it, and a pod whose claims record none and a caller in no pod are served it too:
+		// every root's `treeRuns`, and the gated steps of a root one of whose steps stands open or
+		// pending on an ancestor's basis. They leave together (withoutGateBasis), so one column
+		// answers for both. The same row also serves an older caller an issue in
+		// awaiting_children as `admitted` and that held word as `children_first`, which
+		// awaiting_children_narrow_test.go reads, since the state here holds no such issue.
 		basis bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},

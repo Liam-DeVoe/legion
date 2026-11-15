@@ -808,9 +808,11 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below
 // gateBasisContract, the contract that let a root's gated step stand open on an ancestor's
-// approval or wait on an ancestor's approval request and served each root whether its tree
-// runs, is served it without `treeRuns` and without the `gatedSteps` of an issue any step of
-// which reads `open_on_basis` or `pending_on_basis` (withoutGateBasis).
+// approval or wait on an ancestor's approval request, served each root whether its tree runs and
+// added the phase awaiting_children, is served it without `treeRuns`, without the `gatedSteps` of
+// an issue any step of which reads `open_on_basis` or `pending_on_basis`, and with an issue in
+// awaiting_children read as `admitted` and that held word as `children_first`
+// (withoutGateBasis).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -1118,8 +1120,12 @@ const mergeWaitContract = 133
 // before them and refuses the whole body for a fifth, and no word of those four is true of such a
 // step: `waiting` would send its architect to ask a person for an approval of its own, and
 // `approved` names a person's approval no person gave. The issue keeps every other key, and its
-// `designGate` among them. It is the highest of the bands, this daemon's own contract, so the
-// only caller served the basis and `treeRuns` is one at it.
+// `designGate` among them. The same contract added the phase awaiting_children and the held word
+// of that name (R13), which a plugin before it knows neither of, so it is served them as
+// `admitted` and `children_first`, the values the wait replaced (withoutGateBasis). It is the
+// highest of the bands, this daemon's own contract, so of the pods whose claims record a contract
+// only one at it is served the basis, `treeRuns` and the two words; a pod whose claims record none
+// and a caller in no pod are served the state as it is (stateFor).
 const gateBasisContract = 138
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

@@ -34,12 +34,13 @@ A held root is not a parked one. It stands at `phase: held` and is still in the 
 `todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
 hold came from and that phase's role starts again, at the same generation
 (`skill://legion-controller/references/wakes.md`, the `held` wake). Where an open child stands
-under the root, the release holds that phase in `awaiting_children` until the children are
-finished, and the daemon then starts it by itself. A root that is parked or
-lingers takes `todo` alone, and that `todo` re-admits its tree. The pair `backlog` and then `todo`
-(step 1 of **Deciding**) is for a root still in the workflow whose architect has stopped, a held
-root included, where `todo` alone would only release the hold. The `backlog` write takes that
-tree out of the workflow, so the `todo` after it re-admits the tree.
+under the root, the release of a phase from `planning` through `accepting` holds that phase in
+`awaiting_children` until the children are finished, and the daemon then starts it by itself. A
+release of `retro` or `merging`, or of a phase that a move out of them started, is not held. A
+root that is parked or lingers takes `todo` alone, and that `todo` re-admits its tree. The pair
+`backlog` and then `todo` (step 1 of **Deciding**) is for a root still in the workflow whose
+architect has stopped, a held root included, where `todo` alone would only release the hold. The
+`backlog` write takes that tree out of the workflow, so the `todo` after it re-admits the tree.
 
 ## The notice
 

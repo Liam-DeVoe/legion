@@ -10,8 +10,8 @@ import (
 // row's empty word among them — stand before it nowhere. A reorder of HeldReasons moves that
 // answer, so it fails here rather than passing silently. What `why` does with those seven is
 // stated by its sentence table (the projection's heldSentences), whose own test holds the table
-// to this answer. dispatch://INFRA-3320 added awaiting_children, between root_awaiting_person and
-// design_gate, which is the seventh and is a deliberate change of this test's want.
+// to this answer. awaiting_children stands between root_awaiting_person and design_gate, the
+// sixth of the seven.
 func TestTheHeldWordsThatTakeTheBlockedArmAreTheSevenTheLadderReadsBeforeTheLinks(t *testing.T) {
 	var before []HeldReason
 	for _, word := range HeldReasons {

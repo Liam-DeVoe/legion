@@ -42,9 +42,10 @@ you release it. Read the record, then choose the release.
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
    rounds, the pod and the place in the admission line stay as they were. On a root with an open
-   child under it, the release moves it to `awaiting_children` instead, holding that phase, and
-   the phase starts once no child under it is open. Take it when the cause
-   is gone, a cause that a relaunch no longer meets: a launch the runtime refused
+   child under it, a release into `planning` through `accepting` moves it to `awaiting_children`
+   instead, holding that phase, and the phase starts once no child under it is open. A release
+   into `retro` or `merging`, or into a phase that a move out of them started, is not held. Take
+   it when the cause is gone, a cause that a relaunch no longer meets: a launch the runtime refused
    (`launch_refused`), a process that died (`died`), an agent that never came up
    (`never_registered`); and when you fixed what the `detail` names. On
    a child, the same `todo` brings it back at `admitted` with a new generation of its own, since

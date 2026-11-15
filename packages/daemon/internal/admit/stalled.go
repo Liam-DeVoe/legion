@@ -452,12 +452,11 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // is writing the design the work must follow (design_gate); an issue a Dispatch blocked-by link
 // holds (dispatch_blocker); and an issue the children-first rule holds (children_first). R5's
 // fourth wait, "an issue that needs a slot and holds none, whatever holds its start", is no word
-// of the ladder's, because the ladder speaks
-// only of the issues the line left behind: it is the line's own membership, an entry holding no
-// slot (record.LineEntry.Holds), and the first two words are the two ways the daemon keeps such
-// an issue out of the line instead. The test of that wait is the need and not the mechanism:
-// each earlier reading of it named a mechanism and missed a shape that answers to the same
-// cause.
+// of the ladder's, because the ladder speaks only of the issues the line left behind: it is the
+// line's own membership, an entry holding no slot (record.LineEntry.Holds), and
+// root_awaiting_person and design_gate are the two ways the daemon keeps such an issue out of the
+// line instead. The test of that wait is the need and not the mechanism: each earlier reading of
+// it named a mechanism and missed a shape that answers to the same cause.
 //
 // A started issue that gave its row back to wait on another issue (blockers.waitsOf, admit's
 // releaseSlotsForWaits) is that membership too, and so is no word of the ladder's either: it

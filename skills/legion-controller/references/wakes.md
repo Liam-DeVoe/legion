@@ -218,10 +218,11 @@ your `set_status` to `todo`, a person's move in the Dispatch dashboard and an op
 its hold came from and starts that phase's role with its task. Three cases end elsewhere: a held
 phase whose pull request head is red goes on to `implementing`, a held review whose round is
 already decided goes on to the phase that decision names, and a parent with an open child under
-it goes to `awaiting_children`, holding that start until no child under it is open. Each time the
-daemon writes the Dispatch status of the phase the issue ends in. Nothing else moves: the
-generation, the review rounds, the pod and the issue's place in the admission line all stay as
-they were.
+it goes to `awaiting_children` from a release into `planning` through `accepting`, holding that
+start until no child under it is open, unless a move out of `retro` or `merging` started that
+phase. Each time the daemon writes the Dispatch status of the phase the issue ends in. Nothing
+else moves: the generation, the review rounds, the pod and the issue's place in the admission
+line all stay as they were.
 `fresh_session` costs the worker's session, which the claim leaves behind with everything in it.
 A park and an un-park costs the most: the generation, the review rounds, the pod with its disk,
 and the issue's place in the waiting line. That `todo`

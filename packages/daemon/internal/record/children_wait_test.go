@@ -83,9 +83,8 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 }
 
 // A parent in awaiting_children holds none of the cap's slots, reads as not at work, and carries
-// its run. The three reads are what releaseSlots, #3715's waitsOf and the engine's close read of
-// the phase, and the one thing that must be true of each is stated here so the forward merge that
-// brings in those readers finds the phase already decided.
+// its run. The three reads are what admit's releaseSlots, blockers.waitsOf and the engine's close
+// read of the phase, and the one thing that must be true of each is stated here.
 func TestAwaitingChildrenHoldsNoSlotIsNotAtWorkAndCarriesItsRun(t *testing.T) {
 	waiting := Issue{Key: "LEGION-231", Tree: "LEGION-230", Project: "LEGION", Phase: phase.AwaitingChildren,
 		Status: "in_progress", Parent: ParentOf("LEGION-230")}

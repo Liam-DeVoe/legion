@@ -2628,13 +2628,14 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   children first, live (dispatch://INFRA-3320): no phase of a parent starts while an open child stands under it, and a parent no longer waits in `accepting` for its children.
   Two more children of tree 1 are filed while it stands in `accepting`, as at `issue-independence` (todo in Dispatch, no `legion` label, each entered by the daemon under tree 1's open gate), and each one's planner registers from an issue pod of its own, at generation 1 in planning, its claim recording tree 1 and its pod's own disk Bound.
-  The first admission pass that sees them moves tree 1 to `awaiting_children`, holding its acceptance, within 900 s: no slot, not in `admission.waiting`, in `admission.blocked` with both children and in `admission.held` as `awaiting_children`, Dispatch `in_progress` within 120 s, and one `awaiting-children` notice on the architect naming both children and the held start of `accepting`.
+  The first admission pass that sees them moves tree 1 to `awaiting_children`, holding its acceptance, within 900 s: no slot, not in `admission.waiting`, in `admission.blocked` with both children and in `admission.held` as `awaiting_children`, Dispatch `in_progress` within 120 s, and exactly one `awaiting-children` notice on the architect naming both children and the held start of `accepting`.
   The driver then prompts the architect to accept, three times, and reads each answer in the architect's session, where the `legion` tool puts it:
   the first `sign_off` is refused `WAITING_ON_CHILDREN` naming both children, and tree 1 stays in `awaiting_children`;
   the proof human parks child 3 (`backlog`, leaving it no Sandbox, no pod and no disk, its planner suspended), and the next `sign_off` is refused naming child 4 alone, which is what makes the wait every open child rather than any.
-  The proof human commits a file under `docs/solutions/` to the base, so the forward merge carries something, and parks child 4:
+  The proof human commits a file under `docs/solutions/`, named after tree 1, to the base, so the forward merge carries something, and parks child 4:
   the pass takes tree 1 back to `implementing` in place of the acceptance it held (the log's `workflow: a parent's open children are finished, so it goes back to the start it held` with `held=accepting to=implementing`, once), and the implementer's task carries the line `children merged: full test round`.
-  The implementer merges the base forward and posts the forward-merge comment ending with that line, read on the pull request, at the implementer's round 2, which the return left unchanged;
+  The implementer merges the base forward and posts the forward-merge comment ending with that line, read on the pull request among the implement App's own comments, at the implementer's round 2, which the return left unchanged;
+  once tree 1 is in `testing`, the pull request's head contains the base commit (GitHub's compare of that commit with the head reads `ahead` or `identical`);
   the tester runs a full test round, and the reviewer's decision on the new head is its own, a request for changes failing the proof.
   The approval moves tree 1 to `accepting`, and the last `sign_off` moves it to `retro` (`workflow: phase changed … from=accepting to=retro trigger=sign_off`), Dispatch to `retro`, and starts the implementer's retro, which takes the issue to merging.
   They are filed here and nowhere else:

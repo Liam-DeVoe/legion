@@ -32,8 +32,9 @@
 # localhost or ::1 with exit 2, before it builds or starts anything. This script starts no
 # database. The broker is the run's own: a nats-server from LEGION_E2E_NATS_BIN, or the pinned one
 # installed with `go install`; a LEGION_TEST_NATS_URL of the caller's is not read.
-# REGISTER_GATE_BASIS_TOOL_ROOT (default this checkout) names the checkout whose packages/pi-legion
-# tool the run drives. A checkout of the commit the branch starts from, with this checkout's
+# REGISTER_GATE_BASIS_TOOL_ROOT (default this checkout; a relative path is read from the directory
+# the script runs in) names the checkout whose packages/pi-legion tool the run drives. A checkout
+# of the commit the branch starts from, with this checkout's
 # packages/pi-legion/test/register-gate-basis-driver.ts copied into its packages/pi-legion/test/
 # and `bun install` run at its root, is k8's negative control: that tool refuses the call itself,
 # since its fields hold no basis, and the run fails at the registration step.
@@ -45,7 +46,10 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-tool_root=${REGISTER_GATE_BASIS_TOOL_ROOT:-$root}
+tool_root=$(cd "${REGISTER_GATE_BASIS_TOOL_ROOT:-$root}" && pwd) || {
+  echo "FAIL prerequisites: REGISTER_GATE_BASIS_TOOL_ROOT=${REGISTER_GATE_BASIS_TOOL_ROOT:-$root} is not a directory" >&2
+  exit 1
+}
 command -v bun >/dev/null || {
   echo "FAIL prerequisites: bun is not on PATH; the legion tool the proof drives runs under it" >&2
   exit 1

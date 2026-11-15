@@ -16,10 +16,10 @@ import (
 
 // An ancestor the daemon records in no live tree when a root comes to rest on its approval gets
 // no resting-root notice, so its architect's start at its admission is how it learns of that root
-// (dispatch://INFRA-3320, R8, and item 7 of the plan): the start's task names each root that rests
-// on its approval and is still in the workflow, apart from the decisions kept for it, which it
-// names none of here. A resting root that has left the workflow is not named. The ancestor may be
-// one the daemon never recorded, or one a person parked on the backlog and moves back to todo.
+// (dispatch://INFRA-3320, R8): the start's task names each root that rests on its approval and is
+// still in the workflow, apart from the decisions kept for it, which it names none of here. A
+// resting root that has left the workflow is not named. The ancestor may be one the daemon never
+// recorded, or one a person parked on the backlog and moves back to todo.
 func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T) {
 	const (
 		ancestor = "LEGION-ROOT"

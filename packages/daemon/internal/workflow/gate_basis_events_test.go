@@ -404,7 +404,7 @@ func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
 
 // The person's approval of the version a step waits on, of an ancestor that is a labelled root
 // parked on the backlog, is that person's handover of the ancestor, and it opens the waiting step
-// as well: the ancestor's steps are read apart from the handover's branch (item 6 of the plan).
+// as well: the ancestor's steps are read apart from the handover's branch.
 func TestAPendingBasisOpensOnTheApprovalThatReadmitsAParkedAncestor(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)

@@ -166,8 +166,7 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 // root's own document, never the version an ancestor's approval opened (admission keeps the
 // person's approval alone, Admission.keepStaleApproval). Beside its request of the latest version
 // it names R1's path: a registration on an approved ancestor's approval, where the root is a view
-// on that ancestor (dispatch://INFRA-3320, R2; k3's re-admission of R). A task with no approval
-// kept names neither.
+// on that ancestor (dispatch://INFRA-3320, R2). A task with no approval kept names neither.
 func TestTheKeptDecisionsTaskNamesThePersonsApprovalAndR1sPath(t *testing.T) {
 	task := KeptDecisionsTask("LEGION-208", record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 5}})
 	want := "A person approved version 2 of the primary document, and the primary document is now at version 5. " +

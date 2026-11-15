@@ -925,7 +925,8 @@ A parent with children puts the work into them, and its own pull request joins a
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge, and there no worker runs:
 the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`, and in `awaiting_children`, `WAITING_ON_CHILDREN`;
-refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
+refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work;
+then while a root whose design-gate step rests on its approval is still in the workflow, `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, and then while a Dispatch child of it is open, `SIGNOFF_CHILD_OPEN`, each naming the issues that hold it) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
 The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
 
@@ -1046,7 +1047,7 @@ Nothing of the work stops: no claim is suspended, no session ends, no phase move
 The worker at work goes on, but every start of a phase worker of the issue up to its review, its next phase's or a restart of its current one, waits until the issue holds a slot again; a start of a phase past the review (`retro`, `merging`) takes no slot and runs at once.
 The state names such an issue under `admission.waiting` and under `admission.blocked`, never under `admission.active`, which is how a reader tells it from an issue a person parked, which is in none of the three.
 A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took, unless a wait of the two above takes that slot back.
-Work already under way is never stopped, and no link undoes its admission, though a wait gives its slot back as above; those are the two exemptions:
+Work already under way is never stopped by a link, and no link undoes its admission, though a wait gives its slot back as above; those are the two exemptions:
 an issue that carries a run into a tree of its own is admitted whatever its links say, and so is a tree that ran, taken back after it finished and lingered, which starts again at its person's `todo`;
 a blocker added to a running tree's issue starts nothing over and stops nothing: the worker at work goes on, the issue gives its slot back before its review unless it is one of the three roots above, and the start of its next phase up to the review waits until it holds a slot again.
 Two backstops catch a close no event brought:
@@ -1155,7 +1156,7 @@ The machinery's notices to a stopped tree (a child's status or close, a dead wor
 **Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
 `decisions` the issue's decisions document, `criteria` its Verification document, `spec` its primary document.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
-The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
+The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person's approval opens it: an approval of that step's document, or, where the root's spec is a view on an ancestor, of the ancestor's document that the root's architect registered the step on.
 Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
 One request with `--include-verification` covers the spec and the Verification document, so it opens the `criteria` and the `spec` step together, each registered on its own document.

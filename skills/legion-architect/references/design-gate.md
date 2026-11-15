@@ -470,7 +470,7 @@ These steps take the place of steps 4 and 5 of "The armed gate":
    the call while the root's own document holds an open decision block.
 3. If you have an open approval request of the root's own document for that step, resolve it in
    the same turn, after the registration:
-   `dispatch resolve-ask --ask <id> --kind retracted --reason '<the step is registered on the ancestor's approval>'`.
+   `dispatch resolve-ask --ask <id> --kind retracted --reason "<the step is registered on the ancestor's approval>"`.
    The registration comes first, so that the resume of a root that waits on a person reads the step
    as the registration left it.
 
@@ -635,9 +635,10 @@ On a person's changes request on a version of the route, the ancestor's architec
 Where the ancestor's tree does not run, the root's architect makes those changes and requests each
 approval itself. A review after an approval reaches it as `basis-changes-requested`. When it
 revises a requirement that another root delivers, it finds that root by the block's `Delivered by`
-name and by the ancestor's coverage. The coverage (`GET /api/v1/issues/<ANCESTOR>/coverage`)
-counts the checks of the issues under the ancestor that serve each block. It tells that root on
-its role topic.
+name. Where the block names no root, it finds each check that serves the block as steps 2 and 3 of
+"Accepting" in `skill://legion-architect/references/acceptance.md` say: the root is the `tree` that
+the `legion` tool's `read_record` gives for that check's issue. The ancestor's coverage names no
+issue: it counts the checks that serve each block. It tells that root on its role topic.
 
 A root acts only where the person's reason touches a requirement that its `Delivers:` line names.
 Every other root keeps its spec and its step as they are. While the ancestor's tree runs, the root
@@ -664,8 +665,9 @@ version, and runs the two fresh reviews of the root's new version.
   `gatedSteps` shows it `open_on_basis`, and no person approved your own version. Go on as after any
   `design-approved`.
 - `basis-ended`: your pending basis ended without opening. The step stays closed and is registered
-  on your own document with no basis. The reason names what ended it. Read the ancestor's document
-  and its open request before you act.
+  on your own document with no basis, unless a person's approval of your own document ended the
+  wait: that approval opens the step, and `design-approved` comes too. The reason names what ended
+  it. Read the ancestor's document and its open request before you act.
   - A newer version of the ancestor's document: register on it again when it is a version of the
     route.
   - A changes request: act as "A changes request on the route" says.

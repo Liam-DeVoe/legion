@@ -736,7 +736,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		r.setStatus(run.parent.Key, "in_progress")
 	case ancestorParked:
 		// The approval is applied while P is in triage, so it is no person's handover of a parked
-		// root (k1's 9b).
+		// root.
 		r.applied(r.newestEvent(run.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == approved.Version }))
 		r.setStatus(run.parent.Key, "backlog")
 		r.quiet(run.parent.Key)

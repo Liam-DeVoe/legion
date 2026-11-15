@@ -503,7 +503,7 @@ const keptVersions = "A person approved version 3 of the primary document, and t
 // new generation's start task names that approval, asks for a request of version 4 and names R1's
 // path beside it. A step on a basis that holds no person's approval names none, and so names no
 // approval of version 4. A step whose basis a new version closed falls back to the person's
-// approval, and the task names it at the new version (k3's re-admission of R).
+// approval, and the task names it at the new version.
 func TestTheKeptApprovalOfAReadmittedRootIsThePersonsAndNotTheBasis(t *testing.T) {
 	basis := record.GateBasis{Issue: "LEGION-UP", ArtifactID: "artifact-up", Version: 3, Approval: record.EventMark{Seq: 40, At: fixedNow},
 		Approver: "user:alice", RegisteredAt: fixedNow}
