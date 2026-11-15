@@ -833,9 +833,15 @@ budget fails the step by name, which is the signal to derive them again.
   the upload                                       1             1             -             2             1
   the whole job                                  180           201           163           318           272
 
-The rule is in this file's head. The browser step's maximum is 106 s, so 106 x 1.15 = 122 s
--> 3 min. The job budget is that step's 180 s plus the measured maximum of every step
+The rule is in this file's head. The browser step's maximum was 106 s, so 106 x 1.15 = 122 s
+-> 3 min, and the job budget was that step's 180 s plus the measured maximum of every step
 without one, which is 314 s of the five columns together: 494 s -> 9 min.
+
+The browser step then outran its budget, which is this rule's signal to derive it again. Over
+the 17 merge-group runs of this job from 2026-11-14T08:40Z to 2026-11-15T06:25Z that passed,
+it read 111-179 s, and two runs that day timed out on it at 183 s and 182 s (run 43687635217,
+a merge group, and run 43691184536, a pull request). So 183 x 1.15 = 211 s -> 4 min, and the
+job budget is that step's 240 s plus the same 314 s: 554 s -> 10 min.
 
 The first of those runs was the only one this job had when these budgets were first written,
 and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
