@@ -322,8 +322,9 @@ func New(o Options) *Server {
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
 	}
-	// net/http writes a line of its own for a connection that fails before a handler sees it;
-	// routing it through the broker's logger keeps it out of a bare stderr write.
+	// net/http writes a line of its own for a connection that fails before a handler sees it,
+	// and for a handler's panic it recovers; routing it through the broker's logger keeps it out
+	// of a bare stderr write.
 	errorLog := log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): a CONNECT the
@@ -795,19 +796,35 @@ func hijack(hijacker http.Hijacker) (net.Conn, error) {
 
 // netHTTPMessage is the message of the line net/http writes through the ErrorLog of either
 // server (slogWriter): a connection that failed before a handler saw it, such as a TLS handshake
-// on a bound connection that failed.
+// on a bound connection that failed, and a handler's panic, which net/http recovers and logs with
+// the stack of the goroutine that panicked.
 const netHTTPMessage = "airlock proxy: net/http"
 
-// slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage with net/http's
-// own text as its error. That text can quote what the client sent: a handshake that failed on a
-// bound connection is logged with crypto/tls's error, which for an ALPN list without http/1.1
-// quotes the client's whole list, up to about 64 KB of protocol names, each byte of which %q may
-// write as four and the JSON handler then escapes again. So the error passes answer.ClipFields as
-// a call's line does, and the line stays one Cloud Logging entry whatever the client sent.
+// slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage: the first line
+// of net/http's text as its error, and the rest of the text, where there is any, as its stack.
+//
+// The first line can quote what the client sent: a handshake that failed on a bound connection is
+// logged with crypto/tls's error, which for an ALPN list without http/1.1 quotes the client's
+// whole list, up to about 64 KB of protocol names, each byte of which %q may write as four and
+// the JSON handler then escapes again. So the error passes answer.ClipFields as a call's line
+// does.
+//
+// The rest is the stack net/http writes under a handler's panic it recovered, and it is kept
+// whole, with no cut of its own: neither server recovers a panic before net/http does (record),
+// so this line is the one record of where the panic happened, and the handler's own frames come
+// after the runtime's, past the first 256 bytes of the text. The stack is the server's own text,
+// not the client's - frames, file paths, tabs and newlines, which the JSON handler writes in one
+// or two bytes each - and net/http bounds it at 64 KiB, so it writes at most 128 KiB, and the line
+// stays one Cloud Logging entry whatever the client sent.
 type slogWriter struct{ log *slog.Logger }
 
 func (w slogWriter) Write(p []byte) (int, error) {
-	w.log.Warn(netHTTPMessage, answer.ClipFields([]any{"error", strings.TrimSuffix(string(p), "\n")})...)
+	text, stack, stacked := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
+	fields := answer.ClipFields([]any{"error", text})
+	if stacked {
+		fields = append(fields, "stack", stack)
+	}
+	w.log.Warn(netHTTPMessage, fields...)
 	return len(p), nil
 }
 

@@ -9,6 +9,7 @@
 package airlockproxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -446,7 +447,7 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 // connection's line, an upstream failure's line and net/http's own line on the proxy port each fit
 // one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because each text field of
 // them is cut to its first 256 bytes where it enters the line (answer.ClipFields;
-// ca-refusal-record, Verification v15). Each row sends, through one field the caller chose, text
+// ca-refusal-record, Verification v19). Each row sends, through one field the caller chose, text
 // that writes that line at about 300 KB uncut, on the real proxy of the rig:
 //
 //   - of a refusal's line, the method, the host, the path and the X-Correlation-Id of a request
@@ -465,14 +466,25 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //     handshake that failed on a bound connection, whose ClientHello offers only protocols the
 //     proxy does not speak, which crypto/tls's error quotes whole.
 //
+// The cut is for the caller's text, never for the server's own. One row more panics a handler of
+// the inner server (serveBound, through the clock the rig hands the proxy), which net/http
+// recovers and logs with the stack of the goroutine that panicked. That line is the one record of
+// where the panic happened, so it holds the first line of net/http's text as its error, cut as
+// every other error is, and the stack after it whole in its stack field, which must name the
+// handler that panicked; net/http bounds the stack it writes, so the line still fits the entry.
+// No other row's line holds a stack.
+//
 // Each row writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads
 // its length, and reads the field back as the first 256 bytes of the text it held, which for a
-// reason or an error is the proxy's words around the host, and for net/http's error its words
-// around the client's address and the protocols it offered. The table records which field of
-// which line it drove, and fails when it drove fewer than all of them.
+// reason or an error is the proxy's words around the host, for net/http's error its words around
+// the client's address and the protocols it offered, and for the panic's error, which is shorter,
+// its whole first line: the client's address and the value the clock panicked with. The table
+// records which field of which line it drove, and fails when it drove fewer than all of them.
 //
-// The named revert: let one field pass answer.ClipFields uncut; that field's row writes a line of
-// about 300 KB and fails.
+// The named reverts: let one field pass answer.ClipFields uncut; that field's row writes a line
+// of about 300 KB and fails. Or pass net/http's whole text through answer.ClipFields as its error
+// with no stack field, as slogWriter did before Verification v19; the panic row then fails, since
+// the first 256 bytes of that text end inside the runtime's frames, before any of the handler's.
 func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	const entryLimit = 256 << 10
 	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
@@ -536,6 +548,10 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	// handshakeError is what net/http's line holds before the cut. It names the client's own
 	// address, which only the row's dial picks, so the row's send writes it.
 	var handshakeError string
+	// panicked is what the panic row's clock panics with, and panicError the first line of
+	// net/http's text for it, which names the client's address as handshakeError does.
+	const panicked = "the clock the panic row hands the proxy panicked"
+	var panicError string
 	// fields is every field of each line that holds the caller's text, each of which a row drives.
 	fields := map[string][]string{
 		answer.RefusalMessage: {"method", "host", "path", "correlation_id", "reason"},
@@ -554,6 +570,9 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		// heldBy, where set, answers held once send has run, for a field whose text names what
 		// only the row's own dial picks.
 		heldBy func() string
+		// frame, where set, is the function the line's stack must name: the handler that
+		// panicked. A row that sets none writes a line with no stack.
+		frame  string
 		status int
 		// options is the rig's; the zero value is the plain rig every other row drives.
 		options Options
@@ -636,6 +655,26 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				}
 				return response
 			}},
+		{name: "Go's HTTP server's error: a handler of the inner server that panics, whose stack the line keeps whole", message: netHTTPMessage, field: "error",
+			heldBy: func() string { return panicError }, frame: "github.com/sjawhar/envoy/internal/broker/airlockproxy.(*Server).serveBound(",
+			status: http.StatusOK, options: Options{Now: func() time.Time { panic(panicked) }},
+			send: func(t *testing.T, r *rig) *http.Response {
+				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
+				// net/http names the client as the handshake row's line does, and the value the
+				// handler panicked with beside it.
+				panicError = fmt.Sprintf("http: panic serving %s: %s", conn.LocalAddr(), panicked)
+				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust})
+				// A call the rules allow: serveBound reads the grant, decides, and asks for the
+				// grant's values, whose first read of the clock panics.
+				call := "GET /v1/things HTTP/1.1\r\nHost: " + boundHost + "\r\nAuthorization: Bearer " + workerPlaceholder + "\r\n\r\n"
+				if _, err := client.Write([]byte(call)); err != nil {
+					t.Fatalf("write the call on the bound connection: %v", err)
+				}
+				if answered, err := http.ReadResponse(bufio.NewReader(client), nil); err == nil {
+					t.Fatalf("the call whose handler panicked was answered %d; want the connection closed with no answer", answered.StatusCode)
+				}
+				return response
+			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
@@ -648,8 +687,9 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 			// A call's line is written once its answer has been copied to the client, so it
 			// can come a moment after the client has read the answer, and net/http's once the
-			// handshake has failed. The upstream failure's line and net/http's name no answer id,
-			// so each is read by its message alone: each row has a rig of its own.
+			// handshake has failed or the handler has panicked. The upstream failure's line and
+			// net/http's name no answer id, so each is read by its message alone: each row has a
+			// rig of its own.
 			var lines []string
 			for deadline := time.Now().Add(10 * time.Second); len(lines) == 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 				for _, record := range r.logs.Records() {
@@ -679,12 +719,24 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			if err := json.Unmarshal([]byte(lines[0]), &written); err != nil {
 				t.Fatalf("the line is not one JSON object: %v", err)
 			}
+			// The stack first, so that a line that kept no stack fails on the frame it lost
+			// rather than on the error that holds the stack's first bytes in its place.
+			stack, _ := written["stack"].(string)
+			_, stacked := written["stack"]
+			switch {
+			case row.frame == "" && stacked:
+				t.Fatalf("the line has a stack of %d bytes, want none: no handler panicked", len(stack))
+			case row.frame != "" && !strings.Contains(stack, row.frame):
+				t.Fatalf("the line names no frame %s, the handler that panicked: its stack is %d bytes and its error %q",
+					row.frame, len(stack), written["error"])
+			}
 			held := row.held
 			if row.heldBy != nil {
 				held = row.heldBy()
 			}
-			if kept, _ := written[row.field].(string); kept != held[:256] {
-				t.Fatalf("the line's %s is %d bytes, want the first 256 of the %d it held: %.80q", row.field, len(kept), len(held), kept)
+			want := held[:min(len(held), 256)]
+			if kept, _ := written[row.field].(string); kept != want {
+				t.Fatalf("the line's %s is %d bytes, want the first %d of the %d it held: %.80q", row.field, len(kept), len(want), len(held), kept)
 			}
 		})
 	}
@@ -696,8 +748,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 		}
 	}
-	if driven != 15 || len(missing) != 0 {
-		t.Fatalf("the table drove %d fields, want 15; it never drove %v", driven, missing)
+	if driven != 16 || len(missing) != 0 {
+		t.Fatalf("the table drove %d fields, want 16; it never drove %v", driven, missing)
 	}
 }
 
