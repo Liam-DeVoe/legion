@@ -14,7 +14,6 @@ import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
-import { PRESET_NAMES } from "../issue/page-words";
 import {
   type BlockTarget,
   blockFragment,
@@ -895,9 +894,7 @@ export function shortForm(route: DispatchReferenceRoute): string {
     return route.item === undefined ? `${base}${block}` : `${base} ${route.item.kind}${block}`;
   }
   if (isPlainIssueRoute(route)) {
-    // The Checks preset replaced the Verification tab and carries its address (R15, R19), so a
-    // reference to it reads as the preset a reader lands on rather than the tab that is gone.
-    return `${route.key} ${route.kind === "verification" ? PRESET_NAMES.checks : route.kind}`;
+    return `${route.key} ${route.kind}`;
   }
   switch (route.kind) {
     case "issue":

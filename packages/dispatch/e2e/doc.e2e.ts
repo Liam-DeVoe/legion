@@ -441,18 +441,19 @@ test("tab round-trips keep one document connection, the typed text, and the Conv
     const scrollPosition = await conversationScrollTop(page);
     expect(scrollPosition).toBeGreaterThan(0);
 
-    // Two presets sit between the Spec and the Tree the conversation's address opens - the
-    // row is Tree, Decisions, Checks, Spec, Plan now (dispatch://INFRA-1196 R3) - and the arrow
-    // activates each preset it lands on, so the walk mounts the ones in between on the way.
-    for (const from of ["Tree", "Decisions", "Checks"]) {
-      await page.getByRole("tab", { exact: true, name: from }).press("ArrowRight");
-    }
-    await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toBeFocused();
+    // A round-trip through the filter row: the Spec filter on, then every filter off again with
+    // Conversation (dispatch://INFRA-1196 R2), the document staying mounted on the way.
+    await page.getByRole("button", { exact: true, name: "Spec" }).click();
+    await expect(page.getByRole("button", { exact: true, name: "Spec" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     await expect(editor).toContainText("stay mounted");
-    for (const from of ["Spec", "Checks", "Decisions"]) {
-      await page.getByRole("tab", { exact: true, name: from }).press("ArrowLeft");
-    }
-    await expect(page.getByRole("tab", { exact: true, name: "Tree" })).toBeFocused();
+    await page.getByRole("button", { exact: true, name: "Conversation" }).click();
+    await expect(page.getByRole("button", { exact: true, name: "Conversation" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     await openConversation.click();
     await expect(
       page.getByRole("list", { name: "Conversation turns" }).getByText("Existing message 29")

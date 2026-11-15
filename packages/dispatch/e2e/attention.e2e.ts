@@ -169,12 +169,14 @@ test("a new card arriving while the reader is on another preset leaves the conve
     // is the position the follow reads as the reader keeping up with the newest card.
     await scrollConversationTo(page, 0);
 
-    // Away to a preset the page draws in its own column. The panel, and this list in it, are
+    // Away to a filter the page draws in its own column. The panel, and this list in it, are
     // drawn beside it the whole time - that is what makes the arrival below reach a list the
     // reader is not reading.
-    const spec = page.getByRole("tab", { exact: true, name: "Spec" });
+    const spec = page
+      .getByTestId("issue-presets")
+      .getByRole("button", { exact: true, name: "Spec" });
     await spec.click();
-    await expect(spec).toHaveAttribute("aria-selected", "true");
+    await expect(spec).toHaveAttribute("aria-pressed", "true");
     expect(await conversationScrollTop(page)).toBe(0);
 
     await createMessage(issue.key, { body: "Arrived while away" }, session);

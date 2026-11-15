@@ -26,6 +26,7 @@ import {
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
   FILE_WORDS,
+  FILTER_SIGNAL_WORDS,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_NAMES,
@@ -100,6 +101,7 @@ const UNASKED: readonly unknown[] = [
   NODE_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
+  FILTER_SIGNAL_WORDS,
   CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,
@@ -307,16 +309,20 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five presets are named in the order the row draws them", () => {
+test("the five controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
-    "Tree",
-    "Decisions",
-    "Checks",
+    "Conversation",
     "Spec",
+    "Verification",
     "Plan",
+    "Decisions",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
+  }
+  // The page draws Statement, never Requirement (R22): no word of the row says requirement.
+  for (const word of [...Object.values(PRESET_NAMES), ...Object.values(FILTER_SIGNAL_WORDS)]) {
+    expect(word).not.toMatch(/tree|requirement|proven/iu);
   }
 });
 
@@ -338,7 +344,7 @@ test("every gap line is one sentence that says what is absent", () => {
   for (const line of Object.values(GAP_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(GAP_LINES.no_check).toBe("No check serves this requirement.");
+  expect(GAP_LINES.no_check).toBe("No check serves this statement.");
 });
 
 // A node is a row to the reader, the word the tree's own keys already use, and "node" is the
@@ -449,6 +455,8 @@ test("DECLARED_WORDS holds every declared word and no other", () => {
   }
 
   expect(DECLARED_WORDS).toContain("merge");
-  expect(DECLARED_WORDS).not.toContain("verification");
+  // Verification is the filter's name, his word for what draws the checks (R2, the Design's
+  // "The words"), and no longer a word the page holds back.
+  expect(DECLARED_WORDS).toContain("verification");
   expect(DECLARED_WORDS).not.toContain("before_merge");
 });

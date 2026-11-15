@@ -7,8 +7,9 @@ import { DETAILS_ATTRIBUTE, useMarginDrawer } from "../margin/margin-slot";
 export const DETAILS_ROW_ATTRIBUTE = "data-details-row";
 
 /** The rows of Details a control elsewhere on the page opens it at: the labels the header's
- *  count leaves over, and the two properties whose editor opens in their row. */
-export type DetailsRow = "labels" | "parent" | "route";
+ *  count leaves over, the two properties whose editor opens in their row, and the issue's
+ *  collaborators, which `t o` brings the reader to (the key table). */
+export type DetailsRow = "collaborators" | "labels" | "parent" | "route";
 
 /**
  * Opens Details at one of its rows: the drawer opens, the row is brought into its view, and the

@@ -307,7 +307,10 @@ test("the margin folds a declined ask away with a retracted one and keeps the an
   await decline(page, await askCard(page, declined.id), "The lease owner decides this one.");
 
   await page.goto(`/issues/${issue.key}`);
-  await page.getByRole("tab", { name: "Spec" }).click();
+  await page
+    .getByTestId("issue-presets")
+    .getByRole("button", { exact: true, name: "Spec" })
+    .click();
   const margin = page.getByTestId("margin-sheet");
 
   // The answered question is a decision, and stays where a reader reads the decisions. The

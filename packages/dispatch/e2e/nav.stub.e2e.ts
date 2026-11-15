@@ -60,32 +60,34 @@ test("issue tabs are URL-driven and keyboard-navigable, and titles follow direct
   await page.clock.install();
   await page.goto(`/issues/${scene.issueKey}`);
   await expect(page).toHaveTitle(`${scene.issueKey} · ${scene.issueTitle} · Dispatch`);
-  // The nine tabs are five presets now (dispatch://INFRA-1196 R3), each with an address of
-  // its own, and the issue's own address is the Tree preset's. The children are a section of
-  // every preset rather than a tab, and `/children` still resolves.
-  await expect(page.getByRole("tab", { name: "Tree" })).toHaveAttribute("aria-selected", "true");
+  // The nine tabs are the filter row's five controls now (dispatch://INFRA-1196 R2), each with
+  // an address of its own, and the issue's own address is the page with no filter on. The
+  // children are a section of the page rather than a tab, and `/children` still resolves.
+  const toggle = (name: string) => page.getByRole("button", { exact: true, name });
+  await expect(toggle("Conversation")).toHaveAttribute("aria-pressed", "true");
 
   await page.goto(`/issues/${scene.issueKey}/children`);
   await expect(page.getByTestId("issue-children")).toContainText("Child task");
   await page.reload();
-  await expect(page.getByRole("tab", { name: "Tree" })).toHaveAttribute("aria-selected", "true");
+  await expect(toggle("Conversation")).toHaveAttribute("aria-pressed", "true");
 
-  await page.getByRole("tab", { name: "Tree" }).focus();
+  // The arrows move between the five, and Enter presses the one they land on.
+  await toggle("Conversation").focus();
   await page.keyboard.press("ArrowRight");
-  await expect(page.getByRole("tab", { name: "Decisions" })).toBeFocused();
-  await expect(page.getByRole("tab", { name: "Decisions" })).toHaveAttribute(
-    "aria-selected",
-    "true"
-  );
+  await expect(toggle("Spec")).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(toggle("Decisions")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(toggle("Decisions")).toHaveAttribute("aria-pressed", "true");
   await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/decisions$`));
 
-  // Plan is the last preset, and Spec before it keeps the address the Spec tab answered.
-  await page.keyboard.press("End");
-  await expect(page.getByRole("tab", { name: "Plan" })).toBeFocused();
+  // Each filter keeps the address its tab answered; pressing the one on turns it off.
+  await toggle("Plan").click();
   await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/plan$`));
-  await page.keyboard.press("ArrowLeft");
-  await expect(page.getByRole("tab", { name: "Spec" })).toBeFocused();
+  await toggle("Spec").click();
   await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/spec$`));
+  await toggle("Spec").click();
+  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}$`));
   await page.goto(`/issues/${scene.issueKey}/activity`);
   await expect(page.getByRole("list", { name: "Issue activity" })).toBeVisible();
 

@@ -54,10 +54,12 @@ const tree = node("CORE-1", "issue", {
   children: [node("spec", "document", { children: [askNode] }), commentNode],
 });
 
-test("each preset's address is the one its tab carries", () => {
-  expect(presetPath("CORE-1", "tree")).toBe("/issues/CORE-1");
-  expect(presetPath("CORE-1", "checks")).toBe("/issues/CORE-1/verification");
+test("each control of the filter row carries its own address (R2, R20)", () => {
+  expect(presetPath("CORE-1", "conversation")).toBe("/issues/CORE-1");
   expect(presetPath("CORE-1", "spec")).toBe("/issues/CORE-1/spec");
+  expect(presetPath("CORE-1", "verification")).toBe("/issues/CORE-1/verification");
+  expect(presetPath("CORE-1", "plan")).toBe("/issues/CORE-1/plan");
+  expect(presetPath("CORE-1", "decisions")).toBe("/issues/CORE-1/decisions");
 });
 
 // Two of the conversation's four states are addresses of their own, so picking one is
@@ -116,15 +118,20 @@ test("the address names the conversation's state only where it names what that s
   expect(named({ key: "CORE-1", kind: "artifact", slug: "plan-md" })).toBeUndefined();
 });
 
-test("the address says which preset it opens, which document, and which node it names", () => {
-  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "", "spec").preset).toBe("tree");
-  expect(issueAddress({ key: "CORE-1", kind: "verification" }, "", "", "spec").preset).toBe(
-    "checks"
+test("the address says which filter it opens, which document, and which node it names", () => {
+  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "", "spec").preset).toBe(
+    "conversation"
   );
+  expect(issueAddress({ key: "CORE-1", kind: "conversation" }, "", "", "spec").preset).toBe(
+    "conversation"
+  );
+  for (const kind of ["spec", "verification", "plan", "decisions"] as const) {
+    expect(issueAddress({ key: "CORE-1", kind }, "", "", "spec").preset).toBe(kind);
+  }
   // A route naming the issue's own spec by its slug opens the spec itself, in place of the
   // outline, as every document's own address does; `/spec` is the Spec filter (R3, R20).
   const spec = issueAddress({ key: "CORE-1", kind: "artifact", slug: "spec" }, "?v=2", "", "spec");
-  expect(spec.preset).toBe("tree");
+  expect(spec.preset).toBe("conversation");
   expect(spec.document).toBe("spec");
   expect(spec.version).toBe(2);
   expect(issueAddress({ key: "CORE-1", kind: "spec" }, "", "", "spec").document).toBeUndefined();
@@ -149,7 +156,7 @@ test("the address says which preset it opens, which document, and which node it 
       kind: "item",
     });
     expect(item.document, `/${kind}s/<id> opens a document`).toBeUndefined();
-    expect(item.preset, `/${kind}s/<id> opens a filter`).toBe("tree");
+    expect(item.preset, `/${kind}s/<id> opens a filter`).toBe("conversation");
   }
 });
 

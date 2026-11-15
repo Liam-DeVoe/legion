@@ -1,13 +1,13 @@
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
-import { buildIssuePath, type IssueTab } from "../refs/routes";
+import { buildIssuePath, type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useOpenDetailsAt } from "./details-rows";
 import { bringOnScreen } from "./identity-block";
-import { presetPath } from "./issue-address";
-import { CONTROL_LABELS, PRESET_NAMES } from "./page-words";
+import { issueAddress, presetPath } from "./issue-address";
+import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
@@ -65,6 +65,8 @@ function outsideInputsAndAskCards(): boolean {
  */
 const PARTS = {
   children: '[data-testid="issue-children"]',
+  // The collaborators' row of Details (`IssueMargin.tsx`), whose own control opens the list.
+  collaborators: '[data-details-row="collaborators"]',
   filter: `input[aria-label="${CONTROL_LABELS.filter}"]`,
   margin: '[data-testid="issue-margin"]',
   menu: '[role="menu"]',
@@ -74,10 +76,12 @@ const PARTS = {
 } as const;
 
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
- *  stop, the panel's selected conversation state, the children's own disclosure, and a menu's
- *  first item once it holds any (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
+ *  stop, the panel's selected conversation state, the children's own disclosure, the
+ *  collaborators' own control, and a menu's first item once it holds any
+ *  (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
   children: "button",
+  collaborators: "button",
   filter: undefined,
   margin: '[data-conversation-state][aria-selected="true"]',
   menu: '[role="menuitem"]',
@@ -154,68 +158,70 @@ function keepPartOnScreen(found: HTMLElement, takes: HTMLElement, left: number):
 }
 
 /**
+ * The address a filter's chord opens from the view `active`: the filter itself, or, where that
+ * filter is the one on, the page with every filter off - the chord toggles it, as pressing the
+ * filter's own control does (R2).
+ */
+function toggled(key: string, filter: Preset, active: Preset): string {
+  return presetPath(key, filter === active ? "conversation" : filter);
+}
+
+/**
  * Every chord the page binds, which is the `t` table of the spec's Design section, chord for
- * chord. Each one opens an address and puts the focus in what that address draws: the eight the
- * page bound before the redesign that the table keeps hold the addresses their tabs had, every
- * one of which still resolves (R19), and `t t` and `t f` are the two the table adds.
+ * chord. Each one opens an address and puts the focus in what that address draws: the nine
+ * chords bound before the redesign keep a target each (R11), and `t f` is the one the table
+ * adds.
  *
- * A label names what the chord opens on this page, not the tab the address once was: there is
- * no tablist and no Verification, Children, Artifacts or Collaborators tab to go to, so `?`
- * would otherwise send a reader looking for five things the page does not have (R21). The
- * preset names are the row's own (`PRESET_NAMES`), and the panel, the children section and the
- * node menu are named as the page names them.
+ * `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions filters, and
+ * `t c` is the conversation, the page with every filter off; each leaves the focus in the
+ * outline. A label names what the chord does on this page, in the filter row's own names
+ * (`PRESET_NAMES`), and the panel, the children section and the node menu as the page names
+ * them.
  */
 const CHORDS: readonly {
   keys: string;
   label: string;
-  /** The address the chord opens, or undefined for a chord that opens none. */
-  path?: (key: string) => string;
+  /** The address the chord opens from the view on, or undefined for a chord that opens none. */
+  path?: (key: string, active: Preset) => string;
   part: keyof typeof PARTS;
   /** What names the binding, which is the tab the address was that tab's. */
-  tab: IssueTab | "tree" | "filter";
+  tab: IssueTab | "filter";
 }[] = [
   {
-    keys: "t t",
-    label: `Open the ${PRESET_NAMES.tree} preset`,
-    part: "tree",
-    path: (key) => presetPath(key, "tree"),
-    tab: "tree",
-  },
-  {
     keys: "t s",
-    label: `Open the ${PRESET_NAMES.spec} preset`,
+    label: `Turn the ${PRESET_NAMES.spec} filter on or off`,
     part: "tree",
-    path: (key) => presetPath(key, "spec"),
+    path: (key, active) => toggled(key, "spec", active),
     tab: "spec",
   },
   // `t v` is the activity and `t c` the conversation, so the checks take their own `k`; `t p`
   // is free (`p` alone focuses the priority, which is a different scope of key).
   {
     keys: "t k",
-    label: `Open the ${PRESET_NAMES.checks} preset`,
+    label: `Turn the ${PRESET_NAMES.verification} filter on or off`,
     part: "tree",
-    path: (key) => presetPath(key, "checks"),
+    path: (key, active) => toggled(key, "verification", active),
     tab: "verification",
   },
   {
     keys: "t p",
-    label: `Open the ${PRESET_NAMES.plan} preset`,
+    label: `Turn the ${PRESET_NAMES.plan} filter on or off`,
     part: "tree",
-    path: (key) => presetPath(key, "plan"),
+    path: (key, active) => toggled(key, "plan", active),
     tab: "plan",
   },
   {
     keys: "t d",
-    label: `Open the ${PRESET_NAMES.decisions} preset`,
+    label: `Turn the ${PRESET_NAMES.decisions} filter on or off`,
     part: "tree",
-    path: (key) => presetPath(key, "decisions"),
+    path: (key, active) => toggled(key, "decisions", active),
     tab: "decisions",
   },
   {
     keys: "t c",
-    label: "Open the conversation in the panel",
-    part: "margin",
-    path: (key) => buildIssuePath({ key, kind: "conversation" }),
+    label: `${PRESET_NAMES.conversation}: turn every filter off`,
+    part: "tree",
+    path: (key) => presetPath(key, "conversation"),
     tab: "conversation",
   },
   // `t a` opens the node menu and `l` is the issue's label editor, so the activity takes `t v`.
@@ -243,13 +249,18 @@ const CHORDS: readonly {
     path: (key) => buildIssuePath({ key, kind: "artifacts" }),
     tab: "artifacts",
   },
-  // No chord for the collaborators: the spec's table names two chords into the panel - `t c`
-  // for the conversation and `t v` for the activity - and `t o` was a third the table does not
-  // hold (R9). `/collaborators` still resolves and still opens them in the panel (R19,
-  // `IssueMargin.tsx`); it is the key that is gone, so `?` lists what the table lists.
-  // The filter narrows the preset the reader is already on, so it opens no address of its own:
-  // what it types is `?q=`, which the box itself writes.
-  { keys: "t f", label: "Filter the preset", part: "filter", tab: "filter" },
+  // `t o`, the collaborators, in the panel: `/collaborators` opens Details at the People
+  // section with the list drawn (R20, `IssueMargin.tsx`), and the focus goes to its control.
+  {
+    keys: "t o",
+    label: "Open the issue's collaborators in Details",
+    part: "collaborators",
+    path: (key) => buildIssuePath({ key, kind: "collaborators" }),
+    tab: "collaborators",
+  },
+  // The filter by words narrows the view the reader is already on, so it opens no address of
+  // its own: what it types is `?q=`, which the box itself writes.
+  { keys: "t f", label: "Filter by words", part: "filter", tab: "filter" },
 ];
 
 /**
@@ -263,7 +274,12 @@ const CHORDS: readonly {
  */
 export function useIssueKeymap(priorityWrite: IssuePriorityWrite, issueKey: string): void {
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const openDetailsAt = useOpenDetailsAt();
+  // The view the address has on, which a filter's chord toggles from.
+  const route = parseIssuePath(pathname);
+  const active =
+    route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
   useKeymapScope("issue");
   useKeymap("issue", [
     {
@@ -335,8 +351,15 @@ export function useIssueKeymap(priorityWrite: IssuePriorityWrite, issueKey: stri
       keys,
       label,
       run: () => {
-        if (path !== undefined) navigate(path(issueKey));
-        reachPart(part);
+        if (path === undefined) {
+          reachPart(part);
+          return;
+        }
+        navigate(path(issueKey, active));
+        // The part is looked for once the address has drawn: the outline is the same element
+        // under every view, and a row of the view being left would take the focus and then be
+        // unmounted with it - a filter draws its rows at another depth than the outline does.
+        requestAnimationFrame(() => reachPart(part));
       },
     })),
   ]);

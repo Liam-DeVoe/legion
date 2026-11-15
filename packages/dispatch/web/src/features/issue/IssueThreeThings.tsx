@@ -27,8 +27,8 @@ import {
  * The head of the page: the issue's three sentences under "In short", and the two rows under
  * them (dispatch://INFRA-1196 R8, `dispatch://INFRA-1196/artifact/plan-md#b-t10`).
  *
- * It is drawn with every preset, because what the issue is does not change with the query a
- * reader is running over it: from 1024 px up it heads the Contents pane at the left of the
+ * It is drawn with every filter, because what the issue is does not change with the filter a
+ * reader has on: from 1024 px up it heads the Contents pane at the left of the
  * page, as the prototype's `.brief` does, and below that it heads the reading column, above the
  * outline, since a reader of a phone must not press a control to read what the issue is
  * (`IssueBody.tsx`).
@@ -56,9 +56,9 @@ import {
  *
  * The two rows are the page's own words and hold no author's text, so the sentences above them
  * are the only thing a reader of the head quotes. Each names one source and no second: the
- * Plan preset with how the plan stands with its reviewers, and the Checks preset with the
+ * Plan filter with how the plan stands with its reviewers, and the Verification filter with the
  * state every criterion's latest result is in. The count behind each of those states is in the
- * preset itself, one row per criterion, which is one press away.
+ * filter itself, one row per criterion, which is one press away.
  */
 export function IssueThreeThings({
   checks,
@@ -164,12 +164,12 @@ export function IssueThreeThings({
           <span {...pageChrome}>{CONTROL_LABELS.what_you_will_be_shown}</span>
           <Link
             className={`dispatch-inline-link underline ${pageInkText}`}
-            to={presetPath(issueKey, "checks")}
+            to={presetPath(issueKey, "verification")}
           >
-            <span {...pageChrome}>{PRESET_NAMES.checks}</span>
+            <span {...pageChrome}>{PRESET_NAMES.verification}</span>
           </Link>
           {states.length === 0 ? (
-            <span {...pageChrome}>{EMPTY_STATE_LINES.checks}</span>
+            <span {...pageChrome}>{EMPTY_STATE_LINES.verification}</span>
           ) : (
             states.map((state) => (
               <span className="flex items-center gap-1" key={state} {...pageChrome}>

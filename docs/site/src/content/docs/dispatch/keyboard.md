@@ -128,28 +128,29 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `l` | Edit labels, in **Details**' **Labels** row |
 | `e` | Edit the title |
 | `Shift+P` | Pin or unpin the issue |
-| `t t` | Open the Tree preset |
-| `t s` | Open the Spec preset |
-| `t k` | Open the Checks preset |
-| `t p` | Open the Plan preset |
-| `t d` | Open the Decisions preset |
-| `t c` | Open the conversation in the panel |
+| `t s` | Turn the Spec filter on or off |
+| `t k` | Turn the Verification filter on or off |
+| `t p` | Turn the Plan filter on or off |
+| `t d` | Turn the Decisions filter on or off |
+| `t c` | Conversation: turn every filter off |
 | `t v` | Open the issue's history under the tree |
 | `t h` | Open the issue's children |
 | `t a` | Open the Files and documents menu |
-| `t f` | Filter the preset |
+| `t o` | Open the issue's collaborators in **Details** |
+| `t f` | Filter by words |
 | `Escape` | Back out of the focused status or priority |
 | `Enter` on a file in **Files and documents** | Open it in place of the tree |
-| `Escape` in a document opened in place of the tree | Leave its text, then close it and go back to the tree |
+| `Escape` | In this order: leave the caret, then close a document opened in place of the tree, then clear the **Filter** box, then turn every filter off, then leave the tree |
 | `Escape` while **Details** is open | Close **Details** first; in a text field or a select, leave the field first |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
 where the key belongs to that control.
 
-Each `t` key but `t f` opens an address of the issue page and puts the focus in what it opens.
-`t f` puts the focus in the **Filter** box. While a preset has the focus, `←` and `→` move to the
-previous and next preset, and `Home` and `End` to the first and last. At 1024 px and below the
-presets are one menu instead.
+Each `t` key but `t f` opens an address of the issue page and puts the focus in what it opens; a
+filter's key turns its filter off when it is the one on. `t f` puts the focus in the **Filter**
+box. While a control of the filter row has the focus, `←` and `→` move to the previous and next
+one, `Home` and `End` to the first and last, and `Enter` or `Space` chooses it. At 1024 px and
+below the row is one menu instead. **Keys**, at the right of the row, opens this list.
 
 ## Issue tree
 

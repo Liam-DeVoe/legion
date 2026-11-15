@@ -35,7 +35,7 @@ import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// The issue's checks, on the Checks preset of the redesigned issue page (dispatch://INFRA-1196):
+// The issue's checks, on the Verification filter of the redesigned issue page (dispatch://INFRA-1196):
 // each check of the Verification document is a node of the issue's tree, with its state told by
 // a word and a shape, its own attributes in its body, and each result recorded against it a node
 // under it carrying what that run recorded. Until 2026-11-06 this file read the Verification
@@ -120,8 +120,8 @@ async function openResults(page: Page): Promise<void> {
 // Verification document of three checks and two recorded results, each result's record route
 // reading through to that fake for the pull request's head, before one load of the page, which
 // opens the document's live room and draws all three checks with every field of both results.
-// @pr: The Checks preset's own row: every check of the document, each with the results recorded against it.
-test("the Checks preset draws every check of the document, each with the results recorded against it @pr", async ({
+// @pr: The Verification filter's own row: every check of the document, each with the results recorded against it.
+test("the Verification filter draws every check of the document, each with the results recorded against it @pr", async ({
   browser,
 }, testInfo) => {
   const issue = await seedIssue("Verification tab", secondHead);
@@ -437,7 +437,7 @@ test("an issue with no Verification document says the preset holds no check", as
 
     // The old tab printed the command that makes the document; the preset says what is absent
     // and never what the reader should do about it (`EMPTY_STATE_LINES`).
-    expect(await visibleText(page)).toContain(EMPTY_STATE_LINES.checks);
+    expect(await visibleText(page)).toContain(EMPTY_STATE_LINES.verification);
     await expect(rowsOfType(page, "check")).toHaveCount(0);
   } finally {
     await alice.close();

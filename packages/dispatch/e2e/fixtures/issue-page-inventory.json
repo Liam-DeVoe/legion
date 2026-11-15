@@ -2811,14 +2811,14 @@
     }
   ],
   "renames": {
-    "tab \"Spec\"": "tab \"Spec\" | menuitem \"Spec\"",
-    "tab \"Verification\"": "tab \"Checks\" | menuitem \"Checks\"",
-    "tab \"Plan\"": "tab \"Plan\" | menuitem \"Plan\"",
+    "tab \"Spec\"": "button \"Spec\" | menuitem \"Spec\"",
+    "tab \"Verification\"": "button \"Verification\" | menuitem \"Verification\"",
+    "tab \"Plan\"": "button \"Plan\" | menuitem \"Plan\"",
     "tab \"Conversation\"": "region \"Conversation\"",
     "tab \"Children\"": "button \"Children\"",
     "tab \"Artifacts 7\"": "button \"Files and documents\"",
     "tab \"Activity\"": "region \"Activity\"",
-    "tab \"Decisions\"": "tab \"Decisions\" | menuitem \"Decisions\"",
+    "tab \"Decisions\"": "button \"Decisions\" | menuitem \"Decisions\"",
     "tab \"Collaborators\"": "button \"Collaborators\"",
     "button \"Reopen issue\"": "button \"Reopen into Backlog\"",
     "button \"Upload\"": "menuitem \"Upload\"",

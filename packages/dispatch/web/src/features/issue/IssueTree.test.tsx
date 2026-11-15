@@ -133,11 +133,13 @@ function renderTree(
               emptyLine="Nothing here."
               filtering={false}
               focusReveal={false}
+              holdsEscape={false}
               isClosed={false}
               onEditing={(artifactId) => edited.push(artifactId)}
               onReport={(report) => reports.push(report)}
               reveal={undefined}
               root={root}
+              rootRow
             />
           </MarginProvider>
         </KeymapProvider>

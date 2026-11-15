@@ -102,7 +102,7 @@ const SHAPED_BLOCK_WORDS = "One command, a seeded corpus, a signed-in browser.";
  *  all at once", `web/src/features/issue/useIssueTree.ts`). The seeded decision's chip is where
  *  this corpus shows it - the spec block that decision shaped, named by that block's own words
  *  - so a row that waits on this is reading a tree whose words are in. Every address that opens
- *  the Tree preset draws that row, which is why the four rows of those addresses share it.
+ *  the page with no filter on draws that row, which is why the four rows of those addresses share it.
  *
  *  It is the same answer the `issue-spec` row gets from the margin's decision card: one
  *  reference, drawn twice over by two surfaces, each of which holds the address until the graph
@@ -232,8 +232,8 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     pattern: "/issues/:key/*",
     // The conversation's one list, which is drawn in the page's one right-hand panel and in
     // no column of the page any more (`web/src/features/issue/IssueMargin.tsx`), and the tree
-    // this address draws beside it: `/conversation` names no preset, so it opens the Tree
-    // preset, whose rows take their words from the batched reference read.
+    // this address draws beside it: `/conversation` names no filter, so it opens the page with
+    // no filter on, whose rows take their words from the batched reference read.
     ready: (page) => [
       page.getByRole("list", { name: "Conversation turns" }),
       treeNamesSettled(page),
@@ -252,7 +252,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // section's own header is on the screen whether or not its rows are. The row is
     // `[data-child-row]`, which is how `e2e/issue-page.ts` reads one.
     //
-    // And the tree's words, because this address opens the Tree preset beside the section.
+    // And the tree's words, because this address opens the page with no filter on beside it.
     ready: (page) => [
       page.locator('[data-testid="issue-children"] [data-child-row]').first(),
       treeNamesSettled(page),
@@ -270,7 +270,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // it). The menu's item for the issue's spec is the primary document's row there - an issue's
     // spec is `spec.md` under the slug `spec` (`issue_create.go`) - so the item says the issue's
     // artifacts have reached the page. The tree's words are the second, as on every address
-    // that opens the Tree preset.
+    // that opens the page with no filter on.
     ready: (page) => [
       page.getByRole("menu").getByRole("menuitem").filter({ hasText: "spec.md" }),
       treeNamesSettled(page),
@@ -286,7 +286,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // column (`features/activity/ActivityTab.tsx`, mounted by `IssuePresetPanels.tsx`) while
     // the panel beside it holds the conversation in its `everything` state - the state this
     // address names (`conversation-states.tsx`). And the tree's words, as on every address
-    // that opens the Tree preset.
+    // that opens the page with no filter on.
     ready: (page) => [page.getByRole("list", { name: "Issue activity" }), treeNamesSettled(page)],
   },
   {
@@ -327,7 +327,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // key in one run and the title in the other; this waits for the document and that answer
     // together.
     //
-    // `verification-tab` went with the nine tab panels. This address opens the Checks preset
+    // `verification-tab` went with the nine tab panels. This address opens the Verification filter
     // and keeps the Verification document beside the tree, in the preset's own panel
     // `#issue-verification-panel` (`RoleDocumentPanel.tsx`, whose Checks half gives the
     // document no frame because the checks themselves are rows of the tree), so the panel's

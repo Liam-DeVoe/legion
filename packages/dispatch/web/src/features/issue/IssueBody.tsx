@@ -1,22 +1,31 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
+import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails } from "../../api/types";
-import { textMutedOnCanvas } from "../../theme/classes";
+import { pageLineBorder, textMutedOnCanvas } from "../../theme/classes";
+import { useKeymap } from "../shell/keymap";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { IssueChildren } from "./IssueChildren";
-import { ContentsList, IssueContentsPane, OutlineSheet } from "./IssueContents";
+import {
+  type ContentsEntry,
+  ContentsList,
+  contentsOf,
+  IssueContentsPane,
+  OutlineSheet,
+} from "./IssueContents";
 import { IssuePresets } from "./IssuePresets";
 import { IssueThreeThings, nodesOfType, specSummary } from "./IssueThreeThings";
 import { IssueTree, type OutlineRequest } from "./IssueTree";
 import type { AddressTarget, IssueAddress } from "./issue-address";
-import { pathToTarget } from "./issue-address";
+import { pathToTarget, presetPath } from "./issue-address";
 import { artifactsBySlug } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { pageChrome } from "./page-structure";
-import { EMPTY_STATE_LINES, PRESET_ORDER, type Preset } from "./page-words";
-import { presetCounts, presetView } from "./presets";
+import { EMPTY_STATE_LINES, type Preset } from "./page-words";
+import { filterSignals, isFilter, presetView } from "./presets";
 import { useIssueTree } from "./useIssueTree";
 import { firstWaitingNode, waitingPressOf } from "./waiting";
 
@@ -29,21 +38,27 @@ export const CONTENTS_PANE_QUERY = "(min-width: 64rem)";
 export const PAGE_INSET = "px-3.5 md:px-7";
 
 /**
- * The issue's body on every address: its three sentences, the preset row, the children section
- * and the one tree the preset is a query over (dispatch://INFRA-1196 R1, R3, R5, R10) - or, where
- * the address opens a document, that document in place of the children section and the tree.
+ * The issue's body on every address: its three sentences, the filter row, the children section
+ * and the one tree the page and its filters draw (dispatch://INFRA-1196 R1, R2, R3, R5, R10) -
+ * or, where the address opens a document, that document in place of the children section and
+ * the tree.
  *
  * It is one component because all four read the same tree: the head reads the spec's summary
- * node and the issue's checks, the row counts what each preset's query holds, and the tree
- * draws what the open preset left. Building that tree is this page's one model read
- * (`useIssueTree.ts`), so it happens here, once, below the guards `IssuePage` draws for an
- * issue it could not load.
+ * node and the issue's checks, the row's signals count what each view holds, and the tree draws
+ * what the view on left. Building that tree is this page's one model read (`useIssueTree.ts`),
+ * so it happens here, once, below the guards `IssuePage` draws for an issue it could not load.
  *
- * Under the preset row the body is two columns from 1024 px up: the Contents pane against the
+ * Under the filter row the body is two columns from 1024 px up: the Contents pane against the
  * rail, with the three sentences and the list of questions and the reader's own threads, and
  * the reading column with the outline (R8, R14). Below 1024 px the pane is not drawn: the three
  * sentences head the reading column, above the outline, and the list is behind the Outline
- * control beside the presets.
+ * control beside the one control the row is there, with no filter on, as the 390 px pictures
+ * draw it.
+ *
+ * Escape takes the steps of the key table in its order: a caret is left first (the outline's
+ * and a document's own), then an opened document is closed (`OpenedDocument.tsx`), then the
+ * filter by words is cleared, then every filter is turned off, and then the outline is left
+ * (`useTreeKeymap.ts`). The two middle steps are this component's.
  */
 export function IssueBody({
   address,
@@ -79,10 +94,21 @@ export function IssueBody({
   const navigate = useNavigate();
   const { hash, pathname, search, state: locationState } = useLocation();
   const { blocksRead, root } = useIssueTree(issue);
-  const counts = useMemo(
-    () => presetCounts(root, address.filter, PRESET_ORDER),
-    [address.filter, root]
-  );
+  // Who the reader is, which the Contents list's entries are read for: a thread is an entry
+  // where the reader began it (`contentsOf`).
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  // What each control of the filter row draws after its name: a filter's count of its main kind
+  // and what of it asks something of the reader, and for Conversation how many entries the
+  // Contents list holds, as the prototype's signal counts its branches. Each follows `?q=`.
+  const signals = useMemo(() => {
+    const entries = (list: readonly ContentsEntry[]): number =>
+      list.reduce((count, entry) => count + 1 + entries(entry.children), 0);
+    const conversation = presetView(root, "conversation", address.filter).root;
+    return {
+      ...filterSignals(root, address.filter),
+      conversation: { count: entries(contentsOf(conversation, viewer)) },
+    };
+  }, [address.filter, root, viewer]);
   // The address's own node is resolved against the whole tree and then kept by the preset's
   // query, so an address that names a node the preset would not have matched still draws it.
   // The target is read by what it says rather than by the value `issueAddress` built, which is
@@ -131,15 +157,15 @@ export function IssueBody({
   // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
   // `onReport`) and drawn here as the page's own status.
   const [report, setReport] = useState("");
-  // Where the version control goes. From `md` it sits beside the preset row, as the design
-  // draws it (R2). Below `md` it is 96 px of a 844 px screen - the version picker, the
-  // name-a-version control and the link, two lines of 44 px controls - and the identity block,
-  // the head, the preset row and the children section already take 700 px of it, so it is
-  // drawn under the tree instead: the same move the identity block's fourth row makes at that
-  // width (`IssueHeader.tsx`), and for the same reason - the first open question has to be on a
-  // phone's first screen (R6). A document opened in place of the tree has no tree to go under,
-  // so there it is drawn above the document it reads. Nothing is behind a control either way,
-  // so every one of its controls is still drawn with nothing opened (R18).
+  // Where the version control goes. From `md` it sits beside the filters, as the design draws
+  // it (R2), while a filter is on or a document is open in place of the outline. Below `md` it
+  // is 96 px of a 844 px screen - the version picker, the name-a-version control and the link,
+  // two lines of 44 px controls - and the identity block, the head, the filter row and the
+  // children section already take 700 px of it, so it is drawn under the tree instead: the
+  // same move the identity block's fourth row makes at that width (`IssueHeader.tsx`), and for
+  // the same reason - the first open question has to be on a phone's first screen (R6). A
+  // document opened in place of the tree has no tree to go under, so there it is drawn above
+  // the document it reads. Nothing is behind a control either way (R18).
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const phoneToolbar =
     isPhoneViewport && shownToolbar !== undefined ? (
@@ -154,6 +180,64 @@ export function IssueBody({
   const [focusBranch, setFocusBranch] = useState(false);
   const ask = (id: string | undefined, branch: boolean) =>
     setRequest((held) => ({ focusBranch: branch, id, seq: (held?.seq ?? 0) + 1 }));
+  // What the filter by words holds is `?q=`, which the box writes in place, keeping the rest
+  // of the address.
+  const setWords = (next: string) => {
+    const query = new URLSearchParams(search);
+    if (next === "") query.delete("q");
+    else query.set("q", next);
+    const rest = query.toString();
+    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
+  };
+  // Whether the page's own Escape is the next step: no document is open, whose close comes
+  // first, no menu is open, whose press it is, and the focus is in no control inside a row of
+  // the outline, which Escape gives the row back from first (`useTreeKeymap.ts`).
+  const escapesHere = () => {
+    if (drawsDocument || document.querySelector('[role="menu"]') !== null) return false;
+    const active = document.activeElement;
+    const row = active?.closest("[data-node-row]");
+    return row === null || row === undefined || row === active;
+  };
+  const filterOn = isFilter(address.preset);
+  useKeymap("issue", [
+    {
+      // The box the filter by words is typed in: Escape empties it, and leaves it once it is
+      // empty, as Escape leaves a caret first.
+      id: "words-leave",
+      inEditable: true,
+      keys: "Escape",
+      label: "Clear the filter by words, then leave it",
+      palette: false,
+      run: () => {
+        if (address.filter !== "") setWords("");
+        else (document.activeElement as HTMLElement | null)?.blur();
+      },
+      when: () => document.activeElement?.matches('[data-testid="issue-filter"]') === true,
+    },
+    {
+      id: "words-clear",
+      keys: "Escape",
+      label: "Clear the filter by words",
+      palette: false,
+      run: () => setWords(""),
+      when: () => address.filter !== "" && escapesHere(),
+    },
+    {
+      // Every filter off, which is Conversation's address. A reader on a row of the filter
+      // stays on that node in the outline it opens on, so the next Escape leaves the outline.
+      id: "filters-off",
+      keys: "Escape",
+      label: "Turn every filter off",
+      palette: false,
+      run: () => {
+        const on = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+        onLeave();
+        navigate(presetPath(issue.key, "conversation"));
+        if (on !== undefined) ask(on, focusBranch);
+      },
+      when: () => filterOn && escapesHere(),
+    },
+  ]);
   // The header's count of what waits on the reader turns the Decisions filter on and leaves its
   // press in the history entry (`IssuePropertiesRow.tsx`): once the filter has drawn the first
   // node that waits - an open question whose turn is the reader's, or a decision waiting for
@@ -210,24 +294,22 @@ export function IssueBody({
       <p className={`text-xs ${PAGE_INSET} ${textMutedOnCanvas}`} role="status" {...pageChrome}>
         {report}
       </p>
-      <div className={PAGE_INSET}>
+      {/* The filter row's rule runs the column's whole width, as the prototype's `#tabs` does,
+          and its controls keep the page's inset. */}
+      <div className={`border-b ${PAGE_INSET} ${pageLineBorder}`}>
         <IssuePresets
           active={address.preset}
           artifacts={issue.artifacts ?? []}
-          counts={counts}
           filter={address.filter}
           isClosed={isClosed}
           issueKey={issue.key}
           nodeMenu={address.nodeMenu}
+          onFilterChange={setWords}
           onLeave={onLeave}
-          onFilterChange={(next) => {
-            const query = new URLSearchParams(search);
-            if (next === "") query.delete("q");
-            else query.set("q", next);
-            const rest = query.toString();
-            navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
-          }}
-          outline={paned || drawsDocument ? undefined : <OutlineSheet list={list} />}
+          // The list is the conversation's, as the 390 px pictures draw it: beside the one
+          // control with no filter on, and not under a filter, whose rows are the list.
+          outline={paned || drawsDocument || filterOn ? undefined : <OutlineSheet list={list} />}
+          signals={signals}
           toolbar={isPhoneViewport ? undefined : shownToolbar}
         />
       </div>
@@ -249,6 +331,7 @@ export function IssueBody({
                 emptyLine={EMPTY_STATE_LINES[address.preset]}
                 filtering={view.filtering}
                 focusReveal={followed || address.preset !== "spec" || targetKind === "item"}
+                holdsEscape={filterOn || address.filter !== ""}
                 isClosed={isClosed}
                 onEditing={onEditing}
                 onReport={setReport}
@@ -256,6 +339,7 @@ export function IssueBody({
                 request={request}
                 reveal={reveal}
                 root={view.root}
+                rootRow={view.rootRow}
               />
               {phoneToolbar}
             </>
@@ -268,9 +352,9 @@ export function IssueBody({
 }
 
 /**
- * The chain down to the node a preset opens on when the address names none: on the Decisions
- * preset the first decision waiting for the reader's review, so the reader lands on what waits
- * for them with Keep and Change in its body (R6, R7). Every other preset opens on no node.
+ * The chain down to the node a filter opens on when the address names none: on the Decisions
+ * filter the first decision waiting for the reader's review, so the reader lands on what waits
+ * for them with Keep and Change in its body (R6, R7). Every other view opens on no node.
  */
 function opensOn(root: TreeNode, preset: Preset): string | undefined {
   if (preset !== "decisions") return undefined;

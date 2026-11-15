@@ -125,8 +125,8 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     } else {
       await page.goto(`/issues/${issue.key}`);
     }
-    // The issue's own address is the Tree preset's now (dispatch://INFRA-1196 R19).
-    await expectActivePreset(page, "Tree");
+    // The issue's own address is the page with no filter on (dispatch://INFRA-1196 R2, R20).
+    await expectActivePreset(page, "Conversation");
     if (isPhone) {
       // The open ask's card is in Details, the phone's sheet the header's control opens
       // (dispatch://INFRA-1196 R14).
@@ -399,7 +399,7 @@ test("the issue page's skeleton fits a phone and names its presets @phone", asyn
       await route.continue();
     });
     const arrival = page.goto(`/issues/${issue.key}`).catch(() => undefined);
-    const presets = page.locator('[aria-busy="true"] [role="tablist"]');
+    const presets = page.locator('[aria-busy="true"] [role="toolbar"]');
     await expect(presets).toBeVisible();
     const layout = await page.evaluate(() => ({
       client: document.documentElement.clientWidth,

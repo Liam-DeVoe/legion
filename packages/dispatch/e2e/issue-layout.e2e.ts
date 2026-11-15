@@ -158,19 +158,19 @@ import {
   overlappingTexts,
   pageStatus,
   parentOfRow,
+  pickPreset,
   pinnedBodies,
   planRow,
   presetChooser,
   presetCount,
   presetMenuItem,
   presetRow,
-  presetTab,
-  presetTablist,
-  presetTabs,
+  presetToggle,
+  presetToggles,
+  presetToolbar,
   rowAuthor,
   rowBody,
   rowGaps,
-  rowsOfType,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
   TYPEFACE,
@@ -927,125 +927,256 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
   });
 });
 
-// c-presets.
-test("the presets are queries over one tree and fit every width @phone", async ({ browser }) => {
-  // The row walks all five presets - a cold load of the issue page each - and then every row
-  // each preset draws, reading its ancestor chain out of the DOM one row at a time, before
-  // measuring the two shapes at four widths. Measured at 30.9 s on an issue pod against
-  // Playwright's 30 s default, so the row raced that default rather than failing on anything
-  // it asserts. The deadline is no part of what the check claims, as it is not on the three
-  // long rows below (`test.setTimeout` at the children section, the internal-word read and
-  // the inventory walk).
-  test.setTimeout(120_000);
+/** What each filter draws as rows, and of those the kind it counts (R2). */
+const FILTER_KINDS = {
+  decisions: { counted: ["ask", "decision"], rows: ["ask", "decision"] },
+  plan: { counted: ["plan_task"], rows: ["plan_task"] },
+  spec: { counted: ["requirement"], rows: ["requirement"] },
+  verification: { counted: ["check"], rows: ["requirement", "check", "result"] },
+} as const satisfies Record<
+  Exclude<Preset, "conversation">,
+  { readonly counted: readonly NodeType[]; readonly rows: readonly NodeType[] }
+>;
+
+/** Each drawn row's parent, read from the rows' own levels in one reading of the page: the row
+ *  above it one level up, or null for a row at the top. A node drawn under two parents has a
+ *  parent per placement, so the answer is every parent of each node. */
+function parentsOf(rows: readonly DrawnRow[]): Map<string, Set<string | null>> {
+  const parents = new Map<string, Set<string | null>>();
+  rows.forEach((row, index) => {
+    const level = Number(row.level ?? "0");
+    let parent: string | null = null;
+    for (let above = index - 1; above >= 0; above -= 1) {
+      if (Number(rows[above]?.level ?? "0") === level - 1) {
+        parent = rows[above]?.id ?? null;
+        break;
+      }
+    }
+    const id = row.id ?? "";
+    parents.set(id, (parents.get(id) ?? new Set()).add(parent));
+  });
+  return parents;
+}
+
+// c-presets. What waits on dispatch://INFRA-1253, and is not read here: each filter's ids against
+// `GET /api/v1/issues/{key}/tree?view=`, a criterion, a parent's requirements on a child's Spec,
+// a child's checks under a parent's requirements, and `?v=` drawing a filter as the query node
+// stood. Today every issue is one the conversion has not reached, so each filter is read against
+// the outline the page draws with no filter on and every branch open: the same reads, one tree.
+test("the five controls are toggles that draw their query's answer @phone", async ({ browser }) => {
+  // Five widths of the row, every filter pressed on and off, and the whole outline unfolded once
+  // to read each filter against: a minute and a half on an issue pod's two CPUs.
+  test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
-
-    // At 1280 px and above: a row of five tabs, each named by its preset and carrying its count.
-    expect(await presetTabs(page).count(), "no row of five presets is drawn at 1440 px").toBe(5);
-    expect(await presetTablist(page).count(), 'no role="tablist" named "Issue presets"').toBe(1);
     await expectIssuePageDrawn(page);
-    for (const preset of PRESET_ORDER) {
-      expect(
-        await presetTab(page, preset).count(),
-        `no tab is named exactly "${PRESET_NAMES[preset]}"`
-      ).toBe(1);
-      expect(
-        await presetCount(page, preset).count(),
-        `the ${PRESET_NAMES[preset]} preset draws no count of its own`
-      ).toBe(1);
-    }
 
-    // Each preset is its own address, draws every match with the chain of ancestors above it, and
-    // duplicates nothing.
-    const chains = new Map<string, { chain: string; preset: Preset }>();
+    // One row of five toggles, in R2's order, each named by its name alone with its count
+    // beside it; none is called Tree, and the page opens with no filter on.
+    await expect(presetToolbar(page), "no toolbar named Filters holds the five").toHaveCount(1);
+    await expect(presetToggles(page)).toHaveCount(5);
+    expect(
+      await presetToggles(page).evaluateAll((buttons) =>
+        buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
+      ),
+      "the row's controls are not Conversation, Spec, Verification, Plan and Decisions"
+    ).toEqual(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]));
+    await expect(presetRow(page).getByRole("button", { name: /tree/i })).toHaveCount(0);
     for (const preset of PRESET_ORDER) {
-      await gotoIssue(page, presetPath(seeded.key, preset));
-      await expectIssuePageDrawn(page);
-      expect(
-        await activePreset(page),
-        `${presetPath(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
-      ).toBe(PRESET_NAMES[preset]);
-
-      const rows = await drawnRows(page);
-      const ids = idsOf(rows);
-      expect(
-        ids.filter((id, index) => ids.indexOf(id) !== index),
-        `the ${PRESET_NAMES[preset]} preset draws a node twice`
-      ).toEqual([]);
-      const matches = rows.filter((row) => !row.context);
-      expect(matches.length, `the ${PRESET_NAMES[preset]} preset matches nothing`).toBeGreaterThan(
-        0
+      await expect(presetToggle(page, preset), `no toggle named ${preset}`).toHaveCount(1);
+      await expect(presetCount(page, preset), `${preset} draws no count`).toHaveCount(1);
+      await expect(presetToggle(page, preset)).toHaveAttribute(
+        "aria-pressed",
+        preset === "conversation" ? "true" : "false"
       );
-      for (const row of rows) {
-        const chain = (await ancestorsOfRow(page, row.id ?? "")).join(" > ");
-        for (const ancestor of chain === "" ? [] : chain.split(" > ")) {
+    }
+    await expect(versionControl(page), "a version control is drawn with no filter on").toHaveCount(
+      0
+    );
+
+    // The outline with no filter on, every branch open: the nodes each filter is read against.
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const whole = await drawnRows(page);
+    const wholeParents = parentsOf(whole);
+    const kindOf = new Map(whole.map((row) => [row.id ?? "", row.type ?? ""]));
+
+    for (const filter of ["spec", "verification", "plan", "decisions"] as const) {
+      const { counted, rows: kinds } = FILTER_KINDS[filter];
+      // Pressing a filter turns it on, and the address is its own.
+      await presetToggle(page, filter).click();
+      await expect(page).toHaveURL(new RegExp(`${presetPath(seeded.key, filter)}$`));
+      for (const other of PRESET_ORDER) {
+        await expect(presetToggle(page, other)).toHaveAttribute(
+          "aria-pressed",
+          other === filter ? "true" : "false"
+        );
+      }
+      await expectIssuePageDrawn(page);
+      const drawn = await drawnRows(page);
+      const name = PRESET_NAMES[filter];
+
+      // The rows are the filter's kinds and no other: no issue row, no comment or message.
+      expect(
+        drawn
+          .filter((row) => !(kinds as readonly string[]).includes(row.type ?? ""))
+          .map((row) => `${row.type}:${row.id}`),
+        `${name} draws rows of kinds it does not draw`
+      ).toEqual([]);
+      // Every node of those kinds the outline holds is drawn, and nothing else.
+      const wanted = [...kindOf]
+        .filter(([, kind]) => (kinds as readonly string[]).includes(kind))
+        .map(([id]) => id)
+        .sort();
+      expect([...new Set(idsOf(drawn))].sort(), `${name} draws other nodes than its kinds`).toEqual(
+        wanted
+      );
+      // The count is the distinct nodes of its main kind.
+      const main = new Set(
+        drawn
+          .filter((row) => (counted as readonly string[]).includes(row.type ?? ""))
+          .map((row) => row.id)
+      );
+      expect(
+        Number(await presetCount(page, filter).textContent()),
+        `${name}'s count is not the ${counted.join(" and ")} it draws`
+      ).toBe(main.size);
+      // Verification's requirements are context, faint and marked; nothing else is.
+      expect(
+        drawn.filter((row) => row.context).map((row) => row.type),
+        `${name} marks rows as context that are not its requirements`
+      ).toEqual(
+        drawn
+          .filter((row) => filter === "verification" && row.type === "requirement")
+          .map((row) => row.type)
+      );
+      if (filter === "verification") {
+        for (const check of drawn.filter((row) => row.type === "check")) {
+          const placements = drawn.filter((row) => row.id === check.id).length;
           expect(
-            rowOf(rows, ancestor)?.role,
-            `the ${PRESET_NAMES[preset]} preset draws ${row.id} without its ancestor ${ancestor} as a treeitem the arrows reach`
-          ).toBe("treeitem");
+            placements,
+            `${check.id} is drawn under ${placements} requirements, not under each it serves`
+          ).toBe(whole.filter((row) => row.id === check.id).length);
         }
-        // Nothing moves between presets: where two presets draw one node, it sits in the same
-        // chain in both.
-        const seen = chains.get(row.id ?? "");
-        if (seen === undefined) {
-          chains.set(row.id ?? "", { chain, preset });
+      }
+
+      // Every other parent is one line on its child's row, read from that parent: a row at the
+      // top whose parent in the outline is no row here and not the issue carries the line, and
+      // the line names that parent by its id, its kind and its first line.
+      const drawnParents = parentsOf(drawn);
+      for (const row of drawn) {
+        const id = row.id ?? "";
+        const above = [...(wholeParents.get(id) ?? [])];
+        const placedUnderRow = [...(drawnParents.get(id) ?? [])].some((parent) => parent !== null);
+        const underIssue = above.includes(seeded.key);
+        if (placedUnderRow || underIssue) {
+          expect(
+            row.parent,
+            `${name} draws a parent line on ${id}, whose parent is drawn`
+          ).toBeNull();
           continue;
         }
+        expect(row.parent, `${name} draws ${id} with no line for its parent`).not.toBeNull();
+        expect(above, `${name} names ${row.parent?.id} as ${id}'s parent`).toContain(
+          row.parent?.id
+        );
+        expect(row.parent?.type).toBe(kindOf.get(row.parent?.id ?? ""));
+        const parentRow = rowOf(whole, row.parent?.id ?? "");
         expect(
-          chain,
-          `${row.id} sits under "${seen.chain}" in ${PRESET_NAMES[seen.preset]} and under "${chain}" in ${PRESET_NAMES[preset]}`
-        ).toBe(seen.chain);
+          row.parent?.line.length ?? 0,
+          `${id}'s parent line is longer than R1's first line`
+        ).toBeLessThanOrEqual(100);
+        expect(parentRow?.firstLine ?? "").toContain((row.parent?.line ?? "").slice(0, 20));
       }
+
+      // The version control reads the filter's own document, and Decisions has none.
+      await expect(versionControl(page), `${name} draws no version control`).toHaveCount(
+        filter === "decisions" ? 0 : 1
+      );
+
+      // Pressed again, the filter turns off: the page with no filter on, at the issue's address.
+      await presetToggle(page, filter).click();
+      await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+      await expect(presetToggle(page, "conversation")).toHaveAttribute("aria-pressed", "true");
+      await expect(versionControl(page)).toHaveCount(0);
+    }
+
+    // Pressing a filter turns any other off, and Conversation turns every filter off.
+    await presetToggle(page, "spec").click();
+    await presetToggle(page, "plan").click();
+    await expect(page).toHaveURL(new RegExp(`${presetPath(seeded.key, "plan")}$`));
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "false");
+    await expect(presetToggle(page, "plan")).toHaveAttribute("aria-pressed", "true");
+    await presetToggle(page, "conversation").click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    await expect(presetToggle(page, "plan")).toHaveAttribute("aria-pressed", "false");
+
+    // Each has its own address, which opens it.
+    for (const preset of PRESET_ORDER) {
+      await gotoIssue(page, presetPath(seeded.key, preset));
+      await expect(presetToggle(page, preset)).toHaveAttribute("aria-pressed", "true");
     }
 
     // The two shapes, and no sideways scroll at any width between them. Each shape is read
     // through `expect.poll` for the reason `assertPageFits` is (`e2e/unclipped.ts`): a resize
-    // settles on two clocks, the engine applying the breakpoint the moment the viewport reaches
-    // it and the preset row re-rendering a task or two later on the `useMediaQuery` state it
-    // reads, so a reading taken the instant the viewport changes is of the shape the page is
-    // leaving. The poll weakens nothing - a page settled on the wrong shape never passes, and
-    // the failure at the timeout names both counts - and both counts are still asserted, so a
-    // page drawing neither shape or both fails as it did.
+    // settles on two clocks, the engine applying the breakpoint at once and the row re-rendering
+    // a task or two later on the `useMediaQuery` state it reads.
     await gotoIssue(page, `/issues/${seeded.key}`);
     const presetShape = async () =>
-      `${await presetTabs(page).count()}/${await presetChooser(page).count()}`;
+      `${await presetToggles(page).count()}/${await presetChooser(page).count()}`;
     for (const width of [1440, 1280]) {
       await page.setViewportSize({ height: DESKTOP.height, width });
       await expect
-        .poll(presetShape, {
-          message: `at ${width} px the page draws no row of five, or one control beside it (tabs/controls)`,
-        })
+        .poll(presetShape, { message: `at ${width} px the page draws no row of five` })
         .toBe("5/0");
       await assertPageFits(page);
+      await assertWhole(presetRow(page));
     }
-    for (const width of [1279, 1100]) {
+    // The row is the prototype's: each toggle 35 px tall from 1280 px up. Below 1280 px every
+    // control keeps the app's 44 px touch floor (`styles.css`), the row of five included.
+    for (const [width, floor] of [
+      [1440, 32],
+      [1279, 44],
+      [1100, 44],
+    ] as const) {
       await page.setViewportSize({ height: DESKTOP.height, width });
-      await expect
-        .poll(presetShape, {
-          message: `at ${width} px the page draws neither the row of five nor the one control (tabs/controls)`,
-        })
-        .toMatch(/^(5\/0|0\/1)$/);
+      await expect.poll(presetShape).toMatch(/^(5\/0|0\/1)$/);
       await assertPageFits(page);
       await assertWhole(presetRow(page));
+      if ((await presetToggles(page).count()) === 0) continue;
+      const heights = await presetToggles(page).evaluateAll((buttons) =>
+        buttons.map((button) => button.getBoundingClientRect().height)
+      );
+      console.log(`c-presets: toggle heights at ${width} px: ${heights.join(", ")}`);
+      for (const height of heights) {
+        expect(height, `a toggle is ${height} px tall at ${width} px`).toBeGreaterThanOrEqual(
+          floor
+        );
+      }
     }
     for (const width of [1024, 390, 320]) {
       await page.setViewportSize({ height: PHONE.height, width });
       await expect
-        .poll(presetShape, {
-          message: `at ${width} px the row of five is still drawn, or the one control is missing (tabs/controls)`,
-        })
+        .poll(presetShape, { message: `at ${width} px the row of five is still drawn` })
         .toBe("0/1");
       await assertPageFits(page);
     }
+    // The one control names the one on with its signal, and opens the five.
+    await expect(presetChooser(page)).toHaveAccessibleName(
+      new RegExp(`^${PRESET_NAMES.conversation} \\d+`)
+    );
     await presetChooser(page).click();
     expect(await openMenu(page).count(), "the one control opens no menu").toBe(1);
     for (const preset of PRESET_ORDER) {
-      expect(
-        await presetMenuItem(page, preset).count(),
-        `the menu holds no item for the ${PRESET_NAMES[preset]} preset`
-      ).toBe(1);
+      await expect(presetMenuItem(page, preset)).toHaveCount(1);
     }
+    await presetMenuItem(page, "spec").click();
+    await expect(page).toHaveURL(new RegExp(`${presetPath(seeded.key, "spec")}$`));
+    await expect(presetChooser(page)).toHaveAccessibleName(
+      new RegExp(`^${PRESET_NAMES.spec} \\d+`)
+    );
+    await assertPageFits(page);
   });
 });
 
@@ -1309,8 +1440,8 @@ test("the three things are at the head with every filter @phone", async ({ brows
         ).toContain(PRESET_NAMES.plan);
         expect(
           (await checksRow(page).innerText()).replace(/\s+/g, " "),
-          `the ${PRESET_NAMES[preset]} preset's head points at no Checks preset`
-        ).toContain(PRESET_NAMES.checks);
+          `the ${PRESET_NAMES[preset]} preset's head points at no Verification filter`
+        ).toContain(PRESET_NAMES.verification);
       }
     }
 
@@ -1370,7 +1501,7 @@ test("the three things are at the head with every filter @phone", async ({ brows
       await expect(
         checksRow(page),
         "the checks row of an issue with no checks does not say so"
-      ).toContainText(EMPTY_STATE_LINES.checks);
+      ).toContainText(EMPTY_STATE_LINES.verification);
     }
   });
 });
@@ -1564,7 +1695,7 @@ test("the children are a section above the outline with the bar and both counts 
         ).toBeLessThanOrEqual((body?.y ?? 0) + 1);
         // With no filter on, each child is a row of the outline under the issue, as well as a
         // line of the section.
-        if (preset !== "tree") continue;
+        if (preset !== "conversation") continue;
         const rows = await drawnRows(page);
         for (const key of seeded.children.keys) {
           expect(
@@ -2575,27 +2706,31 @@ test("a reply is drawn under the entry it answers", async ({ browser }) => {
 });
 
 // c-home. Partial on today's data: `from` waits on dispatch://INFRA-1098 item 21, so every
-// requirement sits at the issue root and this test asserts that, not a decision's parentage.
+// statement sits at the issue root, and the Spec filter, which draws no issue row (R2), draws
+// each as a row of its own top level with no parent line; this test asserts that, not a
+// decision's parentage.
 test("the spec is a preset over the tree and an approval still names it", async ({ browser }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // The approval is requested before the page draws, so the target it pins is read back after.
     await requestApproval(seeded.specArtifactId, { summary: "The spec as the tree draws it." });
 
     await openPreset(page, seeded.key, "spec");
-    expect(await activePreset(page), "the Spec address does not open the Spec preset").toBe(
+    expect(await activePreset(page), "the Spec address does not open the Spec filter").toBe(
       PRESET_NAMES.spec
     );
     await expectIssuePageDrawn(page);
 
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const rows = await drawnRows(page);
+    expect(rowOf(rows, seeded.key), "the Spec filter draws the issue as a row").toBeUndefined();
     for (const requirement of seeded.requirements) {
       const id = blockNodeId(specSlug, requirement);
-      expect(rowOf(rows, id), `the Spec preset does not draw ${requirement}`).toBeDefined();
+      const row = rowOf(rows, id);
+      expect(row, `the Spec filter does not draw ${requirement}`).toBeDefined();
       expect(
-        await parentOfRow(page, id),
-        `${requirement} does not sit at the issue root while its own from pointer is absent`
-      ).toBe(seeded.key);
+        [row?.level, row?.parent],
+        `${requirement} does not sit at the top with no parent line while its own from pointer is absent`
+      ).toEqual(["1", null]);
     }
     // A block with no `from` is never drawn as a block that had no conversation: every gap the
     // preset draws names its kind, so none is an unnamed mark on those rows.
@@ -2630,11 +2765,13 @@ test("the spec is a preset over the tree and an approval still names it", async 
     await openPreset(page, seeded.key, "spec");
     await expectIssuePageDrawn(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const rows = await drawnRows(page);
     for (const requirement of seeded.requirements) {
+      const row = rowOf(rows, blockNodeId(specSlug, requirement));
       expect(
-        await parentOfRow(page, blockNodeId(specSlug, requirement)),
+        [row?.level, row?.parent],
         `${requirement} is drawn differently on an issue that carries one document`
-      ).toBe(seeded.key);
+      ).toEqual(["1", null]);
     }
   });
 });
@@ -2642,33 +2779,26 @@ test("the spec is a preset over the tree and an approval still names it", async 
 // c-checks-readable. The seeded Verification document carries no screenshot - no `check` block in
 // `e2e/issue-layout-seed-text.ts` holds a picture - so "a screenshot renders as a picture" is
 // asserted on the issue's image node in c-nodes instead, and not here.
-test("the Checks preset is readable @phone", async ({ browser }) => {
+test("the Verification filter is readable @phone", async ({ browser }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
 
     for (const width of [1440, 1024, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      await openPreset(page, seeded.key, "checks");
-      expect(await activePreset(page), `the preset is not named Checks at ${width} px`).toBe(
-        PRESET_NAMES.checks
+      await openPreset(page, seeded.key, "verification");
+      expect(await activePreset(page), `the filter is not named Verification at ${width} px`).toBe(
+        PRESET_NAMES.verification
       );
       await expectIssuePageDrawn(page);
-      // The page opens folded to the frontier (R1), so a requirement whose every check has
-      // passed arrives folded with the rest: at a width that draws the whole tree the reader
-      // opens what the fold shut, which is what a reader reading the checks does. At 1024 px
-      // and below the tree is zoomed one node at a time and draws every check the preset kept
-      // under the issue already (`zoomedRows`), where a twisty zooms instead of unfolding.
-      if (width > 1024) await unfoldEveryBranch(page);
-
-      const checks = await rowsOfType(page, "check").count();
-      expect(checks, `the Checks preset draws ${checks} checks, not the six seeded`).toBe(6);
+      // A filter draws every branch it kept open, at every width: its rows are each statement
+      // with its checks and their results (R2), drawn whole rather than one node at a time.
       const ids = (await drawnRows(page))
         .filter((row) => row.type === "check")
         .map((row) => row.id ?? "");
       expect(
-        ids.filter((id, index) => ids.indexOf(id) !== index),
-        `a check is drawn twice at ${width} px`
-      ).toEqual([]);
+        new Set(ids).size,
+        `the Verification filter draws ${new Set(ids).size} checks at ${width} px, not the six seeded`
+      ).toBe(6);
       expect(
         await boxesPastTheirCard(page, "rows"),
         `an element reaches past its card at ${width} px`
@@ -2679,14 +2809,11 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
       ).toEqual([]);
     }
 
-    // A command renders as code with a copy control, and `when` reads as words. The check
-    // that passed is one the frontier leaves folded away, so the reader opens the branches
-    // again on this load: every one of the six is then a row, which the seeded states below
-    // are read from too.
+    // A command renders as code with a copy control, and `when` reads as words. The filter
+    // draws every one of the six as a row, which the seeded states below are read from too.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await openPreset(page, seeded.key, "checks");
+    await openPreset(page, seeded.key, "verification");
     await expectIssuePageDrawn(page);
-    await unfoldEveryBranch(page);
     const passed = nodeRow(page, blockNodeId(verificationSlug, checkBlockId(1))).first();
     await passed.focus();
     expect(await nodeCommands(page).count(), "the check's command is not drawn as code").toBe(1);
@@ -2715,7 +2842,10 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
     // to the page and not to this list fails here until somebody says which it is.
     const unseeded = ["retracted", "unreadable"];
     const states = statesDrawn((await drawnRows(page)).filter((row) => row.type === "check"));
-    expect([...states.keys()].sort(), "the Checks preset does not draw every seeded state").toEqual(
+    expect(
+      [...states.keys()].sort(),
+      "the Verification filter draws not every seeded state"
+    ).toEqual(
       Object.keys(NODE_STATE_WORDS.check)
         .filter((state) => !unseeded.includes(state))
         .map((state) => `check:${state}`)
@@ -4451,7 +4581,10 @@ test("the new page carries every element of the old one @phone", async ({ browse
       .poll(async () => (await getIssueArtifactText(seeded.key, specSlug)).markdown)
       .toContain("Edited in place.");
 
-    // Naming a version, from the version control beside the filters, which reads the spec.
+    // Naming a version, from the version control beside the filters, which the Spec filter
+    // draws reading the spec; with no filter on none is drawn (R2).
+    await page.keyboard.press("Escape");
+    await pickPreset(page, PRESET_NAMES.spec);
     await versionControl(page).getByRole("button", { name: "Name version" }).click();
     const naming = page.getByRole("dialog", { name: "Name this version" });
     await naming.getByRole("textbox", { name: "What changed?" }).fill("Carried over");
@@ -4488,21 +4621,22 @@ test("every address of the old page still resolves", async ({ browser }) => {
 
     // The two addresses whose tabs are gone.
     await gotoIssue(page, `/issues/${seeded.key}/verification`);
-    expect(await activePreset(page), "/verification does not open the Checks preset").toBe(
-      PRESET_NAMES.checks
+    expect(await activePreset(page), "/verification does not open the Verification filter").toBe(
+      PRESET_NAMES.verification
     );
     await expectIssuePageDrawn(page);
     await gotoIssue(page, `/issues/${seeded.key}/artifacts`);
     await expectIssuePageDrawn(page);
     expect(await openMenu(page).count(), "/artifacts does not open the node menu").toBe(1);
 
-    // Every preset's own address opens its filter, and draws no document under it.
+    // `/spec`, `/verification`, `/plan` and `/decisions` open their filter, and the issue's own
+    // address the page with no filter on; none draws a document under it.
     for (const preset of PRESET_ORDER) {
       await gotoIssue(page, presetPath(seeded.key, preset));
       await expectIssuePageDrawn(page);
       expect(
         await activePreset(page),
-        `${presetPath(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
+        `${presetPath(seeded.key, preset)} does not open ${PRESET_NAMES[preset]}`
       ).toBe(PRESET_NAMES[preset]);
       expect(
         await page.getByRole("region", { name: "Document editor" }).count(),
@@ -4510,7 +4644,8 @@ test("every address of the old page still resolves", async ({ browser }) => {
       ).toBe(0);
     }
 
-    // The conversation and the activity: one list, in two of its four states.
+    // The conversation and the activity: one list, in two of its four states. `/conversation`
+    // is the page with no filter on (R20).
     for (const [address, state] of [
       ["conversation", "words"],
       ["activity", "everything"],
@@ -4521,6 +4656,9 @@ test("every address of the old page still resolves", async ({ browser }) => {
         await conversationStateControl(page, state).getAttribute("aria-selected"),
         `/${address} does not open the conversation in its ${state} state`
       ).toBe("true");
+      expect(await activePreset(page), `/${address} opens a filter`).toBe(
+        PRESET_NAMES.conversation
+      );
     }
 
     // The children, a document, and each entry of the conversation.

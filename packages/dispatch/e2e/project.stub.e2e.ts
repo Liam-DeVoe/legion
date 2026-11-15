@@ -172,10 +172,18 @@ referencesTest(
     await expect(references).toContainText("via artifact");
     await expect(references).toContainText("depth 1");
     await expect(references).toContainText("depth 2");
-    const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(5);
-    for (const [index, name] of ["Tree", "Decisions", "Checks", "Spec", "Plan"].entries()) {
-      await expect(tabs.nth(index)).toHaveAccessibleName(name);
+    const toggles = page
+      .getByRole("main")
+      .locator('[data-testid="issue-presets"] button[aria-pressed]');
+    await expect(toggles).toHaveCount(5);
+    for (const [index, name] of [
+      "Conversation",
+      "Spec",
+      "Verification",
+      "Plan",
+      "Decisions",
+    ].entries()) {
+      await expect(toggles.nth(index)).toHaveAccessibleName(name);
     }
     await expect(page.getByRole("button", { name: /make primary/i })).toHaveCount(0);
     // The opened document draws its own mention of Design notes as a chip too, so the link the

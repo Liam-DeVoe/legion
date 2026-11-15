@@ -41,9 +41,9 @@ test("issue landing keeps Spec primary and puts open asks in Needs you @pr", asy
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto(`/issues/${scene.issue}`);
 
-  // The issue's own address is the Tree preset's now (dispatch://INFRA-1196 R19); at a phone
-  // width the row of five is one control naming it.
-  await expectActivePreset(page, "Tree");
+  // The issue's own address is the page with no filter on (dispatch://INFRA-1196 R2, R20); at a
+  // phone width the row of five is one control naming it.
+  await expectActivePreset(page, "Conversation");
   // Needs you is the margin's own cards, in Details, which the header's control opens (R14).
   await openDetails(page);
 

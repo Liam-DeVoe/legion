@@ -27,8 +27,9 @@ import {
   closeDetails,
   openIssueAddress,
   presetChooser,
-  presetTablist,
-  presetTabs,
+  presetToggle,
+  presetToggles,
+  presetToolbar,
 } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
@@ -373,63 +374,59 @@ test("an uploaded document is linked from the Activity list and the presets fit 
 
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 1440 });
-  const tablist = presetTablist(page);
-  const tabs = presetTabs(page);
-  await expect(tabs).toHaveCount(5);
-  const insideTablist = async (tab: Locator) => {
-    const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
-    expect(listBox).not.toBeNull();
+  const toolbar = presetToolbar(page);
+  const toggles = presetToggles(page);
+  await expect(toggles).toHaveCount(5);
+  const insideToolbar = async (toggle: Locator) => {
+    const [rowBox, box] = await Promise.all([toolbar.boundingBox(), toggle.boundingBox()]);
+    expect(rowBox).not.toBeNull();
     expect(box).not.toBeNull();
-    expect(box?.x).toBeGreaterThanOrEqual(listBox?.x ?? 0);
+    expect(box?.x).toBeGreaterThanOrEqual(rowBox?.x ?? 0);
     expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
-      (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
+      (rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 0.5
     );
   };
-  // What the row promises at 1440 px, which is a pointer's width: a tab of the page's own
-  // pointer height and no taller than the row it shares. The presets declare
-  // `min-h-11 md:min-h-9` (`web/src/features/issue/IssuePresets.tsx`), the idiom the whole app
-  // writes for a control - 44 px where a finger reaches it, 36 px from `md` where a pointer
-  // does (`web/src/components/Tabs.tsx`, `CopyButton.tsx`) - so 36 px is what it is held to
-  // here. The 44 px floor is a touch rule and is read below at the width a finger is what
-  // reaches the presets: these five tabs are not drawn there at all, because at 1024 px and
-  // below the row is one control instead (`ZOOMED_TREE_QUERY`), and that control carries the
-  // floor.
-  const fitsTheRow = async (tab: Locator, label: string) => {
-    const height = (await tab.boundingBox())?.height ?? 0;
+  // What the row promises at 1440 px, which is a pointer's width: each toggle is the
+  // prototype's tab, 35 px tall (`web/src/features/issue/IssuePresets.tsx`), and no taller than
+  // the row it shares. The 44 px floor is a touch rule, read below at the width a finger is what
+  // reaches the filters: these five are not drawn there at all, because at 1024 px and below
+  // the row is one control instead (`ZOOMED_TREE_QUERY`), and that control carries the floor.
+  const fitsTheRow = async (toggle: Locator, label: string) => {
+    const height = (await toggle.boundingBox())?.height ?? 0;
     expect(
       height,
-      `the ${label} tab is ${height} px tall, under the 36 px a pointer control is drawn at`
-    ).toBeGreaterThanOrEqual(36);
+      `the ${label} toggle is ${height} px tall, under the prototype's tab`
+    ).toBeGreaterThanOrEqual(32);
     expect(
       height,
-      `the ${label} tab is ${height} px tall, taller than the row of five`
+      `the ${label} toggle is ${height} px tall, taller than the row of five`
     ).toBeLessThanOrEqual(48);
   };
-  // Every preset is reachable from the keyboard, each is inside the row as it takes focus, and
+  // Every control is reachable from the keyboard, each is inside the row as it takes focus, and
   // each is drawn at the height the row gives it.
-  await page.getByRole("tab", { exact: true, name: "Tree" }).focus();
-  for (const label of ["Decisions", "Checks", "Spec", "Plan"] as const) {
+  const first = presetToggle(page, "conversation");
+  await first.focus();
+  for (const preset of ["spec", "verification", "plan", "decisions"] as const) {
     await page.keyboard.press("ArrowRight");
-    const tab = page.getByRole("tab", { exact: true, name: label });
-    await expect(tab).toBeFocused();
-    await insideTablist(tab);
-    await fitsTheRow(tab, label);
+    const toggle = presetToggle(page, preset);
+    await expect(toggle).toBeFocused();
+    await insideToolbar(toggle);
+    await fitsTheRow(toggle, preset);
   }
   await page.keyboard.press("Home");
-  const treeTab = page.getByRole("tab", { exact: true, name: "Tree" });
-  await expect(treeTab).toBeFocused();
-  await insideTablist(treeTab);
-  await fitsTheRow(treeTab, "Tree");
+  await expect(first).toBeFocused();
+  await insideToolbar(first);
+  await fitsTheRow(first, "Conversation");
 
-  // At 390 px the row is one control naming the preset the page is on, which opens the five.
-  // This is the width a finger is what reaches the presets, so this is where the 44 px touch
-  // target is read: the one control a reader presses there carries it, and the row fails if it
-  // ever loses it.
+  // At 390 px the row is one control naming the one on, which opens the five. This is the
+  // width a finger is what reaches the filters, so this is where the 44 px touch target is
+  // read: the one control a reader presses there carries it, and the row fails if it ever
+  // loses it.
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   // The Activity list is in Details, which its address opens (dispatch://INFRA-1196 R14) and
-  // which on a phone is a sheet over the whole page, so a reader closes it to reach the presets.
+  // which on a phone is a sheet over the whole page, so a reader closes it to reach the filters.
   await closeDetails(page);
-  await expect(tabs).toHaveCount(0);
+  await expect(toggles).toHaveCount(0);
   const chooser = presetChooser(page);
   await expect(chooser).toBeVisible();
   const chooserHeight = (await chooser.boundingBox())?.height ?? 0;

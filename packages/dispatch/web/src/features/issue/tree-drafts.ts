@@ -680,8 +680,8 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
  * whatever commit the withdrawn pass ran at.
  *
- * It is the one reading of a check's state the page has: the Checks preset draws the node, the
- * head's Checks line draws the same states, and each is told apart by a word and a shape (R15,
+ * It is the one reading of a check's state the page has: the Verification filter draws the
+ * node, the head's checks line draws the same states, and each is told apart by a word and a shape (R15,
  * R21). `e2e/issue-layout-seed-support.ts` waits on seeded checks by this function, so a seed
  * waits for the states the page draws rather than for a copy of this rule.
  */

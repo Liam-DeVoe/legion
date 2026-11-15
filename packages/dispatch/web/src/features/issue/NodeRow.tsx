@@ -261,13 +261,17 @@ export function NodeRow({
       style={{ paddingLeft: indent }}
       tabIndex={tabStop ? 0 : -1}
     >
+      {/* Where the row wraps, its lines stand 12 px apart below 1280 px, where a chip's link takes
+          6 px of padding above and below as its touch target (`styles.css`'s
+          `.dispatch-inline-link`): 4 px left that padding over the line above. A filter draws
+          its rows whole at every width (`IssueTree.tsx`), so its rows wrap on a phone. */}
       <div
         className={`flex min-w-0 items-baseline gap-x-2 text-sm ${
           oneLine
             ? first.under
               ? "flex-wrap overflow-hidden"
               : "flex-nowrap overflow-hidden whitespace-nowrap"
-            : "flex-wrap gap-y-1"
+            : "flex-wrap gap-y-3 xl:gap-y-1"
         }`}
       >
         <Twisty expanded={expanded} onToggle={onToggle} />
@@ -331,8 +335,8 @@ export function NodeRow({
 
             On a one-line row the count is the body's, as the chips and the gaps are, and for
             the same reason: its words are a sentence of the page's own and they are the one
-            part of the row that is neither the node's name nor its text. Measured in the
-            Checks preset at 390 px, where the row has 328 px: the twisty's touch target 44,
+            part of the row that is neither the node's name nor its text. Measured in the old
+            Checks preset at 390 px, where the row had 328 px: the twisty's touch target 44,
             the type 61, this count 132 and the state 62, with the four gaps 32, leave the
             node's own first line nothing at all - it was drawn 0 px wide - and the state 21 px
             past the card (c-checks-readable). The count is what gives way, because R1's row
@@ -363,6 +367,23 @@ export function NodeRow({
           </span>
         )}
       </div>
+      {/* Under a filter, the node's parent where the filter draws it as no row: one line, its
+          kind's word and its first line (R2, R1's first-line rule), under the row's own line. */}
+      {node.parentLine === undefined ? null : (
+        <p
+          className={`flex min-w-0 items-baseline gap-1 pl-6 text-xs ${textMutedOnCanvas}`}
+          data-node-parent-line=""
+          data-parent-id={node.parentLine.id}
+          data-parent-type={node.parentLine.type}
+        >
+          <span className="shrink-0" {...pageChrome}>
+            {NODE_TYPE_NAMES[node.parentLine.type]}
+          </span>
+          <span className="min-w-0 break-words" {...authorText}>
+            {node.parentLine.line}
+          </span>
+        </p>
+      )}
       {/* The answer an answered ask carries, on a line of the row's own under its first line:
           where the row is one line it has no width for one, and its body draws it instead, as
           it does the chips and the gaps (R17). */}

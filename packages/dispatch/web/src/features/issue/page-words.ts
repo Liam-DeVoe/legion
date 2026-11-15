@@ -72,7 +72,9 @@ export const NODE_TYPE_NAMES = freeze({
   issue: "issue",
   message: "message",
   plan_task: "plan task",
-  requirement: "requirement",
+  /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
+   *  sentence that must be true of the software. */
+  requirement: "statement",
   result: "result",
 } as const);
 
@@ -207,23 +209,47 @@ export function sentenceCase(name: string): string {
   return name === "" ? name : `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
 }
 
-/** The five presets in the order the row draws them (R3). The row is a query over one tree, so
- *  the order is the reader's reading order: the whole tree, then what was decided, then what is
- *  checked, then the spec and the plan the tree carries. */
-export const PRESET_ORDER = freeze(["tree", "decisions", "checks", "spec", "plan"] as const);
+/** The five controls of the filter row in the order the row draws them (R2): Conversation,
+ *  which is the page with no filter on, then the four filters in the order of his answer of
+ *  2026-11-11 20:57Z, "the spec, the verification, the plan, the decisions"
+ *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
+ *  Conversation. */
+export const PRESET_ORDER = freeze([
+  "conversation",
+  "spec",
+  "verification",
+  "plan",
+  "decisions",
+] as const);
 
-/** One preset of the issue page, by its own token, which is also its address. */
+/** One control of the filter row, by its own token: `conversation`, which turns every filter
+ *  off, or one of the four filters. Each has an address of its own (`issue-address.ts`). */
 export type Preset = (typeof PRESET_ORDER)[number];
 
-/** The name of each preset. "Checks" rather than "Verification", because verification names an
- *  activity and the preset draws a thing (R15). */
+/** The name of each control of the filter row. Verification is his word for the filter that
+ *  draws the checks (2026-11-11 21:57Z), and nothing is called Tree (R2). */
 export const PRESET_NAMES = freeze({
-  checks: "Checks",
+  conversation: "Conversation",
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",
-  tree: "Tree",
+  verification: "Verification",
 } as const satisfies Record<Preset, string>);
+
+/**
+ * The words a control of the filter row draws after its count where its nodes are in a state
+ * that asks something of the reader, in the prototype's style ("Verification 2 failing",
+ * "Decisions 6 to review"), and the noun the Plan filter counts its tasks in ("Plan 13
+ * steps", R26's "ordered steps"). The count itself is a number and no word.
+ */
+export const FILTER_SIGNAL_WORDS = freeze({
+  /** After the number of checks whose newest result failed. */
+  failing: "failing",
+  /** After the number of plan tasks. */
+  steps: "steps",
+  /** After the number of decisions waiting for the reader's review (R35). */
+  to_review: "to review",
+} as const);
 
 /** The four states the conversation panel can be read in (R12), in the order the panel offers
  *  them: everything the issue recorded, what the reader pinned, the questions alone, and what
@@ -278,12 +304,13 @@ export function issueStatusWord(token: string): string {
  * do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
-  checks: "This issue has no checks yet.",
+  /** The page with no filter on, on an issue whose tree holds nothing under it. */
+  conversation: "This issue holds nothing yet.",
   decisions: "This issue has no decisions yet.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
   plan: "This issue has no plan tasks yet.",
-  spec: "This issue has no requirements yet.",
+  spec: "This issue has no statements yet.",
   spec_summary: "This spec has no summary.",
   /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
    *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
@@ -291,7 +318,7 @@ export const EMPTY_STATE_LINES = freeze({
   /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
    *  draws. */
   spec_summary_unended: "The summary has no complete sentence.",
-  tree: "This issue holds nothing yet.",
+  verification: "This issue has no checks yet.",
 } as const);
 
 /**
@@ -321,9 +348,9 @@ export const EMPTY_STATE_LINES = freeze({
  * for.
  */
 export const GAP_LINES = freeze({
-  no_check: "No check serves this requirement.",
-  nobody_asked: "This task names no requirement it serves and nothing a person asked for.",
-  serves_not_requirement: "What this says it serves is not a requirement.",
+  no_check: "No check serves this statement.",
+  nobody_asked: "This task names no statement it serves and nothing a person asked for.",
+  serves_not_requirement: "What this says it serves is not a statement.",
   shaped_disagreement: "A decision says it shaped this, but this says it came from somewhere else.",
 } as const);
 
@@ -341,7 +368,7 @@ export const GAP_WORDS = freeze({
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
   /** The citation names a node, and that node is a requirement no longer. */
-  serves_not_requirement: "Not a requirement",
+  serves_not_requirement: "Not a statement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
    *  two name different sources. */
   shaped_disagreement: "Sources disagree",
@@ -590,7 +617,8 @@ export const CONTROL_LABELS = freeze({
   edit_parent: "Edit parent issue",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
-  /** The box that narrows the preset to the rows whose words hold what is typed (R3). */
+  /** The box that narrows the outline to the rows whose words hold what is typed, which is
+   *  `?q=` (R20). */
   filter: "Filter",
   /** The box that narrows the node menu to the files whose name or kind holds what is typed:
    *  the Artifacts list's own filter, in the menu's words (R3). */
@@ -620,6 +648,9 @@ export const CONTROL_LABELS = freeze({
   /** Keeps a node's body open once the focus leaves it (R2); the focused node's body is open
    *  without it. */
   keep_open: "Keep open",
+  /** Opens the list of the page's keys, at the right of the filter row (the 1440 px picture):
+   *  what `?` opens. */
+  keys: "Keys",
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
   /** The count that ends the header's properties line when the issue's labels do not all fit
@@ -663,8 +694,9 @@ export const CONTROL_LABELS = freeze({
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
   pin_issue: "Pin issue",
-  /** The row of five queries over the one tree, as a reader of it hears it named (R3). */
-  presets: "Issue presets",
+  /** The row of five controls, Conversation and the four filters, as a reader hears it named
+   *  (R2). */
+  presets: "Filters",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
@@ -1001,6 +1033,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
+  FILTER_SIGNAL_WORDS,
   CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,

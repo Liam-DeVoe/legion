@@ -72,21 +72,19 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which preset each kind of route opens. Everything not named here is the Tree preset, which
- *  is the issue's own address. */
+/** Which filter each kind of route opens (R20). Every route not named here is the page with no
+ *  filter on, Conversation, whose own address is the issue's. */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
   decisions: "decisions",
   plan: "plan",
   spec: "spec",
-  verification: "checks",
+  verification: "verification",
 };
 
-/** The address of `preset` on `key`, which is the address its own tab carries (R19): the Checks
- *  preset keeps `/verification` and the Tree preset is the issue's own address. */
+/** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
+ *  each filter its old tab's, and Conversation, the page with no filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
-  if (preset === "tree") return buildIssuePath({ key, kind: "issue" });
-  if (preset === "checks") return buildIssuePath({ key, kind: "verification" });
-  return buildIssuePath({ key, kind: preset });
+  return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
 }
 
 /** The conversation's state each address names. `/activity` and `/conversation` are a state of
@@ -214,7 +212,7 @@ export function issueAddress(
     documentItem,
     filter: query.get("q") ?? "",
     nodeMenu: route.kind === "artifacts",
-    preset: ROUTE_PRESETS[route.kind] ?? "tree",
+    preset: ROUTE_PRESETS[route.kind] ?? "conversation",
     target:
       documentItem === undefined
         ? outlineItem

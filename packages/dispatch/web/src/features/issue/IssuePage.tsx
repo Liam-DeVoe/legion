@@ -656,15 +656,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const issueKey = issue.data.key;
   // The document the filters' version control reads while the outline is drawn (R2): the
   // document of the filter's role, whose typed blocks the filter draws on an issue the
-  // conversion has not reached, and with no filter on the issue's spec, as the Design's picture
-  // of such an issue draws it. The Decisions filter has no document of its role and draws none.
+  // conversion has not reached. The Decisions filter has no document of its role, and with no
+  // filter on no version control is drawn.
   const filterDocument = (
     {
-      checks: verificationArtifact,
+      conversation: undefined,
       decisions: undefined,
       plan: planArtifact,
       spec: primaryArtifact,
-      tree: primaryArtifact,
+      verification: verificationArtifact,
     } as const
   )[address.preset];
   // The outline the reader goes back to from a document they opened: the address they opened

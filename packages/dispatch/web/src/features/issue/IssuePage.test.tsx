@@ -455,17 +455,15 @@ async function openedByRow(): Promise<HTMLElement> {
 }
 
 /**
- * The preset the page is on. happy-dom's window is 1024 px wide, which is the width the row of
- * five presets becomes one control named by the active preset (dispatch://INFRA-1196 R3), so
- * that one control is what these tests read and press. The control draws the preset and its
- * count, and so is named by both - a word drawn inside a control belongs in that control's
- * name (WCAG 2.5.3, `IssuePresets.tsx`) - so the preset is its name with the count taken out.
+ * The control of the filter row the page is on. happy-dom's window is 1024 px wide, which is the
+ * width the row of five becomes one control naming the one on (dispatch://INFRA-1196 R2), so
+ * that one control is what these tests read and press. The control draws the name and its
+ * signal, and so is named by both - a word drawn inside a control belongs in that control's
+ * name (WCAG 2.5.3, `IssuePresets.tsx`) - so the name is read from its own part.
  */
 async function activePreset(): Promise<string> {
   const row = await screen.findByTestId("issue-presets");
-  const named = within(row).getByRole("button").cloneNode(true) as HTMLElement;
-  for (const count of named.querySelectorAll("[data-preset-count]")) count.remove();
-  return (named.textContent ?? "").replace(/\s+/g, " ").trim();
+  return within(row).getByRole("button").querySelector("[data-preset-name]")?.textContent ?? "";
 }
 
 async function expectPreset(name: string): Promise<void> {
@@ -1382,7 +1380,7 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
   }
 });
 
-test("IssuePage opens the Tree preset and leaves open asks out of the main column", async () => {
+test("IssuePage opens on Conversation and leaves open asks out of the main column", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue, [
     {
@@ -1406,11 +1404,12 @@ test("IssuePage opens the Tree preset and leaves open asks out of the main colum
   const view = renderIssuePage("/issues/CORE-1");
 
   try {
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     await user.click(within(await screen.findByTestId("issue-presets")).getByRole("button"));
-    for (const preset of ["Tree", "Decisions", "Checks", "Spec", "Plan"] as const) {
+    for (const preset of ["Conversation", "Spec", "Verification", "Plan", "Decisions"] as const) {
       expect(screen.getByRole("menuitem", { name: preset })).toBeDefined();
     }
+    expect(screen.queryByRole("menuitem", { name: "Tree" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Issue board")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1435,7 +1434,7 @@ test("IssuePage opens the activity address with the t v chord", async () => {
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
     );
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     const history = document.getElementById("issue-activity-panel");
     expect(history).not.toBeNull();
     expect(history).not.toHaveAttribute("hidden");
@@ -1461,34 +1460,25 @@ test("IssuePage names each chord by what it opens on this page", async () => {
         .filter((binding) => binding.scope === "issue")
         .map((binding) => [binding.id, binding.label])
     );
-    expect(labels.get("tab-tree")).toBe("Open the Tree preset");
-    expect(labels.get("tab-verification")).toBe("Open the Checks preset");
-    expect(labels.get("tab-plan")).toBe("Open the Plan preset");
-    expect(labels.get("tab-conversation")).toBe("Open the conversation in the panel");
+    expect(labels.get("tab-tree")).toBeUndefined();
+    expect(labels.get("tab-spec")).toBe("Turn the Spec filter on or off");
+    expect(labels.get("tab-verification")).toBe("Turn the Verification filter on or off");
+    expect(labels.get("tab-plan")).toBe("Turn the Plan filter on or off");
+    expect(labels.get("tab-decisions")).toBe("Turn the Decisions filter on or off");
+    expect(labels.get("tab-conversation")).toBe("Conversation: turn every filter off");
     expect(labels.get("tab-activity")).toBe("Open the issue's history under the tree");
     expect(labels.get("tab-children")).toBe("Open the issue's children");
     expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
     expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
-    // `t o` is gone with the chord: the spec's key table names two chords into the panel -
-    // `t c` for the conversation and `t v` for the activity - and the collaborators were a
-    // third it does not hold (dispatch://INFRA-1196 R9). `/collaborators` still resolves and
-    // still opens them in the panel (R19); it is the key that is gone, and `?`, which lists
-    // what the page binds, no longer offers a row for it.
-    expect(labels.get("tab-collaborators")).toBeUndefined();
-    expect(
-      appKeymap
-        .describe()
-        .filter((binding) => binding.keys.join(" ") === "t o")
-        .map((binding) => `${binding.scope}:${binding.id}`),
-      "`t o` is still bound"
-    ).toEqual([]);
+    // `t o` is the collaborators, in the panel (the key table).
+    expect(labels.get("tab-collaborators")).toBe("Open the issue's collaborators in Details");
   } finally {
     view.unmount();
     restore();
   }
 });
 
-test("IssuePage opens the Decisions preset with the t d chord", async () => {
+test("IssuePage toggles the Decisions filter with the t d chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -1508,6 +1498,13 @@ test("IssuePage opens the Decisions preset with the t d chord", async () => {
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/decisions")
     );
     await waitFor(() => expect(decisions).toHaveBeenCalledWith("CORE-1"));
+    // Pressed again, the chord turns the filter it turned on off again (R2).
+    await user.keyboard("t");
+    await user.keyboard("d");
+    await expectPreset("Conversation");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1")
+    );
   } finally {
     view.unmount();
     decisions.mockRestore();
@@ -1515,10 +1512,8 @@ test("IssuePage opens the Decisions preset with the t d chord", async () => {
   }
 });
 
-// `/collaborators` is the address the Collaborators tab carried. The tab is gone, and so is the
-// `t o` chord that opened it: the spec's key table names two chords into the panel and that was
-// a third (dispatch://INFRA-1196 R9). The address still resolves and still opens the panel's
-// People section on who worked the issue (R12, R19).
+// `/collaborators` is the address the Collaborators tab carried. The tab is gone; the address
+// still resolves and still opens the panel's People section on who worked the issue (R12, R20).
 test("IssuePage opens the issue's collaborators at their own address", async () => {
   const restore = stubIssuePage(issue);
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
@@ -1539,6 +1534,40 @@ test("IssuePage opens the issue's collaborators at their own address", async () 
   }
 });
 
+// `t o` keeps its target (R11, the key table): the collaborators, in the panel, with the focus
+// on the control that holds their list.
+test("IssuePage opens the collaborators in Details with the t o chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await expectPreset("Spec");
+    await user.keyboard("t");
+    await user.keyboard("o");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/collaborators")
+    );
+    await screen.findByText("No one has worked this issue yet.");
+    await waitFor(() =>
+      expect(
+        document.activeElement?.closest('[data-details-row="collaborators"]'),
+        "t o leaves the focus outside the collaborators' row"
+      ).not.toBeNull()
+    );
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage renders a not-found view for an unrecognized tab suffix without fetching the issue", async () => {
   const getIssueSpy = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue({
@@ -1549,7 +1578,7 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   try {
     await screen.findByRole("heading", { name: "Page not found" });
     expect(screen.getByRole("link", { name: "Back to inbox" })).toBeDefined();
-    expect(screen.queryByRole("tablist", { name: "Issue presets" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("toolbar", { name: "Filters" })).not.toBeInTheDocument();
     expect(document.title).toBe("Not found · Dispatch");
     expect(getIssueSpy).not.toHaveBeenCalled();
     expect(getMyStateSpy).not.toHaveBeenCalled();
@@ -1560,28 +1589,28 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   }
 });
 
-test("IssuePage preserves an in-progress Conversation composer draft across a preset round-trip", async () => {
+test("IssuePage preserves an in-progress Conversation composer draft across a filter round-trip", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     const composer = (await screen.findByLabelText("Comment")) as HTMLTextAreaElement;
     await user.click(composer);
     await user.paste("Draft in progress");
     expect(composer.value).toBe("Draft in progress");
 
     await openPreset("Spec");
-    // A state picked in the panel opens no address from a preset: it would drop the preset, the
-    // filter and the document the reader has open (R19), and the issue's own address is a
-    // preset's address too. The way back to the conversation's own address is its chord.
-    await openPreset("Tree");
+    // Conversation turns every filter off, and `t c` does the same from a filter (R2, R11).
+    await openPreset("Conversation");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1")
+    );
+    await openPreset("Spec");
     await user.keyboard("t");
     await user.keyboard("c");
-    await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/conversation")
-    );
+    await expectPreset("Conversation");
 
     expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe(
       "Draft in progress"
@@ -1858,7 +1887,7 @@ test("IssuePage renders an image artifact at its own address", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
     // The ring says so to a reader and the mark says so to a layer that reads the page as a
@@ -1958,7 +1987,7 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
 
   try {
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
     await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
@@ -2005,7 +2034,7 @@ test("IssuePage shows an unavailable image version instead of the latest image",
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png?v=999");
 
   try {
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
     expect(screen.queryByRole("img", { name: "diagram.png version 1" })).not.toBeInTheDocument();
   } finally {
@@ -2024,7 +2053,7 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
       "href",
       "/issues/CORE-1/artifacts"
     );
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
   } finally {
     view.unmount();
     restore();
@@ -2129,11 +2158,11 @@ test("IssuePage draws the version control beside the filters, with no approval",
     // No editor is on the page, so no document's text was read for it (R21).
     expect(getArtifactText).not.toHaveBeenCalled();
 
-    // With no filter on, the control reads the spec, as the Design's picture of an issue the
-    // conversion has not reached draws it; the Decisions filter has no document of its role.
-    await openPreset("Tree");
-    const treeControl = await screen.findByTestId("issue-version-control");
-    expect(within(treeControl).getByRole("combobox", { name: "Version" })).not.toBeNull();
+    // With no filter on no version control is drawn (R2), and the Decisions filter has no
+    // document of its role, so it draws none either.
+    await openPreset("Conversation");
+    expect(screen.queryByTestId("issue-version-control")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
     await openPreset("Decisions");
     expect(screen.queryByTestId("issue-version-control")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
@@ -3016,7 +3045,7 @@ test("IssuePage keeps the issue's own address and its fragment when a state is p
   const view = renderIssuePage("/issues/CORE-1?q=socket#b-r1");
 
   try {
-    await expectPreset("Tree");
+    await expectPreset("Conversation");
     for (const name of ["Everything", "What people said"]) {
       const states = await screen.findByRole("listbox", { name: "Conversation" });
       await user.click(within(states).getByRole("option", { name }));
@@ -3024,7 +3053,7 @@ test("IssuePage keeps the issue's own address and its fragment when a state is p
       expect(screen.getByTestId("current-route").textContent, `${name} left the address`).toBe(
         "/issues/CORE-1?q=socket#b-r1"
       );
-      await expectPreset("Tree");
+      await expectPreset("Conversation");
       expect(
         within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
           name,

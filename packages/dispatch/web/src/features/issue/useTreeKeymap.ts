@@ -36,6 +36,9 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
   readonly container: RefObject<HTMLElement | null>;
+  /** Whether the page takes Escape from a row before the tree is left: a filter by words to
+   *  clear or a filter to turn off comes first in the key table's order (`IssueBody.tsx`). */
+  readonly holdsEscape: boolean;
   /** Steps the cycle that says how much of the whole tree is drawn. */
   readonly onCycle: () => void;
   /** Puts the caret in one node's own text, in the row the key was pressed on. */
@@ -447,7 +450,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       // From a control the reader reached inside a row - a chip's link, Keep, Change - Escape
       // gives the row back, because the row is where the keys that move through the tree are;
-      // from the row itself it leaves the tree.
+      // from the row itself it leaves the tree, once the page has cleared its filter by words
+      // and turned its filter off, which come first in the key table's order.
       id: "tree-leave",
       keys: "Escape",
       label: "Leave the control, then the tree",
@@ -460,7 +464,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         }
         elements[at(elements)]?.focus();
       },
-      when: () => at(drawn().elements) !== -1,
+      when: () => {
+        const { elements } = drawn();
+        return at(elements) !== -1 && !(tree.holdsEscape && onRowItself(elements) !== -1);
+      },
     },
   ]);
 }

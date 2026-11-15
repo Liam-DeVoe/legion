@@ -11,6 +11,7 @@ import {
   childrenSection,
   conversationStateControl,
   drawnRows,
+  expectActivePreset,
   filterBox,
   focusedNodeId,
   focusInside,
@@ -143,39 +144,48 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
       });
     await leaveFocus(page);
 
-    // t is a chord: the indicator shows it waiting, then the second key picks that tab. c is a
-    // global shortcut on its own (the create dialog), and completing the chord is not it. The
-    // chord's second key must follow within the keymap's 1000 ms window, so nothing slow sits
-    // between the two keys: the screenshot is taken once the tab is reached.
+    // t is a chord: the indicator shows it waiting, then the second key picks its target. c is a
+    // global shortcut on its own (the create dialog), and completing the chord is not it: `t c`
+    // is the conversation, the page with every filter off (the key table). The chord's second
+    // key must follow within the keymap's 1000 ms window, so nothing slow sits between the two.
     await page.keyboard.press("t");
     const indicator = page.getByTestId("chord-indicator");
     await expect(indicator).toHaveText(/t/);
     await page.keyboard.press("c");
     await expect(indicator).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "Create issue" })).toHaveCount(0);
-    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
-    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
+    await expectActivePreset(page, PRESET_NAMES.conversation);
     await page.screenshot({
       path: testInfo.outputPath(`issue-tab-conversation-${testInfo.project.name}.png`),
     });
 
-    // Every address the nine tabs answered still resolves (dispatch://INFRA-1196 R19), so each
-    // chord of the spec's table opens its address; four of them are a preset's own and the rest
-    // open the Tree preset, whose content the address names. `/collaborators` resolves too and
-    // is read by its own address in `e2e/issue-layout.e2e.ts`, never by a key: the spec's table
-    // names no chord for it (R9).
+    // Every chord of the key table opens its target's address (R11, R20): a filter's chord
+    // turns it on from any other view and off from its own, `t c` turns every filter off, and
+    // the rest open the children, the node menu, the history and the collaborators.
     for (const [key, address] of [
       ["k", "verification"],
       ["p", "plan"],
+      ["d", "decisions"],
       ["h", "children"],
       ["a", "artifacts"],
       ["v", "activity"],
+      ["o", "collaborators"],
       ["s", "spec"],
     ] as const) {
       await page.keyboard.press("t");
       await page.keyboard.press(key);
       await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/${address}$`));
     }
+    // Pressed from its own filter, the chord turns it off.
+    await page.keyboard.press("t");
+    await page.keyboard.press("s");
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
+    await page.keyboard.press("t");
+    await page.keyboard.press("p");
+    await page.keyboard.press("t");
+    await page.keyboard.press("c");
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
 
     // ? lists the scope as "Issue"; the digits collapse to one 0 – 3 row.
     await page.keyboard.press("?");
@@ -187,26 +197,26 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Set priority P0–P3" }).locator("kbd")
     ).toHaveText(["0", "3"]);
-    // Each chord is listed under what it opens on this page, not under a tab the page no
-    // longer has (`web/src/features/issue/useIssueKeymap.ts`'s `CHORDS`): the presets by the
-    // row's own names, and the panel, the children and the node menu as the page names them.
+    // Each chord is listed under what it does on this page, not under a tab the page no longer
+    // has (`web/src/features/issue/useIssueKeymap.ts`'s `CHORDS`): the filters by the row's own
+    // names, and the panel, the children and the node menu as the page names them.
     await expect(
       issueSection
         .getByRole("listitem")
-        .filter({ hasText: "Open the conversation in the panel" })
+        .filter({ hasText: `${PRESET_NAMES.conversation}: turn every filter off` })
         .locator("kbd")
     ).toHaveText(["t", "c"]);
-    // `t v` is the activity and `t c` the conversation, so the Checks preset takes `k`.
+    // `t v` is the activity and `t c` the conversation, so Verification takes `k`.
     await expect(
       issueSection
         .getByRole("listitem")
-        .filter({ hasText: `Open the ${PRESET_NAMES.checks} preset` })
+        .filter({ hasText: `Turn the ${PRESET_NAMES.verification} filter on or off` })
         .locator("kbd")
     ).toHaveText(["t", "k"]);
     await expect(
       issueSection
         .getByRole("listitem")
-        .filter({ hasText: `Open the ${PRESET_NAMES.plan} preset` })
+        .filter({ hasText: `Turn the ${PRESET_NAMES.plan} filter on or off` })
         .locator("kbd")
     ).toHaveText(["t", "p"]);
     // The activity takes `t v`, since `t a` opens the node menu and `l` the labels. Its words
@@ -219,12 +229,15 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: "Open the issue's history under the tree" })
         .locator("kbd")
     ).toHaveText(["t", "v"]);
-    // The collaborators have no chord: the spec's table names two chords into the panel, `t c`
-    // and `t v`, and `t o` was a third it does not hold (dispatch://INFRA-1196 R9). The help
-    // lists what the page binds, so it lists no row for them either.
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "collaborators" }),
-      "the help still offers a key for the collaborators, which the spec's table does not name"
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Open the issue's collaborators in Details" })
+        .locator("kbd")
+    ).toHaveText(["t", "o"]);
+    await expect(
+      issueSection.getByRole("listitem").filter({ hasText: /\bTree\b/ }),
+      "the help still names a Tree"
     ).toHaveCount(0);
     // No row of the help names a tab this page does not have (R21).
     for (const gone of ["Verification tab", "Children tab", "Artifacts tab", "Collaborators tab"]) {
@@ -321,10 +334,8 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
       await page.keyboard.press("t");
       await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
       await page.keyboard.press("c");
-      await expect(conversationStateControl(page, "words")).toHaveAttribute(
-        "aria-selected",
-        "true"
-      );
+      await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
+      await expectActivePreset(page, PRESET_NAMES.conversation);
       await pickPreset(page, "Spec");
       await leaveFocus(page);
     }
@@ -706,7 +717,9 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
     const second = blockNodeId(specSlug, requirementBlockId(2));
     await nodeRow(page, second).first().focus();
     await page.keyboard.press("Enter");
-    expect(await caretInNode(page), "Enter did not put the caret in the focused node").toBe(true);
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the focused node" })
+      .toBe(true);
     await page.keyboard.press("Escape");
     expect(await caretInNode(page), "Escape did not leave the caret").toBe(false);
     expect(await focusedRow(page), "Escape left the row as well as the caret").toBe(second);
@@ -763,69 +776,73 @@ test("every chord the page bound before the redesign brings a target on screen w
 }) => {
   const { context, page } = await openTree(browser);
   try {
-    // The preset chords of the key table, which hold five of the nine the page bound before this
-    // change: `t d`, `t k`, `t s` and `t p`, with `t t` the table's own addition.
+    // The filter chords of the key table: `t d`, `t k`, `t s` and `t p`, each turning its filter
+    // on from the one before it, and `t c`, which turns every filter off. Each leaves the focus
+    // in the outline.
     const chords = [
-      { preset: PRESET_NAMES.tree, second: "t" },
       { preset: PRESET_NAMES.decisions, second: "d" },
-      { preset: PRESET_NAMES.checks, second: "k" },
+      { preset: PRESET_NAMES.verification, second: "k" },
       { preset: PRESET_NAMES.spec, second: "s" },
       { preset: PRESET_NAMES.plan, second: "p" },
+      { preset: PRESET_NAMES.conversation, second: "c" },
     ] as const;
     for (const chord of chords) {
       await focusThePage(page);
       await page.keyboard.press("t");
       await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
       await page.keyboard.press(chord.second);
-      expect(
-        await activePreset(page),
-        `t ${chord.second} does not open the ${chord.preset} preset`
-      ).toBe(chord.preset);
+      await expect
+        .poll(() => activePreset(page), {
+          message: `t ${chord.second} does not open ${chord.preset}`,
+        })
+        .toBe(chord.preset);
       await expectTreeDrawn(page);
       // The tree is a column of its own and may be taller than the screen, which no reading of
       // "every pixel on screen" could pass; the page shows the control it leaves the reader on
       // where a part does not fit (`useIssueKeymap.ts`'s `showPart`), and that control is the
       // tree's one tab stop, so the row it lands on is what is read.
+      await expect.poll(() => focusedRow(page)).not.toBeNull();
       const landed = await focusedRow(page);
-      expect(landed, `t ${chord.second} leaves the focus on no row of the tree`).not.toBeNull();
       expect(
         await onScreen(nodeRow(page, landed ?? "").first()),
         `t ${chord.second} does not bring the row it lands on on screen`
       ).toBe(true);
       expect(
         await focusInside(tree(page)),
-        `t ${chord.second} does not put the focus in the preset's content`
+        `t ${chord.second} does not put the focus in the outline`
       ).toBe(true);
     }
 
-    // The conversation in its words state and in its everything state: `t c` and `t v`. The
-    // panel the conversation is drawn in is a full-height column (`margin/MarginSheet.tsx`'s
-    // `h-dvh`), taller than the screen by construction, so what the chord has to bring on
-    // screen is the conversation's own head - the state controls it leaves the focus in - and
-    // not every pixel of the panel around it, which no panel of that shape could satisfy.
-    for (const [second, state] of [
-      ["c", "words"],
-      ["v", "everything"],
-    ] as const) {
-      await focusThePage(page);
-      await page.keyboard.press("t");
-      await page.keyboard.press(second);
-      expect(
-        await conversationStateControl(page, state).getAttribute("aria-selected"),
-        `t ${second} does not open the conversation in its ${state} state`
-      ).toBe("true");
-      expect(
-        await onScreen(conversationStateControl(page, state)),
-        `t ${second} leaves the conversation off screen`
-      ).toBe(true);
-      expect(
-        await focusInside(marginSlot(page)),
-        `t ${second} does not put the focus in the panel`
-      ).toBe(true);
-    }
-    // Both open the conversation in Details (dispatch://INFRA-1196 R14), the layer over the
-    // page, which Escape closes before the page's own Escape does anything else; the chords
-    // below are read on the page under it.
+    // The history, in its everything state: `t v`. The panel it is drawn in is a full-height
+    // column (`margin/MarginSheet.tsx`'s `h-dvh`), taller than the screen by construction, so
+    // what the chord has to bring on screen is the state control it leaves the focus in.
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("v");
+    await expect
+      .poll(() => conversationStateControl(page, "everything").getAttribute("aria-selected"))
+      .toBe("true");
+    expect(
+      await onScreen(conversationStateControl(page, "everything")),
+      "t v leaves the history off screen"
+    ).toBe(true);
+    expect(await focusInside(marginSlot(page)), "t v does not put the focus in the panel").toBe(
+      true
+    );
+    await page.keyboard.press("Escape");
+    await expect(marginShell(page), "Escape does not close Details").toBeHidden();
+
+    // The collaborators, in the panel: `t o`.
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("o");
+    const collaborators = marginSlot(page).locator('[data-details-row="collaborators"]');
+    await expect
+      .poll(() => focusInside(collaborators), { message: "t o does not put the focus on them" })
+      .toBe(true);
+    expect(await onScreen(collaborators), "t o leaves the collaborators off screen").toBe(true);
+    // Details is the layer over the page, which Escape closes before the page's own Escape
+    // does anything else; the chords below are read on the page under it.
     await page.keyboard.press("Escape");
     await expect(marginShell(page), "Escape does not close Details").toBeHidden();
 
@@ -872,6 +889,72 @@ test("every chord the page bound before the redesign brings a target on screen w
   }
 });
 
+test("Escape leaves the caret, then closes a document, then clears the words, then turns every filter off, then leaves the outline", async ({
+  browser,
+}) => {
+  const { context, page, seeded } = await openTree(browser);
+  try {
+    const spec = await getArtifact(seeded.specArtifactId);
+    const words = "Requirement";
+    await gotoIssue(page, `/issues/${seeded.key}/spec?q=${words}`);
+    await expectActivePreset(page, PRESET_NAMES.spec);
+    await expect(filterBox(page)).toHaveValue(words);
+
+    // A document opened from the node menu, with the caret in its text: the caret is left
+    // first, and the next Escape closes the document, back to the filter it was opened from.
+    await nodeMenuButton(page).click();
+    await openMenu(page).getByRole("button", { exact: true, name: spec.name }).click();
+    await expect(openedArtifact(page)).toHaveCount(1);
+    const editor = openedArtifact(page).getByRole("textbox", { name: "Document editor" });
+    await editor.click();
+    await expect
+      .poll(() => editor.evaluate((box) => box.contains(document.activeElement)))
+      .toBe(true);
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => editor.evaluate((box) => box.contains(document.activeElement)))
+      .toBe(false);
+    await expect(openedArtifact(page), "Escape closed the document with the caret").toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(openedArtifact(page), "Escape does not close the document").toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/spec\\?q=${words}$`));
+
+    // On a row of the filter: Enter puts the caret in it, and Escape leaves the caret first.
+    const row = nodeRow(page, blockNodeId(spec.slug, requirementBlockId(2))).first();
+    await row.focus();
+    const on = await focusedRow(page);
+    expect(on, "the filter draws no row to stand on").not.toBeNull();
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the row" })
+      .toBe(true);
+    await page.keyboard.press("Escape");
+    expect(await caretInNode(page), "Escape did not leave the caret").toBe(false);
+    expect(await focusedRow(page)).toBe(on);
+
+    // Then the words: the filter stays on, and the reader stays in the outline.
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/spec$`));
+    await expect(filterBox(page)).toHaveValue("");
+    await expectActivePreset(page, PRESET_NAMES.spec);
+
+    // Then the filter: every filter off, with the reader on the same node of the outline.
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    await expectActivePreset(page, PRESET_NAMES.conversation);
+    await expect.poll(() => focusedRow(page), { message: "the reader left the outline" }).toBe(on);
+
+    // Then the outline itself.
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => focusedRow(page), { message: "Escape did not leave the outline" })
+      .toBe(null);
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+  } finally {
+    await context.close();
+  }
+});
+
 test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / stays the global search", async ({
   browser,
 }) => {
@@ -912,7 +995,9 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
     const requirement = nodeRow(page, blockNodeId(specSlug, requirementBlockId(2))).first();
     await requirement.focus();
     await page.keyboard.press("Enter");
-    expect(await caretInNode(page), "Enter did not put the caret in the node").toBe(true);
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the node" })
+      .toBe(true);
     await selectTextIn(page, rowBody(requirement), "requirement");
     await page.keyboard.press("ControlOrMeta+Alt+m");
     await expect(page.getByRole("form", { name: "Comment composer" })).toBeVisible();

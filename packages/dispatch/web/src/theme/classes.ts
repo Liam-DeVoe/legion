@@ -843,8 +843,12 @@ export const pageSegmentBg = "bg-page-hair";
  *  control of its own (a file, a menu item). */
 export const pageRowBorder = "border-page-line";
 export const pageRowHoverBg = "hover:bg-page-mark";
-/** What the header says of a write Dispatch refused, in the failed red on the page's paper. */
+/** What the header says of a write Dispatch refused, in the failed red on the page's paper; and
+ *  the filter row's word for the checks that failed (the prototype's `.sig.bad`). */
 export const pageFailedText = "text-page-failed";
+/** The filter row's word for the decisions waiting for the reader's review (the prototype's
+ *  `.sig.dec`), in the decisions' violet. */
+export const pageDecisionText = "text-page-decision";
 
 for (const ground of ["page-paper", "page-pane"]) {
   for (const ink of ["page-ink", "page-muted", "page-quiet"]) {

@@ -257,11 +257,10 @@ interface ZoomedRow {
  * and the breadcrumb always walks back to the whole issue: a reader on a phone reaches every
  * node a reader at 1440 px reaches, one zoom at a time (R6, R7).
  *
- * A row the preset draws only as the ancestor of a match (`context`) is no stop of its own
- * here: the one screen a phone has goes to what the preset matched, so a node's children are
- * the nearest rows below it the preset kept. The Checks preset at 390 px therefore draws its
- * checks under the issue, where at 1440 px each sits under the requirement it serves and that
- * requirement is drawn faint above it (R3, R17).
+ * A row the view draws only as the ancestor of a match (`context`) - the chain above a match of
+ * the filter by words - is no stop of its own here: the one screen a phone has goes to what the
+ * reader filtered for, so a node's children are the nearest rows below it the view kept. A
+ * filter's own rows are never zoomed (`IssueTree.tsx`): they are drawn whole at every width.
  *
  * One path is drawn deeper than that, and only one: the trail down to the first open question
  * in reading order. Each node of it keeps its own row and the next node of the trail follows

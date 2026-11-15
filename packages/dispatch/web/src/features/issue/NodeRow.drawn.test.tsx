@@ -255,11 +255,11 @@ function drawnGap(drawn: TreeNode): { chip: string | undefined; line: string | u
 
 // R8: a citation that must name a requirement and names something else is a gap, drawn on the
 // node that holds the citation and never as an error.
-test("a check whose citation names no requirement says so, in words", () => {
+test("a check whose citation names no statement says so, in words", () => {
   const gaps: GapKind[] = ["serves_not_requirement"];
   expect(drawnGap(node({ gaps, id: "verification-md#b-c1", type: "check" }))).toEqual({
-    chip: "Not a requirement",
-    line: "What this says it serves is not a requirement.",
+    chip: "Not a statement",
+    line: "What this says it serves is not a statement.",
   });
 });
 
@@ -270,7 +270,7 @@ test("a plan task nobody asked for says so, in words", () => {
   const gaps: GapKind[] = ["nobody_asked"];
   expect(drawnGap(node({ gaps, id: "plan-md#b-t9", type: "plan_task" }))).toEqual({
     chip: "No reason given",
-    line: "This task names no requirement it serves and nothing a person asked for.",
+    line: "This task names no statement it serves and nothing a person asked for.",
   });
 });
 

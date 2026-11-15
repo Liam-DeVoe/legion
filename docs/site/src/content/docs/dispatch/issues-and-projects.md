@@ -213,10 +213,10 @@ shows that issue and offers **Create anyway**. A new issue opens as soon as it i
 
 ![An issue's spec in the editor, with a decision block in the document and a comment thread in the margin.](/legion/media/dispatch/issue-spec.png)
 
-The issue page draws one issue as one tree. From the top down it holds the header, up to three
-sentences that say what the issue is, a row of five presets, the issue's child issues, and the
-tree. A preset chooses which part of the tree you see. The panel on the right holds the rest of
-the issue's properties and its conversation.
+The issue page draws one issue as one tree. From the top down it holds the header, a row of five
+controls - **Conversation** and the four filters - up to three sentences that say what the issue
+is, the issue's child issues, and the outline. A filter chooses which kinds of node the outline
+draws. The panel on the right holds the rest of the issue's properties and its conversation.
 
 ### The header
 
@@ -238,7 +238,7 @@ nothing else, in three lines on a desktop screen:
 
 `Waiting on you (N)` counts three things: the open asks whose turn is yours, the decisions
 waiting for your review, and an approval request waiting on you. Choose it, or press Enter on it,
-to turn the **Decisions** preset on with the first of them focused; when only the approval request
+to turn the **Decisions** filter on with the first of them focused; when only the approval request
 waits, it moves you to the approval control instead. From a document, it returns to the outline
 first.
 
@@ -260,10 +260,10 @@ until the spec has loaded. A spec with no such block reads **This spec has no su
 summary cut inside its first sentence reads **The summary is too long to show here.**, and one
 with no sentence end at all reads **The summary has no complete sentence.** Two lines follow:
 
-- **How it gets done** links the **Plan** preset and gives the plan's approval state, such as
+- **How it gets done** links the **Plan** filter and gives the plan's approval state, such as
   **Awaiting approval**, or says **This issue has no plan tasks yet.**
-- **What you will be shown** links the **Checks** preset and names each state its checks are
-  in, such as **Passed** or **Failed**, or says **This issue has no checks yet.**
+- **What you will be shown** links the **Verification** filter and names each state its checks
+  are in, such as **Passed** or **Failed**, or says **This issue has no checks yet.**
 
 ### Changes Dispatch has not confirmed
 
@@ -325,17 +325,17 @@ agents using it stop working at once.
 ### The tree
 
 The tree is the issue's conversation and what it revealed, one row per node: every note, ask,
-requirement, plan task and check block of its documents; its decisions; the results recorded
-against each check; its comments and messages; and its child issues, under the issue. It draws
-no document or file: those are in **Files and documents**. A check and a plan task sit under
-each requirement they serve, a result under its check, and a decision under the ask it
+statement (a `requirement` block), plan task and check block of its documents; its decisions; the
+results recorded against each check; its comments and messages; and its child issues, under the
+issue. It draws no document or file: those are in **Files and documents**. A check and a plan
+task sit under each statement they serve, a result under its check, and a decision under the ask it
 answers. A node whose source Dispatch does not hold sits under the issue. An answered ask carries
 its answer on a line of its own row: **Answer**, who answered, and the first line of what they
 wrote; its body holds what they chose and wrote, as they wrote it.
 
 The tree opens folded to its frontier. The path down to each thing that is open and unanswered
 is unfolded, however deep it is: an ask nobody has answered, a check that has not passed, a
-decision that waits for your review, and a requirement no check serves. Every other branch is one
+decision that waits for your review, and a statement no check serves. Every other branch is one
 row that says how many rows it hides, such as **3 rows hidden inside**, and a replaced decision's
 branch stays folded. A branch you fold stays folded, and a branch you unfold stays open. From the
 third level down, unfolding a branch shows one row, such as **3 more rows below**, which opens the
@@ -344,22 +344,23 @@ rest.
 A row is one line: what the node is, who wrote it, its state, its links, and what it lacks in a
 few words. Who wrote it is a name and a shape: a person by their login, with one shape, and an
 agent by its session's title, with another, or **An agent** when the session has no title; where
-Dispatch holds no author, as for a requirement, a check, a plan task or a decision, the row says
+Dispatch holds no author, as for a statement, a check, a plan task or a decision, the row says
 **Author unknown**, with a shape of its own. A decision marked unsure says **Unsure**. A row
 marks what it lacks only where that sets it apart from rows of its kind and names work someone
-owes: **No check** on a requirement no check serves, **No reason given** on a plan task that
-serves no requirement, and **Not a requirement** on a check or a plan task whose **serves** names
+owes: **No check** on a statement no check serves, **No reason given** on a plan task that
+serves no statement, and **Not a statement** on a check or a plan task whose **serves** names
 something else. Focus a row, with the pointer or a key, and its body
 opens under it with the rest: its facts, and each lack as a sentence. The body closes when the
 focus moves on, unless you choose **Keep open**; **Let it close** undoes that. A faint row is
-there only because a row under it matches the preset. A decision that waits for your review has
+there to place the rows under it: a statement under **Verification**, or the rows above a match
+of the **Filter** box. A decision that waits for your review has
 **Keep** and **Change** in its body: **Change** opens **Your change**, with **Send change** and
 **Cancel**.
 
 Nothing on the issue page opens when you rest the pointer on it, a link included. A link's
 preview card opens when you focus the link with the keyboard, or, in a document you are editing,
 when the caret is in the link. Following a link or a row's link to another node of the issue puts
-the focus on that node's row, in whichever preset the link opens.
+the focus on that node's row, with whichever filter the link opens.
 
 Press `Enter` on a row to edit its text where it stands; `Escape` takes you back to the row. `.`
 zooms into the focused row: the tree is drawn from that row down, and the path above it is a line
@@ -368,24 +369,33 @@ always read one node at a time: it shows the node you are on and the rows under 
 above it as that line of names, and it unfolds the path down to the first open question.
 [Keyboard shortcuts](/legion/dispatch/keyboard/#issue-tree) lists every key of the tree.
 
-### The presets
+### The filters
 
-A preset is a view of the one tree. It draws the nodes of the kinds it is for, with the rows
-above each one, so a node sits under the same parent in every preset. The count beside a preset
-is how many nodes it holds.
+The row under the header holds five controls: **Conversation**, then the **Spec**,
+**Verification**, **Plan** and **Decisions** filters. One filter is on at a time, or none:
+choose a filter to turn it on and any other off, choose it again to turn it off, and choose
+**Conversation** to turn every filter off. The page opens with none on.
 
-| Preset | What it draws | Address |
+Each control draws a count after its name. A filter's count is how many nodes of its own kind it
+draws, such as **Spec 21** or **Plan 13 steps**; **Verification** adds how many checks failed,
+such as **11 · 2 failing**, and **Decisions** how many decisions wait for your review, such as
+**9 · 6 to review**. **Conversation**'s count is how many entries the **Contents** list holds.
+
+A filter draws only its own kinds as rows. The issue is no row of a filter, and any other parent
+of a row the filter draws - an ask, a comment, a statement under **Plan** - is one line on that
+row, its kind and its first line.
+
+| Control | What it draws | Address |
 | --- | --- | --- |
-| **Tree** | Every node | `/issues/<KEY>` |
-| **Decisions** | Asks and decisions. It opens the body of the first decision that waits for your review | `/issues/<KEY>/decisions` |
-| **Checks** | Checks and the results recorded against each one | `/issues/<KEY>/verification` |
-| **Spec** | Requirements | `/issues/<KEY>/spec` |
-| **Plan** | Plan tasks | `/issues/<KEY>/plan` |
+| **Conversation** | The whole outline, folded to its frontier | `/issues/<KEY>` |
+| **Spec** | The statements | `/issues/<KEY>/spec` |
+| **Verification** | Each statement, faint, with the checks that serve it and the results recorded against each | `/issues/<KEY>/verification` |
+| **Plan** | The plan tasks, each once | `/issues/<KEY>/plan` |
+| **Decisions** | The asks and the decisions. It opens the body of the first decision that waits for your review | `/issues/<KEY>/decisions` |
 
-No preset draws a document under the tree. A document, the spec included, opens from **Files and
-documents** in place of the tree; [Documents](/legion/dispatch/documents/) covers it. The Plan
-preset draws each plan task under the requirement it **serves**, with a chip for each task it
-**needs**, and the plan's approval chip is on the plan's own page.
+No filter draws a document under the outline. A document, the spec included, opens from **Files
+and documents** in place of the outline; [Documents](/legion/dispatch/documents/) covers it. The
+plan's approval chip is on the plan's own page.
 
 A check reads **Passed**, **Failed**, **Out of date**, **No result**, **Retracted**, **Cannot
 tell** or **Could not read**. Its body shows its **when**, **surface**, **run** command and
@@ -394,26 +404,31 @@ Dispatch can tell, **how it stands**: **Up to date**, or **Out of date** when it
 one the check compares results with or the check's words changed after it. It also shows its
 **role**, its **commit**, and what it counted.
 
-Choose a preset to open it. While a preset has the focus, `←` and `→` move to the previous and
-next one, and `Home` and `End` to the first and last. At 1024 px and below the row is one control
-that names the preset you are on and opens a menu of the five.
+While a control of the row has the focus, `←` and `→` move to the previous and next one, `Home`
+and `End` to the first and last, and `Enter` or `Space` chooses it. At 1024 px and below the row
+is one control that names the one you are on, with its count, and opens a menu of the five;
+with no filter on, **Outline** stands beside it.
 
-Beside the presets:
+Beside the five:
 
+- The version control: **Version**, **Name**, the connection dot, the copy control and **Copy
+  link**, for the document you opened or, with a filter on, the filter's own document: the spec
+  under **Spec**, the Verification document under **Verification**, the plan under **Plan**.
+  **Decisions** and **Conversation** draw none.
+  [Documents](/legion/dispatch/documents/#versions) covers them. The approval chip is in the
+  identity block. On a screen narrower than 768 px the version control is under the outline, or
+  above the document you opened.
 - **Files and documents** lists every document and file of the issue, each with a copy control,
   the download of its latest version and, for a document the issue can drop, **Remove**. Choose
-  one to open it in place of the tree, at its own address; `Escape` or **Back to the
-  conversation** returns to the tree. The box at the top of the menu narrows it by name or kind.
-  The menu also holds **Upload**, which uploads the file you pick at once, and **New document**,
-  which asks for a title; a file dropped on the open menu uploads. `t a` opens it.
-- The **Filter** box narrows the preset to the rows whose text holds what you type, and the rows
+  one to open it in place of the outline, at its own address; `Escape` or **Back to the
+  conversation** returns to where you opened it from. The box at the top of the menu narrows it
+  by name or kind. The menu also holds **Upload**, which uploads the file you pick at once, and
+  **New document**, which asks for a title; a file dropped on the open menu uploads. `t a` opens
+  it.
+- The **Filter** box narrows the outline to the rows whose text holds what you type, and the rows
   above them, with every branch it keeps unfolded. The counts follow it, and the address keeps it
-  as `?q=`.
-- The version control: **Version**, **Name**, the connection dot, the copy control and **Copy
-  link**, for the document you opened or, with none open, the preset's own document.
-  [Documents](/legion/dispatch/documents/#versions) covers them. The approval chip is in the
-  identity block. On a screen narrower than 768 px the version control is under the tree, or
-  above the document you opened.
+  as `?q=`. `t f` puts the focus in it.
+- **Keys**, at the right end, lists every key of the page, as `?` does.
 
 ### The navigation and the Contents pane
 
@@ -425,7 +440,7 @@ On a screen 1024 px wide or more, the **Contents** pane stands at the left of th
 three sentences, then each question and each thread you began, one line each. Choose one, or
 press Enter on it, to go to it in the outline; the one you are in is marked. **Focus branch**
 draws that branch of the outline alone, and pressing it again draws the whole outline. On a
-narrower screen **Outline**, beside the presets, opens the same list.
+narrower screen **Outline**, beside the one control of the row, opens the same list.
 
 ### The panel
 
@@ -502,7 +517,7 @@ day, and **New since you last read** where your last read ends.
 
 ### Child issues
 
-An issue with child issues has a **Children** section above the tree, on every preset. Its line
+An issue with child issues has a **Children** section above the outline, with every filter. Its line
 has a progress bar and two counts: **Children done**, for the issue's own children, and **Whole
 tree done**, for every issue under it. Open, it lists each child on one line: its key and title,
 its status, **Blocked by** and the issues it waits on, **Claimed by** and the agent that holds
@@ -511,31 +526,31 @@ the next issue you open.
 
 ### Addresses
 
-Each of these addresses opens the issue page, and links made before the page had presets still
+Each of these addresses opens the issue page, and links made before the page had filters still
 open:
 
 | Address | What it opens |
 | --- | --- |
-| `/issues/<KEY>` | The Tree preset |
-| `/issues/<KEY>/spec` | The Spec preset |
-| `/issues/<KEY>/verification` | The Checks preset |
-| `/issues/<KEY>/plan` | The Plan preset |
-| `/issues/<KEY>/decisions` | The Decisions preset |
-| `/issues/<KEY>/conversation` | The Tree preset, with **What people said** chosen and the conversation's list in the panel |
-| `/issues/<KEY>/activity` | The Tree preset, with **Everything** chosen and the issue's whole history under the tree |
-| `/issues/<KEY>/children` | The Tree preset. The **Children** section is above the tree on every preset |
-| `/issues/<KEY>/artifacts` | The Tree preset, with the **Files and documents** menu open |
-| `/issues/<KEY>/collaborators` | The Tree preset, with **Collaborators** open in the panel's **People** section |
-| `/issues/<KEY>/artifacts/<name>` | That document or file in place of the tree, with its editor, its versions, its details and what references the issue. A `#b-` naming a block the tree holds as a node opens the tree at that node instead |
-| `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The Tree preset, with **What people said** chosen, the panel's conversation on that entry, and the tree unfolded to its row |
+| `/issues/<KEY>` | The page with no filter on |
+| `/issues/<KEY>/spec` | The **Spec** filter |
+| `/issues/<KEY>/verification` | The **Verification** filter |
+| `/issues/<KEY>/plan` | The **Plan** filter |
+| `/issues/<KEY>/decisions` | The **Decisions** filter |
+| `/issues/<KEY>/conversation` | The page with no filter on, with **What people said** chosen and the conversation's list in the panel |
+| `/issues/<KEY>/activity` | The page with no filter on, with **Everything** chosen and the issue's whole history under the outline |
+| `/issues/<KEY>/children` | The page with no filter on. The **Children** section is above the outline with every filter |
+| `/issues/<KEY>/artifacts` | The page with no filter on, with the **Files and documents** menu open |
+| `/issues/<KEY>/collaborators` | The page with no filter on, with **Collaborators** open in the panel's **People** section |
+| `/issues/<KEY>/artifacts/<name>` | That document or file in place of the outline, with its editor, its versions, its details and what references the issue. A `#b-` naming a block the outline holds as a node opens the outline at that node instead |
+| `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The page with no filter on, with **What people said** chosen, the panel's conversation on that entry, and the outline unfolded to its row |
 
 On any of them, `?q=` fills the **Filter** box, and `#b-` with a block's id, `?ask=` or
-`?comment=` unfolds the tree down to that node. `?v=` with a version number pins the version
-control to that version on a preset's address, and reads that version of the document on
+`?comment=` unfolds the outline down to that node. `?v=` with a version number pins the version
+control to that version on a filter's address, and reads that version of the document on
 `/issues/<KEY>/artifacts/<name>`. On `/issues/<KEY>/spec`, a `?comment=`, or a `#b-` naming a
-block of the spec's own text, opens the spec in place of the tree at that comment or block, as
-the spec's own address does; a `#b-` naming a requirement or another node the tree draws opens
-the Spec preset at that node.
+block of the spec's own text, opens the spec in place of the outline at that comment or block, as
+the spec's own address does; a `#b-` naming a statement or another node the outline draws opens
+the **Spec** filter at that node.
 
 ### Writing in the Conversation
 

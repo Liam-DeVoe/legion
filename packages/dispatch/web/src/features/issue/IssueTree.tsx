@@ -27,21 +27,25 @@ import { useTreeKeymap } from "./useTreeKeymap";
  * The issue's body: one folded tree of its nodes (dispatch://INFRA-1196 R1, R2, R3, R6,
  * `dispatch://INFRA-1196/artifact/plan-md#b-t14`).
  *
- * The model is `issue-tree.ts`'s, the preset's query over it is `presets.ts`'s and the fold is
- * `tree-fold.ts`'s, all three pure; this holds what only a reader's page can hold - what they
- * opened, what they pinned, and where the focus is. The rows themselves are drawn by
- * `TreeRows.tsx` and the caret in a node's own text is `useNodeEditing.ts`'s.
+ * The model is `issue-tree.ts`'s, the view of it the page or a filter draws is `presets.ts`'s
+ * and the fold is `tree-fold.ts`'s, all three pure; this holds what only a reader's page can
+ * hold - what they opened, what they pinned, and where the focus is. The rows themselves are
+ * drawn by `TreeRows.tsx` and the caret in a node's own text is `useNodeEditing.ts`'s.
  *
- * The tree is the one body every preset draws: the page hands it the tree its preset left, and
- * a row drawn only because a match sits under it is context, faint and marked, and reached by
- * the arrow keys like any other row.
+ * The tree is the one body the page and every filter draw: the page hands it the tree its view
+ * left. With no filter on the issue is its first row; a filter draws its own kinds as rows and
+ * no other (R2), so there the issue is no row and the filter's rows are the tree's top level,
+ * each drawn whole at every width, its parent a line on it where that parent is no row. A row
+ * drawn to place the filter's own - a requirement under Verification - is context, faint and
+ * marked, and reached by the arrow keys like any other row.
  *
  * The tree answers the WAI-ARIA tree pattern's roles and properties and keeps one tab stop: the
  * focused row is the only row that takes the focus. The keys that move it are
  * `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s, so a reader uses the pointer until they land.
  *
- * At 1024 px and below the tree is zoomed, one node at a time: the path down to the node the
- * reader is on, that node, and its children as one-line rows, with no second indent level.
+ * At 1024 px and below the page with no filter on is read one node at a time: the path down to
+ * the node the reader is on, that node, and its children as one-line rows, with no second
+ * indent level.
  */
 export function IssueTree({
   artifacts,
@@ -49,6 +53,7 @@ export function IssueTree({
   emptyLine,
   filtering,
   focusReveal,
+  holdsEscape,
   isClosed,
   onEditing,
   onReport,
@@ -56,11 +61,12 @@ export function IssueTree({
   request,
   reveal,
   root,
+  rootRow,
 }: {
   /** Each artifact of the issue by its slug, which is how a node names the document it is or
    *  belongs to (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
-  /** The ids of the rows this preset draws only as the ancestor of a match. */
+  /** The ids of the rows the view draws as context, faint and marked. */
   context: ReadonlySet<string>;
   /** What the page says where the preset's query matched nothing under the issue. */
   emptyLine: string;
@@ -75,6 +81,9 @@ export function IssueTree({
    *  because the document lands on it there, and two surfaces scrolling for the same node would
    *  each undo the other. */
   focusReveal: boolean;
+  /** Whether the page takes Escape from a row before the outline is left: a filter by words to
+   *  clear or a filter to turn off comes first in the key table's order (`IssueBody.tsx`). */
+  holdsEscape: boolean;
   /** Whether the issue is closed, which the writes a node's body offers are refused on. */
   isClosed: boolean;
   /** The document the reader is editing a node of here, so the page draws that document's one
@@ -96,8 +105,11 @@ export function IssueTree({
   /** The chain down to the node the address names, the issue first: the tree unfolds it and
    *  puts the focus on its last node, once per address (R19). */
   reveal: readonly TreeNode[] | undefined;
-  /** The tree as the preset left it. */
+  /** The tree as the view left it. */
   root: TreeNode;
+  /** Whether the issue itself is the tree's first row, which it is with no filter on and never
+   *  under a filter (`presets.ts`'s `PresetView.rootRow`). */
+  rootRow: boolean;
 }): ReactNode {
   const [opened, setOpened] = useState<OpenedBranches>(NOTHING_OPENED);
   const [focused, setFocused] = useState<string | undefined>(undefined);
@@ -111,7 +123,9 @@ export function IssueTree({
   const [cycle, setCycle] = useState(0);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
-  const zoomed = useMediaQuery(ZOOMED_TREE_QUERY);
+  // A filter's rows are drawn whole at every width: they are its own kinds alone, a level or two
+  // deep, and the one-node-at-a-time reading is the conversation's.
+  const zoomed = useMediaQuery(ZOOMED_TREE_QUERY) && rootRow;
   const setFocusedNode = useSetFocusedNode();
   const body = useRef<HTMLDivElement | null>(null);
   // The width every one-line row cuts its first line to, read once for all of them from the
@@ -168,9 +182,16 @@ export function IssueTree({
   // editing and the tree's one tab stop are held by that key, and a zoom either way leaves
   // them where they are (`rowKeyOf`).
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
-  const rows = zoomed
+  const drawn = zoomed
     ? zoomedRows(root, on, context)
     : treeRows(rooted, cycle === EVERYTHING ? everythingOpened(rooted) : shown, rootedAbove);
+  // Under a filter the issue is no row: its rows are the tree's top level (R2). A zoom into one
+  // of them keeps that row, which the filter draws.
+  const head = drawn[0];
+  const rows =
+    rootRow || head?.kind !== "node" || head.node.id !== root.id
+      ? drawn
+      : drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }));
   const breadcrumb: readonly TreeNode[] = zoomed
     ? zoomBreadcrumb(root, on)
     : zoom === undefined
@@ -302,6 +323,7 @@ export function IssueTree({
 
   useTreeKeymap({
     container: body,
+    holdsEscape,
     onCycle: () => setCycle((held) => (held + 1) % CYCLE_STATES),
     onEdit: edit,
     onEditEnd: stopEditing,

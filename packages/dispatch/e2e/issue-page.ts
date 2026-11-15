@@ -41,17 +41,19 @@ import { navigateInApp } from "./sends";
  *   `[data-testid="issue-children-direct-count"]` and
  *   `[data-testid="issue-children-subtree-count"]`, each with a visible label. c-children,
  *   c-nothing-lost, c-keyboard (`t h`).
- * - **The preset row** `[data-testid="issue-presets"]`. At 1280 px and above it is a row of five,
- *   each preset a `tab` in a `role="tablist"` named "Issue presets", its accessible name the
- *   preset's name alone, with its count in `[data-preset-count="<preset>"]` beside it inside the
- *   tab's own box and named as the tab's description (`aria-describedby`): a word drawn inside a
- *   control has to be in that control's name (WCAG 2.5.3), and the tab is held to the preset's
- *   name alone by the inventory of the page it replaced. At 1024 px and below the row becomes
- *   one control: a `button` with `aria-haspopup="menu"` drawing the active preset and its count,
- *   and so named by both, opening a `role="menu"` of five `role="menuitem"`s, each named by its
- *   preset alone. Each preset has its own address (`issue-address.ts`'s `presetPath`, which
- *   this module imports). c-presets, c-three-things, c-children, c-urls, c-plain-words,
- *   c-keyboard.
+ * - **The filter row** `[data-testid="issue-presets"]`. At 1280 px and above it is a
+ *   `role="toolbar"` named `CONTROL_LABELS.presets` of five toggle `button`s, Conversation,
+ *   Spec, Verification, Plan and Decisions, each carrying `aria-pressed`, its accessible name
+ *   the control's name alone, with its signal - its count in `[data-preset-count="<preset>"]`,
+ *   and where it draws one what of it waits on the reader in `[data-preset-flag]` - beside it
+ *   inside the control's own box and named as the button's description (`aria-describedby`): a
+ *   word drawn inside a control has to be in that control's name (WCAG 2.5.3), and each is held
+ *   to its name by the inventory of the page it replaced. At 1024 px and below the row becomes
+ *   one control: a `button` with `aria-haspopup="menu"` drawing the one on and its signal, and
+ *   so named by both, its name part `[data-preset-name]`, opening a `role="menu"` of five
+ *   `role="menuitem"`s, each named by its control's name alone. Each control has its own
+ *   address (`issue-address.ts`'s `presetPath`, which this module imports). c-presets,
+ *   c-three-things, c-children, c-urls, c-plain-words, c-keyboard.
  * - **The node menu** beside the presets: a `button` named by `CONTROL_LABELS.other_nodes`,
  *   opening a `role="menu"` whose items are its rows: each document and artifact of the issue
  *   is a `role="menuitem"` holding the button that opens it and the `button` that copies its
@@ -107,15 +109,19 @@ import { navigateInApp } from "./sends";
  *   on the issue itself is drawn under its own id.
  * - **A node's body sits inside its own row**, so a row and its body are read together
  *   (`[data-node-row] [data-node-body]`). c-tree, c-focus-opens.
- * - **`[data-node-context]`** on a row a preset draws only as the ancestor of a match, which is
- *   what "the ancestors faint and reachable with the arrow keys" is read by. c-presets.
- * - **`[data-testid="issue-filter"]`**, the filter the preset's filter key opens: a `searchbox`
- *   carrying the query. c-keyboard (`t f`), c-urls (`?q=`).
- * - **`[data-testid="issue-version-control"]`**, the version control beside the filters, holding
- *   the version picker, the name-a-version control and the link, which reads the document
- *   opened in place of the outline and, with none opened, the filter's own document; it holds
- *   no approval, which stays in the identity block. c-urls (`?v=`), c-nothing-lost (naming a
- *   version).
+ * - **`[data-node-context]`** on a row a filter draws to place its own - a requirement under
+ *   Verification - and, with no filter on, on the chain above a match of the filter by words.
+ *   c-presets.
+ * - **`[data-node-parent-line]`** under a filter's row whose parent the filter draws as no row:
+ *   one line carrying `data-parent-id` and `data-parent-type`, the parent's kind as page chrome
+ *   and its first line as the author's text (R2). c-presets.
+ * - **`[data-testid="issue-filter"]`**, the filter by words: a `searchbox` carrying the query.
+ *   c-keyboard (`t f`), c-urls (`?q=`).
+ * - **`[data-testid="issue-version-control"]`**, the version control beside the filters while a
+ *   filter is on, holding the version picker, the name-a-version control and the link, which
+ *   reads the document opened in place of the outline and, with none opened, the filter's own
+ *   document; none is drawn with no filter on. It holds no approval, which stays in the identity
+ *   block. c-presets, c-urls (`?v=`), c-nothing-lost (naming a version).
  * - **`[data-testid="opened-artifact"]`**, the document or file an address opens in place of
  *   the outline, named by its own name. c-nodes, c-urls.
  * - **`[data-conversation-state]`** on each of the conversation's four state controls, with
@@ -126,8 +132,9 @@ import { navigateInApp } from "./sends";
  * - **The add control** (`CONTROL_LABELS.add`) opens a `role="menu"` listing every property with
  *   no value, which is how "an empty field is reachable from one add control that lists it" is
  *   read. c-properties.
- * - **The preset row holds the presets alone**: the node menu's button sits beside that row and
- *   outside it, so the one control at 1024 px and below is unambiguous. c-presets, c-nodes.
+ * - **The filter row holds the five controls alone**: the node menu's button, the filter by
+ *   words and Keys sit beside it and outside it, so the one control at 1024 px and below is
+ *   unambiguous. c-presets, c-nodes.
  * - **The children section's completion bar**, a `role="progressbar"` the collapsed header keeps
  *   beside its two counts. c-children.
  * - **A `role="status"` of the page's own** for what a key reports when it has nowhere to go,
@@ -176,6 +183,7 @@ const SELECTORS = {
   nodeUnsure: "[data-node-unsure]",
   nodeState: "[data-node-state]",
   pageChrome: "[data-page-chrome]",
+  parentLine: "[data-node-parent-line]",
   presetCount: "[data-preset-count]",
   presetRow: '[data-testid="issue-presets"]',
   tree: '[role="tree"]',
@@ -245,28 +253,29 @@ export function presetRow(page: Page): Locator {
 }
 
 /** The row of five, at 1280 px and above. */
-export function presetTablist(page: Page): Locator {
-  return presetRow(page).getByRole("tablist", { name: "Issue presets" });
+export function presetToolbar(page: Page): Locator {
+  return page.getByRole("toolbar", { exact: true, name: CONTROL_LABELS.presets });
 }
 
-export function presetTabs(page: Page): Locator {
-  return presetRow(page).getByRole("tab");
+/** The five toggles of the row, at 1280 px and above. */
+export function presetToggles(page: Page): Locator {
+  return presetRow(page).locator("button[aria-pressed]");
 }
 
-export function presetTab(page: Page, preset: Preset): Locator {
-  return presetRow(page).getByRole("tab", { exact: true, name: PRESET_NAMES[preset] });
+export function presetToggle(page: Page, preset: Preset): Locator {
+  return presetRow(page).getByRole("button", { exact: true, name: PRESET_NAMES[preset] });
 }
 
-/** The count the row draws for one preset: beside the tab at a width that draws the row, and
- *  inside the one control below it. It sits beside the tab rather than inside it because the
- *  tab's accessible name has to hold every word drawn inside that tab (WCAG 2.5.3) and the tab
- *  is named by its preset alone; the tab points at the count with `aria-describedby`, so a
- *  reader still hears it (`web/src/features/issue/IssuePresets.tsx`). */
+/** The count the row draws for one control: beside the toggle at a width that draws the row,
+ *  and inside the one control below it. It sits beside the toggle rather than inside it because
+ *  the toggle's accessible name has to hold every word drawn inside it (WCAG 2.5.3) and the
+ *  toggle is named by its control's name alone; the toggle points at the signal with
+ *  `aria-describedby`, so a reader still hears it (`web/src/features/issue/IssuePresets.tsx`). */
 export function presetCount(page: Page, preset: Preset): Locator {
   return presetRow(page).locator(`[data-preset-count="${preset}"]`);
 }
 
-/** The one control the row becomes at 1024 px and below, named by the active preset. */
+/** The one control the row becomes at 1024 px and below, named by the one on. */
 export function presetChooser(page: Page): Locator {
   return presetRow(page).locator('button[aria-haspopup="menu"]');
 }
@@ -627,6 +636,9 @@ export interface DrawnRow {
   readonly context: boolean;
   /** Whether the row's body is pinned open. */
   readonly pinned: boolean;
+  /** The one line a filter's row draws for its parent where the filter draws that parent as no
+   *  row: its id and kind, and the line as drawn. Null where the row draws none. */
+  readonly parent: { readonly id: string; readonly line: string; readonly type: string } | null;
   readonly role: string | null;
   /** `data-node-state`, the model's own token, or null for a type it gives no state. */
   readonly state: string | null;
@@ -700,6 +712,16 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
         id: row.getAttribute("data-node-id"),
         level: row.getAttribute("aria-level"),
         pinned: row.querySelector(`${selectors.nodeBody}[data-pinned]`) !== null,
+        parent: (() => {
+          const line = row.querySelector(`:scope > ${selectors.parentLine}`);
+          return line === null
+            ? null
+            : {
+                id: line.getAttribute("data-parent-id") ?? "",
+                line: text(line.querySelector("[data-author-text]")) ?? "",
+                type: line.getAttribute("data-parent-type") ?? "",
+              };
+        })(),
         role: row.getAttribute("role"),
         state: row.getAttribute("data-node-state"),
         stateWord: text(row.querySelector(selectors.nodeState)),
@@ -836,23 +858,16 @@ export function treeActiveDescendant(page: Page): Promise<string | null> {
   }, SELECTORS);
 }
 
-/** The name of the preset the page is on: the selected tab's own name at a width that draws the
- *  row, and the one control's name below it. Null while the page draws neither. */
+/** The name of the control the page is on: the pressed toggle's own name at a width that draws
+ *  the row, and the one control's name part below it. Null while the page draws neither. */
 export function activePreset(page: Page): Promise<string | null> {
   return page.evaluate((selectors) => {
     const row = document.querySelector(selectors.presetRow);
     if (row === null) return null;
-    const named = (element: Element): string => {
-      const label = element.getAttribute("aria-label");
-      if (label !== null) return label.trim();
-      const copy = element.cloneNode(true) as Element;
-      for (const count of copy.querySelectorAll(selectors.presetCount)) count.remove();
-      return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
-    };
-    const selected = row.querySelector('[role="tab"][aria-selected="true"]');
-    if (selected !== null) return named(selected);
-    const chooser = row.querySelector('button[aria-haspopup="menu"]');
-    return chooser === null ? null : named(chooser);
+    const pressed = row.querySelector('button[aria-pressed="true"] [data-preset-name]');
+    if (pressed !== null) return (pressed.textContent ?? "").trim();
+    const chooser = row.querySelector('button[aria-haspopup="menu"] [data-preset-name]');
+    return chooser === null ? null : (chooser.textContent ?? "").trim();
   }, SELECTORS);
 }
 
@@ -1320,10 +1335,11 @@ export async function openIssueAddress(page: Page, tab: string): Promise<void> {
 }
 
 /**
- * Moves to `name` by pressing the preset row itself, however that row draws at the width a test
- * runs at (R3): a row of five tabs from 1280 px, and one control opening a menu of five at
- * 1024 px and below. `openPreset` goes to the preset's own address instead, which is a load;
- * this is for a spec whose page is holding something a load would drop.
+ * Moves to `name` by pressing the filter row itself, however that row draws at the width a test
+ * runs at (R2): a row of five toggles from 1280 px, and one control opening a menu of five at
+ * 1024 px and below. A toggle already pressed is left as it is, since pressing it again turns
+ * it off. `openPreset` goes to the control's own address instead, which is a load; this is for
+ * a spec whose page is holding something a load would drop.
  */
 export async function pickPreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);
@@ -1331,9 +1347,9 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
   // is still loading answers zero for both shapes and would send every caller to the control
   // that is not there.
   await row.waitFor();
-  const tab = row.getByRole("tab", { exact: true, name });
-  if ((await tab.count()) > 0) {
-    await tab.click();
+  const toggle = row.getByRole("button", { exact: true, name });
+  if ((await toggle.count()) > 0) {
+    if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
     return;
   }
   await presetChooser(page).click();
@@ -1341,17 +1357,17 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
 }
 
 /** Fails unless the page is on `name`, whichever shape the row has at this width: the row of
- *  tabs marks the preset it is on with `aria-selected`, and the one control below 1025 px draws
- *  that preset and its count as its own name (`web/src/features/issue/IssuePresets.tsx`). */
+ *  toggles presses the one it is on (`aria-pressed`), and the one control below 1025 px draws
+ *  its name and its signal as its own name (`web/src/features/issue/IssuePresets.tsx`). */
 export async function expectActivePreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);
   await row.waitFor();
-  const tab = row.getByRole("tab", { exact: true, name });
-  if ((await tab.count()) > 0) {
-    await expect(tab).toHaveAttribute("aria-selected", "true");
+  const toggle = row.getByRole("button", { exact: true, name });
+  if ((await toggle.count()) > 0) {
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
     return;
   }
-  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+$`));
+  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+\\b`));
 }
 
 /** The identity block's one actions control, open. Close, reopen and the control that gives the

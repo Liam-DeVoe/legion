@@ -15,7 +15,7 @@ import { StagedDocument } from "./StagedDocument";
  * its own address, in place of the outline (`IssueBody`), and `/artifacts` opens the node menu,
  * which is the issue's list of files (`NodeMenu.tsx`).
  *
- * These are plain panels, not tabpanels: the presets are queries over one tree and the page has
+ * These are plain panels, not tabpanels: the filters are views of one tree and the page has
  * no tablist of panels any more. A panel the reader has never opened stays unmounted, and one
  * they have opened keeps rendering while hidden (`activatedTabs`).
  */

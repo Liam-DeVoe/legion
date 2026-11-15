@@ -130,6 +130,14 @@ export interface NodeFact {
   readonly value: string;
 }
 
+/** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
+export interface ParentLine {
+  readonly id: string;
+  /** The parent's own first line, cut by R1's rule (`firstLineOf`). */
+  readonly line: string;
+  readonly type: NodeType;
+}
+
 /** One node of the issue's tree. A node drawn under more than one parent is one node per
  *  placement, each naming the others in `alsoUnder`. */
 export interface TreeNode {
@@ -157,6 +165,12 @@ export interface TreeNode {
   readonly question: boolean;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
+  /** The parent a filter draws as no row, where it draws this node as one (R2): every parent
+   *  that is not a kind the filter draws - an ask, a comment, a message, a requirement under
+   *  the Plan filter - is one line on its child's row, read from the parent's id, kind and
+   *  first line (`presets.ts`). Absent wherever the node's parent is drawn as a row, or is the
+   *  issue itself, and on every node of the page with no filter on. */
+  readonly parentLine?: ParentLine;
   /** Whether the decision this node holds was replaced, which folds its branch to one line
    *  (R1). */
   readonly replaced: boolean;
