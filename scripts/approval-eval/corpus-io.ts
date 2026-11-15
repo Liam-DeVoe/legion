@@ -64,9 +64,11 @@ export interface Corpus {
   byCaseId: Map<string, CaseRow>;
   /**
    * The reserve of INFRA-2897's next final test in this corpus: how many cases it holds, on how
-   * many issues, and the reference they were read under, null where they were held out.
+   * many issues, the reference they were read under (null where they were held out), and the
+   * ids of the cases this read left out, empty where it read them. A command that reads a file an
+   * earlier run wrote checks that file's case ids against `held`.
    */
-  reserve: { cases: number; issues: number; readUnder: string | null };
+  reserve: { cases: number; issues: number; readUnder: string | null; held: ReadonlySet<string> };
 }
 
 export function recordOf(value: unknown): Record<string, unknown> | null {
@@ -243,6 +245,7 @@ export async function readCorpus(corpus: string): Promise<Corpus> {
   const rows: CaseRow[] = [];
   const byCaseId = new Map<string, CaseRow>();
   const reservedIssues = new Set<string>();
+  const held = new Set<string>();
   let reservedCases = 0;
   for (const [index, line] of lines.entries()) {
     if (line.trim() === "") continue;
@@ -258,7 +261,10 @@ export async function readCorpus(corpus: string): Promise<Corpus> {
     if (reserve === "held") {
       reservedCases += 1;
       if (row.issueKey !== null) reservedIssues.add(row.issueKey);
-      if (readUnder === null) continue;
+      if (readUnder === null) {
+        held.add(row.caseId);
+        continue;
+      }
     }
     rows.push(row);
     byCaseId.set(row.caseId, row);
@@ -279,7 +285,7 @@ export async function readCorpus(corpus: string): Promise<Corpus> {
     snapshot,
     rows,
     byCaseId,
-    reserve: { cases: reservedCases, issues: reservedIssues.size, readUnder },
+    reserve: { cases: reservedCases, issues: reservedIssues.size, readUnder, held },
   };
 }
 

@@ -150,12 +150,13 @@ interface Snapshot {
   readFinishedAt: string;
 }
 
-/** The shape of the corpus, by kind and by verdict. */
-interface Counts {
+/** The shape of the corpus, by kind and by verdict, and how many cases the reserve holds. */
+export interface Counts {
   total: number;
   byKind: Record<CaseKind, number>;
   approvalByVerdict: Record<CaseVerdict, number>;
   withWordsByKind: Record<CaseKind, number>;
+  reserved: number;
 }
 
 /** The flags as `parseArgs` reads them, before their rules are checked. */
@@ -317,14 +318,25 @@ function withConfounds(seeds: readonly CaseSeed[]): CaseRow[] {
   return rows;
 }
 
-function countsOf(rows: readonly CaseRow[]): Counts {
+/**
+ * The counts a build prints and writes, over the cases a command may read. A case the reserve
+ * holds (`reserve.ts`) is counted only as reserved: a verdict count that took it in would tell its
+ * answer to whoever compares two builds, which the reserve allows no reader.
+ */
+export function countsOf(rows: readonly CaseRow[]): Counts {
   const counts: Counts = {
-    total: rows.length,
+    total: 0,
     byKind: { approval: 0, question: 0 },
     approvalByVerdict: { approve: 0, request_changes: 0, other: 0 },
     withWordsByKind: { approval: 0, question: 0 },
+    reserved: 0,
   };
   for (const row of rows) {
+    if (reserveOf(row) === "held") {
+      counts.reserved += 1;
+      continue;
+    }
+    counts.total += 1;
     counts.byKind[row.kind] += 1;
     if (row.kind === "approval" && row.verdict !== null) counts.approvalByVerdict[row.verdict] += 1;
     if (row.hasWords) counts.withWordsByKind[row.kind] += 1;
@@ -332,20 +344,20 @@ function countsOf(rows: readonly CaseRow[]): Counts {
   return counts;
 }
 
-function report(counts: Counts, snapshot: Snapshot, directory: string, reserved: number): string {
+function report(counts: Counts, snapshot: Snapshot, directory: string): string {
   const verdicts = counts.approvalByVerdict;
   return [
     `corpus for ${snapshot.person} through event ${snapshot.throughEventId}`,
     `  events read            ${snapshot.eventsRead}`,
     `  events kept            ${snapshot.keptEvents}`,
-    `  cases                  ${counts.total}`,
+    `  cases                  ${counts.total} (the reserved cases left out of every count)`,
     `    approval             ${counts.byKind.approval}` +
       ` (approve ${verdicts.approve}, request_changes ${verdicts.request_changes},` +
       ` other ${verdicts.other})`,
     `    question             ${counts.byKind.question}`,
     `  cases with their words ${counts.withWordsByKind.approval} approval,` +
       ` ${counts.withWordsByKind.question} question`,
-    `  reserved cases         ${reserved} (every command holds them: reserve.ts)`,
+    `  reserved cases         ${counts.reserved}, written and held from every command (reserve.ts)`,
     `  written to             ${directory}`,
   ].join("\n");
 }
@@ -386,7 +398,6 @@ async function build(flags: Flags): Promise<number> {
       issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
     }))
   );
-  const reserved = rows.filter((row) => reserveOf(row) === "held").length;
   const counts = countsOf(rows);
   const snapshot: Snapshot = {
     person: flags.person,
@@ -404,7 +415,7 @@ async function build(flags: Flags): Promise<number> {
   );
   await writeFile(join(directory, "snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
-  console.log(report(counts, snapshot, directory, reserved));
+  console.log(report(counts, snapshot, directory));
   if (rows.length === 0) {
     console.error(`no case: ${flags.person} answered no ask through event ${through}`);
     return 1;
@@ -432,4 +443,5 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+// Only when run: a test that imports `countsOf` must not run a build.
+if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));

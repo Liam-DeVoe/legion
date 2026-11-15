@@ -7,6 +7,7 @@ import type { CaseRow } from "./build-corpus";
 import {
   CannotRunError,
   type Corpus,
+  counted,
   labelsOfCase,
   listOf,
   num,
@@ -1201,6 +1202,27 @@ async function writeReport(out: string, report: FreshReport): Promise<void> {
   await writeFile(reportPath(out), `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
 }
 
+/**
+ * Refuses a run into a directory whose `fresh-agent.json` holds a report over a case this read's
+ * reserve left out (`reserve.ts`): the command prints every report the file holds, and a figure
+ * over such a case is a figure of INFRA-2897's next final test.
+ */
+export function refuseHeldReports(
+  shapes: FreshShapes,
+  held: ReadonlySet<string>,
+  out: string
+): void {
+  for (const [shape, report] of Object.entries(shapes)) {
+    const over = report?.caseIds.filter((caseId) => held.has(caseId)).length ?? 0;
+    if (over > 0) {
+      throw new FreshError(
+        `${reportPath(out)} holds the ${shape} report over ${counted(over, "case")} the reserve ` +
+          "holds (reserve.ts): move that file aside before this run"
+      );
+    }
+  }
+}
+
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
 async function fresh(flags: Flags): Promise<number> {
   const log = (line: string): void => {
@@ -1209,6 +1231,7 @@ async function fresh(flags: Flags): Promise<number> {
   const corpus = await readCorpus(flags.corpus);
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
+  refuseHeldReports(await readShapes(out), corpus.reserve.held, out);
   // Before a case directory, a profile or a prompt is built: a run into a directory already
   // holding this shape's answers stops here, having paid for nothing and read nothing.
   await settleAnswers(

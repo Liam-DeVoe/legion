@@ -2,9 +2,11 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CaseRow } from "../build-corpus";
+import { type CaseRow, countsOf } from "../build-corpus";
 import { type Corpus, CorpusError, readCorpus } from "../corpus-io";
 import type { DispatchEvent } from "../dispatch-read";
+import { FreshError, type FreshReport, refuseHeldReports } from "../fresh-agent";
+import { PoolError, type RunOutcomes, refuseHeldRuns } from "../pool-runs";
 import {
   noteIssueCreated,
   pickedKey,
@@ -210,7 +212,12 @@ describe("readCorpus and the reserve", () => {
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["open"]);
     expect(corpus.byCaseId.has("reserved")).toBe(false);
     expect(corpus.byCaseId.has("question")).toBe(false);
-    expect(corpus.reserve).toEqual({ cases: 2, issues: 1, readUnder: null });
+    expect(corpus.reserve).toEqual({
+      cases: 2,
+      issues: 1,
+      readUnder: null,
+      held: new Set(["reserved", "question"]),
+    });
     expect(printed).toContain("held out 2 cases on 1 issue");
   });
 
@@ -219,6 +226,7 @@ describe("readCorpus and the reserve", () => {
     const { corpus } = await read(await corpusOnDisk([reserved, open]));
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved", "open"]);
     expect(corpus.reserve.readUnder).toBe("dispatch://INFRA-2897/comment/claim-run");
+    expect(corpus.reserve.held.size).toBe(0);
   });
 
   test("refuses a value of the variable that names no reference", async () => {
@@ -241,5 +249,38 @@ describe("readCorpus and the reserve", () => {
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["old"]);
     expect(corpus.reserve.cases).toBe(0);
     expect(printed).toBe("");
+  });
+});
+
+describe("what a command prints from a file an earlier run wrote", () => {
+  const held = new Set(["reserved@2026-11-15T01:00:00Z"]);
+
+  test("a build's counts leave a reserved case's verdict out", () => {
+    const after = "2026-11-15T01:00:00Z";
+    const reserved: CaseRow = {
+      ...caseRow("reserved", PICKED, after, "2026-11-14T09:00:00Z"),
+      verdict: "request_changes",
+    };
+    const counts = countsOf([reserved, caseRow("open", NOT_PICKED, after, after)]);
+    expect(counts.reserved).toBe(1);
+    expect(counts.total).toBe(1);
+    expect(counts.approvalByVerdict).toEqual({ approve: 1, request_changes: 0, other: 0 });
+  });
+
+  test("fresh-agent refuses a directory whose kept report covers a held case", () => {
+    const report = { caseIds: ["open@x", "reserved@2026-11-15T01:00:00Z"] } as FreshReport;
+    expect(() => refuseHeldReports({ without: report }, held, "/nowhere")).toThrow(FreshError);
+    expect(() => refuseHeldReports({ without: report }, new Set(), "/nowhere")).not.toThrow();
+  });
+
+  test("pool-runs refuses a run that holds a held case", () => {
+    const run = (ids: string[]): RunOutcomes => ({
+      directory: "/nowhere/run",
+      cases: new Map(ids.map((id) => [id, { skill: true, control: false }])),
+      finishedAt: null,
+      skillSha: null,
+    });
+    expect(() => refuseHeldRuns([run(["open@x"]), run([...held])], held)).toThrow(PoolError);
+    expect(() => refuseHeldRuns([run(["open@x"])], held)).not.toThrow();
   });
 });
