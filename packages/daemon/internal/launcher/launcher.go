@@ -74,7 +74,7 @@ type Config struct {
 	SessionDatabase ompsessions.Database
 	// SessionDialer builds that proxy's upstream dialer. Nil is the Cloud SQL connector's, which
 	// is the only one a pod uses; a test passes a fake.
-	SessionDialer func(ctx context.Context) (sessionproxy.Dialer, error)
+	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.

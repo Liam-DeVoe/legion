@@ -1059,7 +1059,7 @@ func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
 // this very fake.
-func (d *sessionDialer) build(context.Context) (sessionproxy.Dialer, error) { return d, nil }
+func (d *sessionDialer) build(context.Context, string) (sessionproxy.Dialer, error) { return d, nil }
 
 // stalledDial opens a real connection to addr, a silent upstream, and runs a real TLS handshake
 // over it, which nothing ever answers, so it ends only when ctx does.
