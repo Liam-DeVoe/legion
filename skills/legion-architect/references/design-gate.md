@@ -408,7 +408,8 @@ Write the root as a view when each of these is true:
    earlier version.
 
 In every other case, ask for the root's own approval, as "When the root asks for its own approval"
-below says. `register_gate` reads each condition again. It refuses a call that fails one and
+below says. Ask for it too when one of that section's cases holds, even where the five conditions
+above are true. `register_gate` reads each condition again. It refuses a call that fails one and
 records nothing, and its code and message name what Dispatch shows.
 
 ### How to write the view
@@ -500,7 +501,8 @@ version with no basis, in each of these cases:
 - The ancestor marks no requirement block.
 - The ancestor's approved text says that the root's kind asks for its own approval.
 - The ancestor's approval request is open, and its summary names no root and no requirement that a
-  root sent up.
+  root sent up. This holds whatever version the request names, one a person already approved
+  included, and whichever of the ancestor's documents changed before the request opened.
 - The ancestor's newest review is a changes request, or its approval is of an older version, and no
   request of the route waits on the person.
 - No person gave the ancestor's approval.
