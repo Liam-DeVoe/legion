@@ -99,14 +99,16 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 }
 
 // publishDeliveryException publishes item's delivery exception for reason, on the transport its
-// own lane takes (bus.Client.Publish, bus.UsesCoreTransport): the stream stores the lane of an
-// agent subject and of a team topic, and a role lane's exception keeps core NATS, since no stream
-// subject captures it. Every fanout refusal took core NATS until team topics were stored, which
-// keeps nothing: the report of a team message reached only a reader subscribed at that moment,
-// where the stream's copy reaches a session's consumer whenever that session comes back. origin,
-// when not empty, identifies the stored message the exception is about (exceptionOrigin): an
-// exception the stream stores then carries Nats-Msg-Id exception.<reason>.<origin>, so the stream
-// keeps one copy however many listeners raise it for that message, each from its own durable.
+// own lane takes (bus.Client.Publish, bus.Client.UsesCoreTransport): the stream stores the lane
+// of an agent subject and of a team topic, and a role lane's exception keeps core NATS, since no
+// stream subject captures it. Every fanout refusal took core NATS until team topics were stored,
+// which keeps nothing: the report of a team message reached only a reader subscribed at that
+// moment, where the stream's copy reaches a session's consumer whenever that session comes back.
+// origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
+// an exception on a lane the deployed stream captures (bus.Client.DeployedStreamCaptures, the
+// judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
+// stream keeps one copy however many listeners raise it for that message, each from its own
+// durable, a lane only a newer build's subjects capture among them.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -115,7 +117,7 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 	if err != nil {
 		return err
 	}
-	if origin != "" && bus.StreamCaptures(exception.Topic) {
+	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
 		// One stored copy however many listeners raise it, each reading the same message from its
 		// own durable: they agree on the origin, where they would each mint their own message id.
 		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {

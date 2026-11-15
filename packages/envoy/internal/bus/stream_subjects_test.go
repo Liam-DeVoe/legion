@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// SubjectsCapture matches a literal topic against stream subjects by NATS's wildcard rules: `*` is
+// subjectsCapture matches a literal topic against stream subjects by NATS's wildcard rules: `*` is
 // one token, a last `>` one or more.
 func TestSubjectsCaptureMatchesByNATSWildcardRules(t *testing.T) {
 	for _, tc := range []struct {
@@ -33,13 +33,13 @@ func TestSubjectsCaptureMatchesByNATSWildcardRules(t *testing.T) {
 		{[]string{"notifications.agent.>", "notifications.github.>"}, "notifications.team.deploy", false},
 		{nil, "notifications.github.pr.1", false},
 	} {
-		if got := SubjectsCapture(tc.subjects, tc.topic); got != tc.want {
-			t.Errorf("SubjectsCapture(%q, %q) = %t, want %t", tc.subjects, tc.topic, got, tc.want)
+		if got := subjectsCapture(tc.subjects, tc.topic); got != tc.want {
+			t.Errorf("subjectsCapture(%q, %q) = %t, want %t", tc.subjects, tc.topic, got, tc.want)
 		}
 	}
 }
 
-// ReadStreamSubjects answers from the server, so a subject another build added to the stream after
+// readStreamSubjects answers from the server, so a subject another build added to the stream after
 // this binary started is in the list, though this binary does not compile it in. What it reads at
 // the start is every subject the stream itself carries (streamCarriedSubjects), the listener's
 // kept lane included, which is one more than the consumer filters take (streamSubjects).
@@ -50,8 +50,8 @@ func TestReadStreamSubjectsReadsASubjectAddedAtRuntime(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	const added = "notifications.twobuild.>"
-	if subjects, err := ReadStreamSubjects(client.JS()); err != nil || !slices.Equal(subjects, streamCarriedSubjects) {
-		t.Fatalf("ReadStreamSubjects at start = %q, %v; want %q", subjects, err, streamCarriedSubjects)
+	if subjects, err := readStreamSubjects(client.JS()); err != nil || !slices.Equal(subjects, streamCarriedSubjects) {
+		t.Fatalf("readStreamSubjects at start = %q, %v; want %q", subjects, err, streamCarriedSubjects)
 	}
 
 	info, err := client.JS().StreamInfo(Stream)
@@ -64,14 +64,14 @@ func TestReadStreamSubjectsReadsASubjectAddedAtRuntime(t *testing.T) {
 		t.Fatalf("add %s to the stream: %v", added, err)
 	}
 
-	subjects, err := ReadStreamSubjects(client.JS())
+	subjects, err := readStreamSubjects(client.JS())
 	if err != nil {
-		t.Fatalf("ReadStreamSubjects: %v", err)
+		t.Fatalf("readStreamSubjects: %v", err)
 	}
 	if !slices.Contains(subjects, added) {
-		t.Fatalf("ReadStreamSubjects = %q, missing %q", subjects, added)
+		t.Fatalf("readStreamSubjects = %q, missing %q", subjects, added)
 	}
-	if !SubjectsCapture(subjects, "notifications.twobuild.box-a.1") {
+	if !subjectsCapture(subjects, "notifications.twobuild.box-a.1") {
 		t.Fatalf("the read subjects %q do not capture a topic under %s", subjects, added)
 	}
 }

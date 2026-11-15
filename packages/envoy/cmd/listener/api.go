@@ -1131,8 +1131,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// only what its own consumer holds, so such a publish would reach nobody, now or later;
 		// nothing retries into success, so it is the 400 the refusals above answer rather than a
 		// 504. Team topics are the namespace an agent names itself and the stream stores them
-		// (bus.StreamSubjects). The role lanes bus.ReachesNoSession excepts are forwarded above.
-		if bus.ReachesNoSession(request.Topic) {
+		// (bus.StreamSubjects). The role lanes bus.Client.ReachesNoSession excepts are forwarded
+		// above.
+		if d.client.ReachesNoSession(request.Topic) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
 				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
 			return
@@ -2344,12 +2345,17 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 
 // splitUncapturedTopics splits a registration's requested topics into the ones it plans and
 // stores and the set it leaves out: a notification topic no stream subject captures that is no
-// role lane (bus.ReachesNoSession). A session receives what its own consumer delivers, which is
-// what the stream stored, so an interest in such a topic would be stored and deliver nothing.
+// role lane (bus.Client.ReachesNoSession). A session receives what its own consumer delivers,
+// which is what the stream stored, so an interest in such a topic would be stored and deliver
+// nothing.
 // It is asked once per topic, here, and the answer carries to the plan as well as to the warning
 // each dropped topic earns (contracts.UncapturedTopicRefusal) — the warning a topic in this set
 // earns only when the private rule has nothing to say about it, since a wildcard such as
 // notifications.> is both, and what it earns is the private warning (subscribeHandler).
+//
+// It judges the topics on m.stream, the client the consumer's filter is judged on
+// (sessionConsumerFilter), so a topic a registration stores is one its consumer filters on. A nil
+// m judges the subjects this build compiles; such a listener refuses every registration anyway.
 //
 // Both plugins refuse an explicit subscribe to one in those same words (envoy_subscribe in
 // pi-envoy's extensions/envoy.ts and follow in claude-envoy's src/envoy-channel-server.ts, both
@@ -2357,11 +2363,15 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 // named one reads the same sentence wherever it is told: the sentence itself is written once, as
 // uncapturedTopicRefusal in packages/contracts, which scripts/gen-go.ts emits as
 // contracts.UncapturedTopicRefusal.
-func splitUncapturedTopics(requested []string) ([]string, map[string]struct{}) {
+func (m *sessionDelivery) splitUncapturedTopics(requested []string) ([]string, map[string]struct{}) {
+	var stream *bus.Client
+	if m != nil {
+		stream = m.stream
+	}
 	planned := make([]string, 0, len(requested))
 	uncaptured := make(map[string]struct{})
 	for _, topic := range requested {
-		if bus.ReachesNoSession(topic) {
+		if stream.ReachesNoSession(topic) {
 			uncaptured[topic] = struct{}{}
 			continue
 		}
@@ -2735,7 +2745,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the
 		// loop below names each in its warning, after the private rule has had its say. The
 		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
-		planned, uncaptured := splitUncapturedTopics(requested)
+		planned, uncaptured := d.consumers.splitUncapturedTopics(requested)
 		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",

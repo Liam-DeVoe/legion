@@ -203,7 +203,7 @@ func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 	// heartbeat asks for the session's own consumer, as every registration must since #2603
 	// (2af83d53fc) refused one without delivery.consumer (deliveryReasonNotRequested), so they
 	// carry the session consumers too.
-	d := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)})
+	d := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)})
 	const sessionID = "ses_newer_build"
 	bucket := func(name string) nats.KeyValue {
 		t.Helper()

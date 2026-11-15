@@ -1479,9 +1479,11 @@ func main() {
 	// kernel chose (PORT=0 or a socket a harness opened on port 0).
 	logger.Info("envoy-listener listening", slog.String("addr", ln.Addr().String()))
 
-	// Phase 5: Connect to NATS, for as long as NATS takes to answer. The listener owns
-	// ENVOY_NOTIFICATIONS: this start reconciles the stream (bus.ConnectOwningStream) at the
-	// deployment's replica count and byte limit (listenerStreamOptions).
+	// Phase 5: Connect to NATS, for as long as NATS takes to answer. The listener and Dispatch's
+	// server both own ENVOY_NOTIFICATIONS: this client ensures the stream on this connect and after
+	// every reconnect, at the deployment's replica count and byte limit (listenerStreamOptions), and
+	// leaves as it is a stream that a newer build stamped with a higher generation
+	// (bus.ConnectOwningStream).
 	client := connectListener(cfg, instance, logger)
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
@@ -1771,7 +1773,7 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()

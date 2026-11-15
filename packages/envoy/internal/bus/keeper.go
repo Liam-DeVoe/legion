@@ -24,10 +24,10 @@ func WithKeepInterval(interval time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.keepInterval = interval })
 }
 
-// startKeeper starts the keeper of a client whose start reconciled the stream with cfg
+// startKeeper starts the keeper of a client whose start ensured the stream with cfg
 // (ensureStreamWithConfig), which keeps the client's buckets (WithKeptBuckets, KeepBucket) at
 // cfg's copies too: the constructor's start once install has returned, and the first connection's
-// on a client that connects in the background (ensureStreamOnce), which a Close or Drain can stop
+// on a client that connects in the background (startKeeperOnce), which a Close or Drain can stop
 // first. A client already stopped starts none. The client's stop ends it (Close and Drain wait for
 // it: awaitKeeper). The check and keeperDone's write are one step under mu, and Close and Drain
 // stop the client before awaitKeeper reads keeperDone under mu, so a keeper either sees the stop
@@ -168,13 +168,19 @@ func (c *Client) awaitKeeper() {
 // role lanes it leaves to a start, sending nothing and returning an error when it needs anything:
 // only a start moves the role lanes off the stream, their consumers' filters first
 // (migrateRoleLanesOffStream), and a write of the list the keeper read could put them back after a
-// start removed them. An update whose answer never came succeeds when the stream, read again,
-// needs nothing more, and one the server refused as overlapping the stream itself is sent again
-// until the stream needs nothing more or its sends run out (updateStream).
+// start removed them. A stream stamped with a generation higher than streamConfigGeneration
+// belongs to a newer build and is left exactly as it is, as a start leaves it
+// (ensureStreamWithConfig), so the two builds a release runs at once never put their own settings
+// back in turn. An update whose answer never came succeeds when the stream, read again, needs
+// nothing more, and one the server refused as overlapping the stream itself is sent again until
+// the stream needs nothing more or its sends run out (updateStream).
 func keepStream(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	info, err := js.StreamInfo(Stream)
 	if err != nil {
 		return nil, err
+	}
+	if MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration {
+		return nil, nil
 	}
 	kept := keptStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(kept, info.Config) {

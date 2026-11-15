@@ -392,9 +392,9 @@ Every other `notifications.` topic the route takes is published to the stream an
 once the stream stored it. The route forwards it to nobody: each session that registered the
 topic reads it from its own consumer, which the listener holding that session relays, whether the
 session was connected at the publish or comes back later. A topic no stream subject captures is
-refused `400` by name (`bus.ReachesNoSession`), since nothing would store it and no session would
-ever receive it, and no retry turns that into a delivery; `notifications.team.<name>`, the one
-namespace an agent names itself, is captured and stored.
+refused `400` by name (`bus.Client.ReachesNoSession`), since nothing would store it and no session
+would ever receive it, and no retry turns that into a delivery; `notifications.team.<name>`, the
+one namespace an agent names itself, is captured and stored.
 
 The role lane, a core-NATS queue subscriber in each listener, carries a role topic a client
 publishes straight onto NATS rather than through the route. It resolves the holder at delivery

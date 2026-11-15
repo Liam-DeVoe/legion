@@ -712,8 +712,10 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	}
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
-	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0).
-	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq())
+	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
+	// capture is the deployed stream's, which the session's consumer filter is judged on too.
+	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq(),
+		cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
 		// The session's own consumer holds this message and the relay of that consumer delivers it
 		// (session.SessionEntry.ConsumerRelaysStored), as on the fan-out path below. Nothing is
@@ -843,8 +845,10 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		}
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own.
-		err := session.Resolve(item, interest.SessionID, target, message.storedSeq())
+		// of its own. The capture is the deployed stream's, which the session's consumer filter is
+		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
+		// is one that consumer relays.
+		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// A recipient whose own consumer relays this message is asked nothing: it is handed
 		// nothing here, and the relay of that consumer settles nothing of its own. Nor is one

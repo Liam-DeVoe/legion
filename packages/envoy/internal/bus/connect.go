@@ -110,11 +110,18 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 		o.IgnoreAuthErrorAbort = true
 		connectedCB, reconnectedCB, report := o.ConnectedCB, o.ReconnectedCB, o.AsyncErrorCB
 		o.ConnectedCB = func(nc *nats.Conn) {
-			refusals.reset()
-			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+			// The connection's own report comes first (options' ConnectedCB, which records it for
+			// the client's connected flag, Client.noteConnection), so a held first-connect callback
+			// (HoldFirstConnectForTest) holds what the client does with the connection, not the
+			// flag that says nats.go connected it.
 			if connectedCB != nil {
 				connectedCB(nc)
 			}
+			if gate := firstConnectGate.Load(); gate != nil {
+				<-*gate
+			}
+			refusals.reset()
+			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 			if connected != nil {
 				connected(nc)
 			}

@@ -38,7 +38,7 @@ func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	relay := startSubjectStallRelay(t, testnats.URL(t))
-	delivery, err := connectSessionDelivery([]string{relay.relayed}, bus.SessionConsumerInactiveThreshold, logging.NewWithWriter("test", io.Discard))
+	delivery, err := connectSessionDelivery([]string{relay.relayed}, bus.SessionConsumerInactiveThreshold, client, logging.NewWithWriter("test", io.Discard))
 	if err != nil {
 		t.Fatalf("open the session-consumer connection through the relay: %v", err)
 	}

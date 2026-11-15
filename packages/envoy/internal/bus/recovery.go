@@ -121,12 +121,11 @@ func (c *Client) onClosed() {
 // (WithConnectInBackground): nats.go has connected the connection the constructor returned for the
 // first time, and has sent the core subscriptions made before it. It is a connection event as a
 // reconnect in place is, so the work of it binds the JetStream subscription made before it and
-// runs the reconnect hooks, an owning client's reconciliation of the stream first
-// (ensureStreamOnce), on the client's own goroutine (queueReconnect). nats.go runs it once per
-// connection, and the client never installs a second connection before this one has connected
-// (ensureConnWithContext), so it marks the end of the wait only for c.Conn, here on the callback
-// goroutine: a caller waiting for the first connection waits for nats.go's connect, not for the
-// hooks.
+// runs the reconnect hooks, an owning client's ensure of the stream first (ensureStreamOn), on the
+// client's own goroutine (queueReconnect). nats.go runs it once per connection, and the client
+// never installs a second connection before this one has connected (ensureConnWithContext), so it
+// marks the end of the wait only for c.Conn, here on the callback goroutine: a caller waiting for
+// the first connection waits for nats.go's connect, not for the hooks.
 func (c *Client) onConnect(nc *nats.Conn) {
 	c.mu.Lock()
 	if nc == c.Conn {

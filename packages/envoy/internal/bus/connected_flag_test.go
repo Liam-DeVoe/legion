@@ -48,7 +48,7 @@ func TestTheConnectedFlagFollowsTheInstalledConnectionsLastEventInAnyOrder(t *te
 					c.noteConnection(installed, up)
 				}
 			}
-			if err := c.install(nc, nil, row.dialedUp); err != nil {
+			if err := c.install(nc, false, row.dialedUp); err != nil {
 				t.Fatalf("install: %v", err)
 			}
 			if got := c.ConnectedConn() == nc; got != row.want || c.Connected() != row.want {
@@ -64,10 +64,10 @@ func TestTheConnectedFlagFollowsTheInstalledConnectionsLastEventInAnyOrder(t *te
 func TestALateEventOfAReplacedConnectionLeavesTheFlagToItsReplacement(t *testing.T) {
 	old, replacement := downConnection(t), downConnection(t)
 	c := &Client{name: t.Name()}
-	if err := c.install(old, nil, true); err != nil {
+	if err := c.install(old, false, true); err != nil {
 		t.Fatalf("install the first connection: %v", err)
 	}
-	if err := c.install(replacement, nil, true); err != nil {
+	if err := c.install(replacement, false, true); err != nil {
 		t.Fatalf("install the replacement: %v", err)
 	}
 	c.noteConnection(old, false)

@@ -32,14 +32,16 @@ const (
 // (bus.ReachesPrivateStreamSubject: the Legion controller lane and the failed-delivery lanes),
 // so a session on one would never be relayed.
 //
-// `notifications.twobuild.>`, the subject only the other build's stream carries
-// (internal/bus/stream_extra_twobuild.go), gets no session: a session consumer's filter is this
-// build's own list of the subjects the stream stores (bus.StreamCaptures, through the
-// registration's followed topics), so a pod of the plain build cannot relay a topic on a subject
-// it does not compile in, whatever the durable's filter takes.
-// A session following such a topic is served only while a pod of the build that knows the
-// subject holds the term; that is a property of per-session consumers, not of this merge, and it
-// is recorded in the pull request rather than measured here.
+// `notifications.twobuild.>`, the subject only the other build compiles in
+// (internal/bus/stream_extra_twobuild.go), gets no session in this row, which does not measure
+// one. A pod of the plain build could serve it: a registration's followed topics and a session
+// consumer's filter are judged on the subjects the deployed stream carries, as the pod's own client
+// last read them (bus.Client.DeployedStreamCaptures, read at each ensure of the stream, which runs
+// at connect and after every reconnect, and every streamSubjectsRefresh, a minute), and no build's
+// ensure drops a subject it does not compile in. So once a pod of the other build has added the
+// subject, a session following a topic on it is served by a pod of either build that has read the
+// stream since, whichever build holds the term; a pod that has not read it yet leaves the topic out
+// of a registration and names it in the answer's warning.
 func tbTargets() []mpTarget {
 	subjects := bus.StreamSubjects()
 	var targets []mpTarget
