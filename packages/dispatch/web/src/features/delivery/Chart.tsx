@@ -38,8 +38,8 @@ import { type SpreadBarDay, SpreadBars } from "./SpreadBars";
 import { UtcRangeFields } from "./UtcRangeFields";
 
 /** A chart's range: the custom member of the page's own `WindowChoice` (`lib/window.ts`), since
- *  a chart draws the range its answer resolved and a comparison names two exact ends, never a
- *  rolling preset. `liveWindow` turns one into the window a page reads it with. */
+ *  a chart draws a range of two exact ends and a comparison names two exact ends, never a rolling
+ *  preset. `liveWindow` turns one into the window a page reads it with. */
 export type ChartRange = Extract<WindowChoice, { kind: "custom" }>;
 
 /** A run of per-day numbers, as `Sparkbars` takes them; `label` heads its table column. */
@@ -145,7 +145,11 @@ const UTC_DAYS: ChartRows = { header: "Day", over: "UTC day", pair: "position" }
 export interface ChartProps {
   /** What the chart draws, in the reader's words: it names both controls and heads the table. */
   readonly label: string;
-  /** The range the series cover, as the answer resolved it. */
+  /** The range the series cover, as the page read them. The compare control offers the range
+   *  just before it, of its length, as a read of its own, so this is a range the server takes:
+   *  never an answer's window where the server answered one wider than it was asked (the eval
+   *  routes answer the whole UTC days a range touches, a day past the server's 84-day cap for the
+   *  84 days before the present). */
   readonly range: ChartRange;
   /** The series drawn, in order; the table holds every number all of them draw. */
   readonly series: readonly ChartSeries[];
@@ -169,14 +173,15 @@ const MODES: readonly SegmentedOption<ChartMode>[] = [
   { value: "table", label: "Table" },
 ];
 
-/** A small control beside a chart: the compare picker here, and the Legion section's project
- *  picker, so one shape serves every control the page's charts sit under. */
-export const fieldClass = `rounded border px-1.5 py-0.5 text-xs ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
+/** A small control beside a chart: the compare picker and the two date fields of its custom
+ *  range. */
+const fieldClass = `rounded border px-1.5 py-0.5 text-xs ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
 
 const noteClass = `text-[11px] ${textMutedOnSurface}`;
 
 /** The range immediately before `range`, of the same length: what a comparison starts from. It
- *  is as long as a range the server already answered, so it is inside the server's cap too. */
+ *  is as long as `range`, which a page holds inside the server's cap (`ChartProps.range`), so it is
+ *  inside the cap too. */
 export function precedingRange(range: ChartRange): ChartRange {
   const from = Date.parse(range.from);
   const to = Date.parse(range.to);

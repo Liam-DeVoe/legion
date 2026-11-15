@@ -481,8 +481,8 @@ test(
     expect(applied.body).toEqual(evalsNext.body);
     expect(applied.revs).toEqual(evalsNext.revs);
 
-    // --compare reads the project's list route for the days the body folded, with the view's
-    // own query, and finds every eval and every field equal.
+    // --compare reads the project's list route over the view's own window, here the days the
+    // body folded, with the view's own query, and finds every eval and every field equal.
     expect(
       dispatch.reads.map((url) => [
         url.pathname,
@@ -502,6 +502,62 @@ test(
         status: 200,
         type: "compare",
       },
+    ]);
+  },
+  PROCESS_TEST_MS
+);
+
+// The list read answers the whole UTC days a window touches as its `window`, so a view of the 84
+// days before a present inside a day holds the 85 days those touch, more than the route takes
+// (`maxDeliveryWindow`). --compare reads the route over the view's own window as Dispatch read
+// it, the preset's days ending now, which the route folds into the same days.
+test(
+  "--compare reads an evals view of a preset over the preset's own days, never the wider days its body folded",
+  async () => {
+    // The 85 UTC days the 84 days before a present inside 2026-10-28 touch.
+    const folded = { days: 85, from: "2026-08-05T00:00:00Z", to: "2026-10-29T00:00:00Z" };
+    const evalsHeld = evalsSnapshot as unknown as DeliveryLiveSnapshot;
+    const heldFolded = {
+      ...evalsHeld,
+      body: { ...(evalsHeld.body as EvalListResponse), window: folded },
+    };
+    const nextList = evalsAfter.body as unknown as EvalListResponse;
+    const presetView: DeliveryLiveView = {
+      kind: "evals",
+      project: "ACME",
+      query: "kind=experiment",
+      window: { preset: 84 },
+    };
+    const dispatch = probeDispatch({
+      onSubscribe(socket, sub) {
+        socket.send(forSub(heldFolded, sub));
+        socket.send(forSub(evalsDelta, sub));
+      },
+      routes: {
+        "/api/v1/projects/ACME/evals": {
+          ...nextList,
+          freshness: { ...nextList.freshness, refresher_age_seconds: 600 },
+          window: folded,
+        },
+      },
+    });
+    const startedAt = Date.now();
+    const run = runProbe([...args(dispatch, TOKEN, "1", presetView), "--compare"]);
+    await run.until(() => run.lines.some((line) => line.type === "delta"));
+    run.kill("SIGINT");
+    expect(await run.exited()).toBe(0);
+    const endedAt = Date.now();
+
+    expect(dispatch.reads.map((url) => [url.pathname, url.searchParams.get("kind")])).toEqual([
+      ["/api/v1/projects/ACME/evals", "experiment"],
+    ]);
+    const from = Date.parse(dispatch.reads[0]?.searchParams.get("from") ?? "");
+    const to = Date.parse(dispatch.reads[0]?.searchParams.get("to") ?? "");
+    expect(to - from).toBe(84 * 24 * 60 * 60 * 1000);
+    expect(to).toBeGreaterThanOrEqual(startedAt);
+    expect(to).toBeLessThanOrEqual(endedAt);
+    expect(comparisons(run.lines).map(({ equal, measures }) => ({ equal, measures }))).toEqual([
+      { equal: true, measures: { differ: [], equal: true } },
     ]);
   },
   PROCESS_TEST_MS

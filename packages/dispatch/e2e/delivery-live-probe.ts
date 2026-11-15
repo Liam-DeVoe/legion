@@ -7,9 +7,10 @@
  * carried no frame for three heartbeats; each new connection resumes from the last change it
  * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
- *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
- *  measure are equal (for an evals view, every eval and every field of the list read but the
- *  refresher's age, which the route measures at the moment of its read).
+ *  the last window it applied (for an evals view, the view's own window, a preset's days ending
+ *  then) and writes, for each, whether the pull request ids, run ids and every measure are equal
+ *  (for an evals view, every eval and every field of the list read but the refresher's age, which
+ *  the route measures at the moment of its read).
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
@@ -42,6 +43,7 @@ import type {
   LiveSubscribe,
 } from "../web/src/api/types";
 import { applyDelta, applyRevs } from "../web/src/features/delivery/lib/applyDelta";
+import { DAY_MS } from "../web/src/features/delivery/lib/window";
 
 /** The frames `GET /ws/live` sends: a delivery view's own, the freshness verdict, a refusal and
  * the heartbeat. */
@@ -704,7 +706,8 @@ function compareEvals(
   return { differ, equal: differ.length === 0 };
 }
 
-/** The GET routes that answer the figures `body` holds, for the window it last applied. */
+/** The GET routes that answer the figures `body` holds, for the window it last applied; for an
+ *  evals view, for the view's own window. */
 function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
   const query = (base: string, window: { readonly from: string; readonly to: string }) => {
     const params = new URLSearchParams(base);
@@ -777,9 +780,21 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
     }
     case "evals": {
       if (!isEvals(body)) throw new Error("the evals view's snapshot is not an evals body");
+      // The view's window as Dispatch read it, a preset's days ending now, and never the body's:
+      // the list read answers the whole UTC days a window touches, so a preset of 84 days, which
+      // touches 85, holds a window the route refuses to be sent. The route folds the same days,
+      // and the `window` it answers is compared with the rest.
+      const end = Date.now();
+      const window =
+        "preset" in view.window
+          ? {
+              from: new Date(end - view.window.preset * DAY_MS).toISOString(),
+              to: new Date(end).toISOString(),
+            }
+          : view.window;
       return [
         read<EvalListResponse>(
-          `/api/v1/projects/${encodeURIComponent(view.project)}/evals?${query(view.query, body.window)}`,
+          `/api/v1/projects/${encodeURIComponent(view.project)}/evals?${query(view.query, window)}`,
           (answer) => ({
             measures: compareEvals(body, answer),
             prs: null,

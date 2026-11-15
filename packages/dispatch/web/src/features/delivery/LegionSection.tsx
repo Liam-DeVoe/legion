@@ -22,7 +22,10 @@
 // own route twice. The page gives the section the window and the comparison it gives the Pipeline
 // section and the delivery timeline (`DeliverySectionProps`), so every chart on the page follows
 // one window control and one compare range. The routes take two instants rather than the page's
-// preset, so a preset is resolved to a range once per choice (`metricsRange`).
+// preset, so a preset is resolved to a range once per choice (`metricsRange`), as the whole UTC
+// days the routes fold; every read the section makes, its lists of issues and its compare range's
+// included, is of that range or of one a chart names from it, so each stays inside the server's 84
+// days.
 import { useQuery } from "@tanstack/react-query";
 import { memo, type ReactNode, useMemo } from "react";
 
@@ -119,17 +122,23 @@ const shown = (value: number | null, format: (value: number) => string): string 
 const topOf = (values: readonly (number | null)[]): number =>
   Math.max(1, ...values.filter((value): value is number => value !== null));
 
-/** The range the eval routes read for a window choice: a custom range as the reader named it,
- *  and a preset as its own days ending at `nowMs`. The routes take two instants, so a preset is
- *  resolved once per choice rather than on every render, which would read the routes again every
- *  time anything else on the page moved. */
+/** The range the eval routes read for a window choice: a custom range as the reader named it (the
+ *  window control names whole UTC days), and a preset as its own number of whole UTC days, ending
+ *  with the day of `nowMs`. The routes fold the whole days a range touches and answer those
+ *  (`evalDaysOf`, `packages/envoy/internal/dispatch/api/evals.go`), so a preset's 84 days back
+ *  from the present would fold 85, and a list or a compare range read over those would be refused
+ *  for spanning more than the server's 84 days. A range of whole days is answered as itself, and
+ *  the range just before it (`precedingRange`) shares no day with it. The routes take two
+ *  instants, so a preset is resolved once per choice rather than on every render, which would
+ *  read the routes again every time anything else on the page moved. */
 function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
   const live = liveWindow(choice);
   if (!("preset" in live)) return { kind: "custom", from: live.from, to: live.to };
+  const end = (Math.floor(nowMs / DAY_MS) + 1) * DAY_MS;
   return {
     kind: "custom",
-    from: new Date(nowMs - live.preset * DAY_MS).toISOString(),
-    to: new Date(nowMs).toISOString(),
+    from: new Date(end - live.preset * DAY_MS).toISOString(),
+    to: new Date(end).toISOString(),
   };
 }
 
@@ -390,11 +399,8 @@ export const LegionSection = memo(function LegionSection({
     [settings.data]
   );
   // The window as two instants, resolved when the page's choice changes and not on every render:
-  // a preset's end is the minute it was resolved in, so a re-render reads no new range.
-  const range = useMemo(
-    () => metricsRange(chosen, Math.floor(Date.now() / 60_000) * 60_000),
-    [chosen]
-  );
+  // a preset's days end with the day it was resolved on, so a re-render reads no new range.
+  const range = useMemo(() => metricsRange(chosen, Date.now()), [chosen]);
   const query = useQuery({
     ...legionEvalsQuery({ from: range.from, projects, to: range.to }),
     enabled: projects.length > 0,
@@ -457,14 +463,14 @@ export const LegionSection = memo(function LegionSection({
               key={project}
               onCompare={onCompare}
               project={project}
-              range={{ kind: "custom", from: query.data.window.from, to: query.data.window.to }}
+              range={range}
             />
           ))}
     </section>
   );
 });
 
-/** One project's block: its four cards over the answer's window, the lists of issues of two of
+/** One project's block: its four cards over the section's range, the lists of issues of two of
  *  them read once per range. `compare` and `onCompare` are the page's comparison, and
  *  `comparedEvals` the project's evals in the compare range's read: undefined while that read is
  *  out or nothing is compared, and empty where that read holds no eval of the project, whose

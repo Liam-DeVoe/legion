@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 import { api } from "../../api/client";
 import type {
@@ -13,6 +14,7 @@ import type {
 } from "../../api/types";
 import type { ChartRange } from "./Chart";
 import { LegionSection, weekOf } from "./LegionSection";
+import { DAY_MS, type WindowChoice } from "./lib/window";
 
 /** Every spy a test installed, put back when it ends. */
 const spies: { mockRestore(): void }[] = [];
@@ -220,27 +222,51 @@ const LOGGED: EvalItemRow = {
   source: "a-notebook",
 };
 
-/** The section over a window the page already resolved, so the range it reads is this one, and
- *  beside it the compare range `compare` names (none by default). */
+/** The section as the page holds it: the page's window, and its one compare range, which starts
+ *  as `initial` and which a chart's compare control names. */
+function Page({ initial, window }: { initial: ChartRange | null; window: WindowChoice }) {
+  const [compare, setCompare] = useState(initial);
+  return <LegionSection compare={compare} onCompare={setCompare} window={window} />;
+}
+
+/** The section over `window` (the custom range of WINDOW, which the page already resolved, by
+ *  default), and beside it the compare range `compare` names (none by default). */
 async function renderSection(
   settings: LegionSetting[],
-  evals: (query: { from: string; offset: number; projects: readonly string[] }) => EvalListResponse,
-  items: (project: string, slug: string) => EvalItemRow[] = (project) => [
-    issueRow(`${project}-1`, { parked_hours: 2, queued_hours: 1, work_hours: 30 }),
-    issueRow(`${project}-2`, {
-      implementing_after_first_review: 1,
-      review_rounds: 2,
-      testing_after_first_review: 1,
-      work_hours: 18,
-    }),
-    LOGGED,
-  ],
-  compare: ChartRange | null = null
+  evals: (query: {
+    from: string;
+    offset: number;
+    projects: readonly string[];
+    to: string;
+  }) => EvalListResponse,
+  {
+    compare = null,
+    items = (project) => [
+      issueRow(`${project}-1`, { parked_hours: 2, queued_hours: 1, work_hours: 30 }),
+      issueRow(`${project}-2`, {
+        implementing_after_first_review: 1,
+        review_rounds: 2,
+        testing_after_first_review: 1,
+        work_hours: 18,
+      }),
+      LOGGED,
+    ],
+    window = { kind: "custom", ...WINDOW },
+  }: {
+    compare?: ChartRange | null;
+    items?: (project: string, slug: string) => EvalItemRow[];
+    window?: WindowChoice;
+  } = {}
 ) {
   const list = spyOn(api, "listLegionSettings").mockResolvedValue(settings);
   const listEvals = spyOn(api, "listEvals").mockImplementation((query) =>
     Promise.resolve(
-      evals({ from: query.from ?? "", offset: query.offset ?? 0, projects: query.project ?? [] })
+      evals({
+        from: query.from ?? "",
+        offset: query.offset ?? 0,
+        projects: query.project ?? [],
+        to: query.to ?? "",
+      })
     )
   );
   const listItems = spyOn(api, "listProjectEvalItems").mockImplementation((project, slug) => {
@@ -258,11 +284,7 @@ async function renderSection(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <LegionSection
-        compare={compare}
-        onCompare={() => {}}
-        window={{ kind: "custom", ...WINDOW }}
-      />
+      <Page initial={compare} window={window} />
     </QueryClientProvider>
   );
   return { listEvals, listItems };
@@ -391,13 +413,12 @@ test("the work-time and the rework lists are one read of the range's finished is
   const { listItems } = await renderSection([setting("ACME")], twoProjects);
 
   const table = await tableOf("ACME: Work time to merge");
-  // Over the whole UTC days the evals answer folded (its `window`), so a list holds the issues
-  // the card's numbers count. legion-rework's items are the same finished issues as
+  // Over the section's range, the whole UTC days the evals answer folded, so a list holds the
+  // issues the card's numbers count. legion-rework's items are the same finished issues as
   // legion-work-time's, so the one read serves both lists.
-  const days = { from: "2026-10-06T00:00:00Z", to: "2026-11-03T00:00:00Z" };
   expect(listItems).toHaveBeenCalledTimes(1);
   expect(listItems).toHaveBeenCalledWith("ACME", "legion-work-time", {
-    ...days,
+    ...WINDOW,
     limit: 200,
     offset: 0,
     row_kind: "issue",
@@ -418,6 +439,62 @@ test("the work-time and the rework lists are one read of the range's finished is
   expect(cell(rework, "ACME-1", "Review rounds")).toBe("0");
   expect(rework.textContent).not.toContain("LOGGED-1");
   expect(listItems).toHaveBeenCalledTimes(1);
+});
+
+/** The whole UTC days [from, to) touches, as the eval routes answer them (`evalDaysOf` in
+ *  `packages/envoy/internal/dispatch/api/evals.go`): from the midnight of from's day to the
+ *  midnight after to's last instant. */
+function daysOf(from: string, to: string): EvalListResponse["window"] {
+  const first = Math.floor(Date.parse(from) / DAY_MS) * DAY_MS;
+  const end = (Math.floor((Date.parse(to) - 1) / DAY_MS) + 1) * DAY_MS;
+  return {
+    days: (end - first) / DAY_MS,
+    from: new Date(first).toISOString(),
+    to: new Date(end).toISOString(),
+  };
+}
+
+// The eval routes answer the whole UTC days a range touches, and the server refuses a range of
+// more than 84 days (`maxDeliveryWindow`, api/delivery.go) on every read: the window's, a list of
+// issues', and a compare range's. The 84 days before the present touch 85, so a preset is read as
+// its own whole days, and no list or compare range is read over the 85 days an answer of those
+// instants would name.
+test("with the last 84 days, every read the section makes covers 84 whole UTC days, and so does the previous 84 days a chart offers", async () => {
+  // Mid-afternoon, so the 84 days before the present start inside a day.
+  spies.push(spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-15T14:37:00Z")));
+  const user = userEvent.setup();
+  const { listEvals, listItems } = await renderSection(
+    [setting("ACME")],
+    (query) => ({ ...answer(legionEvals("ACME")), window: daysOf(query.from, query.to) }),
+    { window: { kind: "preset", preset: "84d" } }
+  );
+  // The 84 UTC days ending with today, and the 84 before them, which share no day with them.
+  const window = { from: "2026-08-24T00:00:00.000Z", to: "2026-11-16T00:00:00.000Z" };
+  const previous = { from: "2026-06-01T00:00:00.000Z", to: window.from };
+  // Every range read so far: the evals reads', then the lists of issues'.
+  const ranges = () => [
+    ...listEvals.mock.calls.map(([query]) => ({ from: query.from, to: query.to })),
+    ...listItems.mock.calls.map(([, , query]) => ({ from: query.from, to: query.to })),
+  ];
+
+  // The window's evals and its list of issues are read over the same 84 days.
+  await waitFor(() => expect(listItems).toHaveBeenCalledTimes(1));
+  expect(ranges()).toEqual([window, window]);
+
+  const picker = await screen.findByRole("combobox", {
+    name: "ACME: Phase time by worker type comparison",
+  });
+  expect(picker.querySelector('option[value="preceding"]')?.textContent).toBe("Previous 84 days");
+  await user.selectOptions(picker, "preceding");
+
+  // The compare range's evals and list of issues are read over the 84 days before them.
+  await waitFor(() => expect(listItems).toHaveBeenCalledTimes(2));
+  expect(ranges()).toEqual([window, previous, window, previous]);
+  for (const range of ranges()) {
+    expect(Date.parse(range.to ?? "") - Date.parse(range.from ?? "")).toBeLessThanOrEqual(
+      84 * DAY_MS
+    );
+  }
 });
 
 // The median of a bar runs over every finished issue, one the role never worked counting as
@@ -453,8 +530,7 @@ test("a compare range whose read holds no eval of a project reads no value in th
   await renderSection(
     [setting("ACME")],
     (query) => (query.from === compare.from ? answer([]) : answer(legionEvals("ACME"))),
-    undefined,
-    compare
+    { compare }
   );
 
   await waitFor(() => expect(figure("ACME", "phase_time", "Idle share")).toBe("12.5%"));

@@ -20,8 +20,9 @@ instead.
 The page opens on the last 28 days. **Window**, in the page header, sets it: the last 7, 14, 28 or
 84 days, or a custom range of whole days in UTC, both ends included. A preset rolls, so a link to
 the last 7 days always shows the latest 7; a custom range keeps its dates. The page reads at most
-84 days, and refuses a longer custom range, saying so. Changing the window clears a dragged
-stretch.
+84 days, and refuses a longer custom range, saying so. The Legion and Pipeline sections count
+whole UTC days: a preset there is that many days ending with today, today included. Changing the
+window clears a dragged stretch.
 
 The window, the search box and every filter (Repository, Parent agent, Session, Dispatch issue,
 Priority, Component, Author, rework, and whether a pull request has deployed) are written into the
@@ -92,10 +93,10 @@ newest day first; a day the window only partly covers is marked partial.
   the window.
 - **Change failure rate**: confirmed failed changes over deploys (and, in the fold, over pull
   requests). Only a flag the dora role holder has confirmed counts; pending flags are shown
-  separately, as the rate if every one were confirmed. Until flags are recorded the card says so,
-  and the rate is zero.
+  separately, as the rate if every one were confirmed. Until flags are recorded the card says so
+  and shows no rate and no verdict: a rate that measured nothing is not zero.
 - **Time to restore**: the median time from a broken pull request's deploy to its fix's deploy,
-  over confirmed flags.
+  over confirmed flags. Until flags are recorded it has no value.
 - **Rework share**: pull requests whose title starts with `fix`, `revert` or `hotfix`, over all
   pull requests merged in the window.
 - **Deploy runs reaching production**: runs that reached the production job, over runs that
@@ -106,7 +107,8 @@ newest day first; a day the window only partly covers is marked partial.
 
 The filters narrow every figure drawn from pull requests: lead time, rework share and the per-pull
 request failure rate. Deploys and runs follow the window alone, and a deploy counts as one that
-shipped a pull request when it shipped any pull request merged in the window, whatever the filters.
+shipped a pull request when it is, for at least one pull request, the first production deploy that
+contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
@@ -131,7 +133,8 @@ signed-in person or agent token reads it. `GET /api/v1/delivery/timeline` carrie
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
 code, so they agree. `flags_source` says whether recorded flags fed the change failure rate;
-`none` means no flags are recorded yet.
+`none` means no flags are recorded yet, so `change_failure_rate` is null, `time_to_restore` has
+no median, and `status.change_failure_rate` and `status.change_failure_rate_upper_bound` are null.
 
 `GET /ws/live` is the one websocket each browser tab keeps open for all of its live views. A
 signed-in person or agent token may open it; only a person may subscribe to an agent conversation.
@@ -142,8 +145,12 @@ Every client message is one JSON object:
 ```
 
 `sub` identifies that subscription in every response. `unsubscribe` with the same `sub` ends it.
-A delivery view is `timeline` or `measures` with its window and GET-route query, or `pipeline`
-with optional `at`; it may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
+A delivery view is `timeline` or `measures` with its window and GET-route query; `pipeline` with
+its window, an `at`, or neither; `legion` with the `project` whose Legion board it shows (the body
+of `GET /api/v1/projects/{key}/legion/board`) and nothing else; or `evals` with the `project`
+whose evals it shows, its window, and the query `GET /api/v1/projects/{key}/evals` would be sent
+without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit`, `offset`). A
+delivery view may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
 `{"kind":"events"}` and resumes with `{"since":"<event id>"}`. An agent view is
 `{"kind":"agent","session_id":"<uuid>"}` and never has a resume. A resume of the wrong shape, or
 any unknown member, is an `INVALID_FRAME` error.
@@ -152,17 +159,21 @@ Dispatch answers a delivery view with:
 
 - a `snapshot`: the matching GET route's body for the window resolved now, the change it reflects
   (`seq`), when that change was recorded (`changed_at`), and a revision for every key it holds;
-- then only `delta` frames: the pull requests, runs and session groups that changed (`items`,
-  each list's `upsert` and the ids it `remove`s), the map entries and counts that changed (`maps`
-  and `counts`, null for a key that left), and the fields replaced whole (`set`, which carries
-  `window` whenever it moved, never alone);
-- `freshness`, the whole freshness verdict - the `freshness` object the snapshot carries (the last
-  event, the last reconcile, its error and how many pull requests cannot be fetched) and the
+- then only `delta` frames: the list items that changed (`items`, each list's `upsert` and the ids
+  it `remove`s: the timeline's pull requests, runs and session groups, and an evals view's evals,
+  by eval id), the map entries and counts that changed (`maps` and `counts`, a legion view's
+  issues by key among the maps, null for a key that left), and the fields replaced whole (`set`,
+  which carries `window` whenever it moved, never alone);
+- `freshness`, the whole freshness verdict - the `freshness` object a timeline, measures or
+  pipeline snapshot carries (the last event, the last reconcile, its error and how many pull
+  requests cannot be fetched) and the
   `stale` source list - sent right after a subscription's first answer when Dispatch
   holds one, so a socket opened or resumed after the verdict changed still gets it, and to every
   subscriber whenever it changes;
 - `error`, with the code the matching GET route would answer (`INVALID_QUERY`,
-  `DELIVERY_NOT_CONFIGURED`) or `INVALID_FRAME`; and
+  `DELIVERY_NOT_CONFIGURED`; `LEGION_NOT_CONFIGURED` for a legion view of a project with no Legion
+  daemon, `PROJECT_NOT_FOUND` for an evals view of a project that does not exist) or
+  `INVALID_FRAME`; and
 - `heartbeat`, every 15 seconds. While nothing the view shows changes, the heartbeat is the only
   frame sent.
 
@@ -249,29 +260,33 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   branch, is not counted. The first two are optional settings; a pipeline that names neither has no
   such card.
 - **Merge to production**: the delivery lead time, by the day each pull request merged. A pull
-  request still waiting has none yet. It is judged on the seven days' longest change: the target
-  is under 45 minutes for every change.
+  request still waiting has none yet. It is judged on the window's longest change: the target is
+  under 45 minutes for every change.
 - **PR open to merge**: every merged pull request, deployed or not, by the day it merged. It is
-  judged on the seven days' median: the target is a median under 60 minutes.
+  judged on the window's median: the target is a median under 60 minutes.
 
-**PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
-and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
-run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
-`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
-Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped to
-no project or that project has no `pr-ci` eval yet. The section says the number it ranked by. The
-`pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
-ended in success or failure are counted.
+**PR CI: slowest jobs** ranks the checks workflow's jobs by their median over the window's days,
+slowest first, and shows five. A job needs a number of timed results in those days to be ranked,
+so a rarely run job cannot top the table on a handful of results: the `min_n` of the `job:*`
+series of the `pr-ci` eval in the project the deploy repository is mapped to (**Settings →
+Repositories → Projects**), which is 50 until someone changes it, and 50 where the deploy
+repository is mapped to no project or that project has no `pr-ci` eval yet. The section says the
+number it ranked by. The `pr-ci` eval's items sorted by median list every job ranked the same way.
+Only jobs of runs that ended in success or failure are counted.
 
-**PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in
-the last day, most failures first, with how many of its results there failed and a link to the run
-of its latest failure. A cancelled run's jobs are not counted, and neither is the roll-up job
-named in **Settings → Delivery timeline**, which only reports the other jobs' result and fails
-whenever any of them does, nor a notification or guard step.
+**PR CI: jobs that failed in the last 24 hours** looks back 24 hours from where the window stops:
+the present for a preset, and the end of a custom range's last day. It lists every job that failed
+in a pull-request checks run that started in the window's days and completed in those 24 hours,
+most failures first and then by name, with how many of its results in those runs failed and a
+link to the run of its latest failure, whose age is counted from the window's end. Only runs and
+jobs that ended in success or failure are counted, so a cancelled run's jobs are not, and neither
+is the roll-up job named in **Settings → Delivery timeline**, which only reports the other jobs'
+result and fails whenever any of them does, nor a notification or guard step.
 
 For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its optional `from` and
 `to` (RFC 3339) are the window, as the page's control sends it, bounded at the same 84 days as
 the other delivery routes, and its optional `at` is the seven UTC days ending on its own day and
 the moment the failing jobs look back from; the route refuses `at` beside `from` or `to`, and
-with none of the three the window is the seven days ending now. Any signed-in person or agent
-token reads it.
+with none of the three the window is the seven days ending now. `pr_checks.slowest_min_results`
+is the number of timed results a job needed to be ranked among the slowest. Any signed-in person
+or agent token reads it.

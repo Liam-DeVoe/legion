@@ -709,7 +709,7 @@ Above the timeline sits `features/delivery/MeasuresPanel.tsx`, the delivery prot
 
 `features/delivery/DeliveryPage.tsx` is `/delivery`, and since `dispatch://INFRA-1077` it is three sections under its one `WindowControl`, in the spec's order: `LegionSection` (`#legion`, "Legion: issue to merge"), `PipelineSection` (`#pipeline`, "Pipeline: CI and deploy") and the delivery timeline itself (`#delivery`, "Delivery: merge to production"). Each section takes the page's window and the page's one compare range (`compare`, `onCompare`, `window`), so every chart on the page follows one control; the address's hash is scrolled to on arrival. One freshness row serves the whole page, between the header and the first section: `SourceFreshness` is drawn once, from the timeline answer's `freshness`, since the three sections read the same reconcile pass, the same Dispatch tables and the same event intake, so its six sources are every source of all three and no section draws a row of its own. Two rows would be two regions named "Source freshness", which neither a reader nor a spec could tell apart. `/pipeline` is still mounted, as `PipelineRedirect` in `app.tsx`, a `<Navigate replace to="/delivery#pipeline">`, and the sidebar's `Pipeline` row under `Delivery` points at that address.
 
-`features/delivery/LegionSection.tsx` is that Legion section, on the eval registry since `dispatch://INFRA-2916` (R14): one block (`data-legion-project`) for each project `GET /api/v1/settings/legion` names (`legionSettingsQuery`), with no first-project default, each the four Legion metrics of `dispatch://INFRA-1077` (`data-legion-metric`: work time to merge, phase time by worker type, rework, splitting and follow-ups), every one through `Chart`. Its numbers are one read across those projects, `GET /api/v1/evals?project=…&kind=legion` over the page's window (`legionEvalsQuery`, `["legion", "evals", {projects, from, to}]`, every page of it read), and a second over the compare range, as the Pipeline section reads its own route twice; each card's list of issues is its eval's items (`GET /api/v1/projects/{key}/evals/{slug}/items?row_kind=issue`, `legionEvalItemsQuery`) over the whole UTC days that answer folded, and a reading logged under the eval's slug, which carries no stored facts, is no row of it. Every measure is three series, every issue and the roots and the children cuts (`<series>:roots`, `<series>:children`), and the cards draw the cuts beside every issue as figures and as series: no toggle picks one. The splitting card's chart stays by UTC week: `weekOf` adds the eval's per-day counts up under the Monday the server's `metrics.weekStart` names. A window that starts before a series' first day reads no value (`—`, never 0), and the card says from when its eval has data (`data-legion-since`). It reads by GET rather than live, and a deployment where no project names a daemon draws `data-legion-metrics-unconfigured` and reads nothing.
+`features/delivery/LegionSection.tsx` is that Legion section, on the eval registry since `dispatch://INFRA-2916` (R14): one block (`data-legion-project`) for each project `GET /api/v1/settings/legion` names (`legionSettingsQuery`), with no first-project default, each the four Legion metrics of `dispatch://INFRA-1077` (`data-legion-metric`: work time to merge, phase time by worker type, rework, splitting and follow-ups), every one through `Chart`. Its numbers are one read across those projects, `GET /api/v1/evals?project=…&kind=legion` over the page's window (`legionEvalsQuery`, `["legion", "evals", {projects, from, to}]`, every page of it read), and a second over the compare range, as the Pipeline section reads its own route twice; each card's list of issues is its eval's items (`GET /api/v1/projects/{key}/evals/{slug}/items?row_kind=issue`, `legionEvalItemsQuery`) over the same range, and a reading logged under the eval's slug, which carries no stored facts, is no row of it. That range is the window as whole UTC days (`metricsRange`: a preset is its own number of days ending with today), because the eval routes fold, and answer as their `window`, the whole days a range touches: the 84 days before the present touch 85, more than the server reads, so the section hands its charts and its lists its own range, never an answer's `window`, and the range just before it that a chart offers shares no day with it. Every measure is three series, every issue and the roots and the children cuts (`<series>:roots`, `<series>:children`), and the cards draw the cuts beside every issue as figures and as series: no toggle picks one. The splitting card's chart stays by UTC week: `weekOf` adds the eval's per-day counts up under the Monday the server's `metrics.weekStart` names. A window that starts before a series' first day reads no value (`—`, never 0), and the card says from when its eval has data (`data-legion-since`). It reads by GET rather than live, and a deployment where no project names a daemon draws `data-legion-metrics-unconfigured` and reads nothing.
 
 `features/delivery/PipelineSection.tsx` is that Pipeline section, the delivery prototype's Pipeline page ported as it is: the header line naming the shown UTC days, six cards with their `data-metric` attributes, then the slowest-jobs and failed-in-24-hours tables (`data-section`, `data-job`, `data-failing-job`). The cards take the prototype's column counts at the prototype's content widths - one column, two from 46rem, six from 78rem, its `md:grid-cols-2 xl:grid-cols-6` less its page padding - measured on the section's own width (Tailwind container queries) rather than the viewport, as the measures panel's are, since beside the sidebar the viewport rule left six cards too little room for their figures. It is a live view on the same socket (`deliveryPipelineQuery`, `["delivery", "pipeline", {kind, window}]`, the `GET /api/v1/delivery/pipeline` body), subscribed for the page's window rather than seven fixed days, and computes nothing but the two lead-time cards' met/missed badge (`data-target-met`), judged as the prototype judges it against the `targets` the response carries: merge to production on the window's longest change, PR open to merge on its median. A settings row naming no staging end-to-end or staging deploy job answers that card `null`, and the section omits it. The answer's `freshness` is the page's row, so the section draws none. Every "N days" the section writes is the answer's own day count, and a failure's age is measured from where the window stops - a custom range's end, the present for a preset - which is what the route looks its 24 hours back from. A test or a screenshot pins the fixture's days with the page's own window, ending it at the instant the fixture is dated for (`e2e/delivery-seed.ts`'s `PIPELINE_SECTION_URL`, whose `to` is `PIPELINE_AT`), so the page and an agent's `?at=PIPELINE_AT` look the same 24 hours back; the route's `?at=` stays for an agent reading it directly. Unconfigured delivery (`DELIVERY_NOT_CONFIGURED`) leaves the page showing its setup form in the Pipeline and Delivery sections' place. `e2e/delivery-seed.ts`'s `seedPipelineFixture` (with `PIPELINE_AT`) seeds the browser rows (`e2e/pipeline.e2e.ts`), and its `seedPipelineRows` the docs screenshot beside the measures fixture.
 
@@ -1554,10 +1554,11 @@ prosemirror-tables patch, and the four for an empty last row fail without the pr
 `e2e/read-back.ts` reads a stored document back through Go and through the headless engine
 (`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs` answers what a reader sees of each
 paragraph, which is `readDocument`'s own field: whitespace collapsed to one space and trimmed. What
-a `<br>` and a `hardbreak` each contribute to that text is
-`packages/proof-editor/src/document-reading.ts:15-16`; what that does to a reading is the stored
-reading of `pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces
-end the line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
+a `<br>` and a `hardbreak` each contribute to that text is the module comment of
+`packages/proof-editor/src/document-reading.ts`, where a walk over the nodes disagrees with the
+serializer; what that does to a reading is the stored reading of
+`pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces end the
+line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
 spelling of a body against the engine's, where the whitespace between its words is the point, reads
 the stored bytes or `engineTables` instead.
 
@@ -1609,10 +1610,11 @@ a `catch`, and a write still retrying after a file's last test, are reported all
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
 `/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
-The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
-with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
-are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
-page carrying that header, none of them about projects.
+The project list is read by the sidebar wherever it is drawn (`Sidebar`'s `projectsQuery` read in
+`features/sidebar/Sidebar.tsx`, with no `enabled` guard) and by the issue header for every root
+issue, to learn which design steps are gated (`IssueHeader`'s, in
+`features/issue/IssueHeader.tsx`); removing its answer fails 36 rows, every one a page carrying
+that header, none of them about projects.
 The sidebar's other reads, the Inbox and the pinned issues, are not answered here: a test that
 draws the sidebar answers them itself.
 Every other route is the test's own to answer, and there are four seams for it, from the top
@@ -2654,7 +2656,9 @@ run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--
 `applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
 /api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
 /api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
-routes for the last window it applied and writes whether the pull request ids, run ids and every
+routes for the last window it applied (an evals view's list route for the view's own window, a
+preset's days ending then, since the body's `window` is the whole UTC days that window touches and
+can be a day past the route's 84) and writes whether the pull request ids, run ids and every
 measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
@@ -3036,12 +3040,12 @@ see - a colour change confined to fewer than about 20 pixels - rather than a mar
 the widest token, which overstates it by three orders of magnitude.
 
 **A swatch and a class literal are many-to-one, so a control must move the literal the page
-actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
-`card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
-mappings table: a control on `surfaceBg` left both `settings` shots untouched where the `card`
-control reddened them. It is the `palette.ts` trap above in a second shape - a clean comparison
-told you nothing about the token, only about the string you edited. So never read a clean
-comparison as proof that a token is absent from a baseline.
+actually draws.** `SURFACE` is spelled by both `surfaceBg` and `card` (each in
+`web/src/theme/classes.ts`), the same two colours in two strings, and only `card` draws the
+Settings mappings table: a control on `surfaceBg` left both `settings` shots untouched where the
+`card` control reddened them. It is the `palette.ts` trap above in a second shape - a clean
+comparison told you nothing about the token, only about the string you edited. So never read a
+clean comparison as proof that a token is absent from a baseline.
 
 **A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
 gives twice the failures a hard assertion inside the `SCHEMES` loop gives, and nothing in the
