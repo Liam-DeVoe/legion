@@ -384,12 +384,12 @@ func TestTheBrokerBootsWithAnIssuerItCannotRead(t *testing.T) {
 	client := namedClient{t: t, base: "http://" + broker.Addr}
 
 	t.Run("the broker starts and logs a line for each issuer with its name, its URL and whether it read it", func(t *testing.T) {
-		for _, want := range []string{
-			"INFO broker: kubernetes issuer name=a url=" + a.URL() + " read=true\n",
-			"INFO broker: kubernetes issuer name=b url=" + b.URL() + " read=false\n",
+		for _, want := range []map[string]any{
+			{"severity": "INFO", "name": "a", "url": a.URL(), "read": true},
+			{"severity": "INFO", "name": "b", "url": b.URL(), "read": false},
 		} {
-			if strings.Count(broker.Boot, want) != 1 {
-				t.Errorf("the boot log holds %d lines %q, want one:\n%s", strings.Count(broker.Boot, want), want, broker.Boot)
+			if got := len(recordsWith(broker.Boot, "broker: kubernetes issuer", want)); got != 1 {
+				t.Errorf("the boot log holds %d lines %q carrying %v, want one:\n%s", got, "broker: kubernetes issuer", want, broker.Boot)
 			}
 		}
 	})
@@ -455,9 +455,11 @@ func TestTheBrokerBootsWithAnIssuerItCannotRead(t *testing.T) {
 			t.Fatalf("B's token login was not answered 200 within a minute of B answering; it last answered %s", last)
 		}
 		t.Logf("B's token login answered 200 %s after B answered", time.Since(answered).Round(time.Millisecond))
-		want := "INFO broker: kubernetes issuer read name=b url=" + b.URL() + "\n"
-		if !testwait.Holds(time.Until(answered.Add(time.Minute)), 250*time.Millisecond, func() bool { return strings.Contains(broker.Log(), want) }) {
-			t.Fatalf("no line %q within a minute of B answering:\n%s", want, broker.Log())
+		want := map[string]any{"severity": "INFO", "name": "b", "url": b.URL()}
+		if !testwait.Holds(time.Until(answered.Add(time.Minute)), 250*time.Millisecond, func() bool {
+			return len(recordsWith(broker.Log(), "broker: kubernetes issuer read", want)) != 0
+		}) {
+			t.Fatalf("no line %q carrying %v within a minute of B answering:\n%s", "broker: kubernetes issuer read", want, broker.Log())
 		}
 	})
 }
@@ -475,8 +477,8 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 		"BROKER_SERVICE_LOGINS="+namedService+"="+namedDaemonA+"=a,b "+namedService+"="+namedDaemonB+"=a,b",
 	)})
 	client := namedClient{t: t, base: "http://" + broker.Addr}
-	if want := "INFO broker: kubernetes issuer name=b url=" + b.URL() + " read=true\n"; !strings.Contains(broker.Boot, want) {
-		t.Fatalf("the boot log holds no line %q: B's discovery document must be read at boot, so that only its key set fails:\n%s", want, broker.Boot)
+	if want := (map[string]any{"name": "b", "url": b.URL(), "read": true}); len(recordsWith(broker.Boot, "broker: kubernetes issuer", want)) == 0 {
+		t.Fatalf("the boot log holds no line %q carrying %v: B's discovery document must be read at boot, so that only its key set fails:\n%s", "broker: kubernetes issuer", want, broker.Boot)
 	}
 	status, code, loginOfA := client.tokenLogin(clusterToken(t, a, aKey, namedDaemonA, ""), proofKey(t))
 	if status != http.StatusOK || loginOfA.credentialID == "" {
