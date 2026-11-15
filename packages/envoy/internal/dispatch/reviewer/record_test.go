@@ -269,3 +269,29 @@ func TestAuthor(t *testing.T) {
 		}
 	}
 }
+
+// A decision block's record holds its question as the document holds it, picture and link with
+// it, which the ask's row leaves out; every other kind's text, and a block the version does not
+// hold yet, keep the text they were given.
+func TestBlockQuestionReadsTheDecisionBlocksMarkdown(t *testing.T) {
+	const markdown = "# Rollout\n\n:::ask{#flip urgency=\"med\" multiple=\"false\" state=\"open\"}\n" +
+		"Run the audit first? See [the run](https://ci.test/runs/7) ![Flip rate](https://ci.test/flip.png)\n\n" +
+		"- Ship: Release it\n- Hold: Wait\n:::\n"
+	for name, test := range map[string]struct {
+		kind    Kind
+		blockID string
+		want    string
+	}{
+		"decision block": {KindDecisionBlock, "flip", "Run the audit first? See [the run](https://ci.test/runs/7) ![Flip rate](https://ci.test/flip.png)"},
+		"ask":            {KindAsk, "flip", "the row's question"},
+		"block not held": {KindDecisionBlock, "elsewhere", "the row's question"},
+	} {
+		text := Text{Kind: test.kind, Body: "the row's question"}
+		if err := blockQuestion(&text, markdown, test.blockID); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if text.Body != test.want {
+			t.Errorf("%s: the record's question is %q, want %q", name, text.Body, test.want)
+		}
+	}
+}

@@ -588,7 +588,10 @@ type heldDecision struct {
 // decideHeld decides what of the held text row posts and posts it: the row is set posting with
 // the outcome where it is still in review or awaiting its writer at the wording the decision was
 // made of, the outcome is recorded, and the text and every text whose turn comes after it post.
+// A decision block's rewrite the block cannot hold is decided as the block written
+// (applicableDecision).
 func (s *server) decideHeld(ctx context.Context, row heldRow, decision heldDecision) {
+	decision = s.applicableDecision(ctx, row, decision)
 	tag, err := s.deps.Store.Pool.Exec(ctx, `
 		update held_texts
 		set state = 'posting', outcome = $3, detail = nullif($4, ''), reason = nullif($5, ''),

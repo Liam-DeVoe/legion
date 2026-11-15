@@ -568,12 +568,15 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 }
 
 // askWording is a rewording of an ask: the fields an edit names, nil for each it leaves as it
-// is. Urgency is already normalized (normalizeAskUrgency).
+// is. Urgency is already normalized (normalizeAskUrgency). QuestionMarkdown is whether Question is
+// markdown, which a decision block's rewrite alone writes (rewriteDecisionBlock,
+// docs.AskBlockEdit.QuestionMarkdown); every other edit's question is plain text.
 type askWording struct {
-	Question *string
-	Options  *[]model.AskOption
-	Multiple *bool
-	Urgency  *string
+	Question         *string
+	Options          *[]model.AskOption
+	Multiple         *bool
+	Urgency          *string
+	QuestionMarkdown bool
 }
 
 // applyTo is ask with the wording's named fields in place of its own.
@@ -615,7 +618,10 @@ func (s *server) writeAskEdit(ctx context.Context, tx pgx.Tx, ask model.Ask, wor
 		if err != nil {
 			return model.Ask{}, previous, model.Event{}, err
 		}
-		edit := docs.AskBlockEdit{Question: wording.Question, Options: wording.Options, Multiple: wording.Multiple, Urgency: wording.Urgency}
+		edit := docs.AskBlockEdit{
+			Question: wording.Question, Options: wording.Options, Multiple: wording.Multiple, Urgency: wording.Urgency,
+			QuestionMarkdown: wording.QuestionMarkdown,
+		}
 		stored, err := s.deps.Docs.SetAskBlockText(ctx, blockArtifact, *ask.BlockID, edit, actor)
 		if err != nil {
 			return model.Ask{}, previous, model.Event{}, err

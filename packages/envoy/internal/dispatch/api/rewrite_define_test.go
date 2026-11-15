@@ -533,6 +533,65 @@ func TestARewriteOfADecisionBlockKeepsItsOptionLines(t *testing.T) {
 	}
 }
 
+// A person's Rewrite of a decision block whose question holds a link and a picture reads the
+// question as the document holds it, in markdown, and writes the rewrite back as markdown: the
+// document's new version keeps the picture and the link, and the row takes the plain text. A
+// rewrite that writes the picture as a bare address is not applied, and its reason names the
+// picture.
+func TestARewriteOfADecisionBlockKeepsItsPicture(t *testing.T) {
+	const (
+		link    = "[the run](https://ci.test/runs/7)"
+		picture = "![the wait](https://ci.test/chart.png)"
+		asked   = "Ship the reviewer? See " + link + " " + picture
+	)
+	document := "# Rollout\n\nThe plan for the rollout.\n\n:::ask{urgency=\"med\"}\n" + asked +
+		"\n\n- Ship it: Release it today.\n- Do not file: Wait.\n:::\n"
+	options := []map[string]string{option("", "Ship it", "Release it today."), option("", "Do not file", "Wait.")}
+	for name, test := range map[string]struct {
+		body, state, reason string
+	}{
+		"kept": {body: "Ship it today or wait for a fix? See " + link + " " + picture, state: model.RewriteRewritten},
+		"dropped": {
+			body: "Ship it today or wait for a fix? See " + link + " https://ci.test/chart.png", state: model.RewriteFailed,
+			reason: `it drops the picture "https://ci.test/chart.png"`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newRewriteRig(t, []string{"steer"}, modeltest.Rule{
+				Contains: rewriteMarker, Reply: modeltest.Reply{Text: rewriteJSON(t, test.body, false, options...)},
+			})
+			id := rig.uploadBlock(document)
+			original := rig.question(id)
+			rig.rewrite(id)
+			reason := rig.waitRewrite(id, test.state)
+			if test.state == model.RewriteFailed {
+				if !strings.Contains(reason, test.reason) {
+					t.Fatalf("the failed rewrite's reason is %q, want it to name the picture", reason)
+				}
+				if got := rig.question(id); got != original {
+					t.Fatalf("the block asks %q after a rewrite that was not applied", got)
+				}
+				return
+			}
+			var markdown string
+			pollUntil(t, 20*time.Second, "a new version of the document holding the rewrite", func() bool {
+				err := rig.database.Pool.QueryRow(context.Background(), `
+					select coalesce(v.markdown, '') from artifact_versions v join artifacts a on a.id = v.artifact_id
+					where a.name = 'rollout.md' order by v.number desc limit 1`).Scan(&markdown)
+				return err == nil && strings.Contains(markdown, "Ship it today or wait for a fix?")
+			})
+			for _, kept := range []string{link, picture} {
+				if !strings.Contains(markdown, kept) {
+					t.Fatalf("the new version holds no %q:\n%s", kept, markdown)
+				}
+			}
+			if got := rig.question(id); got != "Ship it today or wait for a fix? See the run" {
+				t.Fatalf("the row asks %q, want the plain text of the rewrite", got)
+			}
+		})
+	}
+}
+
 // The asking agent's edit while a rewrite runs is never written over: the rewrite fails and the
 // ask keeps the agent's words.
 func TestARewriteIsNotAppliedOverTheAgentsEdit(t *testing.T) {

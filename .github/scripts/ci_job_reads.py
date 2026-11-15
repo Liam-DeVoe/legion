@@ -190,7 +190,7 @@ def at_docs(step):
 BROWSER_JOB = "dispatch-browser"
 BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
-BROWSER_EMBEDDER = "embedder"
+BROWSER_EMBEDDER, BROWSER_ASK_CARD = "embedder", "ask-card"
 BROWSER_VISUAL = "visual"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
@@ -846,6 +846,8 @@ BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
+BROWSER_ASK_CARD_SPECS = "Browser-test the ask card against the stand-in model"
+BROWSER_ASK_CARD_BUILD = "Build the Dispatch server for the ask-card lane"
 # The step every job that runs the suite carries, under one name: Playwright loads the config
 # before any hook of the suite, and that config imports `@legion/contracts`, whose built dist/
 # its Node runner reads (dispatch-browser.yaml's shard job says it at length).
@@ -860,13 +862,14 @@ BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
 # pinned build step in the gate below names already, so this job adds no command of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
-# The six steps that run the browser suite, named together wherever a Run or a read cites the
+# The seven steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the six names, rather than beside the first of them.
+# here, below the seven names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
-    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)} and "
+    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_ASK_CARD_SPECS, BROWSER_ASK_CARD)} and "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
@@ -1241,6 +1244,11 @@ GATES = [
         pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ], workflow=BROWSER_SITE),
+        # The ask-card job builds it once for the same reason, for the stack's server and the
+        # reviewer's, and names its step for its own lane as the embedder job does.
+        pinned_step(BROWSER_ASK_CARD, BROWSER_ASK_CARD_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
          f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
@@ -1249,7 +1257,8 @@ GATES = [
         (CONTRACTS_SRC, f"{BROWSER_SUITE_STEPS} read it through Playwright's own Node "
          f"resolution, which takes the package's built dist/, and {at_browser(BROWSER_CONTRACTS)}, "
          f"{at_browser(BROWSER_CONTRACTS, BROWSER_ALONE)}, {at_browser(BROWSER_CONTRACTS, BROWSER_MP)}, "
-         f"{at_browser(BROWSER_CONTRACTS, BROWSER_EMBEDDER)} and "
+         f"{at_browser(BROWSER_CONTRACTS, BROWSER_EMBEDDER)}, "
+         f"{at_browser(BROWSER_CONTRACTS, BROWSER_ASK_CARD)} and "
          f"{at_browser(BROWSER_CONTRACTS, BROWSER_VISUAL)} make that build, one per job, before "
          "Playwright loads a config that imports the package; "
          "packages/dispatch/web/vite.config.ts:117-126 aliases"),

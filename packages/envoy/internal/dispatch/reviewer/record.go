@@ -3,13 +3,16 @@ package reviewer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -207,6 +210,9 @@ func BuildRecord(ctx context.Context, database *store.Store, subject Subject) (R
 		record.Document = &document
 		if issueKey == "" {
 			issueKey, projectKey = owner.issueKey, owner.projectKey
+		}
+		if err := blockQuestion(&record.Text, document.Markdown, subject.BlockID); err != nil {
+			return Record{}, err
 		}
 	}
 	if issueKey != "" {
@@ -456,6 +462,26 @@ type documentOwner struct{ issueKey, projectKey string }
 const versionAt = `coalesce((select v.markdown from artifact_versions v
 	where v.artifact_id = a.id and ($2::timestamptz is null or v.created_at <= $2)
 	order by v.number desc limit 1), '')`
+
+// blockQuestion gives text, a decision block's, the block's question as the document's markdown
+// holds it (docs.AskBlockQuestionMarkdown): with the pictures, the links and the marks the ask's
+// row leaves out, so every rule of what a rewrite keeps weighs them (Preserve) and the rewrite
+// writes them back (the server's rewriteDecisionBlock). It leaves every other kind's text as it
+// is, and a block the version read does not hold yet, whose row is all there is to read.
+func blockQuestion(text *Text, markdown, blockID string) error {
+	if text.Kind != KindDecisionBlock || blockID == "" {
+		return nil
+	}
+	question, err := docs.AskBlockQuestionMarkdown(markdown, blockID)
+	switch {
+	case errors.Is(err, pmdoc.ErrTargetNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("reviewer: read the question of decision block %s: %w", blockID, err)
+	}
+	text.Body = question
+	return nil
+}
 
 // readDocument is the document id at at, and its owner.
 func readDocument(ctx context.Context, q queryer, id string, at *time.Time) (Document, documentOwner, error) {

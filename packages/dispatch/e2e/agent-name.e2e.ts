@@ -182,16 +182,17 @@ test("the page reads the agent list once, asks nothing per agent, and shows a re
   }
 });
 
-// The ask card's provenance line holds the turn, the asker's copy-handles button with the live
-// link beside it, and the time. On a phone the live link's 44 px touch box and "Waiting on you"
-// leave the asker's name a few letters ("Le…") unless the asker gets a line of its own.
+// The ask card's provenance line holds the asker's copy-handles button with the live link beside
+// it, and the time; the turn is named there only where it is not the reader's own (INFRA-3231's
+// R7). On a phone the live link's 44 px touch box leaves the asker's name a few letters ("Le…")
+// unless the asker gets the room the line has.
 //
 // It stayed on the real stack after a measurement, not by the exclusion rules: moved to the
 // stubbed layer it read `scrollWidth` 144 against `clientWidth` 116 and failed, because the
 // claim is a text measurement and a stubbed page paints before its web fonts have loaded, where
 // the real stack's server round trips give them the time. A row whose claim is a width needs a
 // settled font, and this layer is faster than that.
-test("on a phone the ask card's asker reads its whole name beside Waiting on you and the live link @phone", async ({
+test("on a phone the ask card's asker reads its whole name beside the live link @phone", async ({
   browser,
 }) => {
   const seeded = await seed();
@@ -200,7 +201,8 @@ test("on a phone the ask card's asker reads its whole name beside Waiting on you
     const page = await alice.newPage();
     await page.goto("/");
     const card = page.getByTestId(`ask-${seeded.runAsk}`);
-    await expect(card.getByTestId(`turn-${seeded.runAsk}`)).toHaveText("Waiting on you");
+    // The reader's own question names no turn: it is hers.
+    await expect(card.getByTestId(`turn-${seeded.runAsk}`)).toHaveCount(0);
     await expect(
       card.getByRole("link", { exact: true, name: `Open live conversation with ${runCurrent}` })
     ).toBeVisible();

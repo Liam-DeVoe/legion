@@ -93,6 +93,10 @@ export interface HarnessOptions {
   /** Aborting it while the harness starts stops every process started so far, and the start
    *  rejects with `Interrupted`. */
   readonly signal?: AbortSignal;
+  /** The rows to start, in place of the table's (`targetedListeners`): a spec that starts a
+   *  server of its own beside its stack's, as `e2e/reviewer-server.ts` starts the reviewer's
+   *  Dispatch, starts that row alone, against the ports and the database `env` names. */
+  readonly listeners?: readonly HarnessListener[];
 }
 
 interface Watched extends HarnessProcess {
@@ -251,7 +255,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const environment: NodeJS.ProcessEnv = { ...process.env, ...options.env };
   // Refuses a malformed or duplicated port before anything starts.
   const given = harnessPorts(environment);
-  const listeners = targetedListeners();
+  const listeners = options.listeners ?? targetedListeners();
   if (options.logDir !== undefined) mkdirSync(options.logDir, { recursive: true });
   const supervisor = new Supervisor();
   const interrupt = () => supervisor.interrupt();

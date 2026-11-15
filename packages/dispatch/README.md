@@ -114,7 +114,10 @@ credential-request feature is on, and tests seed its pending requests with
 deployment that configures none (`AGENTS.md` has the switch). It starts
 `e2e/fake-model.ts`, the stand-in model, which the server's model groups call through
 `DISPATCH_TEST_MODEL_URL`, and tests script its answers and read the requests it got with
-`setModelRules` and `modelRequests` from `e2e/fake-model-helpers.ts`. It also starts
+`setModelRules` and `modelRequests` from `e2e/fake-model-helpers.ts`. The server sets one group,
+Rewrite and Define's (deployment `stand-in-rewrite-define`), so a person's Rewrite and Define
+answer; the reviewer holds texts only on the server `e2e/ask-card-reviewer.e2e.ts` starts for
+itself beside its stack's, with the reviewer's settings (`e2e/reviewer-server.ts`). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the

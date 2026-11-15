@@ -299,6 +299,55 @@ func (s *server) decisionBlockSubject(ctx context.Context, row heldRow) (reviewe
 	return subject, nil
 }
 
+// applicableDecision is decision about the held row, except that a decision to post the reviewer's
+// rewrite of a decision block that the block cannot hold is a decision to post the block as
+// written, saying why: the rewrite would drop a picture or a link the block's question holds,
+// which the release would refuse (rewriteDecisionBlock). Deciding it here keeps the held row's
+// outcome and its writing_check_events row truthful, which R8's counts read. Where the block
+// cannot be read the decision stands, and the release still refuses what the block cannot hold.
+func (s *server) applicableDecision(ctx context.Context, row heldRow, decision heldDecision) heldDecision {
+	if row.kind != string(reviewer.KindDecisionBlock) || decision.outcome != reviewRewritePosted || row.rewrite == nil {
+		return decision
+	}
+	refusal, err := s.decisionBlockRewriteRefusal(ctx, row.id, *row.rewrite)
+	if err != nil {
+		slog.Warn("dispatch: weigh the reviewer's rewrite of a decision block", "ask", row.id, "error", err)
+		return decision
+	}
+	if refusal == "" {
+		return decision
+	}
+	detail := "the reviewer's rewrite is not applied: " + refusal
+	if decision.detail != "" {
+		detail = decision.detail + "; " + detail
+	}
+	return heldDecision{outcome: reviewPostedAsWritten, detail: detail, reason: decision.reason}
+}
+
+// decisionBlockRewriteRefusal is why the decision block ask id cannot hold rewrite, "" where it
+// can: a picture or a link the block's question holds, as its document's newest version holds it
+// (docs.AskBlockQuestionMarkdown, which the review's record read), that the rewrite's question
+// leaves out. It is the release's own write guard (docs.RefuseDroppedInlines), worded as
+// rewriteRefusal gives it.
+func (s *server) decisionBlockRewriteRefusal(ctx context.Context, id string, rewrite reviewer.Text) (string, error) {
+	var blockID, markdown string
+	if err := s.deps.Store.Pool.QueryRow(ctx, `
+		select a.block_id, coalesce((select v.markdown from artifact_versions v
+			where v.artifact_id = a.block_artifact_id order by v.number desc limit 1), '')
+		from asks a where a.id = $1 and a.block_id is not null`, id).Scan(&blockID, &markdown); err != nil {
+		return "", fmt.Errorf("read decision block %s: %w", id, err)
+	}
+	question, err := docs.AskBlockQuestionMarkdown(markdown, blockID)
+	if err != nil {
+		return "", err
+	}
+	err = docs.RefuseDroppedInlines(question, rewrite.Body)
+	if refusal := rewriteRefusal(err); refusal != "" {
+		return refusal, nil
+	}
+	return "", err
+}
+
 // releaseDecisionBlock is a held decision block's post: in one transaction it applies the
 // reviewer's rewrite where the outcome is rewrite_posted and the ask is still open
 // (rewriteDecisionBlock), ends the hold, appends the quiet ask.reviewed an open page refetches its
@@ -333,11 +382,19 @@ func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *he
 		before := model.NewAskEditPrevious(ask)
 		record := model.AskRewriteEdit{By: model.RewriteByReviewer, AskedBy: reviewerActor, Reason: findingsReason(row.findings)}
 		rewritten, event, err := s.rewriteDecisionBlock(documentCtx, tx, ask, *row.rewrite, record)
-		if err != nil {
+		switch reason := rewriteRefusal(err); {
+		case reason != "":
+			// The block cannot hold the reviewer's rewrite, which wrote nothing: the block posts
+			// as its writer wrote it rather than staying held for good. The decision weighed the
+			// rewrite against the block first (applicableDecision), so only a block changed
+			// since the decision reaches here.
+			slog.Warn("dispatch: the reviewer's rewrite of a decision block is not applied", "ask", ask.ID, "reason", reason)
+		case err != nil:
 			return err
+		default:
+			ask, previous = rewritten, &before
+			published = append(published, event)
 		}
-		ask, previous = rewritten, &before
-		published = append(published, event)
 	}
 	if _, err := tx.Exec(ctx, `update asks set held_until = null where id = $1`, ask.ID); err != nil {
 		return err
@@ -383,14 +440,20 @@ func findingsReason(findings []reviewer.Finding) string {
 // version and the event name Dispatch, and its own rewrite starts no review
 // (AskBlockReworded); record.AskedBy names who asked. The reviewer's rewrite of a held decision
 // block (releaseDecisionBlock) calls it, and a person's Rewrite of a decision block calls it with
-// record.By model.RewriteByPerson (ask_rewrite.go). ctx is the document context of tx's ledger
-// (docs.API.Join), and the caller has locked the ask's owner and its row; it publishes the event
-// once tx commits.
+// record.By model.RewriteByPerson (ask_rewrite.go). The rewrite read the block's question as the
+// document holds it, in markdown (reviewer.BuildRecord), so its question is written back as
+// markdown, its pictures, links and marks with it, while the row takes the plain text the block
+// parses back to; a rewrite that would drop a picture or a link the block holds is refused, as
+// *docs.ErrAskBlockUnrepresentable, which rewriteRefusal gives as the reason it was not applied.
+// ctx is the document context of tx's ledger (docs.API.Join), and the caller has locked the ask's
+// owner and its row; it publishes the event once tx commits.
 func (s *server) rewriteDecisionBlock(ctx context.Context, tx pgx.Tx, ask model.Ask, rewrite reviewer.Text, record model.AskRewriteEdit) (model.Ask, model.Event, error) {
 	if ask.BlockID == nil {
 		return model.Ask{}, model.Event{}, fmt.Errorf("ask %q is no decision block", ask.ID)
 	}
-	rewritten, _, event, err := s.writeAskEdit(ctx, tx, ask, rewriteWording(rewrite), reviewerActor, &record)
+	wording := rewriteWording(rewrite)
+	wording.QuestionMarkdown = true
+	rewritten, _, event, err := s.writeAskEdit(ctx, tx, ask, wording, reviewerActor, &record)
 	return rewritten, event, err
 }
 

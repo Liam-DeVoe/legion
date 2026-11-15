@@ -4,17 +4,19 @@ name: Dispatch browser suite
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
 # over four shard machines, the three `-alone` projects get a machine each, the two-process job,
-# the fake-embedder job and the containerised visual review take one each, and one merge job
-# joins what the shard and alone legs wrote into a single report and publishes the run's flake
-# rate.
+# the fake-embedder job, the ask-card job and the containerised visual review take one each, and
+# one merge job joins what the shard and alone legs wrote into a single report and publishes the
+# run's flake rate.
 #
 # Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 # `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
-# fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-# parallel project, the three `-alone` ones, the two-process job, the visual review and that
-# same embedder job, over every row. So an unlabelled pull request pays for the rows that
-# answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
-# run pay for the rest, each of which has the wall time for them.
+# fake-embedder job, which holds a check of the pull request it is on, and the ask-card job,
+# which runs the ask card's rows the full real-stack share of the `@pr` rows cannot hold; `full`
+# runs every parallel project, the three `-alone` ones, the two-process job, the visual review
+# and that same embedder job, over every row, the ask card's among them. So an unlabelled pull
+# request pays for the rows that answer it, and the merge queue, a labelled pull request, a
+# workflow_dispatch and the nightly run pay for the rest, each of which has the wall time for
+# them.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -1235,6 +1237,96 @@ jobs:
           name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
+  # The ask card's rows (INFRA-3231's R5 and R7: e2e/ask-card-rewrite.e2e.ts,
+  # ask-card-define.e2e.ts, ask-card-reviewer.e2e.ts and ask-card-menu.e2e.ts), which a pull
+  # request must see on every push, where the shard job's lane cannot hold them: its real-stack
+  # share is full, at the 150 rows e2e/__tests__/pull-request-lane.test.ts holds it to
+  # (dispatch://INFRA-1407's R1), so they carry no `@pr` and the pull-request lane runs them
+  # here. On the full lane the shard job runs them with every untagged row, so this job runs on
+  # the pull-request lane alone, and no row runs twice in one run. It is the embedder job's shape:
+  # one Chromium install, one stack on the job's own Postgres service, and the server built once
+  # so the harness and the reviewer's own server (e2e/reviewer-server.ts) both find it current.
+  #
+  # Like the embedder job its rows upload no blob report: the merge job joins the shard and alone
+  # legs, and this job's own conclusion is what the caller's `dispatch-browser` job reads. It is
+  # in the merge job's `needs` and in that job's name filter, where it gets a null leg and is
+  # passed over by reading one, exactly as embedder is.
+  #
+  # No budget measured on this file's own runs yet, so the two below are derived from the
+  # embedder job's, whose steps these are: its install step's 4 min, and for the browser step
+  # the rows' own seconds - about forty rows, of 2 to 25 s each by their `SLOW(>=2s)` notes, so
+  # about six minutes at the run's one worker, doubled for the retry a failed row takes. The job
+  # budget is those two plus the embedder job's 135 s for every step without one, rounded up:
+  # 4 + 12 min plus 135 s = 19 min. The first runs replace these with readings of their own, as
+  # this file's head requires.
+  ask-card:
+    if: inputs.lane == 'pull-request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only, as the embedder job restores it and for the same reason.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the specs import read some of contracts' values from its built dist/,
+        # through Playwright's own Node resolution (the shard job's step of the same name).
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build the Dispatch server for the ask-card lane
+        # run-server.sh builds it too, inside the harness's boot wait, once for the stack's
+        # server and once for the reviewer's; built here, both find it current and start in
+        # seconds. The name carries the lane because .github/scripts/check-ci-filters.sh names
+        # a step of this workflow by its own name.
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # Browsers only, no apt: the multiprocess job's step of this name says why that list is
+        # not needed and what the 4 minutes are.
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Browser-test the ask card against the stand-in model
+        timeout-minutes: 12
+        run: bun run e2e -- --project=chromium ask-card-rewrite ask-card-define ask-card-reviewer ask-card-menu
+        working-directory: packages/dispatch
+      # `if: failure()`, as the embedder job's upload is, for the reason it gives. The folder
+      # holds the reviewer's server log too (e2e/reviewer-server.ts writes it there).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-browser-ask-card-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
   # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
   # set compared against a committed baseline, in light and in dark, at a desktop width and two
   # of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
@@ -1424,7 +1516,7 @@ jobs:
     # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
     # run would be reported as legs that uploaded nothing rather than as the build that never
     # handed them anything. The verdict step below names it as it names the rest.
-    needs: [binaries, shard, alone, multiprocess, embedder, visual]
+    needs: [binaries, shard, alone, multiprocess, embedder, ask-card, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
@@ -1570,8 +1662,8 @@ jobs:
           # This run's attempt's jobs, read once here and read again by reading three below.
           # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
           # that both readings take. The jobs API lists the caller's jobs too, so the script
-          # holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
-          # embedder, visual and merge; a called workflow's job is named
+          # holds the name to this workflow's eight - binaries, shard, alone, multiprocess,
+          # embedder, ask-card, visual and merge; a called workflow's job is named
           # `<the caller's job> / <this job>`, with a matrix leg in brackets after it.
           #
           # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.

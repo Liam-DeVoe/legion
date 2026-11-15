@@ -944,10 +944,13 @@ export function AskCard({
             badge swaps the wording in place, so the badge is pressed back where it was pressed;
             in a decision block it stands in the block's own header, above the document's text,
             for the same reason. The names are the parts that give up width: a separator that
-            wrapped left a line opening - or ending - on a bare "·". A block ask the server
-            indexed with no pending author has an empty label and still says when it was asked.
-            The reader's own question is waiting on them wherever it is drawn, so "Waiting on
-            you" is a line they do not need and the turn is named only where it is somebody
+            wrapped left a line opening - or ending - on a bare "·", so the turn, the asker and
+            the time are one group that never wraps. The badge and the reference may wrap below
+            it: on a phone, beside the asker's chevron and the live link's 44 px touch box, a
+            reference held on the same line left the asker's name a few letters. A block ask the
+            server indexed with no pending author has an empty label and still says when it was
+            asked. The reader's own question is waiting on them wherever it is drawn, so "Waiting
+            on you" is a line they do not need and the turn is named only where it is somebody
             else's. */}
         {inBlock && provenanceSlot != null ? (
           createPortal(
@@ -958,7 +961,9 @@ export function AskCard({
             provenanceSlot
           )
         ) : inBlock && provenanceSlot === null ? null : (
-          <div className={`mb-1.5 flex items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}>
+          <div
+            className={`mb-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
+          >
             {provenanceItems}
           </div>
         )}

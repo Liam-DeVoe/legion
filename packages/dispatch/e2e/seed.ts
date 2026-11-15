@@ -61,6 +61,16 @@ const tables = [
   // by its state and its node row stays.
   "priority_tuples",
   "priority_nodes",
+  // INFRA-3231's tables no foreign key ties to an issue (migrations 20261113085841,
+  // 20261115061524, 20261115084745): a held text a row leaves behind would be posted by the
+  // reviewer's sweep into the next row's issue of the same key, and the writing check's events
+  // and the word records are what the counts route and the reader's words route add up, so a row
+  // that reads them would count every earlier row's. The records job's cursor
+  // (word_records_cursor) stays: its one row is the migration's own, and no server of this
+  // harness runs the job.
+  "held_texts",
+  "writing_check_events",
+  "word_questions",
   "user_sessions",
 ];
 

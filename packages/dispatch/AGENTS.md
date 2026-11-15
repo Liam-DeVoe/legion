@@ -2154,16 +2154,24 @@ checkout, `packages/envoy/dispatch-e2e` (gitignored), built under
 one checkout serialise their builds; Go rewrites it only when the source
 changed, and a running server keeps the inode it started from. The script
 unsets inherited `DISPATCH_*`/`ENVOY_*`/`NATS_*` variables, supplies a fresh App
-key, passes no cookie signing key (the server generates one for its process, as
-`DISPATCH_DEV_SIGNIN` requires, or in two-process mode derives one from the
-`DISPATCH_DEV_SIGNIN_SHARED_KEY` the script passes on), and gives the server no caller Home or XDG
+key, passes no cookie signing key (the server derives one from the
+`DISPATCH_DEV_SIGNIN_SHARED_KEY` the script passes on: each stack's own in a pooled run, which
+`e2e/harness-pool.ts` generates so a second server on the stack's database, the reviewer's of
+`e2e/reviewer-server.ts`, signs with it too, and the run's in two-process mode; without one it
+generates a key for its process, as `DISPATCH_DEV_SIGNIN` requires), and gives the server no caller Home or XDG
 directory. A caller's environment or `~/.config/legion/envoy.json` /
 `~/.local/share/dispatch/{app.json,signing-key}` therefore cannot point the
 test server at a live Envoy, dashboard origin or GitHub App (every Legion pane
 exports `ENVOY_URL`). `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are required inputs, the fakes'
 reported ports; `FAKE_MODEL_PORT`, the stand-in model's (`e2e/fake-model.ts`), is optional, and
-set it reaches the server as `DISPATCH_TEST_MODEL_URL`, which every model group the run sets
-calls. On the TypeScript side `e2e/harness-ports.ts` is the one place the harness ports
+set it reaches the server as `DISPATCH_TEST_MODEL_URL` with Rewrite and Define's model group
+(`DISPATCH_REWRITE_DEFINE_MODEL_*`, deployment `stand-in-rewrite-define`), which every model group
+the run sets calls. The reviewer's settings hold every agent's text, so no stack server sets them:
+`e2e/ask-card-reviewer.e2e.ts` starts a second server of its own per worker, against the stack's
+database and fakes, through `startHarness`'s `listeners` (`e2e/reviewer-server.ts`), and its
+rows run in the `ask-card` job of `.github/workflows/dispatch-browser.yaml` on the pull-request
+lane with the other `ask-card-*` files, whose rows carry no `@pr`. On the TypeScript side
+`e2e/harness-ports.ts` is the one place the harness ports
 are resolved. The secrets broker
 the server relays credential requests to is one switch, `DISPATCH_E2E_AGENT_SECRETS_URL`, which
 `run-server.sh` and `e2e/harness-broker.ts` read alike (`${VAR-default}`, so empty and unset

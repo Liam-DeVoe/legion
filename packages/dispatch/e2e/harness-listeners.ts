@@ -56,6 +56,18 @@ const dispatchServer = {
   report: /msg="dispatch: listening" addr=127\.0\.0\.1:(\d+)(?:\s|$)/,
 } as const;
 
+/** A Dispatch server a spec starts beside its stack's own (`startHarness`'s `listeners`), with
+ *  `env` on top of the harness's environment: `run-server.sh` against the stack's database and
+ *  fakes, under the stack's own port variable, which the caller leaves empty so the OS chooses
+ *  (`e2e/reviewer-server.ts`). */
+export function ownDispatchServer(
+  id: string,
+  name: string,
+  env: Readonly<Record<string, string>>
+): HarnessListener {
+  return { ...dispatchServer, env, id, key: "dispatch", name };
+}
+
 // Two-process mode (e2e/harness-processes.ts): the round-robin proxy on DISPATCH_E2E_PORT, which
 // every helper addresses, then Dispatch A and B, each a run-server.sh against the one
 // DATABASE_URL, with B on DISPATCH_E2E_WEB_DIST_B's build when it is set (run-server.sh reads that

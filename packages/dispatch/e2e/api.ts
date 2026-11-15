@@ -800,6 +800,46 @@ export function getAsk(id: string, options: ApiOptions = {}) {
   return get("/api/v1/asks/{id}", { params: { id } }, options);
 }
 
+/** `GET /api/v1/held/{id}`: one text the reviewer holds (INFRA-3231's R5), as an agent's bearer
+ *  reads it - no person reads one - with its state (`reviewing`, `awaiting_writer`, `posting`,
+ *  `posted`, `failed`) and, once it posts, its outcome. `id` is the id its write answered: an
+ *  issue's key, else a uuid. */
+export function getHeld(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/held/{id}", { params: { id } }, { as: "agent", ...options });
+}
+
+/** `GET /api/v1/me/definitions`: the caller's own definitions, newest first; no other person's. */
+export function listMyDefinitions(options: ApiOptions = {}) {
+  return get("/api/v1/me/definitions", {}, options);
+}
+
+/** `GET /api/v1/writing-check/counts` (INFRA-3231's R8): each day's counts of each project and
+ *  person, for the UTC days `first` to `last`, the last 14 by default. */
+export function getWritingCheckCounts(
+  query: Query<"/api/v1/writing-check/counts", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/writing-check/counts", { query }, options);
+}
+
+/** `GET /api/v1/readers/{login}/words`: the words `login` asked about, a Define use among them,
+ *  each once with how many records name it. A person reads their own alone. */
+export function getReaderWords(login: string, options: ApiOptions = {}) {
+  return get("/api/v1/readers/{login}/words", { params: { login } }, { login, ...options });
+}
+
+/** `GET /api/v1/events/log`: the whole event log by id, oldest first, the events after `after`. */
+export function getEventLog(
+  query: Query<"/api/v1/events/log", "get"> = {},
+  options: ApiOptions = {}
+): Promise<DispatchEvent[]> {
+  return getAnswering<DispatchEvent[], "/api/v1/events/log">(
+    "/api/v1/events/log",
+    { query },
+    options
+  );
+}
+
 export function listAskFollowers(id: string, options: ApiOptions = {}) {
   return get("/api/v1/asks/{id}/followers", { params: { id } }, options);
 }
