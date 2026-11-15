@@ -145,10 +145,10 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
     client.editComment(id, { body: stringArg(args, "body"), actor })
   );
   const { label, details } = await commentOwnerResult(client, comment, document);
-  return {
-    text: `Edited comment ${comment.id} on ${label}. Dispatch keeps the body it replaced.`,
-    details,
-  };
+  // The answer proves the edit landed and nothing else. A build that takes the edit and keeps no
+  // earlier body answers the same way (dispatch://INFRA-1523), so a sentence here about the kept
+  // body would be this command telling a person something its own answer does not show.
+  return { text: `Edited comment ${comment.id} on ${label}.`, details };
 }
 
 /** `dispatch delete-comment`: the author withdraws their own comment. */
@@ -184,8 +184,10 @@ export async function editMessageCommand(context: CommandContext): Promise<Dispa
     client.editMessage(id, { body: stringArg(args, "body"), actor })
   );
   const issue = messageIssueKey(message);
+  // The answer proves the edit landed; what became of the body it replaced is the history read's
+  // to answer, as the comment edit above says.
   return {
-    text: `Edited message ${message.id} on ${issue}. Dispatch keeps the body it replaced.`,
+    text: `Edited message ${message.id} on ${issue}.`,
     details: { issue, message: message.id },
   };
 }

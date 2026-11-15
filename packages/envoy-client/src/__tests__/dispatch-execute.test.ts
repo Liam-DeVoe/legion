@@ -15313,7 +15313,7 @@ async function runCorrection(
   return { result, requests };
 }
 
-test("edits a comment through its reference and says Dispatch keeps the body it replaced", async () => {
+test("edits a comment through its reference and claims nothing of the body it replaced", async () => {
   const { result, requests } = await runCorrection(
     "dispatch_edit_comment",
     {
@@ -15332,7 +15332,7 @@ test("edits a comment through its reference and says Dispatch keeps the body it 
   );
 
   expect(result).toEqual({
-    text: `Edited comment ${correctedComment} on DSP-42. Dispatch keeps the body it replaced.`,
+    text: `Edited comment ${correctedComment} on DSP-42.`,
     details: { issue: "DSP-42", comment: correctedComment },
   });
   expect(requests).toEqual([
@@ -15385,7 +15385,7 @@ test("deletes a comment by bare id and says no read gives its body again", async
   ]);
 });
 
-test("edits an issue message through its reference and says Dispatch keeps the body it replaced", async () => {
+test("edits an issue message through its reference and claims nothing of the body it replaced", async () => {
   const { result, requests } = await runCorrection(
     "dispatch_edit_message",
     {
@@ -15404,7 +15404,7 @@ test("edits an issue message through its reference and says Dispatch keeps the b
   );
 
   expect(result).toEqual({
-    text: `Edited message ${correctedMessage} on DSP-42. Dispatch keeps the body it replaced.`,
+    text: `Edited message ${correctedMessage} on DSP-42.`,
     details: { issue: "DSP-42", message: correctedMessage },
   });
   expect(requests).toEqual([
