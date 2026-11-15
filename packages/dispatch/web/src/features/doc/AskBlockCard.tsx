@@ -95,11 +95,11 @@ export function AskBlockCard({
             trailing={
               <>
                 {!carded && answered ? (
-                  // From `md` it follows the header's first line where it fits and takes the
-                  // next row where it does not; below `md` it is a row of its own, under who
-                  // asked and when (`BlockAskHeader`).
+                  // From 36rem of header it follows the header's first line where it fits and
+                  // takes the next row where it does not; below 36rem it is a row of its own,
+                  // under who asked and when (`BlockAskHeader`).
                   <span
-                    className="flex items-center gap-x-2 max-md:order-2 max-md:basis-full"
+                    className="flex items-center gap-x-2 @max-[36rem]:order-2 @max-[36rem]:basis-full"
                     data-dispatch-ask-answered=""
                   >
                     <span>Answered by {facts.answeredBy}</span>

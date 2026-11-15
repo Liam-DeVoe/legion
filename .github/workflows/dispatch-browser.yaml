@@ -48,7 +48,11 @@ name: Dispatch browser suite
 # review read the two together. Two more stood beside them, the Playwright install and the key
 # its apt archive cache was restored under: those two jobs run in the image this repository
 # builds now, which carries the three browsers and every host package they need, so both of
-# those scripts are gone with the steps that called them (dispatch://INFRA-1443).
+# those scripts are gone with the steps that called them (dispatch://INFRA-1443). One shared body
+# is an action instead, .github/actions/dispatch-e2e-binaries, which the shard, alone and visual
+# jobs call to take what the binaries job built: one of its two steps is
+# actions/download-artifact, which no script can call, and neither carries a budget, so the
+# timeout-minutes its steps cannot carry costs it nothing.
 #
 # The budget rule every job and step below follows, this file being where it is written down now
 # that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -114,8 +118,8 @@ jobs:
   # run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
   #
   # The visual job runs on the runner and could build them, but its scripts would then build
-  # them inside its 3-minute browser step; it takes them from here too, and its download step
-  # says what that build cost the step.
+  # them inside its 4-minute browser step; it takes them from here too, and the comment on its
+  # download step says what that build cost the step when its budget was 3 minutes.
   #
   # It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
   # already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
@@ -354,7 +358,9 @@ jobs:
     #   Complete job                                           0
     #
     # The three uploads are three steps of this job and not one, so the sum below counts each
-    # of them: 3 + 2 + 4, not 4.
+    # of them: 3 + 2 + 4, not 4. The download and the chmod were two steps when those legs ran
+    # and are one now, the call of ./.github/actions/dispatch-e2e-binaries, which runs the same
+    # two; the sum counts both, 5 + 1.
     #
     # The browser step's own 9 minutes above held at the merged head, where #2958's
     # accessibility rows joined the shards: its maxima there are 381 s (run 42521581875, job
@@ -418,18 +424,10 @@ jobs:
       # What the binaries job above built, in place of this job's own actions/setup-go
       # and go-envoy cache restore, which are gone: with no go command left here they bought
       # nothing, and the restore was there only for the build run-server.sh no longer does.
-      # The directory is the one run-broker.sh built the broker's three binaries in, which is
-      # where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
-      # binary rides along in it and is named by path below.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-broker
-      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:235-241 and run-broker.sh:98-103 refuse a path that is not executable, and
-      # that refusal would otherwise surface in a stack's own log, far from this cause.
-      - name: Make the downloaded binaries executable
-        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      # The action downloads the four into the one directory run-broker.sh serves and makes them
+      # executable, and says why both; the browser step below names the server by its path
+      # there and the broker's three by the directory.
+      - uses: ./.github/actions/dispatch-e2e-binaries
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # WHY EVERY JOB THAT RUNS THE SUITE CARRIES THIS STEP. Playwright loads
@@ -949,7 +947,8 @@ jobs:
     #   Complete job                                           1
     #
     # The three uploads are three steps here too, and the sum below counts each of them:
-    # 2 + 2 + 1, not 2.
+    # 2 + 2 + 1, not 2. The download and the chmod are one step now, as in the shard job, and
+    # the sum counts both, 5 + 0.
     #
     # The browser step's own 4 minutes above still holds: 69 s is the most it took over these
     # nine legs, webkit-alone's again, well under the 194 s that budget was derived from - none
@@ -985,17 +984,9 @@ jobs:
         with:
           persist-credentials: false
       # What the binaries job above built, in place of this job's own actions/setup-go
-      # and go-envoy cache restore, which are gone: the shard job's step of this name says why,
-      # and this job runs the same two scripts from the same directory.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-broker
-      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:235-241 and run-broker.sh:98-103 refuse a path that is not executable, and
-      # that refusal would otherwise surface in a stack's own log, far from this cause.
-      - name: Make the downloaded binaries executable
-        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      # and go-envoy cache restore, which are gone: the shard job's call of this action says
+      # why, and this job runs the same two scripts from the same directory.
+      - uses: ./.github/actions/dispatch-e2e-binaries
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The shard job's step of this name, for the reason it gives: Playwright's Node runner
@@ -1520,10 +1511,11 @@ jobs:
   #
   # The table's setup-go and go cache restore rows are gone from this job, and its connections
   # step with them: the job runs no go command now (the download step below says why), so the
-  # binaries job's artifact download and its chmod stand where those three stood. The download
-  # took 5 s in the shard job of run 43691891752 (job 132744755413), under the 8 + 10 + 3 s
-  # the three removed steps took in this job of that run (job 132744152651), so the job budget
-  # above, derived with them, still bounds it.
+  # call of ./.github/actions/dispatch-e2e-binaries - the binaries job's artifact download and
+  # its chmod - stands where those three stood. The download took 5 s in the shard job of run
+  # 43691891752 (job 132744755413), under the 8 + 10 + 3 s the three removed steps took in this
+  # job of that run (job 132744152651), so the job budget above, derived with them, still
+  # bounds it.
   visual:
     needs: binaries
     if: inputs.lane == 'full'
@@ -1543,19 +1535,10 @@ jobs:
       # 07:56:53, and the step timed out on its phone shots with every shot it reached passing.
       # Built in the binaries job, they cost a build the shard and alone jobs already wait for,
       # and the step's budget measures the shots again, as the image pull and the connections
-      # read were moved out of it before. The directory is the one run-broker.sh serves, which
-      # refuses any other, and the one packages/dispatch/e2e/real-broker.ts runs requestseed
-      # from; the server binary rides along in it and is named by path below. They run on the
+      # read were moved out of it before. The action says which directory they land in and why
+      # it makes them executable, and the browser step below names them there. They run on the
       # host here, not in a container: the binaries job builds them static (CGO_ENABLED=0).
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-broker
-      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:235-241 and run-broker.sh:98-103 refuse a path that is not executable, and
-      # that refusal would otherwise surface in the stack's own log, far from this cause.
-      - name: Make the downloaded binaries executable
-        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/dispatch-e2e-binaries
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e

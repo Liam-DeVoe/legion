@@ -16,19 +16,19 @@
 // green (sjawhar/legion#2697).
 //
 // The other files of this family, and what each holds, are listed once, at the head of
-// `large-documents-rows.ts`, which holds what they share - among it the probe this row reads a
-// build through (`whatTheBuildServes`).
+// `large-documents-rows.ts`, which holds what they share. The probe this row reads a build
+// through (`whatTheBuildServes`) is `large-documents-build-probe.ts`.
 import { expect, test } from "@playwright/test";
 
 import { documentNames, largeDocument } from "./large-documents";
-import { readTheLongTasks, throttleTheCpu, watchTheDocument } from "./large-documents-page";
 import {
   builtAcross,
   handedToTheBuild,
-  seedDocument,
   theWindowHeldABuild,
   whatTheBuildServes,
-} from "./large-documents-rows";
+} from "./large-documents-build-probe";
+import { readTheLongTasks, throttleTheCpu, watchTheDocument } from "./large-documents-page";
+import { seedDocument } from "./large-documents-rows";
 import { asUser } from "./users";
 
 /** The longest a main-thread task of a build may hold a page at a desktop width.
@@ -109,22 +109,22 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
     // nothing of this run is on the thread the row is measuring (`large-documents-page.ts`).
     // The second is the probe's own: the window this row reads is the one the probe closes, in
     // the frame after the editor is named, and the editor's opening above is a timer of
-    // another recorder's that can come first. Nothing the probe recorded is read until it has
-    // said the swap that ends the build, a task after it closed that window; read on the
-    // opening alone, this row could find no end to its window and read its tasks against 0.
+    // another recorder's that can come first. The probe says that window with the swap that
+    // ends the build, a task after it closed it, and nothing it recorded is read before then;
+    // read on the opening alone, this row could find no end to its window and read its tasks
+    // against 0.
     const endBy = Date.now() + editorOpensWithinMs;
     const openedMs = await reached.editorOpened(endBy - Date.now());
-    await herBuild.swapped(endBy - Date.now());
+    const ran = await herBuild.swapped(endBy - Date.now());
 
-    const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
-    const began = ran.firstBatchMs ?? 0;
+    const began = ran.firstBatchMs;
     const timers = handedToTheBuild((await page.evaluate(() => window.__servedTimers)) ?? [], ran);
     const [leastBuilt, mostBuilt] = builtAcross(timers);
     // Every long task the page has had, the ones its observer had not yet delivered among
     // them: the task the editor opens in ends just before the probe closes the window, and its
     // entry is delivered a task later still (`readTheLongTasks`).
     const tasks = (await readTheLongTasks(page)).tasks.filter(
-      (task) => task.at >= began && task.at <= (ran.openedMs ?? 0)
+      (task) => task.at >= began && task.at <= ran.openedMs
     );
     const longestTask = tasks.reduce((worst, task) => Math.max(worst, task.ms), 0);
     const spread = tasks
@@ -132,7 +132,7 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
       .join(" ");
     // Printed before it is read against its target, as every other number in this file is.
     console.log(
-      `R11 desktop build · a build of ${Math.round((ran.openedMs ?? 0) - began)} ms from its ` +
+      `R11 desktop build · a build of ${Math.round(ran.openedMs - began)} ms from its ` +
         `first batch, ${tasks.length} main-thread task(s) over 50 ms inside it, longest ` +
         `${Math.round(longestTask)} ms (guard ${aDesktopBuildTaskAtMostMs} ms). The editor ` +
         `opened at ${Math.round(openedMs)} ms, holding ${leastBuilt} top-level block(s) at ` +
@@ -142,17 +142,17 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
     );
 
     // The window is a real build, read from what the build had done rather than from how long
-    // it took: its first batch landed, and the editor's own top-level child count rose between
-    // the first timer the page was handed inside the window and the last, so the batches were
-    // still arriving across it and the number below is not a target met by nothing having
-    // happened. That count is the document's - the same blocks arrive in the same batches
-    // whatever the machine - while the window's length is the runner's, which is why the
-    // 5,000 ms floor that used to stand here was a second reading of the runner beside the one
-    // this row guards: the same build measured 23,061 ms, 41,888 ms and 46,187 ms over three
-    // CI runs four workers wide (42628596511, 42682941869, 42686241170) and 1,640 ms on the
-    // machine of its own this row now has (42697341170), where the floor failed and the guard
-    // it exists for passed at 139 ms of 500.
-    expect(began).toBeGreaterThan(0);
+    // it took: its first batch landed before its editor opened, and the editor's own top-level
+    // child count rose between the first timer the page was handed inside the window and the
+    // last, so the batches were still arriving across it and the number below is not a target
+    // met by nothing having happened. That count is the document's - the same blocks arrive in
+    // the same batches whatever the machine - while the window's length is the runner's, which
+    // is why the 5,000 ms floor that used to stand here was a second reading of the runner
+    // beside the one this row guards: the same build measured 23,061 ms, 41,888 ms and
+    // 46,187 ms over three CI runs four workers wide (42628596511, 42682941869, 42686241170)
+    // and 1,640 ms on the machine of its own this row now has (42697341170), where the floor
+    // failed and the guard it exists for passed at 139 ms of 500.
+    expect(began).toBeLessThan(ran.openedMs);
     theWindowHeldABuild(timers);
     expect(tasks.length, "no task of the build held the thread for 50 ms").toBeGreaterThan(3);
 

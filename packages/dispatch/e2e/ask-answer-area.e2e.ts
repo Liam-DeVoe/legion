@@ -13,7 +13,8 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { documentEditor, indexedBlockAsk, marginCard } from "./editor";
-import { askCard, inboxRow } from "./inbox-pane";
+import { askCard, inboxPane, inboxRow } from "./inbox-pane";
+import { replyRowId } from "./inbox-threads";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { resetDatabase } from "./seed";
 import { pasteFile } from "./sends";
@@ -276,64 +277,96 @@ test("a decision block draws the same header fields as the ask's other places, w
   }
 });
 
-/** Where a read-only decision block's header puts its parts: the rows they fall into, whether
- *  who asked shares the label's row or takes one under it, whether "Answered by" follows the
- *  copy control or takes a row under it, and the header's own height. */
-async function blockHeaderLayout(header: Locator) {
-  return header.evaluate((node) => {
-    const box = (selector: string) => {
-      const found = node.querySelector(selector);
-      if (found === null) throw new Error(`the block header draws no ${selector}`);
-      return found.getBoundingClientRect();
-    };
-    const shares = (a: DOMRect, b: DOMRect) => a.top < b.bottom && a.bottom > b.top;
-    const head = node.getBoundingClientRect();
-    const parts = {
-      answered: box("[data-dispatch-ask-answered]"),
-      asked: box("[data-dispatch-ask-asked]"),
-      copy: box("[data-copy-ref] button"),
-      decision: box("strong"),
-      label: box("[data-ask-state-label]"),
-      pill: box("[data-dispatch-ask-pill]"),
-    };
-    const { answered, asked, copy, label } = parts;
-    // A part opens a row when it starts below the bottom of every part on the row above it.
-    let rows = 0;
-    let rowBottom = Number.NEGATIVE_INFINITY;
-    for (const part of Object.values(parts).sort((a, b) => a.top - b.top)) {
-      if (part.top >= rowBottom - 1) {
-        rows += 1;
-        rowBottom = part.bottom;
-      } else {
-        rowBottom = Math.max(rowBottom, part.bottom);
-      }
-    }
-    const firstRowBottom = Math.max(copy.bottom, label.bottom);
-    return {
-      answeredAfterCopy: shares(answered, label)
-        ? answered.left >= copy.right
-        : answered.top >= firstRowBottom - 1,
-      answeredUnderAsked: answered.top >= asked.bottom - 1,
-      askedInsideHeader: asked.right <= head.right + 1,
-      askedOnLabelRow: shares(asked, label),
-      copyAfterAsked: copy.left >= asked.right,
-      copyAtRightEnd: Math.abs(head.right - copy.right) <= 1,
-      copyOnLabelRow: shares(copy, label),
-      height: Math.round(head.height),
-      oneOrTwoRows: rows === 1 || rows === 2,
-      rows,
-    };
-  });
+/** A box the page drew, as the numbers a row compares. */
+interface Box {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
 }
 
-test("a read-only decision block's header is one wrapping row from md, its copy control on the first, and rows of their own on a phone @phone", async ({
-  browser,
-}) => {
-  // A closed issue's answered block draws its own header: no card under it carries the
-  // provenance. Its blocks are the long-titled session's, whose name is what pushed the copy
-  // control off the first row.
-  const title = "Release planner for the ledger mirror";
-  await setLiveSessions([{ ...planner, title }]);
+/** Whether two drawn boxes stand on one line: each starts above where the other ends. */
+function sameLine(a: Box, b: Box): boolean {
+  return a.top < b.bottom && a.bottom > b.top;
+}
+
+/** The boxes `root` and the parts `selectors` name inside it are drawn in, read in one pass. A
+ *  part `root` draws none of fails the row, naming the part. */
+async function drawnBoxes<Part extends string>(
+  root: Locator,
+  selectors: Readonly<Record<Part, string>>
+): Promise<{ parts: Record<Part, Box>; root: Box }> {
+  const drawn = await root.evaluate((node, wanted: Readonly<Record<string, string>>) => {
+    const boxOf = (element: Element): Box => {
+      const { bottom, left, right, top } = element.getBoundingClientRect();
+      return { bottom, left, right, top };
+    };
+    const parts: Record<string, Box> = {};
+    for (const [name, selector] of Object.entries(wanted)) {
+      const found = node.querySelector(selector);
+      if (found === null) throw new Error(`no ${name} is drawn: nothing matches ${selector}`);
+      parts[name] = boxOf(found);
+    }
+    return { parts, root: boxOf(node) };
+  }, selectors);
+  return drawn as { parts: Record<Part, Box>; root: Box };
+}
+
+/** Where a read-only decision block's header puts its parts: the rows they fall into, whether
+ *  who asked shares the label's row or takes one under it, whether "Answered by" follows the
+ *  copy control or takes a row under it, and the header's own height. And what is drawn rather
+ *  than the boxes around it: a line too narrow for its parts drew the time past the end of who
+ *  asked's own box, over the copy control, and pushed the control past the header's edge. */
+async function blockHeaderLayout(header: Locator) {
+  const { parts, root: head } = await drawnBoxes(header, {
+    answered: "[data-dispatch-ask-answered]",
+    asked: "[data-dispatch-ask-asked]",
+    copy: "[data-copy-ref] button",
+    decision: "strong",
+    label: "[data-ask-state-label]",
+    pill: "[data-dispatch-ask-pill]",
+    time: "[data-dispatch-ask-asked] time",
+  });
+  const { time, ...rowParts } = parts;
+  const { answered, asked, copy, label } = rowParts;
+  // A part opens a row when it starts below the bottom of every part on the row above it. The
+  // time is drawn inside who asked, so it opens none of its own.
+  let rows = 0;
+  let rowBottom = Number.NEGATIVE_INFINITY;
+  for (const part of Object.values(rowParts).sort((a, b) => a.top - b.top)) {
+    if (part.top >= rowBottom - 1) {
+      rows += 1;
+      rowBottom = part.bottom;
+    } else {
+      rowBottom = Math.max(rowBottom, part.bottom);
+    }
+  }
+  return {
+    answeredAfterCopy: sameLine(answered, label)
+      ? answered.left >= copy.right
+      : answered.top >= Math.max(copy.bottom, label.bottom) - 1,
+    answeredUnderAsked: answered.top >= asked.bottom - 1,
+    askedOnLabelRow: sameLine(asked, label),
+    copyAtRightEnd: Math.abs(head.right - copy.right) <= 1,
+    copyInsideHeader: copy.left >= head.left - 1 && copy.right <= head.right + 1,
+    copyOnLabelRow: sameLine(copy, label),
+    height: Math.round(head.bottom - head.top),
+    rows,
+    timeClearOfCopy: !sameLine(time, copy) || time.right <= copy.left + 1,
+    timeInsideHeader: time.right <= head.right + 1,
+  };
+}
+
+/** The long-titled session whose name is what pushed a block header's copy control off its
+ *  first row. */
+const BLOCK_ASKER_TITLE = "Release planner for the ledger mirror";
+
+/** An issue whose spec holds one decision block, asked by the long-titled session and answered,
+ *  with the time the server says the answer was given. Each row closes the issue once it has
+ *  seeded what it needs on it: a closed issue's answered block draws its own header, since no
+ *  card under it carries the provenance. */
+async function seedAnsweredBlock() {
+  await setLiveSessions([{ ...planner, title: BLOCK_ASKER_TITLE }]);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue(
     {
@@ -344,46 +377,95 @@ test("a read-only decision block's header is one wrapping row from md, its copy 
     asker
   );
   const blockAsk = await indexedBlockAsk(issue.key, "decide");
-  await answerAsk(blockAsk.id, { expected_edited_at: null, selected: ["Left"], text: "Left." });
+  const answered = await answerAsk(blockAsk.id, {
+    expected_edited_at: null,
+    selected: ["Left"],
+    text: "Left.",
+  });
+  if (answered.answer === null) throw new Error("the answered ask holds no answer");
+  return { answeredAt: answered.answer.at, blockAsk, issue };
+}
+
+/** What the block header's two layouts hold wherever they are drawn: the time clear of the
+ *  copy control and both inside the header, the control on the label's row. */
+const BLOCK_HEADER_DRAWN = {
+  copyInsideHeader: true,
+  copyOnLabelRow: true,
+  timeClearOfCopy: true,
+  timeInsideHeader: true,
+} as const;
+
+/** From 36rem of header: one line, who asked on the label's row, "Answered by" after the copy
+ *  control or under the line. */
+const BLOCK_HEADER_LINE = {
+  ...BLOCK_HEADER_DRAWN,
+  answeredAfterCopy: true,
+  askedOnLabelRow: true,
+} as const;
+
+/** Below 36rem of header: rows, the copy control at the end of the label's, who asked under it
+ *  and "Answered by" under that. */
+const BLOCK_HEADER_ROWS = {
+  ...BLOCK_HEADER_DRAWN,
+  answeredUnderAsked: true,
+  askedOnLabelRow: false,
+  copyAtRightEnd: true,
+} as const;
+
+/**
+ * The read-only block's header at each width this row reads it at, for this seed. The heights
+ * and rows at 1280, 1024 and 768 px are `main`'s at c69be928, before the header drew a state
+ * label: this seed, its page clock pinned as this row pins it, counted as this row counts rows,
+ * on a build of that tree served by its own harness. There it was 80 px in three rows in the
+ * 491 px column 1280 px leaves beside the margin (the urgency and `Decision`; who asked, when
+ * and the copy control; who answered), 44 px in one row in the 939 px column at 1024, and 68
+ * px in two in the 683 px column at 768 - below 1280 px every button is a 44 px box
+ * (`web/src/styles.css`), the copy control with them. A label that made the header taller
+ * there, or pushed "Answered by" to a row of its own at 1024, fails it. A phone's 305 px header
+ * is held to its rows alone: `main` wrapped who asked onto two lines there, 112 px to these
+ * rows' 92.
+ *
+ * The time is the one part of this seed whose width moves, so the row pins it: at 1024 the one
+ * row leaves 70 px to spare on `main` and 7 px here, and a time as wide as "5 minutes ago"
+ * puts "Answered by" on a row of its own on both. The family the text is drawn in is pinned
+ * too: the browser image the suite runs in answers `sans-serif` as DejaVu Sans, as the runner
+ * did (`.github/docker/browser.Dockerfile`), and so do the machines these figures were read on.
+ */
+const BLOCK_HEADER_AT: Readonly<Record<number, Record<string, boolean | number>>> = {
+  390: { ...BLOCK_HEADER_ROWS, rows: 3 },
+  768: { ...BLOCK_HEADER_LINE, height: 68, rows: 2 },
+  1024: { ...BLOCK_HEADER_LINE, height: 44, rows: 1 },
+  1280: { ...BLOCK_HEADER_ROWS, height: 80, rows: 3 },
+};
+
+test("a read-only decision block's header is one wrapping row where its line fits and rows of their own where it does not, as tall as main's from 768 to 1280 px @phone", async ({
+  browser,
+}) => {
+  const { answeredAt, issue } = await seedAnsweredBlock();
   await patchIssue(issue.key, { status: "done" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    // The page's `Date` is held at the moment the server says the block was answered, its
+    // timers left running, so both of the header's times read "just now" however long the row
+    // takes, whatever the page's clock says against the server's: the width of each time is
+    // part of what the row measures (`BLOCK_HEADER_AT`).
+    await page.clock.setFixedTime(answeredAt);
     await page.goto(`/issues/${issue.key}`);
     const header = documentEditor(page).locator(
       '[data-dispatch-ask-block="decide"] header[data-ask-header]'
     );
     await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
+    await expect(header.locator("time")).toHaveText(["just now", "just now"]);
     const viewport = page.viewportSize();
     if (viewport === null) throw new Error("the page has no viewport");
-    // From `md` (768 px) the header is the one wrapping row it always was: the urgency,
-    // `Decision`, the label, who asked and when, and the copy control share a line that never
-    // wraps - the name truncates instead - and "Answered by" follows the control where it fits
-    // and takes the next row where it does not. Below `md`, beside a 44 px copy control, each
-    // takes a row of its own: the urgency, `Decision`, the label and the copy control at its
-    // right end, then who asked and when, then who answered. A desktop project reads the
-    // widths from 1280 down to `md` and a phone's 390 px, a phone project its own width.
+    // The header picks its layout by its own width, not the viewport's. A desktop project reads
+    // it from 1280 down to a phone's 390 px, a phone project at its own width.
     const widths = viewport.width < 768 ? [viewport.width] : [1280, 1024, 768, 390];
     for (const width of widths) {
+      const expected = BLOCK_HEADER_AT[width];
+      if (expected === undefined) throw new Error(`no layout is written down for ${width} px`);
       await page.setViewportSize({ height: viewport.height, width });
-      const expected =
-        width < 768
-          ? {
-              answeredUnderAsked: true,
-              askedInsideHeader: true,
-              askedOnLabelRow: false,
-              copyAtRightEnd: true,
-              copyOnLabelRow: true,
-              rows: 3,
-            }
-          : {
-              answeredAfterCopy: true,
-              askedInsideHeader: true,
-              askedOnLabelRow: true,
-              copyAfterAsked: true,
-              copyOnLabelRow: true,
-              oneOrTwoRows: true,
-            };
       await expect
         .poll(() => blockHeaderLayout(header), {
           message: `the block header's rows at ${width} px`,
@@ -393,8 +475,50 @@ test("a read-only decision block's header is one wrapping row from md, its copy 
     // A name the row cuts is still there whole, in the tooltip of the part that truncates.
     await expect(header.locator("[data-dispatch-ask-asked] > [title]")).toHaveAttribute(
       "title",
-      new RegExp(`^${title} · `)
+      new RegExp(`^${BLOCK_ASKER_TITLE} · `)
     );
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a closed issue's answered block in the narrowest reading pane draws its time clear of its copy control, and the control inside its header", async ({
+  browser,
+}) => {
+  const { blockAsk, issue } = await seedAnsweredBlock();
+  // The asker's reply under the reader's answer keeps the ask's thread in the reader's Inbox as
+  // a Reply row after the close, and the pane opens a decision block's thread in its document.
+  await createComment(issue.key, { ask_id: blockAsk.id, body: "Left it is." }, asker);
+  await patchIssue(issue.key, { status: "done" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // The pane shows from 1280 px (`READING_PANE_QUERY`), where its narrowest is narrowest.
+    await page.setViewportSize({ height: 900, width: 1280 });
+    await page.goto("/");
+    const row = page.locator(`[data-inbox-row="${replyRowId(blockAsk.id)}"]`);
+    await row.locator("time").first().click();
+    await expect(row).toHaveAttribute("data-inbox-selected", "true");
+    // The reader drags the line between the list and the pane as far right as it goes, where
+    // the pane keeps 30% of the two columns (`PaneDivider`): about 266 px.
+    const divider = page.getByTestId("inbox-pane-divider");
+    const line = await divider.boundingBox();
+    if (line === null) throw new Error("the Inbox draws no pane divider");
+    const y = line.y + line.height / 2;
+    await page.mouse.move(line.x + line.width / 2, y);
+    await page.mouse.down();
+    await page.mouse.move(1279, y, { steps: 5 });
+    await page.mouse.up();
+    await expect(divider).toHaveAttribute("aria-valuenow", "30");
+    const header = inboxPane(page).locator(
+      '[data-dispatch-ask-block="decide"] header[data-ask-header]'
+    );
+    await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
+    await expect
+      .poll(() => blockHeaderLayout(header), {
+        message: "the block header in the narrowest reading pane",
+      })
+      .toMatchObject(BLOCK_HEADER_ROWS);
   } finally {
     await alice.close();
   }
@@ -450,38 +574,26 @@ async function seedTurns() {
 
 /** An ask card's own line: the width of its `@container` row and of the viewport, the two
  *  conditions that pick its layout, whether the copy control shares the label's line, and
- *  whether who asked and when opens a line of its own under that one. */
+ *  whether who asked and when opens a line of its own under that one. The row and who asked
+ *  are read by their own marks (`CardAskHeader`), so a row that lost either says which. */
 async function copyLine(card: Locator) {
   await expect(card.locator("[data-ask-header] [data-copy-ref] button")).toBeVisible();
-  return card
-    .locator("[data-ask-header]")
-    .first()
-    .evaluate((header) => {
-      const label = header.querySelector("[data-ask-state-label]");
-      const copy = header.querySelector("[data-copy-ref] button");
-      if (label === null || copy === null) {
-        throw new Error("the card's header draws no label or no copy control");
-      }
-      let row = copy.parentElement;
-      while (row !== null && getComputedStyle(row).containerType !== "inline-size") {
-        row = row.parentElement;
-      }
-      if (row === null) throw new Error("the card's copy control stands in no @container row");
-      // Who asked and when is the box around the time the row draws.
-      const asked = row.querySelector("time")?.parentElement;
-      if (asked === null || asked === undefined) throw new Error("the card's row draws no time");
-      const at = label.getBoundingClientRect();
-      const control = copy.getBoundingClientRect();
-      const line = asked.getBoundingClientRect();
-      const start = row.getBoundingClientRect().left;
-      return {
-        askerOwnLine:
-          line.top >= Math.max(at.bottom, control.bottom) - 1 && Math.abs(line.left - start) <= 1,
-        copyOnLabelLine: control.top < at.bottom && control.bottom > at.top,
-        row: row.clientWidth,
-        viewport: window.innerWidth,
-      };
-    });
+  const viewport = card.page().viewportSize();
+  if (viewport === null) throw new Error("the page has no viewport");
+  const { parts } = await drawnBoxes(card.locator("[data-ask-header]").first(), {
+    asked: "[data-ask-card-asked]",
+    copy: "[data-copy-ref] button",
+    label: "[data-ask-state-label]",
+    row: "[data-ask-card-row]",
+  });
+  const { asked, copy, label, row } = parts;
+  return {
+    askerOwnLine:
+      asked.top >= Math.max(label.bottom, copy.bottom) - 1 && Math.abs(asked.left - row.left) <= 1,
+    copyOnLabelLine: sameLine(copy, label),
+    row: row.right - row.left,
+    viewport: viewport.width,
+  };
 }
 
 test("the Inbox card's copy control ends the label's one line, whoever's turn it is", async ({

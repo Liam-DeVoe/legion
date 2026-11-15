@@ -40,7 +40,6 @@ import {
   liveEditorRoot,
   namedEditor,
   seedDocument,
-  type TheirWordLanded,
   type TheOtherPersonsPen,
   theOtherPersonsPen,
   topLevelBlocks,
@@ -230,8 +229,24 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
   }
 });
 
+/** Where the editor was when another person's word first showed up in its first block: how
+ *  many blocks it held, and whether its build was over by then. */
+interface TheirWordLanded {
+  readonly blocks: number;
+  readonly open: boolean;
+}
+
+declare global {
+  interface Window {
+    /** What the page says in the frame its editor's first block first holds the other
+     *  person's word, so the row waits for that frame rather than reading before it
+     *  (`whenTheirWordLands`). */
+    __theirWordLanded?: (landed: TheirWordLanded) => void;
+  }
+}
+
 /**
- * Records the first animation frame in which the editor's own first block holds `word`, with
+ * Finds the first animation frame in which the editor's own first block holds `word`, with
  * how many blocks the editor held then and whether its build was over, and says so in that
  * frame: what it answers is a wait for that word, which fails by name where the editor never
  * held it inside `timeoutMs`.
@@ -239,10 +254,10 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
  * Only the first block is read, because that is the block the other person writes in and
  * reading the whole of a 406,000-character document every frame would be the thing slowing the
  * page down. The loop does not stop when the editor is named: a word that lands only once the
- * build is over is the failure this row is about, and the row says so rather than finding
- * nothing recorded. It is said rather than read for the same reason: that frame comes after
- * the editor is open, so a reading taken when the row heard the editor was open would find no
- * word and fail as though it had never landed.
+ * build is over is the failure this row is about, and the row says so rather than hearing
+ * nothing. It is said rather than read for the same reason: that frame comes after the editor
+ * is open, so a reading taken when the row heard the editor was open would find no word and
+ * fail as though it had never landed.
  */
 async function whenTheirWordLands(
   page: Page,
@@ -258,11 +273,10 @@ async function whenTheirWordLands(
         const root = document.querySelector(live);
         const first = root === null ? null : root.querySelector("[data-block-id]");
         if (root !== null && first !== null && (first.textContent ?? "").includes(wanted)) {
-          window.__theirWord = {
+          window.__theirWordLanded?.({
             blocks: root.querySelectorAll("[data-block-id]").length,
             open: document.querySelector(named) !== null,
-          };
-          window.__theirWordLanded?.(window.__theirWord);
+          });
           return;
         }
         requestAnimationFrame(look);

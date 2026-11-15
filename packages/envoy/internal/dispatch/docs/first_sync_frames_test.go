@@ -58,6 +58,31 @@ type roomFrame struct {
 	bytes   int    // the whole frame, the document's name and the tag included
 }
 
+// decodeRoomFrame reads message, one whole binary message a room sent, as the Hocuspocus framing
+// Dispatch serves carries it (service.go sets HocuspocusFraming): the document's name, the outer
+// tag, and on a sync frame the sync message, whose type it reads. It reads bytes rather than a
+// socket, so the frames a row reads off a socket and the frames it reads off what the server
+// wrote to one (documentFrame) are read alike.
+func decodeRoomFrame(message []byte) (roomFrame, error) {
+	frame := roomFrame{sync: -1, bytes: len(message)}
+	decoder := encoding.NewDecoder(message)
+	if _, err := decoder.ReadVarString(); err != nil {
+		return roomFrame{}, fmt.Errorf("read the document name: %w", err)
+	}
+	tag, err := decoder.ReadVarUint()
+	if err != nil {
+		return roomFrame{}, fmt.Errorf("read the tag: %w", err)
+	}
+	frame.tag = tag
+	if tag == hocuspocusSync {
+		frame.message = decoder.RemainingBytes()
+		if frame.sync, _, err = ygsync.ReadSyncMessage(frame.message); err != nil {
+			return roomFrame{}, fmt.Errorf("read the sync message: %w", err)
+		}
+	}
+	return frame, nil
+}
+
 // writeHocuspocusFrame sends one Hocuspocus frame on connection: the document's name, the outer
 // tag, then body, which a sync frame carries raw and a Ping carries none of.
 func writeHocuspocusFrame(t *testing.T, connection *gws.Conn, artifactID string, tag uint64, body []byte) {
@@ -89,24 +114,12 @@ func readToPong(t *testing.T, connection *gws.Conn, artifactID string) []roomFra
 		if err != nil {
 			t.Fatalf("read frame %d from document %s's room: %v", len(frames)+1, artifactID, err)
 		}
-		frame := roomFrame{sync: -1, bytes: len(message)}
-		decoder := encoding.NewDecoder(message)
-		if _, err := decoder.ReadVarString(); err != nil {
-			t.Fatalf("read the document name of frame %d: %v", len(frames)+1, err)
-		}
-		if frame.tag, err = decoder.ReadVarUint(); err != nil {
-			t.Fatalf("read the tag of frame %d: %v", len(frames)+1, err)
+		frame, err := decodeRoomFrame(message)
+		if err != nil {
+			t.Fatalf("read frame %d from document %s's room: %v", len(frames)+1, artifactID, err)
 		}
 		if frame.tag == hocuspocusPong {
 			return frames
-		}
-		if frame.tag == hocuspocusSync {
-			frame.message = decoder.RemainingBytes()
-			kind, _, err := ygsync.ReadSyncMessage(frame.message)
-			if err != nil {
-				t.Fatalf("read the sync message of frame %d: %v", len(frames)+1, err)
-			}
-			frame.sync = kind
 		}
 		frames = append(frames, frame)
 	}

@@ -614,7 +614,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these on a fresh load, and nothing else: 20 reads, named rather than counted, and
+  // Exactly these on a fresh load, and nothing else: 21 reads, named rather than counted, and
   // waited for rather than read at an instant. Four of them land after the message above is on
   // the page, which is what a count taken at that instant misses: the issue header is a chunk
   // of its own, asked for only once the page that holds it renders, so the three reads of its

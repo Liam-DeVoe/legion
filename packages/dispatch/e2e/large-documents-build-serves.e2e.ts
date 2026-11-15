@@ -16,22 +16,24 @@
 // (sjawhar/legion#2697).
 //
 // The other files of this family, and what each holds, are listed once, at the head of
-// `large-documents-rows.ts`, which holds what they share - among it the probe the row below
-// reads a build through (`whatTheBuildServes`).
+// `large-documents-rows.ts`, which holds what they share. The probe the row below reads a build
+// through (`whatTheBuildServes`) is `large-documents-build-probe.ts`.
 import { expect, test } from "@playwright/test";
 
 import { documentNames, largeDocument } from "./large-documents";
-import { readTheLongTasks, throttleTheCpu, watchTheDocument } from "./large-documents-page";
 import {
   handedToTheBuild,
   type ServedLate,
   type ServedWord,
+  theWindowHeldABuild,
+  whatTheBuildServes,
+} from "./large-documents-build-probe";
+import { readTheLongTasks, throttleTheCpu, watchTheDocument } from "./large-documents-page";
+import {
   seedDocument,
   type TheOtherPersonsPen,
   theOtherPersonsPen,
-  theWindowHeldABuild,
   topLevelBlocks,
-  whatTheBuildServes,
 } from "./large-documents-rows";
 import { asUser } from "./users";
 
@@ -423,16 +425,16 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const builtAtTheStop = await herBuild.reachedTheStop(stopBy - Date.now());
     // The end of her build, both halves of it as her page says them, inside one deadline: her
     // editor open, and the swap that ends the build stamped with the turn of her page's loop
-    // it ended in. Nothing the page recorded is read before the second, because the page
-    // stamps its swap tasks after the frame that named her editor, and a reading taken in
-    // between holds no swap: CI's `iphone-alone` leg read the records there at `beef6c36`
-    // (run 43718779158), and this row took the missing turn for turn 0 and failed six words
-    // the build had served before her editor opened.
+    // it ended in, which her page says with the build's whole window. Nothing the page
+    // recorded is read before the second, because the page stamps its swap tasks after the
+    // frame that named her editor, and a reading taken in between holds no swap: CI's
+    // `iphone-alone` leg read the records there at `beef6c36` (run 43718779158), and this row
+    // took the missing turn for turn 0 and failed six words the build had served before her
+    // editor opened.
     const endBy = Date.now() + buildTimeoutMs;
     const openedMs = await reached.editorOpened(endBy - Date.now());
-    const swap = await herBuild.swapped(endBy - Date.now());
+    const ran = await herBuild.swapped(endBy - Date.now());
 
-    const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const everyTimer = (await page.evaluate(() => window.__servedTimers)) ?? [];
     const timers = handedToTheBuild(everyTimer, ran);
     const sentWords = writer.sent;
@@ -441,10 +443,10 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // Each word he wrote is one frame of his and one of hers, so the pairing is a reading of
     // this run rather than an assumption about it: a word he never sent, or one her page
     // never served, is named below rather than guessed at.
-    const built = (ran.openedMs ?? 0) - (ran.firstBatchMs ?? 0);
+    const built = ran.openedMs - ran.firstBatchMs;
     // Every timer of the load, not only the ones inside the build: what says whether a long
     // wait is the build's doing is where the long ones fall.
-    const began = ran.firstBatchMs ?? 0;
+    const began = ran.firstBatchMs;
     const spread = everyTimer
       .map(
         (timer) =>
@@ -455,9 +457,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const theirs = theirWordsOfTheBuild(sentWords, servedWords, timeOriginMs);
     // The words he sent inside her build's own window: the ones that build could have held.
     // One he sent after it says nothing about this build and is left out.
-    const inTheBuild = theirs.filter(
-      (word) => word.sentMs >= began && word.sentMs <= (ran.openedMs ?? 0)
-    );
+    const inTheBuild = theirs.filter((word) => word.sentMs >= began && word.sentMs <= ran.openedMs);
     // Every word of his, in the order he wrote them, named and given as sent:waited from her
     // first batch - reported, never held to a number of its own. The names are what the
     // window carried, and where a long wait falls is what says whether the build held it.
@@ -473,13 +473,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // the waits above are made of. Read with the entries the page's observer had not yet
     // delivered (`readTheLongTasks`), so the last tasks of the build are among them.
     const tasks = (await readTheLongTasks(page)).tasks.filter(
-      (task) => task.at >= began && task.at <= (ran.openedMs ?? 0)
+      (task) => task.at >= began && task.at <= ran.openedMs
     );
     const longestTask = tasks.reduce((worst, task) => Math.max(worst, task.ms), 0);
     // When the page said it was free again after the swap that ends the build, which is the
     // page's own stamp and no reading of this side's (`whatTheBuildServes`). Printed, to say
     // how far past the window the swap carried; nothing below is read from it.
-    const swappedMs = swap.atMs;
+    const swappedMs = ran.swappedMs;
     // The end of the turn the page said that in, the page's own stamp too: the first task it
     // was handed from inside that turn, served once it had got through everything it was
     // already holding. Printed, and read by nothing - that backlog was 1.5 to 21 s on this
@@ -488,7 +488,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // afterwards would pass. And not waited for, for the same reason, so the records this row
     // reads may not hold it yet: where they do not, the print says so rather than standing
     // another stamp in for it.
-    const freeTurnEndedMs = ran.freeTurnEndedMs;
+    const freeTurnEndedMs = await page.evaluate(() => window.__freeTurnEndedMs);
     const beforeTheTurnEnded = (ms: number): string =>
       freeTurnEndedMs === undefined
         ? "before the end of that turn, which the page had not stamped when this row read it"
@@ -501,15 +501,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // machine. It is the turn the page said, and never a default: a page that never stamps
     // its swap has already failed above, by name, rather than leaving a missing number for
     // this reading to stand a turn in for.
-    const swapTurn = swap.turn;
+    const swapTurn = ran.swapTurn;
     // The longest the page went without serving a word that was already waiting, over the
     // words the build itself served. Printed, asserted against nothing: it carries the relay
     // from the writer as well as this page's own serving (the block above
     // `aTimerWaitsAtMostMs` says why), and a page that stops serving fails liveness instead.
     const withoutServing = theLongestWithoutServing(
-      inTheBuild.filter(
-        (word) => (word.servedMs ?? Number.POSITIVE_INFINITY) <= (ran.openedMs ?? 0)
-      )
+      inTheBuild.filter((word) => (word.servedMs ?? Number.POSITIVE_INFINITY) <= ran.openedMs)
     );
     const heldPastTheSwap = inTheBuild.filter(
       (word) => word.servedTurn === undefined || word.servedTurn > swapTurn
@@ -520,12 +518,12 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // end of a build rather than a verdict on it. A turn of the swap's own or an earlier one
     // is the swap serving the word; a later one is what the reading below fails on.
     const servedInTheSwap = inTheBuild
-      .filter((word) => word.servedMs !== undefined && word.servedMs > (ran.openedMs ?? 0))
+      .filter((word) => word.servedMs !== undefined && word.servedMs > ran.openedMs)
       .map(
         (word) =>
           `${word.word} sent ${Math.round(word.sentMs - began)} ms into the build, served in ` +
           `turn ${word.servedTurn ?? 0} against the swap's own ${swapTurn}, ` +
-          `${Math.round((word.servedMs ?? 0) - (ran.openedMs ?? 0))} ms past the window and ` +
+          `${Math.round((word.servedMs ?? 0) - ran.openedMs)} ms past the window and ` +
           beforeTheTurnEnded(word.servedMs ?? 0)
       )
       .join("; ");
@@ -560,13 +558,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `${stepBlocks} block(s) of her build, ${theWordsHerStepsAskFor} of them asked for, ` +
         `until her page said its editor had built ${builtAtTheStop} of the document's ` +
         `${whole} top-level block(s), the ${stopAfterBlocks} this row stops him at, which ` +
-        `left ${Math.round((ran.openedMs ?? 0) - lastSentMs)} ms of build after the last ` +
+        `left ${Math.round(ran.openedMs - lastSentMs)} ms of build after the last ` +
         `word he sent; ${inTheBuild.length} of the ${theirs.length} word(s) he sent ` +
         `were sent inside that window (floor ${theFewestWordsRead}), ` +
         `${inTheBuild.length - heldPastTheSwap.length} of those served in the swap's own ` +
         `turn (${swapTurn}) or an earlier one, which is the whole of the reading; on the ` +
         `clock beside it, which no reading uses, the page said it was free again ` +
-        `${Math.round(swappedMs - (ran.openedMs ?? 0))} ms past the window, ` +
+        `${Math.round(swappedMs - ran.openedMs)} ms past the window, ` +
         `${beforeTheTurnEnded(swappedMs)}; ` +
         `${margin}; the longest it went without serving one that was already waiting ` +
         `${Math.round(withoutServing.gapMs)} ms (${withoutServing.word}; reported, held to ` +
@@ -598,7 +596,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // a floor under one would say the opposite of what this row is for - the build on a quiet
     // machine is now about 1.3 s, and a row that failed because the build was quick would be
     // asserting that the product stays slow.
-    expect(ran.firstBatchMs ?? 0).toBeGreaterThan(0);
+    expect(ran.firstBatchMs).toBeLessThan(ran.openedMs);
     theWindowHeldABuild(timers);
     // And the window the reading below is taken over was arranged rather than taken: her page
     // said its build had reached the blocks he stops at while it was still building, so every
@@ -677,7 +675,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
           `${word.servedTurn === undefined ? "never served" : `served in turn ${word.servedTurn}, ${word.servedTurn - swapTurn} turn(s) past the one the page's swap ended in`}`
       ),
       "the page held the other person's words past the turn its swap ended in " +
-        `(turn ${swapTurn}), which it put ${Math.round(swappedMs - (ran.openedMs ?? 0))} ms ` +
+        `(turn ${swapTurn}), which it put ${Math.round(swappedMs - ran.openedMs)} ms ` +
         "past the window"
     ).toEqual([]);
   } finally {

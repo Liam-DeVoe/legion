@@ -294,29 +294,33 @@ function DrawnAskHeader(props: AskHeaderProps & { asker: AskHeaderAsker | undefi
 }
 
 /** A decision block's own portalled header, with nothing of its own between the anchor and the
- *  provenance - the editor holds the question. From `md` it is one wrapping row: the urgency,
- *  the block's `Decision`, the state label, who asked and when, and the copy control stand in
- *  one line that never wraps - the asker's name truncates, with the whole name in its tooltip -
- *  and the host's "Answered by" (`AskBlockCard`) follows on that row where it fits, on the next
- *  where it does not. Below `md` the copy control is a 44 px touch box, and a phone's row has
- *  room for it beside the label alone, so the line gives way to rows: the urgency, `Decision`,
- *  the label and the copy control at the first row's right end, who asked and when on the next
- *  (`order-1`), and "Answered by" on the row after it. */
+ *  provenance - the editor holds the question. Its layout is chosen by the header's own width
+ *  (`@container`), not the viewport's: one block stands in a document's column and in the
+ *  Inbox's reading pane, which a reader can narrow to 30% of its two columns at a desktop
+ *  width. From 36rem of header it is the one wrapping row it was before it drew a label: the
+ *  urgency, the block's `Decision`, the state label, who asked and when, and the copy control
+ *  stand in one line that never wraps - the asker's name truncates, with the whole name in its
+ *  tooltip - and the host's "Answered by" (`AskBlockCard`) follows on that row where it fits,
+ *  on the next where it does not. Only the name gives up width, so a narrower line would cut it
+ *  to nothing, then draw the time over the copy control and push the control out of the
+ *  header. Below 36rem the line gives way to rows instead, as a phone's does: the urgency,
+ *  `Decision`, the label and the copy control at the end of the row it wraps to, who asked and
+ *  when on the next (`order-1`), and "Answered by" on the row after it (`order-2`). */
 function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): ReactNode {
   const author = ask?.author;
   return (
     <header
-      className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`}
+      className={`@container mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`}
       {...facts.attributes}
     >
-      <span className="flex min-w-0 items-center gap-x-2 whitespace-nowrap max-md:contents">
+      <span className="flex min-w-0 items-center gap-x-2 whitespace-nowrap @max-[36rem]:contents">
         <AskHeaderRow
           facts={facts}
           leading={leading}
           provenance={
             !facts.provenance || author === undefined ? null : (
               <span
-                className="flex min-w-0 items-center gap-x-2 max-md:order-1 max-md:basis-full"
+                className="flex min-w-0 items-center gap-x-2 @max-[36rem]:order-1 @max-[36rem]:basis-full"
                 data-dispatch-ask-asked=""
               >
                 {asker === undefined ? (
@@ -336,7 +340,7 @@ function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): R
             )
           }
         />
-        {facts.copy("max-md:ml-auto")}
+        {facts.copy("@max-[36rem]:ml-auto")}
       </span>
       {trailing}
     </header>
@@ -368,6 +372,7 @@ function CardAskHeader({
       {children}
       <div
         className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
+        data-ask-card-row=""
       >
         {/* The label and the provenance are one group whose names truncate, and the copy
             control stands beside the group, so the line holding both never wraps and the
@@ -385,7 +390,8 @@ function CardAskHeader({
             beside its live link (`e2e/agent-name.e2e.ts`). From `md` (the 280 px margin) the
             control's 32 px box stands beside both lines, so the card is no taller than it was
             before it drew a label. `e2e/ask-answer-area.e2e.ts` holds the control to the
-            label's line in all three. */}
+            label's line in all three, and reads the line and the asker by their own marks
+            (`data-ask-card-row`, `data-ask-card-asked`). */}
         <span className="flex min-w-0 items-center gap-x-1.5 max-md:@max-sm:flex-wrap">
           <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap @max-sm:[&>[data-ask-state-label]]:py-0 max-md:@max-sm:contents">
             <AskHeaderRow
@@ -408,7 +414,10 @@ function CardAskHeader({
                         ·
                       </span>
                     )}
-                    <span className="flex min-w-0 items-center gap-x-1.5 @max-sm:basis-full max-md:@max-sm:order-1">
+                    <span
+                      className="flex min-w-0 items-center gap-x-1.5 @max-sm:basis-full max-md:@max-sm:order-1"
+                      data-ask-card-asked=""
+                    >
                       {session === undefined || control === undefined ? (
                         <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
                           {asker === undefined ? "asked" : <AgentName actor={author} />}

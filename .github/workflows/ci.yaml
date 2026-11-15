@@ -1291,6 +1291,10 @@ jobs:
               # started from the default branch alone, answers for no pull request.
               - '.github/workflows/dispatch-browser.yaml'
               - '.github/workflows/dispatch-browser-nightly.yaml'
+              # The action the shard, alone and visual jobs take the binaries job's build
+              # through: its download, and the chmod without which run-server.sh and
+              # run-broker.sh refuse the four binaries.
+              - '.github/actions/dispatch-e2e-binaries/**'
               # The memory and CPU sampler the shard and alone jobs' browser steps start and read
               # back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
               # the script the merge job runs to take each leg's newest attempt, and the script

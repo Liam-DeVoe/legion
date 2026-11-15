@@ -857,6 +857,9 @@ BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+# The action the shard, alone and visual jobs take the binaries job's build through: the
+# artifact's download and the chmod that makes the four executable.
+BROWSER_BINARIES_ACTION = "./.github/actions/dispatch-e2e-binaries"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host and then
 # runs Playwright in the pinned container. The stack it starts there runs the binaries job's
 # build (DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR), so this job runs no go command.
@@ -1256,6 +1259,9 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each stack's server port through it"),
+        (".github/actions/dispatch-e2e-binaries/**",
+         f"{at_browser(BROWSER_BINARIES_ACTION)}, {at_browser(BROWSER_BINARIES_ACTION, BROWSER_ALONE)} "
+         f"and {at_browser(BROWSER_BINARIES_ACTION, BROWSER_VISUAL)} run the action it defines"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),

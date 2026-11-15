@@ -2,7 +2,7 @@ import type { MouseEvent, ReactNode } from "react";
 
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import { dangerText, linkHoverText, linkText, successText } from "../theme/classes";
-import { copyIconBoxClassName } from "./copy-button-classes";
+import { copyBoxClassName, copyIconBoxClassName } from "./copy-button-classes";
 
 /** Copies `value` to the clipboard and confirms inline for 1.5 s ("Copied") or reports the
  *  failure until the next attempt. With `children` the button shows that label before the
@@ -32,7 +32,7 @@ export function CopyButton({
   const box =
     children === undefined
       ? copyIconBoxClassName
-      : "inline-flex min-h-11 max-w-full shrink-0 items-center gap-1 rounded-lg px-1 font-mono text-xs font-medium select-text md:min-h-8";
+      : `${copyBoxClassName} max-w-full gap-1 px-1 font-mono text-xs font-medium select-text`;
 
   return (
     <>
