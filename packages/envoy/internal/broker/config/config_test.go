@@ -1628,24 +1628,12 @@ var (
 	secondIssuer = oidc.NamedIssuer{Name: "second", URL: "https://oidc.second.example"}
 )
 
-// namedIssuersEnv is validEnv with the cluster issuers first and second, in that order, and the
-// audience their tokens carry.
+// namedIssuersEnv is validEnv with the cluster issuers firstIssuer and secondIssuer, in that order,
+// and the audience their tokens carry.
 func namedIssuersEnv() map[string]string {
 	e := validEnv()
-	e["BROKER_K8S_OIDC_ISSUER"] = "first=https://oidc.first.example,second=https://oidc.second.example"
+	e["BROKER_K8S_OIDC_ISSUER"] = firstIssuer.Name + "=" + firstIssuer.URL + "," + secondIssuer.Name + "=" + secondIssuer.URL
 	e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
-	return e
-}
-
-// with is e with each of settings set, an empty value deleting the setting.
-func with(e, settings map[string]string) map[string]string {
-	for name, value := range settings {
-		if value == "" {
-			delete(e, name)
-			continue
-		}
-		e[name] = value
-	}
 	return e
 }
 
@@ -1664,27 +1652,29 @@ func refusedNaming(t *testing.T, e map[string]string, want ...string) {
 }
 
 // TestTheK8sIssuerSettingTakesNamedIssuers pins BROKER_K8S_OIDC_ISSUER's list: one bare URL loads
-// the issuer, the audiences and the account maps it loaded before the setting took names; named
-// entries load in their order; and the setting refuses, naming itself, a malformed entry, a
-// repeated name, a repeated URL and a bare URL beside named entries. BROKER_EXCHANGE_K8S_ISSUER
-// names the exchange's one issuer, may be left out beside one issuer, and refuses, naming itself,
-// an exchange whose issuer is unclear.
+// one issuer with no name, with the audiences and the account maps a deployment of one cluster
+// holds; named entries load in their order; and the setting refuses, naming itself, a malformed
+// entry, a repeated name, a repeated URL and a bare URL beside named entries.
+// BROKER_EXCHANGE_K8S_ISSUER names the exchange's one issuer, may be left out beside one issuer,
+// and refuses, naming itself, an exchange whose issuer is unclear.
 func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
-	t.Run("one bare URL loads what it loaded before the list", func(t *testing.T) {
-		cfg, err := Load(env(with(validEnv(), map[string]string{
+	t.Run("one bare URL loads one issuer with no name", func(t *testing.T) {
+		e := validEnv()
+		maps.Copy(e, map[string]string{
 			"BROKER_K8S_OIDC_ISSUER":       " https://oidc.eks.example.invalid/id/EXAMPLE ",
 			"BROKER_K8S_OIDC_AUDIENCE":     "agent-secrets",
 			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
 			"BROKER_API_ACCOUNTS":          "dispatch=system:serviceaccount:example-ns:example-dispatch",
 			"BROKER_SERVICE_LOGINS":        "legion-daemon=system:serviceaccount:legion-system:legion-daemon",
-		})))
+		})
+		cfg, err := Load(env(e))
 		if err != nil {
 			t.Fatal(err)
 		}
-		// What the broker loaded from this environment before the list: the URL, trimmed, as the
-		// cluster's issuer and the exchange's, the two audiences, the dispatch caller for its
-		// subject and legion-daemon for its login. The one thing added is each entry's issuer,
-		// the list's one issuer, which has no name.
+		// A deployment that names its one cluster by its URL alone keeps the meaning of its
+		// settings: the URL, trimmed, as the cluster's issuer and the exchange's, the two
+		// audiences, the dispatch caller for its subject and legion-daemon for its login. Each
+		// entry takes the list's one issuer, which has no name.
 		bare := oidc.NamedIssuer{URL: "https://oidc.eks.example.invalid/id/EXAMPLE"}
 		if want := []oidc.NamedIssuer{bare}; !slices.Equal(cfg.K8sOIDCIssuers, want) {
 			t.Errorf("K8sOIDCIssuers = %+v, want %+v", cfg.K8sOIDCIssuers, want)
@@ -1706,12 +1696,14 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 	})
 
 	t.Run("two named entries load in their order", func(t *testing.T) {
-		cfg, err := Load(env(with(validEnv(), map[string]string{
+		e := validEnv()
+		maps.Copy(e, map[string]string{
 			"BROKER_K8S_OIDC_ISSUER":       "second=https://oidc.second.example, first=https://oidc.first.example",
 			"BROKER_K8S_OIDC_AUDIENCE":     "agent-secrets",
 			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
 			"BROKER_EXCHANGE_K8S_ISSUER":   "first",
-		})))
+		})
+		cfg, err := Load(env(e))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1724,11 +1716,13 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 	})
 
 	t.Run("beside one named issuer the exchange's issuer may be left out", func(t *testing.T) {
-		cfg, err := Load(env(with(validEnv(), map[string]string{
+		e := validEnv()
+		maps.Copy(e, map[string]string{
 			"BROKER_K8S_OIDC_ISSUER":       "first=https://oidc.first.example",
 			"BROKER_K8S_OIDC_AUDIENCE":     "agent-secrets",
 			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
-		})))
+		})
+		cfg, err := Load(env(e))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1784,6 +1778,7 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 			want:     []string{issuerSetting, `"https://oidc.first.example"`},
 		},
 		{
+			// An empty value is an unset one to Load.
 			name:     "the list without its audience",
 			settings: map[string]string{"BROKER_K8S_OIDC_AUDIENCE": ""},
 			want:     []string{issuerSetting, "BROKER_K8S_OIDC_AUDIENCE"},
@@ -1810,7 +1805,9 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			refusedNaming(t, with(namedIssuersEnv(), c.settings), c.want...)
+			e := namedIssuersEnv()
+			maps.Copy(e, c.settings)
+			refusedNaming(t, e, c.want...)
 		})
 	}
 }
@@ -1832,11 +1829,18 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		return account
 	}
 
+	googleWithIssuers := func() map[string]string {
+		e := validVMEnv()
+		e["BROKER_K8S_OIDC_ISSUER"] = namedIssuersEnv()["BROKER_K8S_OIDC_ISSUER"]
+		e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+		return e
+	}
+
 	t.Run("an entry that names no issuer takes the first", func(t *testing.T) {
-		cfg, err := Load(env(with(namedIssuersEnv(), map[string]string{
-			"BROKER_API_ACCOUNTS":   "dispatch=" + dispatchSubject,
-			"BROKER_SERVICE_LOGINS": "legion-daemon=" + daemonSubject,
-		})))
+		e := namedIssuersEnv()
+		e["BROKER_API_ACCOUNTS"] = "dispatch=" + dispatchSubject
+		e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + daemonSubject
+		cfg, err := Load(env(e))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1849,9 +1853,7 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 	})
 
 	t.Run("an entry names its issuers in its order and a Google entry none", func(t *testing.T) {
-		e := validVMEnv()
-		e["BROKER_K8S_OIDC_ISSUER"] = namedIssuersEnv()["BROKER_K8S_OIDC_ISSUER"]
-		e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+		e := googleWithIssuers()
 		e["BROKER_API_ACCOUNTS"] = "dispatch=" + dispatchSubject + "=second,first listener=google:" + exampleListenerAccount
 		e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + daemonSubject + "=second"
 		cfg, err := Load(env(e))
@@ -1870,12 +1872,6 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		}
 	})
 
-	googleWithIssuers := func() map[string]string {
-		e := validVMEnv()
-		e["BROKER_K8S_OIDC_ISSUER"] = namedIssuersEnv()["BROKER_K8S_OIDC_ISSUER"]
-		e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
-		return e
-	}
 	for _, c := range []struct {
 		name    string
 		base    func() map[string]string

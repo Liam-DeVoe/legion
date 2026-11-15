@@ -5,9 +5,12 @@ body: |-
   as before, and the broker checks each token against the issuer its `iss` claim names.
   The broker reads each issuer in the background, so it starts and serves while one of them cannot
   be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
-  answers the same while an issuer's key set cannot be read, and reads that key set again at most
-  once in 5 seconds. Before, it refused to start when it could not read its one issuer, and it
-  answered a token whose key set it could not read `403 POD_IDENTITY_MISMATCH` or
+  answers the same to a token whose key it cannot read: a key it does not hold from its last good
+  read of the issuer's key set, while that key set cannot be read. It reads such a key set again at
+  most once in 5 seconds. It logs `broker: kubernetes issuer cannot be read` once when it starts to
+  answer an issuer's tokens so, and `broker: kubernetes issuer can be read again` once when a token
+  of that issuer verifies again. Before, it refused to start when it could not read its one issuer,
+  and it answered a token whose key it could not read `403 POD_IDENTITY_MISMATCH` or
   `401 TOKEN_INVALID`.
   An entry of `BROKER_API_ACCOUNTS` or `BROKER_SERVICE_LOGINS` may end with
   `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that

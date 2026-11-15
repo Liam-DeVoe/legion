@@ -25,7 +25,8 @@ var (
 	ErrKeySet       = errors.New("oidc: key set could not be read")
 )
 
-// The timings a Keys starts with. A caller that wants others sets the fields before its first Key.
+// The timings a Keys starts with, and the FailureSpacing a caller that wants one sets, since
+// NewKeys sets none. A caller that wants other timings sets the fields before its first Key.
 const (
 	// DefaultKeysLifetime is how long a fetched set answers before the next Key reads the issuer
 	// again. It is the far side of the trade a cache makes: a key the issuer has withdrawn still
@@ -40,6 +41,11 @@ const (
 	// DefaultKeysFetchTimeout bounds one key-set read. An issuer that accepts the connection and
 	// never answers would otherwise hold a verification open for as long as the caller allows.
 	DefaultKeysFetchTimeout = 10 * time.Second
+	// DefaultKeysFailureSpacing is the FailureSpacing the broker sets on the key set of each
+	// cluster issuer it trusts. It is the spacing a LazyVerifier keeps between two failed reads of
+	// a discovery document (discoveryRetrySpacing), so while an issuer's discovery document or its
+	// key set cannot be read, the tokens that arrive cost it one read in 5 seconds, not one each.
+	DefaultKeysFailureSpacing = discoveryRetrySpacing
 )
 
 // maxKeySetBytes is the most of an issuer's key-set response that is read. A real set is a few

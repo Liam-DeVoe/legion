@@ -2,8 +2,8 @@
 // verifiers (issuer, audience, signature, expiry, subject) and then reads the pod UID claim from
 // the same, already-verified token — the check Hawk's token broker makes (_is_pod_bound). A pod's
 // enrollment needs the token bound to its pod (Verify); a service's token login reads the account
-// and, when the token has one, its pod (VerifyAccount). Both answer the issuer of
-// BROKER_K8S_OIDC_ISSUER that signed the token, which an account entry's issuers are judged by.
+// and, when the token has one, its pod (VerifyAccount), and the issuer of BROKER_K8S_OIDC_ISSUER
+// that signed the token, which an account entry's issuers are judged by.
 package enroll
 
 import (
@@ -81,5 +81,5 @@ func (k K8sPodVerifier) Verify(ctx context.Context, raw string) (PodClaims, erro
 	if claims.PodUID == "" {
 		return PodClaims{}, fmt.Errorf("projected token is not bound to a pod")
 	}
-	return PodClaims{Subject: claims.Subject, PodUID: claims.PodUID, Issuer: claims.Issuer}, nil
+	return PodClaims{Subject: claims.Subject, PodUID: claims.PodUID}, nil
 }

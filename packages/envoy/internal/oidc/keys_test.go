@@ -187,8 +187,8 @@ const spacedCalls = 50
 
 // TestAKeySetThatCannotBeReadIsReadOncePerSpacing pins the broker's spacing of failed key-set
 // reads: against a key set that answers 503, fifty Key calls spread over five seconds, with the
-// spacing the broker sets (discoveryRetrySpacing), read the set at most twice, each call answering
-// ErrKeySet. A Keys with no spacing reads the set at every call, as it did before the spacing.
+// spacing the broker sets (DefaultKeysFailureSpacing), read the set at most twice, each call
+// answering ErrKeySet. A Keys with no spacing, as NewKeys makes one, reads the set at every call.
 func TestAKeySetThatCannotBeReadIsReadOncePerSpacing(t *testing.T) {
 	for _, c := range []struct {
 		name        string
@@ -196,7 +196,7 @@ func TestAKeySetThatCannotBeReadIsReadOncePerSpacing(t *testing.T) {
 		gap         time.Duration
 		least, most int
 	}{
-		{name: "spaced five seconds", spacing: discoveryRetrySpacing, gap: discoveryRetrySpacing / spacedCalls, least: 1, most: 2},
+		{name: "spaced five seconds", spacing: DefaultKeysFailureSpacing, gap: DefaultKeysFailureSpacing / spacedCalls, least: 1, most: 2},
 		{name: "with no spacing", least: spacedCalls, most: spacedCalls},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -220,14 +220,14 @@ func TestAKeySetThatCannotBeReadIsReadOncePerSpacing(t *testing.T) {
 // TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing pins the other half of the spacing: a set
 // whose lifetime is over, whose issuer's key set then fails, goes on answering the key it holds,
 // and with the spacing only the first of the Key calls after the failure reads the set. With no
-// spacing every call reads it, as before.
+// spacing every call reads it.
 func TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		spacing time.Duration
 		fetches int
 	}{
-		{name: "spaced five seconds", spacing: discoveryRetrySpacing, fetches: 2},
+		{name: "spaced five seconds", spacing: DefaultKeysFailureSpacing, fetches: 2},
 		{name: "with no spacing", fetches: 1 + spacedCalls},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -289,7 +289,7 @@ func TestTheSpacingEndsAndTheNextKeyReadsTheSet(t *testing.T) {
 func TestACallerThatHungUpStartsNoSpacing(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
-	keys.FailureSpacing = discoveryRetrySpacing
+	keys.FailureSpacing = DefaultKeysFailureSpacing
 	hungUp, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := keys.Key(hungUp, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {

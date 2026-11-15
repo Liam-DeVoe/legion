@@ -155,12 +155,10 @@ type Enrollment struct {
 	carry *string
 }
 
-// PodClaims are a verified pod token's subject, the pod it is bound to, and the issuer of
-// BROKER_K8S_OIDC_ISSUER that signed it.
+// PodClaims are a verified pod token's subject and the pod it is bound to.
 type PodClaims struct {
 	Subject string
 	PodUID  string
-	Issuer  oidc.NamedIssuer
 }
 
 // PodVerifier verifies the clusters' projected ServiceAccount tokens (K8sPodVerifier): Verify a

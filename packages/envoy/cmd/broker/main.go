@@ -492,8 +492,8 @@ func main() {
 		exchangeConfig.Kubernetes = oauth.IssuerConfig{Issuer: cfg.ExchangeK8sIssuer.URL, Audience: cfg.ExchangeK8sAudience, Keys: discovered.ExchangeK8sKeys}
 	}
 	if cfg.GoogleOIDCAudience != "" {
-		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
-		// shared: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
+		// The key set discoverVerifiers read for Google, which a listed caller's Google verifier
+		// reads too: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
 		exchangeConfig.Google = oauth.IssuerConfig{Issuer: cfg.GoogleOIDCIssuer, Audience: cfg.GoogleOIDCAudience, Keys: discovered.GoogleKeys}
 		exchangeConfig.MachineCredentials = machineCredentials(enr)
 	}
@@ -1162,20 +1162,15 @@ func serviceNames(cfg config.Config) []string {
 // keysFunc is issuerKeys' shape, a seam for a test that must not reach a real issuer.
 type keysFunc func(ctx context.Context, issuer string) (*oidc.Keys, error)
 
-// issuerKeySpacing is the least time between a failed read of a cluster issuer's key set and the
-// next (oidc.WithKeyFailureSpacing), the spacing oidc's own background read keeps between two
-// failed reads of a discovery document. The token login gives a token answered 503 its address's
-// request back, so while an issuer's key set cannot be read, this and not that bucket is what
-// holds a flood of its tokens to one read of the set in 5 seconds.
-const issuerKeySpacing = 5 * time.Second
-
 // verifiers are what one boot's discovery of the token issuers the broker trusts produced: the
 // verifiers, and the key sets the RFC 8693 exchange resolves a subject token's own key against.
 type verifiers struct {
 	// Pod verifies a pod's enrollment token and a service's login token, each against the issuer
 	// of BROKER_K8S_OIDC_ISSUER that its iss names, and refuses a token of any other issuer as
 	// oidc.ErrIssuer. Each issuer is read in the background, and until one is, its tokens are
-	// oidc.ErrIssuerUnavailable. Nil on a broker told about no cluster.
+	// oidc.ErrIssuerUnavailable, as is a token whose key the broker cannot read; it logs once when
+	// an issuer's tokens start to be answered so and once when they verify again (loggedIssuers).
+	// Nil on a broker told about no cluster.
 	Pod enroll.PodVerifier
 	// ExchangeK8sKeys is the published keys of the exchange's cluster issuer
 	// (BROKER_EXCHANGE_K8S_ISSUER), nil on a broker with no exchange audience.
@@ -1198,7 +1193,8 @@ type verifiers struct {
 // issuer once, all at the same time (IssuerSet.Boot), and logs one line for each, naming it and
 // whether it was read; then it reads, in the background until ctx ends, each one it could not,
 // and logs one more line when it does. None of them refuses the boot: until an issuer is read,
-// its tokens are answered 503.
+// its tokens are answered 503, and so is a token whose key the broker cannot read, which
+// loggedIssuers logs once for each issuer that goes unread, not once for each token.
 //
 // The exchange's cluster issuer (BROKER_EXCHANGE_K8S_ISSUER) is read again apart from that set,
 // with keysFor, since the exchange's library takes a key source built at boot, and a failure
@@ -1219,14 +1215,18 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		found.ExchangeK8sKeys = keys
 	}
 	if len(cfg.K8sOIDCIssuers) > 0 {
-		issuers := oidc.NewIssuerSet(cfg.K8sOIDCIssuers, cfg.K8sOIDCAudience, issuerKeySpacing)
+		// A key set whose read failed is read again at most once in DefaultKeysFailureSpacing.
+		// The token login gives a token answered 503 its address's request back, so while an
+		// issuer's key set cannot be read, this spacing and not that bucket is what holds a
+		// flood of the issuer's tokens to one read of its key set in 5 seconds.
+		issuers := oidc.NewIssuerSet(cfg.K8sOIDCIssuers, cfg.K8sOIDCAudience, oidc.DefaultKeysFailureSpacing)
 		for _, read := range issuers.Boot(ctx) {
 			slog.Info("broker: kubernetes issuer", append(issuerAttrs(read.Issuer), "read", read.Read)...)
 		}
 		go issuers.Run(ctx, func(issuer oidc.NamedIssuer) {
 			slog.Info("broker: kubernetes issuer read", issuerAttrs(issuer)...)
 		})
-		found.Pod = enroll.K8sPodVerifier{Issuers: issuers}
+		found.Pod = enroll.K8sPodVerifier{Issuers: newLoggedIssuers(issuers, cfg.K8sOIDCIssuers)}
 	}
 	if cfg.GoogleOIDCAudience == "" {
 		return found, nil
@@ -1254,6 +1254,66 @@ func issuerAttrs(issuer oidc.NamedIssuer) []any {
 		return []any{"url", issuer.URL}
 	}
 	return []any{"name", issuer.Name, "url", issuer.URL}
+}
+
+// The lines loggedIssuers writes about a cluster issuer. Each says that a token of the issuer
+// found other than what the issuer's line before it said, as the sign-in client check's lines do:
+// an issuer whose key set cannot be read for a day writes one line, not one for each token.
+const (
+	// issuerUnreadableMessage is logged, at WARN, when a token of an issuer is answered
+	// oidc.ErrIssuerUnavailable and the issuer has logged no line, or last logged
+	// issuerReadableMessage, followed by name= (none for one bare URL), url= and error=, which
+	// names the discovery document or the key set that could not be read.
+	issuerUnreadableMessage = "broker: kubernetes issuer cannot be read"
+	// issuerReadableMessage is logged, at INFO, when a token of an issuer verifies after an
+	// issuerUnreadableMessage line of it, followed by name= and url=.
+	issuerReadableMessage = "broker: kubernetes issuer can be read again"
+)
+
+// loggedIssuers is the clusters' issuer set as the broker's pod verifier reads it
+// (enroll.IssuerVerifier), logging each change of an issuer between read and not read once:
+// issuerUnreadableMessage when a token of it is answered oidc.ErrIssuerUnavailable, and
+// issuerReadableMessage when a token of it verifies after that. Every route answers such a token
+// 503 OIDC_ISSUER_UNAVAILABLE and logs nothing (api.writeIssuerUnavailable), and package oidc
+// reads a key set and logs nothing, since the Dispatch server and the Envoy listener read their
+// key sets through it too. So these two lines are the log of a key set the broker cannot read.
+// An issuer's discovery document has lines of its own as well (discoverVerifiers).
+type loggedIssuers struct {
+	set *oidc.IssuerSet
+	// unreadable is, for the URL of each issuer of set, whether its last line was
+	// issuerUnreadableMessage. Only newLoggedIssuers writes the map, so a read takes no lock.
+	unreadable map[string]*atomic.Bool
+}
+
+// newLoggedIssuers is set, whose issuers are issuers, logging their changes.
+func newLoggedIssuers(set *oidc.IssuerSet, issuers []oidc.NamedIssuer) loggedIssuers {
+	unreadable := make(map[string]*atomic.Bool, len(issuers))
+	for _, issuer := range issuers {
+		unreadable[issuer.URL] = new(atomic.Bool)
+	}
+	return loggedIssuers{set: set, unreadable: unreadable}
+}
+
+// Verify is IssuerSet.Verify, logging the change it finds in the token's issuer. A token of no
+// issuer of the set says nothing of an issuer, and neither does a token whose caller's context
+// ended, which a discovery read still in flight answers ErrIssuerUnavailable: neither logs.
+func (l loggedIssuers) Verify(ctx context.Context, raw string) (oidc.Claims, oidc.NamedIssuer, error) {
+	claims, issuer, err := l.set.Verify(ctx, raw)
+	unreadable := l.unreadable[issuer.URL]
+	switch {
+	case unreadable == nil || ctx.Err() != nil:
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		// Of the tokens a burst answers at once, one alone swaps false for true, so the burst
+		// writes one line.
+		if !unreadable.Swap(true) {
+			slog.Warn(issuerUnreadableMessage, append(issuerAttrs(issuer), "error", err)...)
+		}
+	case err == nil:
+		if unreadable.Swap(false) {
+			slog.Info(issuerReadableMessage, issuerAttrs(issuer)...)
+		}
+	}
+	return claims, issuer, err
 }
 
 // machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the

@@ -300,8 +300,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Then it stops the roles and deletes every Sandbox of the project, the controller's pod, the repository caches and any image probe among them, and saves no workspace.
   From the release's start the daemon starts nothing of the project until its next boot, which ends the release and starts each claim it stopped, on its own session, in the cluster its configuration then names.
   A pod that holds a claim an operator suspended is left, its claims held for an operator.
-  It prints one line per Sandbox and per stopped claim, or with `--json` the daemon's object, and exits 0 once the release finished and left no Sandbox, and 1 when it left one, the daemon refused, or `--wait` (default the bound plus 30 minutes) ended first.
-  `--dry-run` prints what a release would do now and asks, stops and saves nothing.
+  It prints one line per Sandbox and per stopped claim, or with `--json` the daemon's object, and exits 0 once the release finished and left no Sandbox.
+  It exits 1 when the release left a Sandbox, stopped short, or was ended by a boot before it finished, when the daemon refused, and when `--wait` (default the bound plus 30 minutes) ended first.
+  `--dry-run` prints what a release would do now and asks, stops and saves nothing, and a daemon process that already ran a release answers it with that release, which the command then prints and exits on as a release.
   A daemon on the tmux runtime refuses it, and it does not serve a move onto tmux (docs/deployment.md "Moving a project onto tmux")
 
 - `legion restart <team>`

@@ -6297,7 +6297,7 @@ The terminal renewal refusals are one set in `cmd/agent-secrets` (`terminalRenew
 Only those exit 76 (`EX_PROTOCOL`) with the enrollment id, HTTP status and broker code;
 the shim quotes that terminal line beside its own enrollment id and stops rather than restarting a renewer that cannot succeed.
 Every other refusal keeps the retry backoff:
-`503 OIDC_ISSUER_UNAVAILABLE`, which the broker answers for a token whose issuer or key set it cannot read yet;
+`503 OIDC_ISSUER_UNAVAILABLE`, which the broker answers for a token whose issuer it cannot read yet, or whose key it cannot read;
 `POD_IDENTITY_MISMATCH`, because a broker before `OIDC_ISSUER_UNAVAILABLE` answers it for that same token (a real mismatch ends with the lease, and the next renewal is `ENROLLMENT_NOT_LIVE`);
 `POD_TOKEN_EXPIRED`, retried with the token the file holds next; and any other `PROOF_INVALID`, since a clock or URL correction can make the next proof valid.
 
@@ -6490,7 +6490,9 @@ the audience is one value for the tokens of every issuer.
 it reads a token's `iss` before it trusts the token and checks the token against the `oidc.LazyVerifier` of that issuer alone, so a token of one issuer never makes another's verifier read its keys, and a token of an issuer the list does not name is `oidc.ErrIssuer`.
 At boot it tries each issuer's discovery document once, all at the same time (`IssuerSet.Boot`), and logs `broker: kubernetes issuer name=<name> url=<url> read=<bool>` for each;
 then it reads each one it could not in the background until the process ends (`IssuerSet.Run`), logging `broker: kubernetes issuer read` once for each when a read succeeds, and `oidc: discover the issuer; …` at ERROR at most once a minute while one fails.
-No issuer refuses the boot: until an issuer is read, and while its key set cannot be read, its tokens are `oidc.ErrIssuerUnavailable`, which each of those routes answers `503 OIDC_ISSUER_UNAVAILABLE` (`api.writeIssuerUnavailable`), and a key set whose read failed is read again at most once in 5 s however many tokens arrive (`issuerKeySpacing`, `oidc.WithKeyFailureSpacing`)), `BROKER_GOOGLE_OIDC_ISSUER` (optional;
+No issuer refuses the boot: until an issuer is read its tokens are `oidc.ErrIssuerUnavailable`, and so is a token whose key the broker cannot read, one naming a key the broker does not hold from the last good read of its issuer's key set while that set cannot be read, since a key it holds still verifies.
+Each of those routes answers such a token `503 OIDC_ISSUER_UNAVAILABLE` (`api.writeIssuerUnavailable`), and a key set whose read failed is read again at most once in 5 s however many tokens arrive (`oidc.DefaultKeysFailureSpacing`, `oidc.WithKeyFailureSpacing`).
+The routes verify through `loggedIssuers`, which logs `broker: kubernetes issuer cannot be read` at WARN with the `error` when a token of an issuer is answered so, and `broker: kubernetes issuer can be read again` at INFO when a token of that issuer verifies after it: one line each way however many tokens arrive, since `oidc.Keys` logs nothing, Dispatch and the listener reading their key sets through it too), `BROKER_GOOGLE_OIDC_ISSUER` (optional;
 the issuer of the Google identity tokens machines present, `Config.GoogleOIDCIssuer`, `https://accounts.google.com` when unset, which is `config.DefaultGoogleOIDCIssuer` and where every real one comes from;
 it is a variable because a dev stack has no Google, `cmd/dev-oidc-issuer` standing in for it on a loopback port, and it is read only where `BROKER_GOOGLE_OIDC_AUDIENCE` is set), `BROKER_GOOGLE_OIDC_AUDIENCE` (optional;
 the audience a machine's Google identity token must carry, `Config.GoogleOIDCAudience`, at the RFC 8693 token exchange, where such a token is a subject token;
@@ -6525,7 +6527,7 @@ unset, no pod exchanges), `BROKER_EXCHANGE_K8S_ISSUER` (optional with one issuer
 the name, in `BROKER_K8S_OIDC_ISSUER`, of the one issuer whose tokens the token exchange takes for `BROKER_EXCHANGE_K8S_AUDIENCE`, `Config.ExchangeK8sIssuer`, resolved by `exchangeIssuer`;
 with one issuer it may be left out, and the exchange takes that issuer;
 the boot is refused, naming this setting, when the exchange's issuer is unclear: `BROKER_EXCHANGE_K8S_AUDIENCE` set beside two or more issuers with this left out, this naming an issuer the list does not hold, this naming any while the list is one bare URL, and this set without `BROKER_EXCHANGE_K8S_AUDIENCE`.
-`discoverVerifiers` reads that issuer's key set at boot with `issuerKeys`, apart from the `oidc.IssuerSet`, because the exchange takes a key source built at boot (`verifiers.ExchangeK8sKeys`), and a failed read refuses the boot as it always has), `BROKER_EXCHANGE_GITHUB_ISSUER` / `BROKER_EXCHANGE_GITHUB_AUDIENCE` (optional, set together or not at all;
+`discoverVerifiers` reads that issuer's discovery document at boot with `issuerKeys`, apart from the `oidc.IssuerSet`, because the exchange takes a key source built at boot (`verifiers.ExchangeK8sKeys`), and a discovery document it cannot read refuses the boot, while its key set is read at the first subject token that needs it (`oidc.NewKeys`)), `BROKER_EXCHANGE_GITHUB_ISSUER` / `BROKER_EXCHANGE_GITHUB_AUDIENCE` (optional, set together or not at all;
 the issuer of a continuous-integration workflow run's token, `https://token.actions.githubusercontent.com` for runs on GitHub's own hosts, and the audience the run asks GitHub to mint it for;
 neither, and no workflow token is accepted at all), `BROKER_EXCHANGE_ACCOUNTS` (optional;
 whitespace-separated `<service account>=<project>=<person>[=<session>]` entries, such as `system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com`:

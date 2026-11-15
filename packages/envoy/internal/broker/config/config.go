@@ -414,12 +414,14 @@ type Config struct {
 	// checks the token against that issuer's keys alone; a token of an issuer the list does not
 	// name is refused as a token of another issuer. Each issuer is read in the background, so the
 	// broker boots and serves while one cannot be read, and answers that issuer's tokens 503
-	// OIDC_ISSUER_UNAVAILABLE until it can, as it does a token of an issuer whose key set it
-	// cannot read, which it reads again at most once in 5 seconds. The one exception is the token
-	// exchange's issuer (BROKER_EXCHANGE_K8S_ISSUER), which the broker reads at boot and refuses to
-	// boot without. A malformed entry, two entries of one name or of one URL, and a bare URL
-	// beside other entries refuse the boot. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in
-	// which case no pod can enroll.
+	// OIDC_ISSUER_UNAVAILABLE until it can. It answers the same to a token whose key it cannot
+	// read: a key it does not hold from its last good read of the issuer's key set, while that
+	// set cannot be read, which it then reads again at most once in 5 seconds. A token whose key
+	// it holds still verifies. The one exception is the token exchange's issuer
+	// (BROKER_EXCHANGE_K8S_ISSUER), which the broker reads at boot and refuses to boot without.
+	// A malformed entry, two entries of one name or of one URL, and a bare URL beside other
+	// entries refuse the boot. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no
+	// pod can enroll.
 	K8sOIDCIssuers []oidc.NamedIssuer
 	// BROKER_K8S_OIDC_AUDIENCE: the audience a pod's projected service-account token must carry,
 	// one value for the tokens of every issuer BROKER_K8S_OIDC_ISSUER names.
@@ -697,27 +699,27 @@ var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9](
 // whose spec names no account as.
 const defaultServiceAccount = "default"
 
-// serviceAccountEntry is one <service>=system:serviceaccount:<namespace>:<name> entry of
-// BROKER_SERVICES.
-type serviceAccountEntry struct{ service, subject string }
-
 // parseServiceAccounts reads BROKER_SERVICES' whitespace-separated <service>=<ServiceAccount
-// subject> entries, in order. An entry names no issuer, since a pod of a listed account enrolls
-// from any cluster BROKER_K8S_OIDC_ISSUER names, so one ending in an issuer name is not of the
-// form. It refuses what checkServiceAccount refuses. A service named for several accounts is
-// allowed.
-func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) {
+// subject> entries, keyed by subject, each answering its service: the shape
+// Config.ServicesByAccount holds. An entry names no issuer, since a pod of a listed account
+// enrolls from any cluster BROKER_K8S_OIDC_ISSUER names, so one ending in an issuer name is not of
+// the form. It refuses what checkServiceAccount refuses. A service named for several accounts is
+// allowed. No entries answer nil, as an unset setting does.
+func parseServiceAccounts(setting, value string) (map[string]string, error) {
 	const form = "<service>=system:serviceaccount:<namespace>:<name> entries"
-	var entries []serviceAccountEntry
+	var services map[string]string
 	seen := map[string]string{}
 	for _, text := range strings.Fields(value) {
 		service, subject, _ := strings.Cut(text, "=")
 		if err := checkServiceAccount(setting, form, text, service, subject, seen); err != nil {
 			return nil, err
 		}
-		entries = append(entries, serviceAccountEntry{service: service, subject: subject})
+		if services == nil {
+			services = map[string]string{}
+		}
+		services[subject] = service
 	}
-	return entries, nil
+	return services, nil
 }
 
 // parseServiceLogins reads BROKER_SERVICE_LOGINS' whitespace-separated <service>=<ServiceAccount
@@ -772,27 +774,14 @@ func serviceAccountForm(setting, form, text string) error {
 	return fmt.Errorf("%s must be %s, each service lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, form, policy.OwnerShared, text)
 }
 
-// servicesByAccount keys parseServiceAccounts' entries by account, each answering its service,
-// the shape Config.ServicesByAccount holds. No entry, no map: a setting left unset reads nil
-// rather than an empty map.
-func servicesByAccount(entries []serviceAccountEntry) map[string]string {
-	if len(entries) == 0 {
-		return nil
-	}
-	byAccount := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		byAccount[entry.subject] = entry.service
-	}
-	return byAccount
-}
-
 // issuerNamePattern is the form of an issuer's name in BROKER_K8S_OIDC_ISSUER: lowercase letters,
 // digits and hyphens, at most 64.
 var issuerNamePattern = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
 // parseK8sIssuers reads setting's issuers from value, trimmed: comma-separated
 // <name>=<issuer URL> entries, in order, or one bare issuer URL, the list's one issuer with an
-// empty name, which is taken as given, as the setting took its one issuer before it took names.
+// empty name, which is taken as written and not checked as a URL, so a deployment that names its
+// one cluster that way boots on the value it holds.
 // An entry is bare when it holds no "=" or a ":" before its first one, since a name holds no ":"
 // and a URL's scheme does, so a URL with "=" in its path is still one bare URL. It refuses, naming
 // setting: an entry not of the form (an empty one, a name not of issuerNamePattern, a URL not
@@ -852,12 +841,12 @@ func cutIssuerNames(text string) (head string, names []string, ok bool) {
 }
 
 // accountIssuers answers the names of the issuers an account entry's token is taken from: names,
-// the entry's own, or, where it names none, the first of issuers alone, the one issuer every entry
-// written before the list took names was verified against. A Google entry (google) has none. It
-// refuses, naming setting and the entry's text: an issuer name on a Google entry, whose token
-// Google issues; any name while issuers is one bare URL, which has no name to give; a name given
-// twice in the entry; and a name issuers does not hold. With no issuers it answers none, and Load
-// refuses the entry for the issuer it needs.
+// the entry's own, or, where it names none, the first of issuers alone, so an entry written for a
+// broker of one cluster keeps its meaning when the list names a second. A Google entry (google)
+// has none. It refuses, naming setting and the entry's text: an issuer name on a Google entry,
+// whose token Google issues; any name while issuers is one bare URL, which has no name to give; a
+// name given twice in the entry; and a name issuers does not hold. With no issuers it answers
+// none, and Load refuses the entry for the issuer it needs.
 func accountIssuers(setting, text string, names []string, google bool, issuers []oidc.NamedIssuer) ([]string, error) {
 	switch {
 	case google && names != nil:
@@ -1641,11 +1630,10 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_NAME: %w", err)
 		}
 	}
-	services, err := parseServiceAccounts("BROKER_SERVICES", getenv("BROKER_SERVICES"))
+	cfg.ServicesByAccount, err = parseServiceAccounts("BROKER_SERVICES", getenv("BROKER_SERVICES"))
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.ServicesByAccount = servicesByAccount(services)
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}

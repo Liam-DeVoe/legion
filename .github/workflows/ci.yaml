@@ -3823,9 +3823,10 @@ jobs:
     # measured green duration plus its own -timeout, not its compile plus its -timeout: 325 s of
     # setup before the plain step starts, then that step's 839 s (measured while it still ran
     # internal/daemon, so an upper bound for it now) and its 15 minutes, then the race step's
-    # 694 s and its 30, then 13 s for the steps after it, which is 4571 s, or about 76 minutes
-    # (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main push runs).
-    timeout-minutes: 80
+    # 1193 s (its own comment says how that figure is made) and its 30, then 13 s for the steps
+    # after it, which is 5070 s, or about 85 minutes (dispatch://INFRA-1052 measured the other
+    # figures over the 30 newest counted test jobs of main push runs).
+    timeout-minutes: 90
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4182,13 +4183,13 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). Two tests of the project release dominate it now:
-      # TestAProjectMovesToAnotherClusterAndBack took 243 s without -race and
+      # main at job 125691048644 (run 41562777668). Two tests of the project release run in this
+      # step: TestAProjectMovesToAnotherClusterAndBack took 243 s without -race and
       # TestAProjectMovesBackToTheFirstCluster 39 s, and the two took 297 s together under
       # `CGO_ENABLED=1 go test -race` in an issue pod on 2026-11-15. The whole step took 896 s on
-      # run 43693570294 (job `test`) at d740f06b, a commit before those two tests existed. That run's
-      # 896 s and the pod's 297 s add up to 1,193 s, a sum of two machines' figures and no measured
-      # run, which the 30 minutes hold with 607 s to spare.
+      # run 43693570294 (job `test`) at d740f06b, a commit that holds neither test. The step's
+      # figure is that run's 896 s and the pod's 297 s, 1,193 s in all: a sum of two machines'
+      # figures and no measured run, which the 30 minutes hold with 607 s to spare.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon

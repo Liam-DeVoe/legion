@@ -123,8 +123,8 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 	if !ok {
 		t.Fatalf("verifiers = pod %#v; want an enroll.K8sPodVerifier", found.Pod)
 	}
-	if _, ok := pods.Issuers.(*oidc.IssuerSet); !ok {
-		t.Fatalf("the pod verifier checks tokens with %T, want an *oidc.IssuerSet over the clusters' issuers", pods.Issuers)
+	if _, ok := pods.Issuers.(loggedIssuers); !ok {
+		t.Fatalf("the pod verifier checks tokens with %T, want loggedIssuers over the clusters' oidc.IssuerSet", pods.Issuers)
 	}
 	token := cluster.Mint(t, clusterKey, cluster.Claims("system:serviceaccount:example:example-sa", "example-broker-pod"))
 	if claims, err := pods.VerifyAccount(context.Background(), token); err != nil || claims.Issuer != (oidc.NamedIssuer{URL: cluster.URL()}) {

@@ -591,8 +591,8 @@ func TestTheExchangeTakesTheIssuerItNames(t *testing.T) {
 		// The refusal is the exchange library's own issuer check (rfc8693.JWTType, which
 		// ExchangeConfig.tokenTypes in internal/broker/oauth/exchange.go registers with the one
 		// issuer BROKER_EXCHANGE_K8S_ISSUER names), and it is the code a broker of one issuer
-		// gives a token of another issuer: R2 keeps that code for every route.
-		t.Run("the exchange refuses a token of A as main refuses a token of another issuer", func(t *testing.T) {
+		// gives a token of another issuer, which every route keeps for such a token.
+		t.Run("the exchange refuses a token of A as it refuses a token of an issuer it does not take", func(t *testing.T) {
 			status, body := exchange(t, broker.Addr, mintPodToken(t, a, aKey, namedWorker, exchangeAudience, "pod-of-a"))
 			if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
 				t.Fatalf("answered %d %v, want 400 invalid_request and no access token: the exchange takes B's tokens alone", status, body["error"])

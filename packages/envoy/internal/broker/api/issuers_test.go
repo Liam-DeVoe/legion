@@ -27,19 +27,19 @@ const issuerUnavailableMessage = "the service-account token issuer cannot be rea
 
 // withNamedIssuers names the test server's issuers as BROKER_K8S_OIDC_ISSUER's
 // first=<URL>,second=<URL> does: first is the server's own issuer, which mints every token the
-// server's helpers mint, and second is the given one. The service logins' entries name
-// loginIssuers and the listed caller's names callerIssuers.
-func withNamedIssuers(second *oidctest.Issuer, loginIssuers, callerIssuers []string) func(*api.Deps) {
+// server's helpers mint, and second is the given one. The service logins' entries and the listed
+// caller's entry each name the issuers names holds.
+func withNamedIssuers(second *oidctest.Issuer, names []string) func(*api.Deps) {
 	return func(d *api.Deps) {
 		issuers := []oidc.NamedIssuer{{Name: "first", URL: d.Enroll.Issuers[0].URL}, {Name: "second", URL: second.URL()}}
 		verifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(issuers, podAudience, 0)}
 		d.Enroll.Pod, d.Enroll.Issuers, d.AccountTokens = verifier, issuers, verifier
 		for account, login := range d.Enroll.ServiceLogins {
-			login.Issuers = loginIssuers
+			login.Issuers = names
 			d.Enroll.ServiceLogins[account] = login
 		}
 		for account, caller := range d.APIAccounts {
-			caller.Issuers = callerIssuers
+			caller.Issuers = names
 			d.APIAccounts[account] = caller
 		}
 	}
@@ -96,7 +96,7 @@ func TestATokenOfAnIssuerTheBrokerCannotReadIsAnswered503OnEveryRoute(t *testing
 			second := oidctest.New(t)
 			secondKey := second.PublishKey(t, "second-key")
 			fault.apply(second)
-			ts := newTestServerWith(t, withNamedIssuers(second, both, both))
+			ts := newTestServerWith(t, withNamedIssuers(second, both))
 			credentialID, key := ts.mintServiceLauncherCredential(t)
 			podUID := uuid.NewString()
 			enrollmentID, podKey := ts.enrolledPod(t, key, credentialID, podUID, ts.podToken(t, workerAccount, podUID))
@@ -162,7 +162,7 @@ func TestATokenLoginWhoseIssuerCannotBeReadSpendsNoAddressBucket(t *testing.T) {
 	second.FailDiscovery(http.StatusServiceUnavailable)
 	both := []string{"first", "second"}
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		withNamedIssuers(second, both, both)(d)
+		withNamedIssuers(second, both)(d)
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
 			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 100},
@@ -199,7 +199,7 @@ func TestAListedAccountIsTakenOnlyFromTheIssuersItsEntryNames(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			second := oidctest.New(t)
 			secondKey := second.PublishKey(t, "second-key")
-			ts := newTestServerWith(t, withNamedIssuers(second, c.names, c.names))
+			ts := newTestServerWith(t, withNamedIssuers(second, c.names))
 			want := func(listed bool) (int, string) {
 				if listed {
 					return http.StatusOK, ""
@@ -227,12 +227,16 @@ func TestAListedAccountIsTakenOnlyFromTheIssuersItsEntryNames(t *testing.T) {
 					}
 				})
 				t.Run("the daemon on the service route with a token of the "+issuer.name+" issuer", func(t *testing.T) {
-					// The registration itself is refused for want of an exchange entry, which is
-					// the answer of a caller the route took: what matters here is whether it took it.
+					// A caller the route takes reaches the registration, which this server refuses
+					// 403 POD_ACCOUNT_NOT_LISTED, since no exchange entry lists the pod's account.
+					// A caller the route refuses is 403 ACCOUNT_NOT_LISTED.
+					wantCode := "ACCOUNT_NOT_LISTED"
+					if issuer.listed {
+						wantCode = "POD_ACCOUNT_NOT_LISTED"
+					}
 					status, body := ts.registerPodSession(t, issuer.token(daemonAccount), ts.podToken(t, workerAccount, uuid.NewString()), "example-session")
-					refused := status == http.StatusForbidden && decode[wireError](t, body).Code == "ACCOUNT_NOT_LISTED"
-					if refused == issuer.listed {
-						t.Fatalf("POST /v1/oauth/exchange/pod-sessions = %d %s, want the caller refused 403 ACCOUNT_NOT_LISTED: %v", status, body, !issuer.listed)
+					if status != http.StatusForbidden || decode[wireError](t, body).Code != wantCode {
+						t.Fatalf("POST /v1/oauth/exchange/pod-sessions = %d %s, want 403 %s", status, body, wantCode)
 					}
 				})
 				t.Run("an account no entry lists, with a token of the "+issuer.name+" issuer", func(t *testing.T) {
@@ -248,7 +252,7 @@ func TestAListedAccountIsTakenOnlyFromTheIssuersItsEntryNames(t *testing.T) {
 		second := oidctest.New(t)
 		secondKey := second.PublishKey(t, "second-key")
 		both := []string{"first", "second"}
-		ts := newTestServerWith(t, withNamedIssuers(second, both, both))
+		ts := newTestServerWith(t, withNamedIssuers(second, both))
 		key := newSigningKey(t)
 		status, body := ts.tokenLogin(t, issuedToken(t, second, secondKey, daemonAccount, ""), ts.daemonRequest(t, key))
 		if status != http.StatusOK {

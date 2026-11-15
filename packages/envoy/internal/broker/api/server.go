@@ -668,12 +668,16 @@ func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 }
 
 // writeIssuerUnavailable answers a ServiceAccount token whose issuer the broker cannot read yet —
-// its discovery document has not been read, or its key set cannot be (oidc.ErrIssuerUnavailable)
-// — with 503 OIDC_ISSUER_UNAVAILABLE and Dispatch's sentence for the same fault
-// (serviceTokenActor). It is a 5xx because nothing was decided about the token: the Legion daemon
-// stops trying after a 4xx and tries again after a 5xx. It logs nothing, since the issuer's
-// background read logs its own failures at most once a minute and a line here would repeat that
-// for every token.
+// its discovery document has not been read, or the token's key is not among the keys the broker
+// holds from its key set's last good read and the key set cannot be read now
+// (oidc.ErrIssuerUnavailable) — with 503 OIDC_ISSUER_UNAVAILABLE and Dispatch's sentence for the
+// same fault (serviceTokenActor). It is a 5xx because nothing was decided about the token: the
+// Legion daemon stops trying after a 4xx and tries again after a 5xx. It logs nothing, since the
+// clusters' verifier the broker builds (cmd/broker, loggedIssuers) logs an issuer once when a
+// token of it is first answered this and once when a token of it verifies again, and a line here
+// would repeat the first for every token. The answer recorder (internal/broker/answer) counts
+// each such answer in broker_answers_total as outcome failed with code HTTP_503, since it reads a
+// code from a 4xx answer alone, and writes no line for it.
 func writeIssuerUnavailable(w http.ResponseWriter) {
 	writeError(w, http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE", "the service-account token issuer cannot be reached; try again in a minute")
 }

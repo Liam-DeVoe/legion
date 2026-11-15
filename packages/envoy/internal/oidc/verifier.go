@@ -122,12 +122,13 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 
 // NewWithKeys returns a verifier for tokens issuer issued to audience, checking
 // every signature against keys. It exists so that one key cache serves a
-// process's whole use of an issuer: the broker reads the cluster issuer's set
-// both to verify account, pod and service-login tokens and, for the RFC 8693
+// process's whole use of an issuer: the broker reads Google's set both to
+// verify a listed caller's Google identity token and, for the RFC 8693
 // exchange, to hand the key itself to the OAuth provider (Keys), and building
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
-// one per MinRefresh across both of them.
+// one per MinRefresh across both of them. A LazyVerifier builds its verifier
+// with it too, over the Keys its read of the discovery document makes (NewKeys).
 func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the
@@ -163,15 +164,6 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 		issuer:   issuer,
 		audience: audience,
 	}
-}
-
-// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer. A caller that trusts several issuers picks with it the one verifier a token is for, so
-// a token of one issuer never makes another's verifier fetch its keys; Verify still checks the
-// issuer with everything else.
-func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeClaims(raw)
-	return err == nil && claims.Issuer == v.issuer
 }
 
 // Verify checks raw against the issuer's published keys, the configured
