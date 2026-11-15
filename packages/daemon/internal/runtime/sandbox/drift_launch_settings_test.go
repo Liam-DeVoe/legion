@@ -35,6 +35,12 @@ func launchFixture() *config.Config {
 		ProviderKeys:     []config.ProviderKey{{Env: "ANTHROPIC_API_KEY", Secret: "fixture-anthropic-secret"}},
 		RoleConfigFiles:  map[claim.Role][]string{claim.RoleTester: {"/etc/legion-operator/tester.yml"}},
 		WorkerBackends:   map[claim.Role]runtime.Backend{claim.RoleTester: runtime.BackendOmp},
+		// The daemon's own project, whose trailer repositories and memory overlays an issue
+		// pod's launch reads (podLaunchPath, issueLaunchPaths).
+		Projects: map[string]config.Project{"LEGION": {
+			CommitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
+			Memory:                  config.Memory{Mode: config.MemoryOn, ConfigFiles: []string{"/etc/legion-operator/memory.yml"}},
+		}},
 		Runtime: config.Runtime{
 			Name: "kubernetes",
 			Kubernetes: &config.Kubernetes{
@@ -73,9 +79,10 @@ func launchFixture() *config.Config {
 
 // The record a pod template carries holds exactly the launch keys a pod's own launch reads, which
 // are the class table's: every row of class `launch` that is a value rather than a block and
-// whose path is not a template or the tmux runtime's, which is a pane's launch and reaches no
-// pod. The set is pinned here as well as derived, so a row added to the table is read by someone
-// before every pod of the fleet is compared against it.
+// whose path is not the tmux runtime's, which is a pane's launch and reaches no pod. A row under
+// the `projects` map is recorded at the daemon's own project, whose name the walk writes into
+// its path. The set is pinned here as well as derived, so a row added to the table is read by
+// someone before every pod of the fleet is compared against it.
 //
 // A secret row is recorded as a digest of its value and never as itself: an annotation is
 // readable by everything that may read the pod, and a rotation must be drift without the
@@ -86,13 +93,15 @@ func launchFixture() *config.Config {
 // login alone reads it, a pod being handed a projected token of its own, so it is no launch key
 // (config.Classes' row) and a change of it is drift of no pod.
 func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
-	recorded := LaunchSettings(launchFixture())
+	fixture := launchFixture()
+	recorded := LaunchSettings(fixture)
 	settings, err := launchSettingsOf(recorded)
 	if err != nil {
 		t.Fatalf("the record cannot be read: %v", err)
 	}
 	want := []string{
 		"advertise_host", "daemon_url", "instructions", "omp_invocation", "omp_launch_prefix",
+		"projects.LEGION.commit_issue_trailer_repos", "projects.LEGION.memory.config_files",
 		"provider_keys", "role_config_files",
 		"runtime.kubernetes.agent_secrets.audience", "runtime.kubernetes.agent_secrets.token_expiry_seconds",
 		"runtime.kubernetes.agent_secrets.url",
@@ -111,16 +120,44 @@ func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 		t.Errorf("the recorded launch keys are\n%q\nwant\n%q", got, want)
 	}
 	// Every launch row of the table the walk must reach: one entry per path it calls a value of a
-	// pod's launch. A row it misses would be a key an operator changes with no pod replaced.
+	// pod's launch, which is every launch row but the tmux runtime's. A row it misses would be a
+	// key an operator changes with no pod replaced. Which rows those are is this test's own rule
+	// and not podLaunchPath's, so a filter that drops a row the walk reached is caught here too.
+	//
+	// A row whose path is a template is held too, and skipping such rows is what let the
+	// project's trailer repositories and memory overlays reach no pod's record. A member of a
+	// keyed map (config.Row.Keyed) is held at the path the daemon's own project makes of it, the
+	// one entry a pod's launch reads. Any other template row is a member of a value no walk
+	// descends into — a provider key's name inside `provider_keys`, a toleration's key inside
+	// `runtime.kubernetes.scheduling.tolerations`, a reservation's cpu inside
+	// `runtime.kubernetes.resources.issue` — and is held by the record holding that value whole
+	// (enclosedBy). A template row held neither way is refused, as a plain row the record lacks is.
+	var keyed []string
 	for _, row := range config.Classes {
-		switch {
-		case row.Class != config.ClassLaunch || row.Block,
-			strings.Contains(row.Path, "<") || strings.Contains(row.Path, "[]"),
-			!podLaunchPath(row.Path):
+		if row.Keyed {
+			keyed = append(keyed, row.Path+".")
+		}
+	}
+	recordedPaths := slices.Collect(maps.Keys(settings))
+	for _, row := range config.Classes {
+		if row.Class != config.ClassLaunch || row.Block || strings.HasPrefix(row.Path, "runtime.tmux.") {
 			continue
 		}
-		if _, held := settings[row.Path]; !held {
-			t.Errorf("the class table calls %s a launch key of a pod and the record holds none", row.Path)
+		at := row.PathAt(fixture.Project)
+		member := slices.ContainsFunc(keyed, func(prefix string) bool { return strings.HasPrefix(row.Path, prefix) })
+		switch {
+		case member:
+			if _, ok := settings[at]; !ok {
+				t.Errorf("the class table calls %s a launch key of a pod and the record holds no %s, the daemon's own project's", row.Path, at)
+			}
+		case strings.Contains(row.Path, "<") || strings.Contains(row.Path, "[]"):
+			if !slices.ContainsFunc(recordedPaths, func(path string) bool { return enclosedBy(path, row.Path) }) {
+				t.Errorf("the class table calls %s a launch key of a pod and the record holds no value it is a member of", row.Path)
+			}
+		default:
+			if _, ok := settings[row.Path]; !ok {
+				t.Errorf("the class table calls %s a launch key of a pod and the record holds none", row.Path)
+			}
 		}
 	}
 	for _, planted := range []string{
@@ -148,6 +185,28 @@ func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 	if again := LaunchSettings(launchFixture()); again != recorded {
 		t.Errorf("one configuration encodes differently twice:\n%s\n%s", recorded, again)
 	}
+}
+
+// enclosedBy is whether the recorded launch key path is a value the template row's key is a
+// member of: path names a leading run of the template's segments and stops short of its last,
+// with a `<name>` segment of the template matching any one name and a `name[]` segment the
+// sequence `name` itself, which the record holds whole.
+func enclosedBy(path, template string) bool {
+	have, want := strings.Split(path, "."), strings.Split(template, ".")
+	if len(have) >= len(want) {
+		return false
+	}
+	for i, segment := range have {
+		named := want[i]
+		switch {
+		case segment == named:
+		case strings.HasPrefix(named, "<") && strings.HasSuffix(named, ">") && segment != "":
+		case strings.HasSuffix(named, "[]") && segment == strings.TrimSuffix(named, "[]"):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // The guard this annotation exists for: a pod carrying today's annotations and no launch-settings
@@ -296,13 +355,13 @@ func TestEachKindRecordsOnlyTheLaunchKeysItsOwnLaunchReads(t *testing.T) {
 			t.Fatalf("the record of %T cannot be read: %v", kind, err)
 		}
 		for _, path := range paths.own {
-			if _, held := record[path]; !held {
-				t.Errorf("the record of %T holds no %s, which its own launch reads", kind, path)
+			if _, held := record[recordedAt(path)]; !held {
+				t.Errorf("the record of %T holds no %s, which its own launch reads", kind, recordedAt(path))
 			}
 		}
 		for _, path := range paths.other {
-			if _, held := record[path]; held {
-				t.Errorf("the record of %T holds %s, which no launch of its reads", kind, path)
+			if _, held := record[recordedAt(path)]; held {
+				t.Errorf("the record of %T holds %s, which no launch of its reads", kind, recordedAt(path))
 			}
 		}
 	}
@@ -317,10 +376,31 @@ func TestEachKindRecordsOnlyTheLaunchKeysItsOwnLaunchReads(t *testing.T) {
 	}
 }
 
+// recordedAt is the path a launch key one kind alone reads (issueLaunchPaths,
+// controllerLaunchPaths) is recorded at under the launch fixture: the path the fixture's own
+// project makes of a `projects` member's template, and every other key's own.
+func recordedAt(path string) string {
+	row, known := config.ClassOf(path)
+	if !known {
+		return path
+	}
+	return row.PathAt(launchFixture().Project)
+}
+
 // movedIssueLaunchKeys is the whole launch record as it reads after one launch key only an issue
 // pod's launch reads has moved (podkind.go's issueLaunchPaths), by path: what an operator who
 // changes that one key leaves for the next pod's template to record.
 var movedIssueLaunchKeys = map[string]func() string{
+	"projects.<KEY>.commit_issue_trailer_repos": movedBy(func(cfg *config.Config) {
+		project := cfg.Projects[cfg.Project]
+		project.CommitIssueTrailerRepos = []ghrepo.Repository{ghrepo.MustParse("acme/gadgets")}
+		cfg.Projects[cfg.Project] = project
+	}),
+	"projects.<KEY>.memory.config_files": movedBy(func(cfg *config.Config) {
+		project := cfg.Projects[cfg.Project]
+		project.Memory.ConfigFiles = []string{"/etc/legion-operator/memory-2.yml"}
+		cfg.Projects[cfg.Project] = project
+	}),
 	"runtime.kubernetes.resources.issue": movedBy(func(cfg *config.Config) {
 		cfg.Runtime.Kubernetes.Resources.Issue.CPURequest = "2"
 	}),
@@ -348,10 +428,12 @@ func movedBy(move func(*config.Config)) func() string {
 // pod: the skills repository, which the controller's pod clones in no init container and mounts
 // in no container (controllerPod.skillsRepository, controllerPod.initContainers); the pod's own
 // test database, which no container of the controller's serves (issuePod.mainVolumes); the issue
-// reservation, which no container of the controller's carries; and the workers' backends, which
-// name issue roles alone. Were one of them compared against the controller's record, its next
-// launch would replace a pod nothing about it had changed — the spurious round launchSettingsFor
-// exists to refuse, in the one direction its own comment did not cover.
+// reservation, which no container of the controller's carries; the workers' backends, which
+// name issue roles alone; and the project's trailer repositories and memory overlays, which no
+// controller's launch is told (controllerPod.agentEnv, runtime's validateControllerShape). Were
+// one of them compared against the controller's record, its next launch would replace a pod
+// nothing about it had changed — the spurious round launchSettingsFor exists to refuse, in the
+// one direction its own comment did not cover.
 func TestAnIssueOnlyLaunchKeyDriftsTheIssuePodAndNotTheController(t *testing.T) {
 	built := LaunchSettings(launchFixture())
 	recorded, err := launchSettingsOf(built)
@@ -359,8 +441,8 @@ func TestAnIssueOnlyLaunchKeyDriftsTheIssuePodAndNotTheController(t *testing.T) 
 		t.Fatalf("the record cannot be read: %v", err)
 	}
 	for _, path := range slices.Concat(issueLaunchPaths, controllerLaunchPaths) {
-		if _, held := recorded[path]; !held {
-			t.Fatalf("%s is named as a key one kind's launch alone reads and no pod records it: the name has moved or is misspelt", path)
+		if _, held := recorded[recordedAt(path)]; !held {
+			t.Fatalf("%s is named as a key one kind's launch alone reads and no pod records it at %s: the name has moved or is misspelt", path, recordedAt(path))
 		}
 	}
 	for _, path := range issueLaunchPaths {
@@ -374,7 +456,7 @@ func TestAnIssueOnlyLaunchKeyDriftsTheIssuePodAndNotTheController(t *testing.T) 
 				t.Fatalf("the whole record did not move with %s, so this proves nothing", path)
 			}
 			drifted := launchSettingsDrift(launchSettingsFor(built, issuePod{}), launchSettingsFor(shifted, issuePod{}))
-			if len(drifted) != 1 || !strings.Contains(drifted[0], path) {
+			if len(drifted) != 1 || !strings.Contains(drifted[0], recordedAt(path)) {
 				t.Errorf("the issue pod's drift = %q, want the one reason naming %s", drifted, path)
 			}
 			before, after := launchSettingsFor(built, controllerPod{}), launchSettingsFor(shifted, controllerPod{})
@@ -462,5 +544,37 @@ func TestALaunchKeyOfAProjectDriftsTheIssuePod(t *testing.T) {
 				t.Errorf("PodDrift = %q, want a reason naming %s: the key moved and every role of the pod reads it at launch", drifted, tc.names)
 			}
 		})
+	}
+}
+
+// The other half of that rule: a launch key of a project this daemon does not run is no pod's
+// launch key. Every launch reads the daemon's own project (`project`) and nothing else of the
+// `projects` map — the launch specs' trailer repositories and the runtime's memory overlays
+// (internal/daemon's specs and sandboxOptions) — so a record holding another project's would
+// open an update round over every issue pod for a value none of them is handed (podLaunchPath).
+func TestALaunchKeyOfAnotherProjectIsRecordedForNoPod(t *testing.T) {
+	withOther := func(trailer, overlay string) *config.Config {
+		cfg := launchFixture()
+		cfg.Projects["OTHER"] = config.Project{
+			CommitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse(trailer)},
+			Memory:                  config.Memory{ConfigFiles: []string{overlay}},
+		}
+		return cfg
+	}
+	built := LaunchSettings(withOther("acme/gadgets", "/etc/legion-operator/other.yml"))
+	recorded, err := launchSettingsOf(built)
+	if err != nil {
+		t.Fatalf("the record cannot be read: %v", err)
+	}
+	if _, held := recorded["projects.LEGION.commit_issue_trailer_repos"]; !held {
+		t.Fatalf("the record holds no launch key of the daemon's own project, so this proves nothing: %s", built)
+	}
+	for path := range recorded {
+		if strings.HasPrefix(path, "projects.OTHER.") {
+			t.Errorf("the record holds %s, a key of a project no launch of this daemon reads", path)
+		}
+	}
+	if moved := LaunchSettings(withOther("acme/tools", "/etc/legion-operator/other-2.yml")); moved != built {
+		t.Errorf("another project's launch keys moved the record:\n%s\n%s", built, moved)
 	}
 }

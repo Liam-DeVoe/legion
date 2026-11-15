@@ -224,11 +224,13 @@ const (
 // every reader takes as no drift.
 //
 // The set is the table's: every row of class `launch` (config.ClassLaunch) whose path is not the
-// tmux runtime's, which is a pane's launch and no pod's. Today that is `instructions`,
-// `provider_keys`, `daemon_url`, `advertise_host`, `role_config_files`, `worker_backends`,
-// `omp_invocation`, `omp_launch_prefix` and the `runtime.kubernetes` launch keys — the image, the
-// storage class, the issue volume, the session store, the setup command, the test Postgres, the
-// scheduling, the reservations, the operator's pod, the secrets broker and the plugin pair.
+// tmux runtime's, which is a pane's launch and no pod's, and of the launch rows inside the
+// `projects` map, those at the daemon's own project alone (podLaunchPath). Today that is
+// `instructions`, `provider_keys`, `daemon_url`, `advertise_host`, `role_config_files`,
+// `worker_backends`, `omp_invocation`, `omp_launch_prefix`, the `runtime.kubernetes` launch keys
+// — the image, the storage class, the issue volume, the session store, the setup command, the
+// test Postgres, the scheduling, the reservations, the operator's pod, the secrets broker and the
+// plugin pair — and the project's `commit_issue_trailer_repos` and `memory.config_files`.
 //
 // A secret row's value is recorded as the digest of what it renders as (sha256:…) and never as
 // itself: a pod annotation is readable by everything that may read a pod, and a rotation must be
@@ -242,8 +244,8 @@ func LaunchSettings(cfg *config.Config) string {
 	// one class table rather than listed again here and the two can never disagree: a row added
 	// to the table reaches the annotation with it. Only the leaf is this package's — which rows
 	// a pod's own launch reads, and the digest a secret is recorded as.
-	config.WalkSettings(cfg, func(row config.Row, value reflect.Value) {
-		if row.Class != config.ClassLaunch || !podLaunchPath(row.Path) {
+	config.WalkSettings(cfg, func(path string, row config.Row, value reflect.Value) {
+		if row.Class != config.ClassLaunch || !podLaunchPath(cfg.Project, path, row) {
 			return
 		}
 		rendered := config.Render(value)
@@ -251,7 +253,7 @@ func LaunchSettings(cfg *config.Config) string {
 			digest := sha256.Sum256([]byte(rendered))
 			rendered = "sha256:" + hex.EncodeToString(digest[:])
 		}
-		settings[row.Path] = rendered
+		settings[path] = rendered
 	})
 	encoded, err := json.Marshal(settings)
 	if err != nil {
@@ -260,10 +262,18 @@ func LaunchSettings(cfg *config.Config) string {
 	return string(encoded)
 }
 
-// podLaunchPath is whether a launch key is one a pod's own launch reads. The tmux runtime's keys
-// are a pane's launch and reach no pod, and no pod of this runtime is ever built from them.
-func podLaunchPath(path string) bool {
-	return !strings.HasPrefix(path, "runtime.tmux.")
+// podLaunchPath is whether the launch key at path, read into row, is one a pod's own launch
+// reads, project being the daemon's own (`project`). The tmux runtime's keys are a pane's launch
+// and reach no pod, and no pod of this runtime is ever built from them.
+//
+// A member of the `projects` map (config.Row.Keyed, whose walk writes the entry's name into the
+// path) is read at the daemon's own project and at no other: every launch reads
+// `cfg.Projects[cfg.Project]` and nothing else of the map — the launch specs' trailer
+// repositories and the runtime's MemoryConfigFiles (internal/daemon's specs and sandboxOptions)
+// — so `projects.OTHER.commit_issue_trailer_repos` is a key no pod of this daemon reads, and
+// recorded it would open an update round over every issue pod for a value none of them is handed.
+func podLaunchPath(project, path string, row config.Row) bool {
+	return !strings.HasPrefix(path, "runtime.tmux.") && path == row.PathAt(project)
 }
 
 // launchSettingsFor is the record a pod of kind carries: the launch keys of the whole record

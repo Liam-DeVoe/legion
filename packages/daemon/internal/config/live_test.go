@@ -1288,20 +1288,21 @@ func projectsFile(blocks string) string {
 	return strings.Replace(minimalFile, "  DEMO: {}\n", "  DEMO: {}\n"+blocks, 1)
 }
 
-// `projects` is one value the diff compares whole and the pin descends into, key by key
-// (pinKeyed), which is three readings a block of the configuration cannot be: a project the
-// reading adds, a project it drops, and a project whose `memory` block one side carries and
-// the other does not. Each is read as pinBlock reads a block — an entry one reading does not
-// carry is that reading holding every member of it at its zero value — so `memory.mode` and
-// `memory.instructions` keep the value boot settled and are refused under the key the file
-// chose, while `commit_issue_trailer_repos`, `production_check` and `memory.config_files`
-// settle from the same reading under their own classes.
+// `projects` is one value the diff compares whole, and member by member, and the pin descends
+// into, key by key (pinKeyed), which is three readings a block of the configuration cannot be: a
+// project the reading adds, a project it drops, and a project whose `memory` block one side
+// carries and the other does not. Each is read as pinBlock reads a block — an entry one reading
+// does not carry is that reading holding every member of it at its zero value — so
+// `memory.mode` and `memory.instructions` keep the value boot settled and are refused under the
+// key the file chose, while `commit_issue_trailer_repos`, `production_check` and
+// `memory.config_files` settle from the same reading under their own classes.
 //
-// The block is still one change of `projects`, whatever of it the pin took back: the diff
-// compares the value whole and reads it before the pin (Apply), so the launch specs and the
-// runtime are built again and the refusal beside the change is what says which member of the
-// block the daemon did not take. The last row is that case alone — a reading that moves the
-// mode and nothing else.
+// What the settle reports is the map as the pin leaves it, the value the daemon holds (Apply):
+// `projects` whole, beside each member the daemon now holds otherwise under its own path, and
+// no fixed member, which the refusal names instead. A member of an entry the pin carries reads as
+// the zero value the carried entry holds, a member of an entry dropped whole as unset. The last
+// row is a reading that moves the mode and nothing else, which is no change of anything the
+// daemon holds: the mode is pinned back, so nothing is reported and nothing is rebuilt.
 func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 	instructions := filepath.Join(t.TempDir(), "memory.md")
 	if err := os.WriteFile(instructions, []byte("remember\n"), 0o600); err != nil {
@@ -1317,6 +1318,7 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 	for _, tc := range []struct {
 		name, booted, reading string
 		refused               []Refusal
+		applied               []string
 		want                  Project
 		gone                  []string
 	}{
@@ -1325,6 +1327,11 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			booted:  minimalFile,
 			reading: projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets], production_check: \"off\"}\n"),
 			refused: refusedBoth,
+			// Every member the entry holds arrives from unset, the two fixed ones aside.
+			applied: []string{
+				"projects", "projects.OTHER.commit_issue_trailer_repos", "projects.OTHER.memory.config_files",
+				"projects.OTHER.production_check", "projects.OTHER.slack_channels",
+			},
 			// Boot read no mode and no instructions file for a project it did not have, so
 			// both are pinned to the zero value it held them at: the mode nothing was given is
 			// off, and the instructions nothing read are none. The rest of the entry settles.
@@ -1336,6 +1343,13 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 				"  PLAIN: {commit_issue_trailer_repos: [acme/gadgets]}\n"),
 			reading: minimalFile,
 			refused: refusedBoth,
+			// OTHER's members move to the zero values its carried entry holds, its Slack
+			// channels unmoved at none; PLAIN's leave to unset.
+			applied: []string{
+				"projects", "projects.OTHER.commit_issue_trailer_repos", "projects.OTHER.memory.config_files",
+				"projects.OTHER.production_check", "projects.PLAIN.commit_issue_trailer_repos",
+				"projects.PLAIN.memory.config_files", "projects.PLAIN.production_check", "projects.PLAIN.slack_channels",
+			},
 			// The entry comes back carrying the two fixed members and nothing else, as a
 			// dropped block does: its overlays, its trailer repositories and its production
 			// check are the operator's to drop. PLAIN, whose entry holds no fixed member that
@@ -1348,6 +1362,7 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			booted:  projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets]}\n"),
 			reading: projectsFile("  OTHER: {commit_issue_trailer_repos: [acme/gadgets]}\n"),
 			refused: refusedBoth,
+			applied: []string{"projects", "projects.OTHER.commit_issue_trailer_repos", "projects.OTHER.memory.config_files"},
 			// Project.Memory is a value and not a pointer, so a project naming no block is a
 			// project whose block holds every member at its zero value: the mode and the
 			// instructions are pinned back to the boot's, and the overlays the reading dropped
@@ -1363,6 +1378,7 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			booted:  projectsFile("  OTHER: {commit_issue_trailer_repos: [acme/widgets]}\n"),
 			reading: projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets]}\n"),
 			refused: refusedBoth,
+			applied: []string{"projects", "projects.OTHER.memory.config_files"},
 			want: Project{
 				CommitIssueTrailerRepos: widgets,
 				Memory:                  Memory{ConfigFiles: []string{overlay}},
@@ -1393,8 +1409,8 @@ func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
 			if !slices.Equal(refused, tc.refused) {
 				t.Fatalf("the settle refused %+v, want exactly %+v: a fixed member is refused under the key the file chose", refused, tc.refused)
 			}
-			if paths := appliedPaths(applied); !slices.Equal(paths, []string{"projects"}) {
-				t.Fatalf("the settle applied %v, want projects alone: the block the pin took a member back from is still the block that moved", paths)
+			if paths := appliedPaths(applied); !slices.Equal(paths, tc.applied) {
+				t.Fatalf("the settle applied %v, want %v: the map the daemon holds and each member of it that moved, and no fixed member", paths, tc.applied)
 			}
 			settled := live.Snapshot().Projects
 			if got := settled["OTHER"]; !reflect.DeepEqual(got, tc.want) {

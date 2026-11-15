@@ -118,12 +118,14 @@ type Row struct {
 	// key, which ClassOf answers for a caller that sets the whole block.
 	Block bool
 	// Keyed is whether the field is a map of blocks under names the file chooses itself, each
-	// name the `<KEY>` segment of its members' paths. The diff compares such a field whole, as
-	// it compares any field that is no Block row, so one path names a change of any member of
-	// any entry; the pin of the fixed paths descends into it instead, entry by entry, and
-	// refuses a fixed member by its own path with the file's name written into it (live.go's
-	// pinKeyed). A row is Keyed or Block and never both: Block is one block the diff descends
-	// into, Keyed a map of blocks it does not.
+	// name the `<KEY>` segment of its members' paths. The walk visits such a field whole, as one
+	// value at its own path, and then each member of each entry at the path the entry's name
+	// makes of the member's row (live.go's WalkSettings, Row.PathAt), so the diff reports the
+	// map's own change beside each member's that moved, a pod records a launch member its launch
+	// reads, and the pin of the fixed paths refuses a fixed member by its own path with the
+	// file's name written into it (live.go's pinKeyed). A row is Keyed or Block and never both:
+	// Block is one block the diff descends into and never compares whole, Keyed a map it
+	// compares whole and descends into as well.
 	Keyed bool
 	// Secret is whether the value is a credential, the source of one, the path of a file holding
 	// one, or an address whose userinfo or query may carry one. Such a value renders as
@@ -422,30 +424,37 @@ var Classes = []Row{
 	{Field: "Config.RepositoryRenames", Path: "repository_renames", Class: ClassRebuild, Holder: HolderAPIServer,
 		Also: []string{HolderRepositoryMapping, HolderNATS, HolderRuntime}},
 	// The projects block, which `projects` is the one path of: the block is no Block row, so the
-	// diff compares it whole and names `projects` whatever member moved, and the rows below are
-	// what a caller setting one member by name is answered from. Two things hold it: the launch
-	// specs, which copy the project's Slack channels into the controller's prompt and its commit
-	// trailer repositories into every pane's environment; and the runtime, which hands the
-	// daemon-launched controller's pod the same channels and relaunches it when they change
-	// (sandbox.Options.ControllerSlackChannels). The operator is told the launch specs were
-	// rebuilt, and the runtime is built again with them, so the next launch reads the project the
-	// daemon is running on.
+	// diff compares it whole and names `projects` whatever member moved, beside the member's own
+	// path (Keyed), which is what a caller setting one member by name is answered from. Two
+	// things hold it: the launch specs, which copy the project's Slack channels into the
+	// controller's prompt and its commit trailer repositories into every pane's environment; and
+	// the runtime, which hands the daemon-launched controller's pod the same channels and
+	// relaunches it when they change (sandbox.Options.ControllerSlackChannels), and records in
+	// every pod's launch settings the trailer repositories and the memory overlays its launch
+	// read (sandbox.LaunchSettings). The operator is told the launch specs were rebuilt, and the
+	// runtime is built again with them, so the next launch reads the project the daemon is
+	// running on and a pod launched on the old one is compared against the new.
 	//
-	// It is the one keyed row: the file names the entries itself, and the pin of the fixed paths
-	// descends into them, project by project, so the two fixed rows below (`memory.mode` and
-	// `memory.instructions`) are pinned and refused under the key the file chose while every
-	// other member of the entry settles under its own class (live.go's pinKeyed).
+	// It is the one keyed row: the file names the entries itself, and the walk and the pin of
+	// the fixed paths descend into them, project by project, so the two fixed rows below
+	// (`memory.mode` and `memory.instructions`) are pinned and refused under the key the file
+	// chose while every other member of the entry settles under its own class (live.go's
+	// pinKeyed).
 	{Field: "Config.Projects", Path: "projects", Class: ClassRebuild, Holder: HolderLaunchSpecs,
 		Also: []string{HolderRuntime}, Keyed: true},
 	{Field: "Project.SlackChannels", Path: "projects.<KEY>.slack_channels", Class: ClassRebuild, Holder: HolderLaunchSpecs,
 		Also: []string{HolderRuntime}},
 	// The repositories whose commits a pane stamps the issue key into: a pane reads the key from
 	// its own launch environment (LEGION_ISSUE_TRAILER, built in the launch specs), so a change
-	// reaches a role at its next launch. The workflow runtime keeps a copy of its own, but only
-	// to say at the boot's mapping load which named repository the project does not serve
+	// reaches a role at its next launch. So its row names two holders, as `instructions` does:
+	// the launch specs, which build that key into each launch, and the Sandbox runtime, which
+	// records the value of the daemon's own project in each issue pod's launch-settings
+	// annotation (runtime/sandbox's LaunchSettings, made once per build of the runtime), where an
+	// update round reads a pod's drift from. The workflow runtime keeps a copy of its own, but
+	// only to say at the boot's mapping load which named repository the project does not serve
 	// (logUnservedCommitIssueTrailerRepos), and nothing else in the daemon reads it.
 	{Field: "Project.CommitIssueTrailerRepos", Path: "projects.<KEY>.commit_issue_trailer_repos",
-		Class: ClassLaunch, Holder: HolderLaunchSpecs},
+		Class: ClassLaunch, Holder: HolderLaunchSpecs, Also: []string{HolderRuntime}},
 	// Who works the production check a merge closing one of the project's issues opens: the
 	// workflow engine reads it as it decides the merge (internal/daemon's engineConfig, composed
 	// at every decision), and the state's settings report is rebuilt from it, so a change reaches
@@ -454,9 +463,11 @@ var Classes = []Row{
 	{Field: "Project.ProductionCheck", Path: "projects.<KEY>.production_check", Class: ClassDecision},
 	// The project's memory block: the overlays a memory-group role's Oh My Pi loads reach that
 	// role at its next launch, through the runtime that builds its pod (sandboxOptions'
-	// MemoryConfigFiles), while the mode and the instructions are settled at boot — admission
-	// draws each tree it opens under the mode it was given, the API server's own spawn reads
-	// that same value, and the instructions file is read once into the launch specs.
+	// MemoryConfigFiles) and records the daemon's own project's overlays in each issue pod's
+	// launch settings (runtime/sandbox's LaunchSettings), while the mode and the instructions are
+	// settled at boot — admission draws each tree it opens under the mode it was given, the API
+	// server's own spawn reads that same value, and the instructions file is read once into the
+	// launch specs.
 	{Field: "Project.Memory", Path: "projects.<KEY>.memory", Class: ClassFixed, Why: whyMemory, Block: true},
 	{Field: "Memory.Mode", Path: "projects.<KEY>.memory.mode", Class: ClassFixed, Why: whyMemory},
 	{Field: "Memory.ConfigFiles", Path: "projects.<KEY>.memory.config_files", Class: ClassLaunch, Holder: HolderRuntime},

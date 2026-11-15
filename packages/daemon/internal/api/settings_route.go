@@ -214,8 +214,9 @@ func settingResults(changes map[string]any, applied []config.Change, refused []c
 		}
 	}
 	// A change the caller did not name is one its own change moved: a key of a block it set
-	// whole, or a key whose default another key decides. It is answered for too, since it is
-	// part of what this call did.
+	// whole, a key whose default another key decides, the keyed map around a member it named by
+	// its own path, or a member of a keyed map it set whole (config's diff reports both). It is
+	// answered for too, since it is part of what this call did.
 	for _, change := range applied {
 		result := SettingResult{
 			Applied: string(change.Outcome), Holder: change.Holder, Old: change.Old, New: change.New,

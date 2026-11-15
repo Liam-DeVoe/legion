@@ -35,6 +35,8 @@ const (
 	// one runtime and not the other, or an optional block it drops. A Change reads the reading the
 	// loader resolved, before the pin of the fixed paths (Apply), so a dropped block's members read
 	// as unset whether or not the snapshot carries the block for a fixed member of it (pinFixed).
+	// A keyed map is the one value read after the pin instead (Apply), so a member of an entry the
+	// pin carries reads as the zero value the daemon holds there, never as unset.
 	// A drift reason says the same word of the same situation (runtime/sandbox's
 	// launchSettingsDrift), so the settings route's answer and a pod's drift reason never
 	// disagree on it.
@@ -132,7 +134,10 @@ type Live struct {
 	// and before pinFixed put the boot's fixed values back. Apply diffs the next reading against
 	// it, so a change is what moved between two readings and never a value the pin wrote: a
 	// block the pin carries for a fixed member of it holds every other member at a zero value no
-	// reading wrote, which a diff of settled would read as configured.
+	// reading wrote, which a diff of settled would read as configured. A keyed map and its members
+	// are the exception, read as settled holds them (Apply): the pin writes a fixed member back
+	// into a map that is not itself fixed, so the map the reading resolved is not the one the
+	// daemon runs on.
 	reading map[string]setting
 	// normalize is the caller's own fix of what the file says, run over every resolution before
 	// it settles (NewLive); nil fixes nothing.
@@ -307,10 +312,11 @@ func (l *Live) RefusePath(path, reason string) {
 // discipline. The file arm names every path it pinned in refused, with that path's own reason,
 // since the file is where such an edit comes from. The route arm names only what its caller
 // asked for: a fixed path it refuses before resolving, and a fixed member of a keyed map the
-// caller set whole, which the pin takes back and askedFor names, since the diff compares such
-// a map whole and the change the caller reads would otherwise carry a member the daemon did
-// not take. A path pinned under neither is a file edit this resolution read beside the
-// request, which the file arm reports at the settle the watcher makes of it.
+// caller set whole, which the pin takes back and askedFor names, since the change of the map
+// the caller reads carries the value the daemon holds and would otherwise not say which member
+// of the request it left out, or why. A path pinned under neither is a file edit this
+// resolution read beside the request, which the file arm reports at the settle the watcher
+// makes of it.
 //
 // A reading that names a runtime other than the one the daemon booted on settles nothing at
 // all, whichever arm asked: both arms answer *OtherRuntime, with the paths refused on their own
@@ -380,6 +386,22 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 	reading := settingsOf(&next)
 	pinned := pinFixed(settled, &next)
 	pinned = append(pinned, pinDaemon(settled, &next, l.pinned)...)
+	// A keyed map is read again once the pin is done with it, the map whole and every member of
+	// every entry, because it is the one value the pin writes into that is not itself fixed:
+	// pinKeyed puts a fixed member back inside `projects`, a rebuild-class value, and carries an
+	// entry the reading dropped for the fixed members it held. Read before the pin, the change
+	// of `projects` named the map the caller asked for, with a memory mode the daemon refused in
+	// it, and a reading that moved a fixed member alone rebuilt the launch specs and the runtime
+	// for a map the daemon holds unmoved. Read here, the change is the map Snapshot answers, and
+	// a fixed member the pin took back moves nothing; the refusal beside it says which member
+	// that was. An entry the pin carried is one the map holds, so its other members read as the
+	// zero values it holds them at, not as unset as a carried block's do. The pin drops no entry
+	// and no member, so this walk writes over every keyed path the first one read.
+	WalkSettings(&next, func(path string, row Row, value reflect.Value) {
+		if row.Keyed || path != row.Path {
+			reading[path] = settingOf(row, value)
+		}
+	})
 	if source == SourceFile {
 		refused = append(refused, pinned...)
 	} else {
@@ -415,11 +437,13 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 // A fixed path the caller named is refused before this resolution, and a fixed member of a
 // block is a path of its own the diff compares, so the answer carries no change of it at all
 // — `github_apps.review` beside an implement App a caller sets through the `github_apps`
-// block. A keyed map is the one value where silence would be false instead of quiet: the diff
-// compares it whole, so the one change the caller reads carries the member the pin took back,
-// with the value the request gave it. What this filter leaves out of a route answer is every
-// path pinned under no requested path, which is a file edit this resolution read beside the
-// request and the file arm names at the settle the watcher makes of it (Apply).
+// block. A keyed map's own line is the one that answers the caller's value applied while the
+// daemon took less of it: the change of the map carries the map the daemon holds (Apply), so a
+// member the pin took back is at its boot value there and at the request's value in what the
+// caller sent, and nothing on that line says which member differs or why. What this filter
+// leaves out of a route answer is every path pinned under no requested path, which is a file
+// edit this resolution read beside the request and the file arm names at the settle the
+// watcher makes of it (Apply).
 func askedFor(requested map[string]any, pinned []Refusal) []Refusal {
 	var asked []Refusal
 	for _, refusal := range pinned {
@@ -531,25 +555,40 @@ func scalarNode(value string) *yaml.Node {
 type setting struct{ compared, shown string }
 
 // settingsOf is cfg by dotted path: one entry per path the class table calls a value rather than a
-// block. A block the configuration does not carry contributes nothing, and the diff reads its
-// members as unset.
+// block, a keyed map's members each under the path its entry's name makes of the row. A block the
+// configuration does not carry contributes nothing, and the diff reads its members as unset.
 func settingsOf(cfg *Config) map[string]setting {
 	settings := map[string]setting{}
-	WalkSettings(cfg, func(row Row, value reflect.Value) {
-		rendered := Render(value)
-		if row.Secret {
-			settings[row.Path] = setting{compared: rendered, shown: withheldValue}
-			return
-		}
-		settings[row.Path] = setting{compared: rendered, shown: rendered}
+	WalkSettings(cfg, func(path string, row Row, value reflect.Value) {
+		settings[path] = settingOf(row, value)
 	})
 	return settings
 }
 
-// WalkSettings visits every value of cfg the class table names, by the row it is read into: one
-// visit per path the table calls a value rather than a block, with a block descended into and a
-// block the configuration does not carry contributing nothing. A field the table has no row for
-// is a derived value that is no legion.yaml key, which config's own census test names.
+// settingOf is one value of row as the diff compares it and a Change shows it.
+func settingOf(row Row, value reflect.Value) setting {
+	rendered := Render(value)
+	if row.Secret {
+		return setting{compared: rendered, shown: withheldValue}
+	}
+	return setting{compared: rendered, shown: rendered}
+}
+
+// WalkSettings visits every value of cfg the class table names, by the dotted path it is read at
+// and the row it is read into: one visit per path the table calls a value rather than a block,
+// with a block descended into and a block the configuration does not carry contributing nothing.
+// A field the table has no row for is a derived value that is no legion.yaml key, which config's
+// own census test names.
+//
+// A keyed map (Row.Keyed) is visited whole at its own path and then descended into, entry by
+// entry, each member at the path the entry's name makes of its row's template (Row.PathAt):
+// `projects`, then `projects.DEMO.commit_issue_trailer_repos` and every other member of DEMO.
+// A member's class is its own and not the map's — `commit_issue_trailer_repos` and
+// `memory.config_files` are launch keys of a rebuild-class map, `production_check` a decision —
+// so a walk that stopped at the map answered a caller who set one member that nothing moved,
+// and recorded neither launch key in any pod's launch settings. So path is row.Path for every
+// value but a member of a keyed map, the one place the two differ. The entries are visited in no
+// particular order: every visitor keys what it reads by path.
 //
 // It is the one walk of one reading of the configuration the daemon has: config's own diff
 // reads its settings through it (settingsOf), and runtime/sandbox records a pod's launch keys
@@ -557,9 +596,10 @@ func settingsOf(cfg *Config) map[string]setting {
 // never disagree on which fields the table names. The pin of the fixed paths walks two readings
 // at once and is the one walk that does (pinBlock); what the two share is settingFields, the
 // one rule that says which field of a block is which row, so they can differ only in what they
-// do with a pointer block and with a block a reading does not carry.
-func WalkSettings(cfg *Config, visit func(row Row, value reflect.Value)) {
-	walkSettings(reflect.ValueOf(cfg).Elem(), visit)
+// do with a pointer block, with a block a reading does not carry, and with an entry one reading
+// of a keyed map does not carry.
+func WalkSettings(cfg *Config, visit func(path string, row Row, value reflect.Value)) {
+	walkSettings(reflect.ValueOf(cfg).Elem(), "", visit)
 }
 
 // settingFields is every field of one block of the configuration the class table names, as the
@@ -588,11 +628,20 @@ func settingFields(typ reflect.Type) iter.Seq2[int, Row] {
 	}
 }
 
-func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value)) {
+// walkSettings is WalkSettings over one block, key being the name of the keyed map's entry the
+// block sits inside, "" for a block of the configuration itself (pinBlock's key).
+func walkSettings(block reflect.Value, key string, visit func(path string, row Row, value reflect.Value)) {
 	for i, row := range settingFields(block.Type()) {
 		value := block.Field(i)
+		if row.Keyed {
+			visit(row.PathAt(key), row, value)
+			for entry := value.MapRange(); entry.Next(); {
+				walkSettings(entry.Value(), entry.Key().String(), visit)
+			}
+			continue
+		}
 		if !row.Block {
-			visit(row, value)
+			visit(row.PathAt(key), row, value)
 			continue
 		}
 		if value.Kind() == reflect.Pointer {
@@ -601,7 +650,7 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 			}
 			value = value.Elem()
 		}
-		walkSettings(value, visit)
+		walkSettings(value, key, visit)
 	}
 }
 
@@ -625,23 +674,24 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 // `*cfg.Runtime.Kubernetes`) inside this very apply, under the holder's lock, in a daemon that
 // is supervising pods.
 //
-// Which paths are fixed is Classes and no second list, and the walk descends by Row.Block as
-// WalkSettings does, so a row the table makes fixed is pinned with nothing else edited and the
-// pin and the diff can never disagree about which paths the configuration holds. It descends
-// one step further than WalkSettings, by Row.Keyed: into the entries of a map whose names the
-// file chooses, which is `projects` and nothing else today, so the fixed rows the table holds
-// under `projects.<KEY>` — `memory.mode` and `memory.instructions` — are pinned per project
-// key and refused by the path that key makes of the template (pinKeyed, Row.PathAt).
+// Which paths are fixed is Classes and no second list, and the walk descends by Row.Block and
+// Row.Keyed as WalkSettings does, so a row the table makes fixed is pinned with nothing else
+// edited and the pin and the diff can never disagree about which paths the configuration holds.
+// A keyed map is a map whose names the file chooses, which is `projects` and nothing else today,
+// so the fixed rows the table holds under `projects.<KEY>` — `memory.mode` and
+// `memory.instructions` — are pinned per project key and refused by the path that key makes of
+// the template (pinKeyed, Row.PathAt).
 //
 // Pinning a member of that map pins no block, and a member's class is its own whatever the
-// class of the value around it: `projects` is one rebuild-class value the diff compares whole,
-// and what this walk writes is the member alone, so the project's Slack channels, its commit
-// trailer repositories, its production check and its memory overlays settle from a reading
-// that moves a fixed member beside them. What the diff reports of such a reading is the
-// reading's own `projects` block, taken before this walk (Apply), so the rebuild of the launch
-// specs and the runtime still happens and the refusal beside it is what says which member of
-// the block the daemon did not take. So a fixed member is refused whatever named it: its own
-// path on the route, the block around it, or the file.
+// class of the value around it: `projects` is one rebuild-class value, and what this walk writes
+// is the member alone, so the project's Slack channels, its commit trailer repositories, its
+// production check and its memory overlays settle from a reading that moves a fixed member
+// beside them. What the diff reports of such a reading is the map as this walk leaves it, read
+// after it (Apply): `projects` is reported changed where something the daemon now holds of it
+// moved, with the value the daemon holds, each member that moved beside it under its own path,
+// and the refusal is what says which member of the block the daemon did not take. So a fixed
+// member is refused whatever named it: its own path on the route, the block around it, or the
+// file.
 func pinFixed(settled, next *Config) []Refusal {
 	return pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), "", nil)
 }
@@ -671,11 +721,13 @@ func pinDaemon(settled, next *Config, paths map[string]string) []Refusal {
 // cfg's own — settable when cfg is addressable, as a *Config's fields are — or the zero Value
 // when no row of the class table names the path, or the path sits under a block this reading
 // does not carry. It walks the table's one field-to-row rule (WalkSettings), so it reaches
-// exactly the paths the diff and the pins do.
+// exactly the paths the diff and the pins do, but for a member of a keyed map: that is a copy
+// the map hands out, no field of cfg's own and settable by nobody, so pinDaemon could not pin
+// it, and it is the one visit whose path is not its row's.
 func fieldByPath(cfg *Config, path string) reflect.Value {
 	var found reflect.Value
-	WalkSettings(cfg, func(row Row, value reflect.Value) {
-		if row.Path == path {
+	WalkSettings(cfg, func(visited string, row Row, value reflect.Value) {
+		if visited == path && visited == row.Path {
 			found = value
 		}
 	})
@@ -894,6 +946,25 @@ func Compare(old, next map[string]string) []Changed {
 // diff is one Change per path whose value the two configurations disagree on, in path order. A
 // secret is compared by its value and shown as "(withheld)" (setting), so a rotation is a change
 // without being printed.
+//
+// A keyed map is reported twice over where one of its members moved: once whole, under its own
+// path, and once per member that moved, under the member's own (WalkSettings). The member's
+// change is the answer to a caller who set that member by its path, with its own class, holder
+// and values: `projects.DEMO.commit_issue_trailer_repos` is answered next-launch with the
+// repositories it held and now holds, not left unchanged while the map beside it moved. The
+// map's change stays, because its holders are the ones a rebuild of the map answers for: the
+// launch specs and the runtime, which between them hold every member a rebuild can reach, the
+// runtime among them for the launch settings it records of each pod (sandbox.LaunchSettings).
+// It is also the one line a caller that set the map whole reads, and it carries the map the
+// daemon holds after the pin (Apply). The cost is that one member's edit is two changes: two
+// log lines and two posts to the controller (internal/daemon's settingsAnnouncer), a source
+// recorded for each path, and a rebuild failure answered under both; and a project added or
+// dropped whole is its map's change and one change per member it carries. The rebuilder builds
+// each holder once per apply however many changes name it, so nothing is built twice. The
+// other design, the route reading the settled configuration at each path it was asked for,
+// answers that caller alone: the file's own edit of a member, the log and the settings sources
+// would still name only the map, and the route would read a configuration a later apply may
+// already have replaced.
 func diff(old, next map[string]setting, source, by string) []Change {
 	var changes []Change
 	for _, moved := range Compare(comparedValues(old), comparedValues(next)) {
