@@ -95,7 +95,7 @@ env:
 
 jobs:
   # The Go binaries the browser suite's stacks run: the Dispatch server and the real broker's
-  # three commands, built once here and handed to the shard and alone jobs below in one
+  # three commands, built once here and handed to the shard, alone and visual jobs below in one
   # artifact.
   #
   # Why the build is a job of this file rather than of each caller: an artifact is visible only
@@ -112,6 +112,10 @@ jobs:
   # this job, which takes no container, and the suite's own scripts execute what it built
   # instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
   # run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+  #
+  # The visual job runs on the runner and could build them, but its scripts would then build
+  # them inside its 3-minute browser step; it takes them from here too, and its download step
+  # says what that build cost the step.
   #
   # It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
   # already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
@@ -169,8 +173,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
         working-directory: packages/envoy
-      # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
-      # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
+      # The shard and alone jobs' containers have no Go, and the visual job keeps no Go of its
+      # own, so e2e/harness-postgres.ts reads the stacks' connection limit from this output
+      # (DISPATCH_E2E_PG_CONNECTIONS) instead.
       - name: Read the connections each stack's Postgres must allow
         id: connections
         run: |
@@ -421,8 +426,8 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
-      # refusal would otherwise surface in a stack's own log, far from this cause.
+      # run-server.sh:235-241 and run-broker.sh:98-103 refuse a path that is not executable, and
+      # that refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
@@ -987,8 +992,8 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
-      # refusal would otherwise surface in a stack's own log, far from this cause.
+      # run-server.sh:235-241 and run-broker.sh:98-103 refuse a path that is not executable, and
+      # that refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
@@ -1506,7 +1511,15 @@ jobs:
   # before any step budget could fire. That inverts this file's rule, which says the job budget
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
+  #
+  # The table's setup-go and go cache restore rows are gone from this job, and its connections
+  # step with them: the job runs no go command now (the download step below says why), so the
+  # binaries job's artifact download and its chmod stand where those three stood. The download
+  # took 5 s in the shard job of run 43691891752 (job 132744755413), under the 8 + 10 + 3 s
+  # the three removed steps took in this job of that run (job 132744152651), so the job budget
+  # above, derived with them, still bounds it.
   visual:
+    needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 9
@@ -1514,22 +1527,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # What the binaries job built, in place of this job's own actions/setup-go, go-envoy-test
+      # restore and connections step, which are gone: with no go command left here they bought
+      # nothing. Without these binaries, run-server.sh builds the Dispatch server and
+      # run-broker.sh the real broker's three commands with `go build` inside the browser step's
+      # own budget. In job 132744152651 of run 43691891752 that step started at 07:54:41, the
+      # server listened at 07:55:37 after its build's `go: downloading` lines, and the broker's
+      # issuer at 07:56:47, so 131 s of the step's 180 passed before Playwright ran a row at
+      # 07:56:53, and the step timed out on its phone shots with every shot it reached passing.
+      # Built in the binaries job, they cost a build the shard and alone jobs already wait for,
+      # and the step's budget measures the shots again, as the image pull and the connections
+      # read were moved out of it before. The directory is the one run-broker.sh serves, which
+      # refuses any other, and the one packages/dispatch/e2e/real-broker.ts runs requestseed
+      # from; the server binary rides along in it and is named by path below. They run on the
+      # host here, not in a container: the binaries job builds them static (CGO_ENABLED=0).
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
-      # this job's run-server.sh builds the Dispatch server, which only that family's entry
-      # holds. It saves none.
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+      # run-server.sh:235-241 and run-broker.sh:98-103 refuse a path that is not executable, and
+      # that refusal would otherwise surface in the stack's own log, far from this cause.
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -1553,15 +1573,6 @@ jobs:
         # pay for it inside the browser step's own budget. A failed pull is a fault of this
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
-      # The stack's connection limit, read outside the browser step's budget, where
-      # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
-      - name: Read the connections the visual stack's Postgres must allow
-        id: connections
-        run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
-          echo "connections=$connections" >> "$GITHUB_OUTPUT"
-        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
         timeout-minutes: 3
         run: |
@@ -1576,8 +1587,13 @@ jobs:
           # is no route here: this job runs on the runner and only its Playwright command is in
           # a container.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          # Read in the step above, outside this step's budget (e2e/harness-postgres.ts).
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          # Read in the binaries job, outside this step's budget (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          # What the binaries job built, which run-server.sh and run-broker.sh execute instead
+          # of building: the server by its path, the broker's three by the directory that holds
+          # them.
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
           # One stack, which e2e/visual-run.sh starts on the host and stops however it ends: the
           # Playwright run inside the container reads DISPATCH_E2E_REUSE_SERVERS=1 among that
           # stack's variables and starts none of its own. Each project of the two runs one

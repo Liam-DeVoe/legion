@@ -55,8 +55,8 @@ name: CI
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 # listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-# builds the test binary of every package of the envoy module, and the binaries, multiprocess
-# and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
+# builds the test binary of every package of the envoy module, and the binaries and
+# multiprocess jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 # broker's commands out of that same set), go-envoy-infra
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
@@ -1266,7 +1266,7 @@ jobs:
               - 'scripts/e2e/lib/held-port.py'
               # e2e/harness-postgres.ts sizes each stack's Postgres from
               # `go run ./internal/dispatch/store/cmd/connections`, which dispatch-browser.yaml's
-              # binaries job runs for the shard and alone jobs and its visual job runs for itself;
+              # binaries job runs for the shard, alone and visual jobs;
               # *dispatch_server carries the store.
               - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
               - 'packages/envoy/internal/dispatch/testlimits/*'
