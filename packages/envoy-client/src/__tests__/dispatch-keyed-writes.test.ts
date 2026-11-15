@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { type AddressInfo, createServer, type Socket } from "node:net";
 import {
   type CommentWriteResponse,
@@ -1189,11 +1189,13 @@ async function socketDispatch(intakes: readonly Intake[]) {
       if (taken.received >= taken.length) {
         answerOn(socket, 201, { artifact: { id: "artifact-1" } }, taken.key);
       } else if (typeof intake === "object") {
-        // A step of the body, not a rate: the steps sit in its first half, so however much of it
-        // the socket buffers already hold when the row lets the last one go on, the connection is
-        // still taking bytes and the client still sees progress. Each step stands in for a
-        // connection whose far end stops reading for a while, and lasts until the row lets it go.
-        const step = taken.length / 2 / intake.pauses;
+        // A step of the body, not a rate. Each step stands in for a connection whose far end stops
+        // reading for a while, and lasts until the row lets it go. The steps sit in the first
+        // quarter of the body, so that when the row lets one go the client always has more of the
+        // body to hand the connection: what the connection's buffers hold past a stop (on this
+        // loopback, at most 4 MiB each way in the issue pod and 4 MiB to send and 6 MiB to receive
+        // by Linux's defaults, and Bun's own write) is far less than the three quarters left.
+        const step = taken.length / 4 / intake.pauses;
         if (taken.pauses < intake.pauses && taken.received >= (taken.pauses + 1) * step) {
           taken.pauses++;
           socket.pause();
@@ -1217,81 +1219,65 @@ async function socketDispatch(intakes: readonly Intake[]) {
   };
 }
 
-/** A silence cut the client armed and `holdSilenceCuts` held: whether the client cleared it. */
+/** A silence cut the client armed through `heldSilenceCuts`: for how long, and whether it was
+ *  disarmed. */
 interface HeldCut {
+  readonly ms: number;
+  /** Ends the silence now, as the cut's timer would. */
   readonly fire: () => void;
-  cleared: boolean;
+  disarmed: boolean;
 }
 
-/** The cuts `holdSilenceCuts` holds, in the order the client armed them, and its undoing. */
+/** The cuts `heldSilenceCuts` holds, in the order the client armed them, and the seam it arms
+ *  them through (`DispatchWriteRetry.armSilence`). */
 interface HeldCuts {
   readonly cuts: readonly HeldCut[];
-  /** Gives the process its own `setTimeout` and `clearTimeout` back. */
-  release(): void;
+  readonly armSilence: NonNullable<DispatchWriteRetry["armSilence"]>;
 }
 
 /**
- * The client's silence cut of each attempt, held rather than left to the clock: every timer armed
- * for exactly `ms`, which nothing else the row runs arms, and whether the client cleared it. A
- * held cut fires only when the row fires it, so the row says when an attempt has gone silent and
- * reads which cut the client armed when; every other timer of the process runs on the clock.
+ * The client's silence cuts, held rather than left to a timer: the client's own record of each
+ * cut it arms and disarms. A held cut fires only when the row fires it, so the row says when an
+ * attempt has gone silent, and no cut comes because the machine stalled a healthy attempt.
  */
-function holdSilenceCuts(ms: number): HeldCuts {
-  const realSetTimeout = globalThis.setTimeout;
-  const realClearTimeout = globalThis.clearTimeout;
+function heldSilenceCuts(): HeldCuts {
   const cuts: HeldCut[] = [];
-  const byHandle = new Map<unknown, HeldCut>();
-  const arm = (run: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
-    if (delay !== ms) return realSetTimeout(run, delay, ...args);
-    const cut = { fire: () => run(...args), cleared: false };
-    cuts.push(cut);
-    // A handle the client can clear, which never fires and holds no run of the process open.
-    const handle = realSetTimeout(() => {}, 2 ** 31 - 1).unref();
-    byHandle.set(handle, cut);
-    return handle;
-  };
-  // Every handle the process clears is a timer of Bun's: the client's own, or one `arm` made.
-  const clear = (handle?: Timer) => {
-    const cut = byHandle.get(handle);
-    if (cut !== undefined) cut.cleared = true;
-    realClearTimeout(handle);
-  };
-  const armed = spyOn(globalThis, "setTimeout").mockImplementation(
-    arm as unknown as typeof setTimeout
-  );
-  const cleared = spyOn(globalThis, "clearTimeout").mockImplementation(
-    clear as typeof clearTimeout
-  );
   return {
     cuts,
-    release: () => {
-      armed.mockRestore();
-      cleared.mockRestore();
+    armSilence: (ms, fire) => {
+      const cut = { ms, fire, disarmed: false };
+      cuts.push(cut);
+      return () => {
+        cut.disarmed = true;
+      };
     },
   };
 }
 
 // An attempt's silence bound counts the connection taking its body as progress, so an upload is
 // bounded by how long it goes unheard, never by how long it takes; one whose connection stops
-// taking it is cut off and sent again under its key. Only a real socket shows that: the pace is
-// the kernel's backpressure on the connection, which no fake clock drives. So these run on a real
-// socket, with the client's silence cuts held (`holdSilenceCuts`): the row reads which cut the
-// client armed and cleared as the connection took the body, and fires a cut itself, so no cut
-// comes because the machine stalled a healthy attempt.
+// taking it is cut off and sent again under its key. Progress is the connection taking bytes,
+// which fetch reads from the body's stream only as the connection takes them, so these run on a
+// real socket. The client's silence cuts are held (`heldSilenceCuts`): each row reads the cuts the
+// client armed and disarmed as the connection took the body, and fires one itself, so nothing a
+// row checks turns on how fast the socket drains.
 describe("DispatchClient's uploads on a real connection", () => {
   const opened: { close(): void }[] = [];
-  let held: HeldCuts;
+  /** Each row's upload: what stops it, and its end, which never rejects. */
+  const uploads: { readonly stop: AbortController; readonly ended: Promise<void> }[] = [];
 
-  beforeEach(() => {
-    forgetKeyedLayerMemory();
-    held = holdSilenceCuts(DISPATCH_WRITE_RETRY.silenceMs);
-  });
+  beforeEach(forgetKeyedLayerMemory);
 
-  // A row that fails part way never reaches the end of its own body, so this hook is what closes
-  // its server and its sockets; left open, their errors would land on the row after it. It is the
-  // one owner of the close, which is why no row closes its own server.
-  afterEach(() => {
-    held.release();
+  // A row that fails part way leaves its upload running and its server open. This hook stops the
+  // upload and waits for it to end, and only then closes the server, so neither the upload's
+  // failure nor the sockets' errors land on the row after it. It is the one owner of both, which
+  // is why no row closes its own server.
+  afterEach(async () => {
+    for (const { stop } of uploads) stop.abort();
+    await settled(
+      "the row's uploads to end once stopped",
+      Promise.all(uploads.splice(0).map(({ ended }) => ended))
+    );
     for (const made of opened.splice(0)) made.close();
   });
 
@@ -1301,36 +1287,56 @@ describe("DispatchClient's uploads on a real connection", () => {
     return made;
   };
 
-  const upload = (url: string, size: number) =>
-    new DispatchClient(url, bearerCredential("secret"), fetch).artifact("DSP-1", {
+  const upload = (url: string, size: number, silence: HeldCuts) => {
+    const stop = new AbortController();
+    const sending = new DispatchClient(url, bearerCredential("secret"), fetch, stop.signal, {
+      ...DISPATCH_WRITE_RETRY,
+      armSilence: silence.armSilence,
+    }).artifact("DSP-1", {
       name: "build.tar",
       file: new Blob([new Uint8Array(size).fill(97)]),
       actor,
     });
+    uploads.push({
+      stop,
+      ended: sending.then(
+        () => undefined,
+        () => undefined
+      ),
+    });
+    return sending;
+  };
 
   // The connection takes the body in four steps and stops after each until the row lets it go
-  // on. Between two stops it takes bytes, and each time it does the client clears the silence cut
-  // it armed and arms another: the cut counts from the connection's last progress, never from the
-  // attempt's start, so however long the body is on the connection it lands in one attempt. At
-  // each stop exactly one cut stands, and more were armed than at the stop before. The body is 24
-  // MiB and the steps sit in its first half, because what the client counts as progress is the
-  // connection taking its bytes: measured in a 2-CPU pod, the socket buffers swallowed a 4 MiB body
-  // whole, which leaves the client nothing to send after a stop.
-  test("an upload going out for longer than silenceMs lands in one attempt", async () => {
+  // on. Each time the connection takes more of the body the client disarms its silence cut and
+  // arms another, so the cut counts from the connection's last progress, never from the attempt's
+  // start, and however long the body is out it lands in one attempt. At each stop one cut stands,
+  // and it is not the one the attempt armed when it began: by the first stop the connection has
+  // taken 1.5 MiB, which the client handed it a chunk at a time, renewing the cut with each. Once
+  // the row lets a stop go, the connection takes more and the client renews the cut that stood
+  // there; the row waits for that renewal rather than reading at the next stop, because how much of
+  // the body the connection's buffers already hold decides whether the client hands it anything
+  // before the next stop, and that is the machine's pace, not the client's. The body is 24 MiB
+  // because what the client counts as progress is the connection taking its bytes: measured in a
+  // 2-CPU pod, the socket buffers swallowed a 4 MiB body whole.
+  test("an upload's silence cut counts from the connection's last progress, so it lands in one attempt", async () => {
     const dispatch = await dispatchOn([{ pauses: 4 }]);
-    const sending = upload(dispatch.url, 24 << 20);
-    // The attempt armed its first cut when it began.
-    let armedBefore = 1;
+    const silence = heldSilenceCuts();
+    const sending = upload(dispatch.url, 24 << 20, silence);
     for (let stop = 1; stop <= 4; stop++) {
       const goOn = await until(`the connection's stop ${stop} of 4`, () => dispatch.paused.shift());
-      const standing = held.cuts.filter((cut) => !cut.cleared).length;
-      expect({ stop, standing, rearmed: held.cuts.length > armedBefore }).toEqual({
+      const standing = silence.cuts.filter((cut) => !cut.disarmed);
+      expect({
         stop,
-        standing: 1,
-        rearmed: true,
-      });
-      armedBefore = held.cuts.length;
+        standing: standing.length,
+        renewed: standing[0] !== silence.cuts[0],
+      }).toEqual({ stop, standing: 1, renewed: true });
+      const stood = standing[0] as HeldCut;
       goOn();
+      await until(
+        `the client to renew its cut as the connection takes the body past stop ${stop}`,
+        () => stood.disarmed
+      );
     }
     await settled("the upload", sending);
 
@@ -1348,15 +1354,17 @@ describe("DispatchClient's uploads on a real connection", () => {
   // stopped, so it is above nothing and below the body.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
     const dispatch = await dispatchOn(["stall", "full"]);
-    const sending = upload(dispatch.url, 16 << 20);
+    const silence = heldSilenceCuts();
+    const sending = upload(dispatch.url, 16 << 20, silence);
     await until(
       "the stand-in to take the first of the upload and stop",
       () => dispatch.writes[0]?.received
     );
-    // The client armed its cut for the production bound, and nothing else ended the attempt.
-    expect(held.cuts.filter((cut) => !cut.cleared)).toHaveLength(1);
+    // One cut stands, armed for the production bound, and nothing else has ended the attempt.
+    const standing = silence.cuts.filter((cut) => !cut.disarmed);
+    expect(standing.map((cut) => cut.ms)).toEqual([DISPATCH_WRITE_RETRY.silenceMs]);
     expect(dispatch.writes).toHaveLength(1);
-    held.cuts.at(-1)?.fire();
+    standing[0]?.fire();
     await settled("the upload sent again after its cut", sending);
 
     const { writes } = dispatch;
