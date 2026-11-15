@@ -152,7 +152,7 @@ func ControllerRoleToken(project string) string {
 }
 
 // UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
-// subject captures and no role lane (bus.ReachesNoSession), is told: nothing would ever be
+// subject captures and no role lane (bus.Client.ReachesNoSession), is told: nothing would ever be
 // delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
 // registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
 // plugin's explicit subscribe refuses such a topic in the same words. Generated from

@@ -359,7 +359,7 @@ export type Subject =
 /**
  * What a caller that named `topic` is told when nothing would ever be delivered to `sessionID` on
  * it: a `notifications.` topic no stream subject captures and no role lane
- * (`bus.ReachesNoSession` in packages/envoy/internal/bus, `streamDeliversNothing` in
+ * (`bus.Client.ReachesNoSession` in packages/envoy/internal/bus, `streamDeliversNothing` in
  * `@legion/envoy-client`). The listener leaves such a topic out of a registration and names it in
  * this warning (`splitUncapturedTopics` in packages/envoy/cmd/listener/api.go, which names it with
  * `contracts.UncapturedTopicRefusal` `scripts/gen-go.ts` emits from this builder), and each
