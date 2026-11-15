@@ -18358,12 +18358,10 @@ console.log(JSON.stringify(args));
      */
     async function bootPlacedSession(query: string, sessionID: string) {
       const places: (TmuxPlace | undefined)[] = [];
-      let registered: (() => void) | undefined;
       globalThis.fetch = async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === "/v1/interests/subscribe" && init?.body !== undefined) {
           places.push(JSON.parse(init.body.toString()).tmux_place);
-          registered?.();
         }
         return responseWithRegistration(input, init, {});
       };
@@ -18380,15 +18378,21 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_start")?.({}, context);
       return {
         places,
-        /** Ticks every interval the session registered, and waits for the registration it sends. */
-        heartbeat: async () => {
-          const sent = Promise.withResolvers<void>();
+        /**
+         * Ticks every interval the session registered until a tick sends a registration, and
+         * waits for it between event-loop turns. A tick that finds the pass an earlier tick
+         * started still holding the queue sends nothing while the registration that pass
+         * refreshes is fresh, and nothing the pass leaves behind shows when it lets go: the
+         * registration is waited for where it shows, at the listener, and ticked for again until
+         * it does, however long a loaded machine keeps the pass running.
+         */
+        heartbeat: () => {
           const before = places.length;
-          registered = () => {
-            if (places.length > before) sent.resolve();
-          };
-          for (const tick of heartbeats) tick();
-          await sent.promise;
+          return until(() => {
+            if (places.length > before) return true;
+            for (const tick of heartbeats) tick();
+            return false;
+          }, "the registration a heartbeat sends");
         },
       };
     }
@@ -18401,10 +18405,10 @@ console.log(JSON.stringify(args));
 
     /** The next registration a session sends once its cached reading has aged out, crossed on
      *  the clock the cache reads (`Date.now`): a real wait would cost every run the lifetime.
-     *  The pass the previous tick started is let settle first, since a tick that finds one still
-     *  holding the queue refreshes nothing while the registration it would refresh is fresh. */
+     *  The heartbeat ticks until that registration goes out, which outlasts the pass the
+     *  previous tick started however long it runs: a tick that finds it still holding the queue
+     *  sends nothing while the registration it would refresh is fresh. */
     async function heartbeatPastTheLifetime(session: { heartbeat: () => Promise<void> }) {
-      await settle();
       setSystemTime(new Date(Date.now() + PLACE_LIFETIME_MS + 1_000));
       try {
         await session.heartbeat();
