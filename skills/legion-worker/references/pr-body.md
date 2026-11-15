@@ -135,8 +135,9 @@ where Dispatch knows of no merge of that issue — and a `default_branch` result
 repository's default branch carries.
 Dispatch attributes a pull request by ranked sources, and a key in its title or body can be the
 one that decides, so the title names no other issue's key and the body names its own key before
-any other: a pull request attributed to another issue proves no result of yours, at a head that
-never moved.
+any other. A GitHub issue the body cites can outrank both, so cite another pull request or issue
+as `owner/repo#N`, never as a bare `#N`: a pull request attributed to another issue proves no
+result of yours, at a head that never moved.
 A push moves the head, with no Dispatch write of anyone's, so each check with no `ci_check` is
 recorded again at the new head. `dispatch results --issue <issue>` prints each check with the
 results recorded against it and the commit each one was recorded at;

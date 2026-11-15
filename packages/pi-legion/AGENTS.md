@@ -535,11 +535,10 @@ the registration's secret.
 That order holds only outside Oh My Pi's startup, so the operator's controller claims nothing at
 `session_start` (`handleSessionStart` in `src/controller-session.ts` returns for it; the session is
 titled and its `legion` tool registered, answering that no claim is registered until one is). Oh
-My Pi holds every send a `session_start` handler makes and drains them at the end of its startup,
-while an Envoy card that finds the session idle starts its own turn: a role claim made during startup lets a
-card on the role's lane, or a notice on the controller topic, start its turn ahead of the held start
-message, and a turn started there runs inside the startup wait, before the TUI shows it or reads any
-input — no start message and no busy row on screen, Enter not taking typed text, Esc doing nothing.
+My Pi holds every send a `session_start` handler makes until its startup has subscribed to the
+agent, then starts them without waiting for a turn they start, while an Envoy card that finds the
+session idle starts its own turn: a role claim made during startup lets a card on the role's lane,
+or a notice on the controller topic, start its turn ahead of the held start message.
 The Envoy entry still opens the session's agent subject at its own `session_start`, so with its
 start message not yet sent the operator's controller names the session at `session_start` in the
 interface's `startupTurn` with the start due and unsent (`{session, sentAt: undefined}`,

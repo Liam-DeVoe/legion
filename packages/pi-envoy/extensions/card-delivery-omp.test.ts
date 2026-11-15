@@ -211,7 +211,8 @@ async function until<T>(
  * listener and the test holds a NATS connection. With `holdStartup` the stand-in holds its answer
  * to that first registration until `releaseStartup`: envoy.ts's `session_start` awaits it
  * (`reconcileNow` registers once the relay subject is open), so the host is still inside its
- * startup, before it starts any extension send or reads any RPC command. With `holdSetup` it holds
+ * startup, before it starts any extension send or runs any RPC command that starts a turn (it
+ * answers a `get_state` meanwhile). With `holdSetup` it holds
  * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
  * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
  * configured, neither a Legion pane nor a subagent), so the host is setting the first prompt up,
@@ -893,24 +894,26 @@ test.skipIf(skip)(
   120_000
 );
 
-// RPC mode answers a command that starts no turn, `get_state` among them, while Oh My Pi's startup
-// still runs, and holds one that starts a turn or changes the session until startup ends
-// (rpc-mode.ts `waitsForStartup`); its startup ends once the startup handlers ran, without waiting
-// for a turn one of them started (`drainSends: false`). The stand-in holds the registration
-// envoy.ts's `session_start` awaits, with the relay subject already open (it is opened before the
-// registration that asks for the consumer), so the cards reach pi-envoy inside the host's startup,
-// and the `get_state` written meanwhile is answered before that startup is released.
+// Cards that reach pi-envoy while Oh My Pi starts are folded into the context with no turn and
+// read in one wake turn after startup (src/card-wake.ts, "The startup phase"). The stand-in holds
+// the registration envoy.ts's `session_start` awaits, with the relay subject already open (it is
+// opened before the registration that asks for the consumer), so the cards reach pi-envoy inside
+// the host's startup. The two `get_state` reads are preconditions about the host, not pi-envoy's
+// decision: RPC mode answers a command that starts no turn while its startup still runs, and holds
+// one that starts a turn or changes the session until startup ends (rpc-mode.ts
+// `waitsForStartup`), so neither read waits for the startup or for the wake's turn.
 test.skipIf(skip)(
-  "a card that arrives while the session starts holds no RPC input",
+  "cards that arrive while the session starts reach the model in one wake turn after startup",
   async () => {
     const session = await startSession({ holdStartup: true });
     const early = session.command({ type: "get_state" });
     const cards = [await session.card("s1"), await session.card("s2")];
+    // Host precondition: a get_state written during startup is answered before it is released.
     await within("get_state written while the session starts", 5_000, early);
     session.releaseStartup();
 
-    // The cards' turn is held at its model request, and the host still answers RPC commands.
     const woken = await session.nextTurn("the turn the startup cards' wake started");
+    // Host precondition: the wake's turn, held at its model request, holds no RPC command.
     await within("get_state written while the turn is held", 5_000, session.state());
 
     const messages = conversation(woken.request);

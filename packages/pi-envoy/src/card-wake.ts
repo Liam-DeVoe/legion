@@ -87,18 +87,21 @@ import type {
  * runs both inside `runner.sends.withHeld`, ~547-555). Print and JSON mode then await every send
  * it tracks before it returns (`runner.sends.drain()`, ~560; `send-queue.ts` `drain`). RPC mode
  * does not (`drainSends: false`, `rpc-mode.ts` ~3040-3043): its startup ends once the startup
- * handlers ran, without waiting for a turn one of them started. Until then it runs no command that
- * starts a turn or changes the session and answers every other one, `get_state` among them
- * (`rpc-mode.ts` `waitsForStartup`); a command it held then runs during a turn a startup send
- * started, as during any other turn. So an idle card sent with `triggerTurn` that reached pi-envoy
- * in that window, as it opens its agent subject in `session_start`, would start the session's
- * first turn, and the daemon's task would arrive inside that turn. The host gives extensions no
- * event once its startup is over. Without the start-turn mark (below) the phase needs `ctx.mode`
- * "rpc". ACP initialises extensions with "rpc" too (`acp-agent.ts` ~3425), so the phase holds
- * there as well, at no cost: ACP's bridge defers a turn the agent starts (`agent-session.ts`
- * ~11680-11682), so the wake becomes hidden next-turn context there, as an idle card's turn did.
- * Print and JSON mode prompt right after their own awaits that follow
- * it (`print-mode.ts`, MCP readiness and a tool refresh, ~426-430; `session.prompt`, ~496), and
+ * handlers ran, without waiting for a turn one of them started. Until then it holds the commands
+ * `waitsForStartup` names, every command that starts a turn or changes the session and a few
+ * more, and answers the rest, `get_state` among them; a command it held then runs during a turn a
+ * startup send started, as during any other turn. A held command also waits for startup's later
+ * awaits (`goalController.reconcile()` and `settled()`, ~3046-3055), so a wake sent after the
+ * held sends can still start before the daemon's task. So what the phase does on this pin is fold
+ * the cards that reach pi-envoy in that window, as it opens its agent subject in `session_start`,
+ * into one wake turn after the held sends, where each would otherwise start or join a turn as the
+ * hold settles, and, while the start-turn mark holds, keep that wake behind the start turn. The
+ * host gives extensions no event once its startup is over. Without the start-turn mark (below)
+ * the phase needs `ctx.mode` "rpc". ACP initialises extensions with "rpc" too (`acp-agent.ts`
+ * ~3425), so the phase holds there as well, at no cost: ACP's bridge defers a turn the agent
+ * starts (`agent-session.ts` ~11680-11682), so the wake becomes hidden next-turn context there, as
+ * an idle card's turn did. Print and JSON mode prompt right after their own awaits that follow it
+ * (`print-mode.ts`, MCP readiness and a tool refresh, ~426-430; `session.prompt`, ~496), and
  * that prompt throws `AgentBusyError` (`agent-session.ts` ~9483-9490) if a wake started a turn
  * first. A terminal holds every send until its init has subscribed to the agent and applied its
  * plan-mode default, and waits for no turn they start (`interactive-mode.ts` `init`, ~2472-2474;
