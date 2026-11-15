@@ -490,8 +490,8 @@ const BLOCK_HOLDER_LABELS: Record<BlockItemKind, string> = {
  *  revision of the ask's parts; its text is the one its graph node carries, as a document
  *  block's is. A block of a post its author edited carries the post's ` · edited`; a block of a
  *  post its author deleted has no text left to show, and its card says the post is deleted
- *  (`blockDeletion`), whether the read answered the node with its mark or answered that the post
- *  is deleted. */
+ *  (`blockDeletion`), whether the read answered the node with its mark or answered that the block
+ *  is gone and the post's own read carries the mark. */
 function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const { block, blockDeletion } = useReferenceData(route, { text: false });
   const artifact = useBlockDocument(route);

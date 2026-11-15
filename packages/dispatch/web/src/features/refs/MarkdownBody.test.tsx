@@ -1024,9 +1024,10 @@ test("a block reference reads as the headline of its text: the pinned version's,
 
 // A block of a post its author deleted is gone with the post's text, so its link keeps the words
 // its author wrote, whichever way the read says so: a node that carries the post's deletion and
-// the empty text the delete left, or a 404 whose words end `: this comment is deleted`. It never
-// reads as the deleted line, which is the post's own link's text, nor as an empty link
-// (`useReferenceLabel`). A block of an edited post reads as its words then ` · edited`.
+// the empty text the delete left, or a 404 `NOT_FOUND`, in words nothing reads, that has the
+// post read for its mark. It never reads as the deleted line, which is the post's own link's
+// text, nor as an empty link (`useReferenceLabel`). A block of an edited post reads as its words
+// then ` · edited`.
 test("a block reference to a deleted post keeps the words its author wrote, and one to an edited post marks it", async () => {
   await warmMarkdownRenderer();
   const comment = "11111111-1111-4111-8111-111111111111";
@@ -1060,12 +1061,7 @@ test("a block reference to a deleted post keeps the words its author wrote, and 
         })
       );
     }
-    return Promise.reject(
-      new ApiError(404, {
-        code: "NOT_FOUND",
-        error: `no block "b3" in comment ${comment}: this comment is deleted`,
-      })
-    );
+    return Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }));
   });
   const getComment = spyOn(api, "getComment").mockResolvedValue({
     comment: {

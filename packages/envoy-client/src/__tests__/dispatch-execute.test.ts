@@ -11,6 +11,7 @@ import {
   type GraphReferences,
   type IssueComponents,
   overCapMessage,
+  POST_HISTORY_PAGE_LIMIT,
   PROJECT_KEY_RULE,
   SEARCH_QUERY_MAX,
   type SearchResult,
@@ -6248,14 +6249,18 @@ describe("executeDispatchTool", () => {
       document: "dispatch://CORE-1/spec",
     };
     const notFound = (error: string) => response({ error, code: "NOT_FOUND" }, 404);
-    /** A read of `ref` against a server whose references route answers `to` and `from` and whose
-     *  document lists `blocks` (none by default, so the read prints no type and no attribute):
-     *  the pending result, and the requests it sends. */
+    /** A read of `ref` against a server whose references route answers `to` and `from`, whose
+     *  document lists `blocks` (none by default, so the read prints no type and no attribute),
+     *  and whose comment and message reads answer `post`: the read of a block the references
+     *  route cannot find reads the post that held it, for the mark that says the post is
+     *  deleted. The default post stands, as every post of these rows does but the deleted one.
+     *  The pending result, and the requests it sends. */
     const readBlock = (
       ref: string,
       to: () => Response,
       from: () => Response = () => response({ node: blockNode, edges: [] }),
-      blocks: unknown[] = []
+      blocks: unknown[] = [],
+      post: () => Response = () => response({ comment: { deleted_at: null }, replies: [] })
     ) => {
       const requests: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -6269,6 +6274,12 @@ describe("executeDispatchTool", () => {
         }
         if (target.pathname === "/api/v1/issues/CORE-1/artifacts/spec/blocks") {
           return response(blocks);
+        }
+        if (
+          target.pathname.startsWith("/api/v1/comments/") ||
+          target.pathname.startsWith("/api/v1/messages/")
+        ) {
+          return post();
         }
         throw new Error(`unexpected request: ${target.pathname}${target.search}`);
       };
@@ -6776,11 +6787,20 @@ describe("executeDispatchTool", () => {
           new Error(`No block b2 in dispatch://DSP-1/comment/${comment}.`)
         );
 
-        // A delete takes the block with the body, and the server's refusal says so, which the
-        // read's own sentence keeps: every read that quotes a post says that it is deleted.
-        const deleted = () =>
-          notFound(`no block "b2" in comment ${comment}: this comment is deleted`);
-        await expect(readBlock(block, deleted, deleted).result).rejects.toThrow(
+        // A delete takes every block with the body, and what says so is the post's own mark:
+        // the read of the post the block was in answers `deleted_at`, and the message carries
+        // that, whatever words the server's refusal of the block holds. Every read that quotes
+        // a post says that the post is deleted.
+        const deleted = () => notFound(`no block "b2" in comment ${comment}`);
+        const deletedPost = () =>
+          response({
+            comment: {
+              deleted_at: "2026-11-15T04:00:00Z",
+              deleted_by: { kind: "user", id: "alice@example.com" },
+            },
+            replies: [],
+          });
+        await expect(readBlock(block, deleted, deleted, [], deletedPost).result).rejects.toThrow(
           new Error(`No block b2 in dispatch://DSP-1/comment/${comment}. This comment is deleted.`)
         );
       });
@@ -15479,10 +15499,14 @@ test("a post nobody edited lists no earlier body, and --history is refused off o
   expect(requests).toBe(0);
 });
 
-// Dispatch answers at most 200 rows of a post's history, newest first, and this command has no
-// flag that reads the rows before them, so a full page ends with the route that reads them, at
-// the oldest time it printed. A shorter page holds every row and says nothing more.
+// Dispatch answers at most POST_HISTORY_PAGE_LIMIT rows of a post's history, newest first, the
+// bound its postHistory reads at (contracts.PostHistoryPageLimit, generated from the same
+// constant), and this command has no flag that reads the rows before them, so a full page ends
+// with the route that reads them, at the oldest time it printed. A shorter page holds every row
+// and says nothing more.
 test("dispatch read --history of a full page ends with the route that reads the older rows", async () => {
+  const editedAt = (index: number) =>
+    new Date(Date.UTC(2026, 10, 11, 9) - index * 60_000).toISOString();
   const read = async (kind: "comment" | "message", id: string, count: number) => {
     const { result } = await runCorrection(
       "dispatch_read",
@@ -15496,7 +15520,7 @@ test("dispatch read --history of a full page ends with the route that reads the 
           entries: Array.from({ length: count }, (_, index) => ({
             body: `text ${count - index}`,
             edited_by: sessionA,
-            edited_at: new Date(Date.UTC(2026, 10, 11, 9) - index * 60_000).toISOString(),
+            edited_at: editedAt(index),
           })),
         };
       }
@@ -15504,23 +15528,21 @@ test("dispatch read --history of a full page ends with the route that reads the 
     return result.text.split("\n");
   };
 
-  const full = await read("comment", correctedComment, 200);
-  expect(full).toHaveLength(1 + 200 * 2 + 1);
+  const page = POST_HISTORY_PAGE_LIMIT;
+  const full = await read("comment", correctedComment, page);
+  expect(full).toHaveLength(1 + page * 2 + 1);
   expect(full.slice(-3)).toEqual([
-    "2026-11-11T05:41:00.000Z · session session-42",
+    `${editedAt(page - 1)} · session session-42`,
     "Body: text 1",
-    `This is the newest page, and a page holds 200 rows: GET /api/v1/comments/${correctedComment}/history?before=2026-11-11T05:41:00.000Z reads any older rows.`,
+    `This is the newest page, and a page holds ${page} rows: GET /api/v1/comments/${correctedComment}/history?before=${editedAt(page - 1)} reads any older rows.`,
   ]);
-  expect((await read("message", correctedMessage, 200)).at(-1)).toBe(
-    `This is the newest page, and a page holds 200 rows: GET /api/v1/messages/${correctedMessage}/history?before=2026-11-11T05:41:00.000Z reads any older rows.`
+  expect((await read("message", correctedMessage, page)).at(-1)).toBe(
+    `This is the newest page, and a page holds ${page} rows: GET /api/v1/messages/${correctedMessage}/history?before=${editedAt(page - 1)} reads any older rows.`
   );
 
-  const short = await read("comment", correctedComment, 199);
-  expect(short).toHaveLength(1 + 199 * 2);
-  expect(short.slice(-2)).toEqual([
-    "2026-11-11T05:42:00.000Z · session session-42",
-    "Body: text 1",
-  ]);
+  const short = await read("comment", correctedComment, page - 1);
+  expect(short).toHaveLength(1 + (page - 1) * 2);
+  expect(short.slice(-2)).toEqual([`${editedAt(page - 2)} · session session-42`, "Body: text 1"]);
 });
 
 // The plugins release from main as this merges, while Dispatch's own server is deployed by hand

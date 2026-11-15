@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -101,6 +104,40 @@ func TestCommentHistoryListsEachReplacedBodyNewestFirst(t *testing.T) {
 		"/api/v1/comments/"+comment.ID+"/history?before=yesterday", nil, "alice")
 	if refused.Code != http.StatusBadRequest {
 		t.Fatalf("?before=yesterday: status=%d body=%s, want 400", refused.Code, refused.Body.String())
+	}
+}
+
+// One answer holds the newest contracts.PostHistoryPageLimit rows, the page `dispatch read
+// --history` takes as full (POST_HISTORY_PAGE_LIMIT, the declaration this constant is generated
+// from); the one row past it is the page after, ?before= the oldest row the first page gave.
+func TestPostHistoryAnswersAPageOfThePageLimitAndTheRowsBeforeItAfter(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A long history", "before")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the body today"}, "alice")
+	// Body n was replaced n minutes ago: body 1 is the newest, and the last, one past the page,
+	// is the oldest.
+	kept := contracts.PostHistoryPageLimit + 1
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into post_body_history (comment_id, body, edited_by, edited_at)
+		select $1::uuid, 'body ' || n, '{"kind":"user","id":"alice"}'::jsonb, now() - make_interval(mins => n)
+		from generate_series(1, $2::int) n
+	`, comment.ID, kept); err != nil {
+		t.Fatalf("keep %d bodies: %v", kept, err)
+	}
+
+	page := readPostHistory(t, handler, "/api/v1/comments/"+comment.ID+"/history")
+	if len(page.Entries) != contracts.PostHistoryPageLimit {
+		t.Fatalf("the first page holds %d rows, want contracts.PostHistoryPageLimit, %d",
+			len(page.Entries), contracts.PostHistoryPageLimit)
+	}
+	oldest := page.Entries[len(page.Entries)-1]
+	if newest, want := page.Entries[0].Body, fmt.Sprintf("body %d", contracts.PostHistoryPageLimit); newest != "body 1" || oldest.Body != want {
+		t.Fatalf("the first page runs from %q to %q, want \"body 1\" to %q: the newest rows", newest, oldest.Body, want)
+	}
+	after := readPostHistory(t, handler, "/api/v1/comments/"+comment.ID+"/history?before="+
+		oldest.EditedAt.Format(time.RFC3339Nano))
+	if want := fmt.Sprintf("body %d", kept); len(after.Entries) != 1 || after.Entries[0].Body != want {
+		t.Fatalf("?before= the first page's oldest row answered %#v, want the one row %q", after.Entries, want)
 	}
 }
 

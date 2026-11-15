@@ -319,6 +319,12 @@ const MaxIssueAdvances = 20
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// `dispatch read --history` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = 200
+
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.

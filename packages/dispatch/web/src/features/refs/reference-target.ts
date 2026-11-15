@@ -27,7 +27,7 @@ import type {
   ReferenceQuestions,
 } from "../../api/types";
 import { useAgentText } from "./AgentName";
-import { type BlockItemKind, itemOfBlock } from "./block-reference";
+import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import { deletedLineText, type PostDeletion, postDeletion } from "./post-marks";
 import {
@@ -245,21 +245,6 @@ function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | u
     : undefined;
 }
 
-/** Whether a block read's refusal says that the comment or message the block belongs to is
- *  deleted. The delete cleared every block the post held, and the server answers 404
- *  `NOT_FOUND` in words that name the missing block and end `: this comment is deleted` (or
- *  `message`; `itemBlockNotFound`, `references.go`): the code is any missing block's, so the
- *  words are what tell the deleted post apart. An ask is no post a delete marks. */
-function blockOfDeletedPost(error: Error | null, kind: BlockItemKind): boolean {
-  return (
-    kind !== "ask" &&
-    error instanceof ApiError &&
-    error.status === 404 &&
-    error.code === "NOT_FOUND" &&
-    error.message.endsWith(`: this ${kind} is deleted`)
-  );
-}
-
 /** The reference's target records, each present once its query resolved. `issue` is the issue
  * summary behind an issue or issue-document reference; `artifact` is the document a
  * document/artifact reference names (never the owning issue's primary spec); `markdown` is that
@@ -267,8 +252,8 @@ function blockOfDeletedPost(error: Error | null, kind: BlockItemKind): boolean {
  * block reference's graph read, whose node carries the block's whole text and, for a pinned
  * reference, its pin, undefined once the read answers that the block is gone. A block reference
  * reads that alone - its document's name is the hover card's own read (`useBlockDocument`) -
- * save where the read answers that the block's comment or message is deleted: that post's own
- * read is then `comment` or `message`, for the mark the refusal does not carry. */
+ * save where the read answers that a block of a comment or message is gone: that post's own
+ * read is then `comment` or `message`, whose mark says whether its author deleted it. */
 export interface ReferenceData {
   readonly issue: IssueReferenceSummary | undefined;
   readonly artifact: ReferenceArtifact | undefined;
@@ -280,7 +265,7 @@ export interface ReferenceData {
   readonly message: MessageRead | undefined;
   readonly block: GraphReferences | undefined;
   /** The deletion of the comment or message a block reference's block belongs to: its graph
-   *  node's mark, or - where the read answers that the post is deleted, which leaves no node -
+   *  node's mark, or - where the read answers that the block is gone, which leaves no node -
    *  the post's own read's, once read. Null for a block of a post that stands, of an ask or of a
    *  document, and for every other target. */
   readonly blockDeletion: PostDeletion | null;
@@ -436,7 +421,7 @@ export function useReferenceData(
   const blockItem = route === undefined ? undefined : itemOfBlock(route);
   // A block of a comment or message is read from its graph node alone, which carries its text:
   // no issue, document, ask, comment or message read behind it, save the post's own read where
-  // the block read answers that the post is deleted (below).
+  // the block read answers that the block is gone (below).
   const record = blockItem !== undefined ? undefined : route;
   const issueRoute =
     route === undefined ||
@@ -463,17 +448,24 @@ export function useReferenceData(
     ...blockQuery(blockReference),
     enabled: blockReference !== undefined,
   });
-  // The delete cleared every block the post held, so its block's read answers 404 and carries no
-  // mark; the post's own read answers the deleted post with its mark, which the deleted line
-  // names. It is read only then, so a block of a post that stands still reads its node alone.
-  const deletedPost =
-    blockItem !== undefined && blockOfDeletedPost(block.error, blockItem.kind)
-      ? blockItem
-      : undefined;
+  // The answer that the block is gone: 404 `NOT_FOUND`, the code of every missing block, whatever
+  // took it.
+  const blockGone =
+    block.error instanceof ApiError &&
+    block.error.status === 404 &&
+    block.error.code === "NOT_FOUND";
+  // A delete clears every block its post held, so a block of a deleted comment or message is gone
+  // and its read carries no mark. The post's own read carries it (`deleted_at`, `deleted_by`), and
+  // that mark, not the refusal, says whether the post is deleted: a post that stands, or one that
+  // cannot be read, leaves the block merely gone. The post is read only on that 404, so a block
+  // whose read answers still reads its node alone, and never for a part of an ask, which no
+  // delete marks.
+  const goneBlockPost =
+    blockGone && blockItem !== undefined && blockItem.kind !== "ask" ? blockItem : undefined;
   const message =
     record?.kind === "message"
       ? record
-      : deletedPost?.kind === "message" && route?.kind === "message"
+      : goneBlockPost?.kind === "message" && route?.kind === "message"
         ? route
         : undefined;
   const version =
@@ -491,8 +483,8 @@ export function useReferenceData(
       ? record.id
       : record?.kind === "document" && record.item?.kind === "comment"
         ? record.item.id
-        : deletedPost?.kind === "comment"
-          ? deletedPost.id
+        : goneBlockPost?.kind === "comment"
+          ? goneBlockPost.id
           : undefined;
   const issue = useQuery({
     ...issueSummaryQuery(summaryKey),
@@ -527,16 +519,11 @@ export function useReferenceData(
   const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
   // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
   // edit deletes its block would go on showing text its document or item no longer holds. The
-  // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
-  // loaded page reads the same link. A pinned reference to a removed block answers 200 with the
-  // pin's `removed` state and keeps its pinned text; any other failure (a dropped connection, a
-  // 5xx) leaves the last data shown.
-  const blockData =
-    block.error instanceof ApiError &&
-    block.error.status === 404 &&
-    block.error.code === "NOT_FOUND"
-      ? undefined
-      : block.data;
+  // read answers 404 `NOT_FOUND` for that block (`blockGone`), and the link and card then read as
+  // a freshly loaded page reads the same link. A pinned reference to a removed block answers 200
+  // with the pin's `removed` state and keeps its pinned text; any other failure (a dropped
+  // connection, a 5xx) leaves the last data shown.
+  const blockData = blockGone ? undefined : block.data;
   return {
     issue: issue.data,
     artifact,
@@ -548,10 +535,10 @@ export function useReferenceData(
     message: messageQueryResult.data,
     block: blockData,
     blockDeletion:
-      deletedPost === undefined
+      goneBlockPost === undefined
         ? postDeletion(blockData?.node)
         : postDeletion(
-            deletedPost.kind === "comment"
+            goneBlockPost.kind === "comment"
               ? comment.data?.comment
               : messageQueryResult.data?.message
           ),

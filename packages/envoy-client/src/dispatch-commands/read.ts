@@ -25,7 +25,7 @@ import {
 } from "./context";
 import { resolveMessageArgument } from "./conversation";
 import { approvalLine, documentListLines } from "./document-targets";
-import { deletedPostClause, dispatchAnswered, throughPostCorrections } from "./failures";
+import { dispatchAnswered, throughPostCorrections } from "./failures";
 import { messageIdOf, refOwnerName, refTarget, refuseItemOffRef, resolveIdPrefix } from "./refs";
 import {
   askPartNoun,
@@ -114,6 +114,25 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       (resolved) => resolved.artifact.id
     );
     return refDocumentId;
+  };
+  /** The sentence a missing block's message ends with when the post that held the block is
+   *  deleted: a delete clears every block the post held, and every read that quotes a post says
+   *  that the post is deleted. The fact is the post's own `deleted_at`, read from the post
+   *  itself; the words of the server's refusal are never read, because a reader of prose breaks
+   *  on the day the prose changes (`skill://dispatch`: branch on an error's code, never on its
+   *  text). Nothing for a block of a document or of an ask, neither of which a delete marks, for
+   *  a post that stands, and where the post's own read fails, which leaves the message as it is.
+   */
+  const deletedPostClause = async (ref: ParsedDispatchRef): Promise<string> => {
+    const item = ref.item;
+    if (item === undefined || (item.kind !== "comment" && item.kind !== "message")) {
+      return "";
+    }
+    const deleted = await (item.kind === "comment"
+      ? client.getComment(item.id).then((read) => read.comment.deleted_at)
+      : client.getMessageThread(item.id).then((read) => read.message.deleted_at)
+    ).catch(() => undefined);
+    return deleted == null ? "" : ` This ${item.kind} is deleted.`;
   };
   if (ownerArguments.ref?.kind === "ask") {
     const ref = ownerArguments.ref;
@@ -247,14 +266,13 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     // The read names the block's node, so a 404 is the block's own answer: an unpinned ref
     // names a block no current version holds, and a pinned one's answer says which of its
     // version, that version's record or the block the server could not find. The unpinned
-    // answer is rewritten in the reference's own words, and the one thing the server says
-    // there that this sentence does not hold is that the post was withdrawn
-    // (api/references.go, itemBlockNotFound), which every read of a deleted post says, so
-    // that clause rides this message.
+    // answer is rewritten in the reference's own words, and a delete, which clears every block
+    // the post held, is the one cause of it that a reader needs told, since every read that
+    // quotes a post says that the post is deleted. The post's own mark is what says so.
     const [incoming, outgoing, partOf, typed] = await Promise.all([
-      client.getReferences({ to: blockRef }).catch((error: unknown) => {
+      client.getReferences({ to: blockRef }).catch(async (error: unknown) => {
         if (ref.pin === undefined && dispatchAnswered(error, 404)) {
-          throw new Error(`No block ${ref.block} in ${holder}.${deletedPostClause(error)}`);
+          throw new Error(`No block ${ref.block} in ${holder}.${await deletedPostClause(ref)}`);
         }
         throw error;
       }),

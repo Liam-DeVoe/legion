@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -30,8 +31,8 @@ type postHistoryEntry struct {
 
 // postHistoryRead is what the two history reads answer: the post's earlier bodies, newest
 // first, and the deleted mark the post carries, as every other read of it carries it. Entries
-// holds at most maxEventPage rows; the page after is the same read under ?before= the oldest
-// edited_at this one gave.
+// holds at most contracts.PostHistoryPageLimit rows; the page after is the same read under
+// ?before= the oldest edited_at this one gave.
 type postHistoryRead struct {
 	DeletedAt *time.Time         `json:"deleted_at"`
 	DeletedBy *model.Actor       `json:"deleted_by"`
@@ -204,11 +205,17 @@ func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind r
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// postHistory is one post's kept bodies, newest first, at most maxEventPage of them and only
-// those written before `before` when it is given. The order is the partial index's
+// postHistory is one post's kept bodies, newest first, at most contracts.PostHistoryPageLimit of
+// them and only those written before `before` when it is given. The order is the partial index's
 // (post_body_history_comment, post_body_history_message), so the read sorts nothing, and
 // edited_at is clock_timestamp(), so two writes of one transaction order by it with the
 // identity breaking a tie within one reading.
+//
+// The page is contracts.PostHistoryPageLimit and not maxEventPage, though both are 200 today.
+// maxEventPage bounds a page of an issue's or a document's event log; this page is a different
+// read, and it is also the bound on which `dispatch read --history` decides a page is full and
+// names the read of its older rows. Under one name a change to the event page would move this
+// page with no client told, so this one is declared in packages/contracts, which both ends read.
 //
 // The post's deleted mark and its kept bodies are one statement, so both are read in one
 // snapshot: as two statements a delete that committed between them served the bodies the
@@ -240,7 +247,7 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 			limit $3
 		) h on true
 		where p.id = $1
-	`, id, cursor, maxEventPage)
+	`, id, cursor, contracts.PostHistoryPageLimit)
 	if err != nil {
 		return postHistoryRead{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
 	}

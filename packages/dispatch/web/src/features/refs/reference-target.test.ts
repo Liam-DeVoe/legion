@@ -307,8 +307,10 @@ function blockRead(text: string | undefined, pin?: NonNullable<GraphReferences["
 // A link to a block is titled by the block's text, from its graph read, which an event that can
 // change the block fetches again. An edit that deletes the block makes the read answer 404: the
 // link drops the title it showed and reads as a freshly loaded page's link (no title, so its
-// short form). A pinned reference to the removed block answers 200 with the pin's `removed` state
-// and keeps the pinned text; any other failure keeps the title it last read.
+// short form). A gone block of a comment or message has the link read the post, whose mark says
+// whether its author deleted it; these posts stand. A pinned reference to the removed block
+// answers 200 with the pin's `removed` state and keeps the pinned text; any other failure keeps
+// the title it last read.
 test.each([
   [
     "a comment block deleted by its author",
@@ -367,7 +369,14 @@ test.each([
     .mockImplementationOnce(() =>
       answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)
     );
-  restore = () => getReferences.mockRestore();
+  const standing = { body: "Beta as written.", deleted_at: null, deleted_by: null };
+  const getComment = spyOn(api, "getComment").mockResolvedValue({ comment: standing } as never);
+  const getMessage = spyOn(api, "getMessage").mockResolvedValue({ message: standing } as never);
+  restore = () => {
+    getReferences.mockRestore();
+    getComment.mockRestore();
+    getMessage.mockRestore();
+  };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const hook = renderHook(() => useReferenceTarget(route, { text: false }), {
     wrapper: ({ children }: { children: ReactNode }) =>
@@ -386,26 +395,30 @@ test.each([
 
 // A reference to a post, or to a block of one, answers the post's marks beside its text: the
 // time its author edited it, and its deletion. A block of a post that stands reads its node
-// alone and carries the marks the node carries; a block of a deleted post answers 404 in words
-// that end `: this message is deleted` and carries none, so the post's own read gives the mark.
+// alone and carries the marks the node carries. A block of a deleted post is gone with the
+// post's text, and its read answers 404 `NOT_FOUND` as any gone block's does, in words nothing
+// reads: the post's own read then decides by its mark, so a gone block of a deleted message
+// carries the deletion and one of a message that stands carries none. A part of an ask, which no
+// delete marks, reads no post when it is gone.
 test("a reference answers the edit and the deletion of the post it names, or whose block it names", async () => {
   const reads = spyReads();
-  reads.getMessage.mockResolvedValue({
-    message: {
-      body: "",
-      deleted_at: "2026-09-09T03:00:00Z",
-      deleted_by: { id: "alice", kind: "user" },
-    },
-  } as never);
+  reads.getMessage.mockImplementation((_key, id) =>
+    Promise.resolve(
+      (id === "m-1"
+        ? {
+            message: {
+              body: "",
+              deleted_at: "2026-09-09T03:00:00Z",
+              deleted_by: { id: "alice", kind: "user" },
+            },
+          }
+        : { message: { body: "Still here.", deleted_at: null, deleted_by: null } }) as never
+    )
+  );
   const standing = blockRead("Beta as written.");
   reads.getReferences.mockImplementation((reference) =>
-    reference.includes("/message/")
-      ? Promise.reject(
-          new ApiError(404, {
-            code: "NOT_FOUND",
-            error: 'no block "b1" in message m-1: this message is deleted',
-          })
-        )
+    reference.includes("/message/") || reference.includes("/ask/")
+      ? Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }))
       : Promise.resolve({
           ...standing,
           node: { ...standing.node, edited_at: "2026-09-09T02:00:00Z" },
@@ -430,6 +443,22 @@ test("a reference answers the edit and the deletion of the post it names, or who
       ),
     { wrapper }
   );
+  const gone = renderHook(
+    () =>
+      useReferenceTarget(
+        { block: { id: "b1" }, id: "m-2", key: "CORE-1", kind: "message" },
+        { text: false }
+      ),
+    { wrapper }
+  );
+  const askPart = renderHook(
+    () =>
+      useReferenceTarget(
+        { block: { id: "b1" }, id: "a-1", key: "CORE-1", kind: "ask" },
+        { text: false }
+      ),
+    { wrapper }
+  );
   try {
     await waitFor(() => expect(edited.result.current.title).toBe("Beta as written."));
     expect(edited.result.current.edited).toBe("2026-09-09T02:00:00Z");
@@ -444,7 +473,26 @@ test("a reference answers the edit and the deletion of the post it names, or who
     expect(deleted.result.current.edited).toBeNull();
     expect(reads.getMessage).toHaveBeenCalledWith("CORE-1", "m-1");
     expect(reads.getComment).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(queryClient.getQueryState(messageQuery("CORE-1", "m-2").queryKey)?.status).toBe(
+        "success"
+      )
+    );
+    expect(gone.result.current.deleted).toBeNull();
+    expect(gone.result.current.title).toBeUndefined();
+
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(blockQuery("dispatch://CORE-1/ask/a-1#b-b1").queryKey)?.status
+      ).toBe("error")
+    );
+    expect(askPart.result.current.deleted).toBeNull();
+    expect(reads.getAsk).not.toHaveBeenCalled();
+    expect(reads.getMessage).toHaveBeenCalledTimes(2);
   } finally {
+    askPart.unmount();
+    gone.unmount();
     deleted.unmount();
     edited.unmount();
   }

@@ -32,6 +32,7 @@ import {
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
+  POST_HISTORY_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
@@ -406,6 +407,12 @@ const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 // and the \`dispatch issues\` command's cannot drift apart.
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
+
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// \`dispatch read --history\` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
 
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the

@@ -12,7 +12,7 @@ import type {
   OpenAsksResponse,
   PostHistoryRead,
 } from "@legion/contracts";
-import { actorActText, encodeBlockId } from "@legion/contracts";
+import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
 import { actorText, deletedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
@@ -209,18 +209,14 @@ function postBodyLines(post: {
   return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${post.body}`];
 }
 
-/** The most rows one answer of a post's history holds, newest first: Dispatch's `maxEventPage`
- *  (packages/envoy/internal/dispatch/api/events.go), which its `postHistory` (post_history.go)
- *  reads a page at. `?before=` the oldest time of a page answers the page after it. */
-const POST_HISTORY_PAGE = 200;
-
 /**
  * What `dispatch read --history` prints: each body an edit or a delete of the post `id`
  * replaced, newest first, under the time of that write and the actor that made it. A post
  * nobody edited lists none. A deleted post gives no part of its body to any read, so its list
  * carries the deleted mark and the times alone. Dispatch answers one page, so a full page
- * (`POST_HISTORY_PAGE` rows) ends with the route that reads the rows before its oldest time:
- * this command has no flag that reads them.
+ * (`POST_HISTORY_PAGE_LIMIT` rows, from `@legion/contracts`, which the server's `postHistory`
+ * reads its page at as `contracts.PostHistoryPageLimit`) ends with the route that reads the rows
+ * before its oldest time, `?before=` that time: this command has no flag that reads them.
  */
 export function postHistorySummary(
   kind: "Comment" | "Message",
@@ -241,10 +237,10 @@ export function postHistorySummary(
           `${entry.edited_at} · ${actorText(entry.edited_by)}`,
           ...(deleted ? [] : [`Body: ${entry.body}`]),
         ])),
-    ...(entries.length < POST_HISTORY_PAGE || oldest === undefined
+    ...(entries.length < POST_HISTORY_PAGE_LIMIT || oldest === undefined
       ? []
       : [
-          `This is the newest page, and a page holds ${POST_HISTORY_PAGE} rows: GET ${route}?before=${oldest.edited_at} reads any older rows.`,
+          `This is the newest page, and a page holds ${POST_HISTORY_PAGE_LIMIT} rows: GET ${route}?before=${oldest.edited_at} reads any older rows.`,
         ]),
   ].join("\n");
 }

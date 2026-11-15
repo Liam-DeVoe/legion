@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'dispatch send-to-agent can be called again. It takes no issue, because the conversation it writes in belongs to none, but the step that fills an issue in had no exemption for it: with LEGION_ISSUE set, the command was refused because issue is not one of its flags, and without it, the command was refused because an issue was missing. Either way there was no way to send to a session.'
+time: 2026-11-15T04:15:00.000000000Z
+custom:
+    Issue: pr3512

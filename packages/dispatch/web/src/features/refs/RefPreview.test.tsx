@@ -863,9 +863,10 @@ test("an unpinned block's card shows its current text, and a block that cannot b
 
 // An open card's block read is fetched again by an event that can change it (`blockQuery`). An
 // edit that deletes the block makes that read answer 404: the card drops the text it showed and
-// reads as a freshly loaded page's card for the same link, its short form. A pinned reference to
-// the removed block answers 200 with the pin's `removed` state and keeps the pinned text, and any
-// other failure leaves the text it last read.
+// reads as a freshly loaded page's card for the same link, its short form. A gone block of a
+// comment has the card read the comment, whose mark says whether its author deleted it; this one
+// stands. A pinned reference to the removed block answers 200 with the pin's `removed` state and
+// keeps the pinned text, and any other failure leaves the text it last read.
 test.each([
   [
     "a comment block deleted by its author",
@@ -898,6 +899,7 @@ test.each([
   ],
 ] as const)("an open card of %s shows what the refresh leaves it", async (_case, route, refresh, kept) => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead());
   const first = pinnedRead({ state: "unchanged", text: "Ship it on Friday." });
   const getReferences = spyOn(api, "getReferences")
     .mockResolvedValueOnce({
@@ -943,6 +945,7 @@ test.each([
   } finally {
     view.unmount();
     getReferences.mockRestore();
+    getComment.mockRestore();
     getIssueSummary.mockRestore();
   }
 });
@@ -1375,19 +1378,25 @@ test("a comment or message card marks an edited post after its author, and a sta
 
 // A block of a comment or message carries its post's marks on its graph node: the card of a
 // block of an edited post marks it after the author, and a block of a post nobody edited does
-// not. A block of a deleted post has no node: its read answers 404 in words that end `: this
-// comment is deleted`, and the card reads the comment for the mark and says it is deleted,
-// where a block that is merely gone still reads as its short form.
+// not. A block of a deleted post has no node: the delete cleared it, and its read answers 404
+// `NOT_FOUND` as any gone block's does, in words the card does not read. The card reads the
+// post, and the post's mark decides: a block of a deleted comment says it is deleted, where a
+// gone block of a comment that stands still reads as its short form.
 test("a block card marks its post's edit, and a block of a deleted post says the post is deleted", async () => {
   const comment = "11111111-1111-4111-8111-111111111111";
+  const standing = "44444444-4444-4444-8444-444444444444";
   const getIssue = mockIssues();
-  const getComment = spyOn(api, "getComment").mockResolvedValue(
-    commentRead({
-      body: "",
-      deleted_at: "2026-09-09T02:00:00Z",
-      deleted_by: { id: "alice", kind: "user" },
-      id: comment,
-    })
+  const getComment = spyOn(api, "getComment").mockImplementation((id) =>
+    Promise.resolve(
+      id === comment
+        ? commentRead({
+            body: "",
+            deleted_at: "2026-09-09T02:00:00Z",
+            deleted_by: { id: "alice", kind: "user" },
+            id,
+          })
+        : commentRead({ id })
+    )
   );
   const blockNode = (block: string, editedAt: string | undefined) => ({
     edges: [],
@@ -1409,19 +1418,14 @@ test("a block card marks its post's edit, and a block of a deleted post says the
     if (reference.endsWith("#b-b1"))
       return Promise.resolve(blockNode("b1", "2026-09-09T01:00:00Z"));
     if (reference.endsWith("#b-b2")) return Promise.resolve(blockNode("b2", undefined));
-    return Promise.reject(
-      new ApiError(404, {
-        code: "NOT_FOUND",
-        error: `no block "b3" in comment ${comment}: this comment is deleted`,
-      })
-    );
+    return Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }));
   });
-  const blockLink = (block: string, name: string) => (
+  const blockLink = (item: string, block: string, name: string) => (
     <Link
       to="/"
       {...referenceTriggerProps({
         block: { id: block },
-        id: comment,
+        id: item,
         key: "CORE-1",
         kind: "comment",
       })}
@@ -1431,9 +1435,10 @@ test("a block card marks its post's edit, and a block of a deleted post says the
   );
   const view = render(
     <Harness>
-      {blockLink("b1", "the edited block")}
-      {blockLink("b2", "the standing block")}
-      {blockLink("b3", "the deleted block")}
+      {blockLink(comment, "b1", "the edited block")}
+      {blockLink(comment, "b2", "the standing block")}
+      {blockLink(comment, "b3", "the deleted block")}
+      {blockLink(standing, "b4", "the gone block")}
     </Harness>
   );
   try {
@@ -1456,6 +1461,15 @@ test("a block card marks its post's edit, and a block of a deleted post says the
     await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Deleted by alice"));
     expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1 · Comment");
     expect(getComment).toHaveBeenCalledWith(comment);
+
+    act(() => {
+      screen.getByRole("link", { name: "the gone block" }).focus();
+    });
+    await waitFor(() => expect(getComment).toHaveBeenCalledWith(standing));
+    await act(async () => {});
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      shortForm({ block: { id: "b4" }, id: standing, key: "CORE-1", kind: "comment" })
+    );
   } finally {
     view.unmount();
     getReferences.mockRestore();

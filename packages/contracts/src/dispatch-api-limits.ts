@@ -59,6 +59,15 @@ export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
  */
 export const DEFAULT_ISSUE_READ_EVENTS = 10;
 
+/**
+ * The most rows one answer of a post's history holds, newest first: `GET
+ * /api/v1/comments/{id}/history` and `GET /api/v1/messages/{id}/history`, whose `?before=` the
+ * oldest row's `edited_at` answers the page after. Generated into Go as
+ * `contracts.PostHistoryPageLimit`, the page the server reads, and `dispatch read --history`
+ * takes a page of exactly this many rows as one that may have older rows, so the two ends agree.
+ */
+export const POST_HISTORY_PAGE_LIMIT = 200;
+
 /** Who holds the turn on an open ask after a reply: `human` when the human needs to act,
  *  `agent` when the asking agent still owes the next move (a progress note). */
 export const ASK_TURNS = ["human", "agent"] as const;

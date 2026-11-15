@@ -97,22 +97,6 @@ export async function throughPostCorrections<T>(
 }
 
 /**
- * The sentence a refusal of a deleted post's block carries, for a message written in this
- * command's own words to end with: ` This comment is deleted.`, ` This message is deleted.`, or
- * nothing where the server said no such thing. The server writes it as the tail of its 404
- * (`api/references.go`, `itemBlockNotFound`), and a read that quotes a post says that the post
- * is deleted wherever it is read, so a message that drops the server's words keeps this one.
- */
-export function deletedPostClause(error: DispatchServiceError): string {
-  for (const kind of ["comment", "message"] as const) {
-    if (error.message.endsWith(`: this ${kind} is deleted`)) {
-      return ` This ${kind} is deleted.`;
-    }
-  }
-  return "";
-}
-
-/**
  * Whether a write that failed with `error` may have taken effect anyway. Only an answer sent
  * before the write could apply proves it did not: Dispatch's own refusal (a 4xx), or a gateway's
  * answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws as such
