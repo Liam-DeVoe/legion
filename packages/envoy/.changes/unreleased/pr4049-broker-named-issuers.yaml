@@ -18,6 +18,15 @@ body: |-
   listed account's token from another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's
   credential records the issuer whose token made it (migration 0032), and it stops working once
   the account's entry no longer names that issuer.
-  `BROKER_EXCHANGE_K8S_ISSUER` names the one issuer whose tokens the token exchange takes. It is
-  required with `BROKER_EXCHANGE_K8S_AUDIENCE` when the list names two or more issuers, and the
-  broker reads that issuer at startup and refuses to start when it cannot, as before.
+  `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in `BROKER_K8S_OIDC_ISSUER` and separated by
+  commas, the issuers whose tokens the token exchange takes. It is required with
+  `BROKER_EXCHANGE_K8S_AUDIENCE` when the list names two or more issuers. The exchange reads those
+  issuers in the background with the rest of the list, so one it cannot read no longer stops the
+  broker from starting, and it answers that issuer's tokens `503 OIDC_ISSUER_UNAVAILABLE` until it
+  can. A token of an issuer the setting does not name is `400 invalid_request`.
+  An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers as
+  `<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]`, and the
+  exchange takes that account's token only from those issuers. An entry that names none takes the
+  first issuer of the list alone, so an existing entry keeps its meaning. An entry of five or more
+  `=`-separated fields names its issuers after its last `=`, so a fixed session that holds `=` now
+  needs the issuer field written after it.

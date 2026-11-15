@@ -13,8 +13,8 @@
 // Five kinds of subject token reach it, and what decides each one's claims differs:
 //
 //   - a pod's Kubernetes service-account token, where an entry keyed on the account subject
-//     (system:serviceaccount:<namespace>:<name>) gives the project and the person, and the token
-//     must carry the pod it is bound to;
+//     (system:serviceaccount:<namespace>:<name>) gives the project and the person and names the
+//     issuers the token may come from, and the token must carry the pod it is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
 //     repository, the workflow's path and the ref it ran on gives the project and the person;
 //   - a machine's Google identity token, where an entry keyed on the account's email address
@@ -51,17 +51,19 @@ import (
 )
 
 // Why a subject token is refused. Each stands for one answer an operator can act on: list the
-// identity (ErrNoEntry), mint the token in a pod rather than by hand (ErrNoPodBinding), ask under
-// the session the entry fixes (ErrSessionMismatch), name a session (ErrSessionRequired), name a
-// usable one (ErrSessionInvalid), present a token that carries the claims its kind must
-// (ErrClaimMissing), verify the machine's or the person's address with its provider
-// (ErrEmailNotVerified), sign in with an account of the configured Workspace domain
-// (ErrNotInDomain), present the machine's own identity token beside the person's
-// (ErrNoActorToken), mint the machine's token on a Compute Engine instance or unpin its entry
-// (ErrNoComputeEngine), run the machine where its entry allows (ErrMachineNotAllowed), or, of a
-// registration, leave an entry that fixes a session alone (ErrSessionFixed).
+// identity (ErrNoEntry), name the token's issuer on the identity's entry (ErrIssuerNotNamed),
+// mint the token in a pod rather than by hand (ErrNoPodBinding), ask under the session the entry
+// fixes (ErrSessionMismatch), name a session (ErrSessionRequired), name a usable one
+// (ErrSessionInvalid), present a token that carries the claims its kind must (ErrClaimMissing),
+// verify the machine's or the person's address with its provider (ErrEmailNotVerified), sign in
+// with an account of the configured Workspace domain (ErrNotInDomain), present the machine's own
+// identity token beside the person's (ErrNoActorToken), mint the machine's token on a Compute
+// Engine instance or unpin its entry (ErrNoComputeEngine), run the machine where its entry allows
+// (ErrMachineNotAllowed), or, of a registration, leave an entry that fixes a session alone
+// (ErrSessionFixed).
 var (
 	ErrNoEntry           = errors.New("exchange: no entry lists this identity")
+	ErrIssuerNotNamed    = errors.New("exchange: the identity's entry does not name the issuer of its token")
 	ErrNoPodBinding      = errors.New("exchange: the subject token is bound to no pod")
 	ErrSessionMismatch   = errors.New("exchange: the request names a session the entry does not fix")
 	ErrSessionRequired   = errors.New("exchange: the request names no session and the entry fixes none")
@@ -396,6 +398,12 @@ type AccountEntry struct {
 	// one name it does not get to choose per request. The name is one of the set's Reservations,
 	// held for the account however many of its pods exchange and refused to every other caller.
 	Session string
+	// Issuers are the names, in BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens the account's
+	// pods exchange: the entry's own, or the first issuer's alone where it names none, which
+	// config.Load fills in. The same account name in another cluster is another ServiceAccount,
+	// so Pod refuses a token of any other issuer. The one issuer of a list written as a bare URL
+	// has the empty name.
+	Issuers []string
 }
 
 // WorkflowEntry lists one GitHub workflow of one repository on one ref, and what a run of it may
@@ -470,7 +478,8 @@ type Set struct {
 }
 
 // NewSet validates every entry and builds the set the exchange decides against. It refuses,
-// naming the entry it refuses: an empty or blank required field, an account or repository that is
+// naming the entry it refuses: an empty or blank required field, an account entry that names no
+// issuer, whose pods' tokens no issuer could carry, an account or repository that is
 // not of its grammar, a fixed session name that is not usable, an identity listed twice, since
 // two answers for one identity is a configuration whose meaning depends on order, two workflows
 // whose principals spell alike, and a session name two entries fix, since one name belongs to one
@@ -511,12 +520,16 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 		if err := checkGrant(where, entry.Project, entry.Person, entry.Session); err != nil {
 			return nil, err
 		}
+		if len(entry.Issuers) == 0 {
+			return nil, fmt.Errorf("exchange: %s: the issuers are required, since an entry naming none takes no pod's token", where)
+		}
 		if _, listed := set.accounts[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
 		}
 		if err := reserve(where, entry.Session, AccountPrincipal(entry.Account)); err != nil {
 			return nil, err
 		}
+		entry.Issuers = slices.Clone(entry.Issuers)
 		set.accounts[entry.Account] = entry
 	}
 	for i, entry := range workflows {
@@ -604,13 +617,16 @@ func checkGrant(where, project, person, session string) error {
 	return nil
 }
 
-// Pod answers the claims for a pod's Kubernetes service-account token. The token's own shape is
-// read first — the account it was minted for, and the pod it is bound to — and the entry for that
-// account second, so an operator reading the refusal learns which of the two to fix.
+// Pod answers the claims for a pod's Kubernetes service-account token, which the issuer named
+// issuer, in BROKER_K8S_OIDC_ISSUER, signed. The token's own shape is read first — the account it
+// was minted for, and the pod it is bound to — and the entry for that account second, so an
+// operator reading the refusal learns which of the two to fix. The entry must name issuer: the
+// same account name in another cluster is another ServiceAccount, so a token of an issuer the
+// entry does not name is refused (ErrIssuerNotNamed).
 //
 // A token carrying no pod uid is refused however the account is listed: Kubernetes mints such a
 // token to anyone holding the account's credentials, and it proves only that the account exists,
-// where a bound one proves Kubernetes minted it for one pod of this cluster. It does not prove
+// where a bound one proves Kubernetes minted it for one pod of its cluster. It does not prove
 // that pod still runs: the broker's exchange verifies the token offline against the issuer's
 // published keys and asks the cluster nothing, so a token whose pod has been deleted is exchanged
 // until its own expiry, which the Kubernetes subject token's lifetime tolerance
@@ -628,7 +644,7 @@ func checkGrant(where, project, person, session string) error {
 // uid registered for the same name rather than a refusal. An entry that fixes a session answers
 // no Instance and needs no registration, because the name it writes under is the configuration's
 // and every pod of the account writes under it.
-func (s *Set) Pod(token map[string]any, session string) (Claims, error) {
+func (s *Set) Pod(token map[string]any, issuer, session string) (Claims, error) {
 	account, err := claimString(token, "sub")
 	if err != nil {
 		return Claims{}, err
@@ -637,6 +653,9 @@ func (s *Set) Pod(token map[string]any, session string) (Claims, error) {
 	entry, err := s.podEntry(account, uid)
 	if err != nil {
 		return Claims{}, err
+	}
+	if !slices.Contains(entry.Issuers, issuer) {
+		return Claims{}, fmt.Errorf("%w: the entry of %s names the issuers %q, and its token is of %q", ErrIssuerNotNamed, account, entry.Issuers, issuer)
 	}
 	name, err := resolveSession(entry.Session, session, account)
 	if err != nil {
@@ -653,7 +672,7 @@ func (s *Set) Pod(token map[string]any, session string) (Claims, error) {
 // pod uid the token must carry, refused first because a token bound to no pod proves only that
 // the account exists, and then the entry that lists the account. Both refuse in this order, in
 // these words, because they are this one helper: a registrar and the exchange that reads its
-// row refuse the same pods for the same reasons, which Registration's doc promises.
+// row refuse the same pods for these two reasons, which Registration's doc promises.
 func (s *Set) podEntry(account, uid string) (AccountEntry, error) {
 	if uid == "" {
 		return AccountEntry{}, fmt.Errorf("%w: %s presented a token bound to no pod, which proves only that the account exists", ErrNoPodBinding, account)
@@ -669,9 +688,10 @@ func (s *Set) podEntry(account, uid string) (AccountEntry, error) {
 // bound to no pod, an account no entry lists, and an entry that fixes a session, which needs no
 // registration because its name is the configuration's. The first two refusals are podEntry,
 // the one reading of a pod's identity Pod makes too, so a registrar and the exchange that reads
-// its row refuse the same pods for the same reasons; what it does not decide is whether the
+// its row refuse the same pods for those two reasons. What it does not decide is whether the
 // name belongs to the account, which only the claim on the name answers
-// (oauthstore.Store.BindSession).
+// (oauthstore.Store.BindSession), and whether the entry names the issuer of the token the pod
+// exchanges, which Pod decides on that token.
 func (s *Set) Registration(account, podUID, session string) error {
 	entry, err := s.podEntry(account, podUID)
 	if err != nil {

@@ -130,8 +130,8 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 	if claims, err := pods.VerifyAccount(context.Background(), token); err != nil || claims.Issuer != (oidc.NamedIssuer{URL: cluster.URL()}) {
 		t.Fatalf("the pod verifier on a token of the cluster's issuer = %+v, %v; want it verified, naming that issuer with no name", claims, err)
 	}
-	if found.ExchangeK8sKeys != nil || found.GoogleKeys != nil {
-		t.Fatalf("the exchange was handed a cluster key set (%p) or a Google one (%p) with neither audience set; it must then register neither subject token type", found.ExchangeK8sKeys, found.GoogleKeys)
+	if found.ExchangeK8s != nil || found.GoogleKeys != nil {
+		t.Fatalf("the exchange was handed cluster issuers (%+v) or a Google key set (%p) with neither audience set; it must then register neither subject token type", found.ExchangeK8s, found.GoogleKeys)
 	}
 	if strings.Contains(strings.ToLower(logged.String()), "google") {
 		t.Fatalf("log with no Google audience names Google:\n%s", logged)

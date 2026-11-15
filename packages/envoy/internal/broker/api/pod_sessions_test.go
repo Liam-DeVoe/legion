@@ -150,7 +150,7 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	t.Helper()
 	entries := make([]exchange.AccountEntry, 0, len(accounts))
 	for _, account := range accounts {
-		entries = append(entries, exchange.AccountEntry{Account: account, Project: brokertest.ExchangeProject, Person: brokertest.ExchangePerson})
+		entries = append(entries, exchange.AccountEntry{Account: account, Project: brokertest.ExchangeProject, Person: brokertest.ExchangePerson, Issuers: []string{""}})
 	}
 	policy, err := exchange.NewSet(entries, nil, nil, "")
 	if err != nil {

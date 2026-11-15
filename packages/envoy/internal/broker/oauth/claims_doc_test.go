@@ -69,6 +69,7 @@ const (
 	claimsProject      = "ACME"
 	claimsSessionName  = "claims-doc-check"
 	claimsIssuer       = "https://kubernetes.example/cluster"
+	claimsIssuerName   = "cluster"
 	claimsAudience     = "https://broker.example"
 	claimsCredentialID = "machine-credential-1"
 	// The Google half: the issuer a machine's identity token comes from, the audience it must
@@ -109,16 +110,17 @@ func issuedClaims(t *testing.T) []string {
 		Account: claimsPodAccount,
 		Project: claimsProject,
 		Person:  claimsPerson,
+		Issuers: []string{claimsIssuerName},
 	}}, nil, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
 	// Keys is left nil: decide verifies no signature. It checks a pod token's audience against the
-	// configured issuer (audience, hasAudience) and the library, which is what resolves a token's
-	// key, is not in this call at all.
+	// configured issuer its iss names (audience, hasAudience) and the library, which is what
+	// resolves a token's key, is not in this call at all.
 	provider := &Provider{exchange: ExchangeConfig{
 		Policy:     policy,
-		Kubernetes: IssuerConfig{Issuer: claimsIssuer, Audience: claimsAudience},
+		Kubernetes: []IssuerConfig{{Name: claimsIssuerName, Issuer: claimsIssuer, Audience: claimsAudience}},
 		Google:     IssuerConfig{Issuer: claimsGoogleIssuer, Audience: claimsGoogleAudience},
 		// The person's own token is checked against Google's issuer too, under the device-flow
 		// client's audience; the actor token below is the machine's, under Google's own.
@@ -131,6 +133,7 @@ func issuedClaims(t *testing.T) []string {
 	}{{
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{
+			"iss":           claimsIssuer,
 			"sub":           claimsPodAccount,
 			"aud":           claimsAudience,
 			"kubernetes.io": map[string]any{"pod": map[string]any{"uid": claimsPodUID}},

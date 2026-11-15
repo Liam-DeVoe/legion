@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // tokenTypeAccessToken is RFC 8693's own name for an access token: the only kind this provider's
@@ -99,18 +100,24 @@ const (
 )
 
 // KeySource answers the public key a token's header names, which is what the library's
-// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set.
+// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set, and so is
+// *oidc.LazyVerifier, reading it once the issuer is discovered.
 type KeySource interface {
 	// Key is the public key a token naming kid and signed with alg is checked against.
 	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
 }
 
 // IssuerConfig is one issuer whose tokens the exchange accepts as a subject token: a Kubernetes
-// cluster, or GitHub. Every field is required of a configured issuer and the zero value is an
-// issuer the broker was not told about, whose token type is then not registered at all — so a
-// caller presenting it is refused by the library before any handler of the broker's runs.
+// cluster, or GitHub. Every field but Name is required of a configured issuer and the zero value
+// is an issuer the broker was not told about, whose token type is then not registered at all — so
+// a caller presenting it is refused by the library before any handler of the broker's runs.
 type IssuerConfig struct {
-	// Issuer is the `iss` the subject token must carry, which the library compares exactly.
+	// Name is a cluster issuer's name in BROKER_K8S_OIDC_ISSUER, by which an account entry names
+	// the issuers its pods' tokens come from (exchange.AccountEntry.Issuers): empty for the one
+	// issuer of a list written as a bare URL, and for GitHub's and Google's issuers.
+	Name string
+	// Issuer is the `iss` the subject token must carry, which the library compares exactly for
+	// GitHub and Google and the exchange chooses a cluster's keys by (kubernetesKeyFunc).
 	Issuer string
 	// Audience is what the subject token's `aud` must carry. The library checks a subject
 	// token's issuer and its expiry and never its audience, so the exchange checks this itself:
@@ -139,6 +146,18 @@ func (c IssuerConfig) validate(where string) error {
 	return nil
 }
 
+// kubernetesIssuer is the one of the cluster issuers the exchange takes whose Issuer is
+// subjectToken's `iss`, and false for a token of none of them.
+func (c ExchangeConfig) kubernetesIssuer(subjectToken map[string]any) (IssuerConfig, bool) {
+	iss, _ := subjectToken["iss"].(string)
+	for _, issuer := range c.Kubernetes {
+		if issuer.Issuer == iss {
+			return issuer, true
+		}
+	}
+	return IssuerConfig{}, false
+}
+
 // ExchangeConfig is what the RFC 8693 token exchange decides and verifies with. None of it is the
 // provider's to decide: the broker's wiring reads it from the deployment's configuration and
 // hands it over whole.
@@ -148,8 +167,15 @@ type ExchangeConfig struct {
 	// or not any identity or issuer is, because the token-exchange grant is the exchange
 	// client's only grant and a caller it refuses must be refused by name.
 	Policy *exchange.Set
-	// Kubernetes is the cluster issuer a pod's projected service-account token comes from.
-	Kubernetes IssuerConfig
+	// Kubernetes is the cluster issuers a pod's projected service-account token may come from,
+	// each with its own name and keys and all of them for one audience. One token type takes
+	// them all: the exchange reads a token's `iss` without trusting it and checks the token
+	// against that issuer's keys alone (kubernetesKeyFunc), as the broker's other routes check a
+	// cluster's token (oidc.IssuerSet.Verify). A token whose `iss` names none of them is refused
+	// invalid_request, the answer the library gives a token of another issuer, and a token of an
+	// issuer whose keys cannot be read for want of a read of the issuer is answered 503
+	// OIDC_ISSUER_UNAVAILABLE (issuerUnavailableRefusal).
+	Kubernetes []IssuerConfig
 	// GitHub is the issuer a continuous-integration workflow run's token comes from.
 	GitHub IssuerConfig
 	// Google is the issuer a machine's identity token comes from, Google's own in a deployment
@@ -183,8 +209,13 @@ type ExchangeConfig struct {
 
 // validate refuses a configuration the exchange could not serve.
 func (c ExchangeConfig) validate() error {
-	if err := c.Kubernetes.validate("Kubernetes"); err != nil {
-		return err
+	for _, issuer := range c.Kubernetes {
+		if !issuer.configured() {
+			return errors.New("oauth: a Kubernetes subject token issuer is listed with no issuer, audience or keys; it needs all three")
+		}
+		if err := issuer.validate("Kubernetes"); err != nil {
+			return err
+		}
 	}
 	if err := c.GitHub.validate("GitHub"); err != nil {
 		return err
@@ -283,10 +314,13 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
 		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
 	}
-	if c.Kubernetes.configured() {
+	if len(c.Kubernetes) > 0 {
 		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
-			Name:   oauthwire.SubjectTokenTypeKubernetes,
-			Issuer: c.Kubernetes.Issuer,
+			Name: oauthwire.SubjectTokenTypeKubernetes,
+			// No issuer for the library to compare: the type takes the tokens of several
+			// clusters, and kubernetesKeyFunc refuses a token whose `iss` names none of them
+			// before it answers any key, so a token's signature is checked against the keys of
+			// the issuer its `iss` names and no other.
 			JWTValidationConfig: rfc8693.JWTValidationConfig{
 				// A pod's projected token is a standing credential its kubelet refreshes, and a
 				// long-running role exchanges many times with the one it holds, so single use
@@ -294,7 +328,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// pod is the pod binding the decision requires.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: kubernetesTolerance,
-				ValidateFunc:               keyFunc(c.Kubernetes.Keys),
+				ValidateFunc:               kubernetesKeyFunc(c.Kubernetes),
 			},
 		}
 	}
@@ -354,22 +388,11 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	return types
 }
 
-// issuerOf is the configured issuer a token type's tokens come from, and false for a type that
-// is not one of the JWT kinds. The machine's actor token is Google's own, the same token its
-// subject type names; a person's carries the device-flow client's audience over Google's issuer
-// and keys, so it is answered as an issuer of its own.
-func (c ExchangeConfig) issuerOf(subjectTokenType string) (IssuerConfig, bool) {
-	switch subjectTokenType {
-	case oauthwire.SubjectTokenTypeKubernetes:
-		return c.Kubernetes, true
-	case oauthwire.SubjectTokenTypeGitHub:
-		return c.GitHub, true
-	case oauthwire.SubjectTokenTypeGoogle, oauthwire.ActorTokenTypeMachine:
-		return c.Google, true
-	case oauthwire.SubjectTokenTypePerson:
-		return IssuerConfig{Issuer: c.Google.Issuer, Audience: c.PersonAudience, Keys: c.Google.Keys}, true
-	}
-	return IssuerConfig{}, false
+// personIssuer is the issuer a person's own Google identity token comes from: Google's issuer and
+// keys, under the device-flow client's audience, so it is an issuer of its own beside the
+// machine's, whose actor token is Google's under the machine's audience.
+func (c ExchangeConfig) personIssuer() IssuerConfig {
+	return IssuerConfig{Issuer: c.Google.Issuer, Audience: c.PersonAudience, Keys: c.Google.Keys}
 }
 
 // keyFunc is a JWT subject token type's ValidateFunc: the library hands it the parsed but
@@ -388,6 +411,27 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
 		}
 		return keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+	}
+}
+
+// errIssuerNotTaken is kubernetesKeyFunc's refusal of a token whose `iss` names none of the
+// cluster issuers the exchange takes, which exchangeGrant answers in the words the library
+// answers a token of another issuer with.
+var errIssuerNotTaken = errors.New("oauth: the subject token's iss names no issuer the exchange takes")
+
+// kubernetesKeyFunc is the Kubernetes subject token type's ValidateFunc: it reads the unverified
+// token's `iss`, and answers keyFunc's key from the keys of the one of issuers that `iss` names,
+// so the library checks the token's signature against that issuer's keys alone. A token whose
+// `iss` names none of them is errIssuerNotTaken, and reads no issuer's keys.
+func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
+	return func(token *jwt.Token) (any, error) {
+		iss, _ := token.Claims.GetIssuer()
+		for _, issuer := range issuers {
+			if issuer.Issuer == iss {
+				return keyFunc(issuer.Keys)(token)
+			}
+		}
+		return nil, errIssuerNotTaken
 	}
 }
 
@@ -413,7 +457,10 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // library builds anything
 // (registeredPodSession). The claim on the session name is made
 // for every type once the library has built the answer, because that is when the issued token's
-// expiry is set, and the claim must not end before the token it is made for.
+// expiry is set, and the claim must not end before the token it is made for. A subject token the
+// library refused for its key is answered 503 OIDC_ISSUER_UNAVAILABLE where the key could not be
+// read for want of a read of its issuer (issuerUnavailableRefusal), and in subjectKeyRefusal's
+// words where the token's `iss` names no issuer the exchange takes.
 func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
@@ -434,7 +481,11 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	request, err := p.oauth.NewAccessRequest(txCtx, r, oauthstore.NewExchangeSession())
 	noteClient(ctx, request)
 	if err != nil {
-		p.writeError(ctx, w, request, err)
+		if errors.Is(subjectKeyError(err), oidc.ErrIssuerUnavailable) {
+			WriteRefusal(w, issuerUnavailableRefusal)
+			return
+		}
+		p.writeError(ctx, w, request, subjectKeyRefusal(err))
 		return
 	}
 	session, ok := request.GetSession().(*oauthstore.ExchangeSession)
@@ -520,6 +571,41 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
+// issuerUnavailableRefusal answers a subject token whose key the broker cannot read for want of a
+// read of its issuer: the issuer's discovery document has not been read, or the token's key is
+// not among the keys the broker holds from its key set's last good read and the key set cannot
+// be read now (oidc.ErrIssuerUnavailable). It is the answer the broker's other routes give the
+// same fault (api.writeIssuerUnavailable), 503 OIDC_ISSUER_UNAVAILABLE with Dispatch's sentence,
+// as the OAuth error a client's library parses (WriteRefusal). It is a 5xx because nothing was
+// decided about the token, and a caller tries again after a 5xx.
+var issuerUnavailableRefusal = &Refusal{
+	Status: http.StatusServiceUnavailable, Code: "OIDC_ISSUER_UNAVAILABLE",
+	Message: "the service-account token issuer cannot be reached; try again in a minute",
+}
+
+// subjectKeyError is the error a subject token type's key function answered, out of the
+// library's refusal of that token, and nil for any other refusal. The library wraps that error in
+// a jwt.ValidationError, which it does not unwrap, so errors.Is cannot reach it through the
+// refusal itself.
+func subjectKeyError(err error) error {
+	var invalid *jwt.ValidationError
+	if !errors.As(err, &invalid) {
+		return nil
+	}
+	return invalid.Inner
+}
+
+// subjectKeyRefusal is err, the library's refusal of an exchange, except where its cause is
+// errIssuerNotTaken: the library's own words for that one are that it could not parse the token,
+// so it is answered invalid_request in words that say the token's issuer is not one the exchange
+// takes, the answer and the status the library gives a token of another issuer.
+func subjectKeyRefusal(err error) error {
+	if !errors.Is(subjectKeyError(err), errIssuerNotTaken) {
+		return err
+	}
+	return oauth2.ErrInvalidRequest.WithHint("Claim 'iss' from token names no issuer this broker's exchange takes.").WithWrap(err).WithDebugError(err)
+}
+
 // reserveSessions holds every session name an entry fixes for that entry's principal
 // (oauthstore.Store.ReserveSessions), once for the life of the provider and before its first
 // exchange, so the first caller of another principal to name one is refused by the same claim
@@ -582,15 +668,20 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	var err error
 	switch subjectTokenType {
 	case oauthwire.SubjectTokenTypeKubernetes:
-		if err = p.audience(subjectTokenType, subjectToken); err == nil {
-			claims, err = p.exchange.Policy.Pod(subjectToken, name)
+		// The token's own issuer, whose keys kubernetesKeyFunc checked its signature against;
+		// the account's entry must name it.
+		issuer, taken := p.exchange.kubernetesIssuer(subjectToken)
+		if !taken {
+			err = errIssuerNotTaken
+		} else if err = audience(issuer, subjectToken); err == nil {
+			claims, err = p.exchange.Policy.Pod(subjectToken, issuer.Name, name)
 		}
 	case oauthwire.SubjectTokenTypeGitHub:
-		if err = p.audience(subjectTokenType, subjectToken); err == nil {
+		if err = audience(p.exchange.GitHub, subjectToken); err == nil {
 			claims, err = p.exchange.Policy.Workflow(subjectToken, name)
 		}
 	case oauthwire.SubjectTokenTypeGoogle:
-		if err = p.audience(subjectTokenType, subjectToken); err == nil {
+		if err = audience(p.exchange.Google, subjectToken); err == nil {
 			claims, err = p.exchange.Policy.Google(subjectToken, name)
 		}
 	case oauthwire.SubjectTokenTypePerson:
@@ -601,8 +692,8 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 		// (rfc8693.CustomJWTTypeHandler), and a request that carried none leaves it nil, which
 		// the policy refuses by name.
 		actor := session.GetActorToken()
-		if err = p.audience(subjectTokenType, subjectToken); err == nil && actor != nil {
-			err = p.audience(oauthwire.ActorTokenTypeMachine, actor)
+		if err = audience(p.exchange.personIssuer(), subjectToken); err == nil && actor != nil {
+			err = audience(p.exchange.Google, actor)
 		}
 		if err == nil {
 			claims, err = p.exchange.Policy.Person(subjectToken, actor, name)
@@ -1002,14 +1093,10 @@ func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore
 	return nil
 }
 
-// audience refuses a subject token whose `aud` does not carry the audience its issuer is
-// configured with. The library checks a subject token's issuer and its expiry and never its
+// audience refuses a subject token whose `aud` does not carry the audience of issuer, the issuer
+// it came from. The library checks a subject token's issuer and its expiry and never its
 // audience, so without this a token a pod was given for another service would be spendable here.
-func (p *Provider) audience(subjectTokenType string, subjectToken map[string]any) error {
-	issuer, ok := p.exchange.issuerOf(subjectTokenType)
-	if !ok {
-		return nil
-	}
+func audience(issuer IssuerConfig, subjectToken map[string]any) error {
 	if hasAudience(subjectToken["aud"], issuer.Audience) {
 		return nil
 	}

@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto"
 	"errors"
 	"net/http"
 	"slices"
@@ -113,6 +114,52 @@ func TestAnIssuerSetAnswersAnIssuerItCannotReadUnavailable(t *testing.T) {
 	}
 	if _, issuer, err := set.Verify(ctx, second.Mint(t, secondKey, second.Claims(testSubject, testAudience))); err != nil || issuer.Name != "second" {
 		t.Fatalf("Verify(the other issuer's token) = %+v, %v; want it verified", issuer, err)
+	}
+}
+
+// Key answers the key the issuer named by URL publishes, and reads nothing of the other issuer
+// for it. An issuer the set does not name is ErrIssuer and reads nothing. A key the issuer does
+// not publish is ErrNoKey and not ErrIssuerUnavailable; an issuer whose discovery document or key
+// set cannot be read is ErrIssuerUnavailable, the key set's failure carrying ErrKeySet.
+func TestAnIssuerSetAnswersEachIssuersKey(t *testing.T) {
+	set, first, second, _, _ := twoIssuers(t)
+	ctx := context.Background()
+	firstKey, err := set.Key(ctx, first.URL(), "signing-key", testAlgorithm)
+	if err != nil {
+		t.Fatalf("Key(the first issuer's key) = %v", err)
+	}
+	if got := reads(second); got != [2]int{} {
+		t.Fatalf("the first issuer's key read the second issuer's discovery document and key set %v times, want none", got)
+	}
+	secondKey, err := set.Key(ctx, second.URL(), "signing-key", testAlgorithm)
+	if err != nil {
+		t.Fatalf("Key(the second issuer's key) = %v", err)
+	}
+	if firstKey.(interface{ Equal(crypto.PublicKey) bool }).Equal(secondKey) {
+		t.Fatal("the two issuers answered one key under one key id, want each its own")
+	}
+
+	third := oidctest.New(t)
+	third.PublishKey(t, "signing-key")
+	if _, err := set.Key(ctx, third.URL(), "signing-key", testAlgorithm); !errors.Is(err, ErrIssuer) {
+		t.Fatalf("Key(an issuer the set does not name) = %v, want ErrIssuer", err)
+	}
+	if got := reads(third); got != [2]int{} {
+		t.Fatalf("an issuer the set does not name was read %v times, want none", got)
+	}
+	if _, err := set.Key(ctx, first.URL(), "never-published", testAlgorithm); !errors.Is(err, ErrNoKey) || errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("Key(a key the first issuer does not publish) = %v, want ErrNoKey and not ErrIssuerUnavailable", err)
+	}
+
+	unread, down, _, _, _ := twoIssuers(t)
+	down.FailDiscovery(http.StatusServiceUnavailable)
+	if _, err := unread.Key(ctx, down.URL(), "signing-key", testAlgorithm); !errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("Key(an issuer whose discovery document cannot be read) = %v, want ErrIssuerUnavailable", err)
+	}
+	keyless, _, failing, _, _ := twoIssuers(t)
+	failing.FailKeys(http.StatusServiceUnavailable)
+	if _, err := keyless.Key(ctx, failing.URL(), "signing-key", testAlgorithm); !errors.Is(err, ErrIssuerUnavailable) || !errors.Is(err, ErrKeySet) {
+		t.Fatalf("Key(an issuer whose key set cannot be read) = %v, want ErrIssuerUnavailable carrying ErrKeySet", err)
 	}
 }
 

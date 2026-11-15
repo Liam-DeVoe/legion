@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,8 +47,10 @@ const (
 	otherProject = "OTHER"
 	otherPerson  = "mallory@example.com"
 	// podAudience and workflowAudience are what each issuer's tokens must be minted for; a token
-	// carrying anything else is not spendable at this broker.
+	// carrying anything else is not spendable at this broker. clusterName is the cluster issuer's
+	// name, which every account entry names.
 	podAudience      = "https://broker.example"
+	clusterName      = "cluster"
 	workflowAudience = "https://broker.example/ci"
 	// signInDomain is the Google Workspace domain a person signing in on a machine must belong
 	// to, BROKER_SIGNIN_DOMAIN's value in these tests, and deviceAudience the audience the
@@ -97,15 +100,15 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtu
 	config := oauth.ExchangeConfig{
 		Policy: newPolicy(t,
 			[]exchange.AccountEntry{
-				{Account: account, Project: project, Person: person},
-				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
-				{Account: otherAccount, Project: otherProject, Person: otherPerson},
+				{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
+				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession, Issuers: []string{clusterName}},
+				{Account: otherAccount, Project: otherProject, Person: otherPerson, Issuers: []string{clusterName}},
 			},
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 			}),
-		Kubernetes: oauth.IssuerConfig{Issuer: cluster.URL(), Audience: podAudience, Keys: clusterKeys},
+		Kubernetes: []oauth.IssuerConfig{{Name: clusterName, Issuer: cluster.URL(), Audience: podAudience, Keys: clusterKeys}},
 		GitHub:     oauth.IssuerConfig{Issuer: github.URL(), Audience: workflowAudience, Keys: githubKeys},
 	}
 	inner := newFixtureWith(t, func(c *oauth.Config) {
@@ -782,9 +785,9 @@ func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) 
 
 	next := old.replica(t, newPolicy(t,
 		[]exchange.AccountEntry{
-			{Account: account, Project: project, Person: person},
-			{Account: daemonAccount, Project: project, Person: person},
-			{Account: otherAccount, Project: otherProject, Person: otherPerson, Session: daemonSession},
+			{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
+			{Account: daemonAccount, Project: project, Person: person, Issuers: []string{clusterName}},
+			{Account: otherAccount, Project: otherProject, Person: otherPerson, Session: daemonSession, Issuers: []string{clusterName}},
 		},
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
@@ -1064,5 +1067,80 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 	}
 	if hint, _ := body["error_description"].(string); !strings.Contains(hint, account) {
 		t.Errorf("the refusal reads %q, which does not name the account no entry lists", hint)
+	}
+}
+
+// TestTheExchangeChecksEachPodTokenByTheClusterItNames: given three more cluster issuers beside the
+// fixture's, the exchange takes a token of the second for an account whose entry names it, checked
+// against that issuer's keys alone. It refuses 400 invalid_request, with no access token, a token
+// of an issuer it is not given, reading nothing of that issuer, a token naming the second issuer
+// and signed with another issuer's key under a key id the second publishes, and a token of the
+// second issuer for an account whose entry names the first alone. A token of an issuer whose
+// discovery document cannot be read, and one of an issuer whose key set cannot be read, are
+// answered 503 OIDC_ISSUER_UNAVAILABLE with no access token.
+func TestTheExchangeChecksEachPodTokenByTheClusterItNames(t *testing.T) {
+	away, down, keyless, stranger := oidctest.New(t), oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	// One key id across away and stranger, so the forged token below names a key away publishes
+	// and only the key itself is wrong.
+	awayKey, downKey, keylessKey, strangerKey := away.PublishKey(t, "cluster-key"), down.PublishKey(t, "down-key"), keyless.PublishKey(t, "keyless-key"), stranger.PublishKey(t, "cluster-key")
+	down.FailDiscovery(http.StatusServiceUnavailable)
+	keyless.FailKeys(http.StatusServiceUnavailable)
+	lazy := func(name string, issuer *oidctest.Issuer) oauth.IssuerConfig {
+		return oauth.IssuerConfig{Name: name, Issuer: issuer.URL(), Audience: podAudience, Keys: oidc.NewLazyVerifier(issuer.URL(), podAudience)}
+	}
+	f := newExchangeFixture(t, func(c *oauth.Config) {
+		c.Exchange.Kubernetes = append(slices.Clone(c.Exchange.Kubernetes), lazy("away", away), lazy("down", down), lazy("keyless", keyless))
+		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{
+			{Account: account, Project: project, Person: person, Issuers: []string{clusterName, "away", "down", "keyless"}},
+			{Account: otherAccount, Project: otherProject, Person: otherPerson, Issuers: []string{clusterName}},
+		}, nil)
+	})
+	key := newKey(t)
+	tokenOf := func(issuer *oidctest.Issuer, signer *oidctest.Key, of, uid string) string {
+		claims := issuer.Claims(of, podAudience)
+		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": uid}}
+		return issuer.Mint(t, signer, claims)
+	}
+
+	t.Run("a token of the second issuer the account's entry names is taken", func(t *testing.T) {
+		f.registers(t, account, "pod-uid-away", "implementer-g1")
+		f.introspectsAs(t, f.exchanged(t, exchangeForm(tokenOf(away, awayKey, account, "pod-uid-away"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key), "implementer-g1", person, project)
+	})
+	refused := func(t *testing.T, status int, body map[string]any, says string) {
+		t.Helper()
+		hint, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(hint, says) {
+			t.Fatalf("answered %d %v, want 400 invalid_request, no access token and a refusal naming %q", status, body, says)
+		}
+	}
+	t.Run("a token of an issuer the exchange is not given is refused and reads nothing of it", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(stranger, strangerKey, account, "pod-uid-stranger"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+		refused(t, status, body, "iss")
+		if reads := stranger.DiscoveryRequests() + stranger.JWKSFetches(); reads != 0 {
+			t.Fatalf("the issuer the exchange is not given was read %d times, want none", reads)
+		}
+	})
+	t.Run("a token naming the second issuer and signed with another issuer's key is refused", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(away, strangerKey, account, "pod-uid-away"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+		refused(t, status, body, "")
+	})
+	t.Run("a token of the second issuer for an account whose entry names the first alone is refused", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(away, awayKey, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		refused(t, status, body, otherAccount)
+	})
+	for _, c := range []struct {
+		name   string
+		issuer *oidctest.Issuer
+		signer *oidctest.Key
+	}{
+		{"a token of an issuer whose discovery document cannot be read is answered 503", down, downKey},
+		{"a token of an issuer whose key set cannot be read is answered 503", keyless, keylessKey},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := f.exchange(t, exchangeForm(tokenOf(c.issuer, c.signer, account, "pod-uid-unread"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+			if status != http.StatusServiceUnavailable || body["code"] != "OIDC_ISSUER_UNAVAILABLE" || body["access_token"] != nil {
+				t.Fatalf("answered %d %v, want 503 OIDC_ISSUER_UNAVAILABLE and no access token", status, body)
+			}
+		})
 	}
 }

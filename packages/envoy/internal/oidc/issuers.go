@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto"
 	"fmt"
 	"sync"
 	"time"
@@ -62,6 +63,20 @@ func (s *IssuerSet) Verify(ctx context.Context, raw string) (Claims, NamedIssuer
 		}
 	}
 	return Claims{}, NamedIssuer{}, fmt.Errorf("%w: %q, which no issuer of the set names", ErrIssuer, claims.Issuer)
+}
+
+// Key answers the key the issuer of the set whose URL is issuer publishes under kid for alg,
+// through that issuer's LazyVerifier (LazyVerifier.Key), so a caller that needs the key itself,
+// as the RFC 8693 token exchange does, reads the discovery document and the key set Verify reads,
+// with their background read, their spacing and their errors, ErrIssuerUnavailable among them.
+// An issuer the set does not name is ErrIssuer, and reads nothing.
+func (s *IssuerSet) Key(ctx context.Context, issuer, kid, alg string) (crypto.PublicKey, error) {
+	for _, entry := range s.entries {
+		if entry.issuer.URL == issuer {
+			return entry.verifier.Key(ctx, kid, alg)
+		}
+	}
+	return nil, fmt.Errorf("%w: %q, which no issuer of the set names", ErrIssuer, issuer)
 }
 
 // IssuerRead is one issuer of a set and whether its discovery document has been read.

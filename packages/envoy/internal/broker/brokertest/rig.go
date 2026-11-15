@@ -302,7 +302,9 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("OAuth secret: %v", err)
 	}
 	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession}},
+		// The entry names the rig's one cluster issuer, which, written as a bare URL, has the
+		// empty name.
+		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession, Issuers: []string{""}}},
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 		nil,
 		// The rig lists no machine, so there is no box a person could have signed in on and no
@@ -321,7 +323,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys},
+			Kubernetes: []oauth.IssuerConfig{{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys}},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		},
 	}, oauthStore)

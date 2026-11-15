@@ -87,12 +87,25 @@ It reads a key set that failed again at most once in 5 seconds, however many tok
 decides nothing about the token, so the Legion daemon and a pod's renewer try again. The broker
 logs one line when it first answers a token of an issuer this way, and one more when a token of
 that issuer verifies again ([Health and logs](#health-and-logs)).
-The one exception is the token exchange's issuer: `BROKER_EXCHANGE_K8S_ISSUER` names, by its name
-in `BROKER_K8S_OIDC_ISSUER`, the one issuer whose tokens the exchange takes for
-`BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker reads that issuer at startup and refuses to start
-when it cannot. With one issuer the setting may be left out. With two or more, a broker that sets
-`BROKER_EXCHANGE_K8S_AUDIENCE` and leaves the setting out refuses to start, naming it. The entries
-of `BROKER_EXCHANGE_ACCOUNTS` match the tokens of that one issuer.
+
+The token exchange takes the tokens of the issuers that `BROKER_EXCHANGE_K8S_ISSUER` names, by
+their names in `BROKER_K8S_OIDC_ISSUER` and separated by commas (`first,second`), for
+`BROKER_EXCHANGE_K8S_AUDIENCE`. It refuses a token of any other issuer with `400 invalid_request`.
+It reads each of its issuers through the same background read, so an issuer it cannot read stops
+no start, and it answers that issuer's tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can. With one
+issuer the setting may be left out. With two or more, a broker that sets
+`BROKER_EXCHANGE_K8S_AUDIENCE` and leaves the setting out refuses to start, naming it. It refuses
+to start as well when the setting names an issuer the list does not hold, names one twice, or is
+set without `BROKER_EXCHANGE_K8S_AUDIENCE`.
+
+An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers after its session slot, as
+`<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]`, and the
+exchange takes that account's token only from those issuers. An entry that names none takes the
+first issuer of `BROKER_K8S_OIDC_ISSUER` alone, so an entry written for one cluster keeps its
+meaning. An entry of five or more `=`-separated fields names its issuers after its last `=`, so a
+fixed session that holds `=` needs the issuer field after it. The broker refuses to start, naming
+`BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer that setting does not name, or
+names one issuer twice.
 
 `BROKER_API_ACCOUNTS` lists the callers of the broker's named-caller routes, here Dispatch's
 server as the caller `dispatch`, each by its own account. An account is written in one of two
@@ -645,7 +658,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | A local stand-in (development only) | `BROKER_FAKE_SECRETS_FILE` names a JSON file the broker reads in place of the store, in Secrets Manager's shape whatever `BROKER_SECRETS_STORE` says, each secret's `kms_key_id` naming the agent-secrets key as the selected store configures it (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME` with the GCP store); the [configuration reference](/legion/broker/reference/config/#variables-the-broker-reads) gives its format. |
 | Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token for `BROKER_K8S_OIDC_AUDIENCE`, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
 | The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable` ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
-| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` names the ServiceAccount token issuer of each cluster whose pods or services present a token, and `BROKER_K8S_OIDC_AUDIENCE` the one audience their projected tokens carry. The broker reads each issuer's discovery document in the background from its start and starts whether or not it can: until it reads an issuer, it answers that issuer's tokens `503 OIDC_ISSUER_UNAVAILABLE` and serves every other issuer's, and after that it answers the same to a token whose key it cannot read, one that names a key it does not hold from its last good read of the issuer's key set while that key set cannot be read. The token exchange's issuer (`BROKER_EXCHANGE_K8S_ISSUER`) is the exception: the broker reads it at startup and refuses to start if it cannot. |
+| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` names the ServiceAccount token issuer of each cluster whose pods or services present a token, and `BROKER_K8S_OIDC_AUDIENCE` the one audience their projected tokens carry. The broker reads each issuer's discovery document in the background from its start and starts whether or not it can: until it reads an issuer, it answers that issuer's tokens `503 OIDC_ISSUER_UNAVAILABLE` and serves every other issuer's, and after that it answers the same to a token whose key it cannot read, one that names a key it does not hold from its last good read of the issuer's key set while that key set cannot be read. The token exchange reads the issuers `BROKER_EXCHANGE_K8S_ISSUER` names the same way. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. |
 | The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |

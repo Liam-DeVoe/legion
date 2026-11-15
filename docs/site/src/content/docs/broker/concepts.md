@@ -936,8 +936,9 @@ not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
-token's `subject`, the `pod_uid` the token is bound to when it is, the login's `key_thumbprint`,
-the credential's `expires_at` and the token's own `token_expires_at`). Each row names its actor:
+token's `subject`, the `pod_uid` the token is bound to when it is, the URL of the `issuer` that
+signed a Kubernetes token, the login's `key_thumbprint`, the credential's `expires_at` and the
+token's own `token_expires_at`). Each row names its actor:
 `human:<email>` for a decision a person made on the broker's approval page or a change Dispatch
 made for its signed-in person, `session:<enrollment id>` for
 a session's own, `launcher:<credential id>` for one

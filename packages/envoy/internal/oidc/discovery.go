@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -159,25 +160,33 @@ func (d *discovery[T]) logFailure(err error) {
 
 // LazyVerifier is a Verifier whose issuer is discovered when first needed (see CodeFlow's
 // discovery), for a server that must start and serve its other callers while that issuer is
-// down. Until the discovery document has been read, Verify fails with ErrIssuerUnavailable.
+// down. Until the discovery document has been read, Verify and Key fail with
+// ErrIssuerUnavailable.
 type LazyVerifier struct {
-	discovery *discovery[*Verifier]
+	discovery *discovery[lazyIssuer]
+}
+
+// lazyIssuer is what one read of a LazyVerifier's discovery document makes: the issuer's key set,
+// and the verifier that checks tokens against it.
+type lazyIssuer struct {
+	verifier *Verifier
+	keys     *Keys
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
-// discovery document is read by Discover, by Run, or by the first Verify.
+// discovery document is read by Discover, by Run, or by the first Verify or Key.
 func NewLazyVerifier(issuer, audience string, options ...LazyVerifierOption) *LazyVerifier {
 	var settings lazyVerifierSettings
 	for _, option := range options {
 		option(&settings)
 	}
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (lazyIssuer, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
-			return nil, err
+			return lazyIssuer{}, err
 		}
 		keys.FailureSpacing = settings.keyFailureSpacing
-		return NewWithKeys(issuer, audience, keys), nil
+		return lazyIssuer{verifier: NewWithKeys(issuer, audience, keys), keys: keys}, nil
 	})}
 }
 
@@ -200,11 +209,29 @@ func WithKeyFailureSpacing(spacing time.Duration) LazyVerifierOption {
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
 // and an attempt is due; before that every error matches ErrIssuerUnavailable.
 func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
-	verifier, err := v.discovery.discover(ctx)
+	issuer, err := v.discovery.discover(ctx)
 	if err != nil {
 		return Claims{}, err
 	}
-	return verifier.Verify(ctx, raw)
+	return issuer.verifier.Verify(ctx, raw)
+}
+
+// Key is Keys.Key on the key set Verify reads, once the issuer is discovered, discovering it
+// first when it is not and an attempt is due: the key a token naming kid and signed with alg is
+// checked against, for a caller that needs the key itself, as the RFC 8693 token exchange does.
+// Its error matches ErrIssuerUnavailable while the discovery document has not been read, and
+// where Keys.Key answers ErrKeySet, since a key set that cannot be read decides nothing about the
+// token, as Verify classifies the same error. Every other error is Keys.Key's.
+func (v *LazyVerifier) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
+	issuer, err := v.discovery.discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key, err := issuer.keys.Key(ctx, kid, alg)
+	if errors.Is(err, ErrKeySet) {
+		return nil, fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
+	}
+	return key, err
 }
 
 // Discover reads the issuer's discovery document unless it has been read; its error matches

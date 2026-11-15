@@ -2,8 +2,8 @@
 // (BROKER_K8S_OIDC_ISSUER=a=<URL>,b=<URL>), each a local OpenID issuer standing in for one cluster,
 // on a real Postgres and over HTTP alone: each token is checked by the issuer it names, an issuer
 // the broker cannot read stops neither the boot nor the other issuer and its tokens are answered
-// 503 until it can be read, the token exchange takes the one issuer BROKER_EXCHANGE_K8S_ISSUER
-// names, and a listed account is taken only from the issuers its entry names. Every request and
+// 503 until it can be read, the token exchange takes the issuers BROKER_EXCHANGE_K8S_ISSUER names,
+// and a listed account is taken only from the issuers its entry names. Every request and
 // answer is logged, with no token, as the live run's transcript.
 package main
 
@@ -541,84 +541,149 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 	})
 }
 
-// TestTheExchangeTakesTheIssuerItNames: with BROKER_EXCHANGE_K8S_AUDIENCE set and two issuers
-// named, the broker refuses to boot, naming BROKER_EXCHANGE_K8S_ISSUER, when that setting is
-// missing, names an issuer the list does not hold, or is set without the exchange's audience. With
-// the setting naming B, the exchange takes a token of B and refuses a token of A as it refuses a
-// token of any issuer it does not take, 400 invalid_request;
-// with B's discovery document failing at boot, the broker refuses to boot. With one issuer named
-// and no BROKER_EXCHANGE_K8S_ISSUER, the exchange takes that issuer's token.
-func TestTheExchangeTakesTheIssuerItNames(t *testing.T) {
+// TestTheExchangeTakesTheIssuersItNames: with BROKER_EXCHANGE_K8S_AUDIENCE set and three issuers
+// named, A, B and C, the broker refuses to boot, naming BROKER_EXCHANGE_K8S_ISSUER, when that
+// setting is missing, names an issuer the list does not hold, or is set without the exchange's
+// audience, and when an entry of BROKER_EXCHANGE_ACCOUNTS names an issuer the setting does not
+// name or names one twice. With the setting naming A and B, the exchange takes a token of A and a
+// token of B for an account whose entry names both, and refuses with 400 invalid_request and no
+// access token a token of C, a token of B for an account whose entry names A alone, and a token of
+// B for an account whose entry names no issuer, which takes A, the first, alone. With B's
+// discovery document failing, the broker boots, the exchange takes a token of A, and a token of B
+// gets 503 OIDC_ISSUER_UNAVAILABLE. With one issuer and no BROKER_EXCHANGE_K8S_ISSUER, the
+// exchange takes that issuer's token for an entry that names no issuer, whether the issuer is
+// named or is one bare URL, as today.
+func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
+	const (
+		// namingA's entry names A alone, and namingNone's names no issuer; namedWorker's names A
+		// and B. Each fixes a session of its own, so its pods exchange with no registration.
+		namingA        = "system:serviceaccount:legion:legion-worker-a"
+		namingNone     = "system:serviceaccount:legion:legion-worker-none"
+		sessionOfA     = "example-session-a"
+		sessionOfNone  = "example-session-none"
+		exchangeIssuer = "BROKER_EXCHANGE_K8S_ISSUER"
+	)
 	binary := buildBroker(t)
-	a, b := oidctest.New(t), oidctest.New(t)
-	aKey, bKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key")
-	exchangeAccounts := "BROKER_EXCHANGE_ACCOUNTS=" + namedWorker + "=ACME=ada@example.com=" + namedSession
+	a, b, c := oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	aKey, bKey, cKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key"), c.PublishKey(t, "c-key")
+	threeIssuers := bothIssuers(a, b) + ",c=" + c.URL()
+	audience := "BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience
+	accounts := "BROKER_EXCHANGE_ACCOUNTS=" + namedWorker + "=ACME=ada@example.com=" + namedSession + "=a,b " +
+		namingA + "=ACME=ada@example.com=" + sessionOfA + "=a " +
+		namingNone + "=ACME=ada@example.com=" + sessionOfNone
+
 	for _, refusal := range []struct {
 		name string
 		env  []string
+		says []string
 	}{
-		{"BROKER_EXCHANGE_K8S_ISSUER is missing", []string{"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience}},
-		{"BROKER_EXCHANGE_K8S_ISSUER names an issuer the list does not hold", []string{"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience, "BROKER_EXCHANGE_K8S_ISSUER=c"}},
-		{"BROKER_EXCHANGE_K8S_ISSUER is set without the exchange audience", []string{"BROKER_EXCHANGE_K8S_ISSUER=b"}},
+		{"BROKER_EXCHANGE_K8S_ISSUER is missing", []string{audience}, []string{exchangeIssuer}},
+		// The broker's log is JSON, so a quoted name in a refusal reads \"name\" in it.
+		{"BROKER_EXCHANGE_K8S_ISSUER names an issuer the list does not hold", []string{audience, exchangeIssuer + "=a,d"}, []string{exchangeIssuer, `\"d\"`}},
+		{"BROKER_EXCHANGE_K8S_ISSUER is set without the exchange audience", []string{exchangeIssuer + "=a,b"}, []string{exchangeIssuer, "BROKER_EXCHANGE_K8S_AUDIENCE"}},
+		{"an entry of BROKER_EXCHANGE_ACCOUNTS names an issuer the setting does not name",
+			[]string{audience, exchangeIssuer + "=a,b", "BROKER_EXCHANGE_ACCOUNTS=" + namedWorker + "=ACME=ada@example.com==c"},
+			[]string{exchangeIssuer, "BROKER_EXCHANGE_ACCOUNTS", `\"c\"`}},
+		{"an entry of BROKER_EXCHANGE_ACCOUNTS names one issuer twice",
+			[]string{audience, exchangeIssuer + "=a,b", "BROKER_EXCHANGE_ACCOUNTS=" + namedWorker + "=ACME=ada@example.com==a,a"},
+			[]string{exchangeIssuer, "BROKER_EXCHANGE_ACCOUNTS", `\"a\"`}},
 	} {
 		t.Run("the broker refuses to boot when "+refusal.name, func(t *testing.T) {
 			out := runRefusedBroker(t, binary, append([]string{
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_K8S_OIDC_ISSUER=" + bothIssuers(a, b),
+				"BROKER_K8S_OIDC_ISSUER=" + threeIssuers,
 				"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 			}, refusal.env...)...)
-			if !strings.Contains(out, "BROKER_EXCHANGE_K8S_ISSUER") {
-				t.Fatalf("the broker refused, but its output does not name BROKER_EXCHANGE_K8S_ISSUER:\n%s", out)
+			for _, want := range refusal.says {
+				if !strings.Contains(out, want) {
+					t.Fatalf("the broker refused, but its output does not carry %s:\n%s", want, out)
+				}
 			}
 		})
 	}
 
-	exchange := func(t *testing.T, addr string, subjectToken string) (int, map[string]any) {
+	// exchange trades the token of account's pod, minted by issuer with key for the exchange's
+	// audience, under the session account's entry fixes.
+	exchange := func(t *testing.T, addr string, issuer *oidctest.Issuer, key *oidctest.Key, account, session string) (int, map[string]any) {
 		t.Helper()
-		return newLiveBroker(addr, proofKey(t)).exchange(t, exchangeForm(subjectToken, namedSession))
+		token := mintPodToken(t, issuer, key, account, exchangeAudience, "pod-"+uuid.NewString())
+		return newLiveBroker(addr, proofKey(t)).exchange(t, exchangeForm(token, session))
 	}
-	t.Run("with the setting naming B", func(t *testing.T) {
-		broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), bothIssuers(a, b),
-			"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience, "BROKER_EXCHANGE_K8S_ISSUER=b", exchangeAccounts)})
+	taken := func(t *testing.T, status int, body map[string]any) {
+		t.Helper()
+		if token, _ := body["access_token"].(string); status != http.StatusOK || token == "" {
+			t.Fatalf("answered %d %v, want 200 with an access token", status, body)
+		}
+	}
+	refused := func(t *testing.T, status int, body map[string]any) {
+		t.Helper()
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
+			t.Fatalf("answered %d %v, want 400 invalid_request and no access token", status, body)
+		}
+	}
+
+	t.Run("with the setting naming A and B", func(t *testing.T) {
+		broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), threeIssuers,
+			audience, exchangeIssuer+"=a,b", accounts)})
 		broker.Await(t, "token exchange")
-		t.Run("the exchange takes a token of B", func(t *testing.T) {
-			status, body := exchange(t, broker.Addr, mintPodToken(t, b, bKey, namedWorker, exchangeAudience, "pod-of-b"))
-			if token, _ := body["access_token"].(string); status != http.StatusOK || token == "" {
-				t.Fatalf("answered %d %v, want 200 with an access token", status, body["error"])
-			}
-		})
-		// The refusal is the exchange library's own issuer check (rfc8693.JWTType, which
-		// ExchangeConfig.tokenTypes in internal/broker/oauth/exchange.go registers with the one
-		// issuer BROKER_EXCHANGE_K8S_ISSUER names), and it is the code a broker of one issuer
-		// gives a token of another issuer, which every route keeps for such a token.
-		t.Run("the exchange refuses a token of A as it refuses a token of an issuer it does not take", func(t *testing.T) {
-			status, body := exchange(t, broker.Addr, mintPodToken(t, a, aKey, namedWorker, exchangeAudience, "pod-of-a"))
-			if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
-				t.Fatalf("answered %d %v, want 400 invalid_request and no access token: the exchange takes B's tokens alone", status, body["error"])
-			}
-		})
+		for _, row := range []struct {
+			name    string
+			issuer  *oidctest.Issuer
+			key     *oidctest.Key
+			account string
+			session string
+			taken   bool
+		}{
+			{"the exchange takes a token of A for an account whose entry names A and B", a, aKey, namedWorker, namedSession, true},
+			{"the exchange takes a token of B for an account whose entry names A and B", b, bKey, namedWorker, namedSession, true},
+			{"the exchange refuses a token of C, an issuer the setting does not name", c, cKey, namedWorker, namedSession, false},
+			{"the exchange refuses a token of B for an account whose entry names A alone", b, bKey, namingA, sessionOfA, false},
+			{"the exchange takes a token of A for an account whose entry names no issuer", a, aKey, namingNone, sessionOfNone, true},
+			{"the exchange refuses a token of B for an account whose entry names no issuer", b, bKey, namingNone, sessionOfNone, false},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				status, body := exchange(t, broker.Addr, row.issuer, row.key, row.account, row.session)
+				if row.taken {
+					taken(t, status, body)
+				} else {
+					refused(t, status, body)
+				}
+			})
+		}
 	})
 
-	t.Run("with B's discovery document failing at boot, the broker refuses to boot", func(t *testing.T) {
+	t.Run("with B's discovery document failing", func(t *testing.T) {
 		b.FailDiscovery(http.StatusServiceUnavailable)
 		t.Cleanup(func() { b.FailDiscovery(0) })
-		out := runRefusedBroker(t, binary, namedIssuersEnv(t, storetest.URL(t), bothIssuers(a, b),
-			"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience, "BROKER_EXCHANGE_K8S_ISSUER=b", exchangeAccounts)...)
-		if want := "discovering issuer " + b.URL(); !strings.Contains(out, want) {
-			t.Fatalf("the broker refused, but its output does not carry %q:\n%s", want, out)
-		}
+		broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), threeIssuers,
+			audience, exchangeIssuer+"=a,b", accounts)})
+		broker.Await(t, "token exchange")
+		t.Run("the broker boots and answers /healthz 200", func(t *testing.T) { requireHealthy(t, broker.Addr) })
+		t.Run("the exchange takes a token of A", func(t *testing.T) {
+			status, body := exchange(t, broker.Addr, a, aKey, namedWorker, namedSession)
+			taken(t, status, body)
+		})
+		t.Run("a token of B gets 503 OIDC_ISSUER_UNAVAILABLE", func(t *testing.T) {
+			status, body := exchange(t, broker.Addr, b, bKey, namedWorker, namedSession)
+			if status != http.StatusServiceUnavailable || body["code"] != issuerUnavailable || body["access_token"] != nil {
+				t.Fatalf("answered %d %v, want 503 %s and no access token", status, body, issuerUnavailable)
+			}
+		})
 	})
 
-	t.Run("with one issuer named and no BROKER_EXCHANGE_K8S_ISSUER, the exchange takes that issuer's token", func(t *testing.T) {
-		broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), "a="+a.URL(),
-			"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience, exchangeAccounts)})
-		broker.Await(t, "token exchange")
-		status, body := exchange(t, broker.Addr, mintPodToken(t, a, aKey, namedWorker, exchangeAudience, "pod-of-a"))
-		if token, _ := body["access_token"].(string); status != http.StatusOK || token == "" {
-			t.Fatalf("answered %d %v, want 200 with an access token", status, body["error"])
-		}
-	})
+	for _, one := range []struct{ name, issuers string }{
+		{"named", "a=" + a.URL()},
+		{"written as one bare URL", a.URL()},
+	} {
+		t.Run("with one issuer "+one.name+" and no BROKER_EXCHANGE_K8S_ISSUER, the exchange takes its token for an entry that names no issuer", func(t *testing.T) {
+			broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), one.issuers,
+				audience, "BROKER_EXCHANGE_ACCOUNTS="+namingNone+"=ACME=ada@example.com="+sessionOfNone)})
+			broker.Await(t, "token exchange")
+			status, body := exchange(t, broker.Addr, a, aKey, namingNone, sessionOfNone)
+			taken(t, status, body)
+		})
+	}
 }
 
 // TestAnAccountIsAcceptedFromTheIssuersItsEntryNames: a BROKER_API_ACCOUNTS entry that names no
