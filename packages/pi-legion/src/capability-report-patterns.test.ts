@@ -105,7 +105,9 @@ function userinfoTexts(): string[] {
 
 /** A JWT as one is made: each part base64url-encoded and the three joined by dots. */
 function jwt(header: string, payload: string, signature: string): string {
-  return [header, payload, signature].map((part) => Buffer.from(part).toString("base64url")).join(".");
+  return [header, payload, signature]
+    .map((part) => Buffer.from(part).toString("base64url"))
+    .join(".");
 }
 
 /** JWTs and near misses, each right after every context the look-arounds tested: nothing, a value
