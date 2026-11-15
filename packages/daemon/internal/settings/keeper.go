@@ -34,13 +34,14 @@ type Keeper struct {
 	// this one covers the reads and the writes around them. unstored is read and written under
 	// it too.
 	mu sync.Mutex
-	// unstored is the file's digest for each path the route applied and stored no row for: a
-	// secret, which is never written into a database every project's daemon shares, and every
-	// path of a change the store refused (NotRecorded). The holder is running on those values
-	// and the store knows nothing of them, so without this the file arm would find no row for
-	// the path and never take the key back: an operator's later edit of that key in
-	// `legion.yaml` would do nothing until the daemon restarted. It is memory alone, as the
-	// overlay it answers for is: a restart reads the file's own value for those paths.
+	// unstored is the file's digest for each path the route applied and no row backs: every path
+	// of a change the store refused (NotRecorded), and every path a keeper with no store applies.
+	// The holder is running on those values and the store knows nothing of them, so without this
+	// the file arm would find no row for the path and never take the key back: an operator's
+	// later edit of that key in `legion.yaml` would do nothing until the daemon restarted. It is
+	// memory alone, as the overlay it answers for is: a restart reads the file's own value for
+	// those paths. A credential never reaches it, since the route refuses one before applying it
+	// (applyRoute).
 	unstored map[string]string
 }
 
@@ -63,23 +64,25 @@ func (k *Keeper) Live() *config.Live { return k.live }
 //
 // A path mapped to nil withdraws that path from the stored overlay: the file's own value takes
 // it back, and the row goes with it. Every other path is laid over the file. A path the class
-// table does not hold, one fixed for the process, and one this caller may not set are refused
-// by name and nothing is stored for them (applyRoute, config.Live.Apply).
+// table does not hold, one fixed for the process, one this caller may not set, and one whose
+// value carries a credential are refused by name and nothing is stored for them (applyRoute,
+// config.Live.Apply).
 //
-// A secret path is applied and never stored: the daemon runs on it, and the value — a private
-// key the caller inlined, the path of a credential file, an address that may carry one — is not
-// written into a database every project's daemon shares. Its row goes with it, so a restart
-// reads the file's own value for that path rather than one a release before this kept.
+// A credential's locator — the path of a file holding one, the name of the key it is held
+// under, an address with no credential in it — is stored like any other change, and this
+// keeper says so in its log, since an operator may look for it there: the store would hold only
+// where the credential lives. The credential itself — a private key the caller inlined, an
+// address whose userinfo carries one — is refused before it is applied (config.CarriesCredential),
+// because the store is a database every project's daemon shares.
 //
 // The store is written after the holder has settled, so a change the loader refused is stored
 // nowhere, and a failed write answers NotRecorded: the change is applied, and the caller is told
 // it will not outlive the daemon rather than that nothing happened. What the daemon's next
 // restart then reads is not one answer for every path of that change: a path this change laid
 // over the file is in the store nowhere, so the boot reads the file's own value for it, while a
-// path it withdrew — and a secret whose row it dropped — keeps the row the store would not
-// drop, and the boot lays that row's value back over the file (Restore). Nothing here can do
-// better, since the one act that would remove such a row is the write that failed, so the rows
-// left standing are logged by name.
+// path it withdrew keeps the row the store would not drop, and the boot lays that row's value
+// back over the file (Restore). Nothing here can do better, since the one act that would remove
+// such a row is the write that failed, so the rows left standing are logged by name.
 func (k *Keeper) Route(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -105,23 +108,15 @@ func (k *Keeper) Route(ctx context.Context, caller config.Caller, by string, cha
 	}
 	at := k.now()
 	var rows []Change
-	var forget []string
+	var forget, locators []string
 	for _, path := range requested {
 		if slices.ContainsFunc(refused, func(r config.Refusal) bool { return r.Path == path }) {
 			continue
 		}
-		row, known := config.ClassOf(path)
-		switch {
-		case changes[path] == nil:
+		if changes[path] == nil {
 			// The overlay is gone, so there is nothing left for this keeper to remember either.
 			forget = append(forget, path)
 			delete(k.unstored, path)
-			continue
-		case known && row.Secret:
-			k.log.Warn("legion settings: a credential changed through the route is applied and not stored; the daemon's next restart reads the file's own value for it",
-				"path", path, "by", by)
-			forget = append(forget, path)
-			k.unstored[path] = Digest(values[path])
 			continue
 		}
 		value, err := json.Marshal(changes[path])
@@ -133,6 +128,9 @@ func (k *Keeper) Route(ctx context.Context, caller config.Caller, by string, cha
 			Source: config.SourceRoute, By: by, At: at,
 		})
 		delete(k.unstored, path)
+		if row, known := config.ClassOf(path); known && row.Secret {
+			locators = append(locators, path)
+		}
 	}
 	if k.store == nil {
 		k.remember(rows)
@@ -152,11 +150,16 @@ func (k *Keeper) Route(ctx context.Context, caller config.Caller, by string, cha
 		}
 		return applied, refused, &config.NotRecorded{Paths: requested, Err: err}
 	}
+	if len(locators) > 0 {
+		k.log.Info("legion settings: a credential's locator changed through the route is stored like any other route change; the daemon's next restart lays it back over the file until the file changes that key",
+			"paths", locators, "by", by)
+	}
 	return applied, refused, nil
 }
 
 // remember holds the file's digest of each row's path in memory, for the paths this keeper
-// applied and stored no row for (unstored). The caller holds mu.
+// applied and stored no row for (unstored): every path of a change the store refused, and every
+// path a keeper with no store applies. The caller holds mu.
 func (k *Keeper) remember(rows []Change) {
 	for _, row := range rows {
 		k.unstored[row.Path] = row.FileDigest
@@ -168,10 +171,11 @@ func (k *Keeper) remember(rows []Change) {
 // the file has itself changed since a route change of that path takes its key back — the latest
 // change of a key wins, and the stored row goes with it (split).
 //
-// A path the route applied and stored no row for — a secret, and every path of a change the
-// store refused — is taken back the same way, from the digest this keeper holds for it in
-// memory (unstored): the overlay the daemon is running on is the same overlay whether or not a
-// row backs it, so the file's own value takes the key back either way.
+// A path the route applied and stored no row for — every path of a change the store refused,
+// and every path a keeper with no store applies — is taken back the same way, from the digest
+// this keeper holds for it in memory (unstored): the overlay the daemon is running on is the
+// same overlay whether or not a row backs it, so the file's own value takes the key back either
+// way.
 //
 // A key the file edited that is fixed for the process is applied nowhere: the holder pins it
 // back to the value boot settled and names it (config.Live.Apply, pinFixed), and this settle
@@ -284,8 +288,9 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 	if _, refused, err := k.applyRoute(config.CallerOperator, "", overlay); err != nil {
 		return nil, err
 	} else if len(refused) > 0 {
-		// A stored path the class table no longer holds, or one this release made fixed: the row
-		// is over, and the daemon runs on the file's own value for it.
+		// A stored path the class table no longer holds, one this release made fixed, or one
+		// whose value carries a credential, which this release takes through the route from no
+		// caller: the row is over, and the daemon runs on the file's own value for it.
 		for _, refusal := range refused {
 			refusedPaths = append(refusedPaths, refusal.Path)
 			kept = slices.DeleteFunc(kept, func(row Change) bool { return row.Path == refusal.Path })
@@ -318,14 +323,18 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 // restore of what the store kept both come through here, so the daemon holds one call site per
 // arm and no second resolution path exists (TestEachSettingsArmHasOneApplyCallSite).
 //
-// It is where a caller meets what that arm may set (config.Caller.Admits): a path this caller
-// may not change is refused by name, with the reason the row gives, and never reaches the
-// holder. The operator bearer, and the boot's restore of what it changed, may set every path.
+// It is where a caller meets what that arm may set, and where a value meets what the route may
+// keep: a path this caller may not change is refused by name, with the reason the row gives
+// (config.Caller.Admits), and so is a value that carries a credential, whoever asked, with the
+// key the credential belongs in (config.CarriesCredential) — the route keeps what it applies in
+// a database every project's daemon shares. Neither reaches the holder, and the caller reads
+// either as it reads the refusal of a fixed path. The operator bearer, and the boot's restore of
+// what it changed, may set every path whose value carries no credential.
 func (k *Keeper) applyRoute(caller config.Caller, by string, overlay map[string]any) ([]config.Change, []config.Refusal, error) {
 	allowed, refused := overlay, []config.Refusal(nil)
 	for _, path := range slices.Sorted(maps.Keys(overlay)) {
-		admitted, why := caller.Admits(path)
-		if admitted {
+		why, refuse := routeRefusal(caller, path, overlay[path])
+		if !refuse {
 			continue
 		}
 		if len(refused) == 0 {
@@ -339,6 +348,16 @@ func (k *Keeper) applyRoute(caller config.Caller, by string, overlay map[string]
 	}
 	applied, loader, err := k.live.Apply(config.SourceRoute, by, allowed)
 	return applied, append(refused, loader...), err
+}
+
+// routeRefusal is why the route arm refuses caller's change of path to value before it reaches
+// the holder, and whether it does: a path this caller may not set, and a value carrying a
+// credential, which no caller sets through the route.
+func routeRefusal(caller config.Caller, path string, value any) (string, bool) {
+	if admitted, why := caller.Admits(path); !admitted {
+		return why, true
+	}
+	return config.CarriesCredential(path, value)
 }
 
 // split is the comparison every reading of what this keeper applied shares: the store's rows,

@@ -731,6 +731,7 @@ A change under a projected ServiceAccount token may set only keys whose value is
 That is why a person changing the admission cap from Dispatch's Legion view can, while the same path cannot reach `github_apps.implement.private_key_command`, whose value the daemon would run, or `gates.design`, which decides whether a person approves a specification at all.
 The other is the file itself changing under the daemon, which a watcher on the directory holding `legion.yaml`, and on each directory holding a file a setting names, notices within a few seconds.
 A change the route made is kept in Postgres and laid back over the file at every boot, so it outlives a restart, until the file's own value for that key changes and takes the key back.
+That holds for every key the route takes, the path of a credential file and every other locator of a credential among them; a value that carries the credential itself is refused instead, by name and whoever asks, as [Why a credential is refused](#why-a-credential-is-refused) says.
 `GET /legion/v1/state` carries a `settingSources` block beside `settings`, which says for each key whether the file or the route decides it now and when that was written.
 
 A file that names a runtime other than the one the daemon booted on settles nothing at all, whichever arm read it: not the key an operator edited beside it, and not the key a route change names at that moment.
@@ -772,10 +773,10 @@ A change whose holder the daemon could not build again is answered `failed` in p
 The change itself was made: the daemon's settings carry the new value and every decision that reads the path reads it, while the client, listener or connection that holds a copy of it kept the one it had — a NATS that refused the new seed, intake consumers that would not reopen.
 The caller is told, rather than reading `rebuilt` while the failure sits in the daemon's log alone, and the path is the route's from now on as an applied one is.
 For a path the store recorded, the recorded value is laid over the file at the next boot, which is what carries it into the holder that refused it.
-A credential is never stored, and neither is a change the store refused (`NotRecorded`): the next boot reads the file's own value for it, so put such a change in the file before you restart.
+A change the store refused (`NotRecorded`) is not stored: the next boot reads the file's own value for it, so put such a change in the file before you restart.
 
 A segment in angle brackets is a name the file chooses (`projects.<KEY>.slack_channels`), and a `[]` suffix one entry of a sequence (`runtime.kubernetes.scheduling.tolerations[].key`).
-The table is the daemon's own (`Classes`, `packages/daemon/internal/config/classes.go`), and `TestDeploymentDocCoversEverySettingsKey` (`packages/daemon/internal/config/deployment_doc_test.go`) fails on a key the code has and this table does not, a key this table has and the code does not, a row whose class or holder is not the code's, and a refusal below whose reason is not the one the route answers with, so the two cannot drift.
+The table is the daemon's own (`Classes`, `packages/daemon/internal/config/classes.go`), and `TestDeploymentDocCoversEverySettingsKey` (`packages/daemon/internal/config/deployment_doc_test.go`) fails on a key the code has and this table does not, a key this table has and the code does not, a row whose class or holder is not the code's, a refusal below whose reason is not the one the route answers with, and a key the route refuses a credential in that the list of those keys does not name with the keys its credential belongs in, so the two cannot drift.
 
 | key | class | holder |
 | :--- | :--- | :--- |
@@ -979,3 +980,34 @@ Each line below is the reason the route answers with, for the keys it names.
 - `github_apps.review` and every key under it — the review App's login is read once, at boot, and the engine, every review body and the check of a reviewer's write access judge by it (internal/daemon's appLoginsAtBoot, engineConfig, reviewBody and reviewerCanWrite): another App under open rounds would change whose reviews decide them, and a mistake there misattributes a verdict, so a change of any key of it reaches the next boot and nothing before it.
   That holds for a new private key of the same App too, whether the file writes it, its `private_key_command` prints it or its `private_key_secret` holds it: the daemon keeps signing with the key it booted on until it is restarted.
   A `token_command` App rotates its key in the broker and needs no restart ([Rotating broker-held App keys](#rotating-broker-held-app-keys)), since the command's text, which is the setting, does not move.
+
+### Why a credential is refused
+
+The route keeps every change it applies in Postgres, in a table every project's daemon shares, which is how the change outlives a restart.
+So what it keeps is where a credential lives, and never the credential.
+A value that says where a credential lives and holds none is a locator, and the route stores it like any other change:
+`operator_token_file`, `dispatch_token_file`, `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `runtime.kubernetes.agent_secrets.token_file`, `runtime.kubernetes.kubeconfig` and its `runtime.kubernetes.context`, `runtime.kubernetes.session_store`, every `provider_keys` entry, whose value is the name of the secretsd or providers Secret key holding the credential or `file:` and a file's path, an App's `private_key_command`, `private_key_secret` and `token_command`, and an address with no credential in it.
+A value that carries the credential itself is refused by name, whoever asks, the operator bearer included: the daemon applies nothing of it and stores nothing of it, and the answer names the key the credential belongs in.
+Write such a change in `legion.yaml` instead, which the daemon reads and does not store, and the file arm applies it as it applies any edit.
+
+Whether an address carries a credential is read from the value the call carries and from nothing else: a `scheme://` authority with userinfo before its `@`, in any string the value holds, and on a plugin pin the query parameter `X-Amz-Signature` as well, the one parameter the daemon's own reading of a pin names.
+An address with neither, a plugin pin with any other query among them, is a locator and is stored.
+A call that sets a block whole is read member by member, so `github_apps` set with an App whose `private_key` is written inline is refused, naming `github_apps.implement.private_key`.
+A key fixed for the process is refused with its own reason before its value is read, which is why `postgres_dsn` and the review App's `private_key` are in [the list above](#why-a-fixed-key-is-refused) and not here.
+
+Each line below is a key the route refuses that way, and where its credential belongs instead.
+
+- `dispatch_url` — an address whose userinfo carries a credential; Dispatch's bearer belongs in `dispatch_token_file`.
+
+- `envoy_url` — an address whose userinfo carries a credential; the Envoy bearer belongs in `envoy_token_file`.
+
+- `nats_urls` — an address whose userinfo carries a credential; a NATS user's seed belongs in `nats_nkey_seed_file`, or `nats_daemon_nkey_seed_file` for the daemon's own connection.
+
+- `github_apps.implement.private_key` — the App's key itself, whatever it holds; name where the key lives in `github_apps.implement.private_key_secret` or `github_apps.implement.private_key_command`.
+  No key of the file holds an App's key as a file's path.
+
+- `runtime.kubernetes.pod.env` — a variable whose value carries userinfo; a credential reaches a pod as a key of the providers Secret it names in `provider_keys`, or a Secret it mounts with `runtime.kubernetes.pod.volumes`.
+
+- `runtime.tmux.pane_env` — a variable whose value carries userinfo; a secret reaches a pane as a file `provider_keys` names.
+
+- `daemon_url`, `runtime.kubernetes.plugins.pi_legion`, `runtime.kubernetes.plugins.pi_envoy` — an address whose userinfo carries a credential, or a pin whose `X-Amz-Signature` does; no other key of the file holds that credential, so the change belongs in `legion.yaml`.

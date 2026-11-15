@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/oidc"
@@ -433,6 +434,57 @@ func TestTheOperatorBearerChangesACommandKeyAndADecisionKeyAlike(t *testing.T) {
 	}
 	if id := live.Snapshot().GitHubApps.Review.AppID; id != "4343" {
 		t.Fatalf("the review App's app_id = %q, want the file's 4343", id)
+	}
+}
+
+// A value that carries a credential is refused by name under the operator bearer too, as a fixed
+// key is: the route keeps what it applies in a database every project's daemon shares, so it
+// takes no credential from any caller, and the answer names the key the credential belongs in
+// rather than reading applied. A locator beside it — the path of a credential file — is applied
+// like any other key, and so is the decision key in the same call.
+func TestTheSettingsRouteRefusesACredentialByNameAndAppliesTheLocatorBesideIt(t *testing.T) {
+	handler, live := settingsRouteServerOn(t, settingsRouteAppsFile, SettingsRouteAuth{}, nil)
+	before := live.Snapshot()
+
+	recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
+		By: "ana@example.com",
+		Changes: map[string]json.RawMessage{
+			"github_apps.implement.private_key": json.RawMessage(`"-----BEGIN LEGION TEST MATERIAL-----\nsettings-route-inlined-key\n-----END LEGION TEST MATERIAL-----"`),
+			"envoy_url":                         json.RawMessage(`"http://legion:pw@envoy.internal:9020"`),
+			"operator_token_file":               json.RawMessage(`"/etc/legion/operator-token-2"`),
+			"admission_cap":                     json.RawMessage(`9`),
+		},
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the settings route = %d; body %s", recorder.Code, recorder.Body)
+	}
+	answer := settingsAnswer(t, recorder)
+	for path, want := range map[string][]string{
+		"github_apps.implement.private_key": {"github_apps.implement.private_key is the credential itself", "github_apps.implement.private_key_secret"},
+		"envoy_url":                         {"envoy_url carries a credential in an address's userinfo", "envoy_token_file"},
+	} {
+		got := answer[path]
+		if got.Applied != "" || got.Failed != "" || got.Refused == "" {
+			t.Errorf("the answer for %s = %+v, want it refused and nothing applied", path, got)
+		}
+		for _, words := range want {
+			if !strings.Contains(got.Refused, words) {
+				t.Errorf("the refusal of %s says %q, which names no %q", path, got.Refused, words)
+			}
+		}
+	}
+	for _, path := range []string{"operator_token_file", "admission_cap"} {
+		if got := answer[path]; got.Refused != "" || got.Applied == "" {
+			t.Errorf("the answer for %s = %+v, want it applied", path, got)
+		}
+	}
+	cfg := live.Snapshot()
+	if cfg.GitHubApps.Implement.PrivateKey != before.GitHubApps.Implement.PrivateKey || cfg.EnvoyURL != before.EnvoyURL {
+		t.Errorf("the daemon moved onto a refused credential: envoy_url %q", cfg.EnvoyURL)
+	}
+	if cfg.OperatorTokenFile != "/etc/legion/operator-token-2" || cfg.AdmissionCap != 9 {
+		t.Errorf("operator_token_file %q and admission_cap %d, want the applied locator and 9", cfg.OperatorTokenFile, cfg.AdmissionCap)
 	}
 }
 

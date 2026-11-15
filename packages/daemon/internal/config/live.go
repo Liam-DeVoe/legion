@@ -299,7 +299,11 @@ func (l *Live) RefusePath(path, reason string) {
 // SourceRoute, where overlay is the requested dotted path to value changes: a path the class
 // table does not hold is refused as an unknown setting, a fixed path is refused by name with its
 // reason, a path mapped to nil is withdrawn from the overlay, and the rest are merged into it.
-// by is whoever asked, which every Change carries.
+// by is whoever asked, which every Change carries. The route arm's two other refusals are made
+// before this call, by the one caller of it that takes a route change (internal/settings'
+// Keeper.applyRoute): a path the caller may not set (Caller.Admits), and a value that carries a
+// credential, which the route would keep in a database every project's daemon shares
+// (CarriesCredential). Both reach the caller as a fixed path's refusal does.
 //
 // The merged overlay is laid over the file's own document and resolved through the loader. A
 // resolution that fails changes nothing: the error comes back with the pointer and the stored

@@ -1,6 +1,10 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -48,6 +52,30 @@ func (c Class) Outcome() Outcome {
 	}
 	return ""
 }
+
+// Credential is which of three things the value of a Secret row is, which decides one question
+// Secret does not: whether the settings route may take the value. The route keeps every change it
+// applies in a database every project's daemon shares, so that the change outlives the daemon's
+// restart (internal/settings' Keeper.Route), and what may be kept there is where a credential
+// lives, never the credential (CarriesCredential).
+type Credential string
+
+const (
+	// CredentialLocator is a value that says where a credential lives and holds none: a file's
+	// path, the name of a secretsd key or of a providers Secret's key, a command that prints one,
+	// a context of a kubeconfig. The route stores it like any other change, so it survives a
+	// restart until the file changes that key.
+	CredentialLocator Credential = "locator"
+	// CredentialAddress is an address, or text holding addresses, whose userinfo may carry a
+	// credential, and a query parameter Row.SecretQuery names may too. The value the call carries
+	// decides (CarriesCredential): one that carries a credential is refused by name, pointing at
+	// Row.CredentialIn, and one that carries none is stored as a locator is.
+	CredentialAddress Credential = "address"
+	// CredentialInlined is the credential itself. The route refuses every value of it by name,
+	// pointing at Row.CredentialIn, and the file arm takes it, since the file is where an
+	// operator writes it and the daemon keeps nothing of the file but a digest.
+	CredentialInlined Credential = "inlined"
+)
 
 // The holders a rebuild names. Each is one thing the daemon builds from the configuration and can
 // build again without stopping the work it is doing: a short stable string, because an operator
@@ -133,6 +161,20 @@ type Row struct {
 	// each of them out of the unauthenticated state (api/settings.go, api/settings_test.go's
 	// settingsExcluded).
 	Secret bool
+	// Credential is which of three things a Secret row's value is, which is where the value may
+	// be kept rather than how it is shown: every Secret row names one and no other row does. A
+	// block row names the kind of what it holds beside the members that have rows of their own,
+	// since a value set at the block is judged member by member (CarriesCredential): an App is a
+	// locator, and its `private_key` member the credential itself.
+	Credential Credential
+	// CredentialIn is the keys of legion.yaml the credential belongs in where the value of an
+	// address or inlined row would carry it, which the route's refusal names. Nil on a locator
+	// row, and on a row no key of the file holds its credential apart from, whose refusal says so.
+	CredentialIn []string
+	// SecretQuery is the query parameters of an address row's value that carry a credential, as
+	// the daemon's own reading of that value names them (api.pluginSourceOf); nil where nothing
+	// names one, which is every address the loader refuses a query on.
+	SecretQuery []string
 }
 
 // PathAt is this row's path with the name the file chose written into the one `<name>` segment
@@ -248,6 +290,155 @@ func (c Caller) Admits(path string) (bool, string) {
 // with `capabilities.decided`.
 func (r Row) Plain() bool { return r.Class == ClassDecision && !r.Secret && r.Holder == "" }
 
+// userinfo is a URL authority whose userinfo is not empty, `scheme://userinfo@`, anywhere in a
+// text. It is where the loader has a NATS or an Envoy credential live (endpointURL: "use URL
+// userinfo or a secret for credentials"), and what the state masks as `xxxxx@`
+// (api.endpointOf). It is matched in the text rather than parsed out of it, because a variable's
+// value may hold several addresses (`nats://a@h1,nats://b@h2`) that no parse of one URL reads,
+// and a `/`, `?` or `#` ends an authority, so an `@` in a path or a query is no userinfo.
+var userinfo = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@]+@`)
+
+// CarriesCredential is whether the settings route refuses value for path because the value
+// carries a credential, and the refusal it answers. The route keeps every change it applies in a
+// database every project's daemon shares, so a credential is never taken through it whoever
+// asks, and the refusal names the key the credential belongs in (Row.CredentialIn) or says that
+// no key holds it. The file arm takes such a value, since the file is where an operator writes
+// it and the daemon keeps nothing of the file but a digest.
+//
+// It reads the value the call carries and nothing else, so a value that carries no credential is
+// never refused here whatever its key is called:
+//
+//   - at an inlined row (CredentialInlined), every value but null, which withdraws the key and
+//     carries nothing;
+//   - at an address row (CredentialAddress), a value holding a string with a non-empty userinfo
+//     in a URL authority (userinfo), or a URL with a query parameter Row.SecretQuery names; an
+//     address with neither is a locator, and is stored;
+//   - a mapping member by member, each at the path it sits at, and a list entry by entry, at
+//     `path[i]`, so a block set whole is judged by every member it carries: `github_apps` set
+//     with an inline private key is refused naming `github_apps.implement.private_key`.
+//
+// A path fixed for the process is not judged: Live.Apply refuses it to every caller with its own
+// row's reason, which is the answer to what the caller asked. A fixed member of a block the call
+// sets whole is judged, since the block's whole value is what the route would keep.
+func CarriesCredential(path string, value any) (string, bool) {
+	if row, known := ClassOf(path); known && row.Class == ClassFixed {
+		return "", false
+	}
+	return carriedCredential(path, reflect.ValueOf(value))
+}
+
+// carriedCredential is CarriesCredential's walk of one value at the path it sits at.
+func carriedCredential(path string, value reflect.Value) (string, bool) {
+	value = held(value)
+	if !value.IsValid() {
+		return "", false
+	}
+	if row, known := ClassOf(path); known {
+		switch row.Credential {
+		case CredentialInlined:
+			return credentialRefusal(path, "is the credential itself", row), true
+		case CredentialAddress:
+			if where := carriedIn(value, row.SecretQuery); where != "" {
+				return credentialRefusal(path, "carries a credential in "+where, row), true
+			}
+		}
+	}
+	switch value.Kind() {
+	case reflect.Map:
+		for _, name := range namesOf(value) {
+			if why, carried := carriedCredential(path+"."+name.String(), value.MapIndex(name)); carried {
+				return why, true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range value.Len() {
+			if why, carried := carriedCredential(fmt.Sprintf("%s[%d]", path, i), value.Index(i)); carried {
+				return why, true
+			}
+		}
+	}
+	return "", false
+}
+
+// carriedIn is where an address row's value carries a credential, as the refusal says it, ""
+// where it carries none. It reads every string the value holds — the value itself, a list's
+// entries, a mapping's values, never a mapping's keys, which are names — for a URL authority
+// with userinfo (userinfo), and, where query names any parameter, for a URL carrying one of them.
+func carriedIn(value reflect.Value, query []string) string {
+	value = held(value)
+	switch value.Kind() {
+	case reflect.String:
+		text := value.String()
+		if userinfo.MatchString(text) {
+			return "an address's userinfo"
+		}
+		if len(query) == 0 {
+			return ""
+		}
+		if parsed, err := url.Parse(text); err == nil {
+			carried := parsed.Query()
+			for _, name := range query {
+				if carried.Has(name) {
+					return "the query parameter " + name
+				}
+			}
+		}
+	case reflect.Map:
+		for _, name := range namesOf(value) {
+			if where := carriedIn(value.MapIndex(name), query); where != "" {
+				return where
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range value.Len() {
+			if where := carriedIn(value.Index(i), query); where != "" {
+				return where
+			}
+		}
+	}
+	return ""
+}
+
+// held is the value an interface or a pointer holds, followed to the end, and the zero Value for
+// a nil one: a route change arrives decoded from JSON, and a test's from Go values of its own.
+func held(value reflect.Value) reflect.Value {
+	for value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return reflect.Value{}
+		}
+		value = value.Elem()
+	}
+	return value
+}
+
+// namesOf is a mapping's keys in order, so two walks of one value refuse it with one reason; a
+// mapping keyed by anything but a string is no block of legion.yaml and has none.
+func namesOf(mapping reflect.Value) []reflect.Value {
+	if mapping.Type().Key().Kind() != reflect.String {
+		return nil
+	}
+	names := mapping.MapKeys()
+	slices.SortFunc(names, func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) })
+	return names
+}
+
+// credentialRefusal is the route's refusal of path, whose value is or carries a credential as
+// what says, naming where the credential belongs instead. A row whose credential no other key of
+// the file holds says so, and that the change belongs in the file.
+func credentialRefusal(path, what string, row Row) string {
+	const kept = ", and the settings route keeps what it applies in a database every project's daemon shares"
+	const file = "legion.yaml, which the daemon reads and does not store"
+	in := strings.Join(row.CredentialIn, " or ")
+	switch {
+	case in == "":
+		return path + " " + what + kept + ", while no other key of legion.yaml holds that credential: this change belongs in " + file
+	case row.Credential == CredentialInlined:
+		return path + " " + what + kept + ": name where it lives in " + in + ", or write it in " + file
+	default:
+		return path + " " + what + kept + ": put the credential in " + in + " and send the address without it, or write this change in " + file
+	}
+}
+
 // Classes is every settable unit of `legion.yaml`, one row per field the loader reads it into,
 // except a GitHub App's fields, which have one row under each App, since the two Apps' classes
 // differ.
@@ -267,7 +458,10 @@ var Classes = []Row{
 	{Field: "Config.Bind", Path: "bind", Class: ClassFixed, Why: whyAddress},
 	{Field: "Config.WorkerStreamPort", Path: "worker_stream_port", Class: ClassFixed, Why: whyStream},
 	{Field: "Config.StateDir", Path: "state_dir", Class: ClassFixed, Why: whyState},
-	{Field: "Config.PostgresDSN", Path: "postgres_dsn", Class: ClassFixed, Why: whyStore, Secret: true},
+	// The store's address carries the daemon's own database password in its userinfo. It is
+	// fixed, so the route refuses it with whyStore before its value is read, and no key of the
+	// file holds that password apart from it.
+	{Field: "Config.PostgresDSN", Path: "postgres_dsn", Class: ClassFixed, Why: whyStore, Secret: true, Credential: CredentialAddress},
 
 	// The runtime selector and its two blocks. `runtime` is one key the loader splits into the
 	// selector and the block it names, so Config.Runtime and Runtime.Name share its path: the
@@ -385,10 +579,14 @@ var Classes = []Row{
 	// the controller's liveness probe), and each launch is handed them too, the address by the
 	// runtime (ENVOY_URL) and the bearer by the launch specs (ENVOY_TOKEN). So each row names
 	// what carries it into the next launch beside the holder.
+	//
+	// An address's credential belongs in the file key beside it: the Envoy bearer in
+	// `envoy_token_file`, a NATS user's seed in the two seed files, Dispatch's bearer in
+	// `dispatch_token_file`. Each of those holds the path of a file, which is a locator.
 	{Field: "Config.EnvoyURL", Path: "envoy_url", Class: ClassRebuild, Holder: HolderEnvoyPublisher,
-		Also: []string{HolderRuntime}, Secret: true},
+		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress, CredentialIn: []string{"envoy_token_file"}},
 	{Field: "Config.EnvoyTokenFile", Path: "envoy_token_file", Class: ClassRebuild, Holder: HolderEnvoyPublisher,
-		Also: []string{HolderLaunchSpecs}, Secret: true},
+		Also: []string{HolderLaunchSpecs}, Secret: true, Credential: CredentialLocator},
 	// NATS's addresses and seeds, and Dispatch's address and bearer, are each held by the
 	// daemon's own client of the service and handed to every launch too: the runtime tells each
 	// launch ENVOY_NATS_URL and DISPATCH_URL (tmux's pane variables, the Sandbox runtime's pod
@@ -399,16 +597,19 @@ var Classes = []Row{
 	// (internal/daemon's launchSecretNames and providersSecrets). So each row names what carries
 	// it into the next launch beside the holder, as the Envoy rows above do.
 	{Field: "Config.NatsURLs", Path: "nats_urls", Class: ClassRebuild, Holder: HolderNATS,
-		Also: []string{HolderRuntime}, Secret: true},
+		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress,
+		CredentialIn: []string{"nats_nkey_seed_file", "nats_daemon_nkey_seed_file"}},
 	{Field: "Config.NatsNkeySeedFile", Path: "nats_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS,
-		Also: []string{HolderLaunchSpecs, HolderRuntime}, Secret: true},
-	{Field: "Config.NatsDaemonNkeySeedFile", Path: "nats_daemon_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS, Secret: true},
+		Also: []string{HolderLaunchSpecs, HolderRuntime}, Secret: true, Credential: CredentialLocator},
+	{Field: "Config.NatsDaemonNkeySeedFile", Path: "nats_daemon_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS, Secret: true,
+		Credential: CredentialLocator},
 	{Field: "Config.DispatchURL", Path: "dispatch_url", Class: ClassRebuild, Holder: HolderDispatchClient,
-		Also: []string{HolderRuntime}, Secret: true},
+		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress, CredentialIn: []string{"dispatch_token_file"}},
 	{Field: "Config.DispatchTokenFile", Path: "dispatch_token_file", Class: ClassRebuild, Holder: HolderDispatchClient,
-		Also: []string{HolderRuntime}, Secret: true},
+		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialLocator},
 	// The bearer the operator routes compare against: the API server holds its hash.
-	{Field: "Config.OperatorTokenFile", Path: "operator_token_file", Class: ClassRebuild, Holder: HolderAPIServer, Secret: true},
+	{Field: "Config.OperatorTokenFile", Path: "operator_token_file", Class: ClassRebuild, Holder: HolderAPIServer, Secret: true,
+		Credential: CredentialLocator},
 	// The settings route's own admission rule: the API server holds the verifier it checks a
 	// projected ServiceAccount token with, and a change of any of the three builds that verifier
 	// again (internal/daemon's apiHolder). Building one reads nothing — the issuer is discovered
@@ -498,32 +699,50 @@ var Classes = []Row{
 	// `<app>` template because the two Apps' members differ in class. The GitHubApp fields are
 	// read twice, once per App, which is why each of them has two rows; no walk descends into an
 	// App, so neither row is what the walk or the pin reads.
+	//
+	// An App's credential is one of four sources, of which three say where its key lives — a
+	// command that prints it, the name of the secretsd key holding it, and the broker command
+	// that leases a token from a key the daemon never holds — and are locators. `private_key` is
+	// the key itself. No key of the file holds an App's key as a file's path, so its refusal
+	// names the two key sources beside it, which say where the key lives instead.
 	{Field: "Config.GitHubApps", Path: "github_apps", Class: ClassRebuild, Holder: HolderGitHubApps, Block: true},
-	{Field: "GitHubApps.Implement", Path: "github_apps.implement", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true},
+	{Field: "GitHubApps.Implement", Path: "github_apps.implement", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true,
+		Credential: CredentialLocator},
 	{Field: "GitHubApp.AppID", Path: "github_apps.implement.app_id", Class: ClassRebuild, Holder: HolderGitHubApps},
 	{Field: "GitHubApp.Installations", Path: "github_apps.implement.installations", Class: ClassRebuild, Holder: HolderGitHubApps},
-	{Field: "GitHubApp.PrivateKey", Path: "github_apps.implement.private_key", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true},
-	{Field: "GitHubApp.PrivateKeyCommand", Path: "github_apps.implement.private_key_command", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true},
-	{Field: "GitHubApp.PrivateKeySecret", Path: "github_apps.implement.private_key_secret", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true},
+	{Field: "GitHubApp.PrivateKey", Path: "github_apps.implement.private_key", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true,
+		Credential: CredentialInlined, CredentialIn: []string{"github_apps.implement.private_key_secret", "github_apps.implement.private_key_command"}},
+	{Field: "GitHubApp.PrivateKeyCommand", Path: "github_apps.implement.private_key_command", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true,
+		Credential: CredentialLocator},
+	{Field: "GitHubApp.PrivateKeySecret", Path: "github_apps.implement.private_key_secret", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true,
+		Credential: CredentialLocator},
 	// The fourth source of an App's credential, for a deployment whose keys only a secrets broker
 	// holds: the manager runs it for a token, so a change of it rebuilds the manager as the three
 	// key sources do.
-	{Field: "GitHubApp.TokenCommand", Path: "github_apps.implement.token_command", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true},
+	{Field: "GitHubApp.TokenCommand", Path: "github_apps.implement.token_command", Class: ClassRebuild, Holder: HolderGitHubApps, Secret: true,
+		Credential: CredentialLocator},
 	// The review App is settled at boot, every key of it: its login is read once, then, and is
 	// what decides whose review settles a round (whyReview). The App is one value the pin puts
 	// back whole, its key and the command or the secret it comes from among it, so a rebuild of
 	// the App manager for a change of the implement App builds it on the review App boot read.
-	{Field: "GitHubApps.Review", Path: "github_apps.review", Class: ClassFixed, Why: whyReview, Secret: true},
+	{Field: "GitHubApps.Review", Path: "github_apps.review", Class: ClassFixed, Why: whyReview, Secret: true, Credential: CredentialLocator},
 	{Field: "GitHubApp.AppID", Path: "github_apps.review.app_id", Class: ClassFixed, Why: whyReview},
 	{Field: "GitHubApp.Installations", Path: "github_apps.review.installations", Class: ClassFixed, Why: whyReview},
-	{Field: "GitHubApp.PrivateKey", Path: "github_apps.review.private_key", Class: ClassFixed, Why: whyReview, Secret: true},
-	{Field: "GitHubApp.PrivateKeyCommand", Path: "github_apps.review.private_key_command", Class: ClassFixed, Why: whyReview, Secret: true},
-	{Field: "GitHubApp.PrivateKeySecret", Path: "github_apps.review.private_key_secret", Class: ClassFixed, Why: whyReview, Secret: true},
-	{Field: "GitHubApp.TokenCommand", Path: "github_apps.review.token_command", Class: ClassFixed, Why: whyReview, Secret: true},
+	{Field: "GitHubApp.PrivateKey", Path: "github_apps.review.private_key", Class: ClassFixed, Why: whyReview, Secret: true,
+		Credential: CredentialInlined, CredentialIn: []string{"github_apps.review.private_key_secret", "github_apps.review.private_key_command"}},
+	{Field: "GitHubApp.PrivateKeyCommand", Path: "github_apps.review.private_key_command", Class: ClassFixed, Why: whyReview, Secret: true,
+		Credential: CredentialLocator},
+	{Field: "GitHubApp.PrivateKeySecret", Path: "github_apps.review.private_key_secret", Class: ClassFixed, Why: whyReview, Secret: true,
+		Credential: CredentialLocator},
+	{Field: "GitHubApp.TokenCommand", Path: "github_apps.review.token_command", Class: ClassFixed, Why: whyReview, Secret: true,
+		Credential: CredentialLocator},
 
 	// Read when a pod or a pane launches: the runtime and the launch specs hold them, and the
 	// change reaches a role at its next launch.
-	{Field: "Config.DaemonURL", Path: "daemon_url", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
+	//
+	// The daemon's API takes no credential in its address — a pod presents its boot token and its
+	// grants, never userinfo — so no key of the file holds one for `daemon_url`.
+	{Field: "Config.DaemonURL", Path: "daemon_url", Class: ClassLaunch, Holder: HolderRuntime, Secret: true, Credential: CredentialAddress},
 	{Field: "Config.AdvertiseHost", Path: "advertise_host", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Config.OmpInvocation", Path: "omp_invocation", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Config.OmpLaunchPrefix", Path: "omp_launch_prefix", Class: ClassLaunch, Holder: HolderRuntime},
@@ -551,10 +770,14 @@ var Classes = []Row{
 	// pane's launch reads (internal/daemon's providerKeyFiles), at boot and again whenever the
 	// entries or their files have moved; under kubernetes the runtime hands each pod the key of
 	// the providers Secret. So a change reaches a role at its next launch.
-	{Field: "Config.ProviderKeys", Path: "provider_keys", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
-	{Field: "ProviderKey.Env", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
-	{Field: "ProviderKey.Secret", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
-	{Field: "ProviderKey.File", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
+	//
+	// A source is never the credential: it is the name of the secretsd key or of the providers
+	// Secret's key that holds it, a variable's name the loader holds to envVarName, or `file:` and
+	// the path of the file that holds it (readProviderKeys). So each is a locator.
+	{Field: "Config.ProviderKeys", Path: "provider_keys", Class: ClassLaunch, Holder: HolderRuntime, Secret: true, Credential: CredentialLocator},
+	{Field: "ProviderKey.Env", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true, Credential: CredentialLocator},
+	{Field: "ProviderKey.Secret", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true, Credential: CredentialLocator},
+	{Field: "ProviderKey.File", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true, Credential: CredentialLocator},
 
 	// The kubernetes block. The runtime holds all of it — it caches each pod's shape when it is
 	// built — so every change of it rebuilds the runtime; what the operator is told is whether the
@@ -568,7 +791,10 @@ var Classes = []Row{
 	{Field: "Kubernetes.Image", Path: "runtime.kubernetes.image", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Kubernetes.StorageClass", Path: "runtime.kubernetes.storage_class", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Kubernetes.IssueVolume", Path: "runtime.kubernetes.issue_volume", Class: ClassLaunch, Holder: HolderRuntime},
-	{Field: "Kubernetes.SessionStore", Path: "runtime.kubernetes.session_store", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
+	// The store's kind, and the name of the providers Secret's key or the Cloud SQL login behind
+	// it: where the sessions' database credential lives, never the credential.
+	{Field: "Kubernetes.SessionStore", Path: "runtime.kubernetes.session_store", Class: ClassLaunch, Holder: HolderRuntime, Secret: true,
+		Credential: CredentialLocator},
 	{Field: "Kubernetes.Setup", Path: "runtime.kubernetes.setup", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Kubernetes.TestPostgres", Path: "runtime.kubernetes.test_postgres", Class: ClassLaunch, Holder: HolderRuntime},
 	// The skills marketplace an issue pod's own init container clones: the runtime holds it, it
@@ -593,7 +819,12 @@ var Classes = []Row{
 	{Field: "Reservation.EphemeralStorage", Path: "runtime.kubernetes.resources.<pod>.ephemeral_storage", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Reservation.EphemeralStorageRequest", Path: "runtime.kubernetes.resources.<pod>.ephemeral_storage_request", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Kubernetes.Pod", Path: "runtime.kubernetes.pod", Class: ClassLaunch, Holder: HolderRuntime, Block: true},
-	{Field: "PodConfig.Env", Path: "runtime.kubernetes.pod.env", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
+	// The operator's own variables, which the loader refuses a credential-shaped name in, so a
+	// credential reaches a pod as a key of the providers Secret or a Secret the pod mounts. A
+	// value may still be an address, and one with userinfo is refused through the route by the
+	// address rule, pointing at those two keys.
+	{Field: "PodConfig.Env", Path: "runtime.kubernetes.pod.env", Class: ClassLaunch, Holder: HolderRuntime, Secret: true,
+		Credential: CredentialAddress, CredentialIn: []string{"provider_keys", "runtime.kubernetes.pod.volumes"}},
 	{Field: "PodConfig.Volumes", Path: "runtime.kubernetes.pod.volumes", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "PodConfig.VolumeMounts", Path: "runtime.kubernetes.pod.volume_mounts", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "PodConfig.ServiceAccount", Path: "runtime.kubernetes.pod.service_account", Class: ClassLaunch, Holder: HolderRuntime},
@@ -621,31 +852,44 @@ var Classes = []Row{
 		Also: []string{HolderSecretsLogin}},
 	{Field: "AgentSecretsConfig.Audience", Path: "runtime.kubernetes.agent_secrets.audience", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "AgentSecretsConfig.TokenExpirySeconds", Path: "runtime.kubernetes.agent_secrets.token_expiry_seconds", Class: ClassLaunch, Holder: HolderRuntime},
-	{Field: "AgentSecretsConfig.TokenFile", Path: "runtime.kubernetes.agent_secrets.token_file", Class: ClassRebuild, Holder: HolderSecretsLogin, Secret: true},
+	{Field: "AgentSecretsConfig.TokenFile", Path: "runtime.kubernetes.agent_secrets.token_file", Class: ClassRebuild, Holder: HolderSecretsLogin, Secret: true,
+		Credential: CredentialLocator},
 	// The plugin pair a stale-plugin relaunch installs into a kept pod, which two things read:
 	// the launch specs, which hand the pair to the launch of a claim on another plugin contract
 	// (internal/daemon's stalePluginInstall), and the Sandbox runtime, which records it in each
 	// pod's launch-settings annotation. The operator is told the launch specs were rebuilt, and
 	// the runtime is built again with them, so the next stale-plugin relaunch installs the pair
 	// the change names.
+	//
+	// A pin is a version, a tarball's path, or an http(s) URL, and a private or pre-signed
+	// tarball's URL carries its credential in its userinfo or in its query: `X-Amz-Signature` is
+	// the one parameter the daemon's own reading of a pin names (api.pluginSourceOf, which drops
+	// the query from the state). No key of the file holds that credential apart from the URL.
 	{Field: "Kubernetes.Plugins", Path: "runtime.kubernetes.plugins", Class: ClassLaunch, Holder: HolderLaunchSpecs,
 		Also: []string{HolderRuntime}, Block: true},
 	{Field: "PluginsConfig.PiLegion", Path: "runtime.kubernetes.plugins.pi_legion", Class: ClassLaunch, Holder: HolderLaunchSpecs,
-		Also: []string{HolderRuntime}, Secret: true},
+		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress, SecretQuery: []string{"X-Amz-Signature"}},
 	{Field: "PluginsConfig.PiEnvoy", Path: "runtime.kubernetes.plugins.pi_envoy", Class: ClassLaunch, Holder: HolderLaunchSpecs,
-		Also: []string{HolderRuntime}, Secret: true},
+		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress, SecretQuery: []string{"X-Amz-Signature"}},
 	// The daemon's own cluster credential, and the repository caches it keeps: pods of the
-	// runtime's own, replaced when the runtime is built again, never role launches.
-	{Field: "Kubernetes.Kubeconfig", Path: "runtime.kubernetes.kubeconfig", Class: ClassRebuild, Holder: HolderRuntime, Secret: true},
-	{Field: "Kubernetes.Context", Path: "runtime.kubernetes.context", Class: ClassRebuild, Holder: HolderRuntime, Secret: true},
+	// runtime's own, replaced when the runtime is built again, never role launches. The
+	// kubeconfig's path and the name of a context in it are where that credential lives.
+	{Field: "Kubernetes.Kubeconfig", Path: "runtime.kubernetes.kubeconfig", Class: ClassRebuild, Holder: HolderRuntime, Secret: true,
+		Credential: CredentialLocator},
+	{Field: "Kubernetes.Context", Path: "runtime.kubernetes.context", Class: ClassRebuild, Holder: HolderRuntime, Secret: true,
+		Credential: CredentialLocator},
 	{Field: "Kubernetes.RepositoryCache", Path: "runtime.kubernetes.repository_cache", Class: ClassRebuild, Holder: HolderRuntime, Block: true},
 	{Field: "RepositoryCacheConfig.Volume", Path: "runtime.kubernetes.repository_cache.volume", Class: ClassFixed, Why: whyCacheVol},
 	{Field: "RepositoryCacheConfig.RefreshMinutes", Path: "runtime.kubernetes.repository_cache.refresh_minutes", Class: ClassRebuild, Holder: HolderRuntime},
 	{Field: "RepositoryCacheConfig.RetainHours", Path: "runtime.kubernetes.repository_cache.retain_hours", Class: ClassRebuild, Holder: HolderRuntime},
 	{Field: "RepositoryCacheConfig.Resources", Path: "runtime.kubernetes.repository_cache.resources", Class: ClassRebuild, Holder: HolderRuntime},
 
-	// The tmux block: what every pane's launch reads, and the take-over boot read once.
-	{Field: "Tmux.PaneEnv", Path: "runtime.tmux.pane_env", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
+	// The tmux block: what every pane's launch reads, and the take-over boot read once. The
+	// loader refuses a credential-shaped name in `pane_env` and a value holding a URL with a
+	// password (runtime.PaneVariableRefusal), since a secret reaches a pane as a file it names in
+	// `provider_keys`; the route refuses a value with any userinfo, pointing there.
+	{Field: "Tmux.PaneEnv", Path: "runtime.tmux.pane_env", Class: ClassLaunch, Holder: HolderRuntime, Secret: true,
+		Credential: CredentialAddress, CredentialIn: []string{"provider_keys"}},
 	{Field: "Tmux.PiConfigFiles", Path: "runtime.tmux.pi_config_files", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "Tmux.TakeOver", Path: "runtime.tmux.take_over", Class: ClassFixed, Why: whyTakeOve},
 }

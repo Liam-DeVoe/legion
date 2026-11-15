@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -12,9 +13,10 @@ import (
 // section and the next `## ` heading closes it, so a table or a reason written elsewhere in the
 // document answers for nothing here.
 const (
-	deploymentDocHeading    = "## What a change of each `legion.yaml` key needs"
-	deploymentDocRefusals   = "### Why a fixed key is refused"
-	deploymentDocHeadingTop = "## "
+	deploymentDocHeading     = "## What a change of each `legion.yaml` key needs"
+	deploymentDocRefusals    = "### Why a fixed key is refused"
+	deploymentDocCredentials = "### Why a credential is refused"
+	deploymentDocHeadingTop  = "## "
 )
 
 // docRow is one row of that section's table: the class the document gives a key, and the holder
@@ -79,6 +81,70 @@ func TestDeploymentDocCoversEverySettingsKey(t *testing.T) {
 				"it: %q", row.Path, row.Why)
 		}
 	}
+
+	// The keys the route refuses a credential in are each listed with where the credential
+	// belongs instead, so an operator the refusal points at a key reads that same key here. A
+	// fixed key is refused with its own reason before its value is read, and is listed above.
+	listed := deploymentDocCredentialList(t, doc)
+	for _, row := range Classes {
+		if row.Class == ClassFixed || (row.Credential != CredentialAddress && row.Credential != CredentialInlined) {
+			continue
+		}
+		spans, held := listed[row.Path]
+		if !held {
+			t.Errorf("docs/deployment.md's %q list does not name %s, whose value the route refuses when it carries a credential",
+				deploymentDocCredentials, row.Path)
+			continue
+		}
+		for _, key := range row.CredentialIn {
+			if !slices.Contains(spans, key) {
+				t.Errorf("docs/deployment.md's line for %s does not name %s, the key the route's refusal puts the credential in",
+					row.Path, key)
+			}
+		}
+	}
+}
+
+// codeSpan is one code span of a line of the document.
+var codeSpan = regexp.MustCompile("`([^`]+)`")
+
+// deploymentDocCredentialList reads the list under the section's credential heading: each bullet
+// by the keys written before its dash, each to every code span the whole bullet writes. A bullet
+// runs from its `- ` to the next blank line, its continuation lines indented beneath it.
+func deploymentDocCredentialList(t *testing.T, section []string) map[string][]string {
+	t.Helper()
+	start := slices.Index(section, deploymentDocCredentials)
+	if start < 0 {
+		t.Fatalf("docs/deployment.md's settings section has no %q heading: the list of keys the route refuses a credential in "+
+			"was renamed, and this check stops checking the moment it cannot find it", deploymentDocCredentials)
+	}
+	listed := map[string][]string{}
+	var bullets []string
+	for _, line := range section[start+1:] {
+		if strings.HasPrefix(line, "#") {
+			break
+		}
+		switch {
+		case strings.HasPrefix(line, "- "):
+			bullets = append(bullets, line)
+		case strings.HasPrefix(line, "  ") && len(bullets) > 0:
+			bullets[len(bullets)-1] += " " + strings.TrimSpace(line)
+		}
+	}
+	for _, bullet := range bullets {
+		keys, _, _ := strings.Cut(bullet, " — ")
+		var spans []string
+		for _, match := range codeSpan.FindAllStringSubmatch(bullet, -1) {
+			spans = append(spans, match[1])
+		}
+		for _, match := range codeSpan.FindAllStringSubmatch(keys, -1) {
+			listed[match[1]] = spans
+		}
+	}
+	if len(listed) == 0 {
+		t.Fatalf("docs/deployment.md's %q heading holds no list of the form \"- `key` — why\"", deploymentDocCredentials)
+	}
+	return listed
 }
 
 // readDeploymentDoc is the section's own lines, the heading first, and the line of the file the

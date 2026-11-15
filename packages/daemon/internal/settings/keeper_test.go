@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -199,48 +200,269 @@ func TestARouteChangeIsLaidBackOverTheFileAtTheNextBoot(t *testing.T) {
 	}
 }
 
-// A secret path is applied and never stored: the value — a credential, the path of a file
-// holding one, or an address that may carry one — stays out of the database every project's
-// daemon shares, where a plain value of the same call is kept. The row of such a path goes with
-// it, so a restart reads the file's own value for it.
-func TestACredentialChangedThroughTheRouteIsAppliedAndNotStored(t *testing.T) {
+// sharedRows is every row of the settings table every project's daemon shares — read across
+// every project, not through this keeper's own — that is stored for path or whose value holds
+// text, each as `project path`.
+func sharedRows(t *testing.T, store *Store, path, text string) []string {
+	t.Helper()
+	rows, err := store.pool.Query(context.Background(),
+		`select project, path from settings_overlay where path = $1 or strpos(value::text, $2) > 0 order by project, path`, path, text)
+	if err != nil {
+		t.Fatalf("read the shared settings table: %v", err)
+	}
+	defer rows.Close()
+	var found []string
+	for rows.Next() {
+		var project, stored string
+		if err := rows.Scan(&project, &stored); err != nil {
+			t.Fatalf("read the shared settings table: %v", err)
+		}
+		found = append(found, project+" "+stored)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the shared settings table: %v", err)
+	}
+	return found
+}
+
+// A locator — a value that says where a credential lives and holds none — changed through the
+// route is stored like any other route change, and the next boot lays it back over the file
+// (acceptance A5, "a change made through the route survives the daemon's restart until the file
+// changes that key"). The path of a credential file, the name of the key a provider's credential
+// is held under, and an address with no credential in it are each a locator.
+func TestALocatorChangedThroughTheRouteSurvivesARestart(t *testing.T) {
 	ctx := context.Background()
 	store := testStore(t)
-	keeper := keeperOn(t, configFile(t, minimalFile), store)
+	path := configFile(t, minimalFile)
+	recorder := &logRecorder{}
+	keeper := keeperLogging(t, path, store, slog.New(recorder))
+	const tokenFile = "/etc/legion/operator-token"
+	const envoy = "http://envoy.internal.example:9021"
+	const providerKey = "provider_keys.GEMINI_API_KEY"
 
 	applied, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{
-		"operator_token_file": "/etc/legion/operator-token",
-		"admission_cap":       7,
+		"operator_token_file": tokenFile,
+		"envoy_url":           envoy,
+		providerKey:           "GEMINI_API_KEY_TESTS",
 	})
 	if err != nil || len(refused) != 0 {
 		t.Fatalf("Route: %v, refused %+v", err, refused)
 	}
-
+	// A provider key's entry is answered under `provider_keys`, the one value the diff compares
+	// the entries in (config's WalkSettings).
 	paths := map[string]bool{}
 	for _, change := range applied {
 		paths[change.Path] = true
 	}
-	if !paths["operator_token_file"] || !paths["admission_cap"] {
-		t.Fatalf("the route applied %+v, want both paths", applied)
+	if !paths["operator_token_file"] || !paths["envoy_url"] || !paths["provider_keys"] {
+		t.Fatalf("the route applied %+v, want all three locators", applied)
 	}
-	if file := keeper.Live().Snapshot().OperatorTokenFile; file != "/etc/legion/operator-token" {
-		t.Fatalf("the daemon reads operator_token_file %q, want the one the route set", file)
-	}
+
 	rows, err := store.Rows(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Path != "admission_cap" {
-		t.Fatalf("the store holds %+v, want the plain value alone and no credential", rows)
+	if got := pathsOf(rows); !slices.Equal(got, []string{"envoy_url", "operator_token_file", providerKey}) {
+		t.Fatalf("the store holds %v, want a row for each locator", got)
+	}
+	if value := string(rows[1].Value); value != `"`+tokenFile+`"` {
+		t.Fatalf("the store holds operator_token_file as %s, want the path the route set", value)
+	}
+	info := strings.Join(recorder.at(slog.LevelInfo), "\n")
+	for _, want := range []string{"stored", "next restart", "operator_token_file", "envoy_url", providerKey, "ana@example.com"} {
+		if !strings.Contains(info, want) {
+			t.Errorf("the keeper's info lines name no %q:\n%s", want, info)
+		}
+	}
+
+	restarted := keeperOn(t, path, store)
+	if file := restarted.Live().Snapshot().OperatorTokenFile; file != "" {
+		t.Fatalf("the file alone reads operator_token_file %q, want none before the restore", file)
+	}
+	kept, err := restarted.Restore(ctx)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := pathsOf(kept); !slices.Equal(got, []string{"envoy_url", "operator_token_file", providerKey}) {
+		t.Fatalf("Restore laid %v back over the file, want every locator", got)
+	}
+	cfg := restarted.Live().Snapshot()
+	if cfg.OperatorTokenFile != tokenFile || cfg.EnvoyURL != envoy {
+		t.Fatalf("after the restore the daemon reads operator_token_file %q and envoy_url %q, want the route's %q and %q",
+			cfg.OperatorTokenFile, cfg.EnvoyURL, tokenFile, envoy)
+	}
+	if want := []config.ProviderKey{{Env: "GEMINI_API_KEY", Secret: "GEMINI_API_KEY_TESTS"}}; !slices.Equal(cfg.ProviderKeys, want) {
+		t.Fatalf("after the restore the daemon reads provider_keys %+v, want the route's %+v", cfg.ProviderKeys, want)
 	}
 }
 
-// The file takes back a key the route applied and the store holds no row for. A credential is
-// applied and never stored (above), so nothing in the store says the daemon is running on the
-// route's value for it: without the digest the keeper holds in memory the file arm would find
-// no row, withdraw nothing, and leave the operator's later edit of that key in `legion.yaml`
-// doing nothing at all until the daemon restarted.
-func TestTheFileTakesBackACredentialTheRouteAppliedAndStoredNoRowFor(t *testing.T) {
+// An address whose value carries a credential — userinfo, or a query parameter the key's own
+// reading names (`X-Amz-Signature` on a plugin pin) — is refused through the route by name, with
+// the key the credential belongs in, or with the word that no key holds it. Nothing of it is
+// applied, and the database every project's daemon shares holds no row for it and no copy of the
+// credential. The paths beside it in the call are applied and stored.
+//
+// The control rows are the same keys with no credential in the value: each is a locator, applied
+// and stored, so the refusal is the value's and not the key's.
+func TestAnAddressCarryingACredentialIsRefusedByNameAndStoredNowhere(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		value      any
+		// secret is the credential the value carries, "" for a control row.
+		secret string
+		// reason is what the refusal must name, the path first.
+		reason []string
+	}{
+		{
+			name: "dispatch_url with userinfo", path: "dispatch_url",
+			value: "https://s3cr3t-dispatch:pw@dispatch.internal.example", secret: "s3cr3t-dispatch:pw",
+			reason: []string{"dispatch_url carries a credential in an address's userinfo", "dispatch_token_file"},
+		},
+		{
+			name: "nats_urls with a token as userinfo", path: "nats_urls",
+			value: []any{"nats://s3cr3t-nats-token@nats.internal.example:4222"}, secret: "s3cr3t-nats-token",
+			reason: []string{"nats_urls carries a credential in an address's userinfo", "nats_nkey_seed_file", "nats_daemon_nkey_seed_file"},
+		},
+		{
+			name: "a plugin pin with a pre-signed query", path: "runtime.kubernetes.plugins",
+			value: map[string]any{
+				"pi_legion": "https://cache.internal.example/pi-legion.tgz?X-Amz-Signature=abc123presigned",
+				"pi_envoy":  "9.7.0",
+			},
+			secret: "abc123presigned",
+			reason: []string{"runtime.kubernetes.plugins.pi_legion carries a credential in the query parameter X-Amz-Signature", "no other key of legion.yaml holds that credential"},
+		},
+		{name: "dispatch_url with no credential", path: "dispatch_url", value: "https://dispatch-2.internal.example"},
+		{
+			name: "a plugin pin with a plain query", path: "runtime.kubernetes.plugins",
+			value: map[string]any{"pi_legion": "https://cache.internal.example/pi-legion.tgz?v=2", "pi_envoy": "9.7.0"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			keeper := keeperOn(t, configFile(t, kubernetesFile), store)
+			before := keeper.Live().Snapshot()
+
+			applied, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{
+				tc.path: tc.value, "admission_cap": 7,
+			})
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.secret == "" {
+				if len(refused) != 0 {
+					t.Fatalf("Route refused %+v, want the address with no credential in it applied", refused)
+				}
+				if got := pathsOf(rows); !slices.Equal(got, []string{"admission_cap", tc.path}) {
+					t.Fatalf("the store holds %v, want admission_cap and %s: an address with no credential is a locator", got, tc.path)
+				}
+				return
+			}
+
+			if len(refused) != 1 || refused[0].Path != tc.path {
+				t.Fatalf("Route refused %+v, want %s alone, by name", refused, tc.path)
+			}
+			for _, want := range tc.reason {
+				if !strings.Contains(refused[0].Reason, want) {
+					t.Errorf("the refusal of %s says %q, which names no %q", tc.path, refused[0].Reason, want)
+				}
+			}
+			if strings.Contains(refused[0].Reason, tc.secret) {
+				t.Errorf("the refusal of %s quotes the credential: %q", tc.path, refused[0].Reason)
+			}
+			for _, change := range applied {
+				if change.Path == tc.path || strings.HasPrefix(change.Path, tc.path+".") {
+					t.Errorf("the route applied %+v of a refused path", change)
+				}
+			}
+			cfg := keeper.Live().Snapshot()
+			if cfg.DispatchURL != before.DispatchURL || !slices.Equal(cfg.NatsURLs, before.NatsURLs) ||
+				!reflect.DeepEqual(cfg.Runtime.Kubernetes.Plugins, before.Runtime.Kubernetes.Plugins) {
+				t.Errorf("the daemon moved onto the refused value: dispatch_url %q, nats_urls %v, plugins %+v",
+					cfg.DispatchURL, cfg.NatsURLs, cfg.Runtime.Kubernetes.Plugins)
+			}
+			if cfg.AdmissionCap != 7 {
+				t.Errorf("admission_cap = %d, want the 7 applied beside the refusal", cfg.AdmissionCap)
+			}
+			if found := sharedRows(t, store, tc.path, tc.secret); len(found) != 0 {
+				t.Fatalf("the shared settings table holds %v, want no row for %s and no copy of its credential", found, tc.path)
+			}
+			if got := pathsOf(rows); !slices.Equal(got, []string{"admission_cap"}) {
+				t.Fatalf("the store holds %v, want the path applied beside the refusal alone", got)
+			}
+		})
+	}
+}
+
+// An inlined credential — the value is the credential itself — is refused through the route by
+// name, pointing at the keys that say where it lives instead, whether the call names its own path
+// or sets a block that carries it. It is never applied and never stored: the database every
+// project's daemon shares holds no row for the path and no copy of the key.
+func TestAnInlinedCredentialIsRefusedByNameAndStoredNowhere(t *testing.T) {
+	const pem = "-----BEGIN LEGION TEST MATERIAL-----\nrouteinlinedkey\n-----END LEGION TEST MATERIAL-----"
+	for _, tc := range []struct {
+		name, path string
+		value      any
+	}{
+		{name: "the key by its own path", path: "github_apps.implement.private_key", value: pem},
+		{name: "the key inside the App block set whole", path: "github_apps", value: map[string]any{
+			"implement": map[string]any{"app_id": "1", "private_key": pem},
+			"review":    map[string]any{"app_id": "2", "private_key": "review-test-key"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			keeper := keeperOn(t, configFile(t, kubernetesFile), store)
+
+			applied, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{
+				tc.path: tc.value, "admission_cap": 7,
+			})
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if len(refused) != 1 || refused[0].Path != tc.path {
+				t.Fatalf("Route refused %+v, want %s alone, by name", refused, tc.path)
+			}
+			for _, want := range []string{
+				"github_apps.implement.private_key is the credential itself",
+				"github_apps.implement.private_key_secret", "github_apps.implement.private_key_command",
+			} {
+				if !strings.Contains(refused[0].Reason, want) {
+					t.Errorf("the refusal of %s says %q, which names no %q", tc.path, refused[0].Reason, want)
+				}
+			}
+			for _, change := range applied {
+				if strings.HasPrefix(change.Path, "github_apps") {
+					t.Errorf("the route applied %+v of a refused credential", change)
+				}
+			}
+			if key := keeper.Live().Snapshot().GitHubApps.Implement.PrivateKey; key != "implement-test-key" {
+				t.Errorf("the daemon signs with %q, want the file's own key", key)
+			}
+			if found := sharedRows(t, store, tc.path, "routeinlinedkey"); len(found) != 0 {
+				t.Fatalf("the shared settings table holds %v, want no row for %s and no copy of the key", found, tc.path)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := pathsOf(rows); !slices.Equal(got, []string{"admission_cap"}) {
+				t.Fatalf("the store holds %v, want the path applied beside the refusal alone", got)
+			}
+		})
+	}
+}
+
+// The file takes back a locator the route stored, as it takes back any key the route holds: the
+// operator's later edit of that key in `legion.yaml` wins over the route's value, and the row goes
+// with it (acceptance A5, "until the file changes that key").
+func TestTheFileTakesBackALocatorTheRouteStored(t *testing.T) {
 	ctx := context.Background()
 	store := testStore(t)
 	path := configFile(t, minimalFile)
@@ -265,6 +487,13 @@ func TestTheFileTakesBackACredentialTheRouteAppliedAndStoredNoRowFor(t *testing.
 	if file := keeper.Live().Snapshot().OperatorTokenFile; file != byFile {
 		t.Fatalf("the daemon reads operator_token_file %q, want the file's own %q: the file changed that key and takes it back", file, byFile)
 	}
+	rows, err := store.Rows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("the store holds %v after the file took the key back, want nothing", pathsOf(rows))
+	}
 	// And the key stays the file's: a later settle of an unchanged file withdraws nothing and
 	// changes nothing.
 	if _, err := keeper.File(ctx); err != nil {
@@ -275,16 +504,17 @@ func TestTheFileTakesBackACredentialTheRouteAppliedAndStoredNoRowFor(t *testing.
 	}
 }
 
-// A settle the loader refuses leaves the keeper's mark of a path no row backs standing. The
-// apply changes nothing, so the overlay the daemon is running on is still the route's; a mark
-// dropped before that apply would be gone with no overlay withdrawn, and no later settle of the
-// fixed file would ever take the key back — the daemon would run on the route's credential
-// until it restarted, whatever the operator wrote in `legion.yaml`.
+// A settle the loader refuses leaves the keeper's mark of a path no row backs standing. A keeper
+// with no store holds such a mark for every path it applies, as a keeper whose store write failed
+// does for the paths of that change (NotRecorded). The apply changes nothing, so the overlay the
+// daemon is running on is still the route's; a mark dropped before that apply would be gone with
+// no overlay withdrawn, and no later settle of the fixed file would ever take the key back — the
+// daemon would run on the route's value until it restarted, whatever the operator wrote in
+// `legion.yaml`.
 func TestAFailedSettleKeepsTheMarkOfAKeyNoRowBacks(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
 	path := configFile(t, minimalFile)
-	keeper := keeperOn(t, path, store)
+	keeper := keeperOn(t, path, nil)
 	const byRoute = "/route/operator-token"
 	if _, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{
 		"operator_token_file": byRoute,
@@ -304,7 +534,7 @@ func TestAFailedSettleKeepsTheMarkOfAKeyNoRowBacks(t *testing.T) {
 	}
 
 	// The operator fixes the value the loader refused, leaving the file's own value for the
-	// credential as it now reads it, and the settle succeeds.
+	// key as it now reads it, and the settle succeeds.
 	rewrite(t, path, minimalFile+"operator_token_file: "+byFile+"\nadmission_cap: 5\n")
 	if _, err := keeper.File(ctx); err != nil {
 		t.Fatalf("the settle of the fixed file: %v", err)

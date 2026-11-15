@@ -424,6 +424,16 @@ func (r *rebuilder) rereadCredentials(cfg *config.Config) {
 		// A reread is no caller's change: a rebuild that failed is logged by rebuild itself and
 		// tried again at the next reread, and nothing of it is answered to a settings route
 		// call that asked for no such rebuild.
-		_ = r.rebuild(cfg, holder)
+		if r.rebuild(cfg, holder) != nil {
+			continue
+		}
+		// A pod's record holds a launch file's path and not its content, so an edit in place opens
+		// no update round, and this line is what tells the operator where the edit lands. The
+		// runtime is left out because a build of it can rewrite a file running panes share (tmux's
+		// Dispatch bearer) and its own cluster credential reaches no role.
+		if name == config.HolderLaunchSpecs {
+			r.log.Info("legion settings: a file a launch key names changed on disk; each role reads the new content at its next launch, and every role running now keeps the old content until then",
+				"holder", name)
+		}
 	}
 }

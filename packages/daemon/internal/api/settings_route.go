@@ -54,11 +54,14 @@ type SettingsChangeResponse struct {
 // Holder read as they do for an applied change, since the change itself was applied.
 //
 // Refused is why the daemon will not change the path: a path fixed for the process is refused
-// with the reason its row gives, and a path the class table does not hold is an unknown setting
-// (config.Refusal). Where the configuration file under the daemon names a runtime other than
-// the one it booted on, nothing of the call settles: every path it named that has no refusal of
-// its own carries that one reason, which names both runtimes and the way out, and `runtime`
-// carries it beside them (config.OtherRuntime).
+// with the reason its row gives, a path the class table does not hold is an unknown setting
+// (config.Refusal), and a value that carries a credential — an inlined key, an address whose
+// userinfo holds one — is refused whoever asks, naming the key the credential belongs in, since
+// the daemon keeps what the route applies in a database every project's daemon shares
+// (config.CarriesCredential). Where the configuration file under the daemon names a runtime
+// other than the one it booted on, nothing of the call settles: every path it named that has no
+// refusal of its own carries that one reason, which names both runtimes and the way out, and
+// `runtime` carries it beside them (config.OtherRuntime).
 type SettingResult struct {
 	Applied   string `json:"applied,omitempty"`
 	Failed    string `json:"failed,omitempty"`
@@ -206,9 +209,9 @@ func authoredBy(caller config.Caller, identity, named string) string {
 func settingResults(changes map[string]any, applied []config.Change, refused []config.Refusal, failed SettingsRebuildFailures) map[string]SettingResult {
 	results := make(map[string]SettingResult, len(changes))
 	for path := range changes {
-		// A path the class table does not hold, and one fixed for the process, come back as
-		// refusals below; every other named path is the route's from now on, whether or not its
-		// own value moved.
+		// A path the class table does not hold, one fixed for the process, and one whose value
+		// carries a credential come back as refusals below; every other named path is the
+		// route's from now on, whether or not its own value moved.
 		if row, known := config.ClassOf(path); known && row.Class != config.ClassFixed {
 			results[path] = SettingResult{Applied: string(row.Class.Outcome()), Holder: row.Holder, Unchanged: true}
 		}
@@ -240,9 +243,9 @@ func settingResults(changes map[string]any, applied []config.Change, refused []c
 // Every path the caller named carries that one reason, which names both runtimes and the way
 // out, and the key the reading turned on carries it beside them, named though the caller named
 // it nowhere. A path refused on its own account before the reading was ever read keeps that
-// refusal — an unknown setting, a key fixed for the process, one this caller may not set are
-// answered the same whatever runtime the file names, and are the more particular answer to what
-// the caller asked.
+// refusal — an unknown setting, a key fixed for the process, one this caller may not set, a
+// value that carries a credential are answered the same whatever runtime the file names, and are
+// the more particular answer to what the caller asked.
 func refusedWhole(changes map[string]any, refused []config.Refusal, why *config.OtherRuntime) map[string]SettingResult {
 	results := make(map[string]SettingResult, len(changes)+1)
 	for path := range changes {

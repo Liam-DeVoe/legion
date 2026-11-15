@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -142,7 +143,7 @@ func TestRowsThatShareAPathAgree(t *testing.T) {
 			byPath[row.Path] = row
 			continue
 		}
-		if first.Class != row.Class || first.Holder != row.Holder || first.Why != row.Why {
+		if first.Class != row.Class || first.Holder != row.Holder || first.Why != row.Why || first.Credential != row.Credential {
 			t.Errorf("%s and %s share the path %s and disagree: %+v against %+v", first.Field, row.Field, row.Path, first, row)
 		}
 	}
@@ -267,5 +268,154 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 		if row.Class == ClassFixed && len(strings.Fields(row.Why)) < 8 {
 			t.Errorf("%s is refused with %q, which does not say what is in the way", row.Path, row.Why)
 		}
+	}
+}
+
+// Every Secret row says which of the three things its value is, and no other row does: Secret is
+// how the value is shown, Credential where it may be kept, and a row with the one and not the
+// other is a value whose route change nobody decided. A locator is stored and points at nothing;
+// a key a refusal points the credential at is one an operator can write, never this row itself;
+// and a query parameter is read on an address alone.
+func TestEverySecretRowSaysWhatItsValueIs(t *testing.T) {
+	for _, row := range Classes {
+		switch {
+		case row.Secret && row.Credential == "":
+			t.Errorf("%s (%s) is Secret and names no Credential: say whether its value is a locator, an address or the credential itself", row.Field, row.Path)
+		case !row.Secret && row.Credential != "":
+			t.Errorf("%s (%s) names the Credential %q and is not Secret, so its value would be shown", row.Field, row.Path, row.Credential)
+		}
+		switch row.Credential {
+		case "", CredentialLocator:
+			if len(row.CredentialIn) > 0 || len(row.SecretQuery) > 0 {
+				t.Errorf("%s (%s) carries no credential and names %v and %v", row.Field, row.Path, row.CredentialIn, row.SecretQuery)
+			}
+		case CredentialAddress:
+		case CredentialInlined:
+			if len(row.SecretQuery) > 0 {
+				t.Errorf("%s (%s) is the credential itself and names query parameters %v", row.Field, row.Path, row.SecretQuery)
+			}
+		default:
+			t.Errorf("%s (%s) names the Credential %q, which is none of the three", row.Field, row.Path, row.Credential)
+		}
+		for _, key := range row.CredentialIn {
+			if _, known := ClassOf(key); !known || key == row.Path {
+				t.Errorf("%s (%s) points its credential at %q, which is no other key of legion.yaml", row.Field, row.Path, key)
+			}
+		}
+	}
+}
+
+// The three kinds, path by path. A locator says where a credential lives and is stored like any
+// other route change; an address is judged by the value a call carries; an inlined row is the
+// credential and is refused whatever its value. A Secret row added to the table fails here until
+// someone has said which it is.
+func TestTheCredentialKindsAreTheOnesTheValuesAre(t *testing.T) {
+	kinds := map[Credential][]string{}
+	for _, row := range Classes {
+		if row.Credential != "" && !slices.Contains(kinds[row.Credential], row.Path) {
+			kinds[row.Credential] = append(kinds[row.Credential], row.Path)
+		}
+	}
+	want := map[Credential][]string{
+		CredentialLocator: {
+			"dispatch_token_file", "envoy_token_file", "github_apps.implement",
+			"github_apps.implement.private_key_command", "github_apps.implement.private_key_secret",
+			"github_apps.implement.token_command", "github_apps.review", "github_apps.review.private_key_command",
+			"github_apps.review.private_key_secret", "github_apps.review.token_command",
+			"nats_daemon_nkey_seed_file", "nats_nkey_seed_file", "operator_token_file", "provider_keys",
+			"provider_keys.<NAME>", "runtime.kubernetes.agent_secrets.token_file", "runtime.kubernetes.context",
+			"runtime.kubernetes.kubeconfig", "runtime.kubernetes.session_store",
+		},
+		CredentialAddress: {
+			"daemon_url", "dispatch_url", "envoy_url", "nats_urls", "postgres_dsn",
+			"runtime.kubernetes.plugins.pi_envoy", "runtime.kubernetes.plugins.pi_legion",
+			"runtime.kubernetes.pod.env", "runtime.tmux.pane_env",
+		},
+		CredentialInlined: {"github_apps.implement.private_key", "github_apps.review.private_key"},
+	}
+	for kind, paths := range kinds {
+		slices.Sort(paths)
+		if !slices.Equal(paths, want[kind]) {
+			t.Errorf("the %s rows are %q, want %q", kind, paths, want[kind])
+		}
+	}
+	if len(kinds) != len(want) {
+		t.Errorf("the table names the kinds %v, want the three", slices.Sorted(maps.Keys(kinds)))
+	}
+}
+
+// CarriesCredential reads the value a route call carries and nothing else: an inlined key is a
+// credential whatever it holds but null, an address carries one in a non-empty userinfo or in a
+// query parameter its row names, a block is read member by member at each member's own path,
+// and a value carrying none is no refusal whatever its key. Every refusal names the path and
+// where the credential belongs, and never quotes the value.
+func TestCarriesCredentialReadsTheValueTheCallCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		value      any
+		// reason is what the refusal names, nil for a value that carries no credential.
+		reason []string
+		// secret is the part of the value the refusal must not quote.
+		secret string
+	}{
+		{name: "an address with a password", path: "dispatch_url", value: "https://tok-dispatch:pw@dispatch.example",
+			reason: []string{"dispatch_url carries a credential in an address's userinfo", "put the credential in dispatch_token_file"}, secret: "tok-dispatch:pw"},
+		{name: "an address with a bare user", path: "envoy_url", value: "http://tok-envoy@envoy.example:9020",
+			reason: []string{"envoy_url carries a credential", "envoy_token_file"}, secret: "tok-envoy"},
+		{name: "one NATS URL of several with a token", path: "nats_urls", value: []any{"nats://h1:4222", "nats://tok-nats@h2:4222"},
+			reason: []string{"nats_urls carries a credential", "nats_nkey_seed_file or nats_daemon_nkey_seed_file"}, secret: "tok-nats"},
+		{name: "a NATS list of Go strings", path: "nats_urls", value: []string{"nats://tok-go@h1:4222"},
+			reason: []string{"nats_urls carries a credential"}, secret: "tok-go"},
+		{name: "the daemon's address, which no key holds a credential for", path: "daemon_url", value: "http://tok-daemon:pw@10.0.0.5:13370",
+			reason: []string{"daemon_url carries a credential", "no other key of legion.yaml holds that credential", "belongs in legion.yaml"}, secret: "tok-daemon:pw"},
+		{name: "a pin's pre-signed query", path: "runtime.kubernetes.plugins.pi_envoy", value: "https://cache.example/pi-envoy.tgz?X-Amz-Signature=sig-pin",
+			reason: []string{"runtime.kubernetes.plugins.pi_envoy carries a credential in the query parameter X-Amz-Signature", "no other key"}, secret: "sig-pin"},
+		{name: "a pin inside its block", path: "runtime.kubernetes.plugins",
+			value:  map[string]any{"pi_envoy": "9.7.0", "pi_legion": "https://tok-block:pw@cache.example/pi-legion.tgz"},
+			reason: []string{"runtime.kubernetes.plugins.pi_legion carries a credential in an address's userinfo"}, secret: "tok-block:pw"},
+		{name: "a pane variable listing addresses", path: "runtime.tmux.pane_env", value: map[string]any{"NATS_LIST": "nats://h0:4222,nats://tok-pane@h1:4222"},
+			reason: []string{"runtime.tmux.pane_env carries a credential", "provider_keys"}, secret: "tok-pane"},
+		{name: "a pod variable with a database password", path: "runtime.kubernetes.pod.env", value: map[string]any{"DB": "postgres://tok-pod:pw@db/app"},
+			reason: []string{"runtime.kubernetes.pod.env carries a credential", "provider_keys or runtime.kubernetes.pod.volumes"}, secret: "tok-pod:pw"},
+		{name: "an inlined key", path: "github_apps.implement.private_key", value: "key-inline",
+			reason: []string{"github_apps.implement.private_key is the credential itself", "github_apps.implement.private_key_secret or github_apps.implement.private_key_command"}, secret: "key-inline"},
+		{name: "a fixed App's key inside the block set whole", path: "github_apps", value: map[string]any{
+			"implement": map[string]any{"app_id": "1", "private_key_secret": "IMPLEMENT_KEY"},
+			"review":    map[string]any{"app_id": "2", "private_key": "key-review"},
+		}, reason: []string{"github_apps.review.private_key is the credential itself"}, secret: "key-review"},
+
+		{name: "an @ in an address's path", path: "dispatch_url", value: "https://dispatch.example/a@b"},
+		{name: "an @ in an address's query", path: "dispatch_url", value: "https://dispatch.example/?who=a@b"},
+		{name: "addresses with no userinfo", path: "nats_urls", value: []string{"nats://h1:4222", "nats://h2:4222"}},
+		{name: "a pin's query the code names no credential in", path: "runtime.kubernetes.plugins.pi_envoy", value: "https://cache.example/pi-envoy.tgz?X-Amz-Date=20261115&v=2"},
+		{name: "a pin's tarball path", path: "runtime.kubernetes.plugins.pi_envoy", value: "/opt/legion/pi-envoy.tgz"},
+		{name: "a pod variable holding a mail address", path: "runtime.kubernetes.pod.env", value: map[string]any{"GIT_EMAIL": "ana@example.com", "HTTP_PROXY": "http://proxy:3128"}},
+		{name: "a withdrawn inlined key", path: "github_apps.implement.private_key", value: nil},
+		{name: "an App on a key command", path: "github_apps.implement", value: map[string]any{"app_id": "1", "private_key_command": "agent-secrets get KEY"}},
+		{name: "a credential file's path", path: "operator_token_file", value: "/etc/legion/operator-token"},
+		{name: "a provider key's name", path: "provider_keys.GEMINI_API_KEY", value: "GEMINI_API_KEY_TESTS"},
+		{name: "the provider keys whole", path: "provider_keys", value: map[string]any{"GEMINI_API_KEY": "GEMINI_API_KEY_TESTS"}},
+		{name: "a fixed address, which the apply refuses with its own reason", path: "postgres_dsn", value: "postgres://legion:pw@db/legion"},
+		{name: "a fixed App's key by its own path", path: "github_apps.review.private_key", value: "key"},
+		{name: "a path no row holds", path: "no_such_key", value: map[string]any{"private_key": "key"}},
+		{name: "a list of blocks", path: "runtime.kubernetes.scheduling.tolerations", value: []any{map[string]any{"key": "pool", "value": "legion"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			why, carried := CarriesCredential(tc.path, tc.value)
+			if carried != (tc.reason != nil) {
+				t.Fatalf("CarriesCredential(%s) = %q, %v; want carried %v", tc.path, why, carried, tc.reason != nil)
+			}
+			if !carried && why != "" {
+				t.Fatalf("CarriesCredential(%s) carries nothing and says %q", tc.path, why)
+			}
+			for _, want := range tc.reason {
+				if !strings.Contains(why, want) {
+					t.Errorf("the refusal of %s says %q, which names no %q", tc.path, why, want)
+				}
+			}
+			if tc.secret != "" && strings.Contains(why, tc.secret) {
+				t.Errorf("the refusal of %s quotes the credential: %q", tc.path, why)
+			}
+		})
 	}
 }
