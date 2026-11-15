@@ -169,12 +169,33 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     run(["git", "-C", ws, "checkout", "-q", "--detach"]);
     writeFileSync(join(ws, "notes.txt"), "first\nunpushed\nedited\n");
     writeFileSync(join(ws, "new.txt"), "a file no commit holds\n");
+    // Links that climb with `..` and stay in the tree, as a Bun workspace's node_modules holds:
+    // one that climbs to the root and back down, one that climbs one step, and a .bin link whose
+    // target runs through another in-tree link, node_modules/astro, and resolves inside the tree.
+    mkdirSync(join(ws, "node_modules/.bun/x"), { recursive: true });
+    writeFileSync(join(ws, "node_modules/.bun/x/index.js"), "export {};\n");
+    mkdirSync(join(ws, "packages/a/node_modules"), { recursive: true });
+    symlinkSync("../../../node_modules/.bun/x", join(ws, "packages/a/node_modules/x"));
+    symlinkSync("../node_modules/.bun/x", join(ws, "node_modules/x"));
+    mkdirSync(join(ws, ".bun/astro/bin"), { recursive: true });
+    writeFileSync(join(ws, ".bun/astro/bin/astro.mjs"), "export {};\n");
+    symlinkSync("../.bun/astro", join(ws, "node_modules/astro"));
+    mkdirSync(join(ws, "node_modules/.bin"));
+    symlinkSync("../astro/bin/astro.mjs", join(ws, "node_modules/.bin/astro"));
+    // An absolute link the repository ignores, as a virtualenv holds, and the relative link beside
+    // it whose walk ends at that absolute target: the tree archive carries both, the checks read
+    // them, and .gitignore keeps them out of the rebuilt commit.
+    writeFileSync(join(ws, ".gitignore"), ".venv/\n");
+    mkdirSync(join(ws, ".venv/bin"), { recursive: true });
+    symlinkSync("/usr/bin/python3", join(ws, ".venv/bin/python"));
+    symlinkSync("python", join(ws, ".venv/bin/python3"));
     mkdirSync(join(root, "archives"));
     goodGit = join(root, "archives/git.tar");
     goodTree = join(root, "archives/tree.tar");
     gitArchive(join(clone, ".git"), goodGit);
     treeArchive(ws, goodTree);
-  });
+    // A dozen git and tar runs: Bun's 5 s default for a hook does not cover a slow host.
+  }, 60_000);
 
   afterAll(() => {
     if (root !== undefined) rmSync(root, { recursive: true, force: true });
@@ -208,6 +229,44 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     expect(run(["git", "-C", verify, "show", `rescue/${key}:new.txt`])).toBe(
       "a file no commit holds\n"
     );
+    for (const [link, target] of [
+      ["packages/a/node_modules/x", "../../../node_modules/.bun/x"],
+      ["node_modules/x", "../node_modules/.bun/x"],
+      ["node_modules/astro", "../.bun/astro"],
+      ["node_modules/.bin/astro", "../astro/bin/astro.mjs"],
+    ]) {
+      expect(run(["git", "-C", verify, "ls-tree", `rescue/${key}`, link])).toStartWith("120000 ");
+      expect(run(["git", "-C", verify, "cat-file", "-p", `rescue/${key}:${link}`])).toBe(target);
+    }
+    const files = run(["git", "-C", verify, "ls-tree", "-r", "--name-only", `rescue/${key}`]);
+    expect(files.split("\n")).toContain(".gitignore");
+    expect(files.split("\n").filter((file) => file.startsWith(".venv"))).toEqual([]);
+  }, 60_000);
+
+  test("an absolute link the repository tracks arrives in the commit as a link", () => {
+    const directory = caseDirectory();
+    mkdirSync(join(directory, "tools"));
+    symlinkSync("/usr/bin/python3", join(directory, "tools/python"));
+    const outcome = carryOut(goodGit, appended(goodTree, directory, "tools"));
+    expect(outcome.stderr).not.toContain("refused:");
+    expect(outcome.exitCode).toBe(0);
+    const verify = join(caseDirectory(), "verify");
+    run(["git", "clone", "-q", join(root, "origin"), verify]);
+    run([
+      "git",
+      "-C",
+      verify,
+      "fetch",
+      "-q",
+      outcome.bundle,
+      `rescue-${key}:refs/remotes/rescue/${key}`,
+    ]);
+    expect(run(["git", "-C", verify, "ls-tree", `rescue/${key}`, "tools/python"])).toStartWith(
+      "120000 "
+    );
+    expect(run(["git", "-C", verify, "cat-file", "-p", `rescue/${key}:tools/python`])).toBe(
+      "/usr/bin/python3"
+    );
   }, 60_000);
 
   test("it refuses a git archive holding a symlink", () => {
@@ -239,21 +298,91 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     expectRefused(carryOut(goodGit, appended(goodTree, directory, "fifo")), "holds p");
   }, 60_000);
 
-  test("it refuses a tree archive holding a symlink to an absolute target", () => {
+  test("it refuses an entry through an absolute link of the tree", () => {
+    // .venv/bin/python -> /usr/bin/python3 is in the good tree; an entry under it is not.
     const directory = caseDirectory();
-    symlinkSync("/etc/passwd", join(directory, "absolute"));
+    mkdirSync(join(directory, ".venv/bin/python"), { recursive: true });
+    writeFileSync(join(directory, ".venv/bin/python/x"), "through the link\n");
+    const treeTar = join(caseDirectory(), "tree.tar");
+    copyFileSync(goodTree, treeTar);
+    run(["tar", "-rf", treeTar, "-C", directory, ".venv/bin/python/x"]);
     expectRefused(
-      carryOut(goodGit, appended(goodTree, directory, "absolute")),
-      "holds a symlink whose target is absolute"
+      carryOut(goodGit, treeTar),
+      "holds an entry through a symlink of the tree: .venv/bin/python/x under .venv/bin/python"
     );
   }, 60_000);
 
-  test("it refuses a tree archive holding a symlink whose target holds ..", () => {
+  test("it refuses a tree archive holding a symlink whose target leaves the tree", () => {
     const directory = caseDirectory();
-    symlinkSync("../../outside", join(directory, "climbing"));
+    mkdirSync(join(directory, "a/b"), { recursive: true });
+    symlinkSync("../../../out", join(directory, "a/b/l"));
     expectRefused(
-      carryOut(goodGit, appended(goodTree, directory, "climbing")),
-      "holds a symlink whose target holds .."
+      carryOut(goodGit, appended(goodTree, directory, "a")),
+      "holds a symlink whose target leaves the tree: a/b/l -> ../../../out"
+    );
+  }, 60_000);
+
+  test("it refuses a symlink that leaves the tree through another link of the archive", () => {
+    // d -> . stays at the root, and l -> d/.. walks d back to the root, then climbs above it,
+    // though read as written it climbs no higher than the root.
+    const directory = caseDirectory();
+    symlinkSync(".", join(directory, "d"));
+    symlinkSync("d/..", join(directory, "l"));
+    expectRefused(
+      carryOut(goodGit, appended(goodTree, directory, "d", "l")),
+      "holds a symlink whose target leaves the tree: l -> d/.."
+    );
+  }, 60_000);
+
+  test("it refuses a symlink to the tree root's parent", () => {
+    const directory = caseDirectory();
+    symlinkSync("..", join(directory, "x"));
+    expectRefused(
+      carryOut(goodGit, appended(goodTree, directory, "x")),
+      "holds a symlink whose target leaves the tree: x -> .."
+    );
+  }, 60_000);
+
+  test("it refuses symlinks that loop", () => {
+    const directory = caseDirectory();
+    mkdirSync(join(directory, "loop"));
+    symlinkSync("b", join(directory, "loop/a"));
+    symlinkSync("a", join(directory, "loop/b"));
+    // tar lists a directory's entries in the order the filesystem gives, so each link is read
+    // from the output on its own.
+    const outcome = carryOut(goodGit, appended(goodTree, directory, "loop"));
+    expectRefused(outcome, "holds a symlink whose target loops: loop/");
+    expect(outcome.stderr).toContain("loop/a -> b");
+    expect(outcome.stderr).toContain("loop/b -> a");
+  }, 60_000);
+
+  test("it refuses a symlink whose walk passes through more than 40 links, and no shorter one", () => {
+    // chain/l0 -> l1 -> … -> l41 -> end: l0's walk passes through 41 links, l1's through 40.
+    const directory = caseDirectory();
+    mkdirSync(join(directory, "chain"));
+    for (let n = 0; n <= 41; n++) {
+      symlinkSync(n === 41 ? "end" : `l${n + 1}`, join(directory, `chain/l${n}`));
+    }
+    const outcome = carryOut(goodGit, appended(goodTree, directory, "chain"));
+    expectRefused(
+      outcome,
+      "holds a symlink whose target passes through more than 40 links: chain/l0 -> l1"
+    );
+    expect(outcome.stderr).not.toContain("chain/l1 -> l2");
+  }, 60_000);
+
+  test("it refuses a tree archive holding an entry through a symlink of the archive", () => {
+    // A link `x -> .`, then an entry `x/l`, which no tar of a real directory writes.
+    const link = caseDirectory();
+    symlinkSync(".", join(link, "x"));
+    const file = caseDirectory();
+    mkdirSync(join(file, "x"));
+    writeFileSync(join(file, "x/l"), "under the link\n");
+    const treeTar = appended(goodTree, link, "x");
+    run(["tar", "-rf", treeTar, "-C", file, "x/l"]);
+    expectRefused(
+      carryOut(goodGit, treeTar),
+      "holds an entry through a symlink of the tree: x/l under x"
     );
   }, 60_000);
 

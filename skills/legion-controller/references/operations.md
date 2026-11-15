@@ -162,12 +162,27 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
 2. **Rebuild the work into a bundle in your own pod.** `carry-out.sh` runs itself in a user,
    network, mount and PID namespace of its own, with a tmpfs over `/run` and over `$HOME`, and
    refuses to run outside it. It checks the type of each entry of both archives. It refuses an
-   entry of the tree through a `.git` or `.jj` directory, at any depth and in any case, and a
-   symlink in the tree whose target is absolute or holds `..`. It then rebuilds the work under an
-   empty environment, and writes a bundle of the branch `rescue-<KEY>`: the commits origin lacks,
-   and the edits no commit holds as one more commit. In a pod of the worker image, the plugin holds
-   the script at `/opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh`, the
-   same file as `skill://legion-controller/scripts/carry-out.sh`:
+   entry of the tree through a `.git` or `.jj` directory, at any depth and in any case, and an
+   entry under a symlink of the tree. It refuses a symlink whose relative target, walked from the
+   link's own directory and on through each link of the tree it meets, climbs above the tree's
+   root, loops, or passes through more than 40 links. An in-tree link that climbs and comes back
+   down, as a Bun workspace's `node_modules` holds, passes.
+
+   An absolute target, such as a virtualenv's `bin/python -> /usr/bin/python3`, passes, and ends
+   the walk of any link that reaches it. It carries no write out of the tree: no entry under a
+   link is unpacked, tar replaces a name it meets again and does not write through it, and
+   `git add` stores a link as a link and does not follow it.
+
+   The tree archive holds ignored files too. Step 1 leaves out only `.git`, `.jj` and
+   `.codegraph`, so `node_modules` and a `.venv` are in it, and the script checks them. The
+   repository's `.gitignore` keeps them out of the rebuilt commit. So a link that git never adds
+   can still refuse a pod, but only as an entry under a link or by the walk of its relative target.
+
+   It then rebuilds the work under an empty environment, and writes a bundle of the branch
+   `rescue-<KEY>`: the commits origin lacks, and the edits no commit holds as one more commit. In a
+   pod of the worker image, the plugin holds the script at
+   `/opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh`, the same file as
+   `skill://legion-controller/scripts/carry-out.sh`:
 
    ```sh
    sh /opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh <KEY> /legion/workspaces/<owner>/<repo>/<key> "$TMPDIR/<KEY>-git.tar" "$TMPDIR/<KEY>-tree.tar" "$TMPDIR/<KEY>.bundle"
@@ -231,6 +246,14 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
 object in the archives that exploits a bug of git or tar runs inside the namespace in your pod.
 There it has no network, and it sees neither `/run`, which holds the credential files under
 `/var/run/legion` and `/var/run/secrets`, nor `$HOME`. It sees `$TMPDIR`.
+
+The bundle can also carry what a role's own push would carry. An absolute link that `git add -A`
+takes, tracked or new and named by no `.gitignore`, can reach the bundle. So can a file that a
+`.gitignore` would have ignored when that `.gitignore` is itself a symlink, because git does not
+read a `.gitignore` that is a symlink. Read the log's `--stat` in step 3 before you push. With
+GNU tar 1.35 and git 2.47.3, tar replaced a repeated name and did not write through the link,
+`git add -A` staged an absolute link as mode 120000, and git did not read a symlinked
+`.gitignore`.
 
 Proved: <PROOF>
 

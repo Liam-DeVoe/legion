@@ -111,15 +111,103 @@ sed -nE 's/^[^"]*"(([^"\\]|\\.)*)".*/\1/p' tree.list >names
 bad=$(grep -iE '(^|/)\.(git|jj)(/|$)' names || true)
 test -z "$bad" || refuse "$tree holds an entry through .git or .jj: $bad"
 
-# The tree is unpacked in the controller's own pod, not in a throwaway container, so a symlink it
-# holds may point neither out of the tree nor at an absolute path.
-links=$(grep -c '^l' tree.list || true)
-sed -n 's/^l.*" -> "\(.*\)"$/\1/p' tree.list >targets
-[ "$(wc -l <targets)" -eq "$links" ] || refuse "cannot read the target of each symlink $tree holds"
-bad=$(grep '^/' targets || true)
-test -z "$bad" || refuse "$tree holds a symlink whose target is absolute: $bad"
-bad=$(grep -F .. targets || true)
-test -z "$bad" || refuse "$tree holds a symlink whose target holds ..: $bad"
+# The tree is unpacked in the controller's own pod, not in a throwaway container, so its symlinks
+# are held to two rules. First, no entry may run through a symlink of the archive: a tar of a real
+# directory never writes one under a link, and tar would write it where the link points rather
+# than where its name says. Second, a relative target may not lead above the tree's root: it is
+# walked one component at a time from the link's own directory, `.` dropped and `..` taking one
+# away, and where the path so far is a symlink entry of the archive, the walk goes on from that
+# entry's own target, from that entry's directory, so a link through `d -> .` that ends in `..` is
+# caught; a walk that loops, or that passes through more than 40 links, is refused too. An in-tree
+# link that climbs and comes back down, as every Bun workspace's node_modules holds, passes, and so
+# does one whose target runs through another in-tree link, as node_modules/.bin's do.
+# An absolute target, the link's own or one met on the walk, ends the walk and is no refusal, as a
+# virtualenv's `bin/python -> /usr/bin/python3` is not: the first rule keeps every later entry from
+# being written through any link, tar replaces a name it meets again rather than write through it,
+# and git add stores a link as a link and does not follow it, so such a target carries no write out
+# of the tree. The tree archive holds ignored files too, node_modules and a .venv among them, since
+# step 1 leaves out only .git, .jj and .codegraph: they are checked here, and the repository's
+# .gitignore keeps them out of the rebuilt commit.
+# Names are compared with tar's `./` and every `.` or empty component left out, and in the C
+# quoting of the listing, which writes `/` and `.` as they are. awk prints one line per finding,
+# its kind first; a line it cannot read is a finding too.
+awk '
+function readq(s, i,   j, c) {
+  for (j = i + 1; j <= length(s); j++) {
+    c = substr(s, j, 1)
+    if (c == "\\") { j++; continue }
+    if (c == "\"") { qend = j; return substr(s, i + 1, j - i - 1) }
+  }
+  qend = 0
+  return ""
+}
+function canon(p,   n, part, k, out) {
+  n = split(p, part, "/")
+  out = ""
+  for (k = 1; k <= n; k++)
+    if (part[k] != "" && part[k] != ".") out = (out == "" ? part[k] : out "/" part[k])
+  return out
+}
+function walk(p, t,   st, depth, rem, i, c, cur, k, hops, seen) {
+  depth = split(p, st, "/") - 1
+  if (substr(t, 1, 1) == "/") return ""
+  rem = t
+  hops = 0
+  while (rem != "") {
+    i = index(rem, "/")
+    if (i == 0) { c = rem; rem = "" } else { c = substr(rem, 1, i - 1); rem = substr(rem, i + 1) }
+    if (c == "" || c == ".") continue
+    if (c == "..") { if (depth == 0) return "leaves"; depth--; continue }
+    st[++depth] = c
+    cur = st[1]
+    for (k = 2; k <= depth; k++) cur = cur "/" st[k]
+    if (!(cur in linkto)) continue
+    if ((cur SUBSEP rem) in seen) return "loops"
+    seen[cur SUBSEP rem] = 1
+    if (++hops > 40) return "hops"
+    if (substr(linkto[cur], 1, 1) == "/") return ""
+    depth--
+    rem = (rem == "" ? linkto[cur] : linkto[cur] "/" rem)
+  }
+  return ""
+}
+{
+  q = index($0, "\"")
+  if (q == 0) { print "unread line " NR; next }
+  name = readq($0, q)
+  if (qend == 0) { print "unread line " NR; next }
+  path[NR] = canon(name)
+  if ($1 !~ /^l/) next
+  rest = substr($0, qend + 1)
+  if (substr(rest, 1, 5) != " -> \"") { print "unread line " NR; next }
+  target[NR] = readq(rest, 5)
+  if (qend == 0) { print "unread line " NR; next }
+  linkto[path[NR]] = target[NR]
+}
+END {
+  for (r = 1; r <= NR; r++) {
+    if (!(r in path)) continue
+    n = split(path[r], part, "/")
+    prefix = ""
+    for (k = 1; k < n; k++) {
+      prefix = (k == 1 ? part[1] : prefix "/" part[k])
+      if (prefix in linkto) { print "through " path[r] " under " prefix; break }
+    }
+    if (!(r in target)) continue
+    found = walk(path[r], target[r])
+    if (found != "") print found " " path[r] " -> " target[r]
+  }
+}' tree.list >findings
+bad=$(sed -n 's/^unread //p' findings)
+test -z "$bad" || refuse "cannot read the name of each entry and the target of each symlink $tree holds: $bad"
+bad=$(sed -n 's/^leaves //p' findings)
+test -z "$bad" || refuse "$tree holds a symlink whose target leaves the tree: $bad"
+bad=$(sed -n 's/^loops //p' findings)
+test -z "$bad" || refuse "$tree holds a symlink whose target loops: $bad"
+bad=$(sed -n 's/^hops //p' findings)
+test -z "$bad" || refuse "$tree holds a symlink whose target passes through more than 40 links: $bad"
+bad=$(sed -n 's/^through //p' findings)
+test -z "$bad" || refuse "$tree holds an entry through a symlink of the tree: $bad"
 
 # tar runs as the namespace's uid 0, which restores each entry's owner and mode by default; the
 # owner, uid 1000 of the pod, is not mapped here, so it takes neither, as the docs' non-root

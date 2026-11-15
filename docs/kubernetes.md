@@ -3981,9 +3981,19 @@ It runs steps 1 and 3 as above, step 3 through the worker image's `git` wrapper 
 Its pod has no Docker, so step 2 runs in that pod, as `skills/legion-controller/scripts/carry-out.sh`:
 the script runs itself under `unshare --user --map-root-user --net --mount --pid --fork --mount-proc`, mounts a tmpfs over `/run` and over `$HOME`, and runs step 2 there under `env -i` with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`.
 It refuses to run outside that namespace, and stops where `unshare` is refused, so it never rebuilds with the network.
-It also refuses an entry of the tree archive through a `.git` or `.jj` directory, at any depth and in any case, and a symlink of it whose target is absolute or holds `..`, and extracts with `--no-same-owner`, since the namespace does not map the pod's uid 1000 that the archives record.
+It also refuses an entry of the tree archive through a `.git` or `.jj` directory, at any depth and in any case, and an entry under a symlink of the archive.
+It refuses a symlink whose relative target, walked from the link's own directory and on through each symlink of the archive it meets, climbs above the tree's root, loops, or passes through more than 40 links;
+an in-tree link that climbs and comes back down, as a Bun workspace's `node_modules` holds, passes.
+An absolute target, such as a virtualenv's `bin/python -> /usr/bin/python3`, passes, and ends the walk of any link that reaches it:
+no entry under a link is unpacked, GNU tar replaces a name it meets again rather than write through it, and `git add` stores a link as a link without following it, so such a target carries no write out of the tree.
+The tree archive holds ignored files too, since step 1 leaves out only `.git`, `.jj` and `.codegraph`:
+`node_modules` and a `.venv` are in it and are checked, and the repository's `.gitignore` keeps them out of the rebuilt commit, so a link git never adds can still refuse a pod, but only as an entry under a link or by its relative target's walk.
+It extracts with `--no-same-owner`, since the namespace does not map the pod's uid 1000 that the archives record.
 Its residual risk is a crafted object that exploits a bug of git or tar:
 it runs inside that namespace in the controller's own pod, with no network and with `/run` (the credential files under `/var/run/legion` and `/var/run/secrets`) and `$HOME` hidden, but not in a container of its own.
+An absolute link that `git add -A` takes, tracked or new and named by no `.gitignore`, can reach the bundle, as it would in a role's own push;
+so can a file that a `.gitignore` which is itself a symlink would have ignored, because git does not read a `.gitignore` that is a symlink.
+GNU tar 1.35 and git 2.47.3 were measured doing each of these: tar replaced a repeated name without writing through the link, `git add -A` staged an absolute link as mode 120000, and git did not read a symlinked `.gitignore`.
 
 ### Running a workload in the cluster from a role
 
