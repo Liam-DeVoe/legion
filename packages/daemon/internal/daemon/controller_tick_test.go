@@ -54,10 +54,15 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 	}
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
+	// The interval is the production default's hour on a clock that stands still unless this test
+	// moves it, so the loop's own timer never comes due: every tick is one this test runs through
+	// the loop's trigger.
+	fake := clocktest.New(time.Now().UTC())
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, controllerWake: 10 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, controllerWake: time.Hour, clock: fake,
 	}
+	passes := triggeringRuntime(w)
 	ticks := func() (rows int, issue string) {
 		t.Helper()
 		if err := pool.QueryRow(context.Background(), `select count(*), coalesce(min(issue), '') from outbox
@@ -77,7 +82,15 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { w.tickController(ctx); close(done) }()
-	testwait.Eventually(t, "three ticks applied", func() bool { return processed() >= 3 })
+	// Three ticks, each at a moment of its own on the runtime's clock, since a tick's event id is
+	// its moment, and each read only once its pass has ended.
+	for tick := 1; tick <= 3; tick++ {
+		fake.Advance(time.Second)
+		passes.pass(t, passControllerTick)
+		if n := processed(); n != tick {
+			t.Fatalf("%d ticks applied after this test's tick %d, want one for each tick it ran", n, tick)
+		}
+	}
 	cancel()
 	<-done
 	if rows, issue := ticks(); rows != 1 || issue != "CAPTURE" {

@@ -344,10 +344,11 @@ func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID stri
 }
 
 // A frame the session holds unwritten (received and progress, no done, as a side question held
-// over a turn) does not delay the receipt of the frames after it, which are written and done. When
-// the session restarts mid-hold and registers with a new epoch, the relay restarts at the ack floor
-// and sends the held frame and those after it again, in stream order, and the session, deduping by
-// event id as a plugin's ledger does, shows each event once.
+// over a turn) does not delay the receipt of the frames after it, which are written and done, even
+// once it has been held past the relay's receipt wait (on the relay's own clock). When the session
+// restarts mid-hold and registers with a new epoch, the relay restarts at the ack floor and sends
+// the held frame and those after it again, in stream order, and the session, deduping by event id
+// as a plugin's ledger does, shows each event once.
 func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_held"
@@ -380,14 +381,20 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	if _, err := rig.harness.client.JS().Publish(agent, marshalListenerEnvelope(t, e1)); err != nil {
 		t.Fatalf("store the held message: %v", err)
 	}
-	storedAt := time.Now()
 	e2, _ := rig.storeEvent(t, agent)
+	frames := first.collect(t, 2)
+	requireFrames(t, frames, e1, e2)
+	// The frame after the held one is written and acked while the held one waits, in progress. The
+	// stand-in sends its replies on one connection and the relay hears them on one subscription, in
+	// that order, so once e2 is acked the relay has heard e1's received and progress as well.
+	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
+	// The held frame outlives the receipt wait on the relay's clock, as a side question held over a
+	// turn outlives it. A relay that took a held frame for one the session never answered would
+	// pause here, and send nothing more until its backoff, which this clock never reaches.
+	rig.relayClock.Advance(relayReceiptWait)
 	e3, _ := rig.storeEvent(t, agent)
-	frames := first.collect(t, 3)
+	frames = append(frames, first.collect(t, 1)...)
 	requireFrames(t, frames, e1, e2, e3)
-	if late := frames[2].arrived.Sub(storedAt); late > time.Second {
-		t.Fatalf("the frame after the held one arrived %s after it was stored, want under 1s", late)
-	}
 	// Everything but the held frame is written and acked; the held one waits, in progress.
 	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
 
