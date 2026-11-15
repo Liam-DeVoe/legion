@@ -119,18 +119,11 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
-// about queued rows, read without its question about the claim's own liveness: this claim is
-// live, which is precisely why it is being given its task.
+// about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
+// liveness: this claim is live, which is precisely why it is being given its task.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	if actingStop(run, root) != 0 {
-		return true
-	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current {
-			return true
-		}
-	}
-	return false
+	stop := actingStop(run, root)
+	return stop != 0 || queuedStartActs(run, stop, current)
 }
 
 // readyWorkerTask gives a phase worker whose claim has just become ready its phase's task again,

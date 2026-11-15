@@ -151,6 +151,21 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 	return relaunch
 }
 
+// startActs is whether queued is a start for current with an id above stop, the newest stop that
+// still acts (actingStop), which is a start that will reach the claim. queuedStartActs and
+// ArchitectRelaunchOf both read it, so they count the same starts.
+func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) bool {
+	return queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop
+}
+
+// lastStartRow is the newest start the outbox ran against run's claim, 0 when run has no claim.
+func lastStartRow(run record.RoleRun) int64 {
+	if run.Claim == nil {
+		return 0
+	}
+	return run.Claim.LastStartRow
+}
+
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names (row): the start StartArchitect writes, enqueued directly rather than through
 // StartOrOwe, so it waits for no admission slot and marks no movement: a root architect's start

@@ -106,7 +106,8 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // not, since each waits for the operator's resume, so Stranded lists it without asking. The
 // architect's start names no phase, so its current is "".
 //
-// Its reading of run.Queued is queuedStartActs, which SilentPhaseWorker shares.
+// Its reading of run.Queued is queuedStartActs, which SilentPhaseWorker and catch_up.go's
+// queuedRowCovers share.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
 	stop := actingStop(run, root)
 	if queuedStartActs(run, stop, current) {
@@ -120,8 +121,8 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
 }
 
-// queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor and
-// SilentPhaseWorker both read it, so they answer that term alike.
+// queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor,
+// SilentPhaseWorker and catch_up.go's queuedRowCovers all read it, so they answer that term alike.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if startActs(queued, stop, current) {
@@ -129,13 +130,6 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 		}
 	}
 	return false
-}
-
-// startActs is whether queued is a start for current with an id above stop, the newest stop that
-// still acts (actingStop), which is a start that will reach the claim. queuedStartActs and
-// ArchitectRelaunchOf both read it, so they count the same starts.
-func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) bool {
-	return queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop
 }
 
 // PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a
@@ -310,14 +304,6 @@ func actingStop(run record.RoleRun, root record.Issue) int64 {
 		}
 	}
 	return stop
-}
-
-// lastStartRow is the newest start the outbox ran against run's claim, 0 when run has no claim.
-func lastStartRow(run record.RoleRun) int64 {
-	if run.Claim == nil {
-		return 0
-	}
-	return run.Claim.LastStartRow
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
