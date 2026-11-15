@@ -386,7 +386,11 @@ test.skipIf(skip)(
         return written > started ? written : undefined;
       }
     );
-    expect(pane.reports.length).toBeGreaterThan(0);
+    // The pane sends its first report once a period, which a loaded machine stretches past the
+    // heartbeats above, so the case waits for that report rather than reading it is already there.
+    await pane.until("the session's first activity report", () =>
+      pane.reports.length > 0 ? pane.reports.length : undefined
+    );
     for (const report of pane.reports.slice(beforeTheService)) {
       expect(report.backgroundWork).toEqual({ running: false, kinds: [] });
     }

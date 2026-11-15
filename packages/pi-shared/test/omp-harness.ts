@@ -267,7 +267,16 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
     });
   } catch (error) {
     if (frame.stopped?.error !== undefined && error === frame.stopped.error) throw error;
-    const cause = inFlight === undefined ? String(lastError) : "its last send was still unanswered";
+    // A send whose deadline came while a request was out names that, and the error the request
+    // before it met as well: which of the two the deadline found depends on scheduling, while the
+    // error an earlier request met (a 503 with no responder) is the fact the send stopped on.
+    const unanswered = "its last send was still unanswered";
+    const cause =
+      inFlight === undefined
+        ? String(lastError)
+        : lastError === undefined
+          ? unanswered
+          : `${unanswered}, and the one before it met ${String(lastError)}`;
     throw new Error(`${frame.sessionID} took no relay frame on ${frame.subject}: ${cause}`, {
       cause: error,
     });
