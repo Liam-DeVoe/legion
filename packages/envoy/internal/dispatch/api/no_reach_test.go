@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -523,7 +524,7 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //     that honoured one would answer something else, so the answer must be the answer it gives
 //     without them, status and rows alike, as the base build answered it.
 func threeBadRequests(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	// The production table: a test hook is mounted only where Deps.TestHooksEnabled is set, and
 	// a route the server does not serve answers 404 to every caller rather than refusing one.
 	rows := routesBeforeThisChild(t, false)
@@ -572,7 +573,19 @@ func threeBadRequests(t *testing.T) {
 	// plain read, so the walked read must answer exactly that: a refusal is an answer
 	// production never gave, and fails as any other. A word a route does declare - `kind` on
 	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
-	// rule, and is no traversal the caller handed it.
+	// rule, and is no traversal the caller handed it. A read whose rows can grow between the
+	// two reads (growingReads) is walked under a parameter it declares that holds it to the
+	// rows its plain read answered, so the two answers differ only where the walk did.
+	//
+	// The event log answers only the events at or below the server's safe horizon, which a
+	// transaction open anywhere on the Postgres instance holds back (events.Horizon): under
+	// load its first read can answer none of the seeded events and its next read every one of
+	// them. Awaiting a horizon proven after the seed puts every seeded event at or below it
+	// before the log is read, and the horizon never falls, so its plain read answers them all
+	// and its bound holds its walked read to them.
+	if _, err := served.horizon().Await(t.Context()); err != nil {
+		t.Fatalf("await an event horizon above the seeded events: %v", err)
+	}
 	queries := routeProbeQueries(owned)
 	answered := 0
 	for _, route := range rows {
@@ -581,12 +594,24 @@ func threeBadRequests(t *testing.T) {
 		}
 		name := route.Method + " " + route.Pattern
 		target := seededProbePath(route.Pattern, owned)
-		walkedTarget := target + "?" + undeclaredTraversal(name)
 		if query, held := queries[name]; held {
 			target += "?" + query
-			walkedTarget = target + "&" + undeclaredTraversal(name)
 		}
 		plain := dispatchRequest(t, handler, route.Method, target, nil, "alice")
+		walk := undeclaredTraversal(name)
+		if bound, grows := growingReads[name]; grows && plain.Code < 400 {
+			held, readRows := bound(plain.Body.Bytes())
+			if !readRows {
+				t.Errorf("%s answers %s at %s on its own, so no bound holds its traversal probe to the rows it read",
+					name, answerShape(plain.Body.Bytes()), target)
+				continue
+			}
+			walk = held + "&" + walk
+		}
+		walkedTarget := target + "?" + walk
+		if _, held := queries[name]; held {
+			walkedTarget = target + "&" + walk
+		}
 		walked := dispatchRequest(t, handler, route.Method, walkedTarget, nil, "alice")
 		if reason, exempt := routesNoSeedAnswers[name]; exempt {
 			if plain.Code < 400 {
@@ -654,6 +679,57 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 	}
+}
+
+// growingReads are the reads the traversal probe walks whose rows can grow between its plain
+// read and its walked one, each with the query, of parameters the route declares, that holds the
+// walked read to the rows the plain read answered, or false when that read answered no row to
+// hold it to. All three read the event log. The server's own background work appends to it after
+// the request that caused the work has been answered (a document's settlement, a keyed write
+// whose client left), and the whole log is read only up to the safe horizon, which moves on
+// whenever a transaction open on the Postgres instance ends. Every other read the probe walks
+// either lists rows that only a write request adds - the inbox's open asks, an issue's comments,
+// messages and asks, the broadcasts - and the probe sends only reads, or answers an object,
+// whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
+// search, the replies, the answers, a person's nodes, the related checks.
+var growingReads = map[string]func(answered []byte) (string, bool){
+	"GET /api/v1/events/log":            eventLogBound,
+	"GET /api/v1/issues/{key}/events":   eventFeedBound,
+	"GET /api/v1/artifacts/{id}/events": eventFeedBound,
+}
+
+// eventFeedBound holds a read of one issue's or one project document's events to the events
+// answered holds: before= one past the newest sequence among them. An issue and a project
+// document number their events under their own row, which each append locks until it commits,
+// so an event the plain read did not see has a later sequence than every event it did, and
+// before= leaves it out. The page keeps the route's default limit, above the rows answered, so
+// a walk that reached another owner's events would still answer more rows.
+func eventFeedBound(answered []byte) (string, bool) {
+	var events []struct {
+		Seq int `json:"seq"`
+	}
+	if err := json.Unmarshal(answered, &events); err != nil || len(events) == 0 {
+		return "", false
+	}
+	newest := 0
+	for _, event := range events {
+		newest = max(newest, event.Seq)
+	}
+	return url.Values{"before": {strconv.Itoa(newest + 1)}}.Encode(), true
+}
+
+// eventLogBound holds a read of the whole event log to the events answered holds: limit=, the
+// one bound the log declares besides after=, set to how many there are. The log is read oldest
+// first by id, every event at or below the horizon is final, and the horizon never falls, so the
+// first that many events of a later read are the events the plain read answered. The log
+// already answers every event, so a traversal word it honoured as a filter would answer fewer
+// rows, and one it honoured by adding rows past its limit would answer more.
+func eventLogBound(answered []byte) (string, bool) {
+	var events []json.RawMessage
+	if err := json.Unmarshal(answered, &events); err != nil || len(events) == 0 {
+		return "", false
+	}
+	return url.Values{"limit": {strconv.Itoa(len(events))}}.Encode(), true
 }
 
 // seededProbePath is the route's path at the objects seedTwoProjects wrote under their own
