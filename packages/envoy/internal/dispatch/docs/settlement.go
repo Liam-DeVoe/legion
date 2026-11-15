@@ -125,15 +125,16 @@ type settlement struct {
 // Shutdown's do them (followUpSettlement), and a caller that runs it synchronously and answers for
 // its outcome itself reports the reason instead (settleOwedNow).
 //
-// A closed issue's document settles as an open one's does. Nothing that arms or runs a settlement
-// reads whether the issue is closed, and the issue's state the settlement goes by is the issue row
-// its transaction locks (issueClosed). The issue's close ends a settlement it finds armed or
-// running only as every move of the room's generation does (closeRecordLocked), and the document's
-// pending-settlement row leaves that settlement to resume. The one settlement a closed issue ends
-// besides is one whose room took an update the append gate refused because the issue closed more
-// than closeMargin before the room took it: that room holds text the store never will, so the
-// settlement saves nothing of it, fails no room and counts no failure, and the room's close and
-// the resumption after it settle the document from the store (endOnRefusedUpdate).
+// A closed issue's document settles as an open one's does. Nothing that arms a settlement, or
+// decides whether one goes on, reads whether the issue is closed. The settlement reads the issue's
+// state only to decide what it writes, and only from the issue row its transaction locks
+// (issueClosed). The issue's close ends a settlement it finds armed or running only as every move
+// of the room's generation does (closeRecordLocked), and the document's pending-settlement row
+// leaves that settlement to resume. The one settlement a closed issue ends besides is one whose
+// room took an update the append gate refused because the issue closed more than closeMargin
+// before the room took it: that room holds text the store never will, so the settlement saves
+// nothing of it, fails no room and counts no failure, and the room's close and the resumption
+// after it settle the document from the store (endOnRefusedUpdate).
 //
 // The settlement runs in stages, each of which answers settleOn where the settlement goes on and
 // the step and outcome it ends on otherwise: it takes the room's live instance (take), reads the

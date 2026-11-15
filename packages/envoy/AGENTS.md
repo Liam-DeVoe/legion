@@ -487,8 +487,8 @@ It runs on an interval because a rolling deploy stops the old task after the new
 Each pass runs under the lease `settlement-resumption` (`duty.Exclusive`), so one process per minute arms the owed settlements:
 a settlement reads the store under the document's lock whichever process runs it.
 A document settles whether or not its issue is closed.
-Nothing that arms or runs a settlement reads the issue's state.
-The settlement reads the issue row that it locks (`settlement.issueClosed`), not the room's record, because the record of a process that has not heard of a close still reads open.
+Nothing that arms a settlement, or decides whether one goes on, reads the issue's state.
+The settlement reads that state only to decide what it writes, and it reads it from the issue row that it locks (`settlement.issueClosed`), not from the room's record, because the record of a process that has not heard of a close still reads open.
 One pass arms at most 50 documents (`settlementResumeBatch`), and the documents of closed and open issues share that bound.
 The pass takes first the rows that no pass tried, oldest `marked_at` first, and then the rows that a pass tried, oldest `tried_at` first.
 The statement that picks the rows also writes `tried_at` on them (migration `20261114100038`), and a settlement that commits deletes the row.
@@ -2501,7 +2501,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The Go Dispatch server maintains its emitted event names and wire payloads separately; `bun run gen:go` generates Envoy envelope validation only.
 
 - `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
-  alone it pages `contracts.DefaultIssuePageLimit`, 50): `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
+  alone it pages `contracts.DefaultIssuePageLimit`, 50):
+  `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
@@ -2549,11 +2550,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
-  `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state: absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
+  `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
+  absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
   everyone who has signed in) — else `400 ASSIGNEE_NOT_ALLOWED` naming the email; a non-string is `400 INVALID_ISSUE`).
   Any authenticated actor may set it; the event's actor is who assigned it, and the whole issue rides in `issue.created` / `issue.updated`, so there is no `assigned_by`.
   Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of:
-  a human actor's email; a personal token's `Owner`; the parent's assignee when it names someone;
+  a human actor's email; a personal token's `Owner`;
+  the parent's assignee when it names someone;
   the project's `default_assignee`, which every project names (`projects.default_assignee`, migrations `0116` and `20261111210103`;
   the column is not null, and a default left stale by a restore or a direct write is used as it stands rather than refusing the create, so the step is the column the create's own transaction already read and not `allowedLogin`).
   The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.

@@ -5418,10 +5418,13 @@ const closingAskSpec = "Context\n\n:::ask{#ship-it urgency=\"med\" multiple=\"fa
 const closingAskResolved = `#ship-it urgency="med" multiple="false" state="resolved"`
 
 // closedSettlementWithin is how long a closed issue's owed document is given to settle on the
-// running servers. Nothing need open it: the resumption arms a pending row once it is a minute
-// old, a pass runs once a docs.SettlementResumeInterval (one minute) on whichever process holds
-// that period's lease, and the settlement the pass arms runs a settle delay later. Four minutes
-// holds the three, with room for a loaded run.
+// running servers. The close's own write of the decision block arms the settlement a settle delay
+// later on the process that made it (docs' publishLiveWrite), unless that process's close of the
+// document's room stops the timer first (closeRecordLocked). Then nothing need open the document:
+// the resumption arms a pending row once it is a minute old, a pass runs once a
+// docs.SettlementResumeInterval (one minute) on whichever process holds that period's lease, and
+// the settlement the pass arms runs a settle delay later. Four minutes holds the three, with room
+// for a loaded run.
 const closedSettlementWithin = 4 * time.Minute
 
 // closingAskIssue is an issue whose spec is closingAskSpec, as the rows below have it before the
@@ -5572,12 +5575,15 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // Bob's keystroke in his tab on B is stored, and the issue closes through A. The close settles the
 // spec first, so the keystroke is in the version the close leaves; the close's withdrawal of the
 // decision's ask then writes the block resolved, which leaves the spec owing a settlement, and the
-// close closes B's room. Nothing opens the spec after that, so a resumption pass arms the
-// settlement, on whichever process holds that period's lease. Within closedSettlementWithin the
-// pending row in the database is gone. The settlement that deletes it writes its version in the
-// same transaction, so the newest version, read once through A's own API, is past the one the
-// close left and holds bob's keystroke and the block resolved, and the ask still reads withdrawn
-// on both processes.
+// close closes B's room. Nothing opens the spec after that. The close's own write arms the
+// settlement on A a settle delay later, unless A's close of its room stops that timer first; then
+// a resumption pass arms it, on whichever process holds that period's lease. Which of the two
+// arms it is a race this test does not decide, so it does not prove the resumption on its own:
+// the docs package's tests drive that path (TestAClosedIssuesOwedSettlementCompletes and the
+// bound's tests). Within closedSettlementWithin the pending row in the database is gone. The
+// settlement that deletes it writes its version in the same transaction, so the newest version,
+// read once through A's own API, is past the one the close left and holds bob's keystroke and the
+// block resolved, and the ask still reads withdrawn on both processes.
 func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 	const settleDelay = 2 * time.Second
 	pair := newPair(t)
