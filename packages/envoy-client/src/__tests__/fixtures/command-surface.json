@@ -1889,20 +1889,11 @@
             "body": "DSP-1: the rota is nowhere written down. Please write it up.",
             "delivery": "aside"
           }
-        },
-        {
-          "method": "GET",
-          "path": "/healthz",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret"
-          },
-          "body": null
         }
       ],
-      "outcome": "error",
+      "outcome": "result",
       "text": [
-        "unexpected request: POST /api/v1/agents/01234567-0000-4000-8000-000000000001/messages"
+        "Sent message 01234567-0000-4000-8000-000000000001 to session 01234567-0000-4000-8000-000000000001; it reached that session as aside. dispatch read --message 01234567-0000-4000-8000-000000000001 reads the conversation back."
       ]
     },
     {
