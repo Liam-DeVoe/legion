@@ -160,7 +160,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	pod := r.storedPod(s.Name)
 	_, initExit := failedInit(pod)
 	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
-	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
+	_, accountDrifted := accountDrift(pod, l.kind.serviceAccount(r))
 	installing := l.spec.Plugins != nil
 	migrate := supersededDisk(s, l)
 	covered := roundCovers(l.kind)

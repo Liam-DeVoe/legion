@@ -230,9 +230,15 @@ const resumeSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smok
 // agentSecrets, set for root-enrolled alone, is the runtime's enrollment for that one case
 // (TestManifestGoldens, TestManifestMatchesTheSandboxCRD apply it to the shared runtime before
 // building that case's manifest, and restore nil after — every other case runs unenrolled).
+// controllerAccount, set for controller alone, is the runtime's
+// runtime.kubernetes.pod.controller_service_account for that one case, applied by the same two
+// tests the same way, so the controller's golden pins the account its pod runs as when the key
+// is set, and controller-resume's the pods' own service_account (none in these settings) that it
+// keeps when the key is not.
 func manifestCases(t *testing.T) map[string]struct {
-	spec         runtime.SpawnSpec
-	agentSecrets *AgentSecrets
+	spec              runtime.SpawnSpec
+	agentSecrets      *AgentSecrets
+	controllerAccount string
 } {
 	resume := workerSpec(t)
 	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", resumeSession
@@ -240,20 +246,24 @@ func manifestCases(t *testing.T) map[string]struct {
 	controllerResume.Generation, controllerResume.BootToken = 2, "boot-g2"
 	controllerResume.ResumeSessionFile = controllerSession
 	return map[string]struct {
-		spec         runtime.SpawnSpec
-		agentSecrets *AgentSecrets
+		spec              runtime.SpawnSpec
+		agentSecrets      *AgentSecrets
+		controllerAccount string
 	}{
-		"root":              {rootSpec(t), nil},
-		"worker":            {workerSpec(t), nil},
-		"claude-worker":     {claudeWorkerSpec(t), nil},
-		"resume":            {resume, nil},
-		"controller":        {controllerSpec(t), nil},
-		"controller-resume": {controllerResume, nil},
+		"root":              {rootSpec(t), nil, ""},
+		"worker":            {workerSpec(t), nil, ""},
+		"claude-worker":     {claudeWorkerSpec(t), nil, ""},
+		"resume":            {resume, nil, ""},
+		"controller":        {controllerSpec(t), nil, goldenControllerAccount},
+		"controller-resume": {controllerResume, nil, ""},
 		"root-enrolled": {rootSpec(t), &AgentSecrets{
 			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
-		}},
+		}, ""},
 	}
 }
+
+// goldenControllerAccount is the controller golden's runtime.kubernetes.pod.controller_service_account.
+const goldenControllerAccount = "legion-controller"
 
 // manifestOf is the Sandbox a launch of spec leaves running, as the API server holds it: the one
 // the runtime creates, with the relaunch's Running patch applied — the launch's pod template, and
@@ -279,7 +289,7 @@ func TestManifestGoldens(t *testing.T) {
 	}
 	for name, tc := range manifestCases(t) {
 		t.Run(name, func(t *testing.T) {
-			r.agentSecrets = tc.agentSecrets
+			r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 			checkGolden(t, name, manifestOf(t, r, tc.spec))
 		})
 	}
@@ -373,7 +383,7 @@ func TestManifestMatchesTheSandboxCRD(t *testing.T) {
 	schema := sandboxSchema(t)
 	for name, tc := range manifestCases(t) {
 		t.Run(name, func(t *testing.T) {
-			r.agentSecrets = tc.agentSecrets
+			r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 			if found := schemaViolations(manifestOf(t, r, tc.spec), schema, ""); len(found) > 0 {
 				t.Fatalf("the manifest has fields the CRD does not declare as sent:\n%s", strings.Join(found, "\n"))
 			}
@@ -1888,6 +1898,49 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 				}
 				if _, set := envOf(init)["PI_CONFIG_FILES"]; set {
 					t.Errorf("%s is told the operator's PI_CONFIG_FILES", init.Name)
+				}
+			}
+		})
+	}
+}
+
+// The controller's pod runs as runtime.kubernetes.pod.controller_service_account where the
+// operator names one, fresh and resuming alike, and as pod.service_account where not, so a
+// deployment that names no controller account runs its controller exactly as before. Every other
+// pod Legion runs — an issue pod, whichever role's launch builds it, the image probe's and a
+// repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
+// the controller alone.
+func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	resume := controllerSpec(t)
+	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
+	for name, tc := range map[string]struct{ pods, controller, wantController string }{
+		"both named":                              {"operator-worker", "legion-controller", "legion-controller"},
+		"the controller's alone named":            {"", "legion-controller", "legion-controller"},
+		"the pods' alone named":                   {"operator-worker", "", "operator-worker"},
+		"neither named, every pod on the default": {"", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := goldenOptions()
+			opts.Pod.ServiceAccount, opts.Pod.ControllerServiceAccount = tc.pods, tc.controller
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for pod, spec := range map[string]runtime.SpawnSpec{"controller": controllerSpec(t), "resuming controller": resume} {
+				if got := podOf(t, r, spec).ServiceAccountName; got != tc.wantController {
+					t.Errorf("the %s's pod runs as %q, want %q", pod, got, tc.wantController)
+				}
+			}
+			others := map[string]corev1.PodSpec{
+				"root":             podOf(t, r, rootSpec(t)),
+				"worker":           podOf(t, r, workerSpec(t)),
+				"implementer":      podOf(t, r, childSpec(t)),
+				"image probe":      r.probeManifest(probeSandboxName, ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec,
+				"repository cache": r.cachePodTemplate(CacheSandboxName(testProject, cacheRepo), cacheRepo).Spec,
+			}
+			for pod, spec := range others {
+				if spec.ServiceAccountName != tc.pods {
+					t.Errorf("the %s pod runs as %q, want pod.service_account %q", pod, spec.ServiceAccountName, tc.pods)
 				}
 			}
 		})

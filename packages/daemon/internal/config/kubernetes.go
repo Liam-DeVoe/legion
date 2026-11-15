@@ -266,15 +266,19 @@ func DefaultResources() PodResources {
 // PodConfig is `runtime.kubernetes.pod`, what the operator adds to every pod Legion runs, the image
 // probe's included, in the API's own types: variables and volume mounts for the agent's container,
 // the volumes they mount (each a Secret, a ConfigMap, a projection of ServiceAccount tokens,
-// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), and the ServiceAccount the pods run as. It passes through as written:
-// the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of Legion's own
-// or the worker image's (sandbox.CheckPod), and the API server the rest when it creates the
-// image probe's pod, which carries it, at boot.
+// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), the ServiceAccount the pods
+// run as, and the one the daemon-launched controller's pod runs as in its place when the file names
+// one (controller_service_account, which only `controller: daemon` reads). It passes through as
+// written: the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of
+// Legion's own or the worker image's (sandbox.CheckPod), and the API server the rest when it
+// creates the image probe's pod, which carries it, at boot. Its fields are sandbox.Pod's, one for
+// one, since the daemon converts the one into the other.
 type PodConfig struct {
-	Env            map[string]string
-	Volumes        []corev1.Volume
-	VolumeMounts   []corev1.VolumeMount
-	ServiceAccount string
+	Env                      map[string]string
+	Volumes                  []corev1.Volume
+	VolumeMounts             []corev1.VolumeMount
+	ServiceAccount           string
+	ControllerServiceAccount string
 }
 
 const (
@@ -760,8 +764,9 @@ func ReadPodFile(path string) (PodConfig, error) {
 }
 
 // readPod reads `runtime.kubernetes.pod`, refusing a shape no pod could carry, and a
-// ServiceAccount still holding a ${…} placeholder: nothing in Legion expands one, as the token
-// projection says, so the API server would refuse every pod for an account that does not exist.
+// ServiceAccount, the pods' or the controller's, still holding a ${…} placeholder: nothing in
+// Legion expands one, as the token projection says, so the API server would refuse every pod for
+// an account that does not exist.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {
 		return PodConfig{}, nil
@@ -769,7 +774,7 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return PodConfig{}, fmt.Errorf("%s must be a mapping", podKey)
 	}
-	fields, err := members(value, podKey, "env", "volumes", "volume_mounts", "service_account")
+	fields, err := members(value, podKey, "env", "volumes", "volume_mounts", "service_account", "controller_service_account")
 	if err != nil {
 		return PodConfig{}, err
 	}
@@ -788,6 +793,12 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 		return PodConfig{}, err
 	}
 	if err := unfilledPlaceholder(podKey+".service_account", pod.ServiceAccount, "the ServiceAccount the pods run as"); err != nil {
+		return PodConfig{}, err
+	}
+	if pod.ControllerServiceAccount, err = optionalString(fields["controller_service_account"], podKey+".controller_service_account"); err != nil {
+		return PodConfig{}, err
+	}
+	if err := unfilledPlaceholder(podKey+".controller_service_account", pod.ControllerServiceAccount, "the ServiceAccount the controller's pod runs as"); err != nil {
 		return PodConfig{}, err
 	}
 	return pod, nil

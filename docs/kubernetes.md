@@ -896,7 +896,7 @@ All three members of `session_database` are required, since no pod reaches the d
 and a member the mapping does not model is refused by name (`readSessionStore` and `readSessionDatabase`, `internal/config/kubernetes.go`).
 
 **No deployment runs `cloudsql-iam` yet, and the sign-in it needs cannot be granted from here.**
-Every Legion pod of every project runs as the one Kubernetes ServiceAccount the operator's `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), so every pod presents the same cloud identity:
+Every Legion pod of every project runs as the one Kubernetes ServiceAccount the operator's `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`) — the daemon-launched controller's pod excepted where `runtime.kubernetes.pod.controller_service_account` names another — so every pod presents the same cloud identity:
 a federated principal with no email address, where Cloud SQL accepts only a user, a service account or a group as a database login.
 Giving that shared account an email-bearing identity of its own would hand every project's pods one sign-in, so it is not done here.
 `dispatch://INFRA-321` gives each project's pods an account of their own, `dispatch://INFRA-311` declares the login, its grant and the instance's identity flag where the deployment is declared, and `dispatch://INFRA-320` points a deployment's session store at that login once its pods can use it.
@@ -1108,6 +1108,7 @@ it is in the generation's private directory, not in the providers mount the work
 
 What the operator supplies is the three values of `session_database`, the pods' cloud identity — the ServiceAccount `runtime.kubernetes.pod.service_account` names, which is what the connector signs in as — and the login's rights in the database.
 Those rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
+The daemon-launched controller's pod runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, so its connector signs in as that account's identity rather than the other pods'.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: `scripts/sessions-import-pods.sh` runs it in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
@@ -1998,7 +1999,7 @@ LEGION-631 is one: it deletes the `/legion/v1/gh-token` and `/legion/v1/git-cred
 The daemon's boot log, and every orphan sweep after it, names each pod still on another image
 — `sandbox runtime: <sandbox> runs image <image>, the configured image is <image>; its agents call
 this daemon as the older release until its update round replaces the pod` (`warnPodDrift` in `internal/runtime/sandbox/sandbox.go`).
-The same log names each pod running as a ServiceAccount other than `runtime.kubernetes.pod.service_account`
+The same log names each pod running as a ServiceAccount other than the one its kind is configured with — `runtime.kubernetes.pod.service_account`, or for the daemon-launched controller's pod `runtime.kubernetes.pod.controller_service_account` where the file names one
 — `sandbox runtime: <sandbox> runs as ServiceAccount <account>, the configured ServiceAccount is
 <account>; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`accountDrift`, warned by the same function)
 — one warning per Sandbox per kind of drift, so a pod holding both is named twice.
@@ -2006,7 +2007,7 @@ A pod runs as the account it was created with for its whole life, so changing `s
 a pod an update round covers — every issue pod — is replaced by that round, which asks every role in it to push its work and ends the pod once every role has answered or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
 For the account, the pod's kind decides, not the one exemption a stale-plugin install has: such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
-The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway.
+The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway; its account is `controller_service_account` where the file names one, so setting, changing or dropping that key replaces the controller's pod at its next launch and moves no other pod.
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
 The boot action is the log line alone: refusing to adopt a drifted pod would stop observing a live pod and trigger nothing.
 
@@ -2479,6 +2480,7 @@ runtime:
       controller: { cpu: 2, memory: 8Gi }  # controller: daemon only
     pod:                        # the operator's: env, volumes, mounts, ServiceAccount (below)
       service_account: <the ServiceAccount this deployment's pods run as>
+      controller_service_account: <optional, controller: daemon only: the ServiceAccount the controller's pod runs as instead>
       env: { PI_CONFIG_FILES: /etc/legion-operator/overlay.yml }
       volumes: [...]
       volume_mounts: [...]
@@ -2628,6 +2630,8 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   controller the daemon launches, and controller: operator launches none: set controller: daemon or
   drop the key`);
 
+- `pod.controller_service_account` unless `controller: daemon`, as `resources.controller` (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`);
+
 - the earlier shape inside an entry: `runtime.kubernetes.resources.issue.requests is gone: a
   reservation is its cpu and memory limits, with cpu_request and memory_request below them
   where set` (`limits` likewise); any other member of an entry but `cpu`, `cpu_request`, `memory`, `memory_request`, `ephemeral_storage` and `ephemeral_storage_request` is an unknown key, and any of those six or `issue_volume` that is not a positive Kubernetes quantity is refused as such (`… must be a positive Kubernetes quantity (e.g. 20Gi or 500m)`);
@@ -2677,7 +2681,8 @@ resources: Burstable (a request below the limit): the issue pod; every other pod
 ```
 
 Legion holds no model route.
-`pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's.
+`pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's;
+and `controller_service_account`, the account the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod").
 A ConfigMap or Secret a volume names must exist in the daemon's namespace, with every key the volume asks of it:
 the image probe refuses the boot at once, naming it, when it does not, for every volume a `volume_mounts` entry mounts (the kubelet attempts no other) ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
 
@@ -3521,7 +3526,7 @@ Every pod runs:
 
 - with `runtimeClassName: gvisor`;
 
-- with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none) and `automountServiceAccountToken: false`;
+- with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none), or for the daemon-launched controller's pod to `pod.controller_service_account` where the operator names one, and `automountServiceAccountToken: false`;
 
 - under Pod Security "restricted": non-root user 1000 on the pod, and on each container no privilege escalation, ALL capabilities dropped and the RuntimeDefault seccomp profile;
 
@@ -5281,7 +5286,7 @@ a pod's model route is the operator's `pod` below); every pod dials the worker s
 none set>:<worker_stream_port>`, so that address must be one pods reach, never `0.0.0.0` or loopback
 — `bind` itself may be `0.0.0.0` only once `advertise_host` names the address instead, so a daemon whose own pod restarts onto a new IP can still bind every interface and be reached through its Service;
 and no Legion URL a pod is handed (`daemon_url`, `envoy_url`, `dispatch_url`, each `nats_urls` entry) may name a loopback or unspecified host (`packages/daemon/internal/config/kubernetes.go`).
-It also reads `runtime.kubernetes.pod` — `env`, `volumes` (each one `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` (read-only unless `read_only: false`), and `service_account` — which it adds to every pod, the image probe's included, refusing any name or path of Legion's own or the worker image's;
+It also reads `runtime.kubernetes.pod` — `env`, `volumes` (each one `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` (read-only unless `read_only: false`), and `service_account` — which it adds to every pod, the image probe's included, refusing any name or path of Legion's own or the worker image's, and `controller_service_account`, which the daemon-launched controller's pod alone runs as in place of `service_account`;
 and the top-level `provider_keys` maps each variable Oh My Pi reads to a key of the providers Secret, of which every pod then mounts those keys alone, for the shim to export.
 Legion holds no model route: everything a pod's Oh My Pi needs to reach a model
 — a `models.yml`, a settings overlay in `PI_CONFIG_FILES`, a token — is the operator's, through `pod` and `provider_keys`.
@@ -5409,7 +5414,7 @@ each issue's pod (every role of it alike) and the image probe's.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
   its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.
 
-- **`runtime.kubernetes.pod`** has four keys.
+- **`runtime.kubernetes.pod`** has five keys.
   `env` is variables set in the agent's container.
   `volumes` are each one `secret`, `config_map`, `projected`, `persistent_volume_claim` (a claim of the daemon's namespace, by `name`) or `nfs` (`server` and `path`) source, never an inline `csi` volume ([Network shares](#network-shares));
   a `secret` or `config_map` source may set `default_mode`, the octal mode of every file it projects, such as `0440` in place of Kubernetes' default 0644 ([Configuration](#configuration));
@@ -5417,6 +5422,10 @@ each issue's pod (every role of it alike) and the image probe's.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
   `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not.
   Changing it replaces each live issue or controller pod at the next launch of one of its roles, and each repository cache's pod at the first boot, sweep or new issue pod of its repository that finds it serving no stream; an issue pod's disk goes with its pod ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  `controller_service_account` is the ServiceAccount the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod"); unset, that pod runs as `service_account` like every other pod, and every other pod — each issue pod, the image probe's and each repository cache's — runs as `service_account` whether or not it is set.
+  It may neither be blank nor still hold a `${…}` placeholder, as `service_account` may not (`runtime.kubernetes.pod.controller_service_account "${…}" is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`), and it is refused unless `controller: daemon`, the one setting under which the daemon launches the controller's pod (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`).
+  The controller's pod is held to it as the other pods are to `service_account`: a controller pod running as any other account, `service_account` included, is warned of at boot and replaced at the next launch of the controller (`accountDrift`), so setting, changing or dropping it moves the controller's pod, and only that pod, at its next launch.
+  `legion start --check-config` names both accounts on a line of its own when it is set (`controller service account: the controller's pod runs as <account> (runtime.kubernetes.pod.controller_service_account); every other pod runs as <account> (runtime.kubernetes.pod.service_account)`).
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
   no role's agent keeps its Oh My Pi state there any more
@@ -5693,9 +5702,9 @@ each issue's pod (every role of it alike) and the image probe's.
   an enrollment another credential made (a service login a person approved through a code before token logins) is refused `NOT_ENROLLING_CREDENTIAL`, and the daemon logs `supervise: agent-secrets: enrollment revocation refused; its lease ends it once its pod stops renewing`:
   it ends one lease after its pod's renewer stops, or at once when someone revokes that login on Dispatch's machine-login page by its **Credential** id (the broker's operate page, "The renew token check", gives the query that finds it), never by its machine name.
 
-- The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above).
+- The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above), the daemon-launched controller's pod as `runtime.kubernetes.pod.controller_service_account` where the file names one.
   A broker configured with that account for `legion-daemon`, such as `BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:<the account the pods run as>`, gives a secret tagged `owner=legion-daemon` to every such pod at once and to no other session (the broker's concepts page, "Owner and tier").
-  When the daemon's pods run as several accounts, the setting names each in a `legion-daemon=` entry of its own.
+  When the daemon's pods run as several accounts, the controller's own among them, the setting names each in a `legion-daemon=` entry of its own.
   The broker refuses to start with a namespace's `default` account in `BROKER_SERVICES`, since every pod there that names no account runs as it, so pods that receive service-owned secrets name a dedicated account.
   The daemon's own ServiceAccount, which logs in, is a different account from its pods', and it is named in `BROKER_SERVICE_LOGINS`, not `BROKER_SERVICES`;
   the broker refuses to start with an account in `BROKER_SERVICE_LOGINS` that is a namespace's `default`, since every pod running as it could then log in as the daemon.
@@ -6116,7 +6125,11 @@ It runs no init container (`controllerPod.initContainers`): nothing on its volum
 The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no tree's cleanup lists it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
-It runs as the operator's ServiceAccount (`runtime.kubernetes.pod`), the same account as every issue pod, and it is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps that account to `legion-daemon`.
+It runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, and as the operator's `runtime.kubernetes.pod.service_account`, the same account as every issue pod, where it does not, so a deployment that names no controller account runs its controller exactly as before (`controllerPod.serviceAccount`, `podTemplate` in `manifest.go`).
+The account a running controller pod is held to is that same one: a pod on any other, `service_account` included while the key names another, is warned of at boot and replaced at the controller's next launch, since no update round covers the controller's pod (`accountDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)); every other pod is held to `service_account` whatever the key says.
+The image probe's pod runs as `service_account`, so the probe at boot does not check that the controller's account exists:
+create that ServiceAccount in `runtime.kubernetes.namespace` before naming it.
+It is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps the account it runs as to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
 The broker grants it, with no person asked, an agent secret whose owner is `legion-daemon` and whose tier is `agent`, which is how the operator stores `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token its `slack_post` replies with.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
@@ -6150,7 +6163,7 @@ A Send from the Agents page is answered in the conversation that page shows.
 Wakes reach it as they reach the operator's controller: it subscribes to `notifications.legion.<project>.controller` once it holds the role.
 
 **Switching back.**
-To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.
+To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.
 At boot, before it re-adopts or relaunches anything, that daemon stops the controller's claim the earlier boot left, unless it is retired already:
 its Sandbox is released and the claim retires (`legion claims list` shows it `retired`), logged as `controller: stopping the controller an earlier boot under controller: daemon launched; this daemon
 leaves the controller to its operator`.
@@ -6179,8 +6192,8 @@ With the row present, every agent's `read_record` fails, and the operator's cont
 So the fallback from `controller: daemon` is `controller: operator` on this release, never the previous image.
 A revert that cannot be avoided goes in this order:
 
-1. Remove `controller` and `runtime.kubernetes.resources.controller` from `legion.yaml`:
-   the earlier release refuses both as unknown keys, and without them this release runs `controller: operator`.
+1. Remove `controller`, `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account` from `legion.yaml`:
+   the earlier release refuses each as an unknown key, and without them this release runs `controller: operator`.
    Restart this release with that file and let it boot once.
    Do not skip this boot: only this release ends the stopped controller's registration.
    It also releases the controller's Sandbox and volume itself, which the earlier release's orphan sweep would otherwise do at its first boot:
