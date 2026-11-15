@@ -310,7 +310,7 @@ func measure(ctx context.Context, pool *store.Pool, client *http.Client, o optio
 		return got, err
 	}
 	for _, statement := range got.all {
-		if catalog[statement.queryID] {
+		if catalog[statement.queryID] || writes(statement.query) {
 			got.background = append(got.background, statement)
 		} else {
 			got.own = append(got.own, statement)
@@ -318,6 +318,18 @@ func measure(ctx context.Context, pool *store.Pool, client *http.Client, o optio
 	}
 	got.serverMs, err = serverTime(o.serverLog, serverFrom, one)
 	return got, err
+}
+
+// writeStatement matches a statement that writes: an insert, update, delete or merge, at its head or
+// in a data-modifying `with`. A GET of the eval or delivery routes writes nothing, so such a
+// statement in a read's window is a background writer's that the catalogue's window did not catch,
+// such as a Legion facts pass whose wake fell inside the read (its `insert into issue_facts` once
+// counted 267 ms against a 28-day read), and it is reported among the background statements.
+var writeStatement = regexp.MustCompile(`(?is)^\s*(insert|update|delete|merge)\b|\b(insert\s+into|update\s+\w|delete\s+from)\b`)
+
+// writes reports whether query writes (writeStatement).
+func writes(query string) bool {
+	return writeStatement.MatchString(query)
 }
 
 // getBody is the status and body of a GET with the agent token.

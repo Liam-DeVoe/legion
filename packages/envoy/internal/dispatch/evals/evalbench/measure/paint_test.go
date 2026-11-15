@@ -53,3 +53,30 @@ func TestTheTimelineBodyIsNoBoundOfTheFirstPaint(t *testing.T) {
 		t.Errorf("an eval read of the first paint whose body is over %d bytes was judged no failure; R8 bounds it", budgetGzip)
 	}
 }
+
+// TestAWriteInAReadsWindowIsNoTimeOfTheRead: a background writer whose statement first runs while a
+// read is in flight (a Legion facts pass's insert, which once counted 267 ms against a 28-day
+// read) is the server's background, not the read's own time, while every statement a read runs
+// stays its own.
+func TestAWriteInAReadsWindowIsNoTimeOfTheRead(t *testing.T) {
+	for _, query := range []string{
+		"insert into issue_facts (key, project) values ($1, $2) on conflict (key) do update set project = excluded.project",
+		"update eval_days set listed = $4 where project_key = $1",
+		"delete from delivery_changes_pending where id = any($1)",
+		"with moved as (delete from delivery_changes_pending returning *) insert into delivery_changes select * from moved",
+		"\n\t\tINSERT INTO issue_facts (key) VALUES ($1)",
+	} {
+		if !writes(query) {
+			t.Errorf("%q is counted as a read's own statement, want the background", query)
+		}
+	}
+	for _, query := range []string{
+		"select id, updated_at from evals_current where project_key = $1",
+		"select d.day, d.n from eval_days d where d.project_key = $1 and d.listed order by d.day",
+		"select count(*) from issues where deleted_at is null and status <> 'done'",
+	} {
+		if writes(query) {
+			t.Errorf("%q is counted as the background, want a read's own statement", query)
+		}
+	}
+}

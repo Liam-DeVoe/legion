@@ -284,28 +284,31 @@ func median(durations []time.Duration) time.Duration {
 	return sorted[len(sorted)/2]
 }
 
-// TestNoIntakeStatementWaitsOnAnEvalCorrection: while each of three corrections of 1,400 readings
-// runs, a run write of the delivery intake (delivery.UpsertRun, whose trigger takes the change
-// log's lock) is sent every 20 ms, each on a connection of its own, and no sample of pg_locks finds
-// one waiting on the lock behind a correction's transaction: whatever it waits behind is a drain
-// or another intake statement. The median and the longest time a run write took are logged and
-// asserted nowhere: R19's 20 ms median wait is the build farm's measure (k20), which a busy runner
-// would fail here. Before the outbox every run write sent during a correction waited behind that
-// correction's transaction until it committed.
+// TestNoIntakeStatementWaitsOnAnEvalCorrection: while a correction of 1,400 readings runs, a run
+// write of the delivery intake (delivery.UpsertRun, whose trigger takes the change log's lock) is
+// sent every 20 ms, each on a connection of its own, and no sample of pg_locks finds one waiting on
+// the lock behind a correction's transaction: whatever it waits behind is a drain or another
+// intake statement. Corrections run one after another until at least minIntakeWrites run writes
+// were sent inside one, up to maxCorrections of them, so how many land does not hang on how fast
+// the machine runs a correction: a fast one runs more corrections. The median and the longest time
+// a run write took are logged and asserted nowhere: R19's 20 ms median wait is the build farm's
+// measure (k20), which a busy runner would fail here. Before the outbox every run write sent
+// during a correction waited behind that correction's transaction until it committed.
 func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	intake := intakePool(t, r, 48)
 	readings := readingIDs(r.write(t, "build-minutes", alice, readingsOverDays(t, correctionSize, nil)...))
-	const corrections, every = 3, 20 * time.Millisecond
+	const minIntakeWrites, maxCorrections, every = 10, 50, 20 * time.Millisecond
 	var (
 		mu    sync.Mutex
 		waits []time.Duration
 		next  = int64(9000)
 		took  []time.Duration
+		sent  int
 	)
 	stop := intakeBlockers(t, r)
-	for range corrections {
+	for len(took) < maxCorrections && sent < minIntakeWrites {
 		done := make(chan error, 1)
 		began := time.Now()
 		go func() {
@@ -316,7 +319,7 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 			}
 			done <- err
 		}()
-		var sent sync.WaitGroup
+		var writes sync.WaitGroup
 		ticker := time.NewTicker(every)
 		var correctionErr error
 	send:
@@ -326,8 +329,9 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 				break send
 			case <-ticker.C:
 				next++
+				sent++
 				id := next
-				sent.Go(func() {
+				writes.Go(func() {
 					started := time.Now()
 					err := delivery.UpsertRun(ctx, intake, delivery.DeliveryRun{
 						Repo: "acme/widgets", RunID: id, Kind: delivery.DeliveryRunKindDeploy, HeadSHA: fmt.Sprintf("sha%d", id),
@@ -346,14 +350,18 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 		}
 		ticker.Stop()
 		took = append(took, time.Since(began))
-		sent.Wait()
+		writes.Wait()
 		if correctionErr != nil {
 			t.Fatalf("the correction: %v", correctionErr)
 		}
 	}
 	blockers := stop()
-	if len(waits) < 10 {
-		t.Fatalf("%d run writes were sent during the corrections, too few to examine", len(waits))
+	if sent < minIntakeWrites {
+		t.Fatalf("%d corrections of %d readings let %d run writes be sent inside them, want at least %d to examine",
+			len(took), correctionSize, sent, minIntakeWrites)
+	}
+	if len(waits) == 0 {
+		t.Fatalf("none of the %d run writes sent inside the corrections landed", sent)
 	}
 	behind := map[string]int{}
 	for _, blocker := range blockers {
@@ -372,7 +380,7 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 	sorted := slices.Clone(waits)
 	slices.Sort(sorted)
 	t.Logf("%d run writes during %d corrections of %d readings (each took %v): median %s, longest %s; samples of a waiting run write saw it behind %v",
-		len(waits), corrections, correctionSize, took, median(waits).Round(time.Microsecond), sorted[len(sorted)-1].Round(time.Microsecond), behind)
+		len(waits), len(took), correctionSize, took, median(waits).Round(time.Microsecond), sorted[len(sorted)-1].Round(time.Microsecond), behind)
 }
 
 // TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere: a correction of 1,400 readings
