@@ -548,7 +548,13 @@ test("the worker skill tells a role to read the pull request's head after its ow
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
-  countedOncePerFile("Four waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  // The list of waits counts no member, so a member is pinned by its own words: here the merger's
+  // wait on its tree's closed design gate (dispatch://INFRA-175).
+  countedOncePerFile(
+    "a merger while its tree's design gate is closed, which merges nothing and ends each turn with a WAITING line until the opening reaches it",
+    ["skills/legion-worker/SKILL.md"]
+  );
   countedOncePerFile("the empty commit that carries it there", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
