@@ -110,16 +110,19 @@ export interface DispatchWritingBoxRow {
   readonly covered: boolean;
   /** Whether Dispatch tells an agent or a role that this write names it. Only a comment does: a
    *  message reaches the session it is addressed to and tells nobody it names, and an ask, an
-   *  answer, a spec, a reason and a setting tell nobody they name. A person is never told; a
-   *  person's reference is a link for a reader, which is why a delivering box says so. */
+   *  answer, a spec, a reason and a setting tell nobody they name. A person is never told, and a
+   *  person's reference is their name with no link until a person has a page (R5), which is why
+   *  a delivering box says so. */
   readonly delivers: boolean;
   /** Whether the picker here lists the rows that need an issue - the issue's people, and the
    *  Legion roles the issue records that nobody is running. A box that writes on no issue lists
    *  everyone who has signed in instead. For a box whose surface is sometimes a project
    *  document, this says what it does on an issue. */
   readonly issueRows: boolean;
-  /** The line under the box, which the box itself reads from this row at the mount. Empty for a
-   *  box that is not covered: with no picker in it, it has no such line to show. */
+  /** The line under the box, which the box itself reads from this row at the mount: the doors,
+   *  and what a pick does on this write - whether a picked agent or role is told and, where
+   *  nobody picked is told, what does tell (R4). Empty for a box that is not covered: with no
+   *  picker in it, it has no such line to show. */
   readonly hint: string;
   /** Why the box is not covered. Only a row whose `covered` is false carries one. */
   readonly reason?: string;
@@ -128,16 +131,60 @@ export interface DispatchWritingBoxRow {
 /** How each door is opened, which every hint starts with. */
 const DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for anything else.";
 
-/** What a box says when a mention on its write is delivered. */
-export const DISPATCH_WRITING_HINT_DELIVERED = `${DOORS} A picked agent or role is told; a person is not.`;
+/** What a box says when a mention on its write is delivered. The comment route tells an agent
+ *  or a role the body names and never a person (`commentPartiesOf` in the Go API's
+ *  comment_create.go), and a person's reference is drawn as their name with no link until a
+ *  person has a page (R5). */
+export const DISPATCH_WRITING_HINT_DELIVERED = `${DOORS} A picked agent or role is told. A picked person shows as a name without a link and is not told.`;
 
-/** What a box says when its write tells nobody it names. */
-export const DISPATCH_WRITING_HINT_QUIET = `${DOORS} Nobody you pick is told.`;
+/** What a box whose write tells nobody it names says of a pick, before it says what does tell.
+ *  It says nothing of a person's link, since a person's reference has none. */
+const PICKED_QUIET =
+  "A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told.";
+
+/**
+ * What a box says when its write tells nobody it names, by the write: that a pick links and
+ * tells nobody, and then what does tell, which is the write's own doing. Only the comment route
+ * reads the parties of a body and delivers to them (`createCommentFor` in the Go API's
+ * comment_create.go), so each sentence says where the write itself goes, or, for a write that
+ * goes nowhere, which comment would tell a picked agent or role, or that nothing would:
+ *
+ * - a message reply goes to the target of its thread, and to whoever wrote the message it
+ *   answers (`createStoredMessage`, and the outbox's `addAuthorRoutes`);
+ * - an edit of a comment resolves no party and opens no delivery (`editComment`): only a new
+ *   comment tells a party the edit adds;
+ * - an ask waits in the Inbox of its issue's assignee, or of its project's default assignee
+ *   (ask_asked_of.go);
+ * - a message to one agent goes to that session, and a broadcast to each selected session
+ *   (`createAgentMessage`, broadcasts.go);
+ * - a decline's note rides the ask's resolution to whoever asked (`declineAsk`, and the outbox's
+ *   `addFollowerRoutes`);
+ * - a reason for asking changes answers the open approval request, which reaches whoever asked
+ *   (`createArtifactReview`); with none open, it rides the review's own event alone, on the
+ *   document's issue (`docs.WriteReview`);
+ * - a priority's write is published to nobody (`priorityEvent`), and a priority takes no
+ *   comment.
+ */
+export const DISPATCH_WRITING_HINT_QUIET = {
+  "agent-message": `${DOORS} ${PICKED_QUIET} The message goes to this agent.`,
+  "approval-reason": `${DOORS} ${PICKED_QUIET} An open approval request sends the reason to whoever asked.`,
+  "architecture-reason": `${DOORS} ${PICKED_QUIET} A comment on the issue tells a picked agent or role.`,
+  ask: `${DOORS} ${PICKED_QUIET} The ask goes to the assignee's Inbox.`,
+  "ask-decline": `${DOORS} ${PICKED_QUIET} The note goes to whoever asked.`,
+  broadcast: `${DOORS} ${PICKED_QUIET} The message goes to each agent you selected.`,
+  "comment-edit": `${DOORS} ${PICKED_QUIET} A new comment, not an edit, tells a picked agent or role.`,
+  "document-text": `${DOORS} ${PICKED_QUIET} A comment on the document tells a picked agent or role.`,
+  "issue-spec": `${DOORS} ${PICKED_QUIET} A comment on the new issue tells a picked agent or role.`,
+  "message-reply": `${DOORS} ${PICKED_QUIET} Your reply goes to whoever the thread is with.`,
+  "priority-description": `${DOORS} ${PICKED_QUIET} Nothing on a priority tells anyone.`,
+  suggestion: `${DOORS} ${PICKED_QUIET} A pick in the Reason box tells an agent or a role.`,
+} as const satisfies Partial<Record<DispatchWriting, string>>;
 
 /** What the ask card's one box says, since the reader chooses there which write it makes: an
- *  answer reaches whoever asked and tells nobody it names, while a question back is a comment.
- *  Both of that box's rows carry it, since the box shows one line for the two. */
-export const DISPATCH_WRITING_HINT_ASK = `${DOORS} Ask back and a picked agent or role is told; an answer tells nobody.`;
+ *  answer reaches whoever asked and tells nobody it names, while a question back is a comment,
+ *  which tells a picked agent or role and never a person. Both of that box's rows carry it,
+ *  since the box shows one line for the two. */
+export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role; a picked person shows as a name without a link and is not told.`;
 
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =
@@ -162,7 +209,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["message-reply"],
     issueRows: true,
     reach: "Comment",
     write: "message-reply",
@@ -210,7 +257,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["message-reply"],
     issueRows: true,
     reach: "Reply",
     write: "message-reply",
@@ -242,7 +289,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/margin/CommentsTab.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET.ask,
     issueRows: true,
     reach: "Question",
     write: "ask",
@@ -252,7 +299,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/margin/ThreadCard.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["comment-edit"],
     issueRows: true,
     reach: "Edit comment",
     write: "comment-edit",
@@ -279,7 +326,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
       "packages/dispatch/web/src/features/doc/DocumentRefPicker.tsx",
       "packages/dispatch/web/src/features/doc/editor.ts",
     ],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["document-text"],
     issueRows: true,
     reach: "Document editor",
     write: "document-text",
@@ -291,7 +338,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["agent-message"],
     issueRows: false,
     reach: "Comment",
     write: "agent-message",
@@ -313,7 +360,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["message-reply"],
     issueRows: true,
     reach: "Comment",
     write: "message-reply",
@@ -329,7 +376,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
       "packages/dispatch/web/src/features/agent-view/AgentThread.tsx",
       "packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx",
     ],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["agent-message"],
     issueRows: false,
     reach: "[data-agent-message]",
     write: "agent-message",
@@ -345,7 +392,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET.suggestion,
     issueRows: true,
     reach: "Replacement",
     write: "suggestion",
@@ -356,7 +403,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET.ask,
     issueRows: true,
     reach: "Option 1 label",
     write: "ask",
@@ -366,7 +413,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET.ask,
     issueRows: true,
     reach: "Option 1 description",
     write: "ask",
@@ -397,13 +444,13 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
   // which is the person's to leave empty. It is written onto the ask's resolution, where the
   // asking agent reads it beside the sentences Dispatch writes there; the decline route
   // resolves no party out of it, as only the comment route does, so a party picked here is a
-  // link for a reader and nobody is told.
+  // reference for a reader and nobody is told.
   {
     box: "ask-decline-note",
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/inbox/DeclineControl.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["ask-decline"],
     issueRows: true,
     reach: "Note (optional)",
     write: "ask-decline",
@@ -436,7 +483,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["issue-spec"],
     issueRows: false,
     reach: "Spec (optional)",
     write: "issue-spec",
@@ -446,7 +493,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/doc/ApprovalChip.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["approval-reason"],
     issueRows: true,
     reach: "Reason",
     write: "approval-reason",
@@ -458,7 +505,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/agents/AgentsPage.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET.broadcast,
     issueRows: false,
     reach: "Broadcast message",
     write: "broadcast",
@@ -468,23 +515,22 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/architecture/AttachmentLists.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["architecture-reason"],
     issueRows: true,
     reach: "Why <ISSUE> is not architectural",
     write: "architecture-reason",
   },
   // A priority's description, written where it is read: on the priority's own page and on the
   // open row of the priorities table, which both open the one editor (`PriorityDescription`,
-  // which mounts the shared field with this row). The priority write resolves no
-  // party out of it and indexes nothing from it, so a party picked here is a link for a reader
-  // and nobody is told. A priority belongs to no issue, so the picker lists everyone who has
-  // signed in.
+  // which mounts the shared field with this row). The priority write resolves no party out of it
+  // and indexes nothing from it, so a party picked here is a reference for a reader and nobody
+  // is told. A priority belongs to no issue, so the picker lists everyone who has signed in.
   {
     box: "priority-description",
     covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/priorities/PriorityDescription.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: DISPATCH_WRITING_HINT_QUIET["priority-description"],
     issueRows: false,
     reach: "Description of P1",
     write: "priority-description",

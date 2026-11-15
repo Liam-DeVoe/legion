@@ -221,6 +221,16 @@
     ]
   },
   {
+    "body": "Ask [@Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) today.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Ask @Planner and @legion/contracts about it.",
+    "refs": []
+  },
+  {
     "body": "Waiting on dispatch://role/reviewer today.",
     "refs": [
       "dispatch://role/reviewer"
@@ -228,6 +238,12 @@
   },
   {
     "body": "See [the reviewer](dispatch://role/reviewer).",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Ask [@reviewer](dispatch://role/reviewer).",
     "refs": [
       "dispatch://role/reviewer"
     ]
@@ -241,6 +257,13 @@
   },
   {
     "body": "See [the owner](dispatch://person/alice@example.com).",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
+  },
+  {
+    "body": "Ask [@alice@example.com](dispatch://person/alice@example.com).",
     "refs": [
       "dispatch://person/alice@example.com"
     ],

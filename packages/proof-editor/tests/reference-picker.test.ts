@@ -212,6 +212,31 @@ test("a pick naming an address is stored as the link that names it", async () =>
   });
 });
 
+// A link's words are their author's own, never a trigger being typed: the `@` a picked
+// mention's words start with opens no door, so the host's picker does not open again over the
+// mention it has just written, nor over one the caret is put beside later.
+test("a link's words are masked in the text before the caret, so a mention opens no door", async () => {
+  const host = hostPicker();
+  await withMarksEditor("Ask now", ({ handle, view }) => {
+    handle.setReferencePicker(host.picker);
+    setFocus(view, true);
+    select(view, 5);
+    view.dispatch(view.state.tr.insertText("@plan ", 5));
+    expect(
+      handle.insertReference({
+        end: 9,
+        href: "dispatch://agent/abc",
+        start: 4,
+        text: "@Planner",
+        trigger: "@",
+      })
+    ).toBe(true);
+    expect(handle.getMarkdown().trim()).toBe("Ask [@Planner](dispatch://agent/abc) now");
+    // One stand-in per character of the link's words, so offsets still count positions.
+    expect(host.carets.at(-1)?.text).toBe(`Ask ${"\ufffc".repeat("@Planner".length)}`);
+  });
+});
+
 // A pick that links is its words and its address together, so a schema with no `link` mark can
 // write only half of it: the pick is refused whole, as a stale one is, rather than storing the
 // words and dropping the address while answering that it was written. Today's commonmark schema

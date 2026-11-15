@@ -56,7 +56,7 @@ test("the unified composer offers live roles and sessions and posts canonical me
     await selectMention(page, "worker");
     const payload = await postPayload(page);
     expect(payload).toEqual({
-      body: "[worker](dispatch://agent/B)",
+      body: "[@worker](dispatch://agent/B)",
       delivery: "steer",
     });
   } finally {
@@ -100,7 +100,7 @@ test("an offline selected mention is posted and exposes its failed delivery", as
     await selectMention(page, "worker");
     await setSessionSendStatus("B", 404);
     const payload = await postPayload(page);
-    expect(payload.body).toBe("[worker](dispatch://agent/B)");
+    expect(payload.body).toBe("[@worker](dispatch://agent/B)");
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText("failed");
     // The sender retries a "no live session" answer under the one attempt and its key for the
     // listener take-over window - half a second under the harness's

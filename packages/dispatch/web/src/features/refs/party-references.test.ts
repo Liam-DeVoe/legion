@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 
-import { draftParties, partyMention, partyMentionSpan } from "./party-references";
+import {
+  draftParties,
+  isPartyMention,
+  linkOf,
+  partyMention,
+  partyMentionSpan,
+} from "./party-references";
 import { partyOfAddress } from "./routes";
+import { readTextReferences } from "./text-references";
 
 const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
 const AGENT = `dispatch://agent/${SESSION}`;
@@ -115,4 +122,48 @@ test("a delivery address is read as a party only where a route is written that w
     expect(partyOfAddress(target)).toBe(undefined);
     expect(partyMention(target, "Planner")).toBe(undefined);
   }
+});
+
+// The mention a channel seeds and a saved draft's old `@Name` becomes (`held-sends.ts`): the
+// mention sign and the party's name, which every reader then reads as `@` and the party's
+// current name (R4).
+test("a party's mention is written as the mention sign and its name", () => {
+  expect(partyMention(`session:${SESSION}`, "Planner")).toBe(`[@Planner](${AGENT})`);
+  expect(partyMention("role:reviewer", " reviewer ")).toBe("[@reviewer](dispatch://role/reviewer)");
+  // A party with no name that fits on one line is mentioned by its address.
+  expect(partyMention(`session:${SESSION}`, "two\nlines")).toBe(`[@session:${SESSION}](${AGENT})`);
+});
+
+// A worded link reads as a party's current name only where its words start with the mention
+// sign and its address names a party, a hand-written one as much as a picked one; every other
+// worded link keeps its author's words (R8).
+test("a mention is a party's link whose words start with the mention sign", () => {
+  const route = (address: string) => readTextReferences(address).references[0]?.route;
+  expect(isPartyMention("@Bob", route(AGENT))).toBe(true);
+  expect(isPartyMention("@reviewer", route("dispatch://role/reviewer"))).toBe(true);
+  expect(isPartyMention("@alice", route("dispatch://person/alice@example.com"))).toBe(true);
+  expect(isPartyMention("Bob", route(AGENT))).toBe(false);
+  expect(isPartyMention(" @Bob", route(AGENT))).toBe(false);
+  expect(isPartyMention("@the fix", route("dispatch://CORE-1"))).toBe(false);
+  expect(isPartyMention("@Bob", undefined)).toBe(false);
+});
+
+// What a draft's pill reads a reference by: the link around it, as a reader of the stored text
+// sees it - its words, or a picture, which is drawn as the picture and is no link.
+test("a link is read around its address, a picture is told apart, and a reference on its own has none", () => {
+  const linkAt = (body: string) => {
+    const [found] = readTextReferences(body).references;
+    if (found === undefined) throw new Error(`${body} holds no reference`);
+    return linkOf(body, found);
+  };
+  expect(linkAt(`Ask [@Planner](${AGENT}) now.`)).toEqual({ picture: false, words: "@Planner" });
+  expect(linkAt(`Ask [@Planner \\[2\\]](${AGENT}) now.`)).toEqual({
+    picture: false,
+    words: "@Planner [2]",
+  });
+  expect(linkAt(`Ask ${AGENT} now.`)).toBe(undefined);
+  expect(linkAt("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")).toEqual({
+    picture: true,
+    words: "shot.png",
+  });
 });

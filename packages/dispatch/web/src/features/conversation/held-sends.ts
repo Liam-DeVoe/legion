@@ -301,12 +301,12 @@ function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
 
 /** A kept draft as its composer takes it up again. A record the build before this one kept
  *  holds a `mentions` array and a body carrying only the cosmetic `@Name` that build drew, so
- *  each of those is written back as the party link that names it (R4): the draft then reads as
- *  who it addresses and resends to them, where dropping the array would have delivered it to
- *  nobody with nothing said about it. A span is rewritten only while it still reads as the
- *  `@Name` that build accepted - the rule that build read its own mentions by
- *  (`survivingMentions`) - and the spans are written from the last to the first, so each is
- *  still the one its offsets named.
+ *  each of those is written back as the party's mention (`[@Name](address)`, R4), which reads as
+ *  the party's current name: the draft then reads as who it addresses and resends to them, where
+ *  dropping the array would have delivered it to nobody with nothing said about it. A span is
+ *  rewritten only while it still reads as the `@Name` that build accepted - the rule that build
+ *  read its own mentions by (`survivingMentions`) - and the spans are written from the last to
+ *  the first, so each is still the one its offsets named.
  *
  *  What is read back is a record, not a draft this build wrote: a target is written into the
  *  body only as the link `partyMention` makes of a delivery address (`party-references.ts`),

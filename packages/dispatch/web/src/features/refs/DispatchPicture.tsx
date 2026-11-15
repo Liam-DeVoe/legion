@@ -128,7 +128,7 @@ export function DispatchPicture({
     // A picture names its artifact and nothing else - its caption is the alt text, not words
     // standing in for the artifact - so what is left when no picture can be drawn reads as the
     // artifact's own name, with the caption standing until that name resolves.
-    return <RefLink addressed route={route} text={caption} />;
+    return <RefLink reads="name" route={route} text={caption} />;
   }
   return variant === "inline" ? (
     <>

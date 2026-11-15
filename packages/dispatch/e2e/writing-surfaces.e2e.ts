@@ -54,9 +54,11 @@ import {
  * no longer holds fails every row. In each box the three doors open over the same rows in each
  * door's own order, the words of a list with no rows are the same, Enter takes the highlighted
  * row and the pick lands at the caret with the words after it untouched, and the line under the
- * box is the hint its row of the list holds - read from the list rather than written out again.
- * Which people a box lists is the one thing its own row decides (`issueRows`), and each box is
- * held to its row's answer.
+ * box says what a pick does on that box's write - whether a picked agent or role is told, that a
+ * picked person is not, and, where nobody picked is told, what does - in words the rows write
+ * out rather than read from the list the box reads them from (`hintWords`). Which people a box
+ * lists is the one thing its own row decides (`issueRows`), and each box is held to its row's
+ * answer.
  *
  * `e2e/writing-boxes.ts` holds the world and the checks; this file holds how each box is
  * reached. Two boxes draw the picker in an editor of their own rather than in the shared text
@@ -224,7 +226,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await field.press("End");
       const back = " which window does it replay?";
       await field.pressSequentially(back);
-      const body = `[${SESSION.title}](dispatch://agent/${SESSION.session_id})${back}`;
+      const body = `[@${SESSION.title}](dispatch://agent/${SESSION.session_id})${back}`;
       await expect(field).toHaveValue(body);
       await card.getByRole("button", { exact: true, name: "Ask back" }).click();
       await expect
@@ -401,12 +403,12 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await page.keyboard.type(`Ask @${QUERY}`);
       await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
       await page.keyboard.press("Enter");
-      const mention = `Ask [${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
+      const mention = `Ask [@${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
       await expect
         .poll(async () => (await getArtifactText(world.spec)).markdown, { timeout: 30_000 })
         .toContain(mention);
       // And the other reader sees the party's name, with no bracket of the address it carries.
-      await expect(documentEditor(other)).toContainText(`Ask ${SESSION.title}`);
+      await expect(documentEditor(other)).toContainText(`Ask @${SESSION.title}`);
       await expect(documentEditor(other)).not.toContainText("](dispatch://agent/");
       await other.close();
     },

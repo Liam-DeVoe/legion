@@ -132,7 +132,7 @@ test("Enter takes the highlighted row into the draft at the caret", async () => 
     await screen.findByText("Planner");
     await user.keyboard("{ArrowDown}{Enter}");
     await waitFor(() =>
-      expect(field.value).toBe("ask [Planner](dispatch://agent/planner-session)")
+      expect(field.value).toBe("ask [@Planner](dispatch://agent/planner-session)")
     );
   } finally {
     restore();
@@ -153,7 +153,7 @@ test("a pick replaces the trigger and leaves the text after the caret", async ()
     await screen.findByText("Planner");
     await user.keyboard("{ArrowDown}{Enter}");
     await waitFor(() =>
-      expect(field.value).toBe("[Planner](dispatch://agent/planner-session)tail")
+      expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)tail")
     );
   } finally {
     restore();

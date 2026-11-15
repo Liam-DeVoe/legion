@@ -383,7 +383,7 @@ test("a send kept with its edit as a bare comment id still restores", async () =
 // the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
 // written back into the body as the party link naming it: the draft reads as who it addresses
 // and resends to them, where dropping the array would deliver it to nobody.
-test("a send kept with the old build's mentions restores them as the links that name them", async () => {
+test("a send kept with the old build's mentions restores them as the mentions that name them", async () => {
   const tab = keptTab();
   const createComment = spyOn(api, "createComment").mockReturnValue(
     Promise.withResolvers<Comment>().promise
@@ -425,7 +425,8 @@ test("a send kept with the old build's mentions restores them as the links that 
     const { held: after, writes } = heldOf(tab);
     writes.resume("alice");
     await settle();
-    const restored = "[Planner](dispatch://agent/planner-session) please look, @Gone.";
+    // Each old `@Name` comes back as the party's mention, which reads as its current name.
+    const restored = "[@Planner](dispatch://agent/planner-session) please look, @Gone.";
     expect(after.get(key)?.request.draft.body).toBe(restored);
     expect(after.get(key)?.draft.draft.body).toBe(restored);
   } finally {

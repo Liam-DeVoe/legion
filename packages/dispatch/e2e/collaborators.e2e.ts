@@ -270,7 +270,7 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
 
     // Choosing the reviewer addresses the comment to its role, not to a session that has ended.
     await reviewer.click();
-    await expect(field).toHaveValue(`[${tokens.reviewer}](dispatch://role/${tokens.reviewer})`);
+    await expect(field).toHaveValue(`[@${tokens.reviewer}](dispatch://role/${tokens.reviewer})`);
     await field.press("End");
     await field.pressSequentially(" please review the fix");
     await form.getByRole("button", { exact: true, name: "Send" }).click();

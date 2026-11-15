@@ -10,6 +10,8 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { isPartyMention } from "../refs/party-references";
+import { MENTION_SIGN } from "../refs/ref-picker";
 import { fetchReferenceHref, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextSource } from "../refs/text-references";
@@ -21,20 +23,22 @@ import type { EditorHandle } from "./editor";
  * opens. The live editor and a past version both draw them, and both read them the one way the
  * dashboard reads what a text cites (`features/refs/text-references.ts`), so a bare issue key, a
  * `#id`, a bare `dispatch://` reference and a link whose text is its own address resolve under
- * exactly the rules a rendered body resolves them under. A link whose text its author wrote
- * keeps those words.
+ * exactly the rules a rendered body resolves them under. A party's mention - a link whose words
+ * start with the mention sign (`isPartyMention`) - reads as that sign and the party's current
+ * name, as it does in a rendered body (`RefLink`); a link whose text its author wrote another
+ * way keeps those words.
  *
  * The editor owns the positions and this owns the grammar: the plugin hands each text block's own
- * text to `scan`, which is the one reader, and reports the distinct words it found; this resolves
- * those words - their existence, their document's question map, the whole id of a prefix - and
- * hands back a title for each. The document's stored text never changes
- * (`@legion/proof-editor`'s `src/reference-decorations.ts`).
+ * text to `scan`, which is the one reader, and reports the distinct words it found - a mention
+ * as the mention sign and its address - and this resolves those words - their existence, their
+ * document's question map, the whole id of a prefix - and hands back a title for each. The
+ * document's stored text never changes (`@legion/proof-editor`'s `src/reference-decorations.ts`).
  */
 
 /** The empty answers, shared so an editor whose text cites nothing keeps one identity across
  *  renders and never hands the plugin a fresh value that says the same thing. */
 const NO_WORDS: readonly string[] = [];
-const NO_TITLES: Readonly<Record<string, string>> = {};
+const NO_NAMES: Readonly<Record<string, ReferenceName>> = {};
 
 /** One reference the editor's text holds, as the host resolved it. */
 interface ResolvedReference {
@@ -43,34 +47,57 @@ interface ResolvedReference {
   readonly reference: string;
   readonly route: DispatchReferenceRoute;
   readonly length: number | undefined;
+  /** Whether the words are a party's mention, which reads as the mention sign and its name. */
+  readonly mention: boolean;
 }
 
-/** One resolved reference's title, reported upward as its queries answer. The queries are the
+/** What one reference's target answered: its current name, and whether Dispatch answered that it
+ *  exists with no name of its own - a session it holds a record of that the registry does not
+ *  name. */
+interface ReferenceName {
+  readonly title: string | undefined;
+  readonly known: boolean;
+}
+
+/** One resolved reference's name, reported upward as its queries answer. The queries are the
  *  ones every other surface reads a reference's title through, so a title the hover card has
  *  already read costs the editor nothing. */
 function ReferenceTitle({
-  onTitle,
+  onName,
   reference,
   route,
 }: {
-  onTitle(reference: string, title: string | undefined): void;
+  onName(reference: string, name: ReferenceName | undefined): void;
   reference: string;
   route: DispatchReferenceRoute;
 }): null {
   const { known, title } = useReferenceTarget(route, { text: false });
-  // A target Dispatch answered exists with no title of its own - a session it holds a record of
-  // that the registry does not name - is drawn as a link in the words of its reference, as a
-  // comment draws it; every other target is drawn once its title answers, and never without one.
-  const shown =
-    route.kind === "issue" && title !== undefined
-      ? `${route.key} ${title}`
-      : (title ?? (known ? reference : undefined));
   useEffect(() => {
-    onTitle(reference, shown);
-  }, [onTitle, reference, shown]);
-  // A reference the text no longer holds takes its title with it.
-  useEffect(() => () => onTitle(reference, undefined), [onTitle, reference]);
+    onName(reference, title === undefined && !known ? undefined : { known, title });
+  }, [known, onName, reference, title]);
+  // A reference the text no longer holds takes its name with it.
+  useEffect(() => () => onName(reference, undefined), [onName, reference]);
   return null;
+}
+
+/** The title the editor draws over `resolved`, or undefined while it draws none. An issue reads
+ *  as its key and title, and a mention as the mention sign and the party's name. A target
+ *  Dispatch answered exists with no title of its own - a session it holds a record of that the
+ *  registry does not name - is drawn as a link in the words of its reference, as a comment draws
+ *  it, and its mention keeps its author's words; every other target is drawn once its title
+ *  answers, and never without one. */
+function drawnTitle(
+  { mention, reference, route }: ResolvedReference,
+  name: ReferenceName | undefined
+): string | undefined {
+  const title = name?.title;
+  if (mention) {
+    return title === undefined ? undefined : `${MENTION_SIGN}${title}`;
+  }
+  if (title !== undefined) {
+    return route.kind === "issue" ? `${route.key} ${title}` : title;
+  }
+  return name?.known === true ? reference : undefined;
 }
 
 /**
@@ -89,7 +116,7 @@ export function DocumentReferences({
   // The words the editor last reported: every candidate its reader found in the document, which
   // is what this resolves - never the markdown the page loaded, which a typed reference is not in.
   const [words, setWords] = useState<readonly string[]>(NO_WORDS);
-  const [titles, setTitles] = useState<Readonly<Record<string, string>>>(NO_TITLES);
+  const [names, setNames] = useState<Readonly<Record<string, ReferenceName>>>(NO_NAMES);
 
   const onKeys = useCallback((keys: readonly string[]) => {
     setWords((current) =>
@@ -98,16 +125,17 @@ export function DocumentReferences({
         : [...keys]
     );
   }, []);
-  const onTitle = useCallback((reference: string, title: string | undefined) => {
-    setTitles((current) => {
-      if (current[reference] === title) {
+  const onName = useCallback((reference: string, name: ReferenceName | undefined) => {
+    setNames((current) => {
+      const now = current[reference];
+      if (now?.title === name?.title && now?.known === name?.known) {
         return current;
       }
       const next = { ...current };
-      if (title === undefined) {
+      if (name === undefined) {
         delete next[reference];
       } else {
-        next[reference] = title;
+        next[reference] = name;
       }
       return next;
     });
@@ -124,44 +152,75 @@ export function DocumentReferences({
     []
   );
 
+  // The editor reports a mention as the mention sign and its address's words, which no reading
+  // of text writes: those are read here, and every other word by the one reader with its facts.
+  const { mentioned, readable } = useMemo(() => {
+    const mentions: ResolvedReference[] = [];
+    const others: string[] = [];
+    for (const word of words) {
+      if (!word.startsWith(MENTION_SIGN)) {
+        others.push(word);
+        continue;
+      }
+      const [found] = readTextReferences(word.slice(MENTION_SIGN.length)).references;
+      if (
+        found?.reference !== undefined &&
+        found.route !== undefined &&
+        isPartyMention(word, found.route)
+      ) {
+        mentions.push({
+          length: undefined,
+          mention: true,
+          reference: found.reference,
+          route: found.route,
+          words: word,
+        });
+      }
+    }
+    return { mentioned: mentions, readable: others };
+  }, [words]);
+
   // Each candidate is read as the whole mention it was, on its own: the editor's words never
   // become one text, so nothing another word holds can end this one (`readTextCandidates`).
-  const { reading } = useTextReferences(words, source);
+  const { reading } = useTextReferences(readable, source);
   const resolved = useMemo(() => {
-    const found: ResolvedReference[] = [];
+    const found: ResolvedReference[] = [...mentioned];
     for (const reference of reading.references) {
       if (reference.reference === undefined || reference.route === undefined) {
         continue;
       }
       found.push({
         length: reference.named,
+        mention: false,
         reference: reference.reference,
         route: reference.route,
         words: reference.text,
       });
     }
     return found;
-  }, [reading]);
+  }, [mentioned, reading]);
 
   const targets = useMemo(() => {
     const drawn = new Map<string, ReferenceTarget | null>();
     for (const word of words) {
       drawn.set(word, null);
     }
-    for (const { length, reference, route, words: written } of resolved) {
-      const title = titles[reference];
+    for (const one of resolved) {
+      const title = drawnTitle(one, names[one.reference]);
       if (title === undefined) {
         continue;
       }
-      drawn.set(written, {
-        href: reference,
+      const { length, reference, route } = one;
+      drawn.set(one.words, {
+        // A person opens no page, so their name is drawn as words and no link (R5).
+        href: route.kind === "person" ? undefined : reference,
         length,
         title,
         titleKey: route.kind === "issue" ? route.key : undefined,
       });
     }
     return drawn;
-  }, [resolved, titles, words]);
+  }, [names, resolved, words]);
 
   const references: EditorReferences = useMemo(
     () => ({ onKeys, scan, targets }),
@@ -186,7 +245,7 @@ export function DocumentReferences({
   return (
     <>
       {read.map(([reference, route]) => (
-        <ReferenceTitle key={reference} onTitle={onTitle} reference={reference} route={route} />
+        <ReferenceTitle key={reference} onName={onName} reference={reference} route={route} />
       ))}
     </>
   );

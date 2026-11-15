@@ -46,13 +46,13 @@ test("/btw with a surviving mention strips its token and sends one comment-level
     await page.goto(`/issues/${issue.key}/conversation`);
     await selectMention(page, "/btw @");
     expect(await post(page)).toEqual({
-      body: "[planner](dispatch://agent/s1)",
+      body: "[@planner](dispatch://agent/s1)",
       delivery: "btw",
     });
     await expect
       .poll(() => listComments(issue.key))
       .toMatchObject([
-        { body: "[planner](dispatch://agent/s1)", mentions: [{ target: "session:s1" }] },
+        { body: "[@planner](dispatch://agent/s1)", mentions: [{ target: "session:s1" }] },
       ]);
   } finally {
     await alice.close();
@@ -98,7 +98,7 @@ test("an unsupported selected mode warns but does not prevent Send", async ({ br
     ).toBeVisible();
     await setSessionSendStatus("s2", 404);
     expect(await post(page)).toEqual({
-      body: "[worker](dispatch://agent/s2)",
+      body: "[@worker](dispatch://agent/s2)",
       delivery: "aside",
     });
   } finally {

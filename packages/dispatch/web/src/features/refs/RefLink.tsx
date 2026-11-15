@@ -1,6 +1,8 @@
 import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
+import { isPartyMention } from "./party-references";
+import { MENTION_SIGN } from "./ref-picker";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
@@ -25,20 +27,26 @@ export interface WordStretch {
 /** A reference whose words hold no search mark of their own. */
 const NO_STRETCHES: readonly WordStretch[] = [];
 
+/** What a reference reads as, by the one rule every record is read under (R8):
+ *  - `name`: the target's current name - an address standing on its own, and a link whose words
+ *    are that same address, what a Markdown autolink is stored as;
+ *  - `mention`: the mention sign and the target's current name - a party's link whose words
+ *    start with that sign, as the picker writes a mention (`isPartyMention`, R4);
+ *  - `words`: the words its author wrote, for every other link with words of its own. */
+export type ReferenceReading = "mention" | "name" | "words";
+
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
-   *  in its place (a host that is one control keeps no link inside its link). */
+   *  in its place (a host that is one control keeps no link inside its link, and a person, whom
+   *  no page shows, is a `<span>` from the start). */
   readonly anchor: HTMLElement;
   readonly key: string;
   readonly route: DispatchReferenceRoute;
   /** The words the anchor showed before they were cleared for the portal: a bare reference's
    *  `dispatch://…`, or the text a Markdown link gave it. */
   readonly text: string;
-  /** Whether the anchor's words are its own address, which is what reads as the target's
-   *  current name: a reference standing on its own, and a link whose words are the address it
-   *  names - what a Markdown autolink is stored as. A link whose words its author wrote keeps
-   *  those words (`RefLink`). */
-  readonly addressed: boolean;
+  /** What the anchor's words read as (`ReferenceReading`). */
+  readonly reads: ReferenceReading;
   /** The stretches of `text` the server marked as matching a search, in order and apart, each
    *  under a mark inside the anchor (`collectReferenceAnchors`); none where the anchor's words
    *  held no mark. */
@@ -63,13 +71,15 @@ export interface ReferenceLinking {
 /** Portal content for an inline reference anchor.
  *
  * One rule says what it reads as, the same rule in a document, a comment, an ask, a message and
- * every other record: an address standing on its own, and a link whose words are that same
- * address, read as the target's current name once `useReferenceTarget` has it (`addressed`); a
- * link whose words its author wrote keeps those words, since the author already said what the
- * reference is there to say. A reference the reader may not see is the same case as the words
- * themselves: the words the writer wrote, with no title drawn over them. A reference whose target
- * Dispatch answered does not exist is its words with no link at all (R8), as the document editor
- * draws it: the element it renders into stops being a link (`unlinkMissingReference`).
+ * every other record (`reads`): an address standing on its own, and a link whose words are that
+ * same address, read as the target's current name once `useReferenceTarget` has it; a party's
+ * mention reads as the mention sign and that name, so a session renamed since the mention was
+ * written reads as it is called now (R4); a link whose words its author wrote another way keeps
+ * those words, since the author already said what the reference is there to say. A reference
+ * the reader may not see is the same case as the words themselves: the words the writer wrote,
+ * with no title drawn over them. A reference whose target Dispatch answered does not exist is its
+ * words with no link at all (R8), as the document editor draws it: the element it renders into
+ * stops being a link (`unlinkMissingReference`).
  *
  * A search hit's marks follow the same rule (`marked`). Wherever the words are drawn, the server's
  * marks stay on them exactly as it sent them; only a title drawn in their place is marked, whole,
@@ -84,17 +94,17 @@ export interface ReferenceLinking {
  * a link, its href follows `useReferenceHref`, which a pinned block of a spec resolves only
  * once its issue's summary is read. */
 export function RefLink({
-  addressed,
   anchor,
   marked = NO_STRETCHES,
+  reads,
   route,
   text,
 }: {
-  /** Whether the words the anchor showed are its own address (`ReferenceAnchor.addressed`). */
-  addressed: boolean;
   anchor?: HTMLElement;
   /** The stretches of `text` a search marked (`ReferenceAnchor.marked`); none by default. */
   marked?: readonly WordStretch[];
+  /** What the words the anchor showed read as (`ReferenceAnchor.reads`). */
+  reads: ReferenceReading;
   route: DispatchReferenceRoute;
   /** The words the anchor showed before they were cleared for this portal: the reference as the
    *  author wrote it, or a Markdown link's own text. */
@@ -102,7 +112,7 @@ export function RefLink({
 }): ReactNode {
   const { missing, picture, title } = useReferenceTarget(route, { text: false });
   // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
-  // path the gate refuses - leaves the words standing where a link would be.
+  // path the gate refuses - gets no href: its element stays no link.
   const href = useReferenceHref(route);
   useLayoutEffect(() => {
     if (anchor instanceof HTMLAnchorElement && href !== undefined && !missing) {
@@ -118,16 +128,12 @@ export function RefLink({
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
-  // An issue reads as its key then its title, as the project's issues table writes a key beside
-  // one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the thing`.
+  // Until the title resolves, for an issue the reader cannot read, for a target that does not
+  // exist and for a link whose words its author wrote, the words the author wrote stand.
   const named =
-    route.kind === "issue" ? (
-      <>
-        <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
-      </>
-    ) : (
-      title
-    );
+    reads === "words" || missing || title === undefined
+      ? undefined
+      : drawnName(reads, route, title);
   return (
     <>
       {picture === undefined || picture === failedPicture ? null : (
@@ -141,9 +147,7 @@ export function RefLink({
           />{" "}
         </>
       )}
-      {/* Until the title resolves, for an issue the reader cannot read, and for a target that
-          does not exist, the words the author wrote stand. */}
-      {!addressed || missing || title === undefined ? (
+      {named === undefined ? (
         markedWords(text, marked)
       ) : marked.length > 0 ? (
         <SearchMark>{named}</SearchMark>
@@ -151,6 +155,27 @@ export function RefLink({
         named
       )}
     </>
+  );
+}
+
+/** The name a reference whose title resolved draws in place of its words, as `reads` reads it:
+ *  an issue as its key then its title, as the project's issues table writes a key beside one
+ *  (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the thing`; a
+ *  mention as the mention sign and the party's name; anything else as its title. */
+function drawnName(
+  reads: Exclude<ReferenceReading, "words">,
+  route: DispatchReferenceRoute,
+  title: string
+): ReactNode {
+  if (reads === "mention") {
+    return `${MENTION_SIGN}${title}`;
+  }
+  return route.kind === "issue" ? (
+    <>
+      <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
+    </>
+  ) : (
+    title
   );
 }
 
@@ -230,15 +255,25 @@ function linkPassReads(node: Node, root: Node): boolean {
   return true;
 }
 
+/** Whether a reference that opens no page of this dashboard is still drawn by name: a person,
+ *  whom no page shows yet, reads as their login wherever Dispatch knows it, with no link (R5).
+ *  Its element is a `<span>` (`collectReferenceAnchors`), never a link. */
+function namedWithoutPage(route: DispatchReferenceRoute): boolean {
+  return route.kind === "person";
+}
+
 /** Whether the link pass links `reference`: the one filter both its passes read. */
 function linksReference(reference: TextReference, cited: ReadonlySet<string>): boolean {
   return (
     reference.reference !== undefined &&
     cited.has(reference.reference) &&
-    // A reference that opens no page of this dashboard - a person, whom nothing in Dispatch
-    // shows - stays the words its author wrote: there would be nothing behind the link.
-    // The same gate `collectReferenceAnchors` writes the href behind, so the two agree.
-    (reference.route === undefined || referenceHref(reference.route) !== undefined)
+    // A reference that opens no page of this dashboard stays the words its author wrote: there
+    // would be nothing behind the link. A person is the one such reference still read, for the
+    // name it is drawn by. The same gate `collectReferenceAnchors` writes the href behind, so
+    // the two agree.
+    (reference.route === undefined ||
+      referenceHref(reference.route) !== undefined ||
+      namedWithoutPage(reference.route))
   );
 }
 
@@ -482,7 +517,9 @@ function isTextUrl(target: string, text: string): boolean {
  * is a read, so its href is read as the server reads a request (`nodeRouteFromHref`), whatever the
  * length of its names. An external link, or an author's href that fails to parse as a reference,
  * is left untouched, and so is a picture's link (`data-dispatch-picture`, the engine's
- * `pictureSerializer`), whose content is a `DispatchPicture` rather than a title.
+ * `pictureSerializer`), whose content is a `DispatchPicture` rather than a title. A person's
+ * reference, which opens no page, becomes a `<span>` the portal draws their login into, or its
+ * words where its author wrote their own.
  *
  * Before it clears an anchor, it notes which of the anchor's words a search mark inside it
  * covers (`ReferenceAnchor.marked`, `markedStretches`), so `RefLink` can draw the server's marks
@@ -510,10 +547,10 @@ export function collectReferenceAnchors(
     const text = anchor.textContent ?? "";
     // What reads as the target's current name: an address standing on its own, which the link
     // pass marks as it wraps one (`data-dispatch-bare`), and a link whose words are its own
-    // address (`isTextUrl`), the form a document stores an autolink in. A link whose words its
-    // author wrote keeps those words.
+    // address (`isTextUrl`), the form a document stores an autolink in. A party's mention reads
+    // as the mention sign and that name. A link whose words its author wrote another way keeps
+    // those words.
     const textUrl = isTextUrl(href, text);
-    const addressed = anchor.hasAttribute("data-dispatch-bare") || textUrl;
     const route = textUrl
       ? referenceRouteFromHref(href, appOrigin)
       : nodeRouteFromHref(href, appOrigin);
@@ -530,20 +567,35 @@ export function collectReferenceAnchors(
       }
       continue;
     }
+    const reads: ReferenceReading =
+      anchor.hasAttribute("data-dispatch-bare") || textUrl
+        ? "name"
+        : isPartyMention(text, route)
+          ? "mention"
+          : "words";
+    const reference = buildDispatchReference(route);
+    const marked = markedStretches(anchor);
     // A reference that opens no page of this dashboard is its words, as one that cites nothing
-    // is: a person, whom nothing in Dispatch shows (R5), and anything that does not resolve to
-    // this origin, which no route writes today and none may start writing unnoticed.
+    // is: anything that does not resolve to this origin, which no route writes today and none
+    // may start writing unnoticed, and a person, whom nothing in Dispatch shows (R5). A person
+    // whose words are not the author's own still reads as their login: in a `<span>`, which is
+    // no link and opens no hover card.
     const path = referenceHref(route);
     if (path === undefined) {
-      anchor.replaceWith(...anchor.childNodes);
+      if (reads === "words" || !namedWithoutPage(route)) {
+        anchor.replaceWith(...anchor.childNodes);
+        continue;
+      }
+      const named = document.createElement("span");
+      anchor.replaceWith(named);
+      targets.push({ anchor: named, key: `${reference}:${index}`, marked, reads, route, text });
+      index += 1;
       continue;
     }
     anchor.setAttribute("href", path);
-    const reference = buildDispatchReference(route);
     anchor.setAttribute("data-dispatch-ref", reference);
-    const marked = markedStretches(anchor);
     anchor.replaceChildren();
-    targets.push({ addressed, anchor, key: `${reference}:${index}`, marked, route, text });
+    targets.push({ anchor, key: `${reference}:${index}`, marked, reads, route, text });
     index += 1;
   }
   return targets;

@@ -274,6 +274,7 @@ interface PortalAnchors {
  * a tooltip. The words, their formatting and a reference's `data-dispatch-ref` (its hover card)
  * stay; the host is the one thing a click or a key press follows. The anchors follow their words
  * into the spans that replaced them, so each reference's portal still mounts where its words are.
+ * A person's reference is a span already (`collectReferenceAnchors`), no link to make inert.
  */
 function inertLinks(
   root: HTMLElement,
@@ -293,6 +294,9 @@ function inertLinks(
     replaced.set(link, span);
   }
   return found.map((reference) => {
+    if (!(reference.anchor instanceof HTMLAnchorElement)) {
+      return reference;
+    }
     const host = replaced.get(reference.anchor);
     if (host === undefined) {
       throw new Error("A reference anchor is not a link of the body it was found in.");
@@ -724,15 +728,9 @@ export function useRenderedMarkdown(
     isFallback,
     isPending,
     portals: [
-      ...referenceAnchors.map(({ addressed, anchor, key, marked, route, text }) =>
+      ...referenceAnchors.map(({ anchor, key, marked, reads, route, text }) =>
         createPortal(
-          <RefLink
-            addressed={addressed}
-            anchor={anchor}
-            marked={marked}
-            route={route}
-            text={text}
-          />,
+          <RefLink anchor={anchor} marked={marked} reads={reads} route={route} text={text} />,
           anchor,
           key
         )

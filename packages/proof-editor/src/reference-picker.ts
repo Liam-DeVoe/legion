@@ -30,9 +30,11 @@ import { $prose } from "@milkdown/kit/utils";
  * escaped characters its Markdown would be stored as if it were written as plain text.
  */
 
-/** Stands in for an inline node that is not text - an image, a hard break - so one character of
- *  the reported text is one position of the document and an offset the host answers with is a
- *  position again. */
+/** Stands in for an inline node that is not text - an image, a hard break - and for each
+ *  character of a link's words, so one character of the reported text is one position of the
+ *  document and an offset the host answers with is a position again. A link's words are words
+ *  their author already wrote - a mention's `@Planner` among them - so no trigger is read
+ *  inside them: the picker never opens over the mention it has just written. */
 const LEAF_CHAR = "\ufffc";
 
 /** What stands before the caret, as the host's picker reads a draft. */
@@ -98,16 +100,21 @@ interface CaretText {
 }
 
 /** The caret's text block read, or undefined when the selection is not a caret standing in text
- *  a reference may be written in. */
+ *  a reference may be written in. The words of a link are masked (`LEAF_CHAR`). */
 function caretText(state: EditorState): CaretText | undefined {
   const { empty, $head } = state.selection;
   if (!empty) return undefined;
   const parent = $head.parent;
   if (!parent.isTextblock || parent.type.spec.code === true) return undefined;
-  return {
-    start: $head.start(),
-    text: parent.textBetween(0, $head.parentOffset, undefined, LEAF_CHAR),
-  };
+  const end = $head.parentOffset;
+  let text = parent.textBetween(0, end, undefined, LEAF_CHAR);
+  parent.forEach((child, offset) => {
+    if (offset >= end || !child.isText) return;
+    if (!child.marks.some((mark) => mark.type.name === "link")) return;
+    const to = Math.min(offset + child.nodeSize, end);
+    text = text.slice(0, offset) + LEAF_CHAR.repeat(to - offset) + text.slice(to);
+  });
+  return { start: $head.start(), text };
 }
 
 /** The transaction a pick makes, or undefined when the pick no longer names the stretch of the

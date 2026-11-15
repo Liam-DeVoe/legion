@@ -1514,6 +1514,8 @@ test("a comment's Reply names its session author's mention as the picker does", 
       }),
     ],
   });
+  // The prefilled mention's pill asks once about the session the registry does not list.
+  const known = spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] });
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   const turn = (id: string) => {
@@ -1529,14 +1531,15 @@ test("a comment's Reply names its session author's mention as the picker does", 
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
     await waitFor(() =>
-      expect(field.value).toBe(`[session:01234567…](dispatch://agent/${untitled})`)
+      expect(field.value).toBe(`[@session:01234567…](dispatch://agent/${untitled})`)
     );
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/planner-session)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
   } finally {
     view.unmount();
     stub.restore();
+    known.mockRestore();
   }
 });
 

@@ -222,6 +222,47 @@ test("a link whose text its author wrote keeps those words", async () => {
   });
 });
 
+// A mention is a link whose words start with `@`: the plugin offers it to the host keyed by the
+// sign and its address, and the host draws it as the party's current name, so a party renamed
+// since reads as it is called now. A link whose words its author wrote another way is never
+// offered, whatever it links to.
+test("a link whose words are a mention is offered as the sign and its address", async () => {
+  const host = hostReferences();
+  await withMarksEditor(
+    "Ask [@Old name](dispatch://agent/s1) and [Old name](dispatch://agent/s1) here.",
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.reported).toEqual([["@dispatch://agent/s1"]]);
+      resolve(handle, host, {
+        "@dispatch://agent/s1": { href: "dispatch://agent/s1", title: "@New name" },
+        "dispatch://agent/s1": { href: "dispatch://agent/s1", title: "New name" },
+      });
+
+      expect(titles(view)).toEqual([{ href: "dispatch://agent/s1", text: "@New name" }]);
+      expect(hidden(view)).toEqual(["@Old name"]);
+      expect(view.dom.textContent).toContain("and Old name here.");
+      expect(view.dom.querySelector("a a")).toBeNull();
+    }
+  );
+});
+
+// A target that opens no page - a person, whom no page shows - is drawn by its title as words,
+// not as a link a click or the hover card would follow.
+test("a target with no address is drawn as words and no link", async () => {
+  const host = hostReferences();
+  await withMarksEditor("Ask dispatch://person/dana here.", ({ handle, view }) => {
+    handle.setReferences(host.references);
+    resolve(handle, host, { "dispatch://person/dana": { title: "dana" } });
+
+    expect(titles(view)).toEqual([]);
+    const drawn = view.dom.querySelector("span.dispatch-reference");
+    expect(drawn?.textContent).toBe("dana");
+    expect(drawn?.hasAttribute("data-dispatch-href")).toBe(false);
+    expect(drawn?.getAttribute("role")).toBeNull();
+    expect(hidden(view)).toEqual(["dispatch://person/dana"]);
+  });
+});
+
 test("code spans, code blocks and a link's own words are never candidates", async () => {
   const host = hostReferences();
   await withMarksEditor(

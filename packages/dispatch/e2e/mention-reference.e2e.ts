@@ -76,16 +76,16 @@ test("a picked party is the text's own reference: no mentions array, and the com
       .poll(() => getSentMessages())
       .toMatchObject([{ target_session: plannerSession.session_id }]);
 
-    // And every reader sees the party named in the text itself, as a link into its own live
-    // conversation. Taken from the turn's body: the card also lists the delivery the mention
-    // made, whose own link names the same session.
+    // And every reader sees the party named in the text itself, as `@` and its current name, a
+    // link into its own live conversation. Taken from the turn's body: the card also lists the
+    // delivery the mention made, whose own link names the same session.
     const turn = page
       .getByRole("list", { name: "Conversation turns" })
       .locator(":scope > li")
       .filter({ hasText: "please look." });
     const named = turn
       .locator("[data-markdown-preview], [data-markdown-body]")
-      .getByRole("link", { exact: true, name: plannerSession.title });
+      .getByRole("link", { exact: true, name: `@${plannerSession.title}` });
     await expect(named).toHaveAttribute("href", `/agents/${plannerSession.session_id}/live`);
     await expect(named).toHaveAttribute(
       "data-dispatch-ref",
@@ -120,7 +120,7 @@ test("an edit adds and removes a party in its text and sends no frame for either
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = await expandedComment(page, comment.id);
-    const named = card.getByRole("link", { exact: true, name: plannerSession.title });
+    const named = card.getByRole("link", { exact: true, name: `@${plannerSession.title}` });
 
     const edit = async (body: string) => {
       await card.getByRole("button", { exact: true, name: "Edit" }).click();

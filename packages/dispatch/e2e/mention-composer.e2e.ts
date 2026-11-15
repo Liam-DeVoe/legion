@@ -107,7 +107,7 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
     await pickReference(field, "/btw @", "role-x");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[role-x](dispatch://role/role-x)",
+      body: "[@role-x](dispatch://role/role-x)",
       delivery: "btw",
     });
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
@@ -146,7 +146,7 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toMatchObject({
-      body: "[Planner](dispatch://agent/planner)",
+      body: "[@Planner](dispatch://agent/planner)",
       delivery: "aside",
     });
   } finally {
@@ -504,7 +504,9 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
       .filter({ hasText: "Parent" });
     await card.getByRole("button", { name: "Reply" }).click();
     const composer = page.getByRole("form", { name: "Comment composer" });
-    await expect(composer.getByLabel("Comment")).toHaveValue("[Planner](dispatch://agent/planner)");
+    await expect(composer.getByLabel("Comment")).toHaveValue(
+      "[@Planner](dispatch://agent/planner)"
+    );
     await composer.getByLabel("Comment").fill("Plain reply");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "Plain reply",
@@ -585,7 +587,7 @@ test("a mention reaches a session the listener's list has dropped while its reco
     // between that read and the send, with the session's own record untouched.
     await setSessionLive("planner", false);
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[Planner](dispatch://agent/planner)",
+      body: "[@Planner](dispatch://agent/planner)",
       delivery: "btw",
     });
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
@@ -614,7 +616,7 @@ test("a mention of a session the listener holds no record of is still refused as
     await pickReference(field, "/btw @", "Planner");
     await setSessionRecord("planner", "absent");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[Planner](dispatch://agent/planner)",
+      body: "[@Planner](dispatch://agent/planner)",
       delivery: "btw",
     });
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText(
@@ -648,7 +650,7 @@ test("a mention of a session the listener could not read is refused with the lis
     // listener answers 503 with the bus's reason.
     await setSessionRecord("planner", "unreadable");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[Planner](dispatch://agent/planner)",
+      body: "[@Planner](dispatch://agent/planner)",
       delivery: "btw",
     });
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });

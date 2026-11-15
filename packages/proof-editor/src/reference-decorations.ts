@@ -19,14 +19,16 @@ export interface ReferenceCandidate {
 }
 
 /** What a candidate resolves to: `href` is the `dispatch://` reference the drawn title carries as
- *  `data-dispatch-href` (the host's click handler and hover card read it), `title` the words the
- *  editor draws in place of the stored text, `titleKey` an issue key `title` starts with, drawn
- *  in semibold, and `length` how many of the candidate's characters, from its start, the title
- *  stands for, when that is fewer than all of them: the rest stay drawn as stored text (a `#q2-`
- *  whose question is q2 draws its title for `#q2` and keeps the `-`, so no character the
- *  reference does not name is ever hidden from the author who typed it). */
+ *  `data-dispatch-href` (the host's click handler and hover card read it), absent for a target
+ *  that opens no page - a person, whom no page shows - whose title is drawn as words and no link;
+ *  `title` the words the editor draws in place of the stored text, `titleKey` an issue key
+ *  `title` starts with, drawn in semibold, and `length` how many of the candidate's characters,
+ *  from its start, the title stands for, when that is fewer than all of them: the rest stay
+ *  drawn as stored text (a `#q2-` whose question is q2 draws its title for `#q2` and keeps the
+ *  `-`, so no character the reference does not name is ever hidden from the author who typed
+ *  it). */
 export interface ReferenceTarget {
-  readonly href: string;
+  readonly href?: string;
   readonly title: string;
   readonly titleKey?: string;
   readonly length?: number;
@@ -42,7 +44,9 @@ export interface EditorReferences {
    *  candidates, since the editor re-reads a block only when an edit touches it. */
   scan(text: string): readonly ReferenceCandidate[];
   /** What each candidate key resolves to; a key absent from the map or mapped to `null` stays
-   *  drawn as the words the author wrote. */
+   *  drawn as the words the author wrote. A link whose words are a mention (`MENTION_SIGN`) is
+   *  keyed as that sign and its address's own key, which the host resolves only where the
+   *  address names a party it draws by name. */
   readonly targets: ReadonlyMap<string, ReferenceTarget | null>;
   /** Called with the distinct keys of the document's candidates, sorted, whenever that set
    *  changes, so the host resolves exactly what the document holds. */
@@ -86,6 +90,11 @@ const LINK_MASK = "<";
 /** Stands in for code's characters, as its stored backtick does: a reference may start or end
  *  beside it, never inside it. */
 const CODE_MASK = "`";
+/** The sign a mention's words start with, as the dashboard writes a mention of a party:
+ *  `[@Planner](dispatch://agent/…)`. Such a link is offered to the host, which draws it as the
+ *  party's current name where its address names one; every other link whose words its author
+ *  wrote keeps them. */
+const MENTION_SIGN = "@";
 
 const NO_TARGETS: ReadonlyMap<string, ReferenceTarget | null> = new Map();
 
@@ -111,7 +120,9 @@ interface LinkRun {
  *  block's with code and links masked, so it is as long as the block's own text and a
  *  candidate's offsets are its positions. A link whose text its author wrote keeps those words
  *  and is never drawn over; a link whose text is its own address - the autolink a document
- *  stores as `[dispatch://…](dispatch://…)` - is one candidate of that address. */
+ *  stores as `[dispatch://…](dispatch://…)` - is one candidate of that address, and a link whose
+ *  words are a mention (`MENTION_SIGN`) one candidate keyed by that sign and the address's key,
+ *  which the host draws as the party's current name or leaves as the words. */
 function blockCandidates(
   block: ProseMirrorNode,
   start: number,
@@ -157,12 +168,14 @@ function blockCandidates(
   }
   for (const run of runs) {
     const href = run.mark.attrs.href;
-    // The whole address and nothing else: the reader must read the link's text, which is its
-    // destination, as one reference running end to end.
-    if (typeof href !== "string" || run.text !== href) continue;
+    const addressed = run.text === href;
+    if (typeof href !== "string" || (!addressed && !run.text.startsWith(MENTION_SIGN))) continue;
+    // The whole address and nothing else: the reader must read the link's destination as one
+    // reference running end to end.
     const [only, ...others] = references.scan(href);
     if (only !== undefined && others.length === 0 && only.start === 0 && only.end === href.length) {
-      found.push({ end: run.end, key: only.key, start: run.start });
+      const key = addressed ? only.key : `${MENTION_SIGN}${only.key}`;
+      found.push({ end: run.end, key, start: run.start });
     }
   }
 
@@ -291,25 +304,29 @@ function revealedRanges(
   return ranges.sort().join(" ");
 }
 
+/** The title drawn over a resolved candidate: a link carrying its target's address, or, for a
+ *  target that opens no page, the same words as no link. */
 function titleWidget(target: ReferenceTarget): (view: EditorView) => HTMLElement {
   return (view) => {
     const document = view.dom.ownerDocument;
-    const link = document.createElement("a");
-    link.className = TITLE_CLASS;
-    link.setAttribute("role", "link");
-    link.dataset.dispatchHref = target.href;
-    const { title, titleKey } = target;
+    const { href, title, titleKey } = target;
+    const drawn = document.createElement(href === undefined ? "span" : "a");
+    drawn.className = TITLE_CLASS;
+    if (href !== undefined) {
+      drawn.setAttribute("role", "link");
+      drawn.dataset.dispatchHref = href;
+    }
     if (titleKey !== undefined && titleKey !== "" && title.startsWith(titleKey)) {
       const key = document.createElement("strong");
       key.textContent = titleKey;
-      link.append(key, title.slice(titleKey.length));
+      drawn.append(key, title.slice(titleKey.length));
     } else {
-      link.textContent = title;
+      drawn.textContent = title;
     }
     // A press on the title neither moves the caret nor focuses the editor, so the title stays
     // drawn until the click lands and the host follows it.
-    link.addEventListener("mousedown", (event) => event.preventDefault());
-    return link;
+    drawn.addEventListener("mousedown", (event) => event.preventDefault());
+    return drawn;
   };
 }
 
@@ -386,9 +403,10 @@ function dispatchReferenceChange(view: EditorView, change: ReferenceChange): voi
  * each candidate's key resolves to; both reach the plugin through `setReferences`, as a host's
  * change marks reach `./editor-change-decorations.ts`, because a host class written on editor DOM
  * is read back as an edit. A resolved candidate is drawn as its target's title, a link carrying
- * `data-dispatch-href`, with its stored text hidden; while the focused editor's selection touches
- * it, the stored text shows instead, so an author edits what is stored. An edit re-reads only the
- * text blocks it touched; mapping carries the other candidates.
+ * `data-dispatch-href` (words and no link for a target that opens no page), with its stored text
+ * hidden; while the focused editor's selection touches it, the stored text shows instead, so an
+ * author edits what is stored. An edit re-reads only the text blocks it touched; mapping carries
+ * the other candidates.
  */
 export const referenceDecorationsPlugin = $prose(
   () =>

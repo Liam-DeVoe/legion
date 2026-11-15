@@ -14,8 +14,11 @@ import {
   userHeaders,
 } from "./api";
 import { documentEditor } from "./editor";
+import { commentField, pickReference } from "./ref-picker";
 import {
+  PERSON_LOGIN,
   RENDERED_BODY,
+  ROLE_TOKEN,
   referenceAgent,
   UNKNOWN_PERSON_LOGIN,
   UNKNOWN_PERSON_REFERENCE,
@@ -359,6 +362,108 @@ test("a session Dispatch holds a record of links though it has ended, a listed o
 
     await page.goto(`/issues/${host.key}/spec`);
     await expectSessions(documentEditor(page));
+  } finally {
+    await alice.close();
+  }
+});
+
+// R4: a mention is written with the name the party had when it was picked, and reads as `@` and
+// the name it has now wherever it is shown: in the composer's pill before the send, and in the
+// record the send stores. A link to the same party whose words its author wrote another way keeps
+// those words through the rename (R8).
+// SLOW(>=2s): a pick, a rename that reaches the open page on the shell's 15 s registry poll, and
+// a send.
+test("a session renamed after it was picked reads as its new name in the pill and the stored record, and a link in other words keeps them", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  await setLiveSessions([plannerSession]);
+  const address = `dispatch://agent/${plannerSession.session_id}`;
+  const renamed = "Planner renamed";
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${host.key}/conversation`);
+    const field = commentField(page);
+    await pickReference(field, "@", plannerSession.title);
+    await expect(field).toHaveValue(`[@${plannerSession.title}](${address})`);
+    await field.press("End");
+    await field.pressSequentially(` and [${WORDS}](${address})`);
+    const composer = page.getByRole("form", { name: "Comment composer" });
+    // One pill for the one party, at its first appearance: the mention.
+    const pills = composer.getByRole("region", { name: "References" }).getByRole("link");
+    await expect(pills).toHaveText([`@${plannerSession.title}`]);
+
+    // The session is renamed while the draft is open: the pill follows it before the send.
+    await setLiveSessions([{ ...plannerSession, title: renamed }]);
+    await expect(pills).toHaveText([`@${renamed}`], { timeout: 30_000 });
+
+    const sent = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${host.key}/comments`
+    );
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+    const stored = (await (await sent).json()) as { body: string; id: string };
+    // The text keeps the name the pick wrote; only what it reads as follows the party.
+    expect(stored.body).toBe(`[@${plannerSession.title}](${address}) and [${WORDS}](${address})`);
+    const card = await expandedComment(page, stored.id);
+    await expect(card.getByRole("link", { exact: true, name: `@${renamed}` })).toHaveCount(1);
+    await expect(card.getByRole("link", { exact: true, name: WORDS })).toHaveCount(1);
+    await expect(
+      card.getByRole("link", { exact: true, name: `@${plannerSession.title}` })
+    ).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// R5 and R8: a bare person reads as their login, with no link, where Dispatch knows the login,
+// and a login it does not know is the words written; a bare role reads as its token, linked to
+// its page. The comment and the document editor read the one answer, so they agree.
+// SLOW(>=2s): two page loads, each waiting for the role's title before it reads the rest.
+test("a bare known person reads as their login with no link, an unknown one as written, and a bare role as its token, linked", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  // Dana signs in once, which is what makes her a person Dispatch knows.
+  await userHeaders(PERSON_LOGIN);
+  const person = `dispatch://person/${PERSON_LOGIN}`;
+  const body = `Ask ${person}, ${UNKNOWN_PERSON_REFERENCE} and dispatch://role/${ROLE_TOKEN}.`;
+  await editArtifact(
+    host.primary_artifact_id,
+    { ops: [{ after: "end", markdown: body, op: "insert" }] },
+    referenceAgent
+  );
+  const comment = await createComment(host.key, { body }, referenceAgent);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    const roleLink = (scope: Locator) => scope.getByRole("link", { exact: true, name: ROLE_TOKEN });
+
+    await page.goto(`/issues/${host.key}/conversation`);
+    const card = (await expandedComment(page, comment.id)).locator(RENDERED_BODY).first();
+    await expect(roleLink(card)).toHaveAttribute("href", `/agents?role=${ROLE_TOKEN}`);
+    await expect(card).toContainText(
+      `Ask ${PERSON_LOGIN}, ${UNKNOWN_PERSON_REFERENCE} and ${ROLE_TOKEN}.`
+    );
+    await expect(card.getByRole("link", { name: PERSON_LOGIN })).toHaveCount(0);
+    await expect(card.getByRole("link", { name: UNKNOWN_PERSON_LOGIN })).toHaveCount(0);
+
+    await page.goto(`/issues/${host.key}/spec`);
+    const editor = documentEditor(page);
+    await expect(roleLink(editor)).toHaveCount(1);
+    // The editor draws the known login over the address it stores, as words and no link.
+    await expect(editor.locator("span.dispatch-reference")).toHaveText([PERSON_LOGIN]);
+    await expect(editor.getByRole("link", { name: PERSON_LOGIN })).toHaveCount(0);
+    await expect(editor).toContainText(UNKNOWN_PERSON_REFERENCE);
+    await expect(editor.getByRole("link", { name: UNKNOWN_PERSON_LOGIN })).toHaveCount(0);
   } finally {
     await alice.close();
   }

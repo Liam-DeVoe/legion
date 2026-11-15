@@ -1241,9 +1241,9 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("[Planner](dispatch://agent/planner-session)")
+      ).toBe("[@Planner](dispatch://agent/planner-session)")
     );
-    // The pick wrote the party's link into the box, so the rest of the message is written
+    // The pick wrote the party's mention into the box, so the rest of the message is written
     // after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
@@ -1255,7 +1255,7 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
       expect(page.createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "[Planner](dispatch://agent/planner-session) Track this under Core",
+          body: "[@Planner](dispatch://agent/planner-session) Track this under Core",
           delivery: "aside",
         },
         keyedAttempt

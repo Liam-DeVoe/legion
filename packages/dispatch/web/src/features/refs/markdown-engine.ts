@@ -4,6 +4,7 @@ import type {
   Attrs,
   DOMOutputSpec,
   DOMSerializer,
+  Mark,
   Node as ProseMirrorNode,
   Schema,
 } from "prosemirror-model";
@@ -14,6 +15,8 @@ import { compiledBlockSchema } from "../doc/schema";
 import { renderAskBlockShell, renderTypedBlock } from "../doc/typed-block-drawing";
 import type { ParsedBody, ParseRequest } from "./markdown-parse.worker";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
+import { isPartyMention } from "./party-references";
+import { MENTION_SIGN } from "./ref-picker";
 import { referenceSpans } from "./reference-spans";
 import { parseDispatchReference, shortForm } from "./routes";
 import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
@@ -517,7 +520,8 @@ export const markdownClassName =
   "dispatch-markdown prose prose-sm prose-slate break-words dark:prose-invert";
 
 /** The name a text's `dispatch://` addresses resolve to, each under the address as its author
- *  wrote it; an address the map does not hold has not resolved, and reads as its short form. */
+ *  wrote it; an address the map does not hold has not resolved, and reads as its short form - a
+ *  party's mention as its author's words. */
 export type ReferenceNames = ReadonlyMap<string, string>;
 
 /** No address resolved yet, shared so a projection that needs none keeps one identity across
@@ -525,7 +529,7 @@ export type ReferenceNames = ReadonlyMap<string, string>;
 export const NO_REFERENCE_NAMES: ReferenceNames = new Map();
 
 /** What one text of a document projects to: its words, and every `dispatch://` address it wrote
- *  outside code, each as its author wrote it. */
+ *  outside code - a party's mention's among them - each as its author wrote it. */
 interface ProjectedText {
   readonly words: string;
   readonly addresses: readonly string[];
@@ -555,13 +559,19 @@ function nameReferences(text: string, names: ReferenceNames, addresses: string[]
  *  boundary, at a hard break, and at a newline in a text or an HTML value - which is where a code
  *  block's lines end, and a block of HTML's, which the engine draws as one `html` node holding
  *  all of its lines. A table's row is the exception: it reads as one line, every boundary or
- *  break inside it a space, so its cells read in a row. */
+ *  break inside it a space, so its cells read in a row. A party's mention - a link whose words
+ *  start with the mention sign (`isPartyMention`) - reads as the sign and the name `names`
+ *  resolved for its address, as the painted mention reads (`RefLink`), and as its author's words
+ *  until that name resolves; every other link reads as its words. */
 function plainLines(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText[] {
   const lines: ProjectedText[] = [];
   let words = "";
   let addresses: string[] = [];
   // Where the table row being read ends: a node that starts before it is one of its cells.
   let rowEnd = -1;
+  // The link of the mention whose party's name was written in place of its words: the text
+  // nodes after its first, which formatting inside the link cuts its words into, add nothing.
+  let named: Mark | undefined;
   const breakLine = (position: number): void => {
     if (position < rowEnd) {
       words += " ";
@@ -582,10 +592,28 @@ function plainLines(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText[
     }
   };
   doc.descendants((node, position, parent) => {
+    const link = node.isText ? node.marks.find((mark) => mark.type.name === "link") : undefined;
+    if (named !== undefined && link?.eq(named) === true) {
+      return true;
+    }
+    named = undefined;
     if (node.isText) {
+      const text = node.text ?? "";
       const code =
         parent?.type.spec.code === true || node.marks.some((mark) => mark.type.spec.code === true);
-      write(position, node.text ?? "", !code);
+      const href = code ? undefined : link?.attrs.href;
+      // A party is named only by its `dispatch://` address: no dashboard page names one in the
+      // shared grammar (`routes.ts`'s `pageRoutes`), as no reader reads one.
+      if (typeof href === "string" && isPartyMention(text, parseDispatchReference(href))) {
+        addresses.push(href);
+        const name = names.get(href);
+        if (name !== undefined) {
+          words += `${MENTION_SIGN}${name}`;
+          named = link;
+          return true;
+        }
+      }
+      write(position, text, !code);
     } else if (node.type.name === "html") {
       write(position, String(node.attrs.value ?? ""), false);
     } else if (node.isBlock || node.type.name === "hardbreak") {

@@ -63,6 +63,8 @@ function spyTitleReads(): () => void {
     // A session reference reads the registry, and an unlisted one the batched known-session read.
     spyOn(api, "listAgents").mockImplementation(stillOut),
     spyOn(api, "getKnownSessions").mockImplementation(stillOut),
+    // A person reference reads the people Dispatch knows, for the login it is named by.
+    spyOn(api, "listUsers").mockImplementation(stillOut),
     spyOn(api, "getAsk").mockImplementation(stillOut),
     spyOn(api, "getComment").mockImplementation(stillOut),
     spyOn(api, "getMessage").mockImplementation(stillOut),

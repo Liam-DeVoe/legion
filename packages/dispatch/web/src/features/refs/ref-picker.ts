@@ -205,7 +205,8 @@ export interface RefPickerTrigger {
    *  them (`@legion/proof-editor`'s `insertReference`). */
   readonly chars: string;
   readonly start: number;
-  /** Never holds a space: a space typed before a row is taken closes the picker. */
+  /** Never holds a space or a `]`: a space typed before a row is taken closes the picker, and a
+   *  `]` ends the link's words the trigger stood in. */
   readonly query: string;
 }
 
@@ -220,7 +221,9 @@ function atWordBoundary(before: string, start: number): boolean {
 /**
  * The door open at the caret, read from the text before it: the last trigger the reader typed
  * that still stands - at a word boundary, with no space typed since. Undefined when none does,
- * which is how the picker closes on a space and how it never opens mid-word.
+ * which is how the picker closes on a space and how it never opens mid-word. Nor does it stand
+ * past a `]`: the `@` a mention's words start with (`[@Planner](dispatch://agent/…)`) follows a
+ * `[`, and the picker must not open again over the mention it has just written.
  */
 export function readTrigger(before: string): RefPickerTrigger | undefined {
   let found: RefPickerTrigger | undefined;
@@ -229,7 +232,7 @@ export function readTrigger(before: string): RefPickerTrigger | undefined {
     if (start < 0 || (found !== undefined && start < found.start)) continue;
     if (!atWordBoundary(before, start)) continue;
     const query = before.slice(start + chars.length);
-    if (!/\s/u.test(query)) found = { chars, door, query, start };
+    if (!/[\s\]]/u.test(query)) found = { chars, door, query, start };
   }
   return found;
 }
@@ -257,16 +260,23 @@ function linkWords(label: string): string {
   return label.replace(/[[\]]/gu, (bracket) => `\\${bracket}`);
 }
 
-/** The mention of a party: a link whose words are its name and whose address names it (R4), so
- *  the stored text reads as the person, session or role it mentions and still names it after an
- *  edit of the words. The one writer of that shape, read by the picker's pick below and by the
- *  seed a channel owes its own party (`party-references.ts`). */
-export function partyLink(words: string, reference: string): string {
-  return `[${linkWords(words)}](${reference})`;
+/** The sign a mention's words start with: `[@Planner](dispatch://agent/…)`. A link whose words
+ *  start with it and whose address names a party reads as the sign and that party's current
+ *  name wherever it is shown, so a session renamed since the pick reads as it is called now
+ *  (R4); a link whose words its author wrote another way keeps those words (R8), and an `@` and
+ *  a word with no link around it is no reference at all (R10). */
+export const MENTION_SIGN = "@";
+
+/** The mention of a party: a link whose words are the mention sign and its name and whose
+ *  address names it (R4), so the stored text reads as the person, session or role it mentions
+ *  and still names it after an edit of the words. The one writer of that shape, read by the
+ *  picker's pick below and by the seed a channel owes its own party (`party-references.ts`). */
+export function partyLink(name: string, reference: string): string {
+  return `[${MENTION_SIGN}${linkWords(name)}](${reference})`;
 }
 
-/** The text a pick inserts: a party as its worded link; every other kind as the bare address,
- *  which the renderer draws by its target's own title (R8). */
+/** The text a pick inserts: a party as its mention; every other kind as the bare address, which
+ *  the renderer draws by its target's own title (R8). */
 export function insertionText(row: RefPickerRow): string {
   return isPartyKind(row.kind) ? partyLink(row.label, row.reference) : row.reference;
 }
@@ -284,7 +294,7 @@ export function insertionFor(
     trigger: trigger.chars,
   };
   return isPartyKind(row.kind)
-    ? { ...insertion, link: { href: row.reference, words: row.label } }
+    ? { ...insertion, link: { href: row.reference, words: `${MENTION_SIGN}${row.label}` } }
     : insertion;
 }
 

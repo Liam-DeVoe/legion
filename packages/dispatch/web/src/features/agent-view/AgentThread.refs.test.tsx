@@ -371,7 +371,7 @@ test("Enter takes the highlighted row while the picker is open, and sends while 
   await waitFor(() => expect(pane?.sent).toEqual(["See dispatch://CORE-2 "]));
 });
 
-test("a picked agent is written as the link that names it, and the hint says who is told", async () => {
+test("a picked agent is written as the mention that names it, and the hint says who is told", async () => {
   const user = userEvent.setup();
   const input = renderThread();
 
@@ -383,5 +383,10 @@ test("a picked agent is written as the link that names it, and the hint says who
   await type(user, input, "@plan");
   await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
   await user.keyboard("{Enter}");
-  await waitFor(() => expect(input.value).toBe("[Planner](dispatch://agent/planner-session) "));
+  await waitFor(() => expect(input.value).toBe("[@Planner](dispatch://agent/planner-session) "));
+  // The mention's words start with the `@` the door opens on, but the door does not open again
+  // over the mention it wrote: not even with the caret right after it.
+  await user.keyboard("{Backspace}");
+  await waitFor(() => expect(input.value).toBe("[@Planner](dispatch://agent/planner-session)"));
+  expect(screen.queryByRole("listbox", { name: "References" })).not.toBeInTheDocument();
 });

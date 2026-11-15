@@ -12,7 +12,7 @@ import {
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
-import { issueQuery } from "../../api/queries";
+import { issueQuery, usersQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
   Artifact,
@@ -27,7 +27,12 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
-import { agentsQuery, registeredAgent, registeredTitle } from "./agent-registry";
+import {
+  agentsQuery,
+  registeredAgent,
+  registeredTitle,
+  useRegistryPolling,
+} from "./agent-registry";
 import { itemOfBlock } from "./block-reference";
 import { knownSessionQuery } from "./known-sessions";
 import { useMarkdownHeadline } from "./markdown-engine";
@@ -296,6 +301,10 @@ export interface ReferenceData {
   readonly sessionTitle: string | undefined;
   /** Whether Dispatch holds a record of the session a session reference names. */
   readonly sessionKnown: boolean;
+  /** Whether Dispatch knows the person a person reference names: their login is one of the
+   *  people who have signed in, the people the reference picker lists where no issue is in hand
+   *  (`useRefPicker.ts`). False while that list loads and for any other reference. */
+  readonly personKnown: boolean;
   /** Whether Dispatch answered that the target does not exist: the read of the record behind the
    *  reference answered 404 (a project with no architecture among them), or the read that lists
    *  it came back without it - an issue's artifacts with neither the slug nor, for a document, the
@@ -549,8 +558,11 @@ export function useReferenceData(
   // A session is a target while Dispatch holds any record of it: listed in the registry, which
   // the page already reads, or, for one the registry does not list, answered by the one batched
   // read of the page's unlisted sessions. An ended session keeps its conversation, so it stays a
-  // link; an id no agent ever held does not (R8).
+  // link; an id no agent ever held does not (R8). While a session reference is drawn it keeps the
+  // shell's one registry poll running, so a session renamed since the page loaded reads as it is
+  // called now (R4) - in a draft's pill as in the record.
   const sessionRoute = route?.kind === "agent-session" ? route : undefined;
+  useRegistryPolling(sessionRoute !== undefined);
   const registry = useQuery({
     ...agentsQuery(),
     enabled: sessionRoute !== undefined,
@@ -568,6 +580,14 @@ export function useReferenceData(
   });
   const listedTitle =
     sessionRoute === undefined ? undefined : registeredTitle(registry.data, sessionRoute.session);
+  // A person is named by their login, which their address holds, once Dispatch knows the login:
+  // the one read of everyone who has signed in, shared with every other person reference and
+  // with the pickers that list them, and made only for a person reference.
+  const personRoute = route?.kind === "person" ? route : undefined;
+  const people = useQuery({ ...usersQuery(), enabled: personRoute !== undefined });
+  const personKnown =
+    personRoute !== undefined &&
+    (people.data ?? []).some((person) => person.login === personRoute.login);
   return {
     issue: issue.data,
     artifact,
@@ -580,6 +600,7 @@ export function useReferenceData(
     component,
     sessionTitle: listedTitle ?? recorded.data?.title,
     sessionKnown: listed !== undefined || recorded.data?.known === true,
+    personKnown,
     missing:
       (unlisted && recorded.data?.known === false) ||
       [
@@ -671,9 +692,10 @@ export function blockTextTree(node: GraphReferences["node"]): DisplayTree | unde
  * it loads or after. A block of a document resolves to the headline of its own text, as an ask or
  * comment does: the text the pinned version held for a pinned reference, its current text
  * otherwise. A component resolves to its own title from its project's architecture, the one
- * record behind that kind. A reference to an image artifact, of an issue, a project or an
- * agent's conversation, also answers its picture: the bytes route of the version it pins, else
- * of the latest.
+ * record behind that kind. A session resolves to its title, a role to its token, and a person
+ * to their login once Dispatch knows it (R5). A reference to an image artifact, of an issue, a
+ * project or an agent's conversation, also answers its picture: the bytes route of the version
+ * it pins, else of the latest.
  */
 export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
@@ -690,6 +712,7 @@ export function useReferenceTarget(
     markdownTree,
     message,
     missing,
+    personKnown,
     sessionKnown,
     sessionTitle,
   } = useReferenceData(route, options);
@@ -755,6 +778,24 @@ export function useReferenceTarget(
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
+      picture: undefined,
+    };
+  } else if (route?.kind === "role") {
+    // A role is named by its token, which its address holds, so it costs no read: the page it
+    // opens lists whoever holds it now.
+    shown = {
+      title: route.role,
+      description: undefined,
+      descriptionTree: undefined,
+      picture: undefined,
+    };
+  } else if (route?.kind === "person") {
+    // A person is named by their login, once Dispatch knows it (R5); a login it does not know
+    // has no name, and reads as the words its writer wrote.
+    shown = {
+      title: personKnown ? route.login : undefined,
+      description: undefined,
+      descriptionTree: undefined,
       picture: undefined,
     };
   } else {

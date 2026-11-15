@@ -376,7 +376,7 @@ test("the picker filters as the reader types, moves with the arrows and takes th
   await waitFor(() => expect(comment.value).toBe("dispatch://CORE/component/relay"));
 });
 
-test("Tab takes the highlighted row, and a party is written as a link naming the party", async () => {
+test("Tab takes the highlighted row, and a party is written as the mention naming the party", async () => {
   const user = userEvent.setup();
   renderHost();
 
@@ -386,7 +386,7 @@ test("Tab takes the highlighted row, and a party is written as a link naming the
   await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
 
   await user.keyboard("{Tab}");
-  await waitFor(() => expect(comment.value).toBe("[Planner](dispatch://agent/planner-session)"));
+  await waitFor(() => expect(comment.value).toBe("[@Planner](dispatch://agent/planner-session)"));
   expect(screen.queryByRole("listbox", { name: "References" })).not.toBeInTheDocument();
 });
 
@@ -403,7 +403,7 @@ test("a pick keeps the text after the caret", async () => {
 
   await user.keyboard("{Enter}");
   await waitFor(() =>
-    expect(comment.value).toBe("see [Planner](dispatch://agent/planner-session) and the rest")
+    expect(comment.value).toBe("see [@Planner](dispatch://agent/planner-session) and the rest")
   );
 });
 

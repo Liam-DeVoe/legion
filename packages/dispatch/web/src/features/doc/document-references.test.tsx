@@ -17,7 +17,7 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import type { Ask, AskRead, IssueReferenceSummary } from "../../api/types";
+import type { Agent, Ask, AskRead, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
@@ -259,6 +259,69 @@ test("the live editor is told to draw the title for a link whose text is its own
     await waitFor(() =>
       expect(drawnTitles(editors[0]?.references)).toEqual({ [AUTOLINK]: "design.md" })
     );
+  } finally {
+    view.unmount();
+  }
+});
+
+const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
+
+/** The session the mentions below name, as the registry lists it now: renamed since the
+ *  mentions were written. */
+const renamed: Agent = {
+  capabilities: [],
+  dir: "/workspaces/planner",
+  host: "host-a",
+  last_activity: null,
+  last_seen: 1_700_000_000_000,
+  machine_id: "host-a",
+  open_asks: 0,
+  roles: [],
+  session_id: SESSION,
+  state: "live",
+  title: "Planner now",
+};
+
+// R4 and R5 in the editor, as a rendered body reads them: a party's mention - the editor offers
+// it as the mention sign and its address - is drawn as `@` and the current name, a link with `@`
+// words to anything but a party is left as its words, a known person is drawn as their login and
+// no link, and a role as its token, linked. A session's live page is no reference in the shared
+// grammar, so a link to it is never offered at all, and keeps its words as a rendered body does.
+test("the live editor draws a mention as @ and the party's current name, a person as their login and a role as its token", async () => {
+  const queryClient = seededQueryClient();
+  queryClient.setQueryData(["agents"], [renamed]);
+  queryClient.setQueryData(["users"], [{ login: "dana@example.test" }]);
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+  const address = `@dispatch://agent/${SESSION}`;
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    await waitFor(() => expect(editors[0]?.references).toBeDefined());
+    const references = editors[0]?.references;
+    if (references === undefined || references === null) throw new Error("references missing");
+    expect(references.scan(`${window.location.origin}/agents/${SESSION}/live`)).toEqual([]);
+    act(() => {
+      references.onKeys([
+        address,
+        "@dispatch://CORE-2",
+        "dispatch://person/dana@example.test",
+        "dispatch://role/reviewer",
+      ]);
+    });
+
+    await waitFor(() =>
+      expect(drawnTitles(editors[0]?.references)).toEqual({
+        [address]: "@Planner now",
+        "@dispatch://CORE-2": null,
+        "dispatch://person/dana@example.test": "dana@example.test",
+        "dispatch://role/reviewer": "reviewer",
+      })
+    );
+    const targets = editors[0]?.references?.targets;
+    expect(targets?.get(address)?.href).toBe(`dispatch://agent/${SESSION}`);
+    expect(targets?.get("dispatch://person/dana@example.test")?.href).toBeUndefined();
+    expect(targets?.get("dispatch://role/reviewer")?.href).toBe("dispatch://role/reviewer");
   } finally {
     view.unmount();
   }

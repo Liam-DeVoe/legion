@@ -18,14 +18,18 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
+  AskRead,
   Comment,
   IssueCollaborators,
+  IssueReferenceSummary,
   ItemBlock,
   ItemBlocks,
   Message,
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedRoleOptions } from "../refs/party-options";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -179,19 +183,30 @@ function holdControls(): HTMLFieldSetElement {
 /** Every source the picker reads when a door opens over the composer, and a read no handler
  *  answers fails its test: the issue's collaborators (its people and the roles nobody is
  *  running), the project's components and the search behind the kinds that need a query. The
- *  rows that are about a stopped role answer the collaborators themselves. */
+ *  rows that are about a stopped role answer the collaborators themselves. The pills under a
+ *  draft draw each reference as the stored record will (`RefLink`), so an issue a pill names is
+ *  read for its title (`summaryOf`), and a session the registry does not list is asked about
+ *  once: Dispatch holds no record of one here. */
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 let architectureRead: Mock<typeof api.getArchitecture>;
 let searchRead: Mock<typeof api.search>;
+let knownRead: Mock<typeof api.getKnownSessions>;
+let summaryRead: Mock<typeof api.getIssueSummary>;
 beforeEach(() => {
   collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators());
   architectureRead = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   searchRead = spyOn(api, "search").mockResolvedValue(searchResponse([]));
+  knownRead = spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] });
+  summaryRead = spyOn(api, "getIssueSummary").mockImplementation((key) =>
+    Promise.resolve(summaryOf(key))
+  );
 });
 afterEach(() => {
   collaboratorsRead.mockRestore();
   architectureRead.mockRestore();
   searchRead.mockRestore();
+  knownRead.mockRestore();
+  summaryRead.mockRestore();
 });
 
 // Whether a typed `/btw` is a command is decided by the parties the shared reader finds in the
@@ -248,10 +263,77 @@ test("a draft whose only party is a person strips /btw and sends a mode nobody i
   }
 });
 
+/** What a reference to CORE-1 or CORE-2 shows: CORE-1's spec is the document its own text's
+ *  `#id`s resolve against. */
+function summaryOf(key: string): IssueReferenceSummary {
+  return {
+    documents:
+      key === "CORE-1"
+        ? [
+            {
+              id: "spec-1",
+              kind: "doc",
+              latest_version: 1,
+              name: "spec.md",
+              primary: true,
+              slug: "spec-md",
+            },
+          ]
+        : [],
+    key,
+    project: "CORE",
+    status: "todo",
+    title: key === "CORE-1" ? "The host" : "Warm the cache",
+  };
+}
+
+/** The ask `#q2` names, as its reference reads it for the title. */
+function askRead(id: string): AskRead {
+  return {
+    answers: [],
+    ask: {
+      anchor: null,
+      answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      author: { id: "planner", kind: "session" },
+      block_id: "q2",
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+      id,
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [],
+      question: "Which way round?",
+      state: "open",
+      urgency: "med",
+    },
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  };
+}
+
+/** Each pill under the draft, by its accessible name and the page it opens. */
+function pillsDrawn(pills: HTMLElement): { href: string | null; name: string }[] {
+  return within(pills)
+    .getAllByRole("link")
+    .map((pill) => ({ href: pill.getAttribute("href"), name: pill.textContent ?? "" }));
+}
+
 // Each pill under the draft is a link to the page its reference opens, written through the one
-// gate between a typed reference and an `href` (`routes.ts`'s `appHref`). A person has no page,
-// so the draft that names one shows no pill for them: an empty `href` navigates to this very
-// page, which would drop the draft the reader is writing.
+// gate between a typed reference and an `href` (`routes.ts`'s `appHref`), and reads as the stored
+// record will. A person has no page, so the draft that names one shows no pill for them: an
+// empty `href` navigates to this very page, which would drop the draft the reader is writing.
 test("a person named in the draft gets no pill, and a reference with a page gets one", async () => {
   const user = userEvent.setup();
   const { view } = renderComposer();
@@ -260,15 +342,117 @@ test("a person named in the draft gets no pill, and a reference with a page gets
     const field = screen.getByLabelText("Comment");
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
-    await user.paste("[Alice](dispatch://person/alice@example.com) and dispatch://CORE-2");
+    await user.paste("[@Alice](dispatch://person/alice@example.com) and dispatch://CORE-2");
     const pills = await screen.findByRole("region", { name: "References" });
-    expect(
-      within(pills)
-        .getAllByRole("link")
-        .map((pill) => pill.getAttribute("href"))
-    ).toEqual(["/issues/CORE-2"]);
+    await waitFor(() =>
+      expect(pillsDrawn(pills)).toEqual([{ href: "/issues/CORE-2", name: "CORE-2 Warm the cache" }])
+    );
   } finally {
     view.unmount();
+  }
+});
+
+// A picture is drawn as the picture in the stored record, never as a link to its document, so
+// the draft shows no pill for it either; a reference beside it still gets one.
+test("a picture in the draft gets no pill", async () => {
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.paste("![shot.png](dispatch://CORE-1/artifact/shot-png@v1) and dispatch://CORE-2");
+    const pills = await screen.findByRole("region", { name: "References" });
+    await waitFor(() =>
+      expect(pillsDrawn(pills)).toEqual([{ href: "/issues/CORE-2", name: "CORE-2 Warm the cache" }])
+    );
+    // No pill at all for the picture, not even one that lost its link: its document is not one
+    // CORE-1's summary lists, so a pill for it would read as its words with no link.
+    expect(pills.querySelectorAll("a")).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R7: the pills read the draft with the facts the renderer reads the stored record with, and
+// with the record the write will have - here an issue comment, whose `#id`s resolve against its
+// issue's spec. So a bare key whose issue exists and a `#id` the spec declares get the titled
+// pills the stored comment's links are, and a key no issue holds gets none, as it gets no link.
+test("a draft's bare key and #id get the titled pills a reader of the stored text sees", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  summaryRead.mockImplementation((key) =>
+    key === "CORE-9"
+      ? Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "no such issue" }))
+      : Promise.resolve(summaryOf(key))
+  );
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: "spec-1",
+    questions: [{ ask: "ask-2", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-2" }],
+  });
+  const getAsk = spyOn(api, "getAsk").mockImplementation((id) => Promise.resolve(askRead(id)));
+  const text = "See CORE-2, CORE-9 and #q2 here.";
+  const { view } = renderComposer();
+  const stored = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <MarkdownBody markdown={text} source={{ id: "comment-1", kind: "comment" }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.paste(text);
+    const pills = await screen.findByRole("region", { name: "References" });
+    const titled = [
+      { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
+      { href: "/issues/CORE-1/asks/ask-2", name: "Which way round?" },
+    ];
+    await waitFor(() => expect(pillsDrawn(pills)).toEqual(titled));
+    // The draft's `#id` is read against the spec its comment will be written on.
+    expect(getReferenceQuestions).toHaveBeenCalledWith("artifact", "spec-1");
+    // The stored comment the reader sees links the same two, titled the same way.
+    await waitFor(() =>
+      expect(
+        within(stored.container)
+          .getAllByRole("link")
+          .map((link) => ({ href: link.getAttribute("href"), name: link.textContent ?? "" }))
+      ).toEqual(titled)
+    );
+  } finally {
+    view.unmount();
+    stored.unmount();
+    getReferenceQuestions.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+// R4: a seeded mention's pill reads as `@` and the party's current name, as the stored record
+// will, though the draft wrote the name the session had when the channel seeded it.
+test("a mention's pill reads as @ and the party's current name", async () => {
+  // The registry the pill reads names the session as it is called now.
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([
+    { ...planner, title: "Planner renamed" },
+  ]);
+  const { view } = renderComposer({
+    agents: [planner],
+    seedMentions: [{ target: "session:A", title: "Planner" }],
+  });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A)"));
+    const pills = await screen.findByRole("region", { name: "References" });
+    await waitFor(() =>
+      expect(pillsDrawn(pills)).toEqual([{ href: "/agents/A/live", name: "@Planner renamed" }])
+    );
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
   }
 });
 
@@ -288,7 +472,7 @@ test("a seeded mention with /btw posts the canonical target and stripped body", 
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
-    await waitFor(() => expect(field.value).toBe("/btw [Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(field.value).toBe("/btw [@Planner](dispatch://agent/A)"));
     expect(screen.getByRole("list", { name: "Mention targets" })).toHaveTextContent("session:A");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
@@ -296,7 +480,7 @@ test("a seeded mention with /btw posts the canonical target and stripped body", 
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "[Planner](dispatch://agent/A)",
+          body: "[@Planner](dispatch://agent/A)",
           delivery: "btw",
         },
         keyedAttempt
@@ -318,7 +502,7 @@ test("deleting a seeded mention restores verbatim body and omits delivery", asyn
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A)"));
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("/btw ");
@@ -345,7 +529,7 @@ test("a draft naming one party twice names it once and sends one mode", async ()
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A)"));
     field.focus();
     field.setSelectionRange(field.value.length, field.value.length);
     await user.paste(" and [Planner](dispatch://agent/A) again");
@@ -358,7 +542,7 @@ test("a draft naming one party twice names it once and sends one mode", async ()
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "[Planner](dispatch://agent/A) and [Planner](dispatch://agent/A) again",
+          body: "[@Planner](dispatch://agent/A) and [Planner](dispatch://agent/A) again",
           delivery: "steer",
         },
         keyedAttempt
@@ -382,7 +566,7 @@ test("a mention's address names its party whatever its words say", async () => {
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("[session:Victim](dispatch://agent/A)"));
+    await waitFor(() => expect(field.value).toBe("[@session:Victim](dispatch://agent/A)"));
     expect(screen.getByRole("list", { name: "Mention targets" })).toHaveTextContent("session:A");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
@@ -390,7 +574,7 @@ test("a mention's address names its party whatever its words say", async () => {
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "[session:Victim](dispatch://agent/A)",
+          body: "[@session:Victim](dispatch://agent/A)",
           delivery: "steer",
         },
         keyedAttempt
@@ -446,7 +630,7 @@ test("reopening the same reply restores its canonical prefills after cancel", as
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://role/planner)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://role/planner)"));
     await user.click(screen.getByRole("button", { name: "Cancel reply" }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Cancel reply" })).not.toBeInTheDocument()
@@ -455,7 +639,7 @@ test("reopening the same reply restores its canonical prefills after cancel", as
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("Draft after cancellation");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://role/planner)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://role/planner)"));
   } finally {
     view.unmount();
   }
@@ -701,8 +885,8 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
 // A mention is a reference, so it survives an edit of the words around it: the reader types in
 // front of it, between the two, and after them, and both parties are still named.
 test("every mention in the draft survives the edits around it", async () => {
-  const planners = "[Planner](dispatch://agent/A)";
-  const workers = "[Worker](dispatch://agent/B)";
+  const planners = "[@Planner](dispatch://agent/A)";
+  const workers = "[@Worker](dispatch://agent/B)";
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const { view } = renderComposer({
@@ -811,14 +995,14 @@ test("a mention survives its target going offline before Send", async () => {
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A)"));
     act(() => queryClient.setQueryData(["agents"], []));
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "[Planner](dispatch://agent/A)",
+          body: "[@Planner](dispatch://agent/A)",
           delivery: "steer",
         },
         keyedAttempt
@@ -915,7 +1099,7 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
     // The row Enter takes with no arrow pressed is the first the list drew, the live agent:
     // this issue's collaborators name no person.
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(label.value).toBe("[Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(label.value).toBe("[@Planner](dispatch://agent/A)"));
     // The option row the picker's Enter did not add.
     expect(screen.queryByRole("textbox", { name: "Option 2 label" })).toBeNull();
 
@@ -968,7 +1152,7 @@ test("two seeded mentions receive one comment-level delivery mode", async () => 
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() =>
       expect(field.value).toBe(
-        "[Planner](dispatch://agent/A) [legion-planner](dispatch://role/legion-planner)"
+        "[@Planner](dispatch://agent/A) [@legion-planner](dispatch://role/legion-planner)"
       )
     );
     field.focus();
@@ -980,7 +1164,7 @@ test("two seeded mentions receive one comment-level delivery mode", async () => 
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "[Planner](dispatch://agent/A) [legion-planner](dispatch://role/legion-planner)",
+          body: "[@Planner](dispatch://agent/A) [@legion-planner](dispatch://role/legion-planner)",
           delivery: "aside",
         },
         keyedAttempt
@@ -1000,7 +1184,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A)"));
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("hello /btw ");
@@ -1009,7 +1193,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
       expect(createComment).toHaveBeenLastCalledWith(
         "CORE-1",
         {
-          body: "hello /btw [Planner](dispatch://agent/A)",
+          body: "hello /btw [@Planner](dispatch://agent/A)",
           delivery: "steer",
         },
         keyedAttempt
@@ -1019,7 +1203,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
 
     const second = renderComposer({ agents: [planner], seedMentions });
     const secondField = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(secondField.value).toBe("[Planner](dispatch://agent/A)"));
+    await waitFor(() => expect(secondField.value).toBe("[@Planner](dispatch://agent/A)"));
     secondField.focus();
     secondField.setSelectionRange(0, 0);
     await user.paste("/btwx ");
@@ -1028,7 +1212,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
       expect(createComment).toHaveBeenLastCalledWith(
         "CORE-1",
         {
-          body: "/btwx [Planner](dispatch://agent/A)",
+          body: "/btwx [@Planner](dispatch://agent/A)",
           delivery: "steer",
         },
         keyedAttempt
@@ -1541,7 +1725,7 @@ test("mentioning two targets that both lack the outbound mode names both in the 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() =>
-      expect(field.value).toBe("[Planner](dispatch://agent/A) [Worker](dispatch://agent/B)")
+      expect(field.value).toBe("[@Planner](dispatch://agent/A) [@Worker](dispatch://agent/B)")
     );
     expect(screen.getByText(/Planner and Worker do not advertise Send/)).toBeTruthy();
   } finally {
@@ -1551,9 +1735,9 @@ test("mentioning two targets that both lack the outbound mode names both in the 
 
 const plannerMention = { target: "session:A", title: "Planner" };
 const workerMention = { target: "session:B", title: "Worker" };
-/** What each of those two seeds writes into a draft: the link that names the party. */
-const plannerLink = "[Planner](dispatch://agent/A)";
-const workerLink = "[Worker](dispatch://agent/B)";
+/** What each of those two seeds writes into a draft: the mention that names the party. */
+const plannerLink = "[@Planner](dispatch://agent/A)";
+const workerLink = "[@Worker](dispatch://agent/B)";
 const createdMessage: Message = {
   author: { id: "alice", kind: "user" },
   body: "sent",

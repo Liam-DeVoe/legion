@@ -30,9 +30,9 @@ import { sessionIds } from "./session-ids";
  * The claim is about the box, not about the surface that draws it: whichever box a person
  * writes in, the same three doors open over the same rows in the same order, the same words
  * stand where the list has none, a pick lands at the caret and leaves the words around it, and
- * the line under the box is the hint its row of `DISPATCH_WRITING_BOXES` holds. One `test()`
- * per covered box, driven from that list, so a box the list gains with no row of its own, and a
- * row for a box the list no longer holds, are both visible.
+ * the line under the box says what a pick does on its write (`hintWords`). One `test()` per
+ * covered box, driven from `DISPATCH_WRITING_BOXES`, so a box the list gains with no row of its
+ * own, and a row for a box the list no longer holds, are both visible.
  *
  * The rows the picker finds are the world's own, and the query that finds them (`QUERY`) is a
  * word no party, person or component holds: so every box lists the same three rows whatever it
@@ -197,34 +197,84 @@ export function coveredBoxes(): DispatchWritingBox[] {
   return [...new Set(DISPATCH_WRITING_BOXES.filter((row) => row.covered).map((row) => row.box))];
 }
 
-/** The line under the box, which the box reads from its row of the list at the mount: the
- *  element the box points `aria-describedby` at. The two hosts that draw the picker in an
- *  editor of their own carry their hint on a test id instead, since their box is no `<label>`
- *  of the shared field's. */
+/** The doors line every hint opens with. */
+const HINT_DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for anything else.";
+
+/** What a box whose write tells nobody it names says of a pick, before it says what does tell. */
+const HINT_QUIET =
+  "A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told.";
+
+/** What does tell, by the write that tells nobody it names: where the write itself goes, or the
+ *  comment that would tell a picked agent or role, or that nothing would. */
+const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
+  "agent-message": "The message goes to this agent.",
+  "approval-reason": "An open approval request sends the reason to whoever asked.",
+  "architecture-reason": "A comment on the issue tells a picked agent or role.",
+  ask: "The ask goes to the assignee's Inbox.",
+  "ask-decline": "The note goes to whoever asked.",
+  broadcast: "The message goes to each agent you selected.",
+  "comment-edit": "A new comment, not an edit, tells a picked agent or role.",
+  "document-text": "A comment on the document tells a picked agent or role.",
+  "issue-spec": "A comment on the new issue tells a picked agent or role.",
+  "message-reply": "Your reply goes to whoever the thread is with.",
+  "priority-description": "Nothing on a priority tells anyone.",
+  suggestion: "A pick in the Reason box tells an agent or a role.",
+};
+
+/**
+ * The words under a box, written out here rather than read from the list: the box reads its
+ * line from its row of `DISPATCH_WRITING_BOXES`, so a row that read its words from there too
+ * would pass whatever they said. These are what the reader of the box is owed (INFRA-1702's R4
+ * and R5): a box that delivers says a picked agent or role is told, and a picked person is not
+ * told and gets no link; a box that does not says a pick links and tells nobody, and says what
+ * does tell, in words of its write's own; and the ask card, whose one box makes both writes,
+ * says both. Which kind a row is comes from its `delivers`, which `expectDeliveryClaim` drives.
+ */
+function hintWords(box: DispatchWritingBox, write: DispatchWriting): string {
+  if (box === "ask-answer") {
+    return `${HINT_DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role; a picked person shows as a name without a link and is not told.`;
+  }
+  if (dispatchWritingBox(box, write).delivers) {
+    return `${HINT_DOORS} A picked agent or role is told. A picked person shows as a name without a link and is not told.`;
+  }
+  const told = HINT_TOLD[write];
+  if (told === undefined) {
+    throw new Error(
+      `${box} writing ${write} tells nobody it names, and no words here say what does`
+    );
+  }
+  return `${HINT_DOORS} ${HINT_QUIET} ${told}`;
+}
+
+/** The line under the box, which the box reads from its row of the list at the mount, held to
+ *  the words that row must say (`hintWords`): the element the box points `aria-describedby` at.
+ *  The two hosts that draw the picker in an editor of their own carry their hint on a test id
+ *  instead, since their box is no `<label>` of the shared field's. */
 export async function expectHint(
   page: Page,
   field: Locator,
   box: DispatchWritingBox,
   write: DispatchWriting
 ): Promise<void> {
-  const { hint } = dispatchWritingBox(box, write);
+  const hint = hintWords(box, write);
   if (box === "document-body" || box === "agent-live-composer") {
     const testid = box === "document-body" ? "document-body-hint" : "agent-message-hint";
     await expect(page.getByTestId(testid), `${box} writing ${write}: its hint`).toHaveText(hint);
     return;
   }
   // `aria-describedby` is a list: the field's own hint, and whatever else the host names beside
-  // it (the decline note's count of the characters left). The hint is the one of them whose
-  // words the writing list holds, so the row watches every id at once, narrows to the ones
-  // holding those words (`hasText`, which matches a substring) and then holds that one line to
-  // the whole of them. Both assertions retry, since a hint may render a tick after the box.
+  // it (the decline note's count of the characters left). The hint is the one of them holding
+  // the doors line, so the row watches every id at once, narrows to the ones holding it
+  // (`hasText`, which matches a substring) and then holds that one line to the whole of the
+  // words. Both assertions retry, since a hint may render a tick after the box.
   const described = await field.getAttribute("aria-describedby");
   expect(described, `${box}: the box names no line under it`).not.toBeNull();
   const ids = (described ?? "").split(/\s+/).filter((id) => id !== "");
   const lines = page.locator(ids.map((id) => `[id="${id}"]`).join(","));
-  await expect(lines.filter({ hasText: hint }), `${box} writing ${write}: its hint`).toHaveText([
-    hint,
-  ]);
+  await expect(
+    lines.filter({ hasText: HINT_DOORS }),
+    `${box} writing ${write}: its hint`
+  ).toHaveText([hint]);
 }
 
 /** The three doors over the same rows, each in its own order, and the words the box shows when

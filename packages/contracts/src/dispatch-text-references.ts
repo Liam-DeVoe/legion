@@ -209,11 +209,20 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "See [the agent](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551).",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
   },
+  // A mention, as the reference picker writes one (`[@<name>](<address>)`), is that same
+  // address: neither reader reads a link's words, which a renderer draws as `@` and the party's
+  // current name. An `@` and a word with no link around it is no reference at all.
+  {
+    body: "Ask [@Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) today.",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  { body: "Ask @Planner and @legion/contracts about it.", refs: [] },
   // A role is its token, the charset a `role:` delivery route takes (`model.ParseRoute`).
   { body: "Waiting on dispatch://role/reviewer today.", refs: ["dispatch://role/reviewer"] },
   { body: "See [the reviewer](dispatch://role/reviewer).", refs: ["dispatch://role/reviewer"] },
+  { body: "Ask [@reviewer](dispatch://role/reviewer).", refs: ["dispatch://role/reviewer"] },
   // A person is their login, the lowercased email `model.CanonicalLogin` stores. No page shows
-  // a person, so a renderer links neither form.
+  // a person, so a renderer links none of these forms.
   {
     body: "Asked dispatch://person/alice@example.com today.",
     refs: ["dispatch://person/alice@example.com"],
@@ -221,6 +230,11 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   },
   {
     body: "See [the owner](dispatch://person/alice@example.com).",
+    refs: ["dispatch://person/alice@example.com"],
+    links: [],
+  },
+  {
+    body: "Ask [@alice@example.com](dispatch://person/alice@example.com).",
     refs: ["dispatch://person/alice@example.com"],
     links: [],
   },

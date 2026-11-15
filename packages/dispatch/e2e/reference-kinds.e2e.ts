@@ -81,10 +81,10 @@ interface Kind {
    *  the server's, so those rows check the shape instead. */
   readonly writes?: string;
   readonly shape?: RegExp;
-  /** The address the stored text names, where the pick wrote a worded link rather than the
-   *  address itself: a party's words are its name, and the reference is inside the link. */
+  /** The address the stored text names, where the pick wrote a mention rather than the address
+   *  itself: a party's words are `@` and its name, and the reference is inside the link. */
   readonly names?: string;
-  /** What the stored reference reads as: the node's own name. */
+  /** What the stored reference reads as: the node's own name, `@` and the name for a party. */
   readonly reads: string;
   /** The page it opens, from the address the pick wrote. An empty path is no link at all. */
   readonly opens: (address: string) => string;
@@ -229,35 +229,36 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       row: new RegExp(`^${COMPONENT_TITLE}\\b`),
       writes: COMPONENT_REFERENCE,
     },
-    // A party is picked as the link that names it (R4), so its words are its name already.
+    // A party is picked as its mention (R4): the mention sign and its name, which the stored
+    // record reads as the sign and the party's current name.
     {
       kind: "agent session",
       opens: () => `/agents/${SESSION_ID}/live`,
       // The session's name is two words and a door closes on a space, so one word finds it.
       query: `@${SESSION_TITLE.split(" ")[0]}`,
-      reads: SESSION_TITLE,
+      reads: `@${SESSION_TITLE}`,
       row: new RegExp(`^${SESSION_TITLE}\\b`),
       names: SESSION_REFERENCE,
-      writes: `[${SESSION_TITLE}](${SESSION_REFERENCE})`,
+      writes: `[@${SESSION_TITLE}](${SESSION_REFERENCE})`,
     },
     {
       kind: "role",
       opens: () => `/agents?role=${ROLE_TOKEN}`,
       query: `@${ROLE_TOKEN}`,
-      reads: ROLE_TOKEN,
+      reads: `@${ROLE_TOKEN}`,
       row: new RegExp(`^${ROLE_TOKEN}\\b`),
       names: ROLE_REFERENCE,
-      writes: `[${ROLE_TOKEN}](${ROLE_REFERENCE})`,
+      writes: `[@${ROLE_TOKEN}](${ROLE_REFERENCE})`,
     },
     {
       kind: "person",
       // Nothing shows a person yet (dispatch://INFRA-1149), so their reference opens nothing.
       opens: () => "",
       query: "@dana",
-      reads: PERSON_LOGIN,
+      reads: `@${PERSON_LOGIN}`,
       row: new RegExp(`^${PERSON_LOGIN}$`),
       names: PERSON_REFERENCE,
-      writes: `[${PERSON_LOGIN}](${PERSON_REFERENCE})`,
+      writes: `[@${PERSON_LOGIN}](${PERSON_REFERENCE})`,
     },
   ];
 

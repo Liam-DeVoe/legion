@@ -4,7 +4,7 @@ import { render, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import type { IssueReferenceSummary, MyReplyRow } from "../../api/types";
+import type { Agent, IssueReferenceSummary, MyReplyRow } from "../../api/types";
 import { ThreadTitle } from "../inbox/ThreadTitle";
 import { MarkdownBody } from "./MarkdownBody";
 import { PlainText } from "./plain-text";
@@ -109,6 +109,111 @@ test("the plain-text projection names a reference by its resolved name", async (
   try {
     await waitFor(() =>
       expect(view.getByTestId("line").textContent).toBe("Tied to CORE-1 Fix the thing here.")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
+
+/** The session a mention below names, as the registry lists it now: renamed since the mention
+ *  was written as `@Old name`. */
+const renamed: Agent = {
+  capabilities: [],
+  dir: "/workspaces/planner",
+  host: "host-a",
+  last_activity: null,
+  last_seen: 1_700_000_000_000,
+  machine_id: "host-a",
+  open_asks: 0,
+  roles: [],
+  session_id: SESSION,
+  state: "live",
+  title: "Planner now",
+};
+
+/** A query client holding the registry's answer for the renamed session, and the people Dispatch
+ *  knows, of whom dana is one and nobody is not. */
+function clientWithParties(): QueryClient {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agents"], [renamed]);
+  client.setQueryData(["users"], [{ login: "dana@example.test" }]);
+  return client;
+}
+
+// R4: a party's mention reads as the mention sign and the party's current name, a hand-written
+// one as much as a picked one, so a session renamed since reads as it is called now. A worded
+// link to the same party with no sign keeps its author's words (R8), and an `@` and a word with
+// no link around it is no reference at all (R10). A session's live page names no node in the
+// shared grammar (`pageRoutes` reads issue, document and agent-document pages alone), so a link
+// to it is an ordinary link in its author's words, whatever they start with.
+test("a party's mention reads as its current name, its other links keep their words, and a plain @ stays text", async () => {
+  const page = `${window.location.origin}/agents/${SESSION}/live`;
+  const view = draw(
+    <MarkdownBody
+      markdown={`Ask [@Old name](dispatch://agent/${SESSION}), [@Old](${page}), [the planner](dispatch://agent/${SESSION}) and @Planner today.`}
+    />,
+    clientWithParties()
+  );
+  try {
+    const mention = await within(view.container).findByRole("link", { name: "@Planner now" });
+    expect(mention).toHaveAttribute("href", `/agents/${SESSION}/live`);
+    expect(within(view.container).getByRole("link", { name: "the planner" })).toHaveAttribute(
+      "href",
+      `/agents/${SESSION}/live`
+    );
+    expect(within(view.container).getByRole("link", { name: "@Old" })).toHaveAttribute(
+      "href",
+      page
+    );
+    expect(within(view.container).getAllByRole("link")).toHaveLength(3);
+    expect(words(view.container)).toBe("Ask @Planner now, @Old, the planner and @Planner today.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// R5 and R8: a bare person reads as their login, with no link, where Dispatch knows the login;
+// a login it does not know is the words written. A person's mention reads as the sign and the
+// login. A bare role reads as its token, linked to its page.
+test("a known person reads as their login with no link, an unknown one as written, and a role as its token, linked", async () => {
+  const view = draw(
+    <MarkdownBody markdown="Ask dispatch://person/dana@example.test, [@Dana](dispatch://person/dana@example.test), dispatch://person/nobody@example.test and dispatch://role/reviewer." />,
+    clientWithParties()
+  );
+  try {
+    const role = await within(view.container).findByRole("link", { name: "reviewer" });
+    expect(role).toHaveAttribute("href", "/agents?role=reviewer");
+    await waitFor(() =>
+      expect(words(view.container)).toBe(
+        "Ask dana@example.test, @dana@example.test, dispatch://person/nobody@example.test and reviewer."
+      )
+    );
+    expect(within(view.container).getAllByRole("link")).toEqual([role]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The plain-text projection reads parties as the painted line does: a mention as the sign and
+// the current name, an author's own words as they are - a link to a session's live page among
+// them, as the painted line keeps it - a role as its token and a known person as their login.
+test("the plain-text projection names a mention, a role and a person as the painted line does", async () => {
+  const page = `${window.location.origin}/agents/${SESSION}/live`;
+  const view = draw(
+    <PlainText
+      markdown={`Ask [@Old name](dispatch://agent/${SESSION}), [@Old](${page}), [the planner](dispatch://agent/${SESSION}), dispatch://role/reviewer and dispatch://person/dana@example.test.`}
+    >
+      {(text) => <span data-testid="line">{text ?? ""}</span>}
+    </PlainText>,
+    clientWithParties()
+  );
+  try {
+    await waitFor(() =>
+      expect(view.getByTestId("line").textContent).toBe(
+        "Ask @Planner now, @Old, the planner, reviewer and dana@example.test."
+      )
     );
   } finally {
     view.unmount();

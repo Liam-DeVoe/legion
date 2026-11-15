@@ -105,6 +105,19 @@ test("a space typed after a trigger closes it, which leaves a heading a heading"
   });
 });
 
+// A mention's words start with `@` right after a `[`, which is a word boundary: the picker must
+// not open again over the mention it has just written, nor over one already in the text.
+test("a picked mention opens no trigger, though its words start with one", () => {
+  expect(readTrigger("[@reviewer](dispatch://role/reviewer)")).toBeUndefined();
+  expect(readTrigger("see [@Planner](dispatch://agent/planner-session) and")).toBeUndefined();
+  expect(readTrigger("[@reviewer")).toEqual({
+    chars: "@",
+    door: "parties",
+    query: "reviewer",
+    start: 1,
+  });
+});
+
 test("the browser-side filter matches a row's words, its detail and its address", () => {
   const agent = {
     ...row("agent", "Planner", "dispatch://agent/planner-session"),
@@ -117,19 +130,21 @@ test("the browser-side filter matches a row's words, its detail and its address"
   expect(matchesQuery(agent, "reviewer")).toBe(false);
 });
 
-test("a party pick inserts a worded link and every other pick the bare address", () => {
+test("a party pick inserts its mention and every other pick the bare address", () => {
+  // A mention's words are `@` and the name: a reader reads it as `@` and the party's current
+  // name, so a session renamed since still reads as it is called now (R4).
   expect(insertionText(row("agent", "Planner", "dispatch://agent/planner-session"))).toBe(
-    "[Planner](dispatch://agent/planner-session)"
+    "[@Planner](dispatch://agent/planner-session)"
   );
   expect(insertionText(row("role", "reviewer", "dispatch://role/reviewer"))).toBe(
-    "[reviewer](dispatch://role/reviewer)"
+    "[@reviewer](dispatch://role/reviewer)"
   );
   expect(
     insertionText(row("person", "alice@theorem.dev", "dispatch://person/alice@theorem.dev"))
-  ).toBe("[alice@theorem.dev](dispatch://person/alice@theorem.dev)");
+  ).toBe("[@alice@theorem.dev](dispatch://person/alice@theorem.dev)");
   // A name holding a bracket cannot break out of the link's words.
   expect(insertionText(row("agent", "Planner [2]", "dispatch://agent/two"))).toBe(
-    "[Planner \\[2\\]](dispatch://agent/two)"
+    "[@Planner \\[2\\]](dispatch://agent/two)"
   );
 
   expect(insertionText(row("issue", "Fix the thing", "dispatch://CORE-1"))).toBe(
@@ -177,9 +192,9 @@ test("a party's insertion carries its words and its address, and no other pick d
   );
   expect(party).toEqual({
     end: 7,
-    link: { href: "dispatch://agent/planner-session", words: "Planner" },
+    link: { href: "dispatch://agent/planner-session", words: "@Planner" },
     start: 4,
-    text: "[Planner](dispatch://agent/planner-session)",
+    text: "[@Planner](dispatch://agent/planner-session)",
     trigger: "@",
   });
 

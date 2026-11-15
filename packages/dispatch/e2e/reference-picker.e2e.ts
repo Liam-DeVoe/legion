@@ -169,7 +169,7 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
     await field.press("ArrowDown");
     await expect(highlightedRow(list)).toContainText(ROLE_TOKEN);
     await field.press("Enter");
-    await expect(field).toHaveValue(`Ship after [${ROLE_TOKEN}](${ROLE_REFERENCE}) then deploy`);
+    await expect(field).toHaveValue(`Ship after [@${ROLE_TOKEN}](${ROLE_REFERENCE}) then deploy`);
 
     // Tab takes the highlighted row as Enter does, and moves no focus out of the box.
     await field.fill("");
@@ -178,7 +178,7 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
       .poll(async () => (await pickerRows(list)).slice(0, 1))
       .toEqual([`Agents: ${SESSION_TITLE}`]);
     await field.press("Tab");
-    await expect(field).toHaveValue(`[${SESSION_TITLE}](${SESSION_REFERENCE})`);
+    await expect(field).toHaveValue(`[@${SESSION_TITLE}](${SESSION_REFERENCE})`);
     await expect(field).toBeFocused();
   } finally {
     await alice.close();

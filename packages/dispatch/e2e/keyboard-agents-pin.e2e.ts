@@ -25,9 +25,9 @@ const DWELL_MS = 1_000;
 // and the unread set it opened with - and that while a closed group hides it, it marks nothing
 // read.
 
-/** What the issue channel seeds into Silent's draft: the link that names the party, which is
+/** What the issue channel seeds into Silent's draft: the mention that names the party, which is
  *  the whole record of who the comment addresses (INFRA-1702 R4). */
-const silentMention = "[Silent](dispatch://agent/silent-session)";
+const silentMention = "[@Silent](dispatch://agent/silent-session)";
 
 /** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which the
  *  page lists under `Idle` - the rows a pin moves within - and any `others` a row needs beside
