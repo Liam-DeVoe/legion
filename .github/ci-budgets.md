@@ -667,9 +667,10 @@ job 129874475871 made 65 fetches through the stand-in, and 29 of them were short
 — 19 of github.com, 9 of the dead address and 1 of get.pulumi.com behind the base-pulumi control's dead proxy.
 The other 36 kept the pinned ladder: the kept case's own fetch at 63 s, which is that job's reading at the 60 s bound and reads 127 s at a bound above it, measured at the 120 s one (job 130417801504) and unchanged at 300 s, since a host that refuses at once makes its eight attempts either way, the probe's reserved control name, and the honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of which took more than a second (1), the bytes the installs and the sixteen cases move, over npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the readings, the `ladder-report` step, the stop-fault step and the report (1).
 That is 18, three more than the 15 this list came to at the 120 s bound, because the kept case's own ladder moved from (5) to (8), and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the limit must stand above the sum rather than at it.
-IT IS NOT DERIVED FROM THAT SUM: 114 is the 104 this construction gives with ten minutes added, the same ten the 75 before it carried over 65, and what has to fit inside it is the staging step's own 5124 s, 86 minutes, whose derivation is beside that step in `.github/workflows/ci.yaml` - far above these 18 minutes of steps.
+IT WAS NOT DERIVED FROM THAT SUM: 114 was the 104 this construction gives with ten minutes added, the same ten the 75 before it carried over 65, and what has to fit inside it is the staging step's own 5124 s, 86 minutes, whose derivation is beside that step in `.github/workflows/ci.yaml` - far above these 18 minutes of steps.
+The key now carries 115, one minute above that construction, so that it also clears the Budgets note's sum, which the paragraphs below add up.
 The sum is what runs beside that step, not the thing the limit is built from.
-This budget replaced 65 minutes with a limit of 75 and now carries 114, and 45 of those original 65 were the twenty-one steps whose primary the fault holds, allowed at 126 s each.
+This budget replaced 65 minutes with a limit of 75, then carried 114 and now 115, and 45 of those original 65 were the twenty-one steps whose primary the fault holds, allowed at 126 s each.
 That 126 s is what a negative control costs, because it drives two ladders;
 the other fourteen of those steps drive one and cost about 64 s, so the old allowance was about twice what two thirds of them could cost.
 What one ladder costs, and how it is derived, is in the comment above ci_tools_curl of .github/scripts/ci-tools.sh.
@@ -679,17 +680,18 @@ So the durations above stand and the limit does not (dispatch://INFRA-1545).
 
 The rule every other budget of `.github/workflows/ci.yaml` is written to (the Budgets note)
 — a job carries its measured duration plus the arithmetic of its single slowest retried step
-— is not what the tool-fallback job's key holds:
-the job's 28.7-minute run, job 129478173535, is 1722 s, and 1722 s and the staging step's 5124 s come to 6846 s, 6 s over the 6840 s of 114 minutes.
-The key is the construction this section gives, and what keeps the job's retried steps diagnosable is their position, which the paragraph after this one gives.
+— is what the tool-fallback job's key now clears as well as its construction:
+the job's 28.7-minute run, job 129478173535, is 1722 s, and 1722 s and the staging step's 5124 s come to 6846 s, 54 s under the 6900 s of the 115 minutes the key carries.
+It carried 114, the construction this section gives, until review round 29 of dispatch://INFRA-1545 read that 6 s under the sum, and one minute closes it at no cost to any run that finishes.
+What keeps the job's retried steps diagnosable is still their position, which the paragraph after this one gives.
 The slowest retried step there is the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either setup-bun step's 2562 s, the blob read's 2015 s and the ci-ok report's 600 s.
 The three minutes of steps this section counts for the job are all that runs before it
 — measured at 0.3 minutes in job 129478173535, a 28.7-minute run of the job
 — so a staging step that spends its whole ladder ends on its own budget at about 86 minutes with the job's limit unspent, and that step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
 
 THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the arithmetic above does not give it.
-A retried step is diagnosable only where its whole ladder fits before the job's limit, so a step whose ladder is N minutes has to START before minute 114 - N:
-the staging step's 5124 s needs to begin before minute 28, and a 22-minute install starting after minute 92 would be cut by the limit and would report GitHub's bare line rather than its own.
+A retried step is diagnosable only where its whole ladder fits before the job's limit, so a step whose ladder is N minutes has to START before minute 115 - N:
+the staging step's 5124 s needs to begin before minute 29, and a 22-minute install starting after minute 93 would be cut by the limit and would report GitHub's bare line rather than its own.
 What keeps every retried step of the tool-fallback job diagnosable is that the long ones run early:
 the staging step first, and no retried step of job 129478173535 reached past 41.6 minutes.
 A step added late with a ladder of its own has to be read against the job's limit rather than assumed safe by it.

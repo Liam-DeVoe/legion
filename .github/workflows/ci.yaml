@@ -2578,13 +2578,13 @@ jobs:
     # steps this change adds to it: .github/ci-budgets.md, "The tool-fallback job's budget,
     # part by part". The rule below is what that sum has to fit inside.
 
-    # Why this key is a construction rather than the Budgets note's sum, and why the staging
-    # step's ladder, its slowest retried step at 5124 s, ends inside it: .github/ci-budgets.md,
-    # "The tool-fallback job's budget, part by part".
-    # The construction .github/ci-budgets.md derives in "The tool-fallback job's budget, part by
-    # part" gives 86 + 18 = 104, and this key is that with the ten minutes it has always
-    # carried -> 114 min.
-    timeout-minutes: 114
+    # How this key was built, and why the staging step's ladder, its slowest retried step at
+    # 5124 s, ends inside it: .github/ci-budgets.md, "The tool-fallback job's budget, part by
+    # part". The construction there gives 86 + 18 = 104, and the key carried that with the ten
+    # minutes it always had, 114, until review round 29 of dispatch://INFRA-1545 read it 6 s
+    # under the Budgets note's sum. It now clears that sum too, this job's 28.7-minute run of
+    # job 129478173535 plus the staging step's ladder: 1722 + 5124 = 6846 s -> 115 min.
+    timeout-minutes: 115
     # What the eleven minutes those installs carry is derived from, and why a bound would have
     # changed nothing in the incident that asked for it: .github/ci-budgets.md, "What the
     # tool-fallback job's eleven-minute installs are derived from".
