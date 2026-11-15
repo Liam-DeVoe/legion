@@ -359,6 +359,16 @@ Each item below names a script, then what it proves.
   Run with `REGISTER_GATE_BASIS_TOOL_ROOT` at the commit the branch starts from, it is the change's negative control.
   No GitHub, no cluster
 
+- `parent-waits.sh`
+
+  a parent starts no phase while a Dispatch child of it is open (dispatch://INFRA-3320's k14, R9 to R12), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the child's moves as Dispatch envelopes and each role's registration, turns, grants, release and completion over the daemon's own HTTP routes and worker stream:
+  a root implementing in its slot, whose architect releases a child under it with `release_children`, stands in `awaiting_children` at the next admission pass, in `admission.blocked` naming the child and in neither `admission.active` nor `admission.waiting`;
+  its implementer, in the middle of the phase, gets one message on its own role topic naming the child and saying the phase ended, and keeps its turn, and its architect gets one `awaiting-children` notice;
+  the implementer's completion of the ended phase is refused `409 HANDOFF_NOT_CURRENT_PHASE`, and the root stays in `awaiting_children`;
+  and once the child is done the root stands in `implementing` with a slot, and its implementer is started with a task that asks it to merge the default branch forward.
+  With `record.ChildOpen` made to answer false, it is the change's negative control.
+  No GitHub, no cluster, no agent
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -4848,6 +4858,57 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 Dispatch, the daemon and the world are this checkout's in both runs, and only the tool differs.
 The run fails at the registration step, and `proof.log` holds that tool's own refusal, `register_gate does not accept field "basis"; register_gate does not accept field "basisVersion"; register_gate does not accept field "reason"; it takes issue, artifactId, version, step`, with no request sent to the daemon or to Dispatch.
 
+## parent-waits.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/parent-waits.sh     # → "parent waits e2e: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-3320's check k14: a parent starts no phase while a Dispatch child of it is open (R9), its worker and its architect are told (R10), it waits holding no slot (R11), and it comes back to the start it held once no open child is left, with a forward merge (R12).
+Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent, no GitHub — so a Legion pod, CI and a devbox all run it.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
+A measured run in a pod took 64 s, 48 s of it building the driver and 9 s the proof itself.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestParentWaitsLive` (`internal/daemon/parent_waits_live_test.go`, `-tags e2e`) |
+| `proof` | the four steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root R implementing on an open pull request at `pw1` with base `main`, holding its tree's slot, its design gate approved, its implementer's claim mid-launch, serving run 1, and its architect's claim mid-launch, both of which the boot relaunches.
+R's implementer has no phases row, so its implementing phase stands under way with no start written and not delivered: the case where the admission pass stops a worker in the middle of its phase.
+The child C is on the Dispatch stand-in alone, unlabelled in backlog under R, as an architect files a child it has not released;
+the stand-in lists no issue at boot, so the daemon has no record and no mirror row of C until its release.
+Facts enter only as production's do:
+C's moves as `notifications.dispatch.issue.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
+the daemon's own HTTP routes for each role's registration, readiness and grants, the architect's `release_children` and the implementer's completion;
+and the daemon's worker stream for the implementer's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames).
+Each step prints `GET /legion/v1/state`'s `admission` member as the route served it, and R's and C's phase, status, tree, slot, implementer and phase entries, which is the answer the step was judged on.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `step1-a-root-in-implementing-holds-a-slot-and-its-implementer-is-registered` | the architect's and the implementer's registration and readiness on the launches the boot made, and the implementer's `agent_start` of a turn of its own | R in `implementing` with a slot and in `admission.active`, its implementer `working` on its registered session, its architect on its own, nothing in `admission.blocked`, and no record of C |
+| `step2-a-released-child-moves-the-root-to-awaiting-children-and-its-worker-and-architect-are-told` | the architect's `POST /legion/v1/waves/release` of C, then Dispatch's echo of the release's write (status todo under R, actor `legion-daemon:<project>`, the next sequence) | 200, and the Dispatch stand-in took the release's status write of C to todo; one message on `notifications.role.<R's implementer's claim>` saying the daemon ended its implementing phase, that R is in `awaiting_children`, that a completion of implementing is refused `HANDOFF_NOT_CURRENT_PHASE` and that the next task comes once the children are finished, naming `C (todo)`, printed in full; R in `awaiting_children`, status `in_progress`, with no slot, in `admission.blocked` waiting on C and in neither `admission.active` nor `admission.waiting`, and C recorded in R's tree; one `awaiting-children` notice on R's architect topic saying R holds the start of implementing, naming `C (todo)`; over three seconds no second message and no second notice, and the implementer's claim still `working` its turn |
+| `step3-the-implementers-completion-of-the-ended-phase-is-refused` | from that turn, the implementer's own implement record and its `POST /legion/v1/handoff/complete` naming it at `pw1`; then its `agent_end` | `409 HANDOFF_NOT_CURRENT_PHASE` in the engine's words; over three seconds R stays in `awaiting_children` with no slot |
+| `step4-the-childs-done-takes-the-root-back-to-implementing-with-a-forward-merge` | Dispatch's event of a person's move of C to done | C at `done`; R in `implementing` with a slot, out of `admission.blocked`, its implementer given the phase entry the return raised; the implementer's connection is sent its start, a task that asks it to merge the default branch `main` into the branch before anything else, push, and complete with a new handoff record, ending its forward-merge comment with `` `children merged: full test round` ``, printed in full |
+
+What the proof stands in for lies outside the change:
+the broker is a native `nats-server`, Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), Envoy's listener is the package's `noticeListener`, GitHub is the harness's REST stand-in for R's pull request (`liveGitHub`, in `internal/daemon/live_issue_proof_test.go`) grown by the default branch's ref and the create of the issue branch C's first phase asks for, the two Apps' tokens are placeholders, and no agent runs:
+every claim is launched by the package's fake runtime, which provisions its own workspace so the daemon clones nothing, and each role the proof acts as is driven over the daemon's own worker stream and HTTP routes.
+R, its pull request, its slot, its design gate and the two claims the boot relaunches are seeded through the store, as every daemon test seeds its fixture;
+C is recorded by the daemon from its own release and envelope.
+The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers, the admission pass and the outbox lanes — the role-message lane among them — are the real ones.
+`PARENT_WAITS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's output.
+
+The negative control is `record.ChildOpen` (`internal/record/children_first.go`) made to answer false for every child:
+the run fails at step 2, `timed out waiting for a message on <R>'s implementer's role topic notifications.role.<R's implementer's claim> after the release of <C>`, and prints `parent waits e2e: FAIL at proof after <n>s`, exit 1.
+
 ## plan-pointer-drive.sh
 
 ```sh
@@ -6547,10 +6608,10 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
+| `LABEL` | the run's name in its last line: `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `parent waits`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);
@@ -6560,7 +6621,7 @@ the Dispatch board stand-in (`liveDispatch`, which holds each issue's status, pa
 the store; the seeding of a tree into the next free admission slots (`admit`);
 and the envelope, `processed_events` and notice reads and writes a step makes, the notices read by the issue whose architect they tell (`architectNotices`).
 `register-gate-basis.sh`'s driver takes the two variables alone from that file and runs on the person-handover rig of `internal/daemon/person_handover_scratch_dispatch_test.go` instead, which `newPersonHandoverRigOn` points at the script's broker and checkout.
-The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `conflict-no-takeover.sh`'s and `phase-entry-converge.sh`'s) share more of it (`liveIssueProof`), in `internal/daemon/live_issue_proof_test.go`, which carries `//go:build e2e` because no untagged test calls it: that issue's seed and the daemon's boot over the fake runtime, each role's registered session and the turns a step plays on its connection (`liveSession`, `liveClaimant`), GitHub's stand-in for the pull request at the head last pushed (`liveGitHub`), and the envelopes of the implementer's push, GitHub's synchronize and a push onto the base.
+The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `conflict-no-takeover.sh`'s, `phase-entry-converge.sh`'s and `parent-waits.sh`'s) share more of it (`liveIssueProof`), in `internal/daemon/live_issue_proof_test.go`, which carries `//go:build e2e` because no untagged test calls it: that issue's seed and the daemon's boot over the fake runtime, each role's registered session and the turns a step plays on its connection (`liveSession`, `liveClaimant`), GitHub's stand-in for the pull request at the head last pushed (`liveGitHub`), and the envelopes of the implementer's push, GitHub's synchronize and a push onto the base.
 
 ## lib/secret-leaks.ts
 
