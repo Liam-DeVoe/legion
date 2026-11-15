@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,10 +25,32 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
+// goHomeKeys are the homes `go` derives its caches and its configuration from where GOPATH,
+// GOMODCACHE, GOCACHE and GOENV are unset, as on a CI runner: the module cache under $HOME/go, the
+// build cache under the cache home and the configuration under the config home.
+var goHomeKeys = []string{"HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"}
+
+// goHomes is each of goHomeKeys the test process held as it began, before any test set its own on
+// the process, as KEY=value entries. The idle rig sets the home of its workspaces on the process
+// (idleRigWorkspaces, fixtureenv.Home), and a `go build` under that home finds a cold module cache
+// in the test's temporary directory: it downloads every module there, and the read-only files
+// it leaves fail t.TempDir's removal.
+var goHomes = func() []string {
+	var homes []string
+	for _, key := range goHomeKeys {
+		if value, ok := os.LookupEnv(key); ok {
+			homes = append(homes, key+"="+value)
+		}
+	}
+	return homes
+}()
+
 // buildLegion builds this checkout's `legion` into a directory of t's, the command every step of a
-// move runs as an operator runs it.
+// move runs as an operator runs it. It builds with the caches of the process's own homes
+// (goHomes), whatever homes the test has set since.
 func buildLegion(t *testing.T) string {
 	t.Helper()
 	module, err := filepath.Abs(filepath.Join("..", ".."))
@@ -40,7 +61,11 @@ func buildLegion(t *testing.T) string {
 	started := time.Now()
 	build := exec.Command("go", "build", "-o", binary, "./cmd/legion")
 	build.Dir = module
-	build.Env = append(os.Environ(), "GOFLAGS=")
+	environ := slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		key, _, _ := strings.Cut(entry, "=")
+		return slices.Contains(goHomeKeys, key)
+	})
+	build.Env = slices.Concat(environ, goHomes, []string{"GOFLAGS="})
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build legion from %s: %v\n%s", module, err, out)
 	}
@@ -196,107 +221,85 @@ func (r *idleWakeRig) runningCopyLines() int {
 	return count
 }
 
-// idleRigStart is one `start` row of the outbox as a watcher saw it: its id, the issue it is
-// filed under, and what it asks.
+// idleRigStart is one `start` row of the outbox as the rig's database recorded it when the row was
+// written: its id, the issue it is filed under, and what it asks.
 type idleRigStart struct {
 	id      int64
 	issue   string
 	request record.SuperviseRequest
-	seen    time.Time
 }
 
-// startWatcher records every `start` row the outbox holds while it runs, polling the table: a
-// row is deleted once its start ran, so a test that reads the starts a boot wrote reads them as
-// they stand, from before that boot until the starts it waits for have run.
+// idleRigStartsTable is the table of the test's own into which the rig's database copies every
+// supervise start row written into the outbox (watchStarts).
+const idleRigStartsTable = "idle_rig_outbox_starts"
+
+// startWatcher reads every `start` row written into the outbox since it began. The outbox deletes
+// a row once its start ran, which at a boot is a few milliseconds after the row's write, so a
+// reader of the outbox itself misses rows however often it reads: the rig's database copies each
+// row into idleRigStartsTable in the transaction that writes it, and the watcher reads that copy.
 type startWatcher struct {
-	// floor is the newest outbox row when the watch began: a row at or under it was written
+	pool *store.Pool
+	// floor is the newest start recorded when the watch began: a row at or under it was written
 	// before, by whatever the test did earlier, and is not counted.
-	floor  int64
-	mu     sync.Mutex
-	starts map[int64]idleRigStart
-	stop   chan struct{}
-	done   chan struct{}
-	err    error
+	floor int64
 }
 
-// watchStarts begins recording the outbox's start rows written from now on; end stops it.
+// watchStarts begins reading the outbox's start rows written from now on. A rig's first watch
+// makes the table and the trigger that fills it, in one transaction, so a later watch finds both
+// or neither. The database is the rig's own clone (isolatedOutboxPool), dropped when the test
+// ends, so no other test sees either.
 func (r *idleWakeRig) watchStarts() *startWatcher {
 	r.t.Helper()
-	w := &startWatcher{starts: map[int64]idleRigStart{}, stop: make(chan struct{}), done: make(chan struct{})}
-	if err := r.pool.QueryRow(context.Background(), `select coalesce(max(id), 0) from outbox`).Scan(&w.floor); err != nil {
-		r.t.Fatalf("read the outbox's newest row: %v", err)
-	}
-	go func() {
-		defer close(w.done)
-		tick := time.NewTicker(50 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			if err := w.read(r); err != nil {
-				w.mu.Lock()
-				w.err = err
-				w.mu.Unlock()
-				return
-			}
-			select {
-			case <-w.stop:
-				_ = w.read(r)
-				return
-			case <-tick.C:
+	ctx := context.Background()
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var made bool
+		if err := tx.QueryRow(ctx, `select to_regclass($1) is not null`, idleRigStartsTable).Scan(&made); err != nil || made {
+			return err
+		}
+		for _, statement := range []string{
+			`create table ` + idleRigStartsTable + ` (id bigint not null, issue text not null, payload jsonb not null)`,
+			`create function idle_rig_record_start() returns trigger language plpgsql as $$
+				begin insert into ` + idleRigStartsTable + ` (id, issue, payload) values (new.id, new.issue, new.payload); return null; end $$`,
+			`create trigger idle_rig_record_start after insert on outbox for each row
+				when (new.kind = 'supervise' and new.payload->>'op' = 'start') execute function idle_rig_record_start()`,
+		} {
+			if _, err := tx.Exec(ctx, statement); err != nil {
+				return err
 			}
 		}
-	}()
-	r.owner().Cleanup(func() { w.end() })
+		return nil
+	})
+	if err != nil {
+		r.t.Fatalf("make the record of the outbox's start rows: %v", err)
+	}
+	w := &startWatcher{pool: r.pool}
+	if err := r.pool.QueryRow(ctx, `select coalesce(max(id), 0) from `+idleRigStartsTable).Scan(&w.floor); err != nil {
+		r.t.Fatalf("read the newest start row recorded: %v", err)
+	}
 	return w
 }
 
-func (w *startWatcher) read(r *idleWakeRig) error {
-	rows, err := r.pool.Query(context.Background(),
-		`select id, issue, payload::text from outbox where kind = 'supervise' and payload->>'op' = 'start' and id > $1`, w.floor)
+// seen is every start written since the watch began, by the issue and role each starts, in id
+// order.
+func (w *startWatcher) seen() (map[string][]idleRigStart, error) {
+	rows, err := w.pool.Query(context.Background(),
+		`select id, issue, payload::text from `+idleRigStartsTable+` where id > $1 order by id`, w.floor)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
-	now := time.Now()
+	byRole := map[string][]idleRigStart{}
 	for rows.Next() {
 		var start idleRigStart
 		var payload string
 		if err := rows.Scan(&start.id, &start.issue, &payload); err != nil {
-			return err
+			return nil, err
 		}
 		if err := json.Unmarshal([]byte(payload), &start.request); err != nil {
-			return fmt.Errorf("decode start row %d: %w", start.id, err)
+			return nil, fmt.Errorf("decode start row %d: %w", start.id, err)
 		}
-		w.mu.Lock()
-		if _, seen := w.starts[start.id]; !seen {
-			start.seen = now
-			w.starts[start.id] = start
-		}
-		w.mu.Unlock()
-	}
-	return rows.Err()
-}
-
-// end stops the watcher once, and waits for it.
-func (w *startWatcher) end() {
-	select {
-	case <-w.stop:
-	default:
-		close(w.stop)
-	}
-	<-w.done
-}
-
-// seen is every start the watcher recorded, by the issue and role each starts, in id order.
-func (w *startWatcher) seen() (map[string][]idleRigStart, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	byRole := map[string][]idleRigStart{}
-	for _, start := range w.starts {
 		key := idleRigKey(start.issue, string(start.request.Role))
 		byRole[key] = append(byRole[key], start)
 	}
-	for _, starts := range byRole {
-		slices.SortFunc(starts, func(a, b idleRigStart) int { return int(a.id - b.id) })
-	}
-	return byRole, w.err
+	return byRole, rows.Err()
 }

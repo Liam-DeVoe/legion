@@ -319,8 +319,9 @@ type moveRelease struct {
 	restarted    time.Time
 	// entryTask is the work of the entry raised during the release, "" when none was.
 	entryTask string
-	// heldRows is the start rows the outbox held when the daemon stopped, by issue and role.
-	heldRows map[string]int
+	// heldThrough is the newest start row written before the daemon stopped for its restart: a
+	// start above it is one the boot wrote.
+	heldThrough int64
 }
 
 // beginRelease reads what a release is checked against before it starts.
@@ -630,16 +631,22 @@ func (m *projectMove) checkNoBundle(t *testing.T, rd *moveRelease) {
 
 // restartOn stops the daemon and boots it again on the same database and state directory with
 // its runtime aimed at cluster, and waits until each claim the release stopped runs again there:
-// in a pod of that cluster, on a process that registered after the restart. It records the start
-// rows the outbox held as the daemon stopped and the most wakes the pacing held at once.
+// in a pod of that cluster, on a process that registered after the restart. It records the newest
+// start written before the daemon stopped (heldThrough) and the most wakes the pacing held at once.
 func (m *projectMove) restartOn(t *testing.T, cluster *issueSandboxAPI, rd *moveRelease) (wakesHeld int) {
 	t.Helper()
 	r := m.rig
 	r.stopDaemon()
-	held, _ := rd.starts.seen()
-	rd.heldRows = map[string]int{}
-	for key, rows := range held {
-		rd.heldRows[key] = len(rows)
+	// Each start the stopped daemon wrote is recorded by now, and nothing writes another before
+	// the boot, so the newest of them parts the starts written before the restart from the boot's.
+	held, err := rd.starts.seen()
+	if err != nil {
+		t.Fatalf("read the outbox's start rows as the daemon stopped: %v", err)
+	}
+	for _, rows := range held {
+		for _, start := range rows {
+			rd.heldThrough = max(rd.heldThrough, start.id)
+		}
 	}
 	r.aimAt(cluster)
 	rd.restarted = time.Now()
@@ -685,10 +692,9 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 	}
 
 	// One start each, the boot's carrying its mark. The starts are read once the claims run, so
-	// each has been written; the watcher saw each row from the release on.
+	// each has been written, and the rig's database recorded each as it was written.
 	time.Sleep(time.Second)
 	starts, err := rd.starts.seen()
-	rd.starts.end()
 	if err != nil {
 		t.Fatalf("read the outbox's start rows: %v", err)
 	}
@@ -705,7 +711,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 			continue
 		}
 		start := rows[0]
-		if start.seen.After(rd.restarted) && !start.request.RuleResume {
+		if start.id > rd.heldThrough && !start.request.RuleResume {
 			t.Errorf("the boot's start of %s is %+v, which carries no ruleResume mark", key, start.request)
 		}
 		behind := key == idleRigKey(m.silent.key, string(m.silent.role)) && rd.entryTask != ""
@@ -1141,7 +1147,6 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 		}
 	}
 	m.checkNoCharge(t, rd.before, "the restart during the unfinished release")
-	rd.starts.end()
 }
 
 // handDeletion is the move's control: the daemon stopped, every Sandbox of the first cluster
