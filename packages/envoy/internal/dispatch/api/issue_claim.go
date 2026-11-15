@@ -35,8 +35,10 @@ import (
 // could name another session here exactly as it could on any other write; what makes a claim
 // trustworthy is that `dispatch claim` fills `actor` from the host's own runtime, so no model
 // chooses it, and that the request has no second parameter for claiming on someone's behalf.
-// A member the body does not declare is ignored, as on every route (decodeJSON), and an ignored
-// member claims nothing on anyone's behalf: the claimant still comes from the request's actor.
+// A member the body does not declare is ignored on a request off the network, as on every route
+// (decodeJSON), and refused on one the command bar sends in-process (judgeUndeclaredMembers); an
+// ignored member claims nothing on anyone's behalf: the claimant still comes from the request's
+// actor.
 //
 // Which writes a holder blocks is claimBlockedBy's alone, and what it asks about the holder is
 // judgeClaim, a test of that session's registry record and never of any list's membership: a
@@ -623,6 +625,10 @@ func (s *server) claimWrite(
 		}
 		applied = claimApplied{issue: after, legionManagedStatus: managed, previous: before.Claim, event: event}
 	}
+	// What the claim routes answer of this write (claimCycle), handed to the command bar's landing
+	// of the request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(ctx, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus,
+		ClaimChanged: applied.event.ID != 0, PreviousClaim: applied.previous})
 	if err := tx.Commit(ctx); err != nil {
 		return claimApplied{}, err
 	}

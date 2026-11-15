@@ -296,6 +296,31 @@ func TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored(t 
 	}
 }
 
+// TestGoingHeldDocumentIsNamedByItsStemOnlyWhereTheStemIsNoShortWord (review round 5, thread 5):
+// the words name a held document by its name without the extension only where that stem is at
+// least goingStemMinimum characters long: "add a note" names no document a.md, since "a" is a
+// word people type for every other reason, while its name and its slug still name it, and the
+// stems "notes" and "spec" name notes.md and spec.md as before.
+func TestGoingHeldDocumentIsNamedByItsStemOnlyWhereTheStemIsNoShortWord(t *testing.T) {
+	for _, tc := range []struct {
+		document, words string
+		named           bool
+	}{
+		{"a.md", "add a note", false},
+		{"to.md", "send it to the team", false},
+		{"add.md", "add a note", false},
+		{"a.md", "overwrite a.md with this", true},
+		{"a.md", "overwrite a-md with this", true},
+		{"notes.md", "overwrite the notes with this text", true},
+		{"spec.md", "replace the spec with this", true},
+	} {
+		held := goingHeldDocument{Name: tc.document, Slug: artifactSlug(tc.document)}
+		if got := held.namedBy(tc.words); got != tc.named {
+			t.Errorf("%q names %s (slug %s): %v, want %v", tc.words, held.Name, held.Slug, got, tc.named)
+		}
+	}
+}
+
 // TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt (deep review round 5,
 // finding D): an upload with force the proposal offers because the words name the held document
 // by its slug or by its name without the extension is one the person can run: picked as the bar

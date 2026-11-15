@@ -272,6 +272,17 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	kind, storedType := artifactKind(mediaType, input.contentType, input.content)
+	// An expected content is a document's markdown (docs.Service.ReplaceTextExpecting), which only
+	// the document branch below compares: a file holds none, so an upload of one carrying it would
+	// be written unconditioned. It is a condition this route does not decide for a file, refused as
+	// a write back carrying none is, before anything is written. The bar's undo writes a document
+	// back alone, and a file upload's one condition is a create alone (expectNew), which a file
+	// decides as a document does.
+	if kind != "doc" && input.expectSHA256 != "" {
+		s.writeHandlerError(w, errorf(http.StatusInternalServerError, codeGoingConditionMissing,
+			"this upload is a file, which holds no document content for the expected content to decide it by, so nothing was written"))
+		return
+	}
 	if kind == "doc" && target.Session != "" {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, agentOwnsFilesOnly)
 		return
@@ -825,6 +836,9 @@ func (s *server) storeArtifact(
 			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, "", *issueStatus, false,
 		)
 	}
+	// What the upload answers it wrote and wrote over, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusCreated, artifactUploadResponse{Artifact: artifact, Version: version, PreviousVersion: previousVersion})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1401,6 +1415,10 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, "", *status, len(edit.AddedAskBlocks) > 0,
 		)
 	}
+	// The tokens of the document the edit found and left, read in this transaction, handed to the
+	// command bar's landing of this request, which records them in it (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, editArtifactResponse{Applied: edit.Applied, Changed: edit.Changed,
+		Token: edit.Token, PreviousToken: edit.PreviousToken})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -128,15 +128,22 @@ type goingRunWrite struct {
 	// may have moved the item between them, and the issue an unchanged create answered is no issue
 	// of the turn's to close.
 	Unchanged bool `json:"unchanged,omitempty"`
+	// BeforeToken is the token of the document the read before a document edit read
+	// (goingObservation.token), recorded on the claim before the edit is sent (goingLandings.plan):
+	// a write taken over after its process ended holds its value before to it against the
+	// previous_token its route recorded beside its landing, as the write held it at once.
+	BeforeToken string `json:"before_token,omitempty"`
 }
 
 // goingWriteRequest is one request a write sent, by method, path and the hex SHA-256 of its body
 // (goingSend.digest), how it went, and the id of the item it made where it made one
 // (goingMadeID). A request is the same request as another only where all three match
-// (goingSameSend); one recorded before the body's digest was, with none, is matched by its method
-// and path alone. Inherited is a request an earlier write of the invocation landed, which this
+// (goingSameSend). Inherited is a request an earlier write of the invocation landed, which this
 // write resumes after and holds a copy of (goingInherited): it stands for the call, and is never
-// named as one this write landed itself (settleGoingTakenOver).
+// named as one this write landed itself (settleGoingTakenOver). Answer is what the request's
+// route answered of what its transaction found and left, recorded beside its landing in that
+// transaction (goingRecordAnswer), its status in the outcome: a write taken over after its process
+// ended is recorded from it (goingObserver.recorded), and a recorded write or undo keeps none.
 type goingWriteRequest struct {
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
@@ -144,13 +151,15 @@ type goingWriteRequest struct {
 	Outcome    goingWriteOutcome `json:"outcome"`
 	Made       string            `json:"made,omitempty"`
 	Inherited  bool              `json:"inherited,omitempty"`
+	Answer     json.RawMessage   `json:"answer,omitempty"`
 }
 
-// goingSameSend reports whether the recorded request is the request spec sends: the same method
-// and path, and the same body where the record names its body's digest.
+// goingSameSend reports whether the recorded request is the request spec sends: the same method,
+// path and body digest. Every request this build records names its digest, so one that names none
+// is no request's.
 func goingSameSend(recorded goingWriteRequest, spec goingSend) bool {
 	return recorded.Method == spec.method && recorded.Path == spec.path &&
-		(recorded.BodySHA256 == "" || recorded.BodySHA256 == spec.digest())
+		recorded.BodySHA256 != "" && recorded.BodySHA256 == spec.digest()
 }
 
 // goingDelivery is one delivery of a message as a send to an agent records it: its state
@@ -169,8 +178,11 @@ type goingDelivery struct {
 // Pending is an undo claimed and not yet recorded (claimGoingRunUndos): the request making it is
 // under way, or it ended - its process died, or its record could not be written - after the undo
 // may have been made. It holds off a second undo of the run until it is recorded or
-// goingClaimBound has passed, and its write is never undone again: past the bound an undo of the
-// run answers that write unsettled (codeGoingUndoUnsettled), as a pending write is answered.
+// goingClaimBound has passed. Past the bound the next undo reads what it landed before anything
+// else (goingUndoTakeOver), as a write taken over does: one whose record names a request it
+// landed is taken over and resumed after it, or recorded done where all of it landed; one never
+// reached (no Sends) is made now; and only one reached with no landing recorded is answered
+// unsettled (codeGoingUndoUnsettled), never made again.
 type goingRunUndo struct {
 	WriteID string            `json:"write_id"`
 	Outcome goingWriteOutcome `json:"outcome"`
@@ -180,8 +192,13 @@ type goingRunUndo struct {
 	At      time.Time         `json:"at"`
 	// Requests is how each request of an undo that sends more than one went, in the order sent:
 	// a created issue's close posts its reason, then closes it. A later undo of the write, under
-	// whatever key, resumes after those that landed (goingUndoLandedBefore).
+	// whatever key, resumes after those that landed (goingUndoLandedBefore). A pending undo holds
+	// each request it sent that landed, at its own index, as its route's transaction recorded it.
 	Requests []goingWriteRequest `json:"requests,omitempty"`
+	// Sends is how many requests a pending undo sends, marked on its claim just before the first
+	// is sent (goingLandings.reach), as a write's claim records its own: 0 for an undo its request
+	// never reached.
+	Sends int `json:"sends,omitempty"`
 }
 
 // goingUndoField is how the undo of one field of a write went: put back (ok), or left as another
@@ -246,20 +263,27 @@ func goingRunWindow(n int) string {
 	return fmt.Sprintf("r.created_at > now() - make_interval(secs => $%d)", n)
 }
 
-// goingRunUndoable holds where a run has a write that went through and that no undo has
-// settled or claimed: an undo that was ok, or refused for what another writer changed, settles
-// its write; one that failed short of a verdict leaves it undoable; and one claimed and never
-// recorded leaves it to no further undo.
-const goingRunUndoable = `exists (
+// goingRunUndoable is the condition that holds where a run has a write that went through and that
+// no undo has settled or still holds, $n being goingClaimBound in seconds: an undo that was ok, or
+// refused for what another writer changed, settles its write; one that failed short of a verdict
+// leaves it undoable; and one claimed and never recorded holds it while its request may still run
+// and, past the bound, only where it was reached (its sends marked) and records no request it
+// landed - every other is taken over by the next undo (goingUndoTakeOver).
+func goingRunUndoable(n int) string {
+	return fmt.Sprintf(`exists (
 	select 1 from jsonb_array_elements(r.writes) w
 	where (w->'outcome'->>'ok')::boolean
 	  and not exists (
 	    select 1 from jsonb_array_elements(r.undos) u
 	    where u->>'write_id' = w->>'id'
 	      and ((u->'outcome'->>'ok')::boolean or coalesce((u->>'settled')::boolean, false)
-	           or coalesce((u->>'pending')::boolean, false))
+	           or (coalesce((u->>'pending')::boolean, false)
+	               and ((u->>'at')::timestamptz > now() - make_interval(secs => $%d)
+	                    or (coalesce((u->>'sends')::int, 0) > 0
+	                        and not coalesce((u->'requests'->0->'outcome'->>'ok')::boolean, false)))))
 	  )
-)`
+)`, n)
+}
 
 // recordGoingRun writes a run's row when the run starts, under its going request's id, keyed on
 // the asking person's canonical login. Every other part is written as the run reaches it.
@@ -358,7 +382,7 @@ func goingRunLatestWrite(offer, invocation int) string {
 // of the invocation is no longer latest, the one the caller read (latest, "" for none): the claim
 // is the statement itself, so of two requests for one invocation one claims it and the other
 // finds it claimed, and a claim never lands on a record that changed since the caller took from
-// it the requests an earlier write landed (goingLandedBefore). Each refusal - the invocation
+// it the requests an earlier write landed (goingResumeAfter). Each refusal - the invocation
 // claimed, another write of it recorded since the read, or a run that is not the author's, that
 // the record does not hold, or that is older than goingRunsKept - is pgx.ErrNoRows, which the
 // caller tells apart by reading the run again. The claim marks no Idempotency-Key committed
@@ -460,21 +484,24 @@ func goingRunUndoPendingAt(at int) string {
 	return fmt.Sprintf(`(coalesce((u->>'pending')::boolean, false) and u->>'at' = $%d)`, at)
 }
 
-// claimGoingRunUndos appends a pending undo of each of writes, claimed at, to the author's run in
-// one statement, unless an undo of the run claimed within goingClaimBound is still pending, one of
-// writes already has an undo that was ok, settled or claimed since the caller read the run, or
-// the run's undos are no longer the read's (read, how many the caller read): an undo claimed and
-// recorded since the read changes them, so a claim never lands on a record that changed since the
-// caller took from it the requests an earlier undo landed (goingUndoLandedBefore). An undo claimed
-// and never recorded stays as it is, however old: that write may have been undone, so it is never
-// claimed again. Each refusal, like a run that is not the author's, that the record does not hold
-// or that is older than goingRunsKept, is pgx.ErrNoRows, which the caller tells apart by reading
-// the run again. The claim marks no Idempotency-Key committed (store.WithoutBeforeCommit), since
-// it writes nothing a repeat must not make again. Each pending undo holds, as its requests, those
-// an earlier undo of its write landed (landed, by write id; goingUndoLandedBefore), as a write's
-// claim holds those of its invocation, so the requests the undo goes on to send record their
-// landings at their own indexes.
-func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string, writes []string, landed map[string][]goingWriteRequest, at time.Time, read int) error {
+// claimGoingRunUndos appends a pending undo of each of writes, claimed at, to the author's run, and
+// takes over the pending undo of each of adopted - one an earlier undo claimed and never recorded,
+// past goingClaimBound, that goingUndoTakeOver takes over - by moving its claim to at, in one
+// statement, unless an undo of the run claimed within goingClaimBound is still pending (another
+// request took one of adopted over first, among others), one of writes already has an undo that
+// was ok, settled or claimed since the caller read the run, an undo of adopted is no longer
+// pending, or the run's undos are no longer the read's (read, how many the caller read): an undo
+// claimed and recorded since the read changes them, so a claim never lands on a record that
+// changed since the caller took from it the requests an earlier undo landed
+// (goingUndoLandedBefore). A taken-over undo keeps every request it landed, at its own index, so
+// the requests this undo sends after them record their landings beside them. Each refusal, like a
+// run that is not the author's, that the record does not hold or that is older than goingRunsKept,
+// is pgx.ErrNoRows, which the caller tells apart by reading the run again. The claim marks no
+// Idempotency-Key committed (store.WithoutBeforeCommit), since it writes nothing a repeat must not
+// make again. Each pending undo appended holds, as its requests, those an earlier undo of its
+// write landed (landed, by write id; goingUndoLandedBefore), as a write's claim holds those of its
+// invocation, so the requests the undo goes on to send record their landings at their own indexes.
+func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string, writes []string, landed map[string][]goingWriteRequest, adopted []string, at time.Time, read int) error {
 	pending := make([]goingRunUndo, 0, len(writes))
 	for _, write := range writes {
 		pending = append(pending, goingRunUndo{WriteID: write, Pending: true, Fields: []goingUndoField{}, At: at,
@@ -484,8 +511,17 @@ func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string,
 	if err != nil {
 		return err
 	}
+	if writes == nil {
+		writes = []string{}
+	}
+	if adopted == nil {
+		adopted = []string{}
+	}
+	taken := `(coalesce((u->>'pending')::boolean, false) and u->>'write_id' = any($8::text[]))`
 	return s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
-		update going_runs r set undos = r.undos || $4::jsonb
+		update going_runs r set undos = (
+		  select coalesce(jsonb_agg(case when `+taken+` then jsonb_set(u, '{at}', to_jsonb($9::text)) else u end order by n), '[]'::jsonb)
+		  from jsonb_array_elements(r.undos) with ordinality e(u, n)) || $4::jsonb
 		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(5)+`
 		  and jsonb_array_length(r.undos) = $7
 		  and not exists (
@@ -496,8 +532,10 @@ func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string,
 		    select 1 from jsonb_array_elements(r.undos) u
 		    where u->>'write_id' = any($3::text[])
 		      and ((u->'outcome'->>'ok')::boolean or coalesce((u->>'settled')::boolean, false)
-		           or coalesce((u->>'pending')::boolean, false)))`,
-		id, authorLogin, writes, string(encoded), goingRunsKept.Seconds(), s.goingClaimBound().Seconds(), read)
+		           or coalesce((u->>'pending')::boolean, false)))
+		  and (select count(*) from jsonb_array_elements(r.undos) u where `+taken+`) = cardinality($8::text[])`,
+		id, authorLogin, writes, string(encoded), goingRunsKept.Seconds(), s.goingClaimBound().Seconds(), read,
+		adopted, goingUndoClaimedAt(at))
 }
 
 // recordGoingRunUndo records one undo on the author's run in the place of its pending claim made
@@ -580,10 +618,10 @@ func (s *server) listGoingRuns(ctx context.Context, authorLogin string, filter g
 		where r.author_login = $1 and `+goingRunWindow(2)+`
 		  and ($3::text = '' or r.issues @> array[$3::text])
 		  and ($4::text = '' or strpos(lower(r.words), lower($4::text)) > 0)
-		  and (not $5::boolean or `+goingRunUndoable+`)
+		  and (not $5::boolean or `+goingRunUndoable(8)+`)
 		order by r.created_at desc, r.id desc
 		limit $6 offset $7
-	`, authorLogin, goingRunsKept.Seconds(), filter.Issue, filter.Q, filter.Undoable, limit, offset)
+	`, authorLogin, goingRunsKept.Seconds(), filter.Issue, filter.Q, filter.Undoable, limit, offset, s.goingClaimBound().Seconds())
 	if err != nil {
 		return nil, 0, err
 	}

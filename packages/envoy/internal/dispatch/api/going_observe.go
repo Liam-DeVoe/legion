@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -78,12 +79,12 @@ func (e goingRefusal) write(w http.ResponseWriter) {
 	_, _ = w.Write(e.body)
 }
 
-// after is the refusal of a request a write sent once the requests before it had landed: the
-// route's status, code and headers, in the shared error shape, its words followed by each request
-// that landed and the item it made, since those stand. A line that shows the refusal so says what
-// of the write is done. A refusal that already names what landed is left as it is, so the
-// landings are named once.
-func (e goingRefusal) after(landed []goingWriteRequest) goingRefusal {
+// after is the refusal of a request a write or an undo (sender, as its line names it: "write" or
+// "undo") sent once the requests before it had landed: the route's status, code and headers, in
+// the shared error shape, its words followed by each request that landed and the item it made,
+// since those stand. A line that shows the refusal so says what of the write or of its undo is
+// done. A refusal that already names what landed is left as it is, so the landings are named once.
+func (e goingRefusal) after(landed []goingWriteRequest, sender string) goingRefusal {
 	if len(landed) == 0 || e.named {
 		return e
 	}
@@ -95,8 +96,8 @@ func (e goingRefusal) after(landed []goingWriteRequest) goingRefusal {
 		}
 		stands = append(stands, sent)
 	}
-	e.Message = fmt.Sprintf("%s (refused after this write's earlier request landed, which stands and is not sent again: %s)",
-		e.Message, strings.Join(stands, "; "))
+	e.Message = fmt.Sprintf("%s (refused after this %s's earlier request landed, which stands and is not sent again: %s)",
+		e.Message, sender, strings.Join(stands, "; "))
 	e.body, e.named = nil, true
 	return e
 }
@@ -415,6 +416,78 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		made = before.target
 	}
 	return goingObservation{target: made, fields: fields, issue: issue, value: map[string]any{"id": made}}, nil
+}
+
+// recorded is what a write taken over after its process ended, every request of it landed, left
+// and found, from what the route of its last request recorded beside that request's landing, in
+// the transaction of the change (goingRecordAnswer): observe reads that record as it reads the
+// answer the route would have given, of the call's row named by the request itself
+// (goingRecordedCall), so nothing of the call is translated or read before again. Whether the
+// call's last request changed anything is its landing, which the record holds (landed): a follow's
+// route answers nothing more. A document edit's record holds its tokens, so its value after is
+// read and kept only where the document still holds the token the edit left, and its value before
+// only where the read before read the token the edit found (documentEdited). A last request that
+// recorded nothing beside its landing, or whose row the catalogue no longer holds, is an error:
+// what the write left is unknown.
+func (o goingObserver) recorded(ctx context.Context, catalogue GoingCatalogue, write goingRunWrite, before goingObservation) (goingObservation, error) {
+	if len(write.Requests) == 0 {
+		return before, errors.New("the write records no request")
+	}
+	last := write.Requests[len(write.Requests)-1]
+	prepared, held := goingRecordedCall(catalogue, write.Action, last)
+	if !held {
+		return before, fmt.Errorf("no row of %s sends %s %s", write.Action, last.Method, last.Path)
+	}
+	if len(last.Answer) == 0 {
+		return before, fmt.Errorf("the route of %s %s recorded nothing of what it left beside its landing", last.Method, last.Path)
+	}
+	o.landed = func(context.Context) (bool, error) { return last.Outcome.OK, nil }
+	return o.observe(ctx, prepared, last.Answer, last.Outcome.Status, before)
+}
+
+// goingRecordedCall is the call of action that sent request, as much as its record names: the
+// action's row whose method is the request's and whose pattern its path fills, and the value of
+// each placeholder of the path (goingPathValues), so what a taken-over write left is read off its
+// record as observe reads a call's, with nothing of the call translated again.
+func goingRecordedCall(catalogue GoingCatalogue, action string, request goingWriteRequest) (goingPrepared, bool) {
+	entry, held := catalogue.Lookup(action)
+	if !held {
+		return goingPrepared{}, false
+	}
+	for _, route := range entry.Routes {
+		if route.Method != request.Method {
+			continue
+		}
+		if values, fills := goingPathValues(route.Pattern, request.Path); fills {
+			return goingPrepared{action: action, route: route, call: goingCall{path: values}}, true
+		}
+	}
+	return goingPrepared{}, false
+}
+
+// goingPathValues is the value of each placeholder of pattern in path, unescaped as goingPath
+// escaped it, and whether path is pattern filled.
+func goingPathValues(pattern, path string) (map[string]string, bool) {
+	patterns, segments := strings.Split(pattern, "/"), strings.Split(path, "/")
+	if len(patterns) != len(segments) {
+		return nil, false
+	}
+	values := map[string]string{}
+	for index, part := range patterns {
+		name, placeholder := strings.CutPrefix(part, "{")
+		if !placeholder {
+			if part != segments[index] {
+				return nil, false
+			}
+			continue
+		}
+		value, err := url.PathUnescape(segments[index])
+		if err != nil || value == "" {
+			return nil, false
+		}
+		values[strings.TrimSuffix(name, "}")] = value
+	}
+	return values, true
 }
 
 // goingTargetOfPath is the item a write's path names, before the write: the last placeholder

@@ -316,6 +316,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, rowID, *status, true,
 		)
 	}
+	// The ask this request opened, handed to the command bar's landing of this request, which
+	// records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusCreated, newShapedAsk(ask, false))
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -637,6 +640,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the edit answers it found and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, askEdited{shapedAsk: newShapedAsk(ask, false), Previous: found})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

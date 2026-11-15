@@ -639,6 +639,16 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What this request answers it did - the ask, whether it opened it, and 201 where it wrote
+	// anything - handed to the command bar's landing of this request, which records it in this
+	// transaction (goingRecordAnswer).
+	sunkStatus := http.StatusOK
+	if len(events) > 0 {
+		sunkStatus = http.StatusCreated
+	}
+	sunkAsk := newShapedAsk(*ask, false)
+	goingRecordAnswer(r.Context(), sunkStatus, approvalRequestResponse{Ask: &sunkAsk, Opened: open == nil, ArtifactID: artifact.ID, Version: version,
+		Approval: newArtifactApprovalRead(*artifact.Approval, false), Coverage: coverage, CoverageUnread: coverageUnread})
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

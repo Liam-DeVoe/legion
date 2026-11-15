@@ -494,6 +494,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	advice := s.writeAdvice(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
 	)
+	// The issue this create made, handed to the command bar's landing of this request, which
+	// records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusCreated, issue)
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -633,6 +636,9 @@ func (s *server) respondWithExistingExternalIssue(
 	advice := s.writeAdvice(
 		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, "", existingStatus, false,
 	)
+	// The issue the create names, which it made nothing of, handed to the command bar's landing of
+	// this request, which records it with whatever the request goes on to commit (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, existing)
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

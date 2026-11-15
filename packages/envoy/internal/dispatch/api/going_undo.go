@@ -123,8 +123,13 @@ type goingUndoAnswer struct {
 // (claimGoingRunUndos) before it undoes any, holding no lock and no connection while it works, so
 // a second undo of the run while the first is under way is 429 GOING_UNDO_IN_PROGRESS with a
 // Retry-After, and its retry reads what the first recorded and undoes nothing twice. A write whose
-// undo was claimed and never recorded, once no request can still be making it, is answered
-// unsettled, 409 GOING_UNDO_UNSETTLED, and never undone again: that undo may have been made.
+// undo was claimed and never recorded, once no request can still be making it, is read for what
+// that undo landed before anything else (goingUndoTakeOver), as a write taken over is: an undo
+// that landed every request it sends is recorded done, sending nothing again; one that landed
+// some, or was never reached, is taken over in the same statement as the claim and made after
+// what landed - a created issue's close after its reason; and only one reached with no landing
+// recorded is answered unsettled, 409 GOING_UNDO_UNSETTLED, and never undone again: that undo may
+// have been made.
 func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -148,6 +153,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	var run goingRun
 	var writes []goingRunWrite
 	var unsettled map[string]time.Time
+	var taken map[string]goingRunUndo
 	for tries := 0; ; tries++ {
 		if run, ok = s.readCallersGoingRun(w, r, caller.ID); !ok {
 			return
@@ -160,16 +166,21 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 				"another undo of this run is under way: ask again shortly, and this undo reads what it did")
 			return
 		}
-		writes, unsettled = goingUndoable(run)
+		// Every pending undo is past the bound now, its request no longer running: what it landed
+		// decides whether it is taken over or unsettled, before anything is read or sent.
+		var pending map[string]goingRunUndo
+		writes, pending = goingUndoable(run)
+		unsettled, taken = goingUndoTakeOver(pending)
 		ids := goingUndoIDs(writes, unsettled)
 		if len(ids) == 0 {
 			break
 		}
-		landed := make(map[string][]goingWriteRequest, len(ids))
-		for _, id := range ids {
+		fresh := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { _, adopt := taken[id]; return adopt })
+		landed := make(map[string][]goingWriteRequest, len(fresh))
+		for _, id := range fresh {
 			landed[id] = goingUndoLandedBefore(run, id)
 		}
-		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, ids, landed, claimedAt, len(run.Undos))
+		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, fresh, landed, slices.Sorted(maps.Keys(taken)), claimedAt, len(run.Undos))
 		if err == nil {
 			break
 		}
@@ -177,17 +188,20 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, fmt.Errorf("claim the going undo: %w", err))
 			return
 		}
-		// Refused: another undo claimed the run, settled one of these writes or recorded an undo
-		// since the read, or the run is gone. The next read says which, and holds what any undo
-		// of these writes landed (goingUndoLandedBefore) as the claim finds it.
+		// Refused: another undo claimed the run, took over one of these undos, settled one of
+		// these writes or recorded an undo since the read, or the run is gone. The next read says
+		// which, and holds what any undo of these writes landed (goingUndoLandedBefore) as the
+		// claim finds it.
 	}
 	at := goingUndoClaimedAt(claimedAt)
-	// The writes the loop below has not reached yet, whose claims are given up when the handler
-	// returns. An undo that was made and whose record failed keeps its claim, as a write whose
-	// record failed does, so no undo of the run makes it a second time: past the bound it is
-	// answered unsettled.
+	// The writes the loop below has not reached yet. The claims of those this undo claimed afresh
+	// are given up when the handler returns; one it took over keeps its claim, and what the undo it
+	// took over landed with it, and is taken over again past the bound. An undo that was made and
+	// whose record failed keeps its claim, as a write whose record failed does, so no undo of the
+	// run makes it a second time.
 	unreached := goingUndoIDs(writes, unsettled)
 	defer func() {
+		unreached = slices.DeleteFunc(unreached, func(id string) bool { _, adopt := taken[id]; return adopt })
 		if len(unreached) == 0 {
 			return
 		}
@@ -210,7 +224,17 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		}
 		unreached = unreached[1:]
 		undoer.landings = &goingLandings{s: s, run: run.ID, login: caller.ID, write: write.ID, undo: at}
-		line := undoer.undo(ctx, write, goingUndoLandedBefore(run, write.ID))
+		landed := goingUndoLandedBefore(run, write.ID)
+		var line goingUndoLine
+		if dead, adopt := taken[write.ID]; adopt {
+			landed = goingLanded(dead.Requests)
+			if dead.Sends > 0 && len(landed) >= dead.Sends {
+				line = goingUndoLandedLine(write, landed)
+			}
+		}
+		if line.WriteID == "" {
+			line = undoer.undo(ctx, write, landed)
+		}
 		if line.Outcome.Code == codeGoingLandingUnread {
 			// Whether a request of the undo landed is unknown: its claim stays, so no undo of the
 			// run makes it a second time, and past the bound it is answered unsettled.
@@ -220,7 +244,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		bookkeeping, done := goingBookkeeping(ctx)
 		err := s.recordGoingRunUndo(bookkeeping, run.ID, caller.ID, goingRunUndo{
 			WriteID: write.ID, Outcome: line.Outcome, Fields: line.Fields, At: time.Now().UTC(),
-			Settled: goingUndoSettles(line.Outcome), Requests: line.requests,
+			Settled: goingUndoSettles(line.Outcome), Requests: goingWithoutAnswers(line.requests),
 		}, at)
 		done()
 		if err != nil {
@@ -253,18 +277,17 @@ func goingUndoLandedBefore(run goingRun, writeID string) []goingWriteRequest {
 }
 
 // goingUndoable is every write of the run an undo answers for, newest first: each that went
-// through and that no undo has undone or settled. unsettled holds, by write, when the undo of
-// each among them that an undo claimed and never recorded was claimed: such a write is answered
-// unsettled rather than undone, since that undo may have been made.
-func goingUndoable(run goingRun) (writes []goingRunWrite, unsettled map[string]time.Time) {
+// through and that no undo has undone or settled. pending holds, by write, the undo of each among
+// them that an earlier undo claimed and never recorded (goingUndoTakeOver reads it).
+func goingUndoable(run goingRun) (writes []goingRunWrite, pending map[string]goingRunUndo) {
 	settled := map[string]bool{}
-	unsettled = map[string]time.Time{}
+	pending = map[string]goingRunUndo{}
 	for _, undo := range run.Undos {
 		switch {
 		case undo.Outcome.OK || undo.Settled:
 			settled[undo.WriteID] = true
 		case undo.Pending:
-			unsettled[undo.WriteID] = undo.At
+			pending[undo.WriteID] = undo
 		}
 	}
 	for _, write := range slices.Backward(run.Writes) {
@@ -272,7 +295,26 @@ func goingUndoable(run goingRun) (writes []goingRunWrite, unsettled map[string]t
 			writes = append(writes, write)
 		}
 	}
-	return writes, unsettled
+	return writes, pending
+}
+
+// goingUndoTakeOver is how an undo reads the pending undos an earlier undo claimed and never
+// recorded, every one past goingClaimBound, by what each landed, as a write taken over reads its
+// own: unsettled, by write the moment it was claimed, is each reached (its Sends marked before its
+// first request was sent, goingLandings.reach) whose record names no request it landed - that
+// request may have run, so it is never made again; taken is every other, taken over by this undo's
+// claim (claimGoingRunUndos) - one that landed requests, resumed after them or recorded done where
+// it landed all it sends, and one never reached, which made nothing and is made now.
+func goingUndoTakeOver(pending map[string]goingRunUndo) (unsettled map[string]time.Time, taken map[string]goingRunUndo) {
+	unsettled, taken = map[string]time.Time{}, map[string]goingRunUndo{}
+	for write, undo := range pending {
+		if undo.Sends > 0 && len(goingLanded(undo.Requests)) == 0 {
+			unsettled[write] = undo.At
+			continue
+		}
+		taken[write] = undo
+	}
+	return unsettled, taken
 }
 
 // goingUndoIDs is the id of each of writes an undo makes, in order: every one but those unsettled.
@@ -284,6 +326,24 @@ func goingUndoIDs(writes []goingRunWrite, unsettled map[string]time.Time) []stri
 		}
 	}
 	return ids
+}
+
+// goingUndoLandedLine is the line of a write whose undo an earlier undo made whole, every request
+// it sends landed (landed), and never recorded, its process having ended: the undo is recorded
+// done, as its route's transaction left it, and nothing is sent again.
+func goingUndoLandedLine(write goingRunWrite, landed []goingWriteRequest) goingUndoLine {
+	outcome := goingWriteOutcome{OK: true, Status: cmp.Or(landed[len(landed)-1].Outcome.Status, http.StatusOK),
+		Message: "this undo landed while the process making it was down, and is recorded done: nothing was sent again"}
+	names := write.Fields
+	if len(names) == 0 {
+		names = []string{""}
+	}
+	fields := make([]goingUndoField, 0, len(names))
+	for _, field := range names {
+		fields = append(fields, goingUndoField{Field: field, OK: true})
+	}
+	return goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Undo: write.Undo,
+		Now: json.RawMessage("null"), Outcome: outcome, Fields: fields, requests: landed}
 }
 
 // goingUndoUnsettledLine is the line of a write whose undo was claimed at claimed and never
@@ -329,6 +389,9 @@ type goingUndoer struct {
 	reason   string
 	// landings is where the requests of the write's undo under way record that they landed.
 	landings *goingLandings
+	// sends is how many requests the write's undo under way sends (undo), marked on its claim
+	// before the first is sent (goingLandings.reach).
+	sends int
 }
 
 // undo undoes one write by the undo the catalogue row it went through states, as its record keeps
@@ -339,8 +402,9 @@ type goingUndoer struct {
 // that names an undo this server has none of for its action, 501 GOING_UNDO_UNSERVED, rather than
 // recorded undone with nothing undone. A write whose value after was never read
 // (goingRunWrite.AfterUnread) is refused, 409 GOING_UNDO_AFTER_UNREAD, for every kind but a
-// trace: what it left is unknown, so there is nothing to compare what is there now with. A write
-// whose route found a value the read before it did not see (goingRunWrite.BeforeUnread) is
+// trace: what it left is unknown, so there is nothing to compare what is there now with, and the
+// line says why in the write's own words and that the person changes the item by hand instead. A
+// write whose route found a value the read before it did not see (goingRunWrite.BeforeUnread) is
 // refused, 409 GOING_UNDO_BEFORE_UNREAD, for every kind but a trace: what it replaced is unknown,
 // so there is nothing to put back.
 func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) goingUndoLine {
@@ -352,14 +416,21 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 		return line
 	}
 	line.Undo = write.Undo
+	// How many requests the undo sends, which its claim is marked with before the first is sent
+	// (goingUndoer.send): a created issue's close posts its reason, then closes it.
+	u.sends = 1
+	if write.Undo == goingUndoCloseCreated {
+		u.sends = 2
+	}
 	var now any
 	var outcome goingWriteOutcome
 	var fields []goingUndoField
 	served := true
 	switch kind := line.Undo; {
 	case write.AfterUnread && kind != goingUndoTrace:
-		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread,
-			Message: "the value this write left was never read, so what it changed is unknown and nothing was undone: read the item to see what it holds"}
+		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread, Message: fmt.Sprintf(
+			"%s, and the bar puts nothing back: read the item, and change it by hand to undo this write",
+			cmp.Or(write.Outcome.Message, "what this write left was never read"))}
 	case write.BeforeUnread && kind != goingUndoTrace:
 		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
 			Message: "another writer changed the item between the read before this write and the write, so what the write replaced is unknown and nothing was undone: read the item to see what it holds"}
@@ -425,8 +496,16 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 // request landed where it was answered 2xx, or where its route's transaction committed, as the
 // record it wrote there says (goingLandings.landed), whatever its answer's status: a write back
 // that committed and then answered 5xx is undone and never made a second time. One whose landing
-// could not be read back is codeGoingLandingUnread.
+// could not be read back is codeGoingLandingUnread. Before the undo's first request is sent, its
+// claim is marked reached (goingLandings.reach), so an undo whose process ends before then is
+// known to have made nothing; a claim that cannot be marked sends nothing, the server's own
+// failure.
 func (u goingUndoer) send(ctx context.Context, index int, route string, values map[string]string, body any, condition *goingCondition) goingWriteOutcome {
+	if u.landings != nil {
+		if err := u.landings.reach(ctx, u.sends); err != nil {
+			return goingFailed(fmt.Errorf("mark the going undo reached: %w", err))
+		}
+	}
 	method, pattern, _ := strings.Cut(route, " ")
 	path := goingPath(pattern, values)
 	spec := goingSend{method: method, path: path}
@@ -1030,60 +1109,66 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 // GOING_UNDO_CHANGED, before anything is posted, and the close expects that status too
 // (goingCondition.Expect, on the request's context), decided under the issue's lock, so a move
 // made after the undo's read is never closed over either: that refusal, 409 ISSUE_CHANGED, is
-// the issue changed, and settles. A record whose value after does not decode is the server's own
-// failure, as retract answers one: nothing is read, posted or closed, and the write stays
-// undoable.
+// the issue changed, and settles. A record whose value after does not decode, or names no status,
+// holds no status for the close to expect, so it is the server's own failure, as retract answers
+// one: nothing is read, posted or closed, and the write stays undoable.
 // Where an earlier undo of the write posted the reason (landed) and its close was refused, the
-// reason is not posted again: the undo resumes at the close. A close refused after the reason
-// landed is answered naming the reason that stands (goingRefusal.after), as a write's refused line
-// names what of it landed. It is the one undo that sends more than one request; every other kind
-// sends one, so a retry of it has nothing landed to skip. A create its route answered made nothing
-// (goingRunWrite.Unchanged: it named an external issue Dispatch already held, which the route
-// answered as it stands) is undone by nothing: that issue is no issue of the turn's, and is neither
-// read, posted on nor closed.
+// reason is not posted again: the undo resumes at the close. Every refusal after the reason landed,
+// in this undo or an earlier one, is answered naming the reason that stands (goingRefusal.after),
+// as a write's refused line names what of it landed, and keeps it in the undo's requests, so a
+// later undo resumes after it still. It is the one undo that sends more than one request; every
+// other kind sends one, so a retry of it has nothing landed to skip. A create its route answered
+// made nothing (goingRunWrite.Unchanged: it named an external issue Dispatch already held, which
+// the route answered as it stands) is undone by nothing: that issue is no issue of the turn's, and
+// is neither read, posted on nor closed.
 func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) (any, goingWriteOutcome, []goingWriteRequest) {
 	if write.Unchanged {
 		return nil, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: fmt.Sprintf(
 			"this create made no issue: Dispatch already held %s for the external issue it named, so nothing was closed", write.Target)}, nil
 	}
+	values := map[string]string{"key": write.Target}
+	reason := goingUndoRequest(goingIssueMessageRoute, values)
+	// The reason an earlier undo of the write posted, which stands whatever this undo does.
+	var posted []goingWriteRequest
+	if len(landed) > 0 && landed[0].Method == reason.Method && landed[0].Path == reason.Path {
+		posted = landed[:1]
+	}
+	stands := func(outcome goingWriteOutcome) goingWriteOutcome {
+		return goingRefusal{Status: outcome.Status, Code: outcome.Code, Message: outcome.Message}.after(posted, "undo").outcome()
+	}
 	var made struct {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(write.After, &made); err != nil {
-		return nil, goingFailed(fmt.Errorf("the write's record holds no status the issue was left in: %w", err)), nil
+		return nil, stands(goingFailed(fmt.Errorf("the write's record holds no status the issue was left in: %w", err))), posted
+	}
+	if made.Status == "" {
+		return nil, stands(goingFailed(errors.New("the write's record names no status the issue was left in, so no close can expect it"))), posted
 	}
 	var issue struct {
 		Status   string  `json:"status"`
 		ClosedAt *string `json:"closed_at"`
 	}
 	if err := u.observer.read.get(ctx, goingIssuePath(write.Target), &issue); err != nil {
-		return nil, goingFailed(err), nil
+		return nil, stands(goingFailed(err)), posted
 	}
 	if issue.ClosedAt != nil {
-		return issue.Status, goingChanged([]string{"the issue is closed already, at " + *issue.ClosedAt}, nil), nil
+		return issue.Status, stands(goingChanged([]string{"the issue is closed already, at " + *issue.ClosedAt}, nil)), posted
 	}
-	left := made.Status
-	if left == "" {
-		// A record whose value after decodes and names no status - one written before the write
-		// recorded it - is held to the status the undo reads, as before.
-		left = issue.Status
+	if issue.Status != made.Status {
+		return issue.Status, stands(goingChanged([]string{fmt.Sprintf("the issue is %s now, moved since this write left it %s", issue.Status, made.Status)}, nil)), posted
 	}
-	if issue.Status != left {
-		return issue.Status, goingChanged([]string{fmt.Sprintf("the issue is %s now, moved since this write left it %s", issue.Status, left)}, nil), nil
-	}
-	values := map[string]string{"key": write.Target}
-	reason := goingUndoRequest(goingIssueMessageRoute, values)
-	if len(landed) == 0 || landed[0].Method != reason.Method || landed[0].Path != reason.Path {
+	if len(posted) == 0 {
 		reason.Outcome = u.send(ctx, 0, goingIssueMessageRoute, values, map[string]any{"body": u.reason}, nil)
 	} else {
-		reason = landed[0]
+		reason = posted[0]
 	}
 	requests := []goingWriteRequest{reason}
 	if !reason.Outcome.OK {
 		return issue.Status, reason.Outcome, requests
 	}
 	closing := goingUndoRequest(goingIssuePatchRoute, values)
-	expected, _ := json.Marshal(left)
+	expected, _ := json.Marshal(made.Status)
 	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{"status": "done"},
 		&goingCondition{WriteBack: true, Expect: map[string]json.RawMessage{"status": expected}})
 	requests = append(requests, closing)
@@ -1093,7 +1178,7 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	if closing.Outcome.Code == codeGoingLandingUnread {
 		return issue.Status, closing.Outcome, requests
 	}
-	refused := goingRefusal{Status: closing.Outcome.Status, Code: closing.Outcome.Code, Message: closing.Outcome.Message}.after(requests[:1])
+	refused := goingRefusal{Status: closing.Outcome.Status, Code: closing.Outcome.Code, Message: closing.Outcome.Message}.after(requests[:1], "undo")
 	if closing.Outcome.Code == "ISSUE_CHANGED" {
 		return issue.Status, goingChanged([]string{refused.Message}, nil), requests
 	}

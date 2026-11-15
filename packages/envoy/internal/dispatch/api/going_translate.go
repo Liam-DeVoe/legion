@@ -504,7 +504,7 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 			// The call resumes after its own reason: what stands is named, and only the close
 			// was not sent.
 			refusal.Message = fmt.Sprintf("%s closed at %s, so the close was not sent", key, *issue.ClosedAt)
-			refusal = refusal.after(landed)
+			refusal = refusal.after(landed, "write")
 		}
 		return goingCall{}, refusal
 	}

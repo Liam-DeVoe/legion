@@ -371,6 +371,86 @@ func TestGoingUndoOfACreatedIssueResumesAfterTheReasonItPosted(t *testing.T) {
 	}
 }
 
+// goingCloseRefusedOnce is a route table that refuses the first close of issue 503 before its
+// route sees it, so an undo's reason lands and its close does not.
+func goingCloseRefusedOnce(inner http.Handler, issue string) http.Handler {
+	refused := false
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && r.URL.Path == "/api/v1/issues/"+issue && !refused {
+			refused = true
+			writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "the close was refused")
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+}
+
+// TestGoingUndoRefusedAfterItsReasonLandedCreditsTheReasonToTheUndo (review round 5, thread 9): an
+// undo of a created issue whose reason landed and whose close was refused says that this undo's
+// earlier request stands, not the write's: the reason is the undo's own.
+func TestGoingUndoRefusedAfterItsReasonLandedCreditsTheReasonToTheUndo(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, its close refused", "force": true}, nil)
+	rig.served.inProcess = goingCloseRefusedOnce(inner, made.Item)
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	rig.served.inProcess = inner
+	if !strings.Contains(line.Outcome.Message, "this undo's earlier request") || strings.Contains(line.Outcome.Message, "this write's") {
+		t.Fatalf("the undo whose close was refused answered %q, want it to credit the reason to this undo", line.Outcome.Message)
+	}
+}
+
+// TestGoingUndoResumedOntoAClosedOrMovedIssueSaysTheReasonStands (review round 5, thread 4): an
+// undo of a created issue posted its reason and its close was refused 503; before the next undo,
+// someone closed the issue, or moved it. The next undo is refused before it sends anything, and
+// its line says the reason the earlier undo posted stands, as the run records it.
+func TestGoingUndoResumedOntoAClosedOrMovedIssueSaysTheReasonStands(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, moved := range []string{"done", "in_progress"} {
+		t.Run(moved, func(t *testing.T) {
+			run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, then moved to " + moved, "force": true}, nil)
+			rig.served.inProcess = goingCloseRefusedOnce(inner, made.Item)
+			oneLine(t, rig.undo(t, "alice", run, nil), false)
+			rig.served.inProcess = inner
+			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+made.Item, map[string]any{"status": moved})
+			line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+			reason := "/api/v1/issues/" + made.Item + "/messages"
+			if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, reason) {
+				t.Fatalf("the undo onto the issue bob moved to %s answered %+v, want it refused naming the reason %s, which stands", moved, line.Outcome, reason)
+			}
+			undos := rig.record(t, "alice", run).Undos
+			if latest := undos[len(undos)-1]; len(latest.Requests) != 1 || latest.Requests[0].Path != reason || !latest.Requests[0].Outcome.OK {
+				t.Fatalf("the run records the latest undo %+v, want it naming the reason landed", latest)
+			}
+		})
+	}
+}
+
+// TestGoingUndoOfACreatedIssueWhoseRecordNamesNoStatusClosesNothing (review round 5, thread 3): the
+// close of an issue the turn created expects the status the create recorded it left; a record
+// that names none holds no status to expect, so the undo is the server's own failure, posts and
+// closes nothing, and leaves the write undoable - never a close held to the status read now.
+func TestGoingUndoOfACreatedIssueWhoseRecordNamesNoStatusClosesNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, its status unrecorded", "force": true}, nil)
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		update going_runs set writes = jsonb_set(writes, '{0,after}', jsonb_build_object('key', $2::text)) where id = $1::uuid`, run, made.Item); err != nil {
+		t.Fatalf("drop the status from the write's record: %v", err)
+	}
+	const reason = "Closed on a status read now."
+	line := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
+	if line.Outcome.Status != http.StatusInternalServerError || rig.issueRead(t, made.Item).ClosedAt != nil || rig.goingReasonsOn(t, made.Item, reason) != 0 {
+		t.Fatalf("the undo of a record naming no status answered %+v and left %s %s with %d reasons, want 500 and nothing posted or closed",
+			line.Outcome, made.Item, rig.issueRead(t, made.Item).Status, rig.goingReasonsOn(t, made.Item, reason))
+	}
+}
+
 // TestGoingUndoOfATraceLeavesTheWriteInPlaceAndMarksItUndone: a comment, a message and an artifact
 // the turn made stay where they are; the undo records the turn undone, so the run is no longer
 // undoable.
@@ -1001,10 +1081,13 @@ func (rig goingWritesRig) refuseRecordedUndos(t *testing.T) (allow func()) {
 }
 
 // TestGoingUndoMadeAndNotRecordedRunsNoSecondTimePastTheBound (review round 3, finding 2; check
-// c21): an undo that released the claim a bar turn took, and whose record the database refused,
-// is never made a second time, however long after: once its claim is older than any request can
-// still run (goingClaimBound), the next undo of the run answers that write unsettled and undoes
-// nothing, so the claim the person took again by hand is released once, by the first undo alone.
+// c21; review round 5, thread 2): an undo that released the claim a bar turn took, and whose record
+// the database refused, is never made a second time, however long after. Its release recorded its
+// landing in its own transaction, so once its claim is older than any request can still run
+// (goingClaimBound), the next undo of the run reads that landing first and records the undo done,
+// as the round 5 rule asks of an undo past its bound whose record shows a landing (it was answered
+// unsettled before that rule): nothing is sent again, so the claim the person took again by hand
+// is released once, by the first undo alone, and a further undo finds nothing left to undo.
 func TestGoingUndoMadeAndNotRecordedRunsNoSecondTimePastTheBound(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Released, not recorded", "The spec.\n").Key
@@ -1025,15 +1108,15 @@ func TestGoingUndoMadeAndNotRecordedRunsNoSecondTimePastTheBound(t *testing.T) {
 		t.Fatalf("age the undo's claim: %v", err)
 	}
 
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Status != http.StatusConflict || line.Outcome.Code != "GOING_UNDO_UNSETTLED" {
-		t.Fatalf("the undo past the bound answered %+v, want the write's undo unsettled, 409 GOING_UNDO_UNSETTLED", line.Outcome)
+	line := oneLine(t, rig.undo(t, "alice", run, nil), true)
+	if line.Outcome.Status != http.StatusOK {
+		t.Fatalf("the undo past the bound answered %+v, want the undo whose release landed recorded done", line.Outcome)
 	}
 	if claim := rig.issueRead(t, issue).Claim; claim == nil || model.CanonicalLogin(claim.Actor.ID) != "alice" {
 		t.Fatalf("the claim alice took again reads %+v after the undo past the bound, want it hers: released once", claim)
 	}
-	if again := oneLine(t, rig.undo(t, "alice", run, nil), false); again.Outcome.Code != "GOING_UNDO_UNSETTLED" {
-		t.Fatalf("a further undo answered %+v, want the write's undo unsettled still", again.Outcome)
+	if again := rig.undo(t, "alice", run, nil); len(again.Lines) != 0 {
+		t.Fatalf("a further undo answered %+v, want no line: the write's undo is recorded done", again.Lines)
 	}
 }
 

@@ -158,6 +158,26 @@ func (row goingSeveralRequestRow) on(t *testing.T, rig goingWritesRig, issue str
 	return arguments, first.method + " " + first.path, own.method + " " + own.path
 }
 
+// firstDigest is the body digest of the first request the row's write sends with arguments, as a
+// landing of it records (goingSend.digest).
+func (row goingSeveralRequestRow) firstDigest(t *testing.T, rig goingWritesRig, arguments map[string]any) string {
+	t.Helper()
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false))}
+	prepared, err := caller.prepare(context.Background(), row.action, arguments)
+	if err != nil {
+		t.Fatalf("prepare %s: %v", row.action, err)
+	}
+	requests, err := prepared.call.requests(prepared.route)
+	if err != nil || len(requests) == 0 {
+		t.Fatalf("%s sends %d requests (%v)", row.action, len(requests), err)
+	}
+	return requests[0].digest()
+}
+
 // goingCommittedThenRefused is a route table that serves the first request of `refused` whole,
 // so its transaction commits, and then answers 503 in its place, as a route does whose change
 // committed and whose read after it failed (createStoredMessage, messages.go); every request is
@@ -540,19 +560,21 @@ func TestGoingWriteOfOneInvocationClaimedAfterAnotherRecordedResumesFromThatReco
 			sent := map[string]int{}
 			rig.served.inProcess = goingCommittedThenRefused(inner, "", sent)
 			method, path, _ := strings.Cut(first, " ")
+			digest := row.firstDigest(t, rig, arguments)
 			rig.holdGoingRun(t, run, func(held pgx.Tx) {
 				// What the other request records once its reason landed and its close was refused
-				// 503: a write of the invocation, refused, its reason landed.
+				// 503: a write of the invocation, refused, its reason landed, named by its body's
+				// digest as every landing is.
 				if _, err := held.Exec(context.Background(), `
 					update going_runs set writes = writes || jsonb_build_array(jsonb_build_object(
 					  'id', gen_random_uuid()::text, 'action', $2::text, 'invocation', 0, 'target', $3::text,
 					  'fields', '[]'::jsonb, 'before', null, 'after', null, 'approved', 'person', 'pending', false,
 					  'at', now(), 'outcome', jsonb_build_object('ok', false, 'status', 503, 'code', 'SERVICE_UNAVAILABLE', 'message', 'refused'),
 					  'requests', jsonb_build_array(
-					    jsonb_build_object('method', $4::text, 'path', $5::text, 'outcome', jsonb_build_object('ok', true, 'status', 201)),
+					    jsonb_build_object('method', $4::text, 'path', $5::text, 'body_sha256', $6::text, 'outcome', jsonb_build_object('ok', true, 'status', 201)),
 					    jsonb_build_object('method', 'PATCH', 'path', '/api/v1/issues/' || $3::text,
 					      'outcome', jsonb_build_object('ok', false, 'status', 503, 'code', 'SERVICE_UNAVAILABLE', 'message', 'refused')))))
-					where id = $1::uuid`, run, row.action, issue, method, path); err != nil {
+					where id = $1::uuid`, run, row.action, issue, method, path, digest); err != nil {
 					t.Fatalf("record the other request's write: %v", err)
 				}
 			}, func() {
@@ -632,6 +654,38 @@ func TestGoingWriteUploadWhoseOwnerCannotBeNamedIsNeverAutomatic(t *testing.T) {
 	}
 	if goingUploadsOver(prepared, before, "save this as notes") {
 		t.Error("an upload whose words write its name is refused, want it run at once")
+	}
+}
+
+// TestGoingLandingWithNoBodyDigestIsNoLandingOfAnyRequest (review round 5, thread 6): every
+// landing this build records names its request's body digest, so one that names none matches no
+// request, whatever its body: a call resumes after nothing of it (goingSameSend), and the read of
+// whether a request landed (goingLandings.landed) finds no landing in it.
+func TestGoingLandingWithNoBodyDigestIsNoLandingOfAnyRequest(t *testing.T) {
+	spec := goingJSONSend(t, http.MethodPost, "/api/v1/issues/DEMO-1/messages", map[string]any{"body": "The reason."})
+	if goingSameSend(goingWriteRequest{Method: spec.method, Path: spec.path, Outcome: goingWriteOutcome{OK: true}}, spec) {
+		t.Error("a recorded request naming no body digest is the request of any body, want it no request's")
+	}
+	if !goingSameSend(goingWriteRequest{Method: spec.method, Path: spec.path, BodySHA256: spec.digest()}, spec) {
+		t.Error("a recorded request naming the body's own digest is not that request")
+	}
+
+	rig := newGoingWritesRig(t)
+	run := rig.proposed(t, "alice", false, "dispatch_comment", map[string]any{"issue": "DEMO-1", "body": "A comment."})
+	write := "11111111-1111-4111-8111-111111111111"
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		update going_runs set writes = writes || jsonb_build_array(jsonb_build_object(
+		  'id', $2::text, 'action', 'dispatch_comment', 'invocation', 0, 'target', '', 'fields', '[]'::jsonb,
+		  'before', null, 'after', null, 'approved', 'person', 'pending', true, 'at', now(),
+		  'outcome', jsonb_build_object('ok', false, 'status', 0),
+		  'requests', jsonb_build_array(jsonb_build_object('method', $3::text, 'path', $4::text, 'outcome', jsonb_build_object('ok', true)))))
+		where id = $1::uuid`, run, write, spec.method, spec.path); err != nil {
+		t.Fatalf("record a landing naming no digest: %v", err)
+	}
+	landings := &goingLandings{s: rig.served, run: run, login: "alice", write: write}
+	landed, err := landings.landed(context.Background(), 0, spec)
+	if err != nil || landed {
+		t.Fatalf("the landing naming no digest reads landed=%v (%v), want no landing of the request", landed, err)
 	}
 }
 
@@ -752,13 +806,15 @@ func (rig goingWritesRig) goingReasonsOn(t *testing.T, issue string, body any) i
 }
 
 // TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord (review round 8, finding 1;
-// check c21): a write whose process ended is taken over by a press whose arguments name another
-// issue. The taken-over write's landings are never rewritten: it is recorded as it stands, naming
-// what it landed. Where all of it landed, it went through: the press is answered that write's line
-// and sends nothing for B, and, the value it left never read, the turn's undo leaves A as it is,
-// as for every write taken over after all of it landed. Where only A's reason landed, it is
-// recorded refused naming the reason, the press runs as a write of its own, and a later press back
-// to A resumes after A's reason and posts it once.
+// check c21; review round 5, thread 1): a write whose process ended is taken over by a press whose
+// arguments name another issue. The taken-over write's landings are never rewritten: it is
+// recorded as it stands, naming what it landed. Where all of it landed, it went through: the press
+// is answered that write's line and sends nothing for B, and the turn's undo reopens A, from the
+// values A's close recorded beside its landing in its own transaction - since round 5 a taken-over
+// write whose last route recorded them is undoable, where before it was recorded with what it left
+// unread and its undo left A as it was. Where only A's reason landed, it is recorded refused naming
+// the reason, the press runs as a write of its own, and a later press back to A resumes after A's
+// reason and posts it once.
 func TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	rows := goingSeveralRequestRows(t, rig)
@@ -767,6 +823,7 @@ func TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord(t *testin
 	for _, row := range rows {
 		t.Run(row.action+" every request landed", func(t *testing.T) {
 			a, b := rig.issue(t, "Closed as the process ended"), rig.issue(t, "Pressed after")
+			beforeA := rig.issueRead(t, a)
 			argumentsA, firstA, ownA := row.on(t, rig, a)
 			argumentsB, _, _ := row.on(t, rig, b)
 			run := rig.proposed(t, "alice", false, row.action, argumentsA)
@@ -786,9 +843,9 @@ func TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord(t *testin
 				recorded[0].Requests[0].Method+" "+recorded[0].Requests[0].Path != firstA || recorded[0].Requests[1].Method+" "+recorded[0].Requests[1].Path != ownA {
 				t.Fatalf("the run keeps %+v, want the one write, through, naming %s and %s", recorded, firstA, ownA)
 			}
-			undone := oneLine(t, rig.undo(t, "alice", run, nil), false)
-			if undone.Outcome.Code != codeGoingUndoAfterUnread || rig.issueRead(t, a).Status != "done" {
-				t.Fatalf("the turn's undo answered %+v and left %s %s, want %s and %s done", undone.Outcome, a, rig.issueRead(t, a).Status, codeGoingUndoAfterUnread, a)
+			undone := oneLine(t, rig.undo(t, "alice", run, nil), true)
+			if reopened := rig.issueRead(t, a); reopened.Status != beforeA.Status || reopened.ClosedAt != nil {
+				t.Fatalf("the turn's undo answered %+v and left %s %s, want it reopened %s", undone.Outcome, a, reopened.Status, beforeA.Status)
 			}
 		})
 		t.Run(row.action+" its reason landed", func(t *testing.T) {
@@ -828,10 +885,11 @@ func TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord(t *testin
 	}
 }
 
-// TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent (review round 8, finding 2): A's
-// reason landed and its close was refused 503; a press with arguments for B, which someone closed,
-// is refused before anything of it is sent, and says that neither B's reason nor its close was
-// sent, and names nothing of A's as its own.
+// TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent (review round 8, finding 2; review
+// round 5, thread 10): A's reason landed and its close was refused 503; a press with arguments for
+// B, which someone closed, is refused before anything of it is sent - B holds no message of its
+// reason - and says that neither B's reason nor its close was sent, and names nothing of A's as
+// its own.
 func TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	rows := goingSeveralRequestRows(t, rig)
@@ -859,6 +917,9 @@ func TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent(t *testing.T) {
 			_, pathA, _ := strings.Cut(firstA, " ")
 			if refused.Code != http.StatusConflict || !strings.Contains(refusal.Error, "the reason was not posted") || strings.Contains(refusal.Error, pathA) {
 				t.Fatalf("the press on %s answered %d %+v, want it refused saying its reason was not posted, naming nothing of %s", b, refused.Code, refusal, a)
+			}
+			if posted := rig.goingReasonsOn(t, b, argumentsB["reason"]); posted != 0 {
+				t.Fatalf("%s holds %d messages saying its reason after the refused press, want none posted", b, posted)
 			}
 		})
 	}

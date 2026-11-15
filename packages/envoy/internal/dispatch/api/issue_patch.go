@@ -772,6 +772,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// What the update answers it found and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, issueUpdated{Issue: after, Previous: previous, RankPlace: rankPlace})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

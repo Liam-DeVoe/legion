@@ -69,19 +69,26 @@ const codeCommentChanged = "COMMENT_CHANGED"
 
 // reopenComment is POST /api/v1/comments/{id}/reopen. Its optional body names the acting session
 // where the caller's credential proved none (actSessionFromBody), as the person routes take it.
-// The command bar's undo makes the reopen conditional (goingCondition.ExpectResolvedAt, on the
-// request's context): the thread must still hold the resolution of that moment, as the
-// comment's read answers resolved_at, when the reopen takes the comment's lock, or it is refused,
-// 409 COMMENT_CHANGED, with nothing written. Every other caller reopens whatever resolution the
-// thread holds.
+// The route took no body before it took this one, so a body off the network that does not decode
+// is ignored, as an empty one is, and the thread reopened as it was; a request the command bar
+// sends in-process is held to its body (decodeJSON), since sender and route are one build. The
+// command bar's undo makes the reopen conditional (goingCondition.ExpectResolvedAt, on the
+// request's context): the thread must still hold the resolution of that moment, as the comment's
+// read answers resolved_at, when the reopen takes the comment's lock, or it is refused, 409
+// COMMENT_CHANGED, with nothing written. Every other caller reopens whatever resolution the thread
+// holds.
 func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
 	var input actorInput
-	if !s.decodeOptionalJSON(w, r, &input) {
-		return
+	if goingServedInProcess(r.Context()) {
+		if !s.decodeOptionalJSON(w, r, &input) {
+			return
+		}
+	} else if r.ContentLength != 0 && decodeJSON(r, &input) != nil {
+		input = actorInput{}
 	}
 	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
 		return
@@ -517,6 +524,11 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	events = append(events, event)
+	if found != nil {
+		// What the resolve answers it found and left, handed to the command bar's landing of this
+		// request, which records it in this transaction (goingRecordAnswer).
+		goingRecordAnswer(r.Context(), http.StatusOK, resolvedComment{shapedComment: newShapedComment(comment, false), Previous: *found})
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

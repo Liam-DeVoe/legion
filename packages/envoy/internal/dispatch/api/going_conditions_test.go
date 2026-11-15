@@ -176,9 +176,10 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 // the architect's rule): a request the command bar's undo sends says it requires its condition
 // (goingCondition.WriteBack), so a write back whose condition a change lost is never made
 // unconditioned: each route that takes a condition refuses one marked as a write back that
-// carries no condition the route decides - none at all, an empty one, or one that leaves a field
-// it writes unexpected - 500 GOING_CONDITION_MISSING, and writes nothing. The same write carrying
-// no mark is made, as every caller but the undo makes it.
+// carries no condition the route decides - none at all, an empty one, one that leaves a field it
+// writes unexpected, or an expected content for a file, which holds no document content its
+// upload compares (review round 5, thread 7) - 500 GOING_CONDITION_MISSING, and writes nothing.
+// The same write carrying no mark is made, as every caller but the undo makes it.
 func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
@@ -196,6 +197,7 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		{"an issue upload with a blank expected content", "issue upload", goingCondition{WriteBack: true, ExpectSHA256: "  "}},
 		{"a project upload with no condition", "project upload", goingCondition{WriteBack: true}},
 		{"a session upload with no condition", "session upload", goingCondition{WriteBack: true}},
+		{"a session upload of a file expecting a content", "session upload", goingCondition{WriteBack: true, ExpectSHA256: strings.Repeat("0", 64)}},
 		{"a claim with no condition", "claim", goingCondition{WriteBack: true}},
 		{"a release with no condition", "release", goingCondition{WriteBack: true}},
 		{"a release expecting a holder of no kind and no id", "release", goingCondition{WriteBack: true, ExpectHolder: &model.Actor{}}},
