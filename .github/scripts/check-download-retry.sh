@@ -61,9 +61,9 @@
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
 # in turn. SCRIPT_CALL finds a call by the path it writes, scripts_called reads one body's calls
 # with the line each is written on, calls_of folds the loops and the functions around that line
-# into how many times the body runs it, and script_arithmetic walks them under a `seen` set,
-# which counts a file two of a step's paths
-# reach once and stops a cycle. Three budgets of this tree were a one-line `run:` of a script
+# into how many times the body runs it, and reached_arithmetic walks every path of them, which
+# charges a file two of a step's paths reach once, at the most expensive of those paths, and
+# stops a cycle. Three budgets of this tree were a one-line `run:` of a script
 # call and nothing else — ci.yaml's `pr-title` and `ci-ok` steps and pr-title.yaml's, 1200 s,
 # 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
 # stopped at the `run:` saw the arithmetic of none of them.
@@ -398,13 +398,15 @@
 #      reader is owed plainly. A shape this check reads as neither a loop nor a call of a
 #      function is no refusal: the call is counted once, the budget is judged against that one
 #      figure, and a step whose real cost is several ladders passes. Each shape below is priced
-#      under its real cost. All but the last were driven at 398ee1e88c83 in a scratch tree as a
-#      step around a 300 s call; the last was driven in review round 8 on this tree's own
-#      staging step. Every one
-#      but the last is absent from this tree: review round 3 of dispatch://INFRA-1545 read every
+#      under its real cost. All but the last two were driven at 398ee1e88c83 in a scratch tree
+#      as a step around a 300 s call; the next to last was driven in review round 29 and again
+#      in round 36 with the input its entry gives, and the last in review round 8 on this
+#      tree's own staging step. Every one but those two
+#      is absent from this tree: review round 3 of dispatch://INFRA-1545 read every
 #      step and every script of it with this check's own parser and found no instance of them.
-#      The last one this tree does hold - a call of a function a sourced file defines - and the
-#      steps it reaches carry budgets written by hand, as that entry says.
+#      The last two this tree does hold, the second of them as a call of a function a sourced
+#      file defines, and the steps that one reaches carry budgets written by hand, as its entry
+#      says.
 #
 #        * two loops written on one line: a loop is keyed by the line it sits on, so only one
 #          of them is read. In a sequence the later loop's count prices a call in the earlier
@@ -439,9 +441,19 @@
 #          one pass; and an element assignment such as `name[2]=c` is not read, so the count is
 #          the words written at the array's definition alone (two words and a third assigned
 #          later is 600 s and not 900 s).
-#        * one script that two of a step's paths reach, counted once, because the `seen` set
-#          is shared across a step's scripts. That set exists to stop a cycle, and this is the
-#          same mechanism read from the other side.
+#        * one file that two of a step's paths reach, charged once at its most expensive path:
+#          its own arithmetic multiplied by the largest product of the loop factors along any
+#          path from the step to it, with the loop waits of that path. The step runs it along
+#          every path, so the step's real cost is the sum over the paths. This is by design: a
+#          library several scripts source is charged once and not once for each of them, and
+#          charging per path raises 52 steps of this tree, all of them through
+#          .github/scripts/ci-tools.sh (dispatch://INFRA-1545, round 36). Until round 36 the
+#          file was charged through whichever path the walk visited first, in the order of the
+#          files' names. Review round 29 drove a step running .github/scripts/zz-a.sh three
+#          times in a loop and zz-b.sh once, both calling zz-c.sh, which retries at 180 s
+#          (1050 s), under `timeout-minutes: 20`: zz-c.sh was charged through zz-a.sh, 3150 s,
+#          and the step was refused, and with zz-b.sh renamed zz-0.sh it was charged through
+#          zz-0.sh, 1050 s, and the step passed. It is refused at 3150 s under either name now.
 #        * a call of a function that a sourced file defines, which is read as a call of that
 #          function and never as a call of the file defining it. A step that sources
 #          .github/scripts/ci-tools.sh is charged that file's sites once, however many times
@@ -630,11 +642,13 @@
 # same reasoning that leaves it unretried.
 #
 # `--jobs` prints the jobs rule 8 holds to a priced key, one per line: each job that writes its own
-# `timeout-minutes` and holds a retried step costing more than 0 s, as six tab-separated columns —
-# the file, the job, the key's line, its minutes, the seconds of the job's slowest retried step and
-# that step's name — sorted by file and then by the key's line, with the count on standard error.
-# Over a tree with a problem it prints the problems and exits 1, as `--list` does. The harness's
-# real-tree case reads it.
+# `timeout-minutes` and holds a retried step costing more than 0 s, as eight tab-separated
+# columns — the file, the job, the key's line, its minutes, the seconds of the job's slowest
+# retried step, the first and the last line (counted from 1) of the comment block that prices the
+# key, `-` and `-` where no block prices it, and that step's name — sorted by file and then by the
+# key's line, with the count on standard error. Over a tree with a problem it prints the problems
+# and exits 1, as `--list` does, and a key no block prices is one such problem, so a run that
+# prints rows prints no `-`. The harness's real-tree case reads it.
 #
 # Run from anywhere: .github/scripts/check-download-retry.sh
 #                    .github/scripts/check-download-retry.sh --list
@@ -1806,28 +1820,6 @@ def arithmetic_of(site: Site) -> int | None:
     return entry.seconds
 
 
-def carried(call: Call, cost: int | None) -> int | None:
-    """What a script costs the body that calls it: its own arithmetic once for each time that
-    body runs it, with the waits of the loops around the call.
-
-    A script that costs nothing costs nothing however often it is run, so a call of it answers
-    0 even where the loops around that call are ones this check cannot count: the figure those
-    passes would multiply is zero either way (review round 5 of dispatch://INFRA-1545).
-
-    What that line does today is keep a priced script priced. A script holding a 450 s ladder
-    and, beside it, a loop this check cannot count around a costless script of its own keeps
-    its 450 s and is held under the budget of the step running it; without the line the
-    costless call would answer None, the whole script's arithmetic with it, and that step
-    would be compared with nothing and pass in silence. The shape review round 5 wrote it for — a loop
-    this check cannot count around a script that only calls a costless script — is answered by
-    waits_for_nothing below as well, which drops the item rather than pricing it (review round 6 of dispatch://INFRA-1545)."""
-    if cost == 0:
-        return 0
-    if cost is None or call.factor is None:
-        return None
-    return call.factor * cost + call.wait
-
-
 def added(total: int | None, more: int | None) -> int | None:
     """Two arithmetics summed, where either may be the unreadable one: a step holding a site
     this check cannot count has no figure at all, and a figure short by one loop would be worse
@@ -2855,19 +2847,113 @@ for site in sites:
 # author to the wrong line.
 
 
-def script_arithmetic(path: str, seen: set[str]) -> int | None:
-    """The arithmetic a call of this script carries: its own calls and those of every script it
-    calls in turn, each once for every time it runs it. `seen` is what the step has counted
-    already, so a script two of its calls reach is counted once, and a cycle — which the shell
-    would run until something failed, but which must not hang this check — stops. None where
-    one of those calls is a site this check cannot count."""
-    if path in seen:
-        return 0
-    seen.add(path)
-    total = script_cost.get(path, 0)
-    for target, call in sorted(script_calls.get(path, {}).items()):
-        total = added(total, carried(call, script_arithmetic(target, seen)))
-    return total
+def calls_from(path: str) -> list[tuple[str, int | None, int]]:
+    """Every call a script or a composite action makes of another file under this check, as
+    (the file it reaches, how many times it runs it, what the loops around the call sleep), in
+    the order of the files' names. The count is None where a loop around the call writes none. A
+    `uses:` of a local action runs it once and sleeps nothing, and an action two steps of one
+    action use is one call of it here, because the walk below charges a file once however many
+    calls reach it."""
+    calls = script_calls.get(path) or action_scripts.get(path) or {}
+    found = [(target, call.factor, call.wait) for target, call in sorted(calls.items())]
+    return found + [(target, 1, 0) for target in sorted(set(action_uses.get(path, ())))]
+
+
+def own_cost(path: str) -> int | None:
+    """The arithmetic of a script's or a composite action's own sites, with what the files it
+    calls cost left out."""
+    return script_cost[path] if path in script_cost else action_cost.get(path, 0)
+
+
+def reached_arithmetic(calls: list[tuple[str, int | None, int]], seen: set[str],
+                       inside: tuple[str, ...]) -> int | None:
+    """The arithmetic of the files these calls reach, each charged ONCE at its most expensive
+    path. Every path from the calls to a file is walked, and the file's own arithmetic is
+    multiplied by the largest product of the loop factors along any of them. Where two paths
+    give the same product, the one whose loop waits charge more is the one taken, and where they
+    charge the same too, the path whose names sort first. The waits charged are those of the
+    calls along the path that charges each file whose own arithmetic is above 0, each
+    multiplied by the factors above it on that path, and a call shared by two such paths is
+    charged once. A file is charged once and not once per path because a library several
+    scripts source would otherwise be charged once for each of them: charging per path raises
+    52 steps of this tree, all of them through .github/scripts/ci-tools.sh (dispatch://INFRA-1545,
+    round 36).
+
+    The most expensive path, and not the first path the walk visits, because the first path
+    is a matter of how the files are named. Review round 29 of dispatch://INFRA-1545 drove a
+    step running .github/scripts/zz-a.sh three times in a loop and zz-b.sh once, both calling
+    zz-c.sh, which retries at 180 s (1050 s), under `timeout-minutes: 20`. A walk charging
+    zz-c.sh through the first name it visited charged it through zz-a.sh (3 x 1050 = 3150 s)
+    and refused the step, and with zz-b.sh renamed zz-0.sh it charged it through zz-0.sh
+    (1050 s) and passed it. This walk charges 3150 s under either name.
+
+    A call whose loop writes no count (factor None) is charged nothing where the file it
+    reaches, with what that file calls in turn, costs 0: the figure those passes would multiply
+    is zero either way (review round 5 of dispatch://INFRA-1545). That keeps a priced script
+    priced. A script holding a 450 s ladder and, beside it, such a loop around a costless script
+    of its own keeps its 450 s, where an answer of None would leave the step running it
+    compared with nothing and passed in silence (review round 6 of dispatch://INFRA-1545). Such
+    a call of a file that costs above 0, or whose own answer is None, makes the whole answer
+    None, whichever path reaches that call.
+
+    `seen` gains every file the calls reach, which is what the step's refusals read for the
+    files it runs and for their uncounted loops. `inside` is the path the calls are made from:
+    a path never enters a file it is already inside, so a cycle, which the shell would run until
+    something failed but which must not hang this check, stops."""
+    # The most expensive path found so far to each file reached through counted calls alone:
+    # the product of its factors, the waits charged along it, and the path itself.
+    best: dict[str, tuple[int, int, tuple[str, ...]]] = {}
+    # What the last call of each path walked charges for the waits of the loops around it: its
+    # own wait times the factors above it on that path.
+    waits: dict[tuple[str, ...], int] = {}
+    unread = False
+
+    def walk(path: tuple[str, ...], product: int, waited: int,
+             calls: list[tuple[str, int | None, int]]) -> None:
+        nonlocal unread
+        for target, factor, wait in calls:
+            if target in path:
+                continue
+            seen.add(target)
+            here = path + (target,)
+            if factor is None:
+                if script_arithmetic(target, seen, path) != 0:
+                    unread = True
+                continue
+            waits[here] = product * wait
+            reached = (product * factor, waited + product * wait, here)
+            known = best.get(target)
+            if (known is None or reached[:2] > known[:2]
+                    or (reached[:2] == known[:2] and here < known[2])):
+                best[target] = reached
+            walk(here, product * factor, waited + product * wait, calls_from(target))
+
+    walk(inside, 1, 0, calls)
+    if unread:
+        return None
+    total = 0
+    charged: set[tuple[str, ...]] = set()
+    for target, (product, _waited, path) in best.items():
+        cost = own_cost(target)
+        if cost is None:
+            return None
+        if cost:
+            total += product * cost
+            charged.update(path[:end] for end in range(len(inside) + 1, len(path) + 1))
+    return total + sum(waits[path] for path in charged)
+
+
+def script_arithmetic(path: str, seen: set[str], inside: tuple[str, ...] = ()) -> int | None:
+    """The arithmetic a call of this script carries: its own calls, and every file it reaches
+    through the scripts it calls in turn, each charged once at its most expensive path from
+    this script, as reached_arithmetic charges them. A file two of its paths reach is charged
+    the same whatever the files are named (review round 29 of dispatch://INFRA-1545, whose
+    input reached_arithmetic's own comment gives). None where one of those calls is a site this
+    check cannot count, or a call of a script that costs anything inside a loop whose passes it
+    cannot read. `seen` gains every file this script reaches, and `inside` is the path the call
+    is made from, which a cycle never re-enters."""
+    return added(script_cost.get(path, 0),
+                 reached_arithmetic(calls_from(path), seen, inside + (path,)))
 
 
 def retries_nothing(path: str, seen: set[str]) -> bool:
@@ -2931,21 +3017,6 @@ def waits_for_nothing(item: Uncounted) -> bool:
     return item.kind == UNCOUNTED_SCRIPT_CALL and retries_nothing(item.what, set())
 
 
-def action_arithmetic(path: str, seen: set[str]) -> int | None:
-    """The arithmetic a `uses:` of this composite action carries: its own calls, the scripts its
-    steps run, and every local action it calls in turn, which carries its own the same way.
-    `seen` stops a cycle, which GitHub would refuse to run but which must not hang this check."""
-    if path in seen:
-        return 0
-    seen.add(path)
-    total = action_cost.get(path, 0)
-    for target, call in sorted(action_scripts.get(path, {}).items()):
-        total = added(total, carried(call, script_arithmetic(target, seen)))
-    for target in action_uses.get(path, ()):
-        total = added(total, action_arithmetic(target, seen))
-    return total
-
-
 JOB_SLOWEST: dict[tuple[str, str], dict] = {}
 def step_name(budget) -> str:
     """What a refusal calls this step. A `uses:` step with no `name:` reads as '-' in the
@@ -2957,16 +3028,15 @@ def step_name(budget) -> str:
 
 
 for budget in budgets:
-    # One `seen` for the whole step: the script its `run:` calls, the action it uses and that
-    # action's own scripts are one reading set, so a file two of those paths reach is read, and
-    # counted, once, though the step runs it twice: the header's list of what rule 8 counts once
-    # names it.
+    # One walk for the whole step: the scripts its `run:` calls and the action it uses are the
+    # walk's first calls, so a file two of those paths reach is charged once, at the most
+    # expensive of them, though the step runs it along both: the header's list of what rule 8
+    # counts once names it. `seen` is every file the step reaches.
     seen: set[str] = set()
-    cost = budget.cost
-    for target, call in sorted(budget.scripts.items()):
-        cost = added(cost, carried(call, script_arithmetic(target, seen)))
+    calls = [(target, call.factor, call.wait) for target, call in sorted(budget.scripts.items())]
     if budget.uses:
-        cost = added(cost, action_arithmetic(budget.uses, seen))
+        calls.append((budget.uses, 1, 0))
+    cost = added(budget.cost, reached_arithmetic(calls, seen, ()))
     # The slowest retried step of each job, kept as this loop computes it — the step's own calls,
     # the scripts it runs and the composite action it uses — for the job-derivation clause below.
     # It is taken here and never recomputed there, because a `uses:` step's whole arithmetic is
@@ -3242,21 +3312,21 @@ for budget in budgets:
     if budget.minutes is not None:
         KEY_OWNERS[(budget.path, budget.line)] = (f"step '{step_name(budget)}' of job "
                                                   f"'{budget.job}'")
-# Every key line a priced block is paired with, as (file, 1-based line). The pricing clause after
-# the job-derivation clause refuses a retried job whose own key is not in it, so what "a job
-# prices itself" means is exactly what this loop pairs. A block's keys are the `timeout-minutes`
-# lines below it, at most one per figure it states, read down to the first comment line or to the
-# first job id, except a job id on the line directly below the block whose last line is indented
-# no deeper than that id: that block is the comment the job's own id carries. There is no window
-# and no distance, and an arrow never reaches past another comment or into a job its block does
-# not head or sit inside (dispatch://INFRA-1545, review round 27, where `typecheck` lowered to 20
-# was priced by `tool-fallback-arm`'s step comment 28 lines above it).
-PAIRED: set[tuple[str, int]] = set()
-# The text of the block that prices each paired key, keyed as PAIRED is and joined as this loop
-# joins it, in reading order. The job-derivation clause reads a job's derivation here and nowhere
-# else, so the block it holds a key to is the block that prices that key (dispatch://INFRA-1545,
-# round 35).
-PRICING_BLOCK: dict[tuple[str, int], str] = {}
+# Every key line a priced block is paired with, as (file, 1-based line), and the block that
+# prices it: the 1-based first and last line of that comment block, and its text joined as this
+# loop joins it, in reading order. The pricing clause after the job-derivation clause refuses a
+# retried job whose own key is not in it, so what "a job prices itself" means is exactly what
+# this loop pairs. The job-derivation clause reads a job's derivation here and nowhere else, so
+# the block it holds a key to is the block that prices that key (dispatch://INFRA-1545, round
+# 35), and `--jobs` prints the block's two lines beside each job. A block's keys are the
+# `timeout-minutes` lines below it, at most one per figure it states, read down to the first
+# comment line or to the first job id, except a job id on the line directly below the block whose
+# last line is indented no deeper than that id: that block is the comment the job's own id
+# carries. There is no window and no distance, and an arrow never reaches past another comment
+# or into a job its block does not head or sit inside (dispatch://INFRA-1545, review round 27,
+# where `typecheck` lowered to 20 was priced by `tool-fallback-arm`'s step comment 28 lines above
+# it).
+PRICING_BLOCK: dict[tuple[str, int], tuple[int, int, str]] = {}
 for path in sorted(set(budget.path for budget in budgets)):
     lines = Path(path).read_text().split("\n")
     job_ids = JOB_ID_LINES.get(path, set())
@@ -3295,8 +3365,9 @@ for path in sorted(set(budget.path for budget in budgets)):
             found = KEY_LINE.match(lines[below])
             if found:
                 keys.append((int(found.group(1)), below + 1))
-                PAIRED.add((path, below + 1))
-                PRICING_BLOCK[(path, below + 1)] = block
+                # `first` is the block's first line counted from 0 and `number` the line after
+                # its last, so the block runs from line first + 1 to line number counted from 1.
+                PRICING_BLOCK[(path, below + 1)] = (first + 1, number, block)
         for key, key_line in keys:
             if key in figures:
                 continue
@@ -3362,11 +3433,11 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     # another job or another step and is never read here. A key no block prices has no
     # derivation to read, and the job-that-prices-nothing clause below refuses it wherever the
     # job's retries cost anything.
-    block = PRICING_BLOCK.get((path, row["line"]))
-    if block is None:
+    pricing = PRICING_BLOCK.get((path, row["line"]))
+    if pricing is None:
         continue
     stated = None
-    for match in DERIVATION.finditer(block):
+    for match in DERIVATION.finditer(pricing[2]):
         if int(match.group(4)) == row["minutes"]:
             stated = match
     if stated is None:
@@ -3426,7 +3497,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     if row["cost"] <= 0:
         continue
-    if (path, row["line"]) in PAIRED:
+    if (path, row["line"]) in PRICING_BLOCK:
         continue
     problem(path, row["line"],
             f"job '{job}' carries `timeout-minutes: {row['minutes']}` and holds a retried step "
@@ -3497,11 +3568,15 @@ if MODE in ("--list", "--jobs") and not problems:
         print(f"{len(sites)} site(s)", file=sys.stderr)
         raise SystemExit(0)
     # The jobs the job-that-prices-nothing clause holds to a priced key, as that clause reads
-    # them: the rows of JOB_SLOWEST whose slowest retried step costs more than 0 s.
+    # them: the rows of JOB_SLOWEST whose slowest retried step costs more than 0 s, each with the
+    # first and last line of the block PRICING_BLOCK pairs with its key, or `-` for both where no
+    # block prices it.
     priced = sorted(((path, job, row) for (path, job), row in JOB_SLOWEST.items()
                      if row["cost"] > 0), key=lambda item: (item[0], item[2]["line"]))
     for path, job, row in priced:
-        print(f"{path}\t{job}\t{row['line']}\t{row['minutes']}\t{row['cost']}\t{row['step']}")
+        first, last, _block = PRICING_BLOCK.get((path, row["line"]), ("-", "-", ""))
+        print(f"{path}\t{job}\t{row['line']}\t{row['minutes']}\t{row['cost']}\t{first}\t{last}"
+              f"\t{row['step']}")
     print(f"{len(priced)} job(s)", file=sys.stderr)
     raise SystemExit(0)
 

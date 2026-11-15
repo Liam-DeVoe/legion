@@ -908,8 +908,10 @@ stage() {
     done <<<"$names"
     rm -f "$file"
   done
+  # The script is named without its path: check-download-retry.sh reads a path a body writes as a
+  # call of that script, even inside a message (dispatch://INFRA-1545, round 36).
   [ -z "$failures" ] ||
-    die "no correct bytes for$failures, so the origin cannot stand in for their source; the copy of every ghcr-mirror row is filled by .github/scripts/mirror-ci-tools.sh in the ci-images job this job needs"
+    die "no correct bytes for$failures, so the origin cannot stand in for their source; the copy of every ghcr-mirror row is filled by mirror-ci-tools.sh in the ci-images job this job needs"
   note "the payload the origin serves is $payload"
 }
 

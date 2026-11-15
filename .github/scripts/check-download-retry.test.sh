@@ -4779,11 +4779,11 @@ def workflow_jobs(text):
 
 def job_rows(jobs_file):
     """The rows --jobs printed, as (path, job, key line counted from 0, minutes, cost): its lines
-    of six tab-separated fields whose third, fourth and fifth are whole numbers."""
+    of eight tab-separated fields whose third, fourth and fifth are whole numbers."""
     for line in Path(jobs_file).read_text().splitlines():
         fields = line.split("\t")
-        if len(fields) == 6 and all(re.fullmatch(r"-?[0-9]+", field) for field in fields[2:5]):
-            path, job, key, minutes, cost, _step = fields
+        if len(fields) == 8 and all(re.fullmatch(r"-?[0-9]+", field) for field in fields[2:5]):
+            path, job, key, minutes, cost, _first, _last, _step = fields
             yield path, job, int(key) - 1, int(minutes), int(cost)
 
 
