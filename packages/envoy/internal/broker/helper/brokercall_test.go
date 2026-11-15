@@ -235,6 +235,49 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 	open()
 }
 
+// TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop: the stop waits for the broker-call
+// ops alone. A register whose wait_seconds is still running when the Serve context ends gives its
+// place in that wait back once its request is read (handle's release), because its wait does not
+// watch the context: the broker holds the session's enrollment, so the register would otherwise
+// hold Serve until its whole wait ran out. Serve returns within the stop's own time instead.
+func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
+	const wait = 6 * time.Second
+	r := startRig(t, "")
+	gate, open := testGate(t)
+	r.fake.mu.Lock()
+	r.fake.enrollGate = gate
+	r.fake.mu.Unlock()
+	child := sleeper(t)
+	r.callerPID.Store(int64(child.Process.Pid))
+
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		_, _ = Call(r.sock, Request{Op: "register", WaitSeconds: int(wait / time.Second)}, wait+10*time.Second)
+	}()
+	// The broker holds the session's enrollment, so the register is in its wait.
+	waitFor(t, func() bool {
+		r.fake.mu.Lock()
+		defer r.fake.mu.Unlock()
+		return r.fake.enrollArrivals >= 1
+	})
+
+	stopped := time.Now()
+	r.cancel()
+	select {
+	case <-r.served:
+		t.Logf("Serve returned %s after its context ended, with a register still in its %s wait", time.Since(stopped), wait)
+	case <-time.After(wait / 2):
+		t.Fatalf("Serve did not return within %s of its context ending: the register still in its %s wait held the stop", wait/2, wait)
+	}
+	open()
+	select {
+	case <-answered:
+	case <-time.After(wait + 10*time.Second):
+		t.Log("the register's client was still waiting when the row ended")
+	}
+}
+
 // TestUnregisterAnswersBeforeItsRevokeEnds: unregister answers with what it decides, the session
 // retired, while the broker still holds the revoke of the session's enrollment; the revoke goes
 // on, and the DELETE of that enrollment lands once the broker lets it.
