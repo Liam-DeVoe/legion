@@ -247,9 +247,9 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable` and `stream_full`, plus `no_live_session` for send, `capability_refused` for send
-and a role send, `publish_denied` for send and publish alike, since a publish on either transport
-can be denied, and `role_unclaimed`, `role_lapsed`,
+`bus_unavailable`, `stream_full` and `rate_limited`, plus `no_live_session` for send,
+`capability_refused` for send and a role send, `publish_denied` for send and publish alike, since a
+publish on either transport can be denied, and `role_unclaimed`, `role_lapsed`,
 `role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a
 refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing. Two
@@ -270,6 +270,20 @@ writes, and a request the starting gate turns away while the routes are still op
 | `unplaceable_no_record` | An agent delivery given up: no session record this listener could read |
 
 `envoy_delivery_duration_seconds` carries the same label for the attempts it times.
+
+Either route answers `429` to an agent session that sends faster than the operator allows, when the
+operator set a limit (`ENVOY_SENDER_MESSAGES_PER_MINUTE`, with `ENVOY_SENDER_MESSAGE_BURST`; no
+limit by default). The limit is one token bucket for each sending session, held in the listener's
+memory, and both routes spend the same bucket. The sender is the session a broker token names, else
+the body's `source_session`, and only for a message whose `source` is `agent` or absent: a message
+from Dispatch, a webhook or a person is not counted, and neither is one that names no sending
+session, which is how a Legion daemon's notices arrive. The refusal comes before the route reads a
+session, resolves a role or touches the bus, so the message is stored nowhere, is kept for no later
+holder and reports no wake. It carries `Retry-After` and the body
+`{"error", "reason": "rate_limited", "retry_after_seconds", "messages_per_minute", "burst"}`; the
+`error` is the sentence the session reads, since both clients show a refusal's error as written
+and retry no status below 500. The request's log line carries the outcome `rate_limited`
+(`cmd/listener/sender_limit.go`).
 
 ## Write route answers
 

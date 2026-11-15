@@ -83,6 +83,9 @@ type listenerDeps struct {
 	// share of its traffic is going to sessions that have stopped answering, before any of them
 	// reaches the gone horizon.
 	sendsToUnresponsive *metrics.Counter
+	// senderLimit is the operator's limit on how fast one agent session's sends and publishes are
+	// taken (sender_limit.go), nil when the operator set none.
+	senderLimit *senderLimit
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1228,6 +1231,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The operator's limit on how fast one agent session's messages are taken, none unless the
+	// environment sets one (sender_limit.go). A value that is no limit at all is refused by name
+	// here rather than read as none.
+	senderMessageLimit, err := parseSenderLimit(os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logger.Info("listener sender limit: " + senderMessageLimit.describe())
 	sessions, err := session.OpenSessionRegistry(
 		client.Conn,
 		session.WithSessionReplicas(cfg.NATSReplicas),
@@ -1439,6 +1450,7 @@ func main() {
 		confirmed:    dedupe.New(10 * time.Minute),
 
 		sendsToUnresponsive: sendsToUnresponsive,
+		senderLimit:         senderMessageLimit,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 

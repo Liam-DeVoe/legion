@@ -27,6 +27,10 @@ services:
       # server rather than this host's. Every connect refuses a NATS that is not the machine's
       # own without this (packages/envoy/internal/bus/reach.go).
       ENVOY_ALLOW_REMOTE_NATS: "1"
+      # The operator's limit on how fast one agent session's messages are taken; empty sets none
+      # (deploy/README.md, "Listener configuration").
+      ENVOY_SENDER_MESSAGES_PER_MINUTE: ${ENVOY_SENDER_MESSAGES_PER_MINUTE:-}
+      ENVOY_SENDER_MESSAGE_BURST: ${ENVOY_SENDER_MESSAGE_BURST:-}
       ENVOY_WEBHOOKS: ${ENVOY_WEBHOOKS:-}
       ENVOY_GITHUB_WEBHOOK_SECRET: ${ENVOY_GITHUB_WEBHOOK_SECRET:-}
       ENVOY_GITHUB_MENTION_TRIGGER: ${ENVOY_GITHUB_MENTION_TRIGGER:-@legion}

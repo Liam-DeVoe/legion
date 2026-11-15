@@ -4310,8 +4310,24 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed` or `stream_full`.
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `rate_limited`.
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
+
+- **Sender limit**: `cmd/listener/sender_limit.go`
+
+  `ENVOY_SENDER_MESSAGES_PER_MINUTE` is the operator's limit on how many messages one agent session may send in a minute, `/v1/messages/send` and `/v1/messages/publish` together;
+  unset, empty or `0` sets none, and the routes are then as they were.
+  `ENVOY_SENDER_MESSAGE_BURST` is how many of them it may send at once, the rate when unset.
+  A value outside its range, or a burst with no rate, refuses startup naming the variable (`parseSenderLimit`).
+  The limit is one token bucket for each sender (`ratelimit.Keyed`), in this listener's memory:
+  no other listener shares it, and a restart gives each sender a full bucket.
+  The sender is the session a broker token names, else the body's `source_session`, and only for a message whose `source` is `agent` or absent (`limitedSender`):
+  another source is another system's delivery, and a request that names no session, as the Legion daemon's notices do (`packages/daemon/internal/notify`), has no sender to count.
+  Both routes call `refuseSenderPastLimit` once the envelope is built and before they read a session, resolve a role or touch the bus,
+  so a refused message is stored nowhere, is kept for no later holder of a role and reports no wake.
+  The refusal is a `429` with `Retry-After`, recorded `rate_limited`, whose body carries `reason: "rate_limited"`, `retry_after_seconds`, `messages_per_minute` and `burst`.
+  Its `error` is the sentence the session reads, since both clients show a refusal's error as written and retry no status below 500 (`packages/envoy-client/src/transport.ts`):
+  it says that the session's sending is rate limited, that the message was not sent and nothing was kept, and after how many seconds to send it again.
 
 - `/v1/roles/<role>` (GET)
 

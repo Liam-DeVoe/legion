@@ -50,6 +50,10 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
+	// outcomeRateLimited is a send or a publish of an agent session past the operator's limit on
+	// messages a minute (sender_limit.go), answered 429. It is refused before the route reads a
+	// session, resolves a role or touches the bus, so no other record holds the message.
+	outcomeRateLimited requestOutcome = "rate_limited"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
