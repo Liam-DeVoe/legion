@@ -5220,6 +5220,388 @@ check "is refused once, for the loop it cannot count" \
 check "names the loop's file and line" \
   "$(contains "$out" '.gh api. at .github/workflows/case.yaml:12, inside the loop at line 11')"
 
+# The tester's input of round 37 (test handoff v51 of dispatch://INFRA-1545, round 37). zz-c.sh
+# retries at 180 s, 5 x 180 + 150 = 1050 s; zz-a.sh and zz-b.sh each run it once, and the step
+# runs zz-a.sh and then zz-b.sh, so it runs zz-c.sh twice and waits 2 x 1050 = 2100 s. Under
+# `timeout-minutes: 30`, 1800 s, the step is refused for those 2100 s; under 36, 2160 s, it
+# passes. A walk charging zz-c.sh once, at its most expensive path, read 1050 s and passed both.
+echo "case: a step running two scripts that each run one retried script waits for both runs"
+root=$(fixture runs-twice-under-30)
+cat > "$root/.github/scripts/zz-c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/zz-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/zz-c.sh
+SH
+cp "$root/.github/scripts/zz-a.sh" "$root/.github/scripts/zz-b.sh"
+chmod +x "$root/.github/scripts/zz-a.sh" "$root/.github/scripts/zz-b.sh" \
+  "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch through both scripts
+        timeout-minutes: 30
+        run: |
+          .github/scripts/zz-a.sh
+          .github/scripts/zz-b.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges zz-c.sh once for each of its two runs" \
+  "$(contains "$out" "step 'Fetch through both scripts' carries .timeout-minutes: 30., 1800 s, and its own retries take 2100 s to exhaust")"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 36. or more')"
+
+echo "case: the same step under timeout-minutes: 36 passes"
+root=$(fixture runs-twice-under-36)
+cp "$work/runs-twice-under-30/.github/scripts/zz-a.sh" \
+  "$work/runs-twice-under-30/.github/scripts/zz-b.sh" \
+  "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/zz-a.sh" "$root/.github/scripts/zz-b.sh" \
+  "$root/.github/scripts/zz-c.sh"
+sed 's/timeout-minutes: 30/timeout-minutes: 36/' "$work/runs-twice-under-30/.github/workflows/case.yaml" \
+  > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "refuses nothing" "$(is "$(contains "$out" '::error')" false)"
+
+# Each spelling a run is written in is a run, charged once for every time the step makes it
+# (dispatch://INFRA-1545, round 37): the path after `bash`, after `sh` and an option of its own,
+# with a `./` in front of it, as the whole command of a `$(…)`, and behind `timeout 600`. zz-c.sh
+# retries at 180 s, 1050 s a run, so the step running it through both shells reads 2100 s and
+# each other step 1050 s. Every key is one minute, so each step is refused with its own figure.
+echo "case: a run is charged in each spelling it is written in"
+root=$(fixture run-spellings)
+cp "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run through two shells
+        timeout-minutes: 1
+        run: |
+          bash .github/scripts/zz-c.sh
+          sh -e .github/scripts/zz-c.sh
+      - name: Run by its dotted path
+        timeout-minutes: 1
+        run: ./.github/scripts/zz-c.sh
+      - name: Run inside a command substitution
+        timeout-minutes: 1
+        run: out=$(.github/scripts/zz-c.sh)
+      - name: Run behind timeout
+        timeout-minutes: 1
+        run: timeout 600 .github/scripts/zz-c.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges a run after bash and one after sh -e, 2100 s" \
+  "$(contains "$out" "step 'Run through two shells' carries .timeout-minutes: 1., 60 s, and its own retries take 2100 s to exhaust")"
+check "charges a run by ./.github/scripts/zz-c.sh, 1050 s" \
+  "$(contains "$out" "step 'Run by its dotted path' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+check "charges a run inside \$(…), 1050 s" \
+  "$(contains "$out" "step 'Run inside a command substitution' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+check "charges a run behind timeout 600, 1050 s" \
+  "$(contains "$out" "step 'Run behind timeout' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+check "refuses none of them as a place it does not read" \
+  "$(is "$(contains "$out" 'a place this check does not read as a call')" false)"
+
+# A library is charged once for each shell that sources it, however often that shell reaches it
+# (dispatch://INFRA-1545, round 37). zz-lib.sh's own site retries at 180 s, 1050 s; zz-user.sh
+# sources it. The first step sources it and then runs zz-user.sh, which sources it again: one
+# shell, 1050 s and not 2100 s. zz-one's one step does the same, 1050 s. zz-two sources it in
+# each of its two steps, which are two shells, so the step using zz-two reads 2100 s.
+echo "case: a library sourced twice in one shell is charged once, and once in each of two shells"
+root=$(fixture library-sourced-twice)
+cat > "$root/.github/scripts/zz-lib.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/zz-user.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/zz-lib.sh
+SH
+chmod +x "$root/.github/scripts/zz-user.sh"
+mkdir -p "$root/.github/actions/zz-one" "$root/.github/actions/zz-two"
+cat > "$root/.github/actions/zz-one/action.yml" <<'YAML'
+name: ZZ one
+description: Sources zz-lib.sh and runs a script that sources it again, in one step.
+runs:
+  using: composite
+  steps:
+    - name: Source the library and run its user
+      shell: bash
+      run: |
+        . .github/scripts/zz-lib.sh
+        .github/scripts/zz-user.sh
+YAML
+cat > "$root/.github/actions/zz-two/action.yml" <<'YAML'
+name: ZZ two
+description: Sources zz-lib.sh in each of two steps.
+runs:
+  using: composite
+  steps:
+    - name: Source the library
+      shell: bash
+      run: . .github/scripts/zz-lib.sh
+    - name: Source the library again
+      shell: bash
+      run: . .github/scripts/zz-lib.sh
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source the library and run its user
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/zz-lib.sh
+          .github/scripts/zz-user.sh
+      - name: Use the action sourcing it in one step
+        uses: ./.github/actions/zz-one
+        timeout-minutes: 1
+      - name: Use the action sourcing it in two steps
+        uses: ./.github/actions/zz-two
+        timeout-minutes: 1
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges the library once in a step that sources it and runs a script sourcing it" \
+  "$(contains "$out" "step 'Source the library and run its user' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+check "charges it once in an action step doing the same" \
+  "$(contains "$out" "step 'Use the action sourcing it in one step' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+check "charges it once in each of an action's two steps" \
+  "$(contains "$out" "step 'Use the action sourcing it in two steps' carries .timeout-minutes: 1., 60 s, and its own retries take 2100 s to exhaust")"
+
+# A path a step only prints, searches for or writes in a comment is no call, and is charged
+# nothing and refused nothing (dispatch://INFRA-1545, round 37). These are the shapes round 37's
+# tester found in this tree, written over zz-c.sh, whose 1050 s would refuse a one-minute key:
+# browser-image.yaml's summary line naming a script inside `{ … } >> "$GITHUB_STEP_SUMMARY"`,
+# ci.yaml tool-fallback's `::error` line, and ci.yaml's `grep` of a script's name, with a
+# `printf`, a comment line and a comment after a command beside them.
+echo "case: a script's path in echo, printf, grep or a comment is no call"
+root=$(fixture non-calls)
+cp "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print and search the script's name
+        timeout-minutes: 1
+        run: |
+          {
+            echo "Pin a row of .github/ci-images.yaml; .github/scripts/zz-c.sh refuses anything else."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::.github/scripts/zz-c.sh answered nothing, so this step has no bound" >&2
+          printf '%s\n' .github/scripts/zz-c.sh
+          grep -q .github/scripts/zz-c.sh notes.txt || true
+          # .github/scripts/zz-c.sh fetches the asset; this step only names it.
+          true # and so does .github/scripts/zz-c.sh
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "neither charges nor refuses the step" "$(is "$(contains "$out" 'case.yaml')" false)"
+check "names zz-c.sh nowhere" "$(is "$(contains "$out" 'zz-c.sh')" false)"
+
+# Every other place a path is written in is unread, and naming a script that fetches it is
+# refused by name: the file and the line, the step, the script, the form and the rewrite
+# (dispatch://INFRA-1545, round 37). One step for each form, each naming zz-c.sh, which retries
+# at 180 s. The process substitution is written twice: a run inside one, and the tester's
+# `bash <(cat …)`, where the path is an argument of `cat` inside it and is named that way.
+echo "case: each place rule 8 does not read is refused by name where the script fetches"
+root=$(fixture unread-forms)
+cp "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run it through a variable
+        timeout-minutes: 1
+        run: |
+          p=.github/scripts/zz-c.sh; "$p"
+      - name: List it in an array
+        timeout-minutes: 1
+        run: |
+          a=( .github/scripts/zz-c.sh )
+          "${a[@]}"
+      - name: Run it through eval
+        timeout-minutes: 1
+        run: |
+          eval .github/scripts/zz-c.sh
+      - name: Run it in bash -c
+        timeout-minutes: 1
+        run: |
+          bash -c '.github/scripts/zz-c.sh'
+      - name: Pipe it into a shell
+        timeout-minutes: 1
+        run: |
+          cat .github/scripts/zz-c.sh | bash
+      - name: Run it in a process substitution
+        timeout-minutes: 1
+        run: |
+          diff <(.github/scripts/zz-c.sh) expected.txt
+      - name: Feed it to bash through a process substitution
+        timeout-minutes: 1
+        run: |
+          bash <(cat .github/scripts/zz-c.sh)
+      - name: Run it in a function
+        timeout-minutes: 1
+        run: |
+          f() { .github/scripts/zz-c.sh; }; f
+      - name: Name it to a helper
+        timeout-minutes: 1
+        run: |
+          die() { echo "$*" >&2; exit 1; }
+          die "see .github/scripts/zz-c.sh"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+command_word='Write the path as the command word'
+for refusal in \
+  "10	Run it through a variable	a variable assignment	$command_word" \
+  "14	List it in an array	an array	$command_word" \
+  "19	Run it through eval	.eval.	$command_word" \
+  "23	Run it in bash -c	.bash -c. text	$command_word" \
+  "27	Pipe it into a shell	a pipe into a shell	$command_word" \
+  "31	Run it in a process substitution	a process substitution	$command_word" \
+  "35	Feed it to bash through a process substitution	an argument of .cat.	$command_word" \
+  "39	Run it in a function	a function body	Call the script outside the function" \
+  "44	Name it to a helper	an argument of .die.	$command_word"; do
+  IFS=$'\t' read -r line step form cure <<<"$refusal"
+  check "refuses '$step' by its file and line, the step, the script and the form" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' names .github/scripts/zz-c.sh in $form, a place this check does not read as a call, and that script fetches")"
+  check "gives '$step' its rewrite" \
+    "$(contains "$out" "step '$step' of job 'build' names .github/scripts/zz-c.sh in $form, .*$cure")"
+done
+check "refuses nothing else" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
+check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" false)"
+
+# The same places naming a script that fetches nothing are neither charged nor refused
+# (dispatch://INFRA-1545, round 37): zz-quiet.sh holds no retried call, so whatever runs it
+# waits for no attempt, and there is no figure to ask for.
+echo "case: a place rule 8 does not read, naming a script that fetches nothing, passes"
+root=$(fixture unread-quiet)
+cat > "$root/.github/scripts/zz-quiet.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "nothing to fetch"
+SH
+chmod +x "$root/.github/scripts/zz-quiet.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run it through a variable
+        timeout-minutes: 1
+        run: |
+          p=.github/scripts/zz-quiet.sh; "$p"
+      - name: Run it in a function
+        timeout-minutes: 1
+        run: |
+          f() { .github/scripts/zz-quiet.sh; }; f
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "names zz-quiet.sh nowhere" "$(is "$(contains "$out" 'zz-quiet.sh')" false)"
+
+# A script is read as a step is: a place it does not read, naming a script that fetches, is
+# refused at the script's own file and line, and the script is named where a step would be
+# (dispatch://INFRA-1545, round 37). zz-wrap.sh runs zz-c.sh, 1050 s, from a function body and
+# through a variable, and the step running zz-wrap.sh is charged neither.
+echo "case: a place rule 8 does not read, inside a script the step runs, is refused at that script's line"
+root=$(fixture unread-in-script)
+cp "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+cat > "$root/.github/scripts/zz-wrap.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+fetch() {
+  .github/scripts/zz-c.sh
+}
+fetch
+p=.github/scripts/zz-c.sh
+"$p"
+SH
+chmod +x "$root/.github/scripts/zz-c.sh" "$root/.github/scripts/zz-wrap.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the wrapper
+        timeout-minutes: 1
+        run: .github/scripts/zz-wrap.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the function body at zz-wrap.sh:4" \
+  "$(contains "$out" "::error file=.github/scripts/zz-wrap.sh,line=4::.github/scripts/zz-wrap.sh names .github/scripts/zz-c.sh in a function body, a place this check does not read as a call, and that script fetches")"
+check "refuses the variable at zz-wrap.sh:7" \
+  "$(contains "$out" "::error file=.github/scripts/zz-wrap.sh,line=7::.github/scripts/zz-wrap.sh names .github/scripts/zz-c.sh in a variable assignment, a place this check does not read as a call, and that script fetches")"
+check "charges the step nothing for them" "$(is "$(contains "$out" 'case.yaml')" false)"
+
+# release.yaml's shape after round 37's rewrite (dispatch://INFRA-1545, round 37): a function
+# computes a value, and each run is written where that value is used, as the whole command of a
+# `$(…)` whose argument is the function's own `$(…)`. Two runs of zz-c.sh, 2 x 1050 = 2100 s,
+# and neither is read as a function body.
+echo "case: a run written at the call site of a function computing its argument is charged"
+root=$(fixture release-shape)
+cp "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve both versions
+        timeout-minutes: 1
+        run: |
+          released_of() {
+            if [ "$(sed -n 's/^skip=//p' <<<"$1")" != true ]; then
+              sed -n 's/^version=//p' <<<"$1"
+            fi
+          }
+          envoy_version=$(.github/scripts/zz-c.sh pair-version pi-envoy-v "$(released_of "$envoy")")
+          legion_version=$(.github/scripts/zz-c.sh pair-version pi-legion-v "$(released_of "$legion")")
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges both runs, 2100 s" \
+  "$(contains "$out" "step 'Resolve both versions' carries .timeout-minutes: 1., 60 s, and its own retries take 2100 s to exhaust")"
+check "reads neither as a place it does not read" \
+  "$(is "$(contains "$out" 'a place this check does not read as a call')" false)"
+
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape
 # this repository's own tree holds hides a key, so this case drives the promise on a copy of the
