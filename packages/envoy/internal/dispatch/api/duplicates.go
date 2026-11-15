@@ -125,7 +125,10 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // the lexeme.
 //
 // A candidate's headline marks the words of its title the new text shares: its query is the
-// shared lexemes, as the title rule it replaces built it.
+// shared lexemes, as the title rule it replaces built it. The title ts_headline reads has every
+// U+E000 and U+E001 its author wrote replaced by U+FFFD, so every markStart and markEnd in the
+// headline is one ts_headline wrote and markSnippet draws no <mark> nothing matched (the same
+// replacement searchPageAndTailSQL's src makes, for the same reason).
 //
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
 // $5 the lowest score to return, $6 the headline options.
@@ -155,7 +158,7 @@ scored as (
    group by h.key
 )
 select s.key, i.title, i.status, s.shared, s.score,
-       ts_headline('english', search_text(i.title),
+       ts_headline('english', translate(search_text(i.title), E'\uE000\uE001', E'\uFFFD\uFFFD'),
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(s.shared_lex) x)), $6) as headline
   from scored s join issues i on i.key = s.key
  where s.score >= $5
@@ -192,6 +195,9 @@ select s.key, i.title, i.status, s.shared, s.score,
 // no text to be a copy of. Without that guard it would name every other such issue in the
 // project.
 //
+// A candidate's headline is cut as duplicateScoreQuery cuts it, from the title with the
+// sentinels its author wrote replaced.
+//
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
 // issue's ancestors, $5 the headline options.
 var duplicateEqualLexemesQuery = `
@@ -201,7 +207,7 @@ with new_text as (
            regexp_replace(search_text($3), '(?s):::ask\{.*?:::', '', 'g'))) as spec_lex
 )
 select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::float8 as score,
-       ts_headline('english', search_text(i.title),
+       ts_headline('english', translate(search_text(i.title), E'\uE000\uE001', E'\uFFFD\uFFFD'),
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(n.title_lex) x)), $5) as headline
   from new_text n
   join issues i
