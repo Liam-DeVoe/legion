@@ -123,7 +123,7 @@ func (f relayedFrame) listener() string {
 
 // sessionStandIn takes a session's relay frames on a NATS connection of its own, as a plugin in
 // consumer mode does, and answers each at once with the replies answer names for it, unless it is
-// silent. A message carrying the connection probe's header (connectionProbeHeader) is no frame:
+// silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
 // it is answered done before anything is decoded, as the plugins' shared consumer delivery
 // answers it, unless the stand-in is silent, and counted in probed rather than collected.
 type sessionStandIn struct {
@@ -149,7 +149,7 @@ func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, an
 	standIn := &sessionStandIn{t: t, conn: conn, frames: make(chan relayedFrame, 256)}
 	t.Cleanup(standIn.conn.Close)
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
-		if msg.Header.Get(connectionProbeHeader) == "1" {
+		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
 			standIn.probed.Add(1)
 			if !standIn.silent.Load() {
 				if err := msg.Respond([]byte(relayReplyDone)); err != nil {

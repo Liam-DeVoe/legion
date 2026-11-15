@@ -229,7 +229,7 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
-		msg.Header.Set(connectionProbeHeader, "1")
+		msg.Header.Set(bus.ConnectionProbeHeader, "1")
 		_, err := conn.RequestMsg(msg, 200*time.Millisecond)
 		if errors.Is(err, natsgo.ErrNoResponders) {
 			return
@@ -395,11 +395,11 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 	}
 	select {
 	case msg := <-heard:
-		if got := msg.Header.Get(connectionProbeHeader); got != "1" {
-			t.Fatalf("the probe carried %s: %q, want 1", connectionProbeHeader, got)
+		if got := msg.Header.Get(bus.ConnectionProbeHeader); got != "1" {
+			t.Fatalf("the probe carried %s: %q, want 1", bus.ConnectionProbeHeader, got)
 		}
 		if len(msg.Header) != 1 {
-			t.Fatalf("the probe carried the headers %v, want %s alone", msg.Header, connectionProbeHeader)
+			t.Fatalf("the probe carried the headers %v, want %s alone", msg.Header, bus.ConnectionProbeHeader)
 		}
 		for _, frameHeader := range []string{relayHeaderSubject, relayHeaderStreamSeq, relayHeaderStreamID, relayHeaderDelivered, relayHeaderStoredAt} {
 			if value := msg.Header.Get(frameHeader); value != "" {

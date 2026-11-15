@@ -27,15 +27,6 @@ const (
 	sessionStateStopped   = "stopped"
 )
 
-// connectionProbeHeader is the one header the connection probe carries, with the value "1", and
-// no body. It is not a relay frame header (relayHeaderSubject and the rest, session_relay.go): the
-// probe carries none of those, since a message on the relay subject that carried them would be
-// read as a frame and move the session's resume point past the messages it stands for. A plugin
-// answers a message carrying this header done before it decodes anything
-// (packages/envoy-client/src/consumer-delivery.ts, RelayHeader.probe); one older than the header
-// answers the same bytes, which decode as no frame, done too.
-const connectionProbeHeader = "Envoy-Probe"
-
 // connectionProbeTimeout bounds the one core request the send route makes on a target's relay
 // subject. A second is the whole wait: a plugin holding the subscription answers from memory in
 // well under it, and silence through it reads connected, so the wait decides nothing that a
@@ -52,8 +43,8 @@ const connectionProbeTimeout = 1 * time.Second
 // (bus.DeliverSubject), the subject both plugins subscribe before they register and on which the
 // session's owning listener relays its consumer's messages, and reports whether the session is
 // connected. The request is one core NATS request bounded by connectionProbeTimeout within ctx
-// (bus.Client.RequestCore), carrying connectionProbeHeader and no body, on a reply inbox of its
-// own, so its answer never reaches the relay's reply handler.
+// (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply inbox of
+// its own, so its answer never reaches the relay's reply handler.
 //
 // Only NATS's no-responders status (nats.ErrNoResponders) is stopped: no subscription on this
 // server's cluster holds the subject, which is what a plugin whose connection closed leaves. A
@@ -65,7 +56,7 @@ const connectionProbeTimeout = 1 * time.Second
 func probeSessionConnection(ctx context.Context, client *bus.Client, sessionID string, logger *logging.Logger) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, connectionProbeTimeout)
 	defer cancel()
-	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), nats.Header{connectionProbeHeader: []string{"1"}})
+	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), nats.Header{bus.ConnectionProbeHeader: []string{"1"}})
 	switch {
 	case err == nil, errors.Is(err, context.DeadlineExceeded):
 		return true
