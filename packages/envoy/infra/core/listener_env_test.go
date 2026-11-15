@@ -58,6 +58,13 @@ func TestListenerConfigCheck(t *testing.T) {
 		{name: "more NATS replicas than NATS keeps", in: core.ListenerConfig{MachineID: "m", Port: 9020, NATSReplicas: 6}, input: "natsReplicas", err: "natsReplicas 6 is outside 0-5"},
 		{name: "a stream byte limit", in: core.ListenerConfig{MachineID: "m", Port: 9020, StreamMaxBytes: 1}},
 		{name: "a negative stream byte limit", in: core.ListenerConfig{MachineID: "m", Port: 9020, StreamMaxBytes: -1}, input: "streamMaxBytes", err: "streamMaxBytes -1 is below 0"},
+		{name: "a sender message rate", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 1}},
+		{name: "a sender message burst", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 1, SenderMessageBurst: 1}},
+		{name: "a sender message rate and burst", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 60000, SenderMessageBurst: 4}},
+		{name: "a negative sender message rate", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: -1}, input: "senderMessagesPerMinute", err: "senderMessagesPerMinute -1 is outside 0-60000"},
+		{name: "a sender message rate above the listener's maximum", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 60001}, input: "senderMessagesPerMinute", err: "senderMessagesPerMinute 60001 is outside 0-60000"},
+		{name: "a negative sender message burst", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessageBurst: -1}, input: "senderMessageBurst", err: "senderMessageBurst -1 is below 0"},
+		{name: "a sender message burst without a rate", in: core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessageBurst: 1}, input: "senderMessageBurst", err: "senderMessageBurst 1 needs senderMessagesPerMinute above 0"},
 	}
 	// The listener refuses each of these at boot, so a config carrying one deploys a listener
 	// that never serves; the entry is refused by its index, beside an entry that is fine.
@@ -133,8 +140,8 @@ func TestListenerConfigEnv(t *testing.T) {
 			want: []string{"PORT=9020", "ENVOY_LISTEN_HOST=0.0.0.0", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222"},
 		},
 		{
-			name: "no NATS replicas and no stream byte limit render neither variable",
-			in:   core.ListenerConfig{MachineID: "m", Port: 9020, NATSReplicas: 0, StreamMaxBytes: 0},
+			name: "no NATS, stream, or sender message limit renders no variable",
+			in:   core.ListenerConfig{MachineID: "m", Port: 9020, NATSReplicas: 0, StreamMaxBytes: 0, SenderMessagesPerMinute: 0, SenderMessageBurst: 0},
 			urls: []string{"nats://127.0.0.1:4222"},
 			want: []string{"PORT=9020", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222"},
 		},
@@ -151,10 +158,31 @@ func TestListenerConfigEnv(t *testing.T) {
 			want: []string{"PORT=9020", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222", "ENVOY_STREAM_MAX_BYTES=21474836480"},
 		},
 		{
-			name: "NATS replicas then the stream byte limit, after the proxy",
-			in:   core.ListenerConfig{MachineID: "m", Port: 9020, ListenHost: "0.0.0.0", AllowedHosts: []string{"hub.internal.example"}, SOCKS5Proxy: "127.0.0.1:1055", NATSReplicas: 3, StreamMaxBytes: 1073741824},
+			name: "a sender message rate alone renders ENVOY_SENDER_MESSAGES_PER_MINUTE",
+			in:   core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 2},
+			urls: []string{"nats://127.0.0.1:4222"},
+			want: []string{"PORT=9020", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222", "ENVOY_SENDER_MESSAGES_PER_MINUTE=2"},
+		},
+		{
+			name: "a sender message rate and burst render in order",
+			in:   core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 3, SenderMessageBurst: 2},
+			urls: []string{"nats://127.0.0.1:4222"},
+			want: []string{"PORT=9020", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222", "ENVOY_SENDER_MESSAGES_PER_MINUTE=3", "ENVOY_SENDER_MESSAGE_BURST=2"},
+		},
+		{
+			name: "NATS, stream, and sender limits precede the broker check",
+			in: core.ListenerConfig{
+				MachineID: "m", Port: 9020, ListenHost: "0.0.0.0", AllowedHosts: []string{"hub.internal.example"}, SOCKS5Proxy: "127.0.0.1:1055",
+				NATSReplicas: 3, StreamMaxBytes: 1073741824, SenderMessagesPerMinute: 5, SenderMessageBurst: 4,
+				AgentSecretsURL: "https://broker.internal.example", AgentSecretsAudience: "broker-audience", PublicURL: "https://listener.internal.example",
+			},
 			urls: []string{"nats://hub.internal.example:4222"},
-			want: []string{"PORT=9020", "ENVOY_LISTEN_HOST=0.0.0.0", "ENVOY_ALLOWED_HOSTS=hub.internal.example", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://hub.internal.example:4222", "ENVOY_ALLOW_REMOTE_NATS=1", "ENVOY_NATS_SOCKS5_PROXY=127.0.0.1:1055", "ENVOY_NATS_REPLICAS=3", "ENVOY_STREAM_MAX_BYTES=1073741824"},
+			want: []string{
+				"PORT=9020", "ENVOY_LISTEN_HOST=0.0.0.0", "ENVOY_ALLOWED_HOSTS=hub.internal.example", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://hub.internal.example:4222",
+				"ENVOY_ALLOW_REMOTE_NATS=1", "ENVOY_NATS_SOCKS5_PROXY=127.0.0.1:1055", "ENVOY_NATS_REPLICAS=3", "ENVOY_STREAM_MAX_BYTES=1073741824",
+				"ENVOY_SENDER_MESSAGES_PER_MINUTE=5", "ENVOY_SENDER_MESSAGE_BURST=4", "ENVOY_AGENT_SECRETS_URL=https://broker.internal.example",
+				"ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=broker-audience", "ENVOY_PUBLIC_URL=https://listener.internal.example",
+			},
 		},
 		{name: "no URL", in: core.ListenerConfig{MachineID: "m", Port: 9020}, err: "natsUrls needs at least one URL"},
 		{name: "a comma in a URL", in: core.ListenerConfig{MachineID: "m", Port: 9020}, urls: []string{"nats://a:1,nats://b:2"}, err: "natsUrls[0] contains a comma"},

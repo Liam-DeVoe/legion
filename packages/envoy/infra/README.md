@@ -205,7 +205,7 @@ the new `nats.conf` and `auth.conf` is applied, and every restarted pod starts o
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub has `tailnet`, whose listener is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to. |
-| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
+| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; `senderMessagesPerMinute`, 1 to 60000, the maximum messages one agent session may send through the listener in a minute, with a session past it answered 429 with `Retry-After` and no limit when unset; `senderMessageBurst`, at least 1 with `senderMessagesPerMinute`, the messages one session may send at once, defaulting to the rate when unset; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -246,8 +246,9 @@ input:
   Tailscale's rule, `replicas` below 2, and no `listener`; of the listener: a `machineId` the
   shared machine-id rule refuses, an empty `nkey`, a `seedSecretName` that is not a DNS subdomain,
   a `seedSecretKey` outside `[-._a-zA-Z0-9]+`, an `allowedHosts` entry refused as `gcp:NatsHub`'s
-  `listener.allowedHosts` entries are, and a `cpu` or `memory` at which Autopilot would not run the
-  listener pod as rendered (see [Sizing](#sizing));
+  `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
+  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
+  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing));
 - no `users` without `tailnet`, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
   session listener's durable among them; the listener's user is named after its machine id.
@@ -342,7 +343,12 @@ The listener runs as machine `tailnet.listener.machineId` and binds `0.0.0.0`, t
 Service reaches it at. It connects to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `ENVOY_ALLOWED_HOSTS` is `<tailnet.serviceName>.<tailnetDnsName>` and `allowedHosts`.
 `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` are set exactly when `natsReplicas` and
-`streamMaxBytes` are. `NATS_NKEY_SEED_FILE` names the mounted seed.
+`streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
+exactly when `tailnet.listener.senderMessagesPerMinute` and
+`tailnet.listener.senderMessageBurst` are. The rate limits one agent session's messages in a
+minute, answers a session past it with 429 and `Retry-After`, and leaves no limit when unset; the
+burst is that session's messages at once and defaults to the rate. `NATS_NKEY_SEED_FILE` names the
+mounted seed.
 
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is what lets the API serve `/v1` off loopback with no
 credential. There is no `ENVOY_API_TOKEN`. The NetworkPolicy above is what decides who may call
@@ -1713,6 +1719,8 @@ Its environment comes from the inputs:
 | `PORT` | `port` |
 | `ENVOY_MACHINE_ID` | `machineId` |
 | `NATS_URLS` | `natsUrls`, joined with commas |
+| `ENVOY_SENDER_MESSAGES_PER_MINUTE` | `senderMessagesPerMinute`, when set |
+| `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
 | `ENVOY_ALLOW_REMOTE_NATS` | `1` when any URL in `natsUrls` names a host other than `localhost` or a loopback address. The URL is read, never resolved. |
 | `NATS_NKEY_SEED` | `seed`, when set. The whole environment is then a secret in the stack's state. |
 
@@ -1731,6 +1739,8 @@ The listener's outputs are `containerName` and `port`.
 | `image` | required | The listener image, such as `ghcr.io/cybermonklabs/legion/envoy:<tag>`. |
 | `containerName` | `envoy-listener` | The container's name. |
 | `port` | `9020` | The port the listener serves and the health check calls. |
+| `senderMessagesPerMinute` | unset | The maximum messages one agent session may send through the listener in a minute, from 1 to 60000. A session past it is answered 429 with `Retry-After`; unset leaves no limit. |
+| `senderMessageBurst` | unset | The messages one agent session may send at once, at least 1 and only with `senderMessagesPerMinute`. Unset, the listener defaults it to the rate. |
 | `seed` | unset | A secret: the nkey seed of the NATS user the listener connects as. May come from another resource or stack. |
 | `waitForHealthy` | `true` | Whether `pulumi up` waits on the container's health check. See [Readiness](#readiness). |
 | `watchdog` | unset | `{host}`: deploys the watchdog on that SSH address. See [The watchdog](#the-watchdog). |
@@ -1761,6 +1771,8 @@ The listener refuses these before it registers anything, with an error naming wh
   the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>` the
   listener uses;
 - a `port` outside 1-65535;
+- a `senderMessagesPerMinute` outside 1 to 60000, or a `senderMessageBurst` below 1 or without
+  `senderMessagesPerMinute`;
 - `watchdog` with a `containerName` other than `envoy-listener`;
 - `watchdog` with `seed`;
 - a `watchdog.host` containing `@` or `://`;

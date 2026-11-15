@@ -175,6 +175,14 @@ type HubListenerArgs struct {
 	// <hostname>.<tailnetDnsName>, which the hub always serves. Each entry is rendered as written,
 	// since the listener normalizes what it reads.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// SenderMessagesPerMinute is the maximum number of messages one agent session may send in one
+	// minute through the listener, ENVOY_SENDER_MESSAGES_PER_MINUTE. It is from 1 to 60000;
+	// unset leaves no limit.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	// SenderMessageBurst is the number of messages one session may send at once,
+	// ENVOY_SENDER_MESSAGE_BURST. It is at least 1 and requires SenderMessagesPerMinute; unset
+	// leaves the listener to default it to the rate.
+	SenderMessageBurst *int `pulumi:"senderMessageBurst,optional"`
 	// AgentSecretsUrl, agentSecretsAudience and publicUrl turn on this listener's broker check
 	// together, as agentSecretsUrl and agentSecretsAudience turn on Dispatch's relay: the
 	// secrets broker a caller's broker access token is introspected at
@@ -366,14 +374,36 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, l.PublicUrl); err != nil {
 		return nil, err
 	}
+	senderMessagesPerMinute, senderMessageBurst := 0, 0
+	if l.SenderMessagesPerMinute != nil {
+		if *l.SenderMessagesPerMinute < 1 || *l.SenderMessagesPerMinute > core.MaxSenderMessagesPerMinute {
+			return nil, core.InputErrorf("listener.senderMessagesPerMinute",
+				"listener.senderMessagesPerMinute %d must be from 1 to %d; leave it unset for no limit",
+				*l.SenderMessagesPerMinute, core.MaxSenderMessagesPerMinute)
+		}
+		senderMessagesPerMinute = *l.SenderMessagesPerMinute
+	}
+	if l.SenderMessageBurst != nil {
+		if *l.SenderMessageBurst < 1 {
+			return nil, core.InputErrorf("listener.senderMessageBurst",
+				"listener.senderMessageBurst %d must be at least 1; leave it unset for the rate", *l.SenderMessageBurst)
+		}
+		if l.SenderMessagesPerMinute == nil {
+			return nil, core.InputErrorf("listener.senderMessageBurst",
+				"listener.senderMessageBurst needs listener.senderMessagesPerMinute")
+		}
+		senderMessageBurst = *l.SenderMessageBurst
+	}
 	env, err := core.ListenerConfig{
-		MachineID:            args.Hostname,
-		Port:                 core.DefaultListenerPort,
-		ListenHost:           "127.0.0.1",
-		AllowedHosts:         append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
-		AgentSecretsURL:      l.AgentSecretsUrl,
-		AgentSecretsAudience: l.AgentSecretsAudience,
-		PublicURL:            l.PublicUrl,
+		MachineID:               args.Hostname,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "127.0.0.1",
+		AllowedHosts:            append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
+		AgentSecretsURL:         l.AgentSecretsUrl,
+		AgentSecretsAudience:    l.AgentSecretsAudience,
+		PublicURL:               l.PublicUrl,
+		SenderMessagesPerMinute: senderMessagesPerMinute,
+		SenderMessageBurst:      senderMessageBurst,
 	}.Env([]string{localNATS})
 	if err != nil {
 		return nil, err

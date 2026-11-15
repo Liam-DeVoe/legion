@@ -96,6 +96,9 @@ func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
 	// WatchdogArgs would reach consumers as WatchdogArgsArgs.
 	require.Equal(t, "#/types/envoy-infra:host:Watchdog", listener.InputProperties["watchdog"].Ref)
 	require.Equal(t, "#/types/envoy-infra:host:Adopt", listener.InputProperties["adopt"].Ref)
+	for _, input := range []string{"senderMessagesPerMinute", "senderMessageBurst"} {
+		require.Equal(t, "integer", listener.InputProperties[input].Type, input)
+	}
 }
 
 func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
@@ -117,9 +120,14 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.Equal(t, "#/types/envoy-infra:gcp:SessionUser", hub.InputProperties["sessionUser"].Ref)
 	// The listener's whole property set is pinned, not its required inputs alone, so a property
 	// added to it cannot stay invisible here.
-	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey", "allowedHosts", "agentSecretsUrl", "agentSecretsAudience", "publicUrl"},
-		slices.Collect(maps.Keys(s.Types["envoy-infra:gcp:HubListener"].Properties)))
+	require.ElementsMatch(t, []string{
+		"image", "seedSecret", "nkey", "allowedHosts", "senderMessagesPerMinute", "senderMessageBurst",
+		"agentSecretsUrl", "agentSecretsAudience", "publicUrl",
+	}, slices.Collect(maps.Keys(s.Types["envoy-infra:gcp:HubListener"].Properties)))
 	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey"}, s.Types["envoy-infra:gcp:HubListener"].Required)
+	for _, input := range []string{"senderMessagesPerMinute", "senderMessageBurst"} {
+		require.Equal(t, "integer", s.Types["envoy-infra:gcp:HubListener"].Properties[input].Type, input)
+	}
 	require.ElementsMatch(t, []string{"name", "nkey"}, s.Types["envoy-infra:gcp:SessionUser"].Required)
 	require.ElementsMatch(t, []string{"natsUrl", "instanceGroup"}, slices.Collect(maps.Keys(hub.Properties)))
 
@@ -174,9 +182,14 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{"serviceName", "tailnetDnsName", "tags", "tailscaleImage", "listener"}, tailnet.Required)
 	require.Equal(t, "integer", tailnet.Properties["replicas"].Type)
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
-	require.ElementsMatch(t, []string{"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "allowedHosts", "cpu", "memory"},
-		slices.Collect(maps.Keys(listener.Properties)))
+	require.ElementsMatch(t, []string{
+		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "allowedHosts",
+		"senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	for _, input := range []string{"senderMessagesPerMinute", "senderMessageBurst"} {
+		require.Equal(t, "integer", listener.Properties[input].Type, input)
+	}
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
 		slices.Collect(maps.Keys(hub.Properties)))
@@ -355,6 +368,6 @@ func TestConstructRefusesAFractionInEveryIntegerInput(t *testing.T) {
 	// aws:NatsService logRetentionDays; aws:WebhookListener logRetentionDays and natsReplicas;
 	// gcp:Dispatch replicas, pprofPort and azureEmbedTokensPerMinute; gcp:NatsHub diskSizeGb;
 	// gcp:ClusteredNatsHub natsReplicas, streamMaxBytes, maxFileStoreGb and diskSizeGb; host:Listener
-	// port.
-	require.GreaterOrEqual(t, covered, 12)
+	// port, senderMessagesPerMinute and senderMessageBurst.
+	require.GreaterOrEqual(t, covered, 14)
 }

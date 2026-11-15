@@ -175,6 +175,44 @@ func TestListenerDefaultsReproduceTheDockerHostContainer(t *testing.T) {
 	require.Equal(t, 9020, port)
 }
 
+// A sender message rate renders alone when no burst is set, and the container carries either
+// variable exactly once when its input is set.
+func TestListenerRendersSenderMessageLimits(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		rate, burst *int
+		env         []string
+	}{
+		{"neither", nil, nil, nil},
+		{"a rate", pulumi.IntRef(2), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=2"}},
+		{"a rate and burst", pulumi.IntRef(3), pulumi.IntRef(2),
+			[]string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=3", "ENVOY_SENDER_MESSAGE_BURST=2"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := exampleArgs()
+			args.SenderMessagesPerMinute, args.SenderMessageBurst = row.rate, row.burst
+			m, err := run(t, args, nil, "docker")
+			require.NoError(t, err)
+			envs, _ := envsOf(t, m.One(t, containerType))
+			for _, env := range []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=2", "ENVOY_SENDER_MESSAGES_PER_MINUTE=3", "ENVOY_SENDER_MESSAGE_BURST=2"} {
+				want := 0
+				for _, expected := range row.env {
+					if env == expected {
+						want++
+					}
+				}
+				got := 0
+				for _, actual := range envs {
+					if env == actual {
+						got++
+					}
+				}
+				require.Equal(t, want, got, env)
+			}
+		})
+	}
+}
+
 func TestListenerNatsUrlsFromAnOutputResolveIntoTheSameEnvs(t *testing.T) {
 	args := exampleArgs()
 	args.NatsUrls = pulumi.String("nats://hub.internal.example:4222").ToStringOutput().
@@ -310,6 +348,54 @@ func TestListenerRefusesInvalidInputs(t *testing.T) {
 			err:   []string{"envoy-infra:host:Listener example-host-a: machineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry"},
 			input: "machineId",
 		},
+		{
+			name: "a sender message rate of none",
+			edit: func(a *host.ListenerArgs) {
+				a.SenderMessagesPerMinute = pulumi.IntRef(0)
+			},
+			err:   []string{"senderMessagesPerMinute 0 must be from 1 to 60000", "leave it unset for no limit"},
+			input: "senderMessagesPerMinute",
+		},
+		{
+			name: "a negative sender message rate",
+			edit: func(a *host.ListenerArgs) {
+				a.SenderMessagesPerMinute = pulumi.IntRef(-1)
+			},
+			err:   []string{"senderMessagesPerMinute -1 must be from 1 to 60000"},
+			input: "senderMessagesPerMinute",
+		},
+		{
+			name: "a sender message rate above the listener's maximum",
+			edit: func(a *host.ListenerArgs) {
+				a.SenderMessagesPerMinute = pulumi.IntRef(60001)
+			},
+			err:   []string{"senderMessagesPerMinute 60001 must be from 1 to 60000"},
+			input: "senderMessagesPerMinute",
+		},
+		{
+			name: "a sender message burst of none",
+			edit: func(a *host.ListenerArgs) {
+				a.SenderMessageBurst = pulumi.IntRef(0)
+			},
+			err:   []string{"senderMessageBurst 0 must be at least 1"},
+			input: "senderMessageBurst",
+		},
+		{
+			name: "a negative sender message burst",
+			edit: func(a *host.ListenerArgs) {
+				a.SenderMessageBurst = pulumi.IntRef(-1)
+			},
+			err:   []string{"senderMessageBurst -1 must be at least 1"},
+			input: "senderMessageBurst",
+		},
+		{
+			name: "a sender message burst without a rate",
+			edit: func(a *host.ListenerArgs) {
+				a.SenderMessageBurst = pulumi.IntRef(1)
+			},
+			err:   []string{"senderMessageBurst needs senderMessagesPerMinute"},
+			input: "senderMessageBurst",
+		},
 	}
 	// The watchdog's create script echoes the listener's name inside double quotes, so a name
 	// holding what the shell expands there, or a line break, is refused with a watchdog.
@@ -350,10 +436,10 @@ func TestListenerRefusesInvalidInputs(t *testing.T) {
 // refused input leaves only the program's own providers behind.
 func TestListenerRefusesBeforeRegistering(t *testing.T) {
 	args := exampleArgs()
-	args.MachineID = "a\nENVEOF\nid"
+	args.SenderMessagesPerMinute = pulumi.IntRef(60001)
 	args.Watchdog = &host.WatchdogArgs{Host: "example-host-a"}
 	m, err := run(t, args, nil, "docker", "command")
-	require.ErrorContains(t, err, "machineId contains a control character")
+	require.ErrorContains(t, err, "senderMessagesPerMinute 60001 must be from 1 to 60000")
 	// The two provider registrations race each other, so only their set is fixed.
 	require.ElementsMatch(t, []string{"pulumi:providers:docker", "pulumi:providers:command"}, m.Types(),
 		"nothing registered beyond the test's providers")

@@ -311,11 +311,11 @@ func TestClusteredNatsHubDefaults(t *testing.T) {
 
 // The listener runs as its machine id on every address of its own pod at the listener's port,
 // serves the Service's tailnet name before the operator's further hosts, and reaches NATS through
-// the in-cluster Service, which Env marks remote. ENVOY_NATS_REPLICAS and ENVOY_STREAM_MAX_BYTES
-// are rendered exactly when natsReplicas and streamMaxBytes are given. This is
-// core.ListenerConfig.Env's whole output: NATS_NKEY_SEED_FILE and
-// ENVOY_API_ALLOW_UNAUTHENTICATED are the container's, added by clusteredHubListenerEnv
-// (TestClusteredNatsHubListenerEnvironment, the pod's).
+// the in-cluster Service, which Env marks remote. ENVOY_NATS_REPLICAS,
+// ENVOY_STREAM_MAX_BYTES, ENVOY_SENDER_MESSAGES_PER_MINUTE and ENVOY_SENDER_MESSAGE_BURST are
+// rendered exactly when their inputs are given. This is core.ListenerConfig.Env's whole output:
+// NATS_NKEY_SEED_FILE and ENVOY_API_ALLOW_UNAUTHENTICATED are the container's, added by
+// clusteredHubListenerEnv (TestClusteredNatsHubListenerEnvironment, the pod's).
 func TestClusteredNatsHubResolvesTheListenerEnvironment(t *testing.T) {
 	base := []string{
 		"ENVOY_MACHINE_ID=envoy-hub",
@@ -326,24 +326,32 @@ func TestClusteredNatsHubResolvesTheListenerEnvironment(t *testing.T) {
 		"ENVOY_ALLOW_REMOTE_NATS=1",
 	}
 	for _, row := range []struct {
-		name                         string
-		natsReplicas, streamMaxBytes *int
-		want                         []string
+		name                                                         string
+		natsReplicas, streamMaxBytes, senderMessagesPerMinute, burst *int
+		want                                                         []string
 	}{
-		{"neither", nil, nil, nil},
-		{"natsReplicas", pulumi.IntRef(3), nil, []string{"ENVOY_NATS_REPLICAS=3"}},
-		{"streamMaxBytes", nil, pulumi.IntRef(1 << 30), []string{"ENVOY_STREAM_MAX_BYTES=1073741824"}},
-		{"both", pulumi.IntRef(1), pulumi.IntRef(5), []string{"ENVOY_NATS_REPLICAS=1", "ENVOY_STREAM_MAX_BYTES=5"}},
+		{"neither", nil, nil, nil, nil, nil},
+		{"natsReplicas", pulumi.IntRef(3), nil, nil, nil, []string{"ENVOY_NATS_REPLICAS=3"}},
+		{"streamMaxBytes", nil, pulumi.IntRef(1 << 30), nil, nil, []string{"ENVOY_STREAM_MAX_BYTES=1073741824"}},
+		{"senderMessagesPerMinute", nil, nil, pulumi.IntRef(2), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=2"}},
+		{"sender messages rate and burst", nil, nil, pulumi.IntRef(3), pulumi.IntRef(2),
+			[]string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=3", "ENVOY_SENDER_MESSAGE_BURST=2"}},
+		{"all", pulumi.IntRef(1), pulumi.IntRef(5), pulumi.IntRef(4), pulumi.IntRef(3),
+			[]string{"ENVOY_NATS_REPLICAS=1", "ENVOY_STREAM_MAX_BYTES=5", "ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=3"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := clusteredArgs()
 			args.Tailnet.Listener.AllowedHosts = []string{"envoy.example.com"}
 			args.NatsReplicas, args.StreamMaxBytes = row.natsReplicas, row.streamMaxBytes
+			args.Tailnet.Listener.SenderMessagesPerMinute, args.Tailnet.Listener.SenderMessageBurst = row.senderMessagesPerMinute, row.burst
 			s, err := gcp.ResolveClusteredNatsHub(args)
 			require.NoError(t, err)
 			env := s.Tailnet.ListenerEnv
 			require.ElementsMatch(t, append(slices.Clone(base), row.want...), env)
-			for _, name := range []string{"ENVOY_NATS_REPLICAS=", "ENVOY_STREAM_MAX_BYTES=", "ENVOY_API_TOKEN="} {
+			for _, name := range []string{
+				"ENVOY_NATS_REPLICAS=", "ENVOY_STREAM_MAX_BYTES=", "ENVOY_SENDER_MESSAGES_PER_MINUTE=",
+				"ENVOY_SENDER_MESSAGE_BURST=", "ENVOY_API_TOKEN=",
+			} {
 				present := slices.ContainsFunc(row.want, func(e string) bool { return strings.HasPrefix(e, name) })
 				require.Equal(t, present, slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, name) }), name)
 			}
@@ -398,9 +406,9 @@ func TestClusteredNatsHubTakesThe43ByteName(t *testing.T) {
 // registers anything.
 func TestClusteredNatsHubRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 	args := clusteredArgs()
-	args.NatsReplicas = pulumi.IntRef(4)
+	args.Tailnet.Listener.SenderMessagesPerMinute = pulumi.IntRef(60001)
 	m, err := runClustered(t, "example-clustered-hub", args, nil)
-	require.ErrorContains(t, err, "envoy-infra:gcp:ClusteredNatsHub example-clustered-hub: natsReplicas 4 must be from 1 to 3")
+	require.ErrorContains(t, err, "envoy-infra:gcp:ClusteredNatsHub example-clustered-hub: tailnet.listener.senderMessagesPerMinute 60001 must be from 1 to 60000")
 	require.Empty(t, m.Types(), "nothing registered")
 
 	m, err = runClustered(t, "example-clustered-hub", clusteredArgs(), nil)

@@ -16,6 +16,9 @@ import (
 // `config.Load(9020)`), and so a component's default for its port.
 const DefaultListenerPort = 9020
 
+// MaxSenderMessagesPerMinute is the largest sender message rate the listener accepts.
+const MaxSenderMessagesPerMinute = 60000
+
 // EnvNATSSeed names the variable holding the nkey seed of the NATS user the listener connects as,
 // the one its bus client reads the seed from. Its value is a secret, so Env never renders it: the
 // component appends it.
@@ -44,6 +47,14 @@ type ListenerConfig struct {
 	// (bus.ConnectOwningStream), ENVOY_STREAM_MAX_BYTES. 0 leaves the variable unset, and the
 	// listener keeps its own default.
 	StreamMaxBytes int
+	// SenderMessagesPerMinute is the maximum number of messages one agent session may send in one
+	// minute, ENVOY_SENDER_MESSAGES_PER_MINUTE. 0 leaves the variable unset and applies no rate
+	// limit.
+	SenderMessagesPerMinute int
+	// SenderMessageBurst is the number of messages one session may send at once,
+	// ENVOY_SENDER_MESSAGE_BURST. 0 leaves the variable unset and the listener defaults the burst
+	// to SenderMessagesPerMinute.
+	SenderMessageBurst int
 	// AgentSecretsURL, AgentSecretsAudience and PublicURL are the listener's broker check,
 	// which the listener reads as one all-or-nothing set (cmd/listener/brokerauth.go,
 	// resolveListenerBrokerConfig): the secrets broker a caller's broker access token is
@@ -196,11 +207,13 @@ func CheckBroker(prefix, brokerURL, audience, origin string) error {
 // that runs as root on the host, where a line break would end the heredoc and run what follows it.
 // Nor may one hold an nkey seed (bus.HoldsSeed), which the environment would carry, in the
 // container's inputs and the watchdog's env file; that refusal names the field and never quotes
-// the value, and comes before any other refusal of that field. NATSReplicas and StreamMaxBytes
-// are refused below 0, which is no count, and NATSReplicas above bus.MaxReplicas, which NATS
-// refuses when the listener creates its stream. CheckBroker owns the broker check's rule, under
-// core's own input names, so a component that renders those three under an input of its own
-// calls it with its own prefix first.
+// value, and comes before any other refusal of that field. NATSReplicas and StreamMaxBytes are
+// refused below 0, which is no count, and NATSReplicas above bus.MaxReplicas, which NATS refuses
+// when the listener creates its stream. SenderMessagesPerMinute is refused outside
+// 0-MaxSenderMessagesPerMinute, and SenderMessageBurst below 0 or above 0 without a rate: the
+// listener refuses that pair at boot. CheckBroker owns the broker check's rule, under core's own
+// input names, so a component that renders those three under an input of its own calls it with its
+// own prefix first.
 func (c ListenerConfig) Check() error {
 	if bus.HoldsSeed(c.MachineID) {
 		return InputErrorf("machineId", "%w", SeedRefusal("machineId"))
@@ -231,6 +244,16 @@ func (c ListenerConfig) Check() error {
 	if c.StreamMaxBytes < 0 {
 		return InputErrorf("streamMaxBytes", "streamMaxBytes %d is below 0", c.StreamMaxBytes)
 	}
+	if c.SenderMessagesPerMinute < 0 || c.SenderMessagesPerMinute > MaxSenderMessagesPerMinute {
+		return InputErrorf("senderMessagesPerMinute", "senderMessagesPerMinute %d is outside 0-%d",
+			c.SenderMessagesPerMinute, MaxSenderMessagesPerMinute)
+	}
+	if c.SenderMessageBurst < 0 {
+		return InputErrorf("senderMessageBurst", "senderMessageBurst %d is below 0", c.SenderMessageBurst)
+	}
+	if c.SenderMessageBurst > 0 && c.SenderMessagesPerMinute == 0 {
+		return InputErrorf("senderMessageBurst", "senderMessageBurst %d needs senderMessagesPerMinute above 0", c.SenderMessageBurst)
+	}
 	if err := CheckBroker("", c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL); err != nil {
 		return err
 	}
@@ -249,12 +272,13 @@ func (c ListenerConfig) Check() error {
 // the URL. ENVOY_ALLOW_REMOTE_NATS=1 is set exactly when a URL names a server bus.LocalNATSURL
 // does not vouch for, since the listener refuses such a server without it. ENVOY_ALLOWED_HOSTS
 // follows the ENVOY_LISTEN_HOST block, and only when the config lists a host, so a listener
-// without one renders what it always rendered. ENVOY_NATS_REPLICAS then ENVOY_STREAM_MAX_BYTES
-// follow, each only when its field is above 0, for that reason too; ENVOY_NATS_REPLICAS there
-// is where aws/rendering's ListenerEnv writes its own, after Env's variables. The broker check
-// comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte.
+// without one renders what it always rendered. ENVOY_NATS_REPLICAS then ENVOY_STREAM_MAX_BYTES,
+// ENVOY_SENDER_MESSAGES_PER_MINUTE and ENVOY_SENDER_MESSAGE_BURST follow, each only when its
+// field is above 0, for that reason too; ENVOY_NATS_REPLICAS there is where aws/rendering's
+// ListenerEnv writes its own, after Env's variables. The broker check comes last, in brokerVars's
+// order — ENVOY_AGENT_SECRETS_URL, ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and
+// only on a config that sets it, so a listener without one renders what it always rendered, byte
+// for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -305,6 +329,12 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	}
 	if c.StreamMaxBytes > 0 {
 		env = append(env, "ENVOY_STREAM_MAX_BYTES="+strconv.Itoa(c.StreamMaxBytes))
+	}
+	if c.SenderMessagesPerMinute > 0 {
+		env = append(env, "ENVOY_SENDER_MESSAGES_PER_MINUTE="+strconv.Itoa(c.SenderMessagesPerMinute))
+	}
+	if c.SenderMessageBurst > 0 {
+		env = append(env, "ENVOY_SENDER_MESSAGE_BURST="+strconv.Itoa(c.SenderMessageBurst))
 	}
 	for i, value := range [3]string{c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL} {
 		if value != "" {

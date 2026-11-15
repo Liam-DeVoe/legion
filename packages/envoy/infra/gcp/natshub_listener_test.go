@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
+	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/gcp"
@@ -114,6 +115,36 @@ func TestNatsHubResolverRefusesInvalidListenerAndSessionUserInputs(t *testing.T)
 			err: []string{`listener.allowedHosts[1] is "*.example.com"`},
 		},
 		{
+			name: "a listener sender message rate of none",
+			edit: func(a *gcp.NatsHubArgs) { a.Listener.SenderMessagesPerMinute = pulumi.IntRef(0) },
+			err:  []string{"listener.senderMessagesPerMinute 0 must be from 1 to 60000", "leave it unset for no limit"},
+		},
+		{
+			name: "a negative listener sender message rate",
+			edit: func(a *gcp.NatsHubArgs) { a.Listener.SenderMessagesPerMinute = pulumi.IntRef(-1) },
+			err:  []string{"listener.senderMessagesPerMinute -1 must be from 1 to 60000"},
+		},
+		{
+			name: "a listener sender message rate above the listener's maximum",
+			edit: func(a *gcp.NatsHubArgs) { a.Listener.SenderMessagesPerMinute = pulumi.IntRef(60001) },
+			err:  []string{"listener.senderMessagesPerMinute 60001 must be from 1 to 60000"},
+		},
+		{
+			name: "a listener sender message burst of none",
+			edit: func(a *gcp.NatsHubArgs) { a.Listener.SenderMessageBurst = pulumi.IntRef(0) },
+			err:  []string{"listener.senderMessageBurst 0 must be at least 1"},
+		},
+		{
+			name: "a negative listener sender message burst",
+			edit: func(a *gcp.NatsHubArgs) { a.Listener.SenderMessageBurst = pulumi.IntRef(-1) },
+			err:  []string{"listener.senderMessageBurst -1 must be at least 1"},
+		},
+		{
+			name: "a listener sender message burst without a rate",
+			edit: func(a *gcp.NatsHubArgs) { a.Listener.SenderMessageBurst = pulumi.IntRef(1) },
+			err:  []string{"listener.senderMessageBurst needs listener.senderMessagesPerMinute"},
+		},
+		{
 			name: "a listener without a public key",
 			edit: func(a *gcp.NatsHubArgs) { a.Listener.NKey = "" },
 			err:  []string{"listener.nkey is required"},
@@ -199,6 +230,38 @@ func TestNatsHubResolverRefusesInvalidListenerAndSessionUserInputs(t *testing.T)
 			err: []string{"listener.publicUrl holds whitespace or a control character", "ENVOY_PUBLIC_URL"},
 		},
 	})
+}
+
+// A sender message rate renders alone when no burst is set, and the unit renders either variable
+// exactly once when its input is set.
+func TestNatsHubListenerRendersSenderMessageLimits(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		rate, burst *int
+		env         []string
+	}{
+		{"neither", nil, nil, nil},
+		{"a rate", pulumi.IntRef(2), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=2"}},
+		{"a rate and burst", pulumi.IntRef(3), pulumi.IntRef(2),
+			[]string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=3", "ENVOY_SENDER_MESSAGE_BURST=2"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := exampleArgs()
+			args.Listener.SenderMessagesPerMinute, args.Listener.SenderMessageBurst = row.rate, row.burst
+			doc, _, err := gcp.CloudConfigOf(args)
+			require.NoError(t, err)
+			unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
+			for _, env := range []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=2", "ENVOY_SENDER_MESSAGES_PER_MINUTE=3", "ENVOY_SENDER_MESSAGE_BURST=2"} {
+				want := 0
+				for _, expected := range row.env {
+					if env == expected {
+						want++
+					}
+				}
+				require.Equal(t, want, strings.Count(unit, " -e "+env+" "), env)
+			}
+		})
+	}
 }
 
 // A seed in the listener's image, seed secret or broker check, each of which the user data

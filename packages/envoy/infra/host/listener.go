@@ -37,8 +37,15 @@ type ListenerArgs struct {
 	ContainerName *string                 `pulumi:"containerName,optional"` // default "envoy-listener"
 	Port          *int                    `pulumi:"port,optional"`          // default core.DefaultListenerPort, 9020
 	Seed          pulumi.StringInput      `pulumi:"seed,optional" provider:"secret"`
-	Watchdog      *WatchdogArgs           `pulumi:"watchdog,optional"`
-	Adopt         *AdoptArgs              `pulumi:"adopt,optional"`
+	// SenderMessagesPerMinute is the maximum number of messages one agent session may send in one
+	// minute, ENVOY_SENDER_MESSAGES_PER_MINUTE. It is from 1 to 60000; unset leaves no limit.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	// SenderMessageBurst is the number of messages one session may send at once,
+	// ENVOY_SENDER_MESSAGE_BURST. It is at least 1 and requires SenderMessagesPerMinute; unset
+	// leaves the listener to default it to the rate.
+	SenderMessageBurst *int          `pulumi:"senderMessageBurst,optional"`
+	Watchdog           *WatchdogArgs `pulumi:"watchdog,optional"`
+	Adopt              *AdoptArgs    `pulumi:"adopt,optional"`
 	// default true; false for a listener whose NATS is not reachable from where the stack is
 	// applied (the container is created and Docker restarts it until it connects)
 	WaitForHealthy *bool `pulumi:"waitForHealthy,optional"`
@@ -110,6 +117,27 @@ func resolveListener(name string, args *ListenerArgs) (listenerPlan, error) {
 	}
 	if args.Port != nil {
 		plan.plain.Port = *args.Port
+	}
+	if args.SenderMessagesPerMinute != nil {
+		if *args.SenderMessagesPerMinute < 1 || *args.SenderMessagesPerMinute > core.MaxSenderMessagesPerMinute {
+			return listenerPlan{}, fmt.Errorf("%s %s: %w", listenerType, name,
+				core.InputErrorf("senderMessagesPerMinute",
+					"senderMessagesPerMinute %d must be from 1 to %d; leave it unset for no limit",
+					*args.SenderMessagesPerMinute, core.MaxSenderMessagesPerMinute))
+		}
+		plan.plain.SenderMessagesPerMinute = *args.SenderMessagesPerMinute
+	}
+	if args.SenderMessageBurst != nil {
+		if *args.SenderMessageBurst < 1 {
+			return listenerPlan{}, fmt.Errorf("%s %s: %w", listenerType, name,
+				core.InputErrorf("senderMessageBurst",
+					"senderMessageBurst %d must be at least 1; leave it unset for the rate", *args.SenderMessageBurst))
+		}
+		if args.SenderMessagesPerMinute == nil {
+			return listenerPlan{}, fmt.Errorf("%s %s: %w", listenerType, name,
+				core.InputErrorf("senderMessageBurst", "senderMessageBurst needs senderMessagesPerMinute"))
+		}
+		plan.plain.SenderMessageBurst = *args.SenderMessageBurst
 	}
 	if args.Adopt != nil {
 		plan.adopt = *args.Adopt

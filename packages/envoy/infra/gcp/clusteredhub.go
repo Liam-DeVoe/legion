@@ -204,6 +204,14 @@ type ClusteredHubListenerArgs struct {
 	// Any further address a client dials the listener by, beyond <serviceName>.<tailnetDnsName>,
 	// which it always serves.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// SenderMessagesPerMinute is the maximum number of messages one agent session may send in one
+	// minute through the listener, ENVOY_SENDER_MESSAGES_PER_MINUTE. It is from 1 to 60000;
+	// unset leaves no limit.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	// SenderMessageBurst is the number of messages one session may send at once,
+	// ENVOY_SENDER_MESSAGE_BURST. It is at least 1 and requires SenderMessagesPerMinute; unset
+	// leaves the listener to default it to the rate.
+	SenderMessageBurst *int `pulumi:"senderMessageBurst,optional"`
 	// The listener container's size, a Kubernetes quantity each, set as both its request and its
 	// limit: 500m and 1Gi by default.
 	Cpu    *string `pulumi:"cpu,optional"`
@@ -691,6 +699,26 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	if err := core.CheckAllowedHosts("tailnet.listener.allowedHosts", l.AllowedHosts); err != nil {
 		return nil, nil, err
 	}
+	senderMessagesPerMinute, senderMessageBurst := 0, 0
+	if l.SenderMessagesPerMinute != nil {
+		if *l.SenderMessagesPerMinute < 1 || *l.SenderMessagesPerMinute > core.MaxSenderMessagesPerMinute {
+			return nil, nil, core.InputErrorf("tailnet.listener.senderMessagesPerMinute",
+				"tailnet.listener.senderMessagesPerMinute %d must be from 1 to %d; leave it unset for no limit",
+				*l.SenderMessagesPerMinute, core.MaxSenderMessagesPerMinute)
+		}
+		senderMessagesPerMinute = *l.SenderMessagesPerMinute
+	}
+	if l.SenderMessageBurst != nil {
+		if *l.SenderMessageBurst < 1 {
+			return nil, nil, core.InputErrorf("tailnet.listener.senderMessageBurst",
+				"tailnet.listener.senderMessageBurst %d must be at least 1; leave it unset for the rate", *l.SenderMessageBurst)
+		}
+		if l.SenderMessagesPerMinute == nil {
+			return nil, nil, core.InputErrorf("tailnet.listener.senderMessageBurst",
+				"tailnet.listener.senderMessageBurst needs tailnet.listener.senderMessagesPerMinute")
+		}
+		senderMessageBurst = *l.SenderMessageBurst
+	}
 	listener := clusteredHubListener{
 		image:          l.Image,
 		machineID:      machineID,
@@ -714,12 +742,14 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	// cluster Service, which a NetworkPolicy admits their pods alone to, and no longer over a
 	// loopback they share with it.
 	env, err := core.ListenerConfig{
-		MachineID:      machineID,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		AllowedHosts:   append([]string{host}, l.AllowedHosts...),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
+		MachineID:               machineID,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "0.0.0.0",
+		AllowedHosts:            append([]string{host}, l.AllowedHosts...),
+		NATSReplicas:            s.natsReplicas,
+		StreamMaxBytes:          s.streamMaxBytes,
+		SenderMessagesPerMinute: senderMessagesPerMinute,
+		SenderMessageBurst:      senderMessageBurst,
 	}.Env([]string{s.serviceURL})
 	if err != nil {
 		return nil, nil, err

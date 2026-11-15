@@ -371,9 +371,9 @@ func requireMachineIDRefusal(t *testing.T, args *gcp.NatsHubArgs, input, want st
 // anything beyond the test's provider.
 func TestNatsHubRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 	args := exampleArgs()
-	args.Hostname = "ab-"
+	args.Listener.SenderMessagesPerMinute = pulumi.IntRef(60001)
 	m, err := run(t, args, nil, true)
-	require.ErrorContains(t, err, `envoy-infra:gcp:NatsHub example-hub: hostname "ab-"`)
+	require.ErrorContains(t, err, "envoy-infra:gcp:NatsHub example-hub: listener.senderMessagesPerMinute 60001 must be from 1 to 60000")
 	require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
 }
 
