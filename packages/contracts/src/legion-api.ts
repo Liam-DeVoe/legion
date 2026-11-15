@@ -1370,9 +1370,18 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; only an `operator`
- * one holds against the daemon's rules. */
-const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+ * the claim's phase and its pending task until the next wake for its role; `project_release` is
+ * one the project release made when it stopped the claim and deleted its pod, which keeps the
+ * same and is started again by the daemon's next boot; only an `operator` one holds against the
+ * daemon's rules. */
+const legionSuspendedBy = z.enum([
+  "unknown",
+  "operator",
+  "daemon",
+  "exit",
+  "released",
+  "project_release",
+]);
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):

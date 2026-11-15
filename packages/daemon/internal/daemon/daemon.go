@@ -319,6 +319,19 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.Close()
 		return err
 	}
+	// A project release lives in the process that started it, so a release no boot has ended is
+	// one an earlier process left: this boot ends it before anything of the workflow runs, and the
+	// claims it stopped, still suspended by `project_release`, are started again by the boot's
+	// own fact (workflow's booted).
+	ended, err := st.EndProjectReleasesAtBoot(boot, plan.project, time.Now().UTC())
+	if err != nil {
+		st.Close()
+		return err
+	}
+	if ended > 0 {
+		log.Info("legion daemon: the boot ended the project releases an earlier process left; it starts the claims they stopped",
+			"project", cfg.Project, "releases", ended)
+	}
 	if cfg.DispatchURL != "" {
 		log.Info("legion workflow boot stage", "stage", "store")
 	}

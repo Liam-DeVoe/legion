@@ -2706,6 +2706,12 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 		// given, and sending that entry's task is what brings its pod back. The one other start
 		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
+		//
+		// A claim the project release stopped has no skip either. One behind its entry is sent
+		// that entry's work here like any other, a start the outbox holds while the release
+		// holds every start; the daemon's next boot, whose own start of every such claim reads
+		// the queued start, then writes none of its own (workflow's booted, StartFor), and a pass
+		// after the boot's start reads that start's entry and writes no second (OwedEntry).
 
 		// A claim an operator suspended is passed over whatever entry it stands on: `legion
 		// claims stop` stopped that worker and only the operator's own resume starts it again

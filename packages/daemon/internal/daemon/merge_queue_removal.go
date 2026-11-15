@@ -150,6 +150,9 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		r.log.Info("outbox merge-queue removal finished undelivered: the merger's claim has failed or retired", append(attributes, "state", held.State)...)
 		return nil
 	}
+	// A merger the project release stopped is not woken by this row (wakeForDelivery): the boot's
+	// start brings it back, and the outbox holds that start behind the design gate itself
+	// (mergerWaitsForTheDesignGate), so the gate is read here for a released merger alone.
 	if held.Released() {
 		closed, err := r.designGateClosed(ctx, issue)
 		if err != nil {

@@ -223,8 +223,14 @@ func claimRuns(state supervise.ClaimState) bool {
 // its owner's, and the wake is what brings the owner back for it (outbox.wakeForDelivery). Were
 // it to lose its role here, a notice for a released sub-architect would walk up to the architect
 // above it, which owns neither the issue nor the answer.
+//
+// A claim the project release stopped keeps its role for the same reason: its session, its phase
+// and its task are as the release left them, and the daemon's next boot starts it again
+// (workflow's booted). The notice waits in the database while the release holds every delivery,
+// and after the boot it is routed to that owner as to a released one, and waits for the start
+// the boot queued rather than for a wake, which nothing makes for it.
 func holdsRole(held supervise.ClaimView) bool {
-	if held.Released() {
+	if held.Released() || held.ProjectReleased() {
 		return !held.Stopping
 	}
 	return claimRuns(held.State) && !held.Stopping

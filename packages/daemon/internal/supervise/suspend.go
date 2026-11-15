@@ -17,9 +17,10 @@ var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to en
 // queued for a phase and still pending unconfirmed (acknowledged and then refused, or lost to the
 // transport) is retired with it (settle): the next resume is started with its new phase's task,
 // never handed the finished one's. A task of no phase — an operator's own, an architect's — is
-// not the workflow's to end, and neither is the phase task of a claim whose idle pod was released:
-// that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
-// task it kept (SuspendSource.RetiresPhaseTask).
+// not the workflow's to end, and neither is the phase task of a claim whose idle pod was released
+// or that the project release stopped: neither suspension ends a phase, and the wake that brings
+// the pod back, or the next boot's start, resumes the claim with the task it kept
+// (SuspendSource.RetiresPhaseTask).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -213,17 +214,27 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
 // claim's suspension is the weakest, because the release ended no phase and every wake may
 // resume it; the daemon's is stronger, since it is a linger, a park or a close; the operator's is
-// strongest and nothing takes it over. An exit's is the root's own and is left where it is.
+// strongest and nothing takes it over. An exit's is the root's own and is left where it is, and so
+// is an unknown one, both at the daemon's rank.
+//
+// The project release's stands between the idle release's and the daemon's. Above the idle
+// release, so the project release takes over a claim an idle release is stopping and the next
+// boot starts it rather than leaving it for a wake. Below the daemon, so a linger, park or close
+// that lands during the project release takes over a claim it stopped: that claim's issue or
+// tree has left the workflow, and the boot then leaves it to the close. An operator's suspend
+// takes it over too, which is how the release holds the claims of a pod it leaves.
 func suspensionRank(source SuspendSource) int {
 	switch source {
 	case SuspendedByReleased:
 		return 1
+	case SuspendedByProjectRelease:
+		return 2
 	case SuspendedByDaemon:
-		return 2
-	case SuspendedByOperator:
 		return 3
+	case SuspendedByOperator:
+		return 4
 	default:
-		return 2
+		return 3
 	}
 }
 
@@ -253,17 +264,20 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 
 // suspendRequest is the event a suspension's row is handed. The table routes only RequestSuspend
 // there (kindOf's onSuspend); another event is a wiring error, and so is a suspension that names
-// none of the operator, the daemon and the idle pod's release (a root's exit suspends it through
-// RequestExit, never this), since the source is what decides whether the daemon may resume the
-// claim and what becomes of the phase's task. Either is refused before anything is stopped, rather
-// than a panic, a journal line with no reason, or a claim suspended by nobody.
+// none of the operator, the daemon, the idle pod's release and the project release (a root's exit
+// suspends it through RequestExit, never this), since the source is what decides whether the
+// daemon may resume the claim and what becomes of the phase's task. Either is refused before
+// anything is stopped, rather than a panic, a journal line with no reason, or a claim suspended by
+// nobody.
 func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	request, ok := ev.(RequestSuspend)
 	if !ok {
 		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspend action was handed %T, not a RequestSuspend", m.claim.Token, ev)
 	}
-	if request.By != SuspendedByOperator && request.By != SuspendedByDaemon && request.By != SuspendedByReleased {
-		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names source %q, not operator, daemon or released", m.claim.Token, request.By)
+	switch request.By {
+	case SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased, SuspendedByProjectRelease:
+	default:
+		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names source %q, not operator, daemon, released or project_release", m.claim.Token, request.By)
 	}
 	// An operator's held suspension wins everywhere — launching, registered, ready while its
 	// stop retries, and working — until it completes. A later daemon linger/leave request must

@@ -1513,6 +1513,15 @@ type Store interface {
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
+	// SuspendedClaims is every claim of the project on an issue that is suspended by source, in
+	// token order: its token, issue and role. It is what the boot reads the claims the project
+	// release stopped by (workflow's booted, its start of every such claim), whatever their role
+	// and wherever their issue stands, since the release lists them nowhere the boot reads.
+	//
+	// project is the claim project token (claim.ProjectToken), as ProjectClaims takes it. A claim
+	// on no issue — the project's own controller — is left out, since it stands in no tree and
+	// its own keeper resumes it.
+	SuspendedClaims(ctx context.Context, tx pgx.Tx, project string, source supervise.SuspendSource) ([]SuspendedClaim, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
@@ -1878,6 +1887,15 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+}
+
+// SuspendedClaim is one suspended claim as Store.SuspendedClaims names it: its token, the issue
+// it is on and its role. The reader asks the rest of the claim of the role's run
+// (Store.RoleRuns), at the generation its issue holds.
+type SuspendedClaim struct {
+	Token claim.Token
+	Issue string
+	Role  claim.Role
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

@@ -72,7 +72,8 @@ const (
 // (RequestRuleResume) — unless an operator suspended it: that suspension holds until the operator
 // resumes the claim. The boot's resume by rule, which main did not have, acts only on a source
 // ByRule names, so it never overrides a drain recorded before the source existed, and it leaves a
-// released claim to the wake that brings its pod back.
+// released claim to the wake that brings its pod back. A claim the project release stopped has
+// a boot step of its own (workflow's booted).
 type SuspendSource string
 
 const (
@@ -99,6 +100,14 @@ const (
 	// its pod back, the stranded report once a wake has run out with no turn, and that cutover
 	// repair.
 	SuspendedByReleased SuspendSource = "released"
+	// SuspendedByProjectRelease: the project release stopped the claim and deleted its pod, so the
+	// project's pods can move to another cluster. The claim keeps its phase, its session and its
+	// pending task, as a released claim does, and the daemon's next boot starts it again, whatever
+	// its role (workflow's booted, its step for these claims; the controller keeper for the
+	// controller's). The release holds every start of the project until that boot, so nothing
+	// before it resumes such a claim. It is no source ByRule names: the boot's resume by rule
+	// starts only the owner of a phase, and these claims are every role's.
+	SuspendedByProjectRelease SuspendSource = "project_release"
 )
 
 // ByRule is whether the source is one the daemon itself recorded as a stop of its own — its own
@@ -106,18 +115,20 @@ const (
 // suspended phase workers the stranded report leaves out. A release is not one of them. It is a
 // stop the daemon recorded too, but no rule here acts on it: the boot's resume by rule leaves it to
 // its role's wake (workflow's booted), and the stranded report holds it to R6's one fact
-// (workflow's stranded).
+// (workflow's stranded). Nor is the project release's, which the next boot starts by a step of
+// its own for every role rather than by this one, which starts phase owners alone.
 func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
 
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
-// for that phase goes with it (settle). Every source does but two: an operator's, and a release.
-// Each of those resumes this same claim in the same phase — the operator's by hand, a released
-// claim's at its role's next wake — so the pending task waits through the suspension and is sent
-// on that resume.
+// for that phase goes with it (settle). Every source does but three: an operator's, an idle
+// release's and a project release's. Each of those resumes this same claim in the same phase — the
+// operator's by hand, a released claim's at its role's next wake, a project release's at the
+// daemon's next boot — so the pending task waits through the suspension and is sent on that
+// resume: the task of a turn the project release cut is sent again that way.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return s != SuspendedByOperator && s != SuspendedByReleased
+	return s != SuspendedByOperator && s != SuspendedByReleased && s != SuspendedByProjectRelease
 }
 
 // Claim is one role claim as the supervisor holds and persists it.
@@ -547,7 +558,8 @@ func (c Claim) LeftPodRound(round string) bool {
 }
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
-// operator's, which holds until an operator resumes the claim.
+// operator's, which holds until an operator resumes the claim. A claim the project release
+// stopped is among them, so the boot's start of it and the controller keeper both resume it.
 func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
 }
@@ -556,9 +568,18 @@ func (c Claim) RuleMayResume() bool {
 // idle issue pod, so the claim keeps its session, its phase and its pending task, and the next
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
 // the wakes, the notice routing, the stranded report, a release the store cancelled — reads it
-// here rather than spelling the pair out again.
+// here rather than spelling the pair out again. A claim the project release stopped is not one:
+// no wake brings it back, since the daemon's next boot starts it (ProjectReleased).
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
+}
+
+// ProjectReleased is whether the project release stopped the claim and the claim waits, as it
+// left it, for the daemon's next boot to start it (SuspendedByProjectRelease). The rules that
+// read it treat it as they treat a released claim where the claim's role is concerned — the notice
+// routing keeps a notice its own — and never wake it, since the boot is what brings it back.
+func (c Claim) ProjectReleased() bool {
+	return c.State == StateSuspended && c.SuspendedBy == SuspendedByProjectRelease
 }
 
 // RuleHolds is whether an operator's suspension blocks a daemon rule: the claim is suspended by the

@@ -734,12 +734,14 @@ type SuperviseRequest struct {
 	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
 	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
 	// boot's one-time start of a merger the `awaiting_merge` cutover left released (workflow's
-	// cutoverMergerRepair), the phase's resume task a ready worker level with the entry its
-	// phases row names is given (workflow's readyWorkerTask), the silence repair's resume task to
-	// a silent worker level with that entry (workflow's workerSilent), a production check's look
-	// (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a cancelled
-	// idle release (the daemon's outbox). Each hands its role work it was already on, or work no
-	// phase entry numbers at all.
+	// cutoverMergerRepair), the boot's task-less start of a claim the project release stopped
+	// (workflow's startReleaseStopped), the phase's resume task a ready worker level with the
+	// entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
+	// resume task to a silent worker level with that entry (workflow's workerSilent), a
+	// production check's look (workflow's startLook, and the boot's start of the open look
+	// again), the pod wake (workflow's wakeRow) and the resume of a cancelled idle release (the
+	// daemon's outbox). Each hands its role work it was already on, or work no phase entry numbers
+	// at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -755,8 +757,9 @@ type SuperviseRequest struct {
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
-	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
-	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
+	// RuleResume marks the boot's resume-by-rule start, the boot's one-time start of a merger the
+	// `awaiting_merge` cutover left released (workflow's cutoverMergerRepair), and the boot's start
+	// of each claim the project release stopped (workflow's startReleaseStopped). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
 	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`

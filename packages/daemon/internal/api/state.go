@@ -1397,6 +1397,10 @@ func StrandedMoves() []StrandedMove {
 // state: read as released, it would name a pod coming back from a wake, and nothing is coming
 // back. For the same reason the released case asks for the suspended state itself rather than for
 // anything that has not failed.
+//
+// No move names a claim the project release stopped: workflow.Stranded never lists one, since
+// the daemon's next boot starts it, and a resume the operator asked for before that boot would be
+// refused while the release holds every start.
 func (c StrandedClaim) Move(suspendedBy string) StrandedMove {
 	state := supervise.ClaimState(c.State)
 	switch {

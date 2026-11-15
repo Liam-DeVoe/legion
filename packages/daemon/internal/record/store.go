@@ -919,6 +919,30 @@ func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string)
 	return claims, nil
 }
 
+// SuspendedClaims reads every claim of the project on an issue suspended by source, in token
+// order (the interface's own doc). project is the claim project token, as ProjectClaims takes it.
+func (s *Postgres) SuspendedClaims(ctx context.Context, tx pgx.Tx, project string, source supervise.SuspendSource) ([]SuspendedClaim, error) {
+	rows, err := tx.Query(ctx, `select token, issue, role from claims
+		where project = $1 and issue <> '' and state = $2 and suspended_by = $3 order by token`,
+		project, string(supervise.StateSuspended), string(source))
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of project %s suspended by %s: %w", project, source, err)
+	}
+	defer rows.Close()
+	var claims []SuspendedClaim
+	for rows.Next() {
+		var held SuspendedClaim
+		if err := rows.Scan(&held.Token, &held.Issue, &held.Role); err != nil {
+			return nil, fmt.Errorf("read the claims of project %s suspended by %s: %w", project, source, err)
+		}
+		claims = append(claims, held)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of project %s suspended by %s: %w", project, source, err)
+	}
+	return claims, nil
+}
+
 // keptCounts is the validity rule as SQL: the claim and the hold a kept row carries count only
 // while they stand in the same tree as the row's own issue. row is the kept row's alias and owner
 // the alias of the issues row of its issue, which is where the tree it is owed to is read. A void

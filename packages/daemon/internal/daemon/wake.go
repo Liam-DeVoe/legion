@@ -210,6 +210,12 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // a test's, which supervises nothing — wakes nothing: there is no machine to read a claim's state
 // from.
 //
+// A claim the project release stopped answers true as well, and is woken by nothing here: its
+// resume is the start the daemon's boot queued for it (workflow's booted), which the wake pacing
+// lets out in its turn. So the delivery waits for that start on its own row's retry, as it waits
+// for a released pod coming back, rather than publishing to a role nobody holds yet — which drops
+// a phase-ended message or a hook prompt — and the boot's start stays the claim's one start.
+//
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
 // would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
@@ -223,7 +229,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		return false, nil
 	}
 	held := machine.View()
-	if !held.Released() {
+	if !held.Released() && !held.ProjectReleased() {
 		return false, nil
 	}
 	issue, err := r.issue(ctx, held.Issue)
@@ -236,6 +242,9 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	}
 	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
+	}
+	if held.ProjectReleased() {
+		return true, nil
 	}
 	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
 	if err != nil {

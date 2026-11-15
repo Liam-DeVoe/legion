@@ -411,12 +411,12 @@ type RequestResume struct{ Claim claim.Token }
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator suspended it (Claim.RuleMayResume): that suspension holds until the operator
-// resumes the claim. The daemon asks it of
-// a claim that owns its issue's current phase (the outbox's start of that phase, the boot's
-// included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
-// launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
-// often as the rule meets the claim without ever relaunching one that is running. Reason is the
-// rule, for the line it logs.
+// resumes the claim. The daemon asks it of a claim that owns its issue's current phase (the
+// outbox's start of that phase, the boot's included), of every claim the project release stopped
+// (the outbox's start the next boot writes for each, workflow's booted) and of its own controller.
+// It resumes nothing that is not suspended — a failed claim's launch budget is spent, and only the
+// workflow's retry relaunches it — so it is asked again as often as the rule meets the claim
+// without ever relaunching one that is running. Reason is the rule, for the line it logs.
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string

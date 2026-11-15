@@ -52,13 +52,16 @@ import (
 // false by default after, and so needs no row of its own here (migration_20261113090512_test.go
 // reads both). Store.Migrate applies every embedded migration a database has not recorded, so a
 // database that took INFRA-2981's two before this one takes it in its next upgrade all the same.
+// dispatch://INFRA-3583's project release (20261115073241), which adds a table and a source to
+// claims_suspended_by_check and touches no outbox row, stands above all of these and is applied
+// last.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113090512,
-	20261113110610, 20261114031356,
+	20261113110610, 20261114031356, 20261115073241,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -66,9 +69,10 @@ var thisBranchsMigrations = []int{
 // above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and above it stand
 // INFRA-3036's 20261111214351, the phase entry's 20261111225552, dispatch://INFRA-3027's
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
-// and 20261113110610, dispatch://INFRA-3146's 20261113090512 and dispatch://INFRA-3274's
-// 20261114031356, which is why the loop below holds the list rather than counting it, so that a
-// version added above any of them is named here rather than read as main's.
+// and 20261113110610, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's
+// 20261114031356 and dispatch://INFRA-3583's 20261115073241, which is why the loop below holds
+// the list rather than counting it, so that a version added above any of them is named here
+// rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
