@@ -30,7 +30,7 @@ pod for itself. An enrollment has one of two kinds:
 | Kind | What it is | Who holds its key | Who enrolls it |
 | --- | --- | --- | --- |
 | `session` | An agent session on a machine a person logged in: running directly on the machine, or in a container on it (a **box**). | For a session on the machine, the machine's helper, in memory; for a box, the container, in `key.pem` under `AGENT_SECRETS_KEY_DIR`. | The machine's helper: when the session registers with `agent-secrets register`, or, for a box, when whoever starts the container runs `agent-secrets enroll --helper` ([run an agent in a container](/legion/broker/guides/run-an-agent-in-a-container/)). |
-| `pod` | A Kubernetes pod: a Legion worker pod, or one an operator launches by hand. | The pod, in its key directory. | The Legion daemon, which proves the pod with a projected service-account token the broker verifies against `BROKER_K8S_OIDC_ISSUER`; or the pod itself, with `agent-secrets enroll --pod`, when its ServiceAccount is one `BROKER_SERVICE_LOGINS` names. An enrollment's runtime id must be the pod UID of the token presented with it, which the broker verifies against the cluster's issuer and refuses otherwise, so a pod enrolling itself enrols the pod whose token it holds. |
+| `pod` | A Kubernetes pod: a Legion worker pod, or one an operator launches by hand. | The pod, in its key directory. | The Legion daemon, which proves the pod with a projected service-account token that the broker verifies against the issuer of `BROKER_K8S_OIDC_ISSUER` that the token names, one issuer for each cluster; or the pod itself, with `agent-secrets enroll --pod`, when its ServiceAccount is one `BROKER_SERVICE_LOGINS` names. An enrollment's runtime id must be the pod UID of the token presented with it, which the broker verifies against that issuer and refuses otherwise, so a pod enrolling itself enrols the pod whose token it holds. While the broker cannot read the token's issuer, it answers `503 OIDC_ISSUER_UNAVAILABLE`, which decides nothing about the pod, and the daemon tries the enrollment again. |
 
 A machine holding a Google identity token enrols a `session` too: it trades that token at the
 broker's token exchange, which answers a Dispatch access token and the machine login that trade
@@ -53,7 +53,8 @@ An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
 a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
 (`POD_IDENTITY_MISMATCH`) unless the token names the pod UID and service account the enrollment was
-made for. The token is not yet required. The broker ratchets each pod UID instead: once any
+made for. While the broker cannot read the token's issuer, it answers the renewal
+`503 OIDC_ISSUER_UNAVAILABLE`, and the renewer tries again. The token is not yet required. The broker ratchets each pod UID instead: once any
 enrollment naming a pod UID, live or ended, has renewed with that pod's token, the broker refuses a
 renewal without one (`POD_TOKEN_REQUIRED`) from every enrollment naming that pod, whichever machine
 login made it.
@@ -206,7 +207,8 @@ sessions it enrolled keep running.
 A service, such as the Legion daemon, logs in with its own projected Kubernetes ServiceAccount
 token instead, and no person approves it: the broker verifies the token as it verifies a pod's,
 refuses one that lives longer than an hour from its issue, and issues the credential when the
-token's account is one `BROKER_SERVICE_LOGINS` names for that service
+token's account is one `BROKER_SERVICE_LOGINS` names for that service and the token's issuer is
+one that entry names
 ([Operate](/legion/broker/operate/#what-to-run)). Each such account holds one credential, which
 every login moves to the login's key and to the token's expiry, at most an hour away, so the
 service logs in again before then and at every restart; a running daemon proves the same key at
@@ -242,7 +244,8 @@ A credential enrolls sessions only for its own operator: an enrollment naming an
 `OPERATOR_MISMATCH`. The broker's rate limiter caps how often anyone can start a machine login, per
 source address and per named person, and how often anyone can try a token login: per source
 address before the token is verified, and per account once it is. A token login the broker could
-not complete (a 5xx, such as while its database is away) spends neither.
+not complete (a 5xx, such as while its database is away, or while the token's issuer cannot be
+read) gives back what it spent.
 
 ## Owner and tier: who may have which secret
 

@@ -35,9 +35,9 @@ BROKER_LISTEN_ADDR=0.0.0.0:13380
 BROKER_PUBLIC_URL=https://secrets.internal.example
 BROKER_MACHINE_LOGIN_URL=https://dispatch.internal.example/credentials/machine
 BROKER_DATABASE_URL='postgres://broker:<password>@db.internal.example:5432/broker'
-BROKER_K8S_OIDC_ISSUER=https://<cluster issuer>
+BROKER_K8S_OIDC_ISSUER=first=https://<first cluster's issuer>,second=https://<second cluster's issuer>
 BROKER_K8S_OIDC_AUDIENCE=legion-broker
-BROKER_API_ACCOUNTS=dispatch=system:serviceaccount:example-ns:example-dispatch
+BROKER_API_ACCOUNTS=dispatch=system:serviceaccount:example-ns:example-dispatch=first
 BROKER_SIGNIN_ISSUER=https://accounts.google.com
 BROKER_SIGNIN_CLIENT_ID=<client id>.apps.googleusercontent.com
 BROKER_SIGNIN_CLIENT_SECRET_FILE=/var/run/secrets/broker-signin/client-secret
@@ -67,13 +67,42 @@ the DPoP signing algorithms it takes, and the subject token types its exchange i
 with, so a client reads off one document what this deployment turned on rather than being
 configured with it twice.
 
+`BROKER_K8S_OIDC_ISSUER` names the issuer of each Kubernetes cluster whose ServiceAccount tokens
+the broker takes: comma-separated `<name>=<issuer URL>` entries, each name lowercase letters,
+digits and hyphens, at most 64 characters. Each GKE cluster signs its tokens as an issuer of its
+own, so a deployment whose pods run in two clusters names both, as above. One bare issuer URL is
+also taken, as the one issuer of a deployment of one cluster, with no name. The broker reads a
+token's `iss` claim before it trusts the token, and checks the token against the keys of that
+issuer alone. It refuses a token whose issuer the list does not name. The tokens of every issuer
+carry the one audience `BROKER_K8S_OIDC_AUDIENCE`. The
+broker refuses to start on a malformed entry, on two entries of one name or of one URL, and on a
+bare URL beside named entries.
+
+The broker reads each issuer in the background from its start, so it starts and serves while
+one of them cannot be read. Until it reads an issuer, it answers the tokens of that issuer
+`503 OIDC_ISSUER_UNAVAILABLE`, and it answers them the same way while the issuer's key set cannot
+be read. It reads a key set that failed again at most once in 5 seconds, however many tokens
+arrive. A 503 decides nothing about the token, so the Legion daemon and a pod's renewer try again.
+The one exception is the token exchange's issuer: `BROKER_EXCHANGE_K8S_ISSUER` names, by its name
+in `BROKER_K8S_OIDC_ISSUER`, the one issuer whose tokens the exchange takes for
+`BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker reads that issuer at startup and refuses to start
+when it cannot. With one issuer the setting may be left out. With two or more, a broker that sets
+`BROKER_EXCHANGE_K8S_AUDIENCE` and leaves the setting out refuses to start, naming it. The entries
+of `BROKER_EXCHANGE_ACCOUNTS` match the tokens of that one issuer.
+
 `BROKER_API_ACCOUNTS` lists the callers of the broker's named-caller routes, here Dispatch's
 server as the caller `dispatch`, each by its own account. An account is written in one of two
 forms, and the entry's own text says which: a Kubernetes ServiceAccount subject, as above, or
 `google:` and a Google service account's address
 (`listener=google:example-listener@example-project.iam.gserviceaccount.com`). A Kubernetes caller
-presents its projected token for `BROKER_K8S_OIDC_AUDIENCE`, verified against
-`BROKER_K8S_OIDC_ISSUER`, and is looked up by the token's `sub`, so such an entry needs that pair.
+presents its projected token for `BROKER_K8S_OIDC_AUDIENCE`, verified against the issuer of
+`BROKER_K8S_OIDC_ISSUER` that the token names, and is looked up by the token's `sub`, so such an
+entry needs that pair. A ServiceAccount of one name can exist in two clusters, so a Kubernetes
+entry may end with the names of the issuers its token is taken from, `=<issuer name>[,<issuer
+name>…]`, as `=first` does above. An entry that names none takes the first issuer of the list
+alone, so an entry written for one cluster keeps its meaning. A listed account's token from an
+issuer its entry does not name is answered `403 ACCOUNT_NOT_LISTED`, as an account the list does
+not name is.
 A Google caller presents its machine's own Google identity token for `BROKER_GOOGLE_OIDC_AUDIENCE`
 — the audience every machine of the deployment already holds a token for, so the Envoy listener on
 a machine presents what its metadata server already hands it and mints no second token — verified
@@ -177,6 +206,8 @@ whitespace-separated `name=<service account>` entries, for example
 `BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:legion-worker` for the Legion daemon's
 worker pods. A service whose pods run as several accounts gets one entry for each, for example
 `legion-daemon=system:serviceaccount:legion:legion-worker legion-daemon=system:serviceaccount:legion:legion-controller`.
+An entry names no issuer: a pod of a listed account enrolls with a token of any issuer
+`BROKER_K8S_OIDC_ISSUER` names, so one entry serves the account's pods in every cluster.
 
 A pod gets the service's agent-tier secrets at once when two things hold: a machine login for the
 listed service enrolled it, and its projected token proved one of that service's accounts. Every
@@ -196,10 +227,16 @@ While a secret's owner tag names a service the list leaves out, the broker refus
 
 A service's launcher, such as the Legion daemon, logs in with its own projected ServiceAccount
 token, and no person approves it. `BROKER_SERVICE_LOGINS` lists which ServiceAccounts may log in
-as which service, whitespace-separated `<service>=<service account>` entries, for example
-`BROKER_SERVICE_LOGINS=legion-daemon=system:serviceaccount:legion-system:legion-daemon-legion`,
+as which service, whitespace-separated `<service>=<service account>[=<issuer name>[,<issuer
+name>…]]` entries, for example
+`BROKER_SERVICE_LOGINS=legion-daemon=system:serviceaccount:legion-system:legion-daemon-legion=first`,
 one entry per daemon. Each account is named exactly, with no wildcard, and logs in as the one
-service its entry names.
+service its entry names. Its token is taken only from the issuers its entry names, by their names
+in `BROKER_K8S_OIDC_ISSUER`, and an entry that names none takes the first issuer of that list
+alone. So a daemon logs in with a token of its own cluster, whichever cluster its pods run in. A
+listed account's token from an issuer its entry does not name is refused
+`403 ACCOUNT_NOT_LISTED`, and the broker refuses to start on an entry that names an issuer the
+list does not hold, names one twice, or names any while `BROKER_K8S_OIDC_ISSUER` is one bare URL.
 The broker refuses to start on an entry naming a namespace's `default` account, which every pod in
 that namespace whose spec names no account runs as, so any pod there could log in as the daemon.
 An account `BROKER_SERVICES` binds for a service's pods may be listed here as well, which is a pod
@@ -209,8 +246,8 @@ enrols the one pod whose token made it: any other pod UID is refused `403 POD_SE
 A pod enrolling itself states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`: the pods
 of one account enrol under one principal, so a name such a pod picked would be a sibling pod's,
 and the enrolment would take that sibling's grants. `agent-secrets enroll --pod` sends none.
-The broker verifies the token as it verifies a pod's, against
-`BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE`, so the setting needs both, and refuses a
+The broker verifies the token as it verifies a pod's, against the issuer of
+`BROKER_K8S_OIDC_ISSUER` that the token names and `BROKER_K8S_OIDC_AUDIENCE`, so the setting needs both, and refuses a
 token that lives longer than an hour from its issue (`exp` minus `iat`, beside a minute of skew) as
 `TOKEN_TOO_LONG_LIVED`: give the daemon's projected token an `expirationSeconds` of at most 3600,
 and `kubectl create token` a `--duration` of at most `1h`. Each account holds one launcher
@@ -223,13 +260,15 @@ for everyone signed in, naming its account and no approver, and anyone may revok
 every pod it enrolled at once; the daemon then logs in again with its token under a new credential,
 which enrolls the pods it launches next, while a pod already running stays without secrets until it
 is replaced. To stop a daemon logging in, remove its entry and redeploy the broker: its credential
-stops authenticating at its next call, and its next login is refused.
+stops authenticating at its next call, and its next login is refused. A credential also stops
+authenticating once the account's entry no longer names the issuer whose token made it, since
+the credential records that issuer.
 
 An account on that list also registers which pod may write under which session name
 (`POST /v1/oauth/exchange/pod-sessions`), which is how a deployment's daemon tells the broker that
 a pod it has just started owns an issue's session. That is a second authority the list carries, so
 weigh it before listing an account. The request carries the pod's own projected ServiceAccount
-token, which the broker verifies against the cluster's issuer as it verifies an enrolling pod's,
+token, which the broker verifies against the issuer that the token names, as it verifies an enrolling pod's,
 bar the one check it does not make here, that the token names a pod: such a token verifies and
 the exchange then refuses the registration `400 POD_NOT_BOUND`. So a listed account registers a
 pod whose token it holds and no other. A caller whose own token names a pod may not register
@@ -257,11 +296,12 @@ the daemon's namespace is that boundary: anyone who may create pods there naming
 create `serviceaccounts/token` for it, or exec into the daemon's pod and read its token file can
 get one. Deleting the daemon's ServiceAccount stops new tokens, but a token already issued keeps
 verifying until it expires, at most an hour after it was minted, because the broker checks tokens
-against the cluster's published keys rather than asking the API server. A token login spends its
+against the published keys of the token's issuer rather than asking the API server. A token login spends its
 source address's rate-limit bucket before its token is verified and its account's own after, so a
 daemon behind an address other callers share is held to that address's bucket. A login the broker
-could not complete (a 5xx, such as while its database is away) spends neither bucket, so the
-daemon's retries through a database outage leave it free to log in once the database is back. Set
+could not complete (a 5xx, such as while its database is away, or `503 OIDC_ISSUER_UNAVAILABLE`
+while the token's issuer cannot be read) gives back what it spent, so the
+daemon's retries through such an outage leave it free to log in once it ends. Set
 `BROKER_TRUSTED_PROXY_HEADER` behind a proxy, so each caller is keyed on its own address, and
 keep the daemon's and its pods' traffic to the broker on their own pod addresses rather than
 translated to a node's or a gateway's. The daemon renews halfway through its credential's life,
@@ -598,7 +638,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | A local stand-in (development only) | `BROKER_FAKE_SECRETS_FILE` names a JSON file the broker reads in place of the store, in Secrets Manager's shape whatever `BROKER_SECRETS_STORE` says, each secret's `kms_key_id` naming the agent-secrets key as the selected store configures it (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME` with the GCP store); the [configuration reference](/legion/broker/reference/config/#variables-the-broker-reads) gives its format. |
 | Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token for `BROKER_K8S_OIDC_AUDIENCE`, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
 | The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable` ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
-| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
+| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` names the ServiceAccount token issuer of each cluster whose pods or services present a token, and `BROKER_K8S_OIDC_AUDIENCE` the one audience their projected tokens carry. The broker reads each issuer's discovery document in the background from its start and starts whether or not it can: until it reads an issuer, and while that issuer's key set cannot be read, it answers that issuer's tokens `503 OIDC_ISSUER_UNAVAILABLE` and serves every other issuer's. The token exchange's issuer (`BROKER_EXCHANGE_K8S_ISSUER`) is the exception: the broker reads it at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. |
 | The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
@@ -823,6 +863,9 @@ The broker logs text lines to stderr. The ones worth alerting or searching on:
 | `approval sign-in refused …` | At WARN: a sign-in made no session, the line saying why: the provider refused it, its state or return path was not the sign-in's, the code exchange or ID token failed, or the person is outside `BROKER_SIGNIN_DOMAIN` or unverified. |
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
+| `broker: kubernetes issuer name=<name> url=<issuer URL> read=<true or false>` | At startup, one line for each issuer of `BROKER_K8S_OIDC_ISSUER` (with no `name` for one bare URL), after one try to read each, all at once: `read=true` when its discovery document was read, `read=false` when it was not, and the broker then reads it in the background and answers its tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can. No issuer refuses the start. |
+| `broker: kubernetes issuer read name=<name> url=<issuer URL>` | At INFO, once, when the background read of an issuer the startup could not read succeeds. From then the broker checks that issuer's tokens. |
+| `oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile issuer=<issuer URL> error=…` | At ERROR, at most once a minute for each issuer: the background read of a cluster's issuer failed. The broker tries again with a wait that doubles from 1 second to 30 seconds, and reads the issuer at most once in 5 seconds. Check the broker's route to that issuer. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and the address is bound. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret name> reason=<reason>` | At ERROR, on every namespace read and each refused reread. Reasons include `owner-tag-missing`, `owner-tag-malformed`, `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `kind-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, or naming a service the deployment does not register), `max-grant-required` (an `admin` secret, or a `google-service-account` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` secret whose `requesters` are not its one person owner, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-kind` (a `scopes` tag on a secret that is not a `google-service-account` one), `shape-malformed` (a `shape` tag set to anything but `token` or `document`), `max-grant-malformed` and `default-grant-malformed`. |

@@ -4163,9 +4163,13 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
+      # main at job 125691048644 (run 41562777668). Two tests of the project release dominate it now:
+      # TestAProjectMovesToAnotherClusterAndBack took 243 s without -race and
+      # TestAProjectMovesBackToTheFirstCluster 39 s, and the two took 297 s together under
+      # `CGO_ENABLED=1 go test -race` in an issue pod on 2026-11-15. The whole step took 896 s on
+      # run 43693570294 (job `test`) at d740f06b, a commit before those two tests existed. That run's
+      # 896 s and the pod's 297 s add up to 1,193 s, a sum of two machines' figures and no measured
+      # run, which the 30 minutes hold with 607 s to spare.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon

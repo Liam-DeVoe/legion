@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  The secrets broker trusts each Kubernetes cluster its configuration names. `BROKER_K8S_OIDC_ISSUER`
+  takes comma-separated `<name>=<issuer URL>` entries, one for each cluster, or one bare issuer URL
+  as before, and the broker checks each token against the issuer its `iss` claim names.
+  The broker reads each issuer in the background, so it starts and serves while one of them cannot
+  be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
+  answers the same while an issuer's key set cannot be read, and reads that key set again at most
+  once in 5 seconds. Before, it refused to start when it could not read its one issuer, and it
+  answered a token whose key set it could not read `403 POD_IDENTITY_MISMATCH` or
+  `401 TOKEN_INVALID`.
+  An entry of `BROKER_API_ACCOUNTS` or `BROKER_SERVICE_LOGINS` may end with
+  `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
+  names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A
+  listed account's token from another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's
+  credential records the issuer whose token made it (migration 0032), and it stops working once
+  the account's entry no longer names that issuer.
+  `BROKER_EXCHANGE_K8S_ISSUER` names the one issuer whose tokens the token exchange takes. It is
+  required with `BROKER_EXCHANGE_K8S_AUDIENCE` when the list names two or more issuers, and the
+  broker reads that issuer at startup and refuses to start when it cannot, as before.

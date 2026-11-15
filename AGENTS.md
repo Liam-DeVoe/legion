@@ -293,6 +293,17 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   each refusal says what the claim is doing and which operation reaches each state `legion claims list` shows, and names no moment to come back at;
   a compaction Oh My Pi refused or skipped is printed with its reason rather than failing the command, because the claim is back and whatever task it owed has gone again all the same
 
+- `legion project release --operator-token-file <file> [--bound <duration>] [--wait <duration>] [--dry-run] [--json]`
+
+  The operator's: release every pod of the daemon's project, the first step of moving the project's pods to another Kubernetes cluster (docs/kubernetes.md "Releasing a project's pods" and "Moving a project's pods to another cluster").
+  The daemon reads each issue pod's workspace through a running role's shim, asks each running role of a pod with unpushed commits, a refused read or a turn in progress to push to `legion/<KEY>` and answer, and waits for those answers or `--bound` (default `pod_update_grace_minutes`).
+  Then it stops the roles and deletes every Sandbox of the project, the controller's pod, the repository caches and any image probe among them, and saves no workspace.
+  From the release's start the daemon starts nothing of the project until its next boot, which ends the release and starts each claim it stopped, on its own session, in the cluster its configuration then names.
+  A pod that holds a claim an operator suspended is left, its claims held for an operator.
+  It prints one line per Sandbox and per stopped claim, or with `--json` the daemon's object, and exits 0 once the release finished and left no Sandbox, and 1 when it left one, the daemon refused, or `--wait` (default the bound plus 30 minutes) ended first.
+  `--dry-run` prints what a release would do now and asks, stops and saves nothing.
+  A daemon on the tmux runtime refuses it, and it does not serve a move onto tmux (docs/deployment.md "Moving a project onto tmux")
+
 - `legion restart <team>`
 
   Restart daemon, preserve worker sessions
