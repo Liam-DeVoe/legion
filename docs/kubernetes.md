@@ -5328,7 +5328,9 @@ The release does five things, in this order:
    The bound is `--bound`, or the daemon's `pod_update_grace_minutes` (30 minutes by default), one moment for every pod, counted from the release's start, and at it the release cuts each turn that still runs.
 
 4. As each pod's wait ends, it reads that pod's workspace one last time and stops its role processes.
-   It waits until each of the pod's claims is stored suspended, by `project_release` or by any source that took the claim over meanwhile, or until `worker_stop_timeout_seconds` passed.
+   It waits until the database holds each of the pod's claims suspended, by `project_release` or by any source that took the claim over meanwhile, or until `worker_stop_timeout_seconds` passed after the later of the stop and the bound.
+   A role in a turn is stopped when its turn ends or at the bound, whichever comes first, so the release waits for that turn rather than leave the pod while the turn may still run.
+   It reads each claim from the database, not from the daemon's memory, so a claim whose suspension the database did not take keeps the pod from being deleted, and the pod is left.
    A claim that failed or retired meanwhile holds no process, so the release does not wait for it, and its line names how it ended.
    Then it asks once more for each claim stored suspended by an idle release's `released`, so that the release's suspension takes that claim over by rank and the next boot starts it.
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
@@ -5337,9 +5339,9 @@ The release does five things, in this order:
    A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
    The daemon pushes nothing for a role.
    The release opens no pod update round, replaces no pod, and takes each claim it stops out of any round it was in.
-   A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods, and its line says so when it was not stored suspended within `worker_stop_timeout_seconds`.
+   A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods and waited for in the same way, and its line says so when it was not stored suspended in that time.
 
-5. Once every issue pod ended, it stops the claim of the project's controller, where the daemon runs one.
+5. Once every issue pod ended, it stops the claim of the project's controller, where the daemon runs one, and waits for it as for an issue pod's claims, so a controller in a turn is stopped when its turn ends or at the bound.
    Then it deletes the project's other Sandboxes one at a time, in the order of their names: the repository caches (`legion-<project>-cache-…`) come before the controller's pod (`legion-<project>-controller`), and any image-probe Sandbox (`legion-probe-<project>-…`) takes its place in that order.
 
 The command reads the release every 5 seconds until it finishes.
@@ -5383,13 +5385,15 @@ The release and the starts charge no launch failure and no death, and the releas
 A restart on the configuration of the release's own cluster also adopts each pod the release did not reach, as after any restart.
 A restart on another cluster's configuration finds none of those pods, so the move changes the configuration only once the release ended with no pod left.
 
-A pod is left when a claim of it was suspended by an operator, before the release or during it, when its claims were not stored suspended within `worker_stop_timeout_seconds`, or when its delete failed.
+A pod is left when a claim of it was suspended by an operator, before the release or during it, when its claims were not stored suspended in time (`worker_stop_timeout_seconds` after the later of the stop and the bound), or when its delete failed.
 The release then holds each claim that ran there as an operator's suspension, so no boot starts it, and the pod keeps its disk and the work on it.
+It also takes each claim of the pod out of any pod update round, the claim an operator suspended before the release included, so a round opened before the release does not replace the pod once its claims are resumed.
 The release waits up to twice `worker_stop_timeout_seconds` for each such hold to be stored before it finishes.
 Each such claim's line ends `operator (the next boot does not start it)`.
 When the hold was not stored in that time, the line names how the claim's own record stands instead and whether the next boot starts it, and adds why the hold was not stored, in brackets.
 The controller's pod, a repository cache or an image probe is left when the volume guard refuses its delete or when the Sandbox was written after the release read it.
-The controller's pod is left too when the controller's claim was not stored suspended within `worker_stop_timeout_seconds`, and so is a Sandbox whose labels name no kind that the release deletes.
+The controller's pod is left too when the controller's claim was not stored suspended in time, and so is a Sandbox whose labels name no kind that the release deletes.
+When the controller's pod is left, the release holds the controller's claim as an operator's suspension, as it holds a left issue pod's claims, and waits for that hold in the same way, so the controller's line ends `operator (the next boot does not start it)`.
 Move nothing while such a pod stands, and recover it in this order:
 
 1. Restart the daemon on the configuration of the cluster that holds the pod.

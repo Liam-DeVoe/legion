@@ -105,7 +105,9 @@ type idleRigAdoption struct {
 // the release's ask with ready_for_update, naming the round the ask names, and PushOnRelease
 // whether it first pushes its work as the ask tells it to: the working copy's change committed,
 // the issue's branch set to that commit and pushed. StayInTurn has the next prompt's turn begin and
-// never end, as a role still working when the release's bound comes.
+// last while the plan says so, as a role still working when the release's bound comes: a plan set
+// without it ends that turn within a second (idleRigRoleProcess.watchActivity), as a long turn
+// ends on its own.
 type idleRigPlan struct {
 	TakeTurn      bool             `json:"takeTurn"`
 	Topics        []string         `json:"topics"`
@@ -484,8 +486,11 @@ type idleRigRoleProcess struct {
 	lines   *bufio.Reader
 	writer  *shimwire.Writer
 	// inTurn is whether the agent is in a turn it has not ended (idleRigPlan.StayInTurn), which
-	// is what get_state answers.
-	inTurn atomic.Bool
+	// is what get_state answers. turnMu orders that turn's beginning and its end (prompted,
+	// endTurn), and turnPrompt is the prompt it runs on, "" while none runs.
+	inTurn     atomic.Bool
+	turnMu     sync.Mutex
+	turnPrompt string
 
 	claimToken claim.Token
 	secret     string
@@ -1039,19 +1044,48 @@ const idleRigActivityPeriod = time.Second
 // from what the daemon last took, or when the daemon took nothing last time, and sends nothing
 // otherwise. A reading it cannot make is skipped, as the next one comes a period later. Each
 // reading is made under reportMu, as reportActivity's is, so the report the daemon holds last is
-// always of the latest reading: none read before a change lands after one read since.
+// always of the latest reading: none read before a change lands after one read since. A reading
+// whose plan no longer stays in a turn ends the turn StayInTurn began (endTurn), and reports as
+// every turn's end does.
 func (p *idleRigRoleProcess) watchActivity() {
 	ticker := time.NewTicker(idleRigActivityPeriod)
 	defer ticker.Stop()
 	for range ticker.C {
 		p.reportMu.Lock()
-		if plan, err := p.plan(); err == nil && (!p.taken || !slices.Equal(plan.Background, p.reported)) {
+		plan, err := p.plan()
+		ended := false
+		if err == nil && !plan.StayInTurn {
+			if ended, err = p.endTurn(); err != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: end the turn of %s: %v\n", p.session, err)
+			}
+		}
+		if err == nil && (ended || !p.taken || !slices.Equal(plan.Background, p.reported)) {
 			if err := p.report(plan.Background); err != nil {
 				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s: %v\n", p.session, err)
 			}
 		}
 		p.reportMu.Unlock()
 	}
+}
+
+// endTurn ends the turn StayInTurn began, as a turn the agent ends on its own: the agent's end and
+// the prompt's result, the frames a plan that takes a turn writes (prompted). It answers whether a
+// turn ran to end.
+func (p *idleRigRoleProcess) endTurn() (bool, error) {
+	p.turnMu.Lock()
+	defer p.turnMu.Unlock()
+	if p.turnPrompt == "" {
+		return false, nil
+	}
+	id := p.turnPrompt
+	p.turnPrompt = ""
+	p.inTurn.Store(false)
+	for _, frame := range []shimwire.Frame{shimwire.AgentEnd{}, shimwire.PromptResult{ID: id, AgentInvoked: true}} {
+		if err := p.write(frame); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
 }
 
 // report posts one activity report through the daemon's own route, naming kinds as the
@@ -1185,6 +1219,9 @@ func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 		return err
 	}
 	if plan.StayInTurn {
+		p.turnMu.Lock()
+		defer p.turnMu.Unlock()
+		p.turnPrompt = prompt.ID
 		p.inTurn.Store(true)
 		return p.write(shimwire.AgentStart{})
 	}

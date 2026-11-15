@@ -7,6 +7,7 @@ package daemon
 // project_move_test.go's, in this same rig.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -282,6 +285,188 @@ func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
 			t.Fatalf("the state after the restart carries %v, want the release ended by a boot", served)
 		}
 	})
+}
+
+// releaseLineNow is the release's line of the Sandbox name as the record holds it now, and whether
+// it holds one yet: the release writes its lines once it has listed the project's Sandboxes.
+func releaseLineNow(release api.ProjectReleaseResponse, name string) (api.ReleasedSandbox, bool) {
+	for _, line := range release.Result.Sandboxes {
+		if line.Name == name {
+			return line, true
+		}
+	}
+	return api.ReleasedSandbox{}, false
+}
+
+// releaseClaimLine is the release's line of the claim token.
+func releaseClaimLine(t *testing.T, release api.ProjectReleaseResponse, token claim.Token) api.ReleasedClaim {
+	t.Helper()
+	for _, line := range release.Result.Claims {
+		if line.Token == token {
+			return line
+		}
+	}
+	t.Fatalf("the release names no claim %s; it names %+v", token, release.Result.Claims)
+	return api.ReleasedClaim{}
+}
+
+// dispatch://INFRA-3583 R6: the release deletes the controller's pod, cutting a turn at the bound
+// at the latest. The controller's stop is asked once every issue pod has ended, and a controller
+// in a turn then is stopped at the turn's end, which can come later than the stop timeout after
+// the stop and still before the bound. The release waits for that turn rather than leave the
+// controller's pod, deletes the pod once the stop is stored, and names the controller's claim
+// stored suspended by `project_release`, which the next boot starts.
+func TestProjectReleaseWaitsForTheControllersTurnToTheBound(t *testing.T) {
+	rig := newIdleRigWith(t, idleRigOptions{
+		configure:      func(cfg *config.Config) { cfg.ControllerLaunch = config.ControllerLaunchDaemon },
+		controllerPlan: &idleRigPlan{StayInTurn: true},
+	}, idleRigSeed{name: "clean", roles: []claim.Role{claim.RoleImplementer}})
+	clean := rig.issue("clean")
+	rig.launchAll()
+	controller := claim.ControllerToken(rig.project)
+	idleRigEventually(t, idleRigPodWait, "the daemon's controller in the turn its start message began", func() bool {
+		c, ok := rig.claimsByToken()[controller]
+		return ok && c.State == string(supervise.StateWorking)
+	})
+
+	rig.startRelease("2m")
+	idleRigEventually(t, idleRigProjectReleaseWait, "the clean pod ended", func() bool {
+		release, _ := rig.readRelease()
+		line, listed := releaseLineNow(release, clean.pod)
+		return listed && line.Outcome != api.ReleaseWaiting
+	})
+	// The controller's stop was asked as the clean pod ended, and its turn holds the stop. The
+	// turn runs on past the stop timeout, well before the bound.
+	time.Sleep(rig.cfg.WorkerStopTimeout + 5*time.Second)
+	if release, _ := rig.readRelease(); release.FinishedAt != nil {
+		t.Fatalf("the release finished while the controller's turn ran before the bound, with the lines %+v", release.Result.Sandboxes)
+	}
+	if c := rig.claimsByToken()[controller]; c.State != string(supervise.StateWorking) {
+		t.Fatalf("the controller stands %s before its turn ended, want working", c.State)
+	}
+	rig.agents.setPlan(idleRigControllerPod, string(claim.RoleController), idleRigPlan{TakeTurn: true})
+
+	release, _ := rig.awaitReleaseFinished()
+	if line := releaseLine(t, release, clean.pod); line.Outcome != api.ReleaseDeletedClean {
+		t.Errorf("the clean pod's line is %+v, want deleted_clean", line)
+	}
+	var line api.ReleasedSandbox
+	for _, l := range release.Result.Sandboxes {
+		if l.Kind == runtime.ProjectSandboxController {
+			line = l
+		}
+	}
+	if line.Outcome != api.ReleaseDeleted {
+		t.Fatalf("the controller's line is %+v, want deleted; the release names %+v", line, release.Result.Sandboxes)
+	}
+	if rig.kube.sandbox(line.Name) != nil {
+		t.Errorf("the controller's Sandbox %s is still there", line.Name)
+	}
+	if release.FinishedAt.After(release.BoundAt) {
+		t.Errorf("the release finished at %s, after the bound %s: the controller's turn was cut, not waited for", release.FinishedAt, release.BoundAt)
+	}
+	if ended := releaseClaimLine(t, release, controller); ended.Ended != string(supervise.SuspendedByProjectRelease) || !ended.BootStarts {
+		t.Errorf("the controller's claim line is %+v, want it ended project_release, which the next boot starts", ended)
+	}
+	if stored := rig.claimsByToken()[controller]; stored.State != string(supervise.StateSuspended) ||
+		stored.SuspendedBy != string(supervise.SuspendedByProjectRelease) {
+		t.Errorf("the controller is stored %s by %q, want suspended by project_release", stored.State, stored.SuspendedBy)
+	}
+}
+
+// refuseReleaseStops has the store refuse every write of token's claim as the project release's
+// suspension, as a database that does not take that write refuses it, for the rest of the test:
+// with a serialization failure (SQLSTATE 40001), which the claim's machine owes as it owes any
+// write the database did not take (supervise's writeOwed), its claim suspended in memory.
+func (r *idleWakeRig) refuseReleaseStops(token claim.Token) {
+	r.t.Helper()
+	for _, statement := range []string{
+		`create function idle_rig_refuse_release_stop() returns trigger language plpgsql as $$
+			begin raise exception 'the store refused the write' using errcode = 'serialization_failure'; end $$`,
+		`create trigger idle_rig_refuse_release_stop before insert or update on claims for each row
+			when (new.token = '` + string(token) + `' and new.suspended_by = '` + string(supervise.SuspendedByProjectRelease) + `')
+			execute function idle_rig_refuse_release_stop()`,
+	} {
+		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
+			r.t.Fatalf("make the store refuse the release's stop of %s: %v", token, err)
+		}
+	}
+}
+
+// dispatch://INFRA-3583 R8 and its plan's decision 8: the release deletes a pod only once each of
+// its claims is stored suspended. A stop whose write the database refuses leaves the claim
+// suspended in its machine's memory and its row as it was, which the next boot would read as a
+// role still running in a pod that is gone. The release reads the row, so it leaves the pod with
+// its disk, its line naming how the store holds the claim, and holds the claim for an operator.
+func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
+	rig := newIdleWakeRig(t, "refused")
+	refused := rig.issue("refused")
+	rig.launchAll()
+	token := rig.token(refused)
+	rig.refuseReleaseStops(token)
+
+	rig.startRelease("10s")
+	release, _ := rig.awaitReleaseFinished()
+	line := releaseLine(t, release, refused.pod)
+	if line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "the store holds it") {
+		t.Fatalf("the pod's line is %+v, want it left for its claim the store does not hold suspended", line)
+	}
+	if rig.kube.sandbox(refused.pod) == nil {
+		t.Fatal("the pod whose claim the store does not hold suspended was deleted")
+	}
+	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
+		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
+	}
+	if ended := releaseClaimLine(t, release, token); ended.Ended != string(supervise.SuspendedByOperator) || ended.BootStarts {
+		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
+	}
+}
+
+// dispatch://INFRA-3583 R6, "the release leaves no round open on any claim": a pod the release
+// leaves keeps none of its claims in an update round, the claim an operator suspended before the
+// release included, which is no claim the release stops. That pod is the one a pod update round
+// waits on past its bound, since the operator's suspension holds it (podupdate.go's
+// heldByOperator), and a round left on its claims would replace it once the operator resumes them.
+// Each claim of the pod stays held by an operator, so no boot starts it.
+func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
+	rig := newIdleRigWith(t, idleRigOptions{orphanSweep: 2 * time.Second},
+		idleRigSeed{name: "held", roles: []claim.Role{claim.RoleImplementer, claim.RolePlanner}})
+	held := rig.issue("held")
+	rig.launchAll()
+	implementer, planner := rig.roleToken(held, claim.RoleImplementer), rig.roleToken(held, claim.RolePlanner)
+	if !rig.kube.madeByAnOlderDaemon(held.pod, moveOlderImage) {
+		t.Fatalf("the pod of %s is not in the cluster to stand for an older daemon's", held.key)
+	}
+	idleRigEventually(t, idleRigPodWait, "the update round open over both claims of the older daemon's pod", func() bool {
+		claims := rig.claimsByToken()
+		return claims[implementer].UpdateRound != "" && claims[planner].UpdateRound != ""
+	})
+	if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(planner)+"/suspend", nil, true); status/100 != 2 {
+		t.Fatalf("suspend %s = %d; body %s", planner, status, body)
+	}
+	idleRigEventually(t, idleRigPodWait, "the operator's suspension of the planner stored, in its round", func() bool {
+		c := rig.claimsByToken()[planner]
+		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator) && c.UpdateRound != ""
+	})
+
+	rig.startRelease("10s")
+	release, _ := rig.awaitReleaseFinished()
+	if line := releaseLine(t, release, held.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
+		t.Fatalf("the pod's line is %+v, want it left for the operator's suspension", line)
+	}
+	if rig.kube.sandbox(held.pod) == nil {
+		t.Fatal("the left pod's Sandbox is gone")
+	}
+	claims := rig.claimsByToken()
+	for _, token := range []claim.Token{implementer, planner} {
+		c := claims[token]
+		if c.UpdateRound != "" || c.UpdateHead != "" {
+			t.Errorf("the left pod's claim %s is stored in round %q with head %q, want in no round", token, c.UpdateRound, c.UpdateHead)
+		}
+		if c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByOperator) {
+			t.Errorf("the left pod's claim %s is stored %s by %q, want suspended by an operator", token, c.State, c.SuspendedBy)
+		}
+	}
 }
 
 // idleRigProcessLines is every line a rig role process wrote of its own, out of the launchers'

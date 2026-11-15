@@ -63,6 +63,13 @@ func (*releaseRecord) ProjectReleaseStopSet(context.Context, string) ([]store.Pr
 	return nil, nil
 }
 
+func (s *releaseRecord) ClaimByToken(_ context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	s.claims.mu.Lock()
+	defer s.claims.mu.Unlock()
+	c, ok := s.claims.claims[token]
+	return c, ok, nil
+}
+
 func (s *releaseRecord) Claims(context.Context) ([]supervise.Claim, error) {
 	s.claims.mu.Lock()
 	defer s.claims.mu.Unlock()
@@ -105,7 +112,8 @@ func (*releasePods) ReleaseProjectController(context.Context, claim.Token) error
 
 // A claim of the stop set that failed or retired before the release came to its pod holds no
 // process, so the release does not wait for it to be stored suspended: the pod is deleted rather
-// than left at the stop timeout, and the claim's line says how it ended, which no boot starts.
+// than left once the wait for its stop runs out, and the claim's line says how it ended, which no
+// boot starts.
 func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testing.T) {
 	for _, ended := range []supervise.ClaimState{supervise.StateFailed, supervise.StateRetired} {
 		t.Run(string(ended), func(t *testing.T) {
@@ -121,11 +129,12 @@ func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testin
 					Session: "ses_implementer", State: supervise.StateWorking}}}
 			pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
 				Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}}
-			// The stop timeout is the wait a claim that never settles costs before its pod is left.
+			// A claim that never settles costs the bound and then the stop timeout before its pod is
+			// left (stopDeadline), so both are short.
 			r := &projectReleaser{ctx: context.Background(), project: "legion", mark: &projectRelease{}, store: records, machines: sup,
 				pods: pods, defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
 				now: time.Now, log: quietLogger()}
-			if _, started, err := r.Start(context.Background(), time.Minute, false); err != nil || !started {
+			if _, started, err := r.Start(context.Background(), time.Second, false); err != nil || !started {
 				t.Fatalf("Start = started %v, %v; want the release started", started, err)
 			}
 			var result api.ProjectReleaseResult

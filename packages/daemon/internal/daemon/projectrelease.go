@@ -36,14 +36,17 @@ const projectReleasePoll = 250 * time.Millisecond
 const releaseUnknownKind = "its labels name no kind of Sandbox the release deletes"
 
 // projectReleaseStore is what the project release reads and writes of the daemon's store: its
-// record, the stop set a dry run reads as the release's own transaction reads it, and the claims
-// as the store holds them, which is where each claim's line of the result is read from at the end.
+// record, the stop set a dry run reads as the release's own transaction reads it, each claim it
+// stops or holds as the store holds it, which is what decides that the claim is stored suspended
+// (awaitSettled), and every claim as the store holds it, which is where each claim's line of the
+// result is read from at the end.
 type projectReleaseStore interface {
 	StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
 	RecordProjectRelease(ctx context.Context, id int64, result json.RawMessage) error
 	FinishProjectRelease(ctx context.Context, id int64, result json.RawMessage, at time.Time) error
 	ReadProjectRelease(ctx context.Context, project string) (store.ProjectRelease, bool, error)
 	ProjectReleaseStopSet(ctx context.Context, project string) ([]store.ProjectReleaseClaim, error)
+	ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error)
 	Claims(ctx context.Context) ([]supervise.Claim, error)
 }
 
@@ -62,11 +65,14 @@ type projectReleaseStore interface {
 // that has a role in a turn is asked. Each asked pod waits until each asked role answered and no
 // role of it is in a turn, or the bound; then its last read, its stop and its delete
 // (stopAndDelete). Once every issue pod ended, the controller's claim and pod, the repository
-// caches and any probe go. The result grows on the record as each Sandbox ends, and the release
-// finishes once each claim it held for an operator in a left pod is stored suspended or its wait
-// ran out. Every goroutine it starts takes a store mark of its own (store.ForConcurrentWorker),
-// since its reads, stops and holds run side by side and the pool refuses a second connection
-// under one mark.
+// caches and any probe go. Each stop is waited for until the stop timeout after the later of the
+// stop and the bound, since a claim in a turn is stopped at the turn's end or at the bound
+// (stopDeadline), and a claim counts as stopped only once the store holds it so (awaitSettled). A
+// pod it leaves, the controller's among them, has its claims held for an operator (hold). The
+// result grows on the record as each Sandbox ends, and the release finishes once each claim it
+// held for an operator is stored suspended or its wait ran out. Every goroutine it starts takes a
+// store mark of its own (store.ForConcurrentWorker), since its reads, stops and holds run side by
+// side and the pool refuses a second connection under one mark.
 type projectReleaser struct {
 	// ctx is the release goroutine's lifetime, supervision's: a daemon that stops ends the release
 	// where it stands, and the next boot ends its record and starts the claims it had stopped.
@@ -85,7 +91,8 @@ type projectReleaser struct {
 	// its teardown (outbox.armBackstops); nil with no workflow, which arms none.
 	armBackstops func(ctx context.Context, issue string) error
 	// defaultBound is pod_update_grace_minutes, the bound of a release that names none, and
-	// stopTimeout is worker_stop_timeout_seconds, which bounds the wait for a stop to be stored.
+	// stopTimeout is worker_stop_timeout_seconds, which bounds the wait for a stop to be stored
+	// after the later of the stop and the bound (stopDeadline).
 	defaultBound time.Duration
 	stopTimeout  time.Duration
 	reread, poll time.Duration
@@ -136,13 +143,13 @@ type releaseRun struct {
 	result api.ProjectReleaseResult
 	// asked is each claim the release asked, and where its answer is recorded.
 	asked map[claim.Token]releaseAsk
-	// held is each claim the release asked an operator's suspension of, in a left pod, whose
-	// storage the release waits for before it finishes, and heldRefused where the machines'
-	// refusals of those suspensions are written.
+	// held is each claim the release asked an operator's suspension of, in a pod it left (an
+	// issue pod or the controller's), whose storage the release waits for before it finishes, and
+	// heldRefused where the machines' refusals of those suspensions are written.
 	held        []claim.Token
 	heldRefused *refusals
 	// detail is why a claim the release stopped with no pod of the project was not stored
-	// suspended within the stop timeout, written on the claim's line at the end.
+	// suspended in time (stopDeadline), written on the claim's line at the end.
 	detail map[claim.Token]string
 
 	// recording serializes the writes of the result, so a later write is never overtaken by an
@@ -367,14 +374,14 @@ func (r *projectReleaser) release(run *releaseRun) {
 			if len(pending) == 0 {
 				return
 			}
-			r.log.Warn("project release: claims with no pod of the project were not stored suspended within the stop timeout",
-				"release", run.id, "timeout", r.stopTimeout.String(), "claims", pendingWords(pending))
+			r.log.Warn("project release: claims with no pod of the project were not stored suspended in time",
+				"release", run.id, "timeout", r.stopTimeout.String(), "bound", run.bound.Format(time.RFC3339), "claims", pendingWords(pending))
 			run.mu.Lock()
 			if run.detail == nil {
 				run.detail = map[claim.Token]string{}
 			}
 			for token, why := range pending {
-				run.detail[token] = "not stored suspended within the stop timeout of " + r.stopTimeout.String() + ": " + why
+				run.detail[token] = r.stopWait() + ": " + why
 			}
 			run.mu.Unlock()
 		}()
@@ -698,11 +705,11 @@ func (run *releaseRun) passBound(pod *releasePod) {
 // or retired meanwhile holds no process and is settled as it stands (stopSettled). A claim stored
 // suspended under another source is asked once more, so an idle release's hold already in flight
 // is taken over by rank and the boot starts it. Then one of two ends. A pod a claim of which an
-// operator suspended meanwhile, or whose claims were not all settled within the stop timeout, is
-// left, each of its claims held for an operator so that no boot starts it. Otherwise the pod is
-// deleted (IssueSuspender.SuspendIssue), with an authorize the runtime calls under its pod lock
-// that holds only while the release runs and no claim of the pod is an operator's, and whose false
-// answer leaves the pod as well.
+// operator suspended meanwhile, or whose claims were not all stored settled by the stop's deadline
+// (stopDeadline), is left, each of its claims held for an operator so that no boot starts it.
+// Otherwise the pod is deleted (IssueSuspender.SuspendIssue), with an authorize the runtime calls
+// under its pod lock that holds only while the release runs and no claim of the pod is an
+// operator's, and whose false answer leaves the pod as well.
 func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, pod *releasePod, last releaseRead) {
 	tokens := stopTokens(pod.stop)
 	pending := r.stopClaims(ctx, run, tokens, "the project release stops it to delete its pod")
@@ -730,7 +737,7 @@ func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, po
 		return
 	}
 	if len(pending) > 0 {
-		r.leave(ctx, run, pod, "its claims were not stored suspended within the stop timeout of "+r.stopTimeout.String()+": "+pendingWords(pending))
+		r.leave(ctx, run, pod, "its claims were "+r.stopWait()+": "+pendingWords(pending))
 		return
 	}
 	authorized := false
@@ -768,32 +775,100 @@ func deletedOutcome(read releaseRead) string {
 	return api.ReleaseDeletedClean
 }
 
-// leave is a pod left with its disk, for why: each claim of the stop set in it is asked an
-// operator's suspension, which takes over a project release's by rank and holds one still in
-// flight, so no boot starts any of them (R6, R8). The release waits for each of those to be stored
-// before it finishes, and a refusal of one is written on that claim's line.
+// leave is a pod left with its disk, for why: each claim of the stop set in it is held for an
+// operator, so no boot starts any of them (R6, R8), and every claim of the pod is taken out of its
+// update round (hold). The release waits for each hold to be stored before it finishes, and a
+// refusal of one is written on that claim's line.
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
-	tokens := stopTokens(pod.stop)
-	r.suspend(ctx, tokens, supervise.RequestSuspend{By: supervise.SuspendedByOperator, Reason: "the project release leaves its pod: " + why},
-		run.heldRefused)
+	held := stopTokens(pod.stop)
+	var others []claim.Token
+	for _, v := range r.issueViews(pod.sandbox.Issue) {
+		if !slices.Contains(held, v.Token) {
+			others = append(others, v.Token)
+		}
+	}
+	r.hold(ctx, run, held, others, "the project release leaves its pod: "+why)
 	run.mu.Lock()
 	line := &run.result.Sandboxes[pod.line]
 	line.Outcome, line.Reason = api.ReleaseLeft, why
-	run.held = append(run.held, tokens...)
 	run.mu.Unlock()
 	r.log.Warn("project release: left an issue pod and its disk", "release", run.id, "sandbox", pod.sandbox.Name, "reason", why)
 	r.record(ctx, run)
 }
 
+// hold asks each of held an operator's suspension for reason, which takes over a project
+// release's by rank and holds one still in flight, so no boot starts the claim, and adds it to the
+// claims finish waits for (run.held), with a refusal written to run.heldRefused. Then each claim of
+// held and of others that records an update round is taken out of it, as the round's end takes it
+// (supervise.PodUpdateEnded): the release leaves no round open on any claim (R6), and a round left
+// on a claim of a pod the release left could replace that pod, and the disk the release left it
+// to keep, once an operator's resume lifts the last hold (podupdate.go's heldByOperator). The
+// round goes after the suspension, so the task the round held back is handed to no role the
+// release is stopping. Each claim's requests run on a goroutine of its own, under a store mark of
+// its own, and hold returns once each was answered.
+func (r *projectReleaser) hold(ctx context.Context, run *releaseRun, held, others []claim.Token, reason string) {
+	var wg sync.WaitGroup
+	for i, token := range slices.Concat(held, others) {
+		holds := i < len(held)
+		m, ok := r.machines.Machine(token)
+		if !ok {
+			if holds {
+				run.heldRefused.set(token, "the daemon supervises no machine for it")
+			}
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := store.ForConcurrentWorker(ctx)
+			if holds {
+				err := m.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator, Reason: reason})
+				if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) {
+					run.heldRefused.set(token, err.Error())
+				}
+			}
+			if round := m.View().UpdateRound; round != "" {
+				if err := m.Handle(ctx, supervise.PodUpdateEnded{Claim: token, Round: round}); err != nil {
+					r.log.Warn("project release: take a claim of a Sandbox it leaves out of its update round",
+						"release", run.id, "claim", token, "round", round, "error", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	run.mu.Lock()
+	run.held = append(run.held, held...)
+	run.mu.Unlock()
+}
+
 // stopClaims asks each of tokens the project release's suspension, bounded by the release's bound,
-// and waits until each is settled (stopSettled) or the stop timeout has passed, on the wall clock. It
-// answers each claim not settled by then with what is known of why: the machine's refusal, or the
-// state it stands in. A suspension held for a turn is the machine's to end, at the turn's end or
-// at the bound, so a held one is waited for like any other.
+// and waits until each is stored settled (awaitSettled) or the stop's deadline has passed, on the
+// wall clock (stopDeadline). It answers each claim not settled by then with what is known of why:
+// the machine's refusal, and how the claim stands in memory or in the store. A suspension held for
+// a turn is the machine's to end, at the turn's end or at the bound, so a held one is waited for
+// like any other.
 func (r *projectReleaser) stopClaims(ctx context.Context, run *releaseRun, tokens []claim.Token, reason string) map[claim.Token]string {
 	refused := r.suspend(ctx, tokens, supervise.RequestSuspend{By: supervise.SuspendedByProjectRelease, Deadline: run.bound, Reason: reason},
 		newRefusals())
-	return r.awaitSettled(ctx, tokens, false, r.stopTimeout, refused)
+	return r.awaitSettled(ctx, tokens, false, r.stopDeadline(run), refused)
+}
+
+// stopDeadline is when the release stops waiting for a stop it asks now to be stored: the stop
+// timeout after the later of now and the bound. The machine holds a suspension that reaches a
+// claim in a turn until the turn ends or until the deadline the release names, its bound
+// (holdSuspension), so a role or the controller whose turn is still allowed to run is waited for,
+// and the runtime's stop of the process takes up to the stop timeout after that.
+func (r *projectReleaser) stopDeadline(run *releaseRun) time.Time {
+	from := time.Now()
+	if run.bound.After(from) {
+		from = run.bound
+	}
+	return from.Add(r.stopTimeout)
+}
+
+// stopWait is how a line says that the wait for a stop ran out (stopDeadline).
+func (r *projectReleaser) stopWait() string {
+	return "not stored suspended within the stop timeout of " + r.stopTimeout.String() + " after the later of its stop and the bound"
 }
 
 // refusals is where the machines' refusals of the suspensions a release asked are written as they
@@ -841,43 +916,92 @@ func (r *projectReleaser) suspend(ctx context.Context, tokens []claim.Token, req
 }
 
 // awaitSettled waits, without asking anything, until each of tokens the daemon supervises is
-// settled as a stop byOperator asks (stopSettled), or until within has passed on the wall clock. It
-// answers each claim not settled by then with why — the machine's refusal where refused holds
-// one, and the state it stands in otherwise — and each token with no machine with its refusal.
-func (r *projectReleaser) awaitSettled(ctx context.Context, tokens []claim.Token, byOperator bool, within time.Duration,
+// settled as a stop byOperator asks (stopSettled) both as its machine holds it and as the store
+// holds it, or until the wall clock passes until. The stored row is what decides, since a pod is
+// deleted only once each of its claims is stored suspended: a suspension whose write failed
+// leaves the machine's claim suspended and the row as it was (supervise's owed write). The store
+// is read once every machine holds its claim settled, and at the last look, so a claim still
+// stopping costs no read. It answers each claim not settled by then with why — how its machine
+// holds it, and how the store holds it where the machine holds it settled, after the machine's
+// refusal where refused holds one — and each token with no machine with its refusal.
+func (r *projectReleaser) awaitSettled(ctx context.Context, tokens []claim.Token, byOperator bool, until time.Time,
 	refused *refusals) map[claim.Token]string {
-	until := time.Now().Add(within)
 	for {
+		last := !time.Now().Before(until) || ctx.Err() != nil
 		pending := map[claim.Token]string{}
-		waiting := 0
+		var settled []supervise.Claim
+		var unsupervised []claim.Token
 		for _, token := range tokens {
-			if m, ok := r.machines.Machine(token); ok {
-				v := m.View()
-				if stopSettled(v.Claim, byOperator) {
-					continue
-				}
-				pending[token] = "it stands " + string(v.State)
-				waiting++
+			m, ok := r.machines.Machine(token)
+			if !ok {
+				unsupervised = append(unsupervised, token)
+				continue
 			}
+			if v := m.View().Claim; stopSettled(v, byOperator) {
+				settled = append(settled, v)
+			} else {
+				pending[token] = "it stands " + claimStanding(v)
+			}
+		}
+		if len(pending) == 0 || last {
+			for _, c := range settled {
+				if why, stored := r.storedSettled(ctx, c, byOperator); !stored {
+					pending[c.Token] = why
+				}
+			}
+		}
+		if len(pending) > 0 && !last {
+			select {
+			case <-ctx.Done():
+			case <-time.After(r.poll):
+			}
+			continue
+		}
+		for token, stands := range pending {
+			if why, ok := refused.of(token); ok {
+				pending[token] = why + "; " + stands
+			}
+		}
+		for _, token := range unsupervised {
 			if why, ok := refused.of(token); ok {
 				pending[token] = why
 			}
 		}
-		if waiting == 0 || !time.Now().Before(until) || ctx.Err() != nil {
-			return pending
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(r.poll):
-		}
+		return pending
 	}
 }
 
-// stopSettled is whether c stands as a stop asked leaves it. Stored suspended is settled: by an
-// operator for an operator's hold, and by any source for the release's own, whose take-over of
-// another source is asked after (stopAndDelete). A claim that failed or retired is settled too: no
-// stop changes it, it holds no process, so no deletion of its pod reads as its death, and the boot
-// starts neither, so its line names how it ended.
+// storedSettled is whether c, which its machine holds settled as a stop byOperator asks, is stored
+// settled too (stopSettled), and how the two stand when it is not.
+func (r *projectReleaser) storedSettled(ctx context.Context, c supervise.Claim, byOperator bool) (string, bool) {
+	stored, found, err := r.store.ClaimByToken(ctx, c.Token)
+	stands := "it stands " + claimStanding(c)
+	switch {
+	case err != nil:
+		return stands + ", and its stored record could not be read: " + err.Error(), false
+	case !found:
+		return stands + ", and the store holds no record of it", false
+	case !stopSettled(stored, byOperator):
+		return stands + ", and the store holds it " + claimStanding(stored), false
+	}
+	return "", true
+}
+
+// claimStanding is how c stands, as a line names it: its state, and the source of its suspension
+// when it is suspended.
+func claimStanding(c supervise.Claim) string {
+	if c.State == supervise.StateSuspended && c.SuspendedBy != "" {
+		return string(c.State) + " by " + string(c.SuspendedBy)
+	}
+	return string(c.State)
+}
+
+// stopSettled is whether c stands as a stop asked leaves it, read of the machine's claim and of the
+// stored row alike (awaitSettled). Suspended is settled: by an operator for an operator's hold,
+// and by any source for the release's own, whose take-over of another source is asked after
+// (stopAndDelete). A claim that failed or retired is settled too: no stop changes it, it holds no
+// process, so no deletion of its pod reads as its death, and the boot starts neither, so its line
+// names how it ended.
 func stopSettled(c supervise.Claim, byOperator bool) bool {
 	switch c.State {
 	case supervise.StateFailed, supervise.StateRetired:
@@ -889,11 +1013,15 @@ func stopSettled(c supervise.Claim, byOperator bool) bool {
 }
 
 // takeOthers ends every Sandbox that is no issue's, once every issue pod has ended: the
-// controller's claim is stopped as the issue pods' claims were and its pod deleted through the
-// runtime's release of the claim (ReleaseProjectController); each repository cache and image
-// probe is deleted through the runtime's fenced delete. A delete the volume guard refuses, or one
-// the fence finds written since it was decided, leaves that Sandbox, named with the refusal, as
-// does a Sandbox of a kind the release does not know.
+// controller's claim is stopped and waited for as the issue pods' claims were, so a controller in
+// a turn is waited for until the turn's end or the bound (stopDeadline), and its pod deleted
+// through the runtime's release of the claim (ReleaseProjectController); each repository cache and
+// image probe is deleted through the runtime's fenced delete. A delete the volume guard refuses,
+// or one the fence finds written since it was decided, leaves that Sandbox, named with the
+// refusal, as does a Sandbox of a kind the release does not know. A controller's pod left — its
+// claim not stored suspended in time, or its delete refused — has the controller's claim held for
+// an operator, as a left issue pod's claims are (hold), so no boot starts the controller while
+// its pod stands.
 func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, others []int) {
 	var controllers []claim.Token
 	for _, c := range run.stop {
@@ -911,9 +1039,12 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 		switch line.Kind {
 		case runtime.ProjectSandboxController:
 			if why, waiting := pending[controller]; waiting {
-				err = fmt.Errorf("the controller's claim was not stored suspended within the stop timeout of %s: %s", r.stopTimeout, why)
+				err = fmt.Errorf("the controller's claim was %s: %s", r.stopWait(), why)
 			} else {
 				err = r.pods.ReleaseProjectController(ctx, controller)
+			}
+			if err != nil {
+				r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+err.Error())
 			}
 		case runtime.ProjectSandboxCache, runtime.ProjectSandboxProbe:
 			err = r.pods.DeleteProjectSandbox(ctx, line.Name)
@@ -937,17 +1068,18 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 	}
 }
 
-// finish waits for each claim held for an operator in a left pod to be stored suspended, on a
-// wall-clock bound of twice the stop timeout from the start of this wait (the hold's own deadline,
-// then the runtime's stop grace before the claim is stored), writes each claim's line from its
-// record as it stands, and finishes the release. An operator's hold lives in memory only, so a
-// release reported finished leaves no left pod's claim stored working for a restart to adopt.
+// finish waits for each claim the release held for an operator in a pod it left (run.held) to be
+// stored suspended, on a wall-clock bound of twice the stop timeout from the start of this wait
+// (the hold's own deadline, then the runtime's stop grace before the claim is stored), writes each
+// claim's line from its record as it stands, and finishes the release. An operator's hold lives in
+// memory only, so a release reported finished leaves no left pod's claim stored working for a
+// restart to adopt.
 func (r *projectReleaser) finish(ctx context.Context, run *releaseRun) {
 	run.mu.Lock()
 	held := slices.Clone(run.held)
 	run.mu.Unlock()
 	within := 2 * r.stopTimeout
-	pending := r.awaitSettled(ctx, held, true, within, run.heldRefused)
+	pending := r.awaitSettled(ctx, held, true, time.Now().Add(within), run.heldRefused)
 	if ctx.Err() != nil {
 		return
 	}

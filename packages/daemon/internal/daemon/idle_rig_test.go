@@ -170,6 +170,10 @@ type idleRigOptions struct {
 	secondCluster, aimSecond bool
 	// configure changes the configuration before the first boot.
 	configure func(*config.Config)
+	// controllerPlan is the plan the project controller's role process follows, set before the
+	// first boot, which launches it where configure names `controller: daemon`; nil leaves the
+	// rig's own.
+	controllerPlan *idleRigPlan
 }
 
 // idleRigSeed is one issue the rig seeds: what the test calls it, every role it has a claim of
@@ -296,6 +300,9 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 
 	for i, seed := range seeds {
 		rig.issues = append(rig.issues, rig.seed(seed, keys[i], i))
+	}
+	if options.controllerPlan != nil {
+		rig.agents.setPlan(idleRigControllerPod, string(claim.RoleController), *options.controllerPlan)
 	}
 	rig.boot()
 	rig.awaitListenerReady()
