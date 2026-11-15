@@ -293,6 +293,7 @@ export function PrioritiesTable({
           />
         )}
         scrollTestId="priorities-table-scroll"
+        stackColumn="title"
       />
 
       {open === undefined ? null : (

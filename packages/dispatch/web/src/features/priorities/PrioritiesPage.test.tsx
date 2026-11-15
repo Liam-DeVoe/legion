@@ -595,3 +595,29 @@ test("a grouped table counts each group in the plural its rows are called by", a
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();
 });
+
+// Under 640 px a header with its sort and its filter side by side leaves a narrow column's name
+// unreadable, so the title's header stacks the two. The core stacks only the column its caller
+// names, and this table names its `title`, as the project List does.
+test("the priorities table stacks its title's header in a box under 640 px", async () => {
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? 390 : 100, 40);
+  });
+  restores.push(() => rect.mockRestore());
+  page(FIFTEEN);
+  const table = await screen.findByRole("table", { name: "Priorities table" });
+  await waitFor(() =>
+    expect(
+      within(table)
+        .getByRole("columnheader", { name: /^Priority/ })
+        .querySelector("span")
+    ).toHaveClass("flex-col")
+  );
+  expect(
+    within(table)
+      .getByRole("columnheader", { name: /^Owner/ })
+      .querySelector("span")
+  ).not.toHaveClass("flex-col");
+});

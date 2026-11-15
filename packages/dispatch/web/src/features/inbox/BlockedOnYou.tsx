@@ -6,12 +6,9 @@ import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
-  borderDefault,
-  surfaceMutedBg,
   surfaceMutedStrongBg,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
-  textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
@@ -22,9 +19,9 @@ import { isSnoozed } from "./snooze";
  *  deferred. Whose turn it is, not whose question it is: who answers it is the person the ask
  *  waits on, which `needsYou` below adds. An agent's progress note keeps its ask waiting on the
  *  agent, whoever replied last; a snooze keeps its ask off every "needs you" surface - the nav
- *  badge, the sidebar, this banner - until it returns, because deferring it is the viewer
- *  saying it does not need them now. A row that carries no snooze at all (an issue header's
- *  `open_asks`) is never deferred. */
+ *  badge, the sidebar, the Inbox's Blocked on you control - until it returns, because
+ *  deferring it is the viewer saying it does not need them now. A row that carries no snooze
+ *  at all (an issue header's `open_asks`) is never deferred. */
 export function waitingOnHuman<
   T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "snoozed_until">>,
 >(asks: readonly T[]): T[] {
@@ -41,8 +38,9 @@ export function waitingOnHuman<
  *  a question nobody waits on is one an older server answered.
  *  Nobody is the reader until the login resolves, so an unknown viewer is waited on by
  *  nothing: a list taken over the whole inbox while the shell loads would not be theirs.
- *  Every count of such work - the badges, the banner, the Agents page's first card number -
- *  reads this, so they all mean the same thing. */
+ *  Every count of such work - the badges, the Inbox's Blocked on you control, the project
+ *  page's pill, the Agents page's first card number - reads this, so they all mean the same
+ *  thing. */
 export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefined): InboxRow[] {
   if (viewer === undefined) return [];
   return waitingOnHuman(asks).filter((ask) => isMine({ ask, kind: "ask" }, viewer));
@@ -56,9 +54,8 @@ export interface NeedsYou {
   readonly oldest: string | undefined;
 }
 
-/** What the banner says, and what the Inbox's own needs-you control is named and titled by, so
- *  the control that replaced the banner on that page carries every word the banner carried
- *  (INFRA-3135, R7). */
+/** What the Inbox's own needs-you control is named and titled by: how many things wait for the
+ *  viewer, and how long the oldest of them has waited (INFRA-3135, R7). */
 export function blockedOnYouText({ count, oldest }: NeedsYou): string {
   const items = `${count} ${count === 1 ? "item" : "items"}`;
   return `Blocked on you: ${items}${oldest === undefined ? "" : `, oldest ${formatAskAge(oldest)}`}`;
@@ -67,8 +64,8 @@ export function blockedOnYouText({ count, oldest }: NeedsYou): string {
 /** Everything that waits for the viewer themselves - every ask `waitingOnYou` keeps, and every
  *  pending credential request they may decide, as its approver or as anyone signed in -
  *  counted, with when the oldest of them began waiting (undefined when nothing does). The
- *  badges, the banner and the Inbox's own needs-you control read this one rule, so every count
- *  of work waiting on the reader means the same thing whatever the list on screen is filtered
+ *  badges and the Inbox's own needs-you control read this one rule, so every count of work
+ *  waiting on the reader means the same thing whatever the list on screen is filtered
  *  to, and another kind of waiting item is added here once. An ask is counted only once the
  *  login resolves - a number taken over the whole inbox while the shell loads would not be the
  *  reader's - which `waitingOnYou` already does; a credential request needs no login of the
@@ -108,47 +105,28 @@ export function useNeedsYouCount(): number {
   return needsYou(inbox.data ?? [], requests, viewer).count;
 }
 
+/** The project page's `Blocked on you · N` pill, linking to the Inbox: the reader's own
+ *  questions over the project's rows, and no credential request, since a request belongs to no
+ *  project. Absent while nothing waits on the reader. */
 export function BlockedOnYou({
   asks,
   className,
-  credentialRequests = [],
-  variant = "banner",
   viewer,
 }: {
   asks: readonly InboxRow[];
   className?: string;
-  /** The credential requests the Inbox lists above its asks; the project pill has none. */
-  credentialRequests?: readonly CredentialPendingRow[];
-  variant?: "banner" | "pill";
   /** The signed-in person's lowercase login, whose questions this counts; nothing is counted
    *  until the caller's `/auth/whoami` read resolves. */
   viewer: string | undefined;
 }): ReactNode {
-  const waiting = needsYou(asks, credentialRequests, viewer);
-  const { count } = waiting;
+  const count = waitingOnYou(asks, viewer).length;
   if (count === 0) return null;
-
-  if (variant === "pill") {
-    return (
-      <Link
-        className={`${className ?? ""} inline-flex min-h-11 items-center rounded-full px-3 text-xs font-medium md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
-        to="/"
-      >
-        Blocked on you · {count}
-      </Link>
-    );
-  }
-
-  // A count of every waiting ask, not one urgency, so the strip stays structural: the spec
-  // reserves the urgency hues for urgency and priority. `w-full` is load-bearing - below
-  // 1280 px an unlayered `a:not(.prose a) { display: inline-flex }` in styles.css beats
-  // Tailwind's `block`, and without it the strip sits beside the controls above the list.
   return (
     <Link
-      className={`block w-full rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
+      className={`${className ?? ""} inline-flex min-h-11 items-center rounded-full px-3 text-xs font-medium md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
       to="/"
     >
-      {blockedOnYouText(waiting)}
+      Blocked on you · {count}
     </Link>
   );
 }

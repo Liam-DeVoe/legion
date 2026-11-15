@@ -186,6 +186,9 @@ export function IssuesTable({
     listingError,
     missingParents,
   } = useIssueTableItems(listing, { wantsDone, registry });
+  const loading = issues.isPending || userState.isPending;
+  const failed = !loading && ((issues.isError && issues.data === undefined) || userState.isError);
+  const loaded = !loading && !failed;
   // The issues an address names with `only=`, which the table shows alone until its chip is
   // removed. The narrowing is the reader's, so it outranks nothing: every other filter still
   // applies to what is left.
@@ -215,7 +218,12 @@ export function IssuesTable({
   // What the table is narrowed to, and the way back to every row: removing the chip clears
   // `only=` and leaves every other control where the reader set it. It is a chip of the control
   // row, beside the flags', and its removal leaves a history entry, so Back gives the narrowing
-  // back (`useAddressNavigate`'s `replace: false`).
+  // back (`useAddressNavigate`'s `replace: false`). The toolbar is drawn in every state, so the
+  // chip counts what it shows only once the rows the table waits on are in: not beside the
+  // loading skeleton, not after a failed read, and not while the closed issues it asked for are
+  // still out, where it would count rows the table has not read. Until then it names its
+  // narrowing alone.
+  const counted = loaded && listingError === undefined && (!wantsDone || doneLoaded);
   const selectionChip =
     picked === null ? undefined : (
       <Chip
@@ -229,8 +237,10 @@ export function IssuesTable({
         size="compact"
         title={picked.label}
       >
-        Showing: {picked.label} · {items.length} of {picked.keys.size}{" "}
-        {picked.keys.size === 1 ? "issue" : "issues"}
+        Showing: {picked.label}
+        {counted
+          ? ` · ${items.length} of ${picked.keys.size} ${picked.keys.size === 1 ? "issue" : "issues"}`
+          : null}
       </Chip>
     );
 
@@ -380,9 +390,6 @@ export function IssuesTable({
     [items, openFilter, filters, search]
   );
 
-  const loading = issues.isPending || userState.isPending;
-  const failed = !loading && ((issues.isError && issues.data === undefined) || userState.isError);
-  const loaded = !loading && !failed;
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
   // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back

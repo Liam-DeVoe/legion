@@ -54,6 +54,11 @@ const NONE: readonly string[] = [];
  *
  * A group the address names that this build does not know is dropped, and the groups are read
  * back in the one order the page draws them in, whatever order they were ticked in.
+ *
+ * The setter writes only the fields that changed. `q` and `machine` are cut at
+ * `SEARCH_QUERY_MAX` when written, so a write of all four would cut a longer value a link
+ * carried as soon as an unrelated control moved. Every caller hands back these `filters` with
+ * one field replaced, so a field changed exactly where it is no longer the value read here.
  */
 export function useAgentFilters(): readonly [AgentFilters, (next: AgentFilters) => void] {
   const [values, set] = useAddressFields(AGENT_FILTER_SPEC);
@@ -66,8 +71,14 @@ export function useAgentFilters(): readonly [AgentFilters, (next: AgentFilters) 
     }),
     [values]
   );
-  const setFilters = (next: AgentFilters) =>
-    set({ group: next.groups, machine: next.machines, q: next.search, role: next.roles });
+  const setFilters = (next: AgentFilters) => {
+    const changed: Partial<typeof values> = {};
+    if (next.groups !== filters.groups) changed.group = next.groups;
+    if (next.machines !== filters.machines) changed.machine = next.machines;
+    if (next.roles !== filters.roles) changed.role = next.roles;
+    if (next.search !== filters.search) changed.q = next.search;
+    set(changed);
+  };
   return [filters, setFilters] as const;
 }
 

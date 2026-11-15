@@ -2108,6 +2108,42 @@ test("the narrowing chip shows the picked issues alone, and its remove gives the
   expect(screen.queryByRole("button", { name: /^Stop showing only/ })).toBeNull();
 });
 
+// The toolbar is drawn while the issues load and after their read fails, so the chip counts what
+// it shows only once the table holds every row it waits on: a count of the empty listing, or of
+// the open issues alone while the closed ones are out, would read as picked issues that are not
+// there.
+test("the narrowing chip counts the picked issues only once the table has loaded them", async () => {
+  const picked = "?only=CORE-1,CORE-3&onlyLabel=Finished+last+week&nofilter=1";
+  const count = () => {
+    const chip = screen.getByRole("button", { name: "Stop showing only Finished last week" });
+    expect(chip.textContent).toContain("Showing: Finished last week");
+    return chip.textContent?.match(/\d+ of \d+ issues?/)?.[0];
+  };
+  const open = Promise.withResolvers<IssueSummary[]>();
+  const full = Promise.withResolvers<IssueSummary[]>();
+  const { view } = table([], picked, { full: full.promise, open: open.promise });
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  expect(count()).toBeUndefined();
+  // The open issues are in and the closed ones still out. One picked issue is closed, so a count
+  // now would say one of two.
+  open.resolve([issue("CORE-1"), issue("CORE-2")]);
+  await screen.findByText("Loading closed issues…");
+  expect(count()).toBeUndefined();
+  full.resolve([issue("CORE-1"), issue("CORE-2"), issue("CORE-3", { status: "done" })]);
+  await waitFor(() => expect(count()).toBe("2 of 2 issues"));
+  view.unmount();
+
+  // A read that fails leaves the chip naming its narrowing beside the error, with no count.
+  const failing = Promise.withResolvers<IssueSummary[]>();
+  table([], picked, {
+    full: Promise.withResolvers<IssueSummary[]>().promise,
+    open: failing.promise,
+  });
+  failing.reject(new Error("the listing is down"));
+  expect(await screen.findByRole("button", { name: "Retry loading issues" })).toBeDefined();
+  expect(count()).toBeUndefined();
+});
+
 // The listing columns exist only where they mean something: a project's own table would name its
 // own project on every row, it is given no priority's title, and its listing carries no move, so
 // it neither shows nor offers any of the four.

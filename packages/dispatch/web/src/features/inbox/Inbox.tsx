@@ -787,8 +787,8 @@ export function Inbox({
   const [paneWidth, setPaneWidth] = usePaneWidth();
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
   const adoptedInbox = useMotionHold(inbox.data, listRef);
-  // The credential requests the Inbox lists above its asks: the section, the banner and the empty
-  // state all read this one answer.
+  // The credential requests the Inbox lists above its asks: the section, the Blocked on you
+  // control and the empty state all read this one answer.
   const credentials = useCredentialRequests();
   const viewer = whoAmI.data?.login;
   // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
@@ -1785,7 +1785,9 @@ export function Inbox({
   // (INFRA-3135, R7): the asks waiting on the reader plus the credential requests they may
   // decide, with the oldest age the banner said in its title and its accessible name, so
   // nothing the banner carried is lost. A press narrows the list to exactly those asks and
-  // leaves the credential requests above it. It is absent at a count of zero, as the banner
+  // leaves the credential requests above it: it takes off the four fields, the assignee and the
+  // search text with the section it writes, so the list holds every ask the number counts, and
+  // keeps the sort, the grouping and the view. It is absent at a count of zero, as the banner
   // was, and absent beside an agent filter or in the Dismissed view, where a count over the
   // whole inbox would contradict the list under it - the rule the banner held to here.
   const waiting = needsYou(adoptedInbox ?? [], credentials.requests, viewer);
@@ -1795,7 +1797,15 @@ export function Inbox({
         aria-label={blockedOnYouText(waiting)}
         className={PAGE_CONTROL_CLASS}
         data-inbox-needs-you=""
-        onClick={() => changeFilter({ ...filter, assignees: undefined, section: "needs-you" })}
+        onClick={() =>
+          changeFilter({
+            ...filter,
+            assignees: undefined,
+            filters: undefined,
+            q: undefined,
+            section: "needs-you",
+          })
+        }
         title={blockedOnYouText(waiting)}
         type="button"
       >

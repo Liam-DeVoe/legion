@@ -182,7 +182,6 @@ export function ProjectPage(): ReactNode {
         <BlockedOnYou
           asks={inbox.data ?? []}
           className="order-3 shrink-0 md:order-5"
-          variant="pill"
           viewer={viewer}
         />
         <div aria-hidden className="order-4 basis-full md:hidden" />

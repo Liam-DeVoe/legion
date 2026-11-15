@@ -4233,6 +4233,39 @@ test("the group and the role are written to the address, and are absent until th
   }
 });
 
+// The page cuts `q` and `machine` at 1,000 characters when it writes them. A longer value a link
+// carried stays as it came until the reader changes that field itself: ticking a group keeps the
+// whole search, and a search keeps every machine the link named.
+test("a filter change leaves the longer search and machine list a link carried whole", async () => {
+  const user = userEvent.setup();
+  const query = "p".repeat(1200);
+  const machines = Array.from(
+    { length: 120 },
+    (_, index) => `host-${String(index).padStart(4, "0")}`
+  ).join(",");
+  const page = renderAgents({ initialEntry: `/agents?machine=${machines}&q=${query}` });
+  const address = () =>
+    new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const group = await filterTrigger(user, region, "group");
+    await user.click(group);
+    await user.click(filterOption("group", "Active"));
+    await waitFor(() => expect(address().get("group")).toBe("active"));
+    expect(address().get("q")).toBe(query);
+    expect(address().get("machine")).toBe(machines);
+
+    await type(user, within(region).getByRole("searchbox", { name: "Search agents" }), "plan");
+    await waitFor(() => expect(address().get("q")).toBe("plan"));
+    expect(address().get("machine")).toBe(machines);
+    expect(address().get("group")).toBe("active");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("a link naming a group and a role opens the page narrowed to them, and its chips take them off", async () => {
   const user = userEvent.setup();
   const page = renderAgents({

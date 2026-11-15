@@ -2194,6 +2194,37 @@ test("the needs-you control narrows the list to what waits on the reader and off
   }
 });
 
+// The number counts the whole inbox, so a press that kept a field narrowing or the search text on
+// would list fewer asks than it says (R7: the page shows every item the number counts). It takes
+// both off, as it takes the assignee off, and keeps how the list is sorted and banded.
+test("the needs-you control takes the fields and the search off, so the list holds every ask it counts", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    issueAsk({ id: "ask-mine" }),
+    inboxIssue("ask-urgent", "CORE-4", "Ship the fix tonight?", { priority: 0 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?priority=P0&q=ship&sort=urgency&group=waiting-on");
+  try {
+    await screen.findByText("Ship the fix tonight?");
+    expect(rowIds()).toEqual(["ask-urgent"]);
+    await user.click(screen.getByRole("button", { name: /^Blocked on you: 2 items/ }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/?section=needs-you&sort=urgency&group=waiting-on"
+      )
+    );
+    expect([...rowIds()].sort()).toEqual(["ask-mine", "ask-urgent"]);
+    expect(screen.getByRole("searchbox", { name: "Search asks" })).toHaveValue("");
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 /** An hour from now, as the server stores it: inside any snooze window the reader can pick. */
 function soon(hours = 3): string {
   return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
