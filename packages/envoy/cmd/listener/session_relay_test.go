@@ -1274,36 +1274,70 @@ func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing
 
 // The count the ladder climbs is the message's own, carried from the pull that published the
 // frame to the reply that refuses it (relayFrame.delivered): a session that refuses the same
-// frame over and over has it back about a second later, then about two seconds later, rather
-// than every second. The row reads the frames' arrivals on the session's own connection, as the
-// relay rows above read what the session was sent, and their Envoy-Delivered headers, which is
-// the same count the ladder is read from.
+// frame over and over has it back after the delay its own delivery count earns, about a second
+// and then about two, rather than every second. How long the server waits is the server's own
+// timer, which no clock of this process reaches (relayNakDelayMax), so the row reads what the
+// relay asked of it: the delay each nak carries (watchRelayNaks), beside each frame's
+// Envoy-Delivered header, the count the ladder is read from. The frame coming back at all is the
+// server keeping those naks.
 func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_nak_relay_ladder"
+	naks := watchRelayNaks(t, rig.url, sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string {
 		return []string{relayReplyReceived, relayReplyNak}
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
 
-	frames := standIn.collect(t, 3)
-	for i, frame := range frames {
+	for delivered := uint64(1); delivered <= 3; delivered++ {
+		frame := standIn.collect(t, 1)[0]
 		if frame.item.EventID != stored.EventID || frame.seq != seq {
-			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", i+1, frame.seq, frame.item.EventID, seq, stored.EventID)
+			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", delivered, frame.seq, frame.item.EventID, seq, stored.EventID)
 		}
-		if got := frame.msg.Header.Get(relayHeaderDelivered); got != strconv.Itoa(i+1) {
-			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
+		if got := frame.msg.Header.Get(relayHeaderDelivered); got != strconv.FormatUint(delivered, 10) {
+			t.Fatalf("frame %d carries %s = %q, want %d", delivered, relayHeaderDelivered, got, delivered)
+		}
+		want := relayNakDelay << (delivered - 1)
+		if got := testwait.Receive(t, fmt.Sprintf("the relay's nak of delivery %d", delivered), naks); got != want {
+			t.Errorf("the relay naked delivery %d with a delay of %s, want %s: a delay that does not climb with the frame's own count brings the frame back every second for the stream's whole retention",
+				delivered, got, want)
 		}
 	}
-	first := frames[1].arrived.Sub(frames[0].arrived)
-	second := frames[2].arrived.Sub(frames[1].arrived)
-	t.Logf("the refused frame came back after %s and then %s", first, second)
-	if first < 500*time.Millisecond || first > 2500*time.Millisecond {
-		t.Errorf("the first redelivery came %s after the refusal, want about relayNakDelay (%s)", first, relayNakDelay)
+}
+
+// watchRelayNaks hands on the delay of every nak the relay sends sessionID's consumer, in the
+// order the relay sent them, read off that consumer's ack subjects on a connection of the test's
+// own: a nak is `-NAK {"delay": <nanoseconds>}` there, and a nak with no delay is a bare `-NAK`.
+func watchRelayNaks(t *testing.T, url, sessionID string) <-chan time.Duration {
+	t.Helper()
+	consumer, ok := bus.SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("session %s can have no consumer", sessionID)
 	}
-	if second < 1600*time.Millisecond {
-		t.Errorf("the second redelivery came %s after the first, want about twice relayNakDelay (%s): the delay is flat, so the frame comes back every second for the stream's whole retention",
-			second, 2*relayNakDelay)
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	naks := make(chan time.Duration, 64)
+	if _, err := conn.Subscribe("$JS.ACK."+bus.Stream+"."+consumer+".>", func(msg *natsgo.Msg) {
+		rest, nak := strings.CutPrefix(string(msg.Data), "-NAK")
+		if !nak {
+			return
+		}
+		var body struct {
+			Delay time.Duration `json:"delay"`
+		}
+		if rest = strings.TrimSpace(rest); rest != "" {
+			if err := json.Unmarshal([]byte(rest), &body); err != nil {
+				t.Errorf("decode the relay's nak %q: %v", msg.Data, err)
+				return
+			}
+		}
+		naks <- body.Delay
+	}); err != nil {
+		t.Fatalf("subscribe to the ack subjects of %s: %v", consumer, err)
 	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the ack subscription of %s: %v", consumer, err)
+	}
+	return naks
 }
