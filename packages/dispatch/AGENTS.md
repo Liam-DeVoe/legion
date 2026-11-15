@@ -429,6 +429,10 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   attempt Dispatch could read, or one still `pending`, says
   `Stored for <session>, the agent on <issue>; whether it reached the session is not known.` and
   never that it was sent, and like a queued one offers no second press.
+  One whose attempt `failed` says
+  `Stored for <session>, the agent on <issue>, and not delivered: <reason>` and offers no second
+  press either: its words are stored under the route's `201` and the run recorded the write, so a
+  second press would be answered that record and send nothing, as for every write the run records.
 - The mention composer suggests only a prefix every refusing target advertises, and a card offers
   BTW only when its session takes it.
 - A message with no `/aside ` or `/btw ` command that answers no thread goes in `plainDelivery`

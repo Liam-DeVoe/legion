@@ -17,13 +17,16 @@ export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
 /** Where the offer stands once a press has been made: the send out, the message sent, queued for
- *  a session that has stopped, or stored with its delivery unknown, or a refusal in the person's
- *  words. Nothing pressed is no state at all (`useWordsState`). */
+ *  a session that has stopped, or stored with its delivery unknown, a send of the bar's run stored
+ *  and not delivered, or a refusal in the person's words. Nothing pressed is no state at all
+ *  (`useWordsState`). */
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
+  | { readonly agent: string; readonly kind: "sent" | "queued" | "stored"; readonly words: string }
   | {
       readonly agent: string;
-      readonly kind: Exclude<SendToAgentOutcome["kind"], "refused">;
+      readonly kind: "failed";
+      readonly refusal: string;
       readonly words: string;
     }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
@@ -98,7 +101,7 @@ export function useSendToAgentOffer({
         setState(
           outcome.kind === "refused"
             ? { kind: "refused", refusal: outcome.refusal, words }
-            : { agent: text.label({ id: session, kind: "session" }), kind: outcome.kind, words }
+            : { ...outcome, agent: text.label({ id: session, kind: "session" }), words }
         );
       },
       (error: unknown) => {
@@ -114,7 +117,8 @@ export function useSendToAgentOffer({
   // agent is live on the issue and no send of these words is out. The row is gone from the
   // press onward: one approval sends one message, so there is no second press to make, and the
   // line below says what became of it. A refused send puts the row back, because then nothing
-  // was sent.
+  // was sent; a failed send of the bar's run does not, since its words are stored and the run
+  // recorded it, so a second press would be answered that record and send nothing.
   const sendable =
     holder !== undefined && (here === undefined || here.kind === "refused") ? holder : undefined;
   return {
@@ -154,6 +158,14 @@ function SendToAgentSaid({
       return (
         <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
           Could not send it to the agent on {issue}: {state.refusal}
+        </p>
+      );
+    // Failed is a send of the bar's run whose words Dispatch stored and whose delivery failed: the
+    // run recorded it, so the row stays gone, and the line says why the words did not arrive.
+    case "failed":
+      return (
+        <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
+          Stored for {state.agent}, the agent on {issue}, and not delivered: {state.refusal}
         </p>
       );
     // Queued is neither sent nor refused: the words are stored for a session that has stopped

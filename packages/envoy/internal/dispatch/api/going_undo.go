@@ -229,7 +229,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		if dead, adopt := taken[write.ID]; adopt {
 			landed = goingLanded(dead.Requests)
 			if dead.Sends > 0 && len(landed) >= dead.Sends {
-				line = goingUndoLandedLine(write, landed)
+				line = goingUndoLandedLine(write, dead, landed)
 			}
 		}
 		if line.WriteID == "" {
@@ -329,21 +329,77 @@ func goingUndoIDs(writes []goingRunWrite, unsettled map[string]time.Time) []stri
 }
 
 // goingUndoLandedLine is the line of a write whose undo an earlier undo made whole, every request
-// it sends landed (landed), and never recorded, its process having ended: the undo is recorded
-// done, as its route's transaction left it, and nothing is sent again.
-func goingUndoLandedLine(write goingRunWrite, landed []goingWriteRequest) goingUndoLine {
+// it sends landed (landed), and never recorded, its process having ended (dead, its claim as the
+// run holds it): the undo is recorded as its routes' transactions left it, and nothing is sent
+// again. Each field is answered from what that undo proved of it, never from the whole: a write
+// back's from the fields its claim marked left as another writer left them, refused naming what
+// changed, and from what its write back's route answered it wrote (goingUndoWriteBackLanded); every
+// other undo is one change its route decided whole under its own condition, so its landing is the
+// outcome of every field the write changed.
+func goingUndoLandedLine(write goingRunWrite, dead goingRunUndo, landed []goingWriteRequest) goingUndoLine {
 	outcome := goingWriteOutcome{OK: true, Status: cmp.Or(landed[len(landed)-1].Outcome.Status, http.StatusOK),
 		Message: "this undo landed while the process making it was down, and is recorded done: nothing was sent again"}
+	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Undo: write.Undo,
+		Now: json.RawMessage("null"), requests: landed}
+	if write.Undo == goingUndoWriteBack && (write.Action == "dispatch_issue_update" || write.Action == "dispatch_edit_ask") {
+		line.Outcome, line.Fields = goingUndoWriteBackLanded(write, dead, landed[0], outcome)
+		return line
+	}
 	names := write.Fields
 	if len(names) == 0 {
 		names = []string{""}
 	}
-	fields := make([]goingUndoField, 0, len(names))
+	line.Outcome, line.Fields = outcome, make([]goingUndoField, 0, len(names))
 	for _, field := range names {
-		fields = append(fields, goingUndoField{Field: field, OK: true})
+		line.Fields = append(line.Fields, goingUndoField{Field: field, OK: true})
 	}
-	return goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Undo: write.Undo,
-		Now: json.RawMessage("null"), Outcome: outcome, Fields: fields, requests: landed}
+	return line
+}
+
+// goingUndoWriteBackLanded is how each field of a write's write back went, its one PATCH (back)
+// landed and its undo never recorded (goingUndoer.writeBack), as that undo would have answered it:
+// a field its claim marked left (goingLandings.reach) is refused naming what changed, and the
+// whole is 409 GOING_UNDO_CHANGED; a field the PATCH's route answered it wrote - a key of the
+// previous it recorded beside the landing (issueUpdated, askEdited) - was put back; and a field
+// neither says is unread, refused for the person to read, never put back, which makes the whole 409
+// GOING_UNDO_UNSETTLED, never undone again. done is the outcome where every field was put back.
+func goingUndoWriteBackLanded(write goingRunWrite, dead goingRunUndo, back goingWriteRequest, done goingWriteOutcome) (goingWriteOutcome, []goingUndoField) {
+	var after map[string]json.RawMessage
+	_ = json.Unmarshal(write.After, &after)
+	var answered struct {
+		Previous map[string]json.RawMessage `json:"previous"`
+	}
+	_ = json.Unmarshal(back.Answer, &answered)
+	left := map[string]string{}
+	for _, field := range dead.Fields {
+		if !field.OK {
+			left[field.Field] = field.Message
+		}
+	}
+	var changes, restored []string
+	unread := false
+	fields := make([]goingUndoField, 0, len(after))
+	for _, field := range slices.Sorted(maps.Keys(after)) {
+		why, refused := left[field]
+		if _, wrote := answered.Previous[field]; wrote && !refused {
+			restored = append(restored, field)
+			fields = append(fields, goingUndoField{Field: field, OK: true})
+			continue
+		}
+		if !refused {
+			why, unread = fmt.Sprintf("%s: this undo landed while the process making it was down, and its record does not say whether it was put back; read the item to see what it holds", field), true
+		}
+		changes = append(changes, why)
+		fields = append(fields, goingUndoField{Field: field, Message: why})
+	}
+	if len(changes) == 0 {
+		return done, fields
+	}
+	outcome := goingChanged(changes, restored)
+	if unread {
+		outcome.Code = codeGoingUndoUnsettled
+	}
+	return outcome, fields
 }
 
 // goingUndoUnsettledLine is the line of a write whose undo was claimed at claimed and never
@@ -501,10 +557,8 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 // known to have made nothing; a claim that cannot be marked sends nothing, the server's own
 // failure.
 func (u goingUndoer) send(ctx context.Context, index int, route string, values map[string]string, body any, condition *goingCondition) goingWriteOutcome {
-	if u.landings != nil {
-		if err := u.landings.reach(ctx, u.sends); err != nil {
-			return goingFailed(fmt.Errorf("mark the going undo reached: %w", err))
-		}
+	if err := u.landings.reach(ctx, u.sends, nil); err != nil {
+		return goingFailed(fmt.Errorf("mark the going undo reached: %w", err))
 	}
 	method, pattern, _ := strings.Cut(route, " ")
 	path := goingPath(pattern, values)
@@ -778,7 +832,10 @@ func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, g
 // route takes, so a field another writer changes between the read and the PATCH is never written
 // over. A refusal whose code `changed` names is that race - the route wrote nothing back, the
 // field is the field changed - and every other refusal leaves the fields with it. Every field's
-// own outcome is answered beside the write's.
+// own outcome is answered beside the write's. The fields left as another writer left them are
+// marked on the undo's claim as it reaches its PATCH (goingLandings.reach), before the PATCH is
+// sent: an undo taken over once that PATCH landed answers each field from them and from what the
+// PATCH's route answered it wrote (goingUndoWriteBackLanded), as this undo answers it.
 func (u goingUndoer) writeBack(
 	ctx context.Context, write goingRunWrite, read func([]string) (map[string]any, error),
 	route string, values map[string]string,
@@ -816,7 +873,14 @@ func (u goingUndoer) writeBack(
 		tokens, condition := conditionOf(restoredAfter)
 		maps.Copy(restore, tokens)
 		condition.WriteBack = true
-		if outcome := u.send(ctx, 0, route, values, restore, &condition); !outcome.OK {
+		left := slices.DeleteFunc(slices.Clone(outcomes), func(field goingUndoField) bool { return field.OK })
+		var outcome goingWriteOutcome
+		if err := u.landings.reach(ctx, u.sends, left); err != nil {
+			outcome = goingFailed(fmt.Errorf("mark the going undo reached: %w", err))
+		} else {
+			outcome = u.send(ctx, 0, route, values, restore, &condition)
+		}
+		if !outcome.OK {
 			if changed(outcome.Code) {
 				// Another writer changed a field after the read: the route wrote nothing back.
 				outcome = goingChanged([]string{outcome.Message}, nil)

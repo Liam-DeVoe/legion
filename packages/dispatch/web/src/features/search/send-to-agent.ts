@@ -33,10 +33,12 @@ export interface SendToAgentWrite {
 /** What became of one send: it reached the session (`sent`); the listener took it for a session
  *  it knows and that is not running, and hands it over when that session runs again (`queued`);
  *  Dispatch stored the words and whether they reached the session is not known (`stored`); or it
- *  did not reach the session, with why (`refused`). */
+ *  did not reach the session, with why: a send of the bar's run, which stored the words and which
+ *  the run recorded, so a second press is answered that record and sends nothing (`failed`), or
+ *  any other refusal, which a second press sends anew (`refused`). */
 export type SendToAgentOutcome =
   | { readonly kind: "sent" | "queued" | "stored" }
-  | { readonly kind: "refused"; readonly refusal: string };
+  | { readonly kind: "failed" | "refused"; readonly refusal: string };
 
 /** How the offer sends: this direct send, or a write of the bar's run where its proposal offers
  *  the send. The direct send answers what its message's attempt says (`sendOutcome`), and a write
@@ -71,13 +73,17 @@ export function sendOutcome(attempt: SentAttempt | undefined): SendToAgentOutcom
  * where the send's own answer was never read. The write landed, so the words are stored: a line
  * that records no attempt - none could be read, or Dispatch kept no line for the landing - or an
  * attempt still `pending`, whose sender ended before it settled, says that and no more (`stored`),
- * never that they reached the session. Every other attempt reads as the direct send reads it.
+ * never that they reached the session. A `failed` attempt is the send's last word (`failed`): the
+ * run records each of its invocations once, so a second press of it is answered this same line and
+ * sends nothing, as every write the run recorded is. Every other attempt reads as the direct send
+ * reads it.
  */
 export function runSendOutcome(attempt: SentAttempt | undefined): SendToAgentOutcome {
   if (attempt === undefined || deliveryOutcomeState(attempt.state) === "pending") {
     return { kind: "stored" };
   }
-  return sendOutcome(attempt);
+  const outcome = sendOutcome(attempt);
+  return outcome.kind === "refused" ? { kind: "failed", refusal: outcome.refusal } : outcome;
 }
 
 /**

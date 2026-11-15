@@ -10,8 +10,10 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // goingDiesOn is a route table that serves the first request of method whose path ends with
@@ -294,11 +297,11 @@ func TestGoingWriteTakenOverIsUndoneFromWhatItsRouteRecorded(t *testing.T) {
 }
 
 // TestGoingWriteTakenOverWhoseDocumentChangedSinceIsUndoneByNothingSayingWhy (review round 5,
-// thread 1, the architect's sink): a document edit whose process ended after it committed, and
-// which another writer edited again before the next press, is answered landed with what it left
-// unread, since the document read now is not the one the edit left, as its route's recorded token
-// says. Its undo puts nothing back, and its line says why in plain words and what the person can
-// do instead.
+// thread 1, the architect's sink; review round 6, finding D): a document edit whose process ended
+// after it committed, and which another writer edited again before the next press, is answered
+// landed with what it left unread, since the document read now is not the one the edit left, as
+// its route's recorded token says, and its line says so. Its undo puts nothing back, and its line
+// says why in plain words and what the person can do instead.
 func TestGoingWriteTakenOverWhoseDocumentChangedSinceIsUndoneByNothingSayingWhy(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Edited as the process ended", "The spec.\n").Key
@@ -315,8 +318,8 @@ func TestGoingWriteTakenOverWhoseDocumentChangedSinceIsUndoneByNothingSayingWhy(
 		map[string]any{"ops": []any{map[string]any{"op": "replace", "find": "opening line", "with": "line bob wrote"}}})
 	bobs := decodeBody[artifactText](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+notes.Artifact.ID+"/text", nil)).Markdown
 	rig.ageGoingWrites(t, run)
-	if line := goingLineOf(t, rig.write(t, "alice", run, press)); !line.Outcome.OK {
-		t.Fatalf("the press after the process ended answered %+v, want the edit landed", line)
+	if line := goingLineOf(t, rig.write(t, "alice", run, press)); !line.Outcome.OK || !strings.Contains(line.Outcome.Message, "another writer changed the document") {
+		t.Fatalf("the press after the process ended answered %+v, want the edit landed, its line saying another writer changed the document since", line)
 	}
 	undone := oneLine(t, rig.undo(t, "alice", run, nil), false)
 	if undone.Outcome.Code != codeGoingUndoAfterUnread || !strings.Contains(undone.Outcome.Message, "while the process making it was down") ||
@@ -619,5 +622,92 @@ func TestGoingUndoWhoseProcessEndedBeforeItsRequestLandedIsUnsettled(t *testing.
 	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
 	if line.Outcome.Code != codeGoingUndoUnsettled || rig.issueRead(t, issue).Title != "Titled by the turn, its undo cut short" {
 		t.Fatalf("the undo after the process ended answered %+v, want it unsettled and the title as the turn left it", line.Outcome)
+	}
+}
+
+// TestGoingUndoLandedWholeAfterItsProcessEndedAnswersEachFieldAsItsWriteBack (review round 6,
+// finding B; check c21): a turn changes an issue's title and its labels, and another person then
+// changes the labels. The undo writes the title back and leaves the labels, which no longer hold
+// what the turn left, and its process ends after that write back committed, before its record.
+// Past the claim's bound the next undo answers as the live undo does - 409 GOING_UNDO_CHANGED, the
+// labels refused naming what the other person left and the title put back - from what the ended
+// undo recorded of each field and what its write back's route answered it wrote, and sends nothing
+// again; the issue keeps the other person's labels.
+func TestGoingUndoLandedWholeAfterItsProcessEndedAnswersEachFieldAsItsWriteBack(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	issue := rig.issue(t, "Titled before the turn")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "title": "Titled by the turn", "labels": []any{"turn"}}, nil)
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"labels": []any{"bobs"}})
+	patch := http.MethodPatch + " /api/v1/issues/" + issue
+	rig.served.inProcess = goingDiesAfter(inner, patch)
+	rig.dieUndoing(t, run, nil)
+	sent := map[string]int{}
+	rig.served.inProcess = goingCommittedThenRefused(inner, "", sent)
+	rig.ageGoingUndos(t, run)
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	rig.served.inProcess = inner
+	fields := map[string]goingUndoField{}
+	for _, field := range line.Fields {
+		fields[field.Field] = field
+	}
+	if line.Outcome.Status != http.StatusConflict || line.Outcome.Code != codeGoingUndoChanged || len(fields) != 2 ||
+		fields["labels"].OK || !strings.Contains(fields["labels"].Message, "bobs") || !fields["title"].OK {
+		t.Fatalf("the undo after the process ended answered %+v, want 409 %s with the labels refused naming bob's and the title put back", line, codeGoingUndoChanged)
+	}
+	if read := rig.issueRead(t, issue); read.Title != "Titled before the turn" || len(read.Labels) != 1 || read.Labels[0] != "bobs" || sent[patch] != 0 {
+		t.Fatalf("the issue reads %q %v with the write back sent %d times after the takeover, want its title back, bob's labels kept and nothing sent",
+			read.Title, read.Labels, sent[patch])
+	}
+}
+
+// TestGoingWriteTakenOverWhoseRouteRecordedNothingItLeftIsLoggedAsAFailure (review round 6,
+// finding D): a title change whose process ended after its request committed is taken over past
+// the claim's bound, and the record of that landing holds nothing of what the route answered, so
+// what the write left cannot be read off it. That is no refusal but a failure of the record: the
+// write is recorded landed with what it left unread, and the failure is logged at Error, naming
+// the write and what failed, never at Info.
+func TestGoingWriteTakenOverWhoseRouteRecordedNothingItLeftIsLoggedAsAFailure(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	issue := rig.issue(t, "Titled before the press")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run := rig.proposed(t, "alice", false, "dispatch_issue_update", map[string]any{"issue": issue, "title": "Titled as the process ended"})
+	press := map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedPerson}
+	rig.served.inProcess = goingDiesAfter(inner, http.MethodPatch+" /api/v1/issues/"+issue)
+	rig.dieWriting(t, run, press)
+	rig.served.inProcess = inner
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		update going_runs set writes = jsonb_set(writes, '{0,requests,0}', (writes->0->'requests'->0) - 'answer')
+		where id = $1::uuid`, run); err != nil {
+		t.Fatalf("take the route's answer off the landing: %v", err)
+	}
+	rig.ageGoingWrites(t, run)
+	writeID := rig.record(t, "alice", run).Writes[0].ID
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
+	line := goingLineOf(t, rig.write(t, "alice", run, press))
+	if !line.Outcome.OK {
+		t.Fatalf("the press after the process ended answered %+v, want the write landed", line)
+	}
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || writes[0].Pending || !writes[0].AfterUnread {
+		t.Fatalf("the run keeps %+v, want the write landed with what it left unread", writes)
+	}
+	var levels []slog.Level
+	for _, record := range recorder.Records() {
+		named := false
+		record.Attrs(func(attr slog.Attr) bool {
+			named = named || attr.Key == "write" && attr.Value.String() == writeID
+			return !named
+		})
+		if named {
+			levels = append(levels, record.Level)
+		}
+	}
+	if !slices.Contains(levels, slog.LevelError) || slices.Contains(levels, slog.LevelInfo) {
+		t.Fatalf("the failure to read what write %s left was logged at %v, want Error and never Info", writeID, levels)
 	}
 }

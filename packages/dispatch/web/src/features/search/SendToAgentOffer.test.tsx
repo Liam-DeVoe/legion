@@ -244,8 +244,11 @@ function OfferAlone({ send }: { readonly send: SendToAgent }): ReactNode {
 // Each outcome a send answers is said in its own words. A send the bar's run stored, whose
 // delivery Dispatch could not read or that is still on its way, says the words are stored and
 // that whether they reached the session is not known - never that they were sent - and, as a sent
-// or a queued one, offers no second press, which would store a second copy. Only a refusal, which
-// stored nothing, offers the row again.
+// or a queued one, offers no second press, which would store a second copy. A send of the bar's
+// run whose delivery failed was stored too, under the route's 201, and the run recorded it, so a
+// second press would be answered that record and send nothing: it says why the words did not
+// arrive and offers no second press either. Only a refusal, which a second press sends anew,
+// offers the row again.
 test("each outcome of a send is said in its own words, and only a refusal offers the row again", async () => {
   const user = userEvent.setup();
   const cases: readonly [SendToAgentOutcome, RegExp, string, boolean][] = [
@@ -260,6 +263,12 @@ test("each outcome of a send is said in its own words, and only a refusal offers
       { kind: "stored" },
       /^Stored for .+, the agent on CORE-7; whether it reached the session is not known\.$/,
       "status",
+      false,
+    ],
+    [
+      { kind: "failed", refusal: "the session takes no aside" },
+      /^Stored for .+, the agent on CORE-7, and not delivered: the session takes no aside$/,
+      "alert",
       false,
     ],
     [

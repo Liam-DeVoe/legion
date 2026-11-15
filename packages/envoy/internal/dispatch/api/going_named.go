@@ -14,10 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -122,22 +120,16 @@ type goingHeldDocument struct {
 	Name, Slug string
 }
 
-// goingStemMinimum is the fewest characters a document's name without its extension holds for the
-// words to name the document by it (goingHeldDocument.namedBy). A shorter stem - "a" of a.md, "to"
-// of to.md, "add" of add.md - is a word people type for every other reason, so the words writing
-// it name no document, and such a document is named by its name or its slug alone: a wrong match
-// costs an offer to replace a document whole, a missed one only the person writing its name.
-// Four keeps the stems people do name documents by, "the spec" and "the plan".
-const goingStemMinimum = 4
-
-// namedBy reports whether the typed words name the document (goingWordsName): its name, its slug,
-// or its name without the extension where that stem is no short word (goingStemMinimum) - "the
-// notes" names notes.md, "the spec" spec.md, and "add a note" no document a.md - whichever of them
-// the answer wrote as the upload's name.
+// namedBy reports whether the typed words name the document (goingWordsName) by the name it is
+// stored under or by its slug. Those are the two names an upload finds a document by
+// (artifactByNameOrSlugSQL), so one of them is the name the answer wrote for the upload, and it is
+// the stem only for a document stored with no extension. A stem the answer did not write as the
+// upload's name names nothing: it is a word people type for every other reason - "add a note"
+// writes the stem of note.md, "add a todo for the release" that of todo.md, "add a note to the
+// plan" that of plan.md - and a wrong match costs an offer to replace a document whole, a missed
+// one only the person writing its name.
 func (d goingHeldDocument) namedBy(words string) bool {
-	stem := strings.TrimSuffix(d.Name, path.Ext(d.Name))
-	return goingWordsName(words, d.Name) || goingWordsName(words, d.Slug) ||
-		utf8.RuneCountInString(strings.TrimSpace(stem)) >= goingStemMinimum && goingWordsName(words, stem)
+	return goingWordsName(words, d.Name) || goingWordsName(words, d.Slug)
 }
 
 // goingHolds is what the store holds now that a proposal's invocations are marked automatic
@@ -497,15 +489,15 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 // which would write that document's next version over the text it holds. Without force every
 // write of it is refused (goingUploadForceRefusal), and the bar has no control that sets force;
 // with force, a pick would replace the document whole, which nothing the bar shows says before the
-// person picks it, unless the person's own words name that document - by its name, its slug or its
-// name without the extension where that stem is no short word, as the store holds them
+// person picks it, unless the person's own words name that document - by the name it is stored
+// under or its slug, one of which is the name the answer wrote for the upload
 // (goingHeldDocument.namedBy) - since they asked for that document themselves. So it is offered
 // only with force and words naming the document, and otherwise withheld, the person changing the
 // document with an edit or uploading with the dispatch command. An owner the proposal could not
 // read is offered, and held to the write's own checks when it runs (goingSendRefusal,
-// goingUploadCondition). A pick of an offer the words name the document of by its slug or its
-// name without the extension is made: no check when the write runs holds the words to the exact
-// name, and goingUploadsOver holds only a write sent at once.
+// goingUploadCondition). A pick of an offer the words name the document of by the other of the
+// two names is made: no check when the write runs holds the words to the exact name the answer
+// wrote, and goingUploadsOver holds only a write sent at once.
 func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
 	argument, uploads := goingUploadNames[action]
 	if !uploads || document == nil {

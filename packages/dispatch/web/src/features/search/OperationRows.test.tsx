@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRoute } from "../../__tests__/send-answers";
@@ -15,6 +16,7 @@ import type {
   GoingProposalEvent,
   GoingWriteInput,
   GoingWriteLine,
+  IssueDetails,
 } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import {
@@ -26,6 +28,7 @@ import {
 } from "./going-bar-fixture";
 import { forgetTurns } from "./going-turns";
 import { OPERATION_OPTION_ID, offerOptionId, useGoingOperations } from "./OperationRows";
+import { useSendToAgentOffer } from "./SendToAgentOffer";
 import { optionId } from "./search-model";
 import type { SendToAgentOutcome } from "./send-to-agent";
 import { forgetAnsweredRun, type GoingAnswer } from "./useGoingAnswer";
@@ -679,14 +682,9 @@ test("a new issue the run made is the issue its write names, with no read of it 
   }
 });
 
-// The send through the run says what the direct send says of the same delivery: a failed one is
-// refused with its reason, one the listener stored for a session that has stopped is queued, and
-// only one that reached the session is sent. A write that landed with no delivery Dispatch could
-// read, or with its attempt still pending, stored the words and no more is known: it is never sent.
-test("a send through the run answers what became of its delivery, as the direct send does", async () => {
-  const words = "tell the agent";
-  // Each send is its own run's: a run writes each of its invocations once.
-  const answerOf = (runId: string): GoingAnswer => ({
+/** An ended run of `words` whose proposal offers one send to an agent, at once. */
+function sendAnswer(runId: string, words: string): GoingAnswer {
+  return {
     block: undefined,
     changed: undefined,
     cut: undefined,
@@ -718,11 +716,41 @@ test("a send through the run answers what became of its delivery, as the direct 
     text: "",
     unreachable: undefined,
     words,
-  });
+  };
+}
+
+/** Dispatch's line for a send to an agent that landed: the route answers it 201 whatever became
+ *  of its delivery, and the line records that delivery. */
+function sentLine(
+  input: GoingWriteInput,
+  delivery: GoingWriteLine["delivery"],
+  id: string
+): GoingWriteLine {
+  return {
+    action: input.offer,
+    before: null,
+    delivery,
+    fields: ["message"],
+    item: id,
+    now: { id },
+    outcome: { code: "", message: "", ok: true, status: 201 },
+    write_id: "write-send",
+  };
+}
+
+// The send through the run says what the direct send says of the same delivery, but for a failed
+// one: the run recorded the write, the words stored under the route's 201, so its failure is said
+// with its reason and is the send's last word (`failed`), as every write the run recorded is. One
+// the listener stored for a session that has stopped is queued, and only one that reached the
+// session is sent. A write that landed with no delivery Dispatch could read, or with its attempt
+// still pending, stored the words and no more is known: it is never sent.
+test("a send through the run answers what became of its delivery, as the direct send does", async () => {
+  const words = "tell the agent";
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // Each send is its own run's: a run writes each of its invocations once.
   const hook = renderHook(
     ({ runId }: { readonly runId: string }) =>
-      useGoingOperations({ answer: answerOf(runId), askNow: () => false, hits: [], words }),
+      useGoingOperations({ answer: sendAnswer(runId, words), askNow: () => false, hits: [], words }),
     {
       initialProps: { runId: "run-1" },
       wrapper: ({ children }: { readonly children: ReactNode }) => (
@@ -730,21 +758,8 @@ test("a send through the run answers what became of its delivery, as the direct 
       ),
     }
   );
-  // Dispatch answers the send 201 whatever became of its delivery; the line records the delivery.
   const delivered = (delivery: GoingWriteLine["delivery"], id: string) =>
-    written.mockImplementation(
-      async (_run, input) =>
-        ({
-          action: input.offer,
-          before: null,
-          delivery,
-          fields: ["message"],
-          item: id,
-          now: { id },
-          outcome: { code: "", message: "", ok: true, status: 201 },
-          write_id: "write-send",
-        }) satisfies GoingWriteLine
-    );
+    written.mockImplementation(async (_run, input) => sentLine(input, delivery, id));
   const send = async (runId: string) => {
     hook.rerender({ runId });
     const sendToAgent = hook.result.current.sendToAgent;
@@ -763,11 +778,11 @@ test("a send through the run answers what became of its delivery, as the direct 
   try {
     delivered({ error: "the session takes no aside", state: "failed" }, "m-1");
     expect(await send("run-1")).toEqual({
-      kind: "refused",
+      kind: "failed",
       refusal: "the session takes no aside",
     });
     delivered({ error: null, state: "failed" }, "m-2");
-    expect(await send("run-2")).toEqual({ kind: "refused", refusal: "Dispatch gave no reason." });
+    expect(await send("run-2")).toEqual({ kind: "failed", refusal: "Dispatch gave no reason." });
     delivered({ error: null, state: "queued" }, "m-3");
     expect(await send("run-3")).toEqual({ kind: "queued" });
     delivered({ error: null, state: "sent" }, "m-4");
@@ -782,5 +797,117 @@ test("a send through the run answers what became of its delivery, as the direct 
   } finally {
     hook.unmount();
     client.clear();
+  }
+});
+
+/** LEGION-3 as its read answers it, its claim held by `session-1`, a live agent. */
+function issueHeldByALiveAgent(): IssueDetails {
+  return {
+    advances: [],
+    advances_revision: 0,
+    artifacts: [],
+    assignee: null,
+    blocked_by: [],
+    children: [],
+    claim: {
+      actor: { id: "session-1", kind: "session", origin: { session_title: "Implementer" } },
+      at: "2026-11-07T06:00:00Z",
+    },
+    closed_at: null,
+    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    created_at: "2026-11-07T05:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    decisions_artifact_id: "",
+    design_gates: [],
+    external_links: [],
+    holder_state: "live",
+    key: "LEGION-3",
+    labels: [],
+    last_seen: null,
+    last_seq: 1,
+    number: 3,
+    open_asks: [],
+    parent: null,
+    plan_artifact_id: "",
+    primary_artifact_id: "artifact-1",
+    priority: null,
+    progress: { children: null, tasks: null },
+    project: "LEGION",
+    rank: "U",
+    referenced_by_count: 0,
+    repo: null,
+    resolved_repo: null,
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "in_progress",
+    takeable_at: null,
+    title: "Instruments",
+    updated_at: "2026-11-07T06:00:00Z",
+    verification_artifact_id: "",
+  };
+}
+
+/** The bar's offer to send the words to the agent on LEGION-3, sending through the run's write as
+ *  the bar wires the two together where the run's proposal offers the send. */
+function RunSendOffer({ words }: { readonly words: string }): ReactNode {
+  const operations = useGoingOperations({
+    answer: sendAnswer("run-1", words),
+    askNow: () => false,
+    hits: [],
+    words,
+  });
+  const offer = useSendToAgentOffer({
+    block: undefined,
+    issue: "LEGION-3",
+    send: operations.sendToAgent,
+    words,
+  });
+  return (
+    <>
+      {offer?.row === undefined ? null : (
+        <button onClick={offer.row.select} type="button">
+          {offer.row.label}
+        </button>
+      )}
+      {offer?.said}
+    </>
+  );
+}
+
+// A send through the run whose delivery failed was still recorded by the run - the route stored
+// the words under its 201 - and the run writes each of its invocations once, so a second press
+// would be answered that same line and send nothing. The bar says the failure with its reason and,
+// as for every write the run recorded, offers no second press.
+test("a send through the run whose delivery failed says why, and offers no press that would send nothing", async () => {
+  const words = "tell the agent";
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issueHeldByALiveAgent());
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(new Error("no registry"));
+  written.mockImplementation(async (_run, input) =>
+    sentLine(input, { error: "the session takes no aside", state: "failed" }, "m-1")
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const user = userOnFakeClock();
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <RunSendOffer words={words} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const label = "Send this to the agent on LEGION-3";
+  try {
+    await user.click(await screen.findByRole("button", { name: label }));
+    const said = await screen.findByTestId("search-send-to-agent-said");
+    expect(said).toHaveTextContent("the session takes no aside");
+    expect(said).toHaveAttribute("role", "alert");
+    expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
+    expect(sent()).toHaveLength(1);
+  } finally {
+    view.unmount();
+    client.clear();
+    getIssue.mockRestore();
+    listAgents.mockRestore();
   }
 });

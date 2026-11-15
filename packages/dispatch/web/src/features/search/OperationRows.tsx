@@ -496,6 +496,8 @@ export function useGoingOperations({
           // Dispatch writes the message under a 201 whatever became of its delivery - failed, or
           // queued for a session that has stopped - so the line's record of that delivery says
           // what became of the words; a line that records none says only that they are stored.
+          // The run records each of its invocations once, so a failed delivery is this send's last
+          // word, never a refusal a second press could send past (`runSendOutcome`).
           return runSendOutcome(written?.delivery);
         };
 

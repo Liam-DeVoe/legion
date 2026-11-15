@@ -30,8 +30,10 @@ import (
 // successful write of that invocation, and an undo appends a pending undo of each write it is
 // about to undo (claimGoingRunUndos), unless another undo of the run is under way. Each then
 // records how it went in the place of its claim (recordGoingRunWrite, recordGoingRunUndo), or
-// gives the claim up where it made nothing (releaseGoingRunWrite, releaseGoingRunUndos). GET
-// /api/v1/me/going-runs is the one route that reads a row, and it reads the caller's own alone.
+// gives the claim up where it made nothing (releaseGoingRunWrite, releaseGoingRunUndos), or gives
+// back the claim of a write it took over and could not yet tell for its own
+// (restoreGoingRunWrite). GET /api/v1/me/going-runs is the one route that reads a row, and it
+// reads the caller's own alone.
 
 // goingRunsKept is how long a run's record is kept: a row older than this is read by nobody,
 // even before sweepGoingRuns deletes it, and takes no write or undo.
@@ -81,8 +83,9 @@ type goingWriteOutcome struct {
 // answered that it is under way while the request that claimed it may still be running
 // (goingClaimBound); after that the request reads what the write landed first
 // (goingWriteTakenOver): one whose record names a request that landed, or that was never planned
-// (Sends 0) and names none, is taken over and made, and only one planned that records no landing
-// is answered that its outcome is unknown, since its request may have run, and never written again.
+// (Sends 0), sending nothing of its own, is taken over and made, and only one planned that records
+// no landing is answered that its outcome is unknown, since its request may have run, and never
+// written again.
 type goingRunWrite struct {
 	ID         string            `json:"id"`
 	Action     string            `json:"action"`
@@ -187,9 +190,12 @@ type goingDelivery struct {
 // may have been made. It holds off a second undo of the run until it is recorded or
 // goingClaimBound has passed. Past the bound the next undo reads what it landed before anything
 // else (goingUndoTakeOver), as a write taken over does: one whose record names a request it
-// landed is taken over and resumed after it, or recorded done where all of it landed; one never
-// reached (no Sends) is made now; and only one reached with no landing recorded is answered
-// unsettled (codeGoingUndoUnsettled), never made again.
+// landed is taken over and resumed after it, or recorded done where all of it landed, each field
+// as that undo proved it (goingUndoLandedLine); one never reached (no Sends) is made now; and only
+// one reached with no landing recorded is answered unsettled (codeGoingUndoUnsettled), never made
+// again. A pending undo's Fields are those its write back leaves as another writer left them,
+// each naming what changed, marked as it reaches its request (goingLandings.reach): none of its
+// requests sends them, and the undo that takes it over answers them so.
 type goingRunUndo struct {
 	WriteID string            `json:"write_id"`
 	Outcome goingWriteOutcome `json:"outcome"`
@@ -411,13 +417,13 @@ func (s *server) claimGoingRunWrite(ctx context.Context, id, authorLogin string,
 
 // adoptGoingRunWrite takes over the claim of write writeID, pending and claimed longer ago than
 // any request making it can still run (goingClaimBound), whose record names a request of it that
-// landed, or whose call was never planned (sends 0) and whose record names no request
-// (goingWriteTakenOver): the request that claimed it ended - its process died - after that
-// landing, or before it sent anything, so a later request of the invocation makes the rest of it,
-// or all of it, under the same claim, the landings its record holds standing. The claim is moved
-// to at in one statement that holds only while it is still past the bound, so of two requests
-// adopting it one does and the other finds it under way. Either refusal is pgx.ErrNoRows. Like
-// the claim, it marks no Idempotency-Key committed.
+// landed, or whose call was never planned (sends 0), its record naming no request or only copies
+// of an earlier write's landings (goingWriteTakenOver): the request that claimed it ended - its
+// process died - after that landing, or before it sent anything, so a later request of the
+// invocation makes the rest of it, or all of it, under the same claim, the landings its record
+// holds standing. The claim is moved to at in one statement that holds only while it is still past
+// the bound, so of two requests adopting it one does and the other finds it under way. Either
+// refusal is pgx.ErrNoRows. Like the claim, it marks no Idempotency-Key committed.
 func (s *server) adoptGoingRunWrite(ctx context.Context, id, authorLogin, writeID string, at time.Time) error {
 	adopted := `(w->>'id' = $3 and coalesce((w->>'pending')::boolean, false)
 		and (w->>'at')::timestamptz < now() - make_interval(secs => $5)
@@ -429,6 +435,25 @@ func (s *server) adoptGoingRunWrite(ctx context.Context, id, authorLogin, writeI
 		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(6)+`
 		  and exists (select 1 from jsonb_array_elements(r.writes) w where `+adopted+`)`,
 		id, authorLogin, writeID, at.Format(time.RFC3339Nano), s.goingClaimBound().Seconds(), goingRunsKept.Seconds())
+}
+
+// restoreGoingRunWrite gives back the claim of write writeID this request took over at
+// (adoptGoingRunWrite) and was refused on before it could compare its call with that write
+// (goingWriteClaim.giveBack): the claim is moved back to previous, the moment it held, in one
+// statement that holds only while the write is still pending under this request's claim, so the
+// write stands byte for byte as it was - every moment the record holds is written in
+// time.RFC3339Nano in UTC, which previous, read back from the record, formats to again - and the
+// next request past goingClaimBound takes it over. A claim that is no longer this request's has
+// nothing to give back, which is no failure. Like the claim, it marks no Idempotency-Key committed.
+func (s *server) restoreGoingRunWrite(ctx context.Context, id, authorLogin, writeID string, at, previous time.Time) error {
+	held := `(w->>'id' = $3 and coalesce((w->>'pending')::boolean, false) and w->>'at' = $4)`
+	return goingReleased(s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
+		update going_runs r set writes = (
+		  select jsonb_agg(case when `+held+` then jsonb_set(w, '{at}', to_jsonb($5::text)) else w end order by n)
+		  from jsonb_array_elements(r.writes) with ordinality e(w, n))
+		where r.id = $1::uuid and r.author_login = $2
+		  and exists (select 1 from jsonb_array_elements(r.writes) w where `+held+`)`,
+		id, authorLogin, writeID, at.Format(time.RFC3339Nano), previous.UTC().Format(time.RFC3339Nano)))
 }
 
 // recordGoingRunWrite records write on the author's run in the place of its claim, the element of

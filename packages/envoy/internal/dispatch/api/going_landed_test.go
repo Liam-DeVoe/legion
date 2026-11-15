@@ -925,6 +925,113 @@ func TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent(t *testing.T) {
 	}
 }
 
+// writesText is the run's writes as the record holds them, byte for byte.
+func (rig goingWritesRig) writesText(t *testing.T, run string) string {
+	t.Helper()
+	var writes string
+	if err := rig.database.Pool.QueryRow(context.Background(), `select writes::text from going_runs where id = $1::uuid`, run).Scan(&writes); err != nil {
+		t.Fatalf("read the run's writes: %v", err)
+	}
+	return writes
+}
+
+// TestGoingPressRefusedBeforeItsComparisonLeavesTheDeadWriteAsItWas (review round 6, finding A;
+// check c21): for every row whose write sends more than one request, A's reasoned close posts its
+// reason and its process ends before the close. Past the claim's bound a press with arguments for
+// B takes A's claim over, and is refused before it can compare the call it sends with what A
+// landed: by its translation, B being closed (409 ISSUE_CLOSED, the reviewer's probe), or by the
+// action's own schema (400 GOING_ARGUMENTS). It cannot tell A's record from its own, so it writes
+// nothing: A's record is byte for byte as it was, no write of the press names A's reason, nothing
+// is posted on B, and the refusal names nothing of A's. A press back on A then resumes A's write.
+func TestGoingPressRefusedBeforeItsComparisonLeavesTheDeadWriteAsItWas(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		for _, tc := range []struct {
+			name   string
+			status int
+			code   string
+			// refuse readies the press on b to be refused before its comparison.
+			refuse func(t *testing.T, b string, arguments map[string]any) map[string]any
+		}{
+			{"its translation", http.StatusConflict, "ISSUE_CLOSED", func(t *testing.T, b string, arguments map[string]any) map[string]any {
+				rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+b, map[string]any{"status": "done"})
+				return arguments
+			}},
+			{"its schema", http.StatusBadRequest, codeGoingArguments, func(t *testing.T, _ string, arguments map[string]any) map[string]any {
+				return goingWith(arguments, "argument_no_action_takes", true)
+			}},
+		} {
+			t.Run(row.action+" "+tc.name, func(t *testing.T) {
+				a, b := rig.issue(t, "Reasoned as the process ended"), rig.issue(t, "Pressed after")
+				argumentsA, firstA, _ := row.on(t, rig, a)
+				argumentsB, _, _ := row.on(t, rig, b)
+				run := rig.proposed(t, "alice", false, row.action, argumentsA)
+				press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+				rig.served.inProcess = goingDiesAfter(inner, firstA)
+				rig.dieWriting(t, run, press)
+				rig.served.inProcess = inner
+				rig.ageGoingWrites(t, run)
+				dead := rig.writesText(t, run)
+				press["arguments"] = tc.refuse(t, b, argumentsB)
+				refused := rig.write(t, "alice", run, press)
+				refusal := goingRefusalSeenOf(t, refused)
+				_, pathA, _ := strings.Cut(firstA, " ")
+				if refused.Code != tc.status || refusal.Code != tc.code || strings.Contains(refusal.Error, pathA) {
+					t.Fatalf("the press on %s answered %d %+v, want %d %s naming nothing of %s", b, refused.Code, refusal, tc.status, tc.code, a)
+				}
+				if now := rig.writesText(t, run); now != dead {
+					t.Fatalf("the run's writes after the refused press are\n%s\nwant them byte for byte as they were\n%s", now, dead)
+				}
+				if posted := rig.goingReasonsOn(t, b, argumentsB["reason"]); posted != 0 {
+					t.Fatalf("%s holds %d messages saying its reason, want none posted", b, posted)
+				}
+				press["arguments"] = argumentsA
+				if line := goingLineOf(t, rig.write(t, "alice", run, press)); !line.Outcome.OK || rig.goingReasonsOn(t, a, argumentsA["reason"]) != 1 {
+					t.Fatalf("the press back on %s answered %+v with %d reasons on it, want A's write resumed after its one reason", a, line.Outcome, rig.goingReasonsOn(t, a, argumentsA["reason"]))
+				}
+			})
+		}
+	}
+}
+
+// TestGoingPressRefusedByItsSessionLookupLeavesTheDeadWriteAsItWas (review round 6, finding A;
+// check c21): a follow whose process ended at its session lookup, after its claim and before
+// anything of it was planned, is taken over past the claim's bound by a press naming a session no
+// live session is. Its session lookup refuses it, 404 GOING_SESSION_NOT_FOUND, before it compares
+// itself with the write it took over, so it writes nothing: the dead write is byte for byte as it
+// was, for the press that does reach that comparison.
+func TestGoingPressRefusedByItsSessionLookupLeavesTheDeadWriteAsItWas(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Followed as the process ended", "The spec.\n").Key
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run := rig.proposed(t, "alice", false, "dispatch_follow", map[string]any{"ask": rig.ask(t, issue, "Which region first?"), "action": "follow"})
+	press := map[string]any{"offer": "dispatch_follow", "invocation": 0, "approved": goingApprovedPerson, "fill": goingPlannerTitle}
+	rig.served.inProcess = goingDiesBefore(inner, http.MethodGet+" /api/v1/agents")
+	rig.dieWriting(t, run, press)
+	rig.served.inProcess = inner
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || !writes[0].Pending || writes[0].Sends != 0 {
+		t.Fatalf("the run keeps %+v, want the one write pending, never planned", writes)
+	}
+	rig.ageGoingWrites(t, run)
+	dead := rig.writesText(t, run)
+	press["fill"] = "No such session"
+	refused := rig.write(t, "alice", run, press)
+	if refusal := goingRefusalSeenOf(t, refused); refused.Code != http.StatusNotFound || refusal.Code != codeGoingSessionNotFound {
+		t.Fatalf("the press naming no live session answered %d %+v, want 404 %s", refused.Code, refusal, codeGoingSessionNotFound)
+	}
+	if now := rig.writesText(t, run); now != dead {
+		t.Fatalf("the run's writes after the refused press are\n%s\nwant them byte for byte as they were\n%s", now, dead)
+	}
+	press["fill"] = goingPlannerTitle
+	if line := goingLineOf(t, rig.write(t, "alice", run, press)); !line.Outcome.OK {
+		t.Fatalf("the press naming the planner answered %+v, want the follow made", line.Outcome)
+	}
+}
+
 // TestGoingWriteWithAnotherReasonPostsItsOwn (review round 8, finding 3): A's reason landed and its
 // close was refused 503; a press that changes only the reason resumes after nothing, since a
 // landing counts only for the request of its own body: it posts its own reason and closes, and the
@@ -967,10 +1074,12 @@ func TestGoingWriteWithAnotherReasonPostsItsOwn(t *testing.T) {
 }
 
 // TestGoingWriteTakenOverAndRefusedByItsTranslationNamesItsLandingsOnce (review round 9,
-// finding 1): a reasoned close whose process ended after its reason landed is taken over by a
-// press with the same arguments after someone closed the issue; the translation refuses it. The
-// refusal names the landed reason once, and the record keeps the item and fields the write
-// planned.
+// finding 1; review round 6, finding A): a reasoned close whose process ended after its reason
+// landed is taken over by a press with the same arguments after someone closed the issue; the
+// translation refuses it. The refusal names the landed reason once, as the press's own call
+// resumes after it, and since the press was refused before it compared itself with the write it
+// took over, it writes nothing: the record keeps the write byte for byte, its item and the fields
+// it planned among it.
 func TestGoingWriteTakenOverAndRefusedByItsTranslationNamesItsLandingsOnce(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	rows := goingSeveralRequestRows(t, rig)
@@ -987,24 +1096,31 @@ func TestGoingWriteTakenOverAndRefusedByItsTranslationNamesItsLandingsOnce(t *te
 			rig.served.inProcess = inner
 			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "done"})
 			rig.ageGoingWrites(t, run)
+			dead := rig.writesText(t, run)
 			refused := rig.write(t, "alice", run, press)
 			refusal := goingRefusalSeenOf(t, refused)
 			_, path, _ := strings.Cut(first, " ")
 			if refused.Code != http.StatusConflict || strings.Count(refusal.Error, path) != 1 {
 				t.Fatalf("the taken-over press answered %d %+v, want it refused naming %s once", refused.Code, refusal, first)
 			}
+			if now := rig.writesText(t, run); now != dead {
+				t.Fatalf("the run's writes after the refused press are\n%s\nwant them byte for byte as they were\n%s", now, dead)
+			}
 			writes := rig.record(t, "alice", run).Writes
-			if len(writes) != 1 || writes[0].Pending || writes[0].Target != issue || len(writes[0].Fields) == 0 {
-				t.Fatalf("the run keeps %+v, want the one write, refused, keeping its item %s and the fields it planned", writes, issue)
+			if len(writes) != 1 || writes[0].Target != issue || len(writes[0].Fields) == 0 {
+				t.Fatalf("the run keeps %+v, want the one write keeping its item %s and the fields it planned", writes, issue)
 			}
 		})
 	}
 }
 
-// TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited (review round 9, finding 2): a
-// reasoned close of A lands its reason and is refused 503; the next press's claim, which starts
-// out holding that landed reason, ends before its call is planned; a press for B takes it over.
-// The taken-over write is settled naming nothing it did not land itself, and B is closed.
+// TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited (review round 9, finding 2; review
+// round 6, finding H): a reasoned close of A lands its reason and is refused 503; the next press's
+// claim, which starts out holding a copy of that landed reason, ends before its call is planned; a
+// press for B takes it over. That claim sent nothing of its own and describes no call, so it is
+// never-planned: the press runs as it, B is closed, and its record names B's requests alone - no
+// copy of A's reason, which A's own refused write still names, and no GOING_WRITE_UNSETTLED for a
+// write that sent nothing.
 func TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	rows := goingSeveralRequestRows(t, rig)
@@ -1014,7 +1130,7 @@ func TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited(t *testing.T) {
 		t.Run(row.action, func(t *testing.T) {
 			a, b := rig.issue(t, "Half closed, then pressed again"), rig.issue(t, "Pressed after")
 			argumentsA, firstA, ownA := row.on(t, rig, a)
-			argumentsB, _, _ := row.on(t, rig, b)
+			argumentsB, firstB, _ := row.on(t, rig, b)
 			run := rig.proposed(t, "alice", false, row.action, argumentsA)
 			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method+" "+r.URL.Path == ownA {
@@ -1033,10 +1149,15 @@ func TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited(t *testing.T) {
 			line := goingLineOf(t, rig.write(t, "alice", run, press))
 			_, pathA, _ := strings.Cut(firstA, " ")
 			recorded := rig.requestsRecorded(t, run)
-			if !line.Outcome.OK || rig.issueRead(t, b).Status != "done" || len(recorded) != 3 || recorded[1].Pending ||
-				recorded[1].Outcome.OK || strings.Contains(recorded[1].Outcome.Message, pathA) {
-				t.Fatalf("the press on %s answered %+v and the run keeps %+v, want the taken-over write settled naming nothing of %s and %s done",
-					b, line.Outcome, recorded, firstA, b)
+			if !line.Outcome.OK || rig.issueRead(t, b).Status != "done" || len(recorded) != 2 || recorded[1].ID != line.WriteID ||
+				recorded[1].Pending || !recorded[1].Outcome.OK || len(recorded[1].Requests) != 2 ||
+				recorded[1].Requests[0].Method+" "+recorded[1].Requests[0].Path != firstB || strings.Contains(recorded[1].Outcome.Message, pathA) {
+				t.Fatalf("the press on %s answered %+v and the run keeps %+v, want the never-planned claim recorded as the press's own write of %s, done, naming nothing of %s",
+					b, line.Outcome, recorded, b, firstA)
+			}
+			if recorded[0].Outcome.OK || len(recorded[0].Requests) == 0 || recorded[0].Requests[0].Method+" "+recorded[0].Requests[0].Path != firstA ||
+				!recorded[0].Requests[0].Outcome.OK {
+				t.Fatalf("the run keeps %+v, want A's refused write still naming %s, which landed", recorded, firstA)
 			}
 		})
 	}

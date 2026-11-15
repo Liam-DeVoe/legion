@@ -236,13 +236,24 @@ func (l *goingLandings) plan(ctx context.Context, write goingRunWrite, issue str
 // reach marks the pending undo, once, as about to send its first request, and how many requests it
 // sends (goingRunUndo.Sends), as plan marks a write: an undo taken over after its process ended
 // whose claim names no such mark was never reached, so it made nothing and is made now, while one
-// marked with no landing recorded may have run and is unsettled (goingUndoTakeOver). It is
-// bookkeeping outside every commit step; a claim the run no longer holds is pgx.ErrNoRows.
-func (l *goingLandings) reach(ctx context.Context, sends int) error {
-	if l.reached {
+// marked with no landing recorded may have run and is unsettled (goingUndoTakeOver). It marks
+// beside them left, the fields of the write the undo leaves as another writer left them, each
+// with what changed (goingUndoer.writeBack), which no request of it sends: so an undo taken over
+// once all it sends landed answers those fields refused, as this one does (goingUndoLandedLine).
+// A nil *goingLandings marks nothing. It is bookkeeping outside every commit step; a claim the run
+// no longer holds is pgx.ErrNoRows.
+func (l *goingLandings) reach(ctx context.Context, sends int, left []goingUndoField) error {
+	if l == nil || l.reached {
 		return nil
 	}
-	if err := l.merge(ctx, fmt.Sprintf(`{"sends": %d}`, sends), ""); err != nil {
+	encoded, err := json.Marshal(struct {
+		Sends  int              `json:"sends"`
+		Fields []goingUndoField `json:"fields,omitempty"`
+	}{sends, left})
+	if err != nil {
+		return err
+	}
+	if err := l.merge(ctx, string(encoded), ""); err != nil {
 		return err
 	}
 	l.reached = true
