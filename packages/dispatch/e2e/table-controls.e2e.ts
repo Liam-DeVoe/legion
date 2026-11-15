@@ -3223,3 +3223,68 @@ test("with a field narrowing and a search on, a press of Blocked on you lists ex
   ).toHaveCount(3);
   expect([...(await drawnIds(page))].sort()).toEqual([...mine].sort());
 });
+
+// SLOW(>=2s): an ask seeded, eight wheel steps over the panel, each scroll read once it has held
+// still, and a Tab through every control the panel holds (3.8 s in Chromium, 4.6 s in Firefox,
+// 5.8 s in WebKit).
+// INFRA-3135's review round 1, R10: a panel with no room for itself on either side of its
+// trigger is cut to the roomier side. To decide the side, the placement took the cut off the
+// panel and read its height, which laid it out at its full height and clamped its own scroll to
+// that layout's, after every render and at every scroll, the panel's own included: the wheel's
+// scroll was pushed back at each step, and a Tab onto a control below the cut scrolled it into
+// view only for the clamp to hide it again. `@firefox` and `@webkit`: each engine lays out a
+// scroll box, and clamps its scroll, its own way.
+test("a filter panel cut to a short window scrolls to its last control @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 340, width: 1440 });
+  await seedAsk("Which lease holds?");
+  await page.goto("/");
+  const main = page.getByTestId("main-content");
+  const trigger = control(controlRow(main), CONTROL.panelTrigger);
+  const panel = await openFilterPanel(page, main);
+  const measured = await panel.evaluate((node) => ({
+    client: node.clientHeight,
+    cut: (node as HTMLElement).style.maxHeight,
+    holds: node.scrollHeight,
+  }));
+  const under = await trigger.boundingBox();
+  console.log(
+    `Filter panel at 1440x340, under a trigger at ${under?.y}-${(under?.y ?? 0) + (under?.height ?? 0)} px: cut to ${measured.cut || "nothing"}, ${measured.client} px shown of ${measured.holds}`
+  );
+  expect(measured.cut, "the window is not short enough to cut the Filter panel").not.toBe("");
+  const wrong: string[] = [];
+
+  // The wheel over the panel, more steps than it has room to move.
+  const area = await panel.boundingBox();
+  if (area === null) throw new Error("the Filter panel is not on screen");
+  await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+  for (let step = 0; step < 8; step++) await page.mouse.wheel(0, 100);
+  const top = await settledScrollTop(panel);
+  const end = await panel.evaluate((node) => node.scrollHeight - node.clientHeight);
+  if (top < end - 1) wrong.push(`the wheel left the panel at ${top} px of the ${end} it scrolls`);
+
+  // Tab from the control the panel opened on to its last, the Assignee filter, which is then in
+  // sight inside the panel. The control is held by its handle, in case a Tab closes the panel.
+  const last = await panel.getByRole("button", { name: "Filter by assignee" }).elementHandle();
+  if (last === null) throw new Error("the Filter panel has no Assignee filter");
+  let reached = false;
+  for (let press = 0; press < 30 && !reached; press++) {
+    await page.keyboard.press("Tab");
+    reached = await last.evaluate((node) => node === document.activeElement);
+  }
+  if (!reached) wrong.push("Tab never reached the Assignee filter");
+  await settledScrollTop(panel);
+  const shown = await last.evaluate((node) => {
+    const own = node.getBoundingClientRect();
+    const box = node.closest('[role="dialog"]')?.getBoundingClientRect();
+    return {
+      inside: box !== undefined && own.top >= box.top - 1 && own.bottom <= box.bottom + 1,
+      place: `${Math.round(own.top)}-${Math.round(own.bottom)} px in a panel at ${Math.round(box?.top ?? 0)}-${Math.round(box?.bottom ?? 0)} px`,
+    };
+  });
+  if (reached && !shown.inside)
+    wrong.push(`the focused Assignee filter is out of sight: ${shown.place}`);
+  await last.dispose();
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
