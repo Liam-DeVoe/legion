@@ -5961,7 +5961,7 @@ Every other op gives back its place in that wait once its request is read, so a 
 `unregister` answers at once with the session retired: `retire` fires the bounded revoke of an unnamed session's enrollments on goroutines of their own, as every sibling path fires it, and the revoke logs its own failure.
 
 This leaves three limits.
-A helper from before these answers gives itself 5 s to write a broker-call op's answer but waits for the broker with no limit, until it restarts on a release that has them (the operator's dotfiles pinned `legion-envoy-v30.18.1` on 2026-11-15, which does not).
+A helper from before these answers gives itself 5 s to write a broker-call op's answer but waits up to 30 s for each request it sends the broker (its HTTP client's timeout, `leasetime.RenewClientTimeout`), until it restarts on a release that has them (the operator's dotfiles pinned `legion-envoy-v30.18.1` on 2026-11-15, which does not).
 When the broker answers after those 5 s, that helper cannot write the answer and closes the connection without one, and when the broker takes longer than the client's own wait, the client times out first.
 Against such a helper, a new `enroll --helper` or `unenroll --helper` prints its `ErrNoReply` message, so it says that the outcome is unknown.
 But that helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.

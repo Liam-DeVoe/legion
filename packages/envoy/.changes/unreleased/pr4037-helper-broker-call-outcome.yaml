@@ -1,7 +1,7 @@
 kind: Fixed
 body: |-
     `agent-secrets-helper` now answers `agent-secrets enroll --helper`, `agent-secrets unenroll --helper` and the login call of `agent-secrets machine login` with the broker's outcome, or with an answer that says the outcome is unknown.
-    Before, the helper gave itself 5 s to write the answer but waited for the broker with no limit, so when the broker answered later the helper could not write the answer and closed the connection without one: `enroll --helper` could exit 1 with an empty reply while the broker made the enrollment.
+    Before, the helper gave itself 5 s to write the answer but waited up to 30 s for each request it sent the broker, so when the broker answered after those 5 s the helper could not write the answer and closed the connection without one: `enroll --helper` could exit 1 with an empty reply while the broker made the enrollment.
     The helper now ends each of these broker calls at 20 s, answers by 21 s, and keeps the connection open for 25 s.
     These three commands wait 30 s for the helper's answer, where `machine login` waited 10 s.
     The new codes `ENROLL_OUTCOME_UNKNOWN` and `UNENROLL_OUTCOME_UNKNOWN` say that the request may have reached the broker and the helper got no result it could read, or that the call did not end within 20 s, so the broker may have made or revoked the enrollment.
