@@ -83,21 +83,26 @@ function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): Tree
   };
 }
 
-/** happy-dom answers every media query against its own 1024 px window, which is where the tree
- *  is read one node at a time (`ZOOMED_TREE_QUERY`). A test that wants the whole tree drawn
- *  asks for a wider one. */
+/** happy-dom answers every media query against its own 1024 px window, where the tree draws
+ *  three levels (`ZOOMED_TREE_QUERY` is below 1024 px). A test sets the width it reads: a
+ *  `max-width` in px, a `min-width` in rem, and `not all and` either. */
 function setViewport(width: number): void {
-  window.matchMedia = ((query: string) =>
-    ({
+  window.matchMedia = ((query: string) => {
+    const max = /max-width:\s*([\d.]+)px/.exec(query)?.[1];
+    const min = /min-width:\s*([\d.]+)rem/.exec(query)?.[1];
+    const matched =
+      max !== undefined ? width <= Number(max) : min !== undefined && width >= Number(min) * 16;
+    return {
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches: width <= Number(/max-width:\s*(\d+)/.exec(query)?.[1] ?? 0),
+      matches: query.startsWith("not all and ") ? !matched : matched,
       media: query,
       onchange: null,
       removeEventListener: () => {},
       removeListener: () => {},
-    }) as MediaQueryList) as typeof window.matchMedia;
+    } as MediaQueryList;
+  }) as typeof window.matchMedia;
 }
 
 const originalMatchMedia = window.matchMedia;
@@ -373,7 +378,7 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
 });
 
 test("q reaches every open question while the tree is read one node at a time", async () => {
-  setViewport(1024);
+  setViewport(1000);
   expect(window.matchMedia(ZOOMED_TREE_QUERY).matches).toBe(true);
   const user = userEvent.setup();
   const root = node({
@@ -407,7 +412,7 @@ test("q reaches every open question while the tree is read one node at a time", 
 // key had just made: `.` drew the rows it started from, and on the zoomed node's own row it
 // walked back out one level instead.
 test(". zooms into the focused node while the tree is read one node at a time", async () => {
-  setViewport(1024);
+  setViewport(1000);
   const user = userEvent.setup();
   const root = node({
     children: [

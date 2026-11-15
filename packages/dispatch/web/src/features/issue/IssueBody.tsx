@@ -146,14 +146,16 @@ export function IssueBody({
     const node = reveal?.at(-1);
     return new Set(node === undefined ? [] : [node.id]);
   }, [reveal]);
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  // The spec's summary callout is the head's three sentences and no row of the outline (R8).
+  const memo = useMemo(() => specSummary(root, specSlug)?.id, [root, specSlug]);
   const view = useMemo(
-    () => presetView(root, address.preset, address.filter, named),
-    [address.filter, address.preset, named, root]
+    () => presetView(root, address.preset, address.filter, named, memo),
+    [address.filter, address.preset, memo, named, root]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const drawsDocument = openedDocument !== undefined;
   const shownToolbar = openedDocument === undefined ? toolbar : openedDocument.toolbar;
-  const specSlug = primarySpec(issue)?.slug ?? "";
   // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
   // `onReport`) and drawn here as the page's own status.
   const [report, setReport] = useState("");
@@ -323,7 +325,10 @@ export function IssueBody({
               {openedDocument?.panel}
             </>
           ) : (
-            <>
+            // The outline's own measure, the prototype's `#pane`: 1000 px, in the middle of the
+            // column, and on a phone 4 px from the left edge and 10 px from the right, as its
+            // `#reading` is there, so the bullets keep the picture's place.
+            <div className="mx-auto flex w-full max-w-[1000px] min-w-0 flex-col max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
               <IssueChildren issue={issue} />
               <IssueTree
                 artifacts={artifacts}
@@ -342,7 +347,7 @@ export function IssueBody({
                 rootRow={view.rootRow}
               />
               {phoneToolbar}
-            </>
+            </div>
           )}
           {below}
         </div>

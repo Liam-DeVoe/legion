@@ -130,6 +130,12 @@ export interface NodeFact {
   readonly value: string;
 }
 
+/** One choice an ask offers, as the ask's own words name it (`AskOption`). */
+export interface NodeOption {
+  readonly description?: string;
+  readonly label: string;
+}
+
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
 export interface ParentLine {
   readonly id: string;
@@ -145,6 +151,10 @@ export interface TreeNode {
   readonly alsoUnder: readonly NodeChip[];
   /** A person's answer to this ask, where it has one. */
   readonly answer?: NodeAnswer;
+  /** When the node was made, as the model records it, where it records one: a turn's, an ask's
+   *  and a result's creation, a decision's last change, the issue's own creation. A block of a
+   *  document carries none, and its row draws no time (R9). */
+  readonly at?: string;
   /** Who made it, where the model holds an author; a row draws "Author unknown" where it holds
    *  none (R9). */
   readonly author?: Actor;
@@ -160,6 +170,9 @@ export interface TreeNode {
   /** The node's own address inside the issue: the issue key, `<slug>#b-<block id>`, else the id
    *  the model gives it. */
   readonly id: string;
+  /** The choices an ask offers, in its own order; absent for every other node and for an ask
+   *  that offers none. */
+  readonly options?: readonly NodeOption[];
   /** Whether this node is an open question that waits on the reader, which the fold unfolds the
    *  path to whatever its depth (R6). */
   readonly question: boolean;
@@ -334,6 +347,7 @@ function assemble(
     return {
       alsoUnder: parents.length > 1 ? others.map((one) => chipOf(references.get(one) ?? one)) : [],
       ...(draft.answer === undefined ? {} : { answer: draft.answer }),
+      ...(draft.at === undefined ? {} : { at: draft.at }),
       ...(draft.author === undefined ? {} : { author: draft.author }),
       children,
       chips: draft.chips,
@@ -342,6 +356,7 @@ function assemble(
       gaps: draft.gaps,
       held: children.reduce((total, child) => total + child.held + 1, 0),
       id: draft.id,
+      ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
@@ -358,6 +373,7 @@ function assemble(
   const children = childrenOf(key, [key]);
   return {
     alsoUnder: [],
+    at: issue.created_at,
     ...(issue.created_by === null ? {} : { author: issue.created_by }),
     children,
     chips: [],

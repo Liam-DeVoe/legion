@@ -188,13 +188,13 @@ On a check, `w` moves to the decision behind the requirement the check serves. N
 issue page opens its preview card for a resting pointer: the card opens when `Tab` focuses the
 link, or when the caret stands in a link of a document you are editing.
 
-At 1024 px and below the tree shows one node at a time, and there `→` and `←` zoom into the
-focused row and back out to its parent.
+Below 1024 px the tree shows one node at a time, and there `→` and `←` zoom into the focused row
+and back out to its parent.
 
-`z` steps through three views: each row's first line; those lines with every body down to the
-second level open; and every branch unfolded with every body open. Your own folds and pins stay as
-they were. A key that has nowhere to go says so in a line under the header, such as **No further
-open question.**
+`z` steps through three views: the rows as the fold leaves them; those rows with every body down
+to the second level open; and every branch unfolded with every body open. Your own folds and pins
+stay as they were. A key that has nowhere to go says so in a line under the header, such as
+**No further open question.**
 
 ## Document
 

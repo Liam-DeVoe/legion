@@ -128,12 +128,17 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     const control = rowElement()?.querySelector<HTMLButtonElement>(rowActionSelector(action));
     return control == null || control.disabled ? null : control;
   };
-  /** Every link the focused row draws, in the order it draws them: a chip's target, and the
-   *  links of the body it opened. None of them is in the tab order (R9), so a key is how a
-   *  reader reaches one; Enter on the link the key left the focus on follows it. */
-  const rowLinks = (): HTMLElement[] => [
-    ...(rowElement()?.querySelectorAll<HTMLElement>("a[href]") ?? []),
-  ];
+  /** Every link the focused row draws: first the chips - the edges the row names, each a target
+   *  of its own - then the links its words hold, which the row draws above its chips (R34).
+   *  None of them is in the tab order (R9), so a key is how a reader reaches one; Enter on the
+   *  link the key left the focus on follows it. */
+  const rowLinks = (): HTMLElement[] => {
+    const row = rowElement();
+    if (row === null) return [];
+    const chips = [...row.querySelectorAll<HTMLElement>("[data-node-chip] a[href]")];
+    const rest = [...row.querySelectorAll<HTMLElement>("a[href]")];
+    return [...chips, ...rest.filter((link) => !chips.includes(link))];
+  };
   /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported. */
   const moveTo = (index: number): void => {
     const { elements } = drawn();

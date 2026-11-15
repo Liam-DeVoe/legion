@@ -107,6 +107,19 @@ test("with no filter on the view is the whole tree, folded to the frontier", () 
   expect(parentLines(view.root)).toEqual({});
 });
 
+// R8, c-tree: the spec's summary callout is the head's three sentences and no row of the
+// conversation, unless the address names it.
+test("with no filter on the spec's memo callout is no row, unless the address names it", () => {
+  const memo = node("spec#b-summary", "callout");
+  const root = node("CORE-1", "issue", [memo, node("ask-1", "ask")]);
+  const ids = (view: { root: TreeNode }) => view.root.children.map((child) => child.id);
+  expect(ids(presetView(root, "conversation", "", new Set(), memo.id))).toEqual(["ask-1"]);
+  expect(ids(presetView(root, "conversation", "", new Set([memo.id]), memo.id))).toEqual([
+    "spec#b-summary",
+    "ask-1",
+  ]);
+});
+
 test("a filter by words with no filter on opens the path down to what it matched", () => {
   const root = issue();
   const view = presetView(root, "conversation", "b-t2");

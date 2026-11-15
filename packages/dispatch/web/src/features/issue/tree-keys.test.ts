@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
-import { pathTo, treeRows, zoomedRows } from "./tree-fold";
+import { NARROW_LEVELS, NOTHING_OPENED, pathTo, treeRows } from "./tree-fold";
 import {
   decisionBehind,
   everythingOpened,
@@ -134,7 +134,9 @@ test("a row is told from another by the path from the root down to it", () => {
 // tree had two rows carrying `tabIndex=0` instead of its one tab stop.
 test("a node drawn under two requirements gives every row below it a key of its own", () => {
   const check = (): TreeNode =>
-    node("verification-md#b-c1", "check", [node("res1", "result")], { state: "passed" });
+    node("verification-md#b-c1", "check", [node("res1", "result", [node("note", "callout")])], {
+      state: "passed",
+    });
   const root = node("CORE-1", "issue", [
     node("spec#b-r1", "requirement", [check()]),
     node("spec#b-r2", "requirement", [check()]),
@@ -145,16 +147,16 @@ test("a node drawn under two requirements gives every row below it a key of its 
   expect(open).toContain("CORE-1>spec#b-r1>verification-md#b-c1>res1");
   expect(open).toContain("CORE-1>spec#b-r2>verification-md#b-c1>res1");
   // Nothing under either copy is open, so each arrives folded; opened by the reader, each
-  // copy's branch below the drawn levels is its own row too.
+  // copy's branch below the three drawn levels is its own row too.
   const folded = treeRows(root, {
-    branches: new Set(["spec#b-r1", "spec#b-r2", "verification-md#b-c1"]),
+    branches: new Set(["spec#b-r1", "spec#b-r2", "verification-md#b-c1", "res1"]),
     closed: new Set(),
     deeper: new Set(),
   }).map(rowKeyOf);
   expect(new Set(folded).size).toBe(folded.length);
   expect(folded.filter((key) => key.startsWith("deeper:"))).toEqual([
-    "deeper:CORE-1>spec#b-r1>verification-md#b-c1",
-    "deeper:CORE-1>spec#b-r2>verification-md#b-c1",
+    "deeper:CORE-1>spec#b-r1>verification-md#b-c1>res1",
+    "deeper:CORE-1>spec#b-r2>verification-md#b-c1>res1",
   ]);
 });
 
@@ -178,22 +180,20 @@ test("a row keeps its key when the tree is drawn from the node a zoom is on", ()
   expect(whole).toEqual(["CORE-1", ...zoomed]);
 });
 
-// R9: the zoomed tree hoists a match out of a context ancestor and carries the trail down to
-// the first open question after the child the trail runs through (`zoomedRows`), so one node
-// is reached both ways. Given one trail apiece those rows shared a key: over the tree below,
-// `zoomedRows(root, undefined, new Set(["spec"]))` drew `spec#b-r1` and `spec#b-q1` twice,
-// keyed `CORE-1>spec#b-r1` and `CORE-1>spec#b-q1` both times. Each row carries the path it is
-// drawn under instead, so two placements are two keys.
-test("every row of a zoomed drawing has a key of its own", () => {
+// R9: below 1024 px the outline draws the frontier's paths whatever their depth, so one node
+// placed under two parents is reached both ways, and each of those rows carries the path it is
+// drawn under: two placements are two keys, never one key drawn twice.
+test("every row of a narrow drawing has a key of its own", () => {
   const under = node("spec#b-r1", "requirement", [
     node("spec#b-q1", "ask", [], { question: true, state: "open" }),
   ]);
   const root = node("CORE-1", "issue", [node("spec", "document", [under]), under]);
 
-  const keys = zoomedRows(root, undefined, new Set(["spec"])).map(rowKeyOf);
+  const keys = treeRows(root, NOTHING_OPENED, [], NARROW_LEVELS).map(rowKeyOf);
   expect(new Set(keys).size).toBe(keys.length);
   expect(keys).toEqual([
     "CORE-1",
+    "CORE-1>spec",
     "CORE-1>spec>spec#b-r1",
     "CORE-1>spec>spec#b-r1>spec#b-q1",
     "CORE-1>spec#b-r1",

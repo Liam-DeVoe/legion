@@ -63,15 +63,21 @@ import { navigateInApp } from "./sends";
  *   and, when they hold children, `aria-expanded`. Each row is `[data-node-row]` with
  *   `data-node-type` (the model's own token, a key of `NODE_TYPE_NAMES`), `data-node-id`,
  *   `data-node-state` (absent for a type the model gives no state) and, when folded,
- *   `data-folded-count`. Inside a row: the type's word (as page chrome, read as the row's text),
- *   its glyph as `svg[data-glyph]` with an accessible name, the author as `[data-node-author]`
- *   (the page's words "Author unknown" where the model holds none), the first line as
- *   `[data-node-first-line][data-author-text]`, each chip as `[data-node-chip]` naming its
- *   target, the state word as `[data-node-state]`'s own text, and an answered ask's answer as
- *   `[data-node-answer]` on the row - its answerer as `[data-answer-author]` - and, in its body,
- *   the whole of what the person wrote as `[data-answer-text]`. A branch deeper than the three
- *   drawn levels is one row `[data-branch-more]` whose text
- *   says how many nodes it holds. c-tree, c-spine, c-focus-opens, c-presets, c-checks-readable,
+ *   `data-folded-count`. Inside a row (R34): its bullet `[data-node-bullet]`, which is the
+ *   `button` named `CONTROL_LABELS.fold` / `CONTROL_LABELS.unfold` where the node holds
+ *   children; then `[data-node-content]`, whose first child is the node's words - drawn whole
+ *   as `[data-node-words]`, or, on a folded branch, its one line `[data-node-first-line]
+ *   [data-author-text]` with its count `[data-node-count]` - and which carries
+ *   `[data-node-own]` on the reader's own words; an agent's words cut at six lines carry
+ *   `[data-node-more]`, the control that opens the rest. At the right, `[data-node-margin]`
+ *   holds a typed kind's tag `[data-node-tag]` (its word as page chrome and its shape as
+ *   `svg[data-glyph]` with an accessible name), the author `[data-node-author]` (the page's
+ *   words "Author unknown" where the model holds none), the time `[data-node-time]` and the
+ *   state word as `[data-node-state]`'s own text. Each chip is `[data-node-chip]` naming its
+ *   target, and an answered ask's answer is `[data-node-answer]` on the row - its answerer as
+ *   `[data-answer-author]`, the whole of what the person wrote as `[data-answer-text]`. A
+ *   branch deeper than the drawn levels is one row `[data-branch-more]` whose text says how
+ *   many nodes it holds. c-tree, c-row, c-spine, c-focus-opens, c-presets, c-checks-readable,
  *   c-reflow, c-plain-words, c-keyboard.
  * - **A node's body** `[data-node-body]`, drawn for the focused row and for a row pinned open
  *   (`[data-node-body][data-pinned]`) and for no other row. c-tree, c-focus-opens, c-keyboard.
@@ -139,11 +145,11 @@ import { navigateInApp } from "./sends";
  *   beside its two counts. c-children.
  * - **A `role="status"` of the page's own** for what a key reports when it has nowhere to go,
  *   such as the next-question key with no further question. c-open-questions, c-keyboard.
- * - **A row's own twisty**, a `button` named `CONTROL_LABELS.fold` while its branch is drawn
- *   and `CONTROL_LABELS.unfold` while it is folded, drawn on every row that holds children:
- *   the page opens folded to the frontier (R1), so this is how a reader opens a branch the
- *   fold left shut, and `unfoldEveryBranch` is a check doing it. c-tree, c-checks-readable,
- *   c-nodes, c-nothing-lost.
+ * - **A row's fold control**, its bullet: a `button` named `CONTROL_LABELS.fold` while its
+ *   branch is drawn and `CONTROL_LABELS.unfold` while it is folded, drawn on every row that
+ *   holds children: the page opens folded to the frontier (R1), so this is how a reader opens a
+ *   branch the fold left shut, and `unfoldEveryBranch` is a check doing it. c-tree, c-row,
+ *   c-checks-readable, c-nodes, c-nothing-lost.
  * - **The header's band**, from the top of the identity block to the top of the preset row,
  *   which is where R13 measures the header's height and its lines (`headerReading`).
  *   c-properties, c-typeface.
@@ -181,6 +187,8 @@ const SELECTORS = {
   nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
   nodeUnsure: "[data-node-unsure]",
+  nodeTag: "[data-node-tag]",
+  nodeWords: "[data-node-words]",
   nodeState: "[data-node-state]",
   pageChrome: "[data-page-chrome]",
   parentLine: "[data-node-parent-line]",
@@ -372,6 +380,16 @@ export function rowPictures(row: Locator): Locator {
 
 export function rowBody(row: Locator): Locator {
   return row.locator(SELECTORS.nodeBody);
+}
+
+/** The node's words as one row draws them whole (R34, ruling 1). */
+export function rowWords(row: Locator): Locator {
+  return row.locator(SELECTORS.nodeWords).first();
+}
+
+/** The control that opens the rest of the words a row cut at six lines, and closes them. */
+export function rowMore(row: Locator): Locator {
+  return row.locator("[data-node-more]");
 }
 
 export function nodeBodies(page: Page): Locator {
@@ -653,9 +671,10 @@ export interface DrawnRow {
   /** The one word a decision the model marks unsure says of itself, or null where none. */
   readonly unsure: string | null;
   readonly visible: boolean;
-  /** The same reading of the box the row's words sit in - its twisty, type, author, first line
-   *  and state - which is what hides a word beside the first line rather than in it. Null
-   *  where the row draws no first line. */
+  /** The node's words as the row draws them whole, or null where it draws its one line. */
+  readonly words: string | null;
+  /** The same reading of the box a folded row's one line sits in, which is what hides a word
+   *  beside the line rather than in it. Null where the row draws no first line. */
   readonly wordsBox: LineBox | null;
 }
 
@@ -713,7 +732,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
         level: row.getAttribute("aria-level"),
         pinned: row.querySelector(`${selectors.nodeBody}[data-pinned]`) !== null,
         parent: (() => {
-          const line = row.querySelector(`:scope > ${selectors.parentLine}`);
+          const line = row.querySelector(`[data-node-content] > ${selectors.parentLine}`);
           return line === null
             ? null
             : {
@@ -730,9 +749,173 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
         type: row.getAttribute("data-node-type"),
         unsure: text(row.querySelector(selectors.nodeUnsure)),
         visible: row.getClientRects().length > 0,
+        words: text(row.querySelector(selectors.nodeWords)),
         wordsBox: lineBox(firstLine?.parentElement),
       };
     });
+  }, SELECTORS);
+}
+
+/** Where the parts of one row stand on the page, in CSS pixels (c-row, R34): its bullet, the
+ *  left edge of its words and the right end of their first line, its tag, its byline and its
+ *  time, and the colours a row draws them in. */
+export interface RowLayout {
+  /** The author's words' colour, and the time's, as computed. */
+  readonly bylineColor: string | null;
+  /** The author's name as drawn, and its computed colour. */
+  readonly author: { readonly color: string; readonly name: string } | null;
+  /** The left of the byline - the author and the time - and the top of its box. */
+  readonly byline: { readonly left: number; readonly top: number } | null;
+  /** The bullet's left, its dot's computed fill, and the fill its kind's token resolves to. */
+  readonly bullet: { readonly fill: string; readonly kindFill: string; readonly left: number };
+  readonly context: boolean;
+  /** The fold control a row that holds nodes draws: its name and whether it is the bullet. */
+  readonly fold: { readonly isBullet: boolean; readonly name: string } | null;
+  /** Whether the first thing the row's content draws is the node's words, so nothing - no
+   *  kind, mark or label - stands between the bullet and them. */
+  readonly wordsFirst: boolean;
+  readonly id: string;
+  /** The words' first line: its top, its height and the right end of its last character. */
+  readonly line: { readonly bottom: number; readonly right: number; readonly top: number };
+  /** The text of the control that opens a cut text, or null where the words are whole. */
+  readonly more: string | null;
+  /** Whether these are the reader's own words, which carry the ink rule. */
+  readonly own: boolean;
+  /** Whether the ink rule is drawn at the content's leading edge. */
+  readonly rule: boolean;
+  /** The page's quiet grey, as computed, for comparison with the byline. */
+  readonly quiet: string;
+  /** The tag a typed kind draws, its text and its box; null where none. */
+  readonly tag: {
+    readonly left: number;
+    readonly right: number;
+    readonly text: string;
+    readonly top: number;
+  } | null;
+  readonly time: string | null;
+  readonly type: string;
+  /** How many pixels of the words the row's box hides. */
+  readonly wordsHidden: number;
+  /** The left edge of the node's words, or of a folded row's one line. */
+  readonly wordsLeft: number;
+}
+
+/** Every visible row's layout, in document order (c-row). */
+export function rowLayouts(page: Page): Promise<RowLayout[]> {
+  return page.evaluate((selectors) => {
+    const fillOf = (token: string): string => {
+      const probe = document.createElement("i");
+      probe.style.backgroundColor = `var(--color-${token})`;
+      document.body.append(probe);
+      const fill = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return fill;
+    };
+    const quiet = (() => {
+      const probe = document.createElement("i");
+      probe.style.color = "var(--color-page-quiet)";
+      document.body.append(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    })();
+    const KIND: Record<string, string> = {
+      ask: "page-question",
+      callout: "page-issue",
+      check: "page-check",
+      child_issue: "page-child",
+      decision: "page-decision",
+      issue: "page-issue",
+      plan_task: "page-step",
+      requirement: "page-statement",
+      result: "page-check",
+    };
+    const rows = [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)];
+    return rows
+      .filter((row) => row.getClientRects().length > 0)
+      .map((row) => {
+        const type = row.getAttribute("data-node-type") ?? "";
+        const author = row.querySelector(selectors.nodeAuthor);
+        const kindToken =
+          KIND[type] ??
+          (author?.getAttribute("data-author-kind") === "person" ? "page-person" : "page-bullet");
+        const content = row.querySelector("[data-node-content]");
+        const words =
+          row.querySelector(selectors.nodeWords) ??
+          row.querySelector(selectors.nodeFirstLine)?.parentElement ??
+          null;
+        const bullet = row.querySelector("[data-node-bullet]");
+        const dot = bullet?.querySelector("i") ?? null;
+        // The words' first line: the boxes of their text alone - a range over an element answers
+        // the element's own box too, which spans the whole column - the first line being those
+        // whose top is the first box's.
+        const rects: DOMRect[] = [];
+        if (words !== null) {
+          const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            rects.push(...[...range.getClientRects()].filter((rect) => rect.width > 0));
+          }
+        }
+        const top = rects[0]?.top ?? 0;
+        const first = rects.filter((rect) => Math.abs(rect.top - top) < 4);
+        const tag = row.querySelector(selectors.nodeTag);
+        const tagBox = tag?.getBoundingClientRect();
+        const byline = row.querySelector("[data-node-byline]");
+        const bylineBox = byline?.getBoundingClientRect();
+        const time = row.querySelector("[data-node-time]");
+        const name = author?.querySelector("[data-author-text], [data-page-chrome]") ?? null;
+        const fold = bullet?.matches("button") === true ? bullet : null;
+        return {
+          author:
+            name === null
+              ? null
+              : { color: getComputedStyle(name).color, name: (name.textContent ?? "").trim() },
+          byline: bylineBox === undefined ? null : { left: bylineBox.left, top: bylineBox.top },
+          bylineColor: time === null ? null : getComputedStyle(time).color,
+          bullet: {
+            fill: dot === null ? "" : getComputedStyle(dot).backgroundColor,
+            kindFill: fillOf(kindToken),
+            left: bullet?.getBoundingClientRect().left ?? -1,
+          },
+          context: row.hasAttribute("data-node-context"),
+          fold:
+            row.getAttribute("aria-expanded") === null
+              ? null
+              : {
+                  isBullet: fold !== null,
+                  name:
+                    (fold ?? row.querySelector("button[aria-label]"))?.getAttribute("aria-label") ??
+                    "",
+                },
+          id: row.getAttribute("data-node-id") ?? "",
+          line: {
+            bottom: Math.max(...first.map((rect) => rect.bottom), top),
+            right: Math.max(...first.map((rect) => rect.right), 0),
+            top,
+          },
+          more:
+            row.querySelector("[data-node-more]")?.textContent?.replace(/\s+/g, " ").trim() ?? null,
+          own: content?.hasAttribute("data-node-own") === true,
+          quiet,
+          rule: content !== null && getComputedStyle(content).boxShadow.includes("inset"),
+          tag:
+            tag === null || tagBox === undefined
+              ? null
+              : {
+                  left: tagBox.left,
+                  right: tagBox.right,
+                  text: (tag.textContent ?? "").trim(),
+                  top: tagBox.top,
+                },
+          time: time?.textContent ?? null,
+          type,
+          wordsFirst: content?.firstElementChild === words,
+          wordsHidden: words === null ? 0 : Math.max(0, words.scrollHeight - words.clientHeight),
+          wordsLeft: words?.getBoundingClientRect().left ?? -1,
+        };
+      });
   }, SELECTORS);
 }
 

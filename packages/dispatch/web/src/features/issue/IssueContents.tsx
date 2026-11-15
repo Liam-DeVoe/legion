@@ -4,6 +4,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useStat
 import { whoAmIQuery } from "../../api/queries";
 import {
   focusVisibleRing,
+  pageFailedText,
   pageGuideBg,
   pageHairBg,
   pageHairBorder,
@@ -11,6 +12,7 @@ import {
   pageInkBorder,
   pageInkText,
   pageIssueBg,
+  pageKindTag,
   pageLineBorder,
   pageMarkBg,
   pageMutedText,
@@ -19,13 +21,22 @@ import {
   pagePersonBg,
   pageQuestionBg,
   pageQuietText,
+  pageWaitingBg,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 import { useFocusedNode } from "./focused-node";
 import { nodeWords, type TreeNode } from "./issue-tree";
+import { NodeGlyph } from "./NodeGlyph";
 import { oneLineCut, useOneLineBox } from "./one-line";
-import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import {
+  CONTENTS_MARK_WORDS,
+  CONTROL_LABELS,
+  type ContentsMark,
+  GLYPH_TOKENS,
+  NODE_TYPE_NAMES,
+  sentenceCase,
+} from "./page-words";
 import { pathTo } from "./tree-fold";
 
 /**
@@ -111,9 +122,11 @@ export function OutlineSheet({ list }: { list: (close: () => void) => ReactNode 
   );
 }
 
-/** One entry of the list: a question, or a thread the reader began, with the entries under it. */
+/** One entry of the list: a question, or a thread the reader began, with the entries under it,
+ *  and what its own branch holds that its marks count (`CONTENTS_MARK_WORDS`). */
 export interface ContentsEntry {
   readonly children: readonly ContentsEntry[];
+  readonly marks: Readonly<Record<ContentsMark, number>>;
   readonly node: TreeNode;
 }
 
@@ -122,10 +135,35 @@ export interface ContentsEntry {
  * each ask and each comment or message the reader wrote that begins a thread, each under the
  * nearest such entry above it in the tree, in the tree's own order. A node drawn under a second
  * parent is listed once, at its own place.
+ *
+ * Each entry's marks count its own branch: every node under it that sits under no entry nearer
+ * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
+ * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
+ * issues, and its statements a check under them failed.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
   const TURNS: Partial<Record<TreeNode["type"], true>> = { comment: true, message: true };
-  const walk = (node: TreeNode, into: ContentsEntry[]): void => {
+  const tally = (): Record<ContentsMark, number> => ({
+    children: 0,
+    failing: 0,
+    for_review: 0,
+    statements: 0,
+  });
+  const count = (node: TreeNode, marks: Record<ContentsMark, number>): void => {
+    if (node.type === "requirement") {
+      marks.statements += 1;
+      if (node.children.some((child) => child.type === "check" && child.state === "failed")) {
+        marks.failing += 1;
+      }
+    }
+    if (node.type === "decision" && node.waiting) marks.for_review += 1;
+    if (node.type === "child_issue") marks.children += 1;
+  };
+  const walk = (
+    node: TreeNode,
+    into: ContentsEntry[],
+    marks: Record<ContentsMark, number>
+  ): void => {
     for (const child of node.children) {
       const begunByReader =
         TURNS[child.type] === true &&
@@ -135,25 +173,55 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
         child.author.id === viewer;
       if (!child.transcluded && (child.type === "ask" || begunByReader)) {
         const children: ContentsEntry[] = [];
-        walk(child, children);
-        into.push({ children, node: child });
+        const own = tally();
+        walk(child, children, own);
+        into.push({ children, marks: own, node: child });
       } else {
-        walk(child, into);
+        count(child, marks);
+        walk(child, into, marks);
       }
     }
   };
   const below: ContentsEntry[] = [];
-  walk(root, below);
-  return [{ children: [], node: root }, ...below];
+  const issue = tally();
+  walk(root, below, issue);
+  return [{ children: [], marks: issue, node: root }, ...below];
 }
+
+/** Each mark's shape and colour, in the order an entry draws them (the prototype's `.cnts`). */
+const MARKS: readonly {
+  readonly glyph: string;
+  readonly mark: ContentsMark;
+  readonly tone: string;
+}[] = [
+  { glyph: GLYPH_TOKENS.types.requirement, mark: "statements", tone: pageKindTag.statement },
+  { glyph: GLYPH_TOKENS.types.decision, mark: "for_review", tone: pageKindTag.decision },
+  { glyph: GLYPH_TOKENS.types.child_issue, mark: "children", tone: pageKindTag.child },
+  { glyph: GLYPH_TOKENS.states.check.failed, mark: "failing", tone: pageFailedText },
+];
 
 /** The pixels a row of the list spends beside its words, from the prototype's `.mrow`: its
  *  side margins and right padding, the 6 px it starts at and 16 px a level, the twisty's 12,
- *  the bullet's 7, and the two 7 px gaps between them. */
-const ROW = { gap: 7, indent: 16, inset: 6, margins: 12, paddingRight: 6, twisty: 12, dot: 7 };
+ *  the bullet's 7, and the 7 px gaps between them; and after the words the waiting dot's 8 and
+ *  each mark's 12 px shape, the 2 px between it and its count, and the 6 px between marks
+ *  (`.cnts`). */
+const ROW = {
+  dot: 7,
+  gap: 7,
+  indent: 16,
+  inset: 6,
+  margins: 12,
+  markGap: 6,
+  markGlyph: 12,
+  markInner: 2,
+  paddingRight: 6,
+  twisty: 12,
+  waiting: 8,
+};
 
-/** The row's words are 14 px: 0.875 rem. */
+/** The row's words are 14 px: 0.875 rem; a mark's count is 12 px. */
 const ROW_TEXT_REM = 0.875;
+const MARK_TEXT_REM = 0.75;
 
 /**
  * The list itself: its heading with the Focus branch toggle, and one row per entry, each its
@@ -312,11 +380,27 @@ export function ContentsList({
           const isCurrent = node.id === current;
           const words = nodeWords(node);
           const indent = ROW.inset + depth * ROW.indent;
+          const marks = MARKS.filter(({ mark }) => entry.marks[mark] > 0);
+          // What stands after the words: the waiting dot, then each mark, its shape, its count
+          // and the gaps between them, which the words' own line is cut to leave room for.
+          const after =
+            box === undefined
+              ? 0
+              : (node.waiting ? ROW.gap + ROW.waiting : 0) +
+                marks.reduce(
+                  (total, { mark }) =>
+                    total +
+                    (total === 0 ? ROW.gap : ROW.markGap) +
+                    ROW.markGlyph +
+                    ROW.markInner +
+                    box.widthOf(String(entry.marks[mark]), MARK_TEXT_REM, 600),
+                  0
+                );
           const cut =
             box === undefined
               ? undefined
               : oneLineCut({
-                  after: 0,
+                  after,
                   before: indent + ROW.twisty + ROW.gap + ROW.dot + ROW.gap,
                   room: box.width - ROW.margins - ROW.paddingRight,
                   text: words,
@@ -389,6 +473,35 @@ export function ContentsList({
               >
                 {line.cut ? `${line.line}…` : line.line}
               </span>
+              {/* An entry whose question waits on the reader carries the waiting dot, and says so
+                  in words to a reader who cannot see it (the prototype's `.mrow .dot`). */}
+              {node.waiting ? (
+                <span className="inline-flex shrink-0 items-center" data-contents-waiting="">
+                  <i aria-hidden="true" className={`size-2 rounded-full ${pageWaitingBg}`} />
+                  <span className="sr-only" {...pageChrome}>
+                    {PROPERTY_LABELS.waiting_on_you}
+                  </span>
+                </span>
+              ) : null}
+              {marks.length === 0 ? null : (
+                <span className="flex shrink-0 gap-1.5">
+                  {marks.map(({ glyph, mark, tone }) => (
+                    <span
+                      className={`inline-flex items-center gap-0.5 text-xs leading-8 font-semibold ${tone}`}
+                      data-contents-mark={mark}
+                      key={mark}
+                    >
+                      <span aria-hidden="true" className="inline-flex">
+                        <NodeGlyph className="size-3 shrink-0" token={glyph} />
+                      </span>
+                      <span {...authorText}>{entry.marks[mark]}</span>
+                      <span className="sr-only" {...pageChrome}>
+                        {CONTENTS_MARK_WORDS[mark]}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              )}
             </div>
           );
         })}

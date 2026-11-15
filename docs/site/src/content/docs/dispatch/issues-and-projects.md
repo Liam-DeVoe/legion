@@ -330,19 +330,28 @@ results recorded against each check; its comments and messages; and its child is
 issue. It draws no document or file: those are in **Files and documents**. A check and a plan
 task sit under each statement they serve, a result under its check, and a decision under the ask it
 answers. A node whose source Dispatch does not hold sits under the issue. An answered ask carries
-its answer on a line of its own row: **Answer**, who answered, and the first line of what they
-wrote; its body holds what they chose and wrote, as they wrote it.
+its answer in its own row: **Answer**, who answered, what they chose and what they wrote, as they
+wrote it.
 
 The tree opens folded to its frontier. The path down to each thing that is open and unanswered
-is unfolded, however deep it is: an ask nobody has answered, a check that has not passed, a
+is unfolded, however deep it is: a question nobody has answered, a check that has not passed, a
 decision that waits for your review, and a statement no check serves. Every other branch is one
-row that says how many rows it hides, such as **3 rows hidden inside**, and a replaced decision's
-branch stays folded. A branch you fold stays folded, and a branch you unfold stays open. From the
-third level down, unfolding a branch shows one row, such as **3 more rows below**, which opens the
-rest.
+line - the first sentence of its node, or its first 100 characters cut at a word - with how
+many rows it hides, such as **3 rows hidden inside**, and a replaced decision's branch stays
+folded. A branch you fold stays folded, and a branch you unfold stays open. On a screen 1024 px
+wide or more the tree draws three levels below the node it starts at, and below that one level:
+unfolding a branch deeper than that shows one row, such as **3 more rows below**, which opens
+the rest.
 
-A row is one line: what the node is, who wrote it, its state, its links, and what it lacks in a
-few words. Who wrote it is a name and a shape: a person by their login, with one shape, and an
+A row reads from the left: its bullet, in its kind's colour, then its words, whole. The bullet of
+a node that holds others is its fold control, with a halo while the branch is folded. At the
+right end of the row's first line stand its kind on one tag - **statement**, **check**,
+**question**, **decision** and so on; a comment or a message has none - then who wrote it and
+when, in grey, and under them its state. Every node's words start at one left edge; your own
+words carry a dark rule and start a little further in. An agent's words, and an answered
+question, are cut at six lines when more than 20 words would be hidden, and **more · 80 words**
+opens the rest where they stand; your own words and a question waiting on you are never cut.
+Who wrote a node is a name and a shape: a person by their login, with one shape, and an
 agent by its session's title, with another, or **An agent** when the session has no title; where
 Dispatch holds no author, as for a statement, a check, a plan task or a decision, the row says
 **Author unknown**, with a shape of its own. A decision marked unsure says **Unsure**. A row
@@ -350,7 +359,8 @@ marks what it lacks only where that sets it apart from rows of its kind and name
 owes: **No check** on a statement no check serves, **No reason given** on a plan task that
 serves no statement, and **Not a statement** on a check or a plan task whose **serves** names
 something else. Focus a row, with the pointer or a key, and its body
-opens under it with the rest: its facts, and each lack as a sentence. The body closes when the
+opens under its words with the rest: its whole words where the row was cut, the facts, and each
+lack as a sentence. The body closes when the
 focus moves on, unless you choose **Keep open**; **Let it close** undoes that. A faint row is
 there to place the rows under it: a statement under **Verification**, or the rows above a match
 of the **Filter** box. A decision that waits for your review has
@@ -364,9 +374,9 @@ the focus on that node's row, with whichever filter the link opens.
 
 Press `Enter` on a row to edit its text where it stands; `Escape` takes you back to the row. `.`
 zooms into the focused row: the tree is drawn from that row down, and the path above it is a line
-of names, each of which zooms back to it. `,` zooms back out. At 1024 px and below the tree is
-always read one node at a time: it shows the node you are on and the rows under it, with the path
-above it as that line of names, and it unfolds the path down to the first open question.
+of names, each of which zooms back to it. `,` zooms back out. Below 1024 px the tree is always
+read one node at a time: it shows the node you are on, the rows under it, and every path down to
+what is open and unanswered, with the path above it as that line of names.
 [Keyboard shortcuts](/legion/dispatch/keyboard/#issue-tree) lists every key of the tree.
 
 ### The filters

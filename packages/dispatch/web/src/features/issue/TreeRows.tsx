@@ -1,19 +1,20 @@
-import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { CSSProperties, ReactNode } from "react";
 
-import type { Artifact } from "../../api/types";
-import { borderDefault, borderTransparent, textMutedOnCanvas } from "../../theme/classes";
+import { whoAmIQuery } from "../../api/queries";
+import type { Actor, Artifact } from "../../api/types";
+import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
-import type { OneLineBox } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
 /**
- * The rows of the issue's tree, drawn (dispatch://INFRA-1196 R1, R2).
+ * The rows of the issue's tree, drawn (dispatch://INFRA-1196 R1, R2, R34).
  *
  * It is the drawing alone: which rows there are is the fold's (`tree-fold.ts`), and what the
  * reader opened, pinned, focused and is editing in is `IssueTree.tsx`'s, which hands each row
@@ -31,12 +32,10 @@ export function TreeRows({
   onOpenDeeper,
   onPin,
   onToggle,
-  oneLineBox,
   openBody,
   pinned,
   rows,
   tabStop,
-  zoomed,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -53,9 +52,6 @@ export function TreeRows({
   onOpenDeeper: (id: string) => void;
   onPin: (row: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
-  /** The tree's one reading of its own width, which every one-line row cuts its first line to
-   *  (`one-line.ts`): a row may not read its own layout to decide what it says. */
-  oneLineBox: OneLineBox | undefined;
   /** The node whose body the preset opens without being asked (R7). */
   openBody?: string;
   /** The keys of the rows whose bodies the reader pinned open. */
@@ -63,23 +59,21 @@ export function TreeRows({
   rows: readonly DrawnRow[];
   /** The key of the row that is the tree's one tab stop. */
   tabStop: string | undefined;
-  /** Whether the tree is read one node at a time (`ZOOMED_TREE_QUERY`). */
-  zoomed: boolean;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
   // where the model holds no author (R9).
   const agentText = useAgentText();
+  // The reader, whose own words carry the ink rule and whose name is drawn in the ink (R34).
+  const reader = useQuery(whoAmIQuery()).data?.login;
   return (
     <>
       {rows.map((row) => {
         const key = rowKeyOf(row);
-        const indent = (row.level - 1) * INDENT_PER_LEVEL;
         if (row.kind === "deeper") {
           return (
             <BranchMore
               held={row.held}
-              indent={indent}
               key={key}
               level={row.level}
               onOpen={() => onOpenDeeper(row.of.id)}
@@ -95,6 +89,7 @@ export function TreeRows({
             author={{
               kind: authorKind(row.node.author),
               name: agentText.author(row.node.author),
+              reader: isReader(row.node.author, reader),
             }}
             body={
               focused === key ||
@@ -109,16 +104,14 @@ export function TreeRows({
             expanded={row.expanded}
             focused={focused === key}
             folded={row.folded}
-            indent={indent}
             isClosed={isClosed}
             key={key}
             level={row.level}
             node={row.node}
             onFocus={() => onFocus(key, row.node)}
-            oneLine={zoomed}
-            oneLineBox={oneLineBox}
             onPin={() => onPin(key)}
             onToggle={() => onToggle(row.node, row.expanded)}
+            ownAnswer={isReader(row.node.answer?.by, reader)}
             pinned={pinned.has(key)}
             rowKey={key}
             tabStop={tabStop === key}
@@ -129,12 +122,20 @@ export function TreeRows({
   );
 }
 
-/** How far in one level of the tree is drawn, in pixels (R1). */
-const INDENT_PER_LEVEL = 20;
+/** Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
+ *  an agent acting for them, whose words are the agent's (R9). */
+function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
+  return (
+    reader !== undefined &&
+    actor?.kind === "user" &&
+    actor.id === reader &&
+    (actor.act?.session ?? "") === ""
+  );
+}
 
 /**
  * How much of the whole tree the cycle key draws, in the three states it steps through: its
- * rows as first lines, those first lines with every body down to the second level open, and
+ * rows as the fold left them, those rows with every body down to the second level open, and
  * everything - every branch unfolded and every body open (R9). The reader's own folds and pins
  * are untouched by it, so the cycle comes back to the tree they had.
  */
@@ -151,30 +152,39 @@ function drawsBody(cycle: number, level: number): boolean {
   return cycle === EVERYTHING || (cycle === 1 && level <= BODIES_TO_LEVEL);
 }
 
-/** The one row a branch below the drawn levels folds to: how many rows it holds, in words that
- *  agree with the count, and the control that opens them in place. */
+/** The one row a branch below the drawn levels folds to (R16): how many rows it holds, in words
+ *  that agree with the count, and the control that opens them in place, at the level its nodes
+ *  would stand at and under the guides of the levels above it. */
 function BranchMore({
   held,
-  indent,
   level,
   onOpen,
 }: {
   held: number;
-  indent: number;
   level: number;
   onOpen: () => void;
 }): ReactNode {
+  const depth = level - 1;
   return (
     <div
       aria-level={level}
-      className={`flex min-w-0 border-l-2 py-1 text-xs ${borderTransparent} ${textMutedOnCanvas}`}
+      className={`relative flex min-w-0 pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[760px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
       data-branch-more=""
       role="treeitem"
-      style={{ paddingLeft: indent }}
+      style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={-1}
     >
+      {Array.from({ length: depth }, (_unused, guide) => (
+        <span
+          aria-hidden="true"
+          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[760px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
+          // biome-ignore lint/suspicious/noArrayIndexKey: a guide is its level and nothing else.
+          key={guide}
+          style={{ "--guide": guide } as CSSProperties}
+        />
+      ))}
       <button
-        className={`rounded border px-1 ${borderDefault}`}
+        className="dispatch-inline-link font-medium underline decoration-page-hair underline-offset-[3px]"
         onClick={onOpen}
         tabIndex={-1}
         type="button"

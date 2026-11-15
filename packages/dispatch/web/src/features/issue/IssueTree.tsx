@@ -7,17 +7,17 @@ import { useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
 import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
-import { useOneLineBox } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import {
+  DRAWN_LEVELS,
+  NARROW_LEVELS,
   NOTHING_OPENED,
   type OpenedBranches,
   pathTo,
   treeRows,
   zoomBreadcrumb,
-  zoomedRows,
 } from "./tree-fold";
 import { everythingOpened, rowKeyOf } from "./tree-keys";
 import { useNodeEditing } from "./useNodeEditing";
@@ -43,9 +43,11 @@ import { useTreeKeymap } from "./useTreeKeymap";
  * focused row is the only row that takes the focus. The keys that move it are
  * `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s, so a reader uses the pointer until they land.
  *
- * At 1024 px and below the page with no filter on is read one node at a time: the path down to
- * the node the reader is on, that node, and its children as one-line rows, with no second
- * indent level.
+ * Below 1024 px the page with no filter on is read one node at a time (R16): the path down to
+ * the node the reader is on is a breadcrumb, and the outline draws that node and one level
+ * below it, and every path the frontier holds open whatever its depth; a branch's fold control
+ * there zooms into it. From 1024 px up the outline draws three levels below the node it is
+ * rooted at.
  */
 export function IssueTree({
   artifacts,
@@ -128,11 +130,6 @@ export function IssueTree({
   const zoomed = useMediaQuery(ZOOMED_TREE_QUERY) && rootRow;
   const setFocusedNode = useSetFocusedNode();
   const body = useRef<HTMLDivElement | null>(null);
-  // The width every one-line row cuts its first line to, read once for all of them from the
-  // tree's own box: a row may not read its own layout to decide what it says, and 56 rows
-  // reading theirs, and again on every resize, is that read by another name (R1,
-  // `one-line.ts`).
-  const oneLineBox = useOneLineBox(body, zoomed);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
     container: body,
@@ -146,11 +143,12 @@ export function IssueTree({
   // node opens it on that node's parent, so the node the address named is one of the rows.
   const on = zoom ?? (target === undefined ? root.id : (reveal?.at(-2) ?? root).id);
   // A reader who zoomed into a node reads the tree from there: the node is the tree's root,
-  // the path above it the breadcrumb, and everything below it folded as it was. At 1024 px and
-  // below the tree is always zoomed, one node at a time, which is `zoomedRows`.
-  const rootedPath = (zoom === undefined || zoom === root.id ? undefined : pathTo(root, zoom)) ?? [
-    root,
-  ];
+  // the path above it the breadcrumb, and everything below it folded as it was. Below 1024 px
+  // the tree is always rooted somewhere, the issue itself until the reader zooms (`on`).
+  const rootedAt = zoomed ? on : zoom;
+  const rootedPath = (rootedAt === undefined || rootedAt === root.id
+    ? undefined
+    : pathTo(root, rootedAt)) ?? [root];
   const rooted = rootedPath.at(-1) ?? root;
   // What a filter opens: every branch of the view it left, since the view holds only its
   // matches and the chain above each, so each branch is the path down to a match and the view
@@ -182,9 +180,12 @@ export function IssueTree({
   // editing and the tree's one tab stop are held by that key, and a zoom either way leaves
   // them where they are (`rowKeyOf`).
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
-  const drawn = zoomed
-    ? zoomedRows(root, on, context)
-    : treeRows(rooted, cycle === EVERYTHING ? everythingOpened(rooted) : shown, rootedAbove);
+  const drawn = treeRows(
+    rooted,
+    cycle === EVERYTHING ? everythingOpened(rooted) : shown,
+    rootedAbove,
+    zoomed ? NARROW_LEVELS : DRAWN_LEVELS
+  );
   // Under a filter the issue is no row: its rows are the tree's top level (R2). A zoom into one
   // of them keeps that row, which the filter draws.
   const head = drawn[0];
@@ -192,11 +193,8 @@ export function IssueTree({
     rootRow || head?.kind !== "node" || head.node.id !== root.id
       ? drawn
       : drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }));
-  const breadcrumb: readonly TreeNode[] = zoomed
-    ? zoomBreadcrumb(root, on)
-    : zoom === undefined
-      ? []
-      : zoomBreadcrumb(root, zoom);
+  const breadcrumb: readonly TreeNode[] =
+    rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
 
   const takeFocus = useCallback(
     (row: string, node: TreeNode) => {
@@ -436,12 +434,10 @@ export function IssueTree({
           onToggle={(node, expanded) =>
             zoomed ? setZoom(node.id) : unfold(node.id, expanded !== true)
           }
-          oneLineBox={oneLineBox}
           {...(openBody === undefined ? {} : { openBody })}
           pinned={pinned}
           rows={rows}
           tabStop={tabStop}
-          zoomed={zoomed}
         />
       </div>
       {root.children.length === 0 ? (
@@ -453,13 +449,12 @@ export function IssueTree({
   );
 }
 
-/** The width the tree is read one node at a time at, where five levels of indent and a row's own
- *  words do not fit together (R1, R17). It is the page's one width: the preset row is the row of
- *  five exactly where the tree is not zoomed, so `IssuePresets.tsx` reads this query's negation
- *  rather than a `(min-width: …)` of its own. Two queries a pixel apart would leave a fractional
- *  width - a zoomed browser, a fractional device-pixel ratio - matching neither, with the presets
- *  a menu while the tree draws full indents (`shell/useDialog.ts`, `MD_VIEWPORT_QUERY`). */
-export const ZOOMED_TREE_QUERY = "(max-width: 1024px)";
+/** The widths the tree is read one node at a time at, one level below the node it is on: below
+ *  1024 px (R16), where three levels of indent and a row's own words do not fit together. It is
+ *  the exact negation of the width the Contents pane is drawn from (`IssueBody.tsx`'s
+ *  `CONTENTS_PANE_QUERY`), so no width - a zoomed browser, a fractional device-pixel ratio -
+ *  draws the pane beside a tree read one node at a time, or neither. */
+export const ZOOMED_TREE_QUERY = "not all and (min-width: 64rem)";
 
 /** One ask the Contents pane makes of the outline: the node to go to, where there is one, and
  *  whether Focus branch is on as it asks. `seq` tells two asks for the same node apart. */

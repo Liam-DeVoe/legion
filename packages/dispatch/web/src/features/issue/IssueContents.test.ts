@@ -72,3 +72,34 @@ test("a reader the page has not named yet begins no thread of the list", () => {
   const root = node("CORE-1", "issue", [node("comment-mine", "comment", [], { author: alice })]);
   expect(shape(contentsOf(root, undefined))).toEqual(["CORE-1"]);
 });
+
+// R14, the 1440 px picture: each entry's marks count what its own branch holds - its
+// statements, its decisions waiting for the reader's review, its child issues and its statements
+// a check failed - and a node counts once, on the nearest entry above it.
+test("each entry counts what its own branch holds, and a nested entry's branch is its own", () => {
+  const failing = node("spec#b-r2", "requirement", [
+    node("verification#b-c2", "check", [], { state: "failed" }),
+  ]);
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement"),
+    node("CORE-2", "child_issue"),
+    node("ask-1", "ask", [
+      failing,
+      node("decisions#b-d1", "decision", [], { waiting: true }),
+      node("decisions#b-d2", "decision"),
+      node("ask-2", "ask", [node("spec#b-r3", "requirement")]),
+    ]),
+  ]);
+  const marks = (entries: readonly ContentsEntry[]): Record<string, unknown> =>
+    Object.fromEntries(
+      entries.flatMap((entry) => [
+        [entry.node.id, entry.marks],
+        ...Object.entries(marks(entry.children)),
+      ])
+    );
+  expect(marks(contentsOf(root, "alice"))).toEqual({
+    "CORE-1": { children: 1, failing: 0, for_review: 0, statements: 1 },
+    "ask-1": { children: 0, failing: 1, for_review: 1, statements: 1 },
+    "ask-2": { children: 0, failing: 0, for_review: 0, statements: 1 },
+  });
+});

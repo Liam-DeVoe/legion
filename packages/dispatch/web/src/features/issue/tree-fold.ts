@@ -23,16 +23,22 @@ import type { TreeNode } from "./issue-tree";
  *
  * ## What the depth still decides
  *
- * `DRAWN_LEVELS` no longer decides what is drawn: it decides how far one opening reaches. A
- * branch the reader opens below the third level draws one row saying how many nodes it holds
- * rather than the nodes themselves, which they open in place (`DeeperRow`, `OpenedBranches`'s
- * `deeper`), so one gesture deep in the tree cannot flood the page. The frontier outranks it:
- * a path to something open is drawn to its end whatever the depth (R6).
+ * The depth no longer decides what is drawn: it decides how far one opening reaches (R16). The
+ * outline draws `DRAWN_LEVELS` levels below the node it is rooted at from 1024 px up and
+ * `NARROW_LEVELS` below that; a branch the reader opens deeper than that draws one row saying
+ * how many nodes it holds rather than the nodes themselves, which they open in place
+ * (`DeeperRow`, `OpenedBranches`'s `deeper`), so one gesture deep in the tree cannot flood the
+ * page. The frontier outranks it: a path to something open is drawn to its end whatever the
+ * depth (R1, R16).
  */
 
-/** How deep a branch may sit and still draw its nodes when it is opened: below this, one
- *  opening draws one row with a count instead, which the reader opens in place. */
+/** How many levels below the node it is rooted at the outline draws from 1024 px up (R16): a
+ *  branch opened deeper than this draws one row with a count instead, which the reader opens in
+ *  place. */
 export const DRAWN_LEVELS = 3;
+
+/** How many levels below the node it is rooted at the outline draws below 1024 px (R16). */
+export const NARROW_LEVELS = 1;
 
 /** What the reader has done to the fold by hand: the branches they unfolded, the branches they
  *  folded shut, and the deeper branches they opened in place. */
@@ -187,11 +193,15 @@ export function frontier(root: TreeNode): ReadonlySet<string> {
  * it left above the tree (`IssueTree.tsx`). It seeds the trails, so every row is keyed by its
  * path from the issue however much of the tree is drawn, and the pin, the open body and the
  * tree's one tab stop a key holds survive a zoom in both directions (`rowKeyOf`).
+ *
+ * `levels` is how many levels below `root` one opening draws (R16): `DRAWN_LEVELS` from
+ * 1024 px up and `NARROW_LEVELS` below.
  */
 export function treeRows(
   root: TreeNode,
   opened: OpenedBranches = NOTHING_OPENED,
-  above: readonly string[] = []
+  above: readonly string[] = [],
+  levels: number = DRAWN_LEVELS
 ): DrawnRow[] {
   const path = frontier(root);
   const rows: DrawnRow[] = [];
@@ -207,17 +217,13 @@ export function treeRows(
       (holds &&
         !opened.closed.has(node.id) &&
         (opened.branches.has(node.id) || (!node.replaced && path.has(node.id))));
-    // How far one opening reaches: a branch opened below the drawn levels draws one row of
-    // its own rather than its nodes, which the reader opens in place, so one gesture deep in
-    // the tree cannot flood the page. The frontier outranks it, since a path to something
-    // open is drawn to its end. Either way the node's children are drawn as no row of
-    // theirs, so the row says how many it holds.
+    // How far one opening reaches: a branch whose nodes would sit more than `levels` below the
+    // root draws one row of its own rather than its nodes, which the reader opens in place, so
+    // one gesture deep in the tree cannot flood the page. The frontier outranks it, since a
+    // path to something open is drawn to its end. Either way the node's children are drawn as
+    // no row of theirs, so the row says how many it holds.
     const toOneLine =
-      unfolded &&
-      holds &&
-      level >= DRAWN_LEVELS &&
-      !opened.deeper.has(node.id) &&
-      !path.has(node.id);
+      unfolded && holds && level > levels && !opened.deeper.has(node.id) && !path.has(node.id);
     rows.push({
       ...(holds ? { expanded: unfolded } : {}),
       ...(holds && (!unfolded || toOneLine) ? { folded: node.held } : {}),
@@ -238,110 +244,7 @@ export function treeRows(
   return rows;
 }
 
-/** One row the zoomed tree draws below the node it is on: the node, and the path it is drawn
- *  under. That path is the row's own rather than the zoomed node's, because one node is drawn
- *  under two parents (R23) and the zoomed tree reaches it both ways. */
-interface ZoomedRow {
-  readonly node: TreeNode;
-  readonly under: readonly string[];
-}
-
-/**
- * The rows the tree draws at 1024 px and below, where it is read one node at a time: the node
- * the reader is on and the rows below it as one line each, with no second indent level under
- * them. The path down to it is the breadcrumb above the rows (`zoomBreadcrumb`) rather than a
- * row apiece, because the identity block leaves a phone one screenful of rows, not five.
- *
- * The tree opens on the issue itself (`zoom` undefined), so every node the issue holds directly
- * - a requirement, a question, a decision no question holds, a child, a turn - is one row away
- * and the breadcrumb always walks back to the whole issue: a reader on a phone reaches every
- * node a reader at 1440 px reaches, one zoom at a time (R6, R7).
- *
- * A row the view draws only as the ancestor of a match (`context`) - the chain above a match of
- * the filter by words - is no stop of its own here: the one screen a phone has goes to what the
- * reader filtered for, so a node's children are the nearest rows below it the view kept. A
- * filter's own rows are never zoomed (`IssueTree.tsx`): they are drawn whole at every width.
- *
- * One path is drawn deeper than that, and only one: the trail down to the first open question
- * in reading order. Each node of it keeps its own row and the next node of the trail follows
- * it, at the same one level, so that question is on the first screen with nothing unfolded by
- * hand even while the tree is on the issue itself (R6). The branches those nodes hold besides
- * the trail are a zoom away, because a screen that is one trail deep is still one screen.
- *
- * That trail is the open question's alone, and not the whole frontier `treeRows` unfolds: a
- * phone has one screen, and a trail per failing check and uncovered requirement would fill it
- * with paths rather than with the one thing R6 puts there. Everything else the frontier
- * reaches is a zoom away, as every other branch is.
- */
-export function zoomedRows(
-  root: TreeNode,
-  zoom: string | undefined,
-  context: ReadonlySet<string> = new Set()
-): DrawnRow[] {
-  const above = pathTo(root, zoom ?? root.id) ?? [root];
-  const node = above.at(-1) ?? root;
-  const trail = firstQuestion(root, [root]) ?? [];
-  // The path down to the node the tree is zoomed on, which its rows are told apart by even
-  // though the breadcrumb draws it rather than a row apiece.
-  const path = above.slice(0, -1).map((one) => one.id);
-  const under = [...path, node.id];
-  // The children of `of` the preset kept, each with the path it is drawn under: a match
-  // hoisted out of a context ancestor hangs under that ancestor, not under the zoomed node.
-  const matched = (of: TreeNode, within: readonly string[]): ZoomedRow[] =>
-    of.children.flatMap((child) =>
-      context.has(child.id)
-        ? matched(child, [...within, child.id])
-        : [{ node: child, under: within }]
-    );
-  // Every row below the node, in reading order: its children, with the rest of the trail
-  // after whichever of them the trail runs through. Each node of that trail tail hangs under
-  // the node of the trail above it, so a node this walk reaches twice - hoisted out of a
-  // context ancestor and again down a trail - is two rows with two keys rather than one key
-  // drawn twice (`rowKeyOf`).
-  const below: ZoomedRow[] = [];
-  for (const child of matched(node, under)) {
-    const at = trail.findIndex((one) => one.id === child.node.id);
-    if (at === -1) {
-      below.push(child);
-      continue;
-    }
-    let within = child.under;
-    for (const one of trail.slice(at)) {
-      below.push({ node: one, under: within });
-      within = [...within, one.id];
-    }
-  }
-  const rows: DrawnRow[] = [
-    {
-      ...(node.children.length > 0 ? { expanded: true } : {}),
-      kind: "node",
-      level: 1,
-      node,
-      trail: path,
-    },
-  ];
-  for (const [index, drawn] of below.entries()) {
-    // Its own twisty says "open" exactly where the trail carries its next node into the row
-    // under it, and "closed", with a count, wherever its branch is a zoom away.
-    const child = drawn.node;
-    const next = below[index + 1]?.node;
-    const unfolded = next !== undefined && child.children.includes(next);
-    rows.push({
-      ...(child.children.length === 0
-        ? {}
-        : unfolded
-          ? { expanded: true }
-          : { expanded: false, folded: child.held }),
-      kind: "node",
-      level: 2,
-      node: child,
-      trail: drawn.under,
-    });
-  }
-  return rows;
-}
-
-/** The nodes above the one the zoomed tree is on, outermost first: the breadcrumb a reader
+/** The nodes above the one the outline is rooted at, outermost first: the breadcrumb a reader
  *  zooms back out through. Empty while the tree is on the issue itself. */
 export function zoomBreadcrumb(root: TreeNode, zoom: string | undefined): TreeNode[] {
   return (pathTo(root, zoom ?? root.id) ?? [root]).slice(0, -1);
@@ -354,17 +257,6 @@ export function pathTo(root: TreeNode, id: string): TreeNode[] | undefined {
   for (const child of root.children) {
     const below = pathTo(child, id);
     if (below !== undefined) return [root, ...below];
-  }
-  return undefined;
-}
-
-/** The chain down to the first open question in reading order, the root first and the question
- *  itself last; undefined when the tree holds none. */
-function firstQuestion(node: TreeNode, above: readonly TreeNode[]): TreeNode[] | undefined {
-  if (node.question) return [...above];
-  for (const child of node.children) {
-    const found = firstQuestion(child, [...above, child]);
-    if (found !== undefined) return found;
   }
   return undefined;
 }

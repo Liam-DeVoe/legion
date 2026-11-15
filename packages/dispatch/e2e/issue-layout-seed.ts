@@ -291,30 +291,6 @@ export async function seedWholeIssueAdvancing(): Promise<AdvancingIssueSeed> {
   return { ...seeded, priorities: { inherited: inherited.id, own: own.id } };
 }
 
-export interface FrontierSeed {
-  readonly askId: string;
-  readonly key: string;
-}
-
-/** An issue whose open question sits one level below it: an ask on the issue itself, under no
- *  document, beside a spec of three requirements. */
-export async function seedFrontierShallow(): Promise<FrontierSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
-  const issue = await createIssue({
-    force: true,
-    project: PROJECT,
-    spec: specDocument({ openQuestion: false, requirements: 3, summary: true }),
-    title: "The frontier is one level down",
-  });
-  await seedSessions(issue.key, [PLANNER]);
-  const ask = await createAsk(
-    issue.key,
-    { question: "Does the fold open to the frontier on a phone too?", urgency: "high" },
-    asPlanner
-  );
-  return { askId: ask.id, key: issue.key };
-}
-
 export interface SpineSeed {
   /** The answered question a reader would read as `shapedElsewhere`'s origin. No `from` edge
    *  names it, because the model holds none; see the doc comment. */

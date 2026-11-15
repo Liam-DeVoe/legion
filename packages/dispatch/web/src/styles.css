@@ -140,6 +140,7 @@
      component writes a `dark:` of its own for them. */
   --color-page-paper: #ffffff; /* page-paper */
   --color-page-ink: #1c1917; /* page-ink */
+  --color-page-words: #292524; /* page-words */
   --color-page-muted: #57534e; /* page-muted */
   --color-page-quiet: #78716c; /* page-quiet */
   --color-page-line: #eceae7; /* page-line */
@@ -147,6 +148,7 @@
   --color-page-pane: #fafaf9; /* page-pane */
   --color-page-mark: #efedea; /* page-mark */
   --color-page-guide: #e7e5e4; /* page-guide */
+  --color-page-bullet: #a8a29e; /* page-bullet */
   --color-page-question: #2563eb; /* page-question */
   --color-page-question-tint: #eff6ff; /* page-question-tint */
   --color-page-person: #1c1917; /* page-ink */
@@ -160,6 +162,7 @@
   --color-page-step: #b45309; /* page-step */
   --color-page-step-tint: #fffbeb; /* page-step-tint */
   --color-page-child: #db2777; /* page-child */
+  --color-page-child-text: #c6005c; /* pink-700 */
   --color-page-child-tint: #fdf2f8; /* page-child-tint */
   --color-page-lens: #a21caf; /* page-lens */
   --color-page-lens-tint: #fdf4ff; /* page-lens-tint */
@@ -189,6 +192,7 @@
   :root {
     --color-page-paper: #020618; /* slate-950 */
     --color-page-ink: #f1f5f9; /* slate-100 */
+    --color-page-words: #e2e8f0; /* slate-200 */
     --color-page-muted: #cad5e2; /* slate-300 */
     --color-page-quiet: #90a1b9; /* slate-400 */
     --color-page-line: #1d293d; /* slate-800 */
@@ -196,6 +200,7 @@
     --color-page-pane: #0f172b; /* slate-900 */
     --color-page-mark: #1d293d; /* slate-800 */
     --color-page-guide: #1d293d; /* slate-800 */
+    --color-page-bullet: #62748e; /* slate-500 */
     --color-page-question: #51a2ff; /* blue-400 */
     --color-page-question-tint: #162456; /* blue-950 */
     --color-page-person: #f1f5f9; /* slate-100 */
@@ -209,6 +214,7 @@
     --color-page-step: #ffb900; /* amber-400 */
     --color-page-step-tint: #461901; /* amber-950 */
     --color-page-child: #fb64b6; /* pink-400 */
+    --color-page-child-text: #fb64b6; /* pink-400 */
     --color-page-child-tint: #510424; /* pink-950 */
     --color-page-lens: #ed6aff; /* fuchsia-400 */
     --color-page-lens-tint: #4b004f; /* fuchsia-950 */
@@ -315,8 +321,15 @@ a {
      prototype's size, 24 px on a phone - each at least 24 by 24 px or spaced so a 24 px circle
      on it meets no other target, WCAG 2.2's 2.5.8 as written - because the header's six lines
      at 390 px leave no room for 44 (dispatch://INFRA-1196 R13). The title's editor is the
-     heading's own box, at least 28 px tall, so ending an edit never moves what is under it. */
-  button:not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *),
+     heading's own box, at least 28 px tall, so ending an edit never moves what is under it.
+
+     `:not([data-node-bullet])`: a node's bullet in the issue outline is its fold control, the
+     prototype's 18 by 24 px `.bul` (R34). Its row is at least 28 px tall and nothing else in
+     the row is a target beside it, so a 24 px circle on it meets no other target (2.5.8's
+     spacing), and a 44 px box would push every row's words off the one left edge. */
+  button:not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *):not(
+      [data-node-bullet]
+    ),
   a:not(.prose a):not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *),
   input:not([type="checkbox"]):not([type="radio"]):not(.sr-only:not(:focus)),
   select:not(.sr-only:not(:focus)):not([data-issue-header] *),
@@ -677,6 +690,17 @@ a {
   }
 }
 
+/* A node's words in the issue page's outline (dispatch://INFRA-1196 R34) stand flush in their
+   row: the first block of them takes no margin above it and the last none below. The spacing
+   between their blocks is set further down, beside `.dispatch-markdown`'s own rules. */
+[data-node-words] .dispatch-markdown > :first-child {
+  margin-top: 0;
+}
+
+[data-node-words] .dispatch-markdown > :last-child {
+  margin-bottom: 0;
+}
+
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the
    prose paragraph margins into the card (a 20px gap under a 12px header). The repeated attribute
    selector lifts these rules to (0,5,0): a decision inside a reply drawn in another decision's
@@ -835,6 +859,27 @@ a {
 .dispatch-markdown :where(h1, h2, h3, h4, h5, h6) {
   font-size: inherit;
   font-weight: 600;
+}
+
+/* A node's words in the issue page's outline (dispatch://INFRA-1196 R34, the prototype's
+   `.body`): they take the row's 15 px on 24 px lines, and its paragraphs, lists, quotes and code
+   stand 6 px apart and a heading 6 px under what precedes it, rather than at the spacing
+   `prose` gives a whole document. */
+[data-node-words] .dispatch-markdown :where(p, ul, ol, pre, blockquote, table) {
+  margin: 0 0 6px;
+}
+
+[data-node-words] .dispatch-markdown :where(ul, ol) {
+  padding-left: 22px;
+}
+
+[data-node-words] .dispatch-markdown :where(li) {
+  margin: 0 0 2px;
+}
+
+[data-node-words] .dispatch-markdown :where(h1, h2, h3, h4, h5, h6) {
+  margin: 6px 0 2px;
+  line-height: inherit;
 }
 
 /* A `MarkdownPreview` sits inside a control (a link, a search option, a card's toggle), so its

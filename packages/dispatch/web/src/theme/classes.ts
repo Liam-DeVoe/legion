@@ -747,10 +747,12 @@ export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
   "icon-rail-accent": pair(P.ICON_RAIL_ACCENT, P.ICON_RAIL_ACCENT),
   "icon-rail-active": pair(P.ICON_RAIL_ACTIVE, P.ICON_RAIL_ACTIVE),
   "icon-rail-text": pair(P.ICON_RAIL_TEXT, P.ICON_RAIL_TEXT),
+  "page-bullet": pair(P.PAGE_BULLET, P.SLATE_500),
   "page-agent": pair(P.PAGE_AGENT, P.SLATE_400),
   "page-check": pair(P.PAGE_CHECK, P.INDIGO_400),
   "page-check-tint": pair(P.PAGE_CHECK_TINT, P.INDIGO_950),
   "page-child": pair(P.PAGE_CHILD, P.PINK_400),
+  "page-child-text": pair(P.PINK_700, P.PINK_400),
   "page-child-tint": pair(P.PAGE_CHILD_TINT, P.PINK_950),
   "page-decision": pair(P.PAGE_DECISION, P.VIOLET_400),
   "page-decision-tint": pair(P.PAGE_DECISION_TINT, P.VIOLET_950),
@@ -781,6 +783,7 @@ export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
   "page-waiting": pair(P.PAGE_WAITING, P.ORANGE_400),
   "page-waiting-text": pair(P.PAGE_WAITING_TEXT, P.ORANGE_300),
   "page-waiting-tint": pair(P.PAGE_WAITING_TINT, P.ORANGE_950),
+  "page-words": pair(P.PAGE_WORDS, P.SLATE_200),
   white: pair(P.WHITE, P.WHITE),
 };
 
@@ -850,8 +853,66 @@ export const pageFailedText = "text-page-failed";
  *  `.sig.dec`), in the decisions' violet. */
 export const pageDecisionText = "text-page-decision";
 
+/** A node's row of the outline (the prototype's `.card`): its words, one step off the ink; the
+ *  reader's own words in the ink itself (`.k-his .body`); the grey of what stands beside them
+ *  in the margin; the faint guide each level hangs from (`.tn > .kids`); and the focused row,
+ *  on the pane's grey inside a hairline, with the muted rule at its leading edge
+ *  (`.card.focused`). The prototype's `#F5F5F4` is the pane's `#FAFAF9` here, because its
+ *  quiet grey margin reads 4.42:1 on the darker one and 4.59:1 on this, AA's 4.5:1 for 12 px. */
+export const pageWordsText = "text-page-words";
+export const pageGuideLineBg = "bg-page-line";
+export const pageFocusedRow =
+  "bg-page-pane shadow-[0_0_0_1px_var(--color-page-hair),inset_3px_0_0_var(--color-page-muted)]";
+/** The ink rule at the leading edge of the reader's own words (`.k-his .nc`), which is their
+ *  second left edge: 2 px of ink and 10 px of padding (R34). */
+export const pageOwnWordsRule = "shadow-[inset_2px_0_0_var(--color-page-ink)] pl-2.5";
+/** A folded branch's bullet keeps a halo of the hairline grey around it (`.card.collapsed`). */
+export const pageFoldedHalo = "shadow-[0_0_0_4px_var(--color-page-hair)]";
+/** Each kind of node's colour (the prototype's `--k`): its bullet's fill, and the words of the
+ *  tag that names a typed kind at the right of its row (R34). An agent's words have the quiet
+ *  grey bullet and no tag; a person's the ink. The tag's word says the kind, and the author's
+ *  name and shape say whose words a turn is, so the colour repeats what is written (R6). A
+ *  child issue's tag is drawn in a deeper shade of its pink than its bullet, `pink-700`: the
+ *  prototype's `#DB2777` reads 4.40:1 on the focused row's ground and 3.93:1 on the Contents
+ *  pane's marked row, under the 4.5:1 WCAG 1.4.3 asks of text wherever it is drawn. */
+export const pageKindBullet = {
+  agent: "bg-page-bullet",
+  check: "bg-page-check",
+  child: "bg-page-child",
+  context: "bg-page-hair",
+  decision: "bg-page-decision",
+  issue: "bg-page-issue",
+  person: "bg-page-person",
+  question: "bg-page-question",
+  statement: "bg-page-statement",
+  step: "bg-page-step",
+} as const;
+export const pageKindTag = {
+  agent: "text-page-quiet",
+  check: "text-page-check",
+  child: "text-page-child-text",
+  context: "text-page-quiet",
+  decision: "text-page-decision",
+  issue: "text-page-issue",
+  person: "text-page-ink",
+  question: "text-page-question",
+  statement: "text-page-statement",
+  step: "text-page-step",
+} as const;
+/** A node's state in the margin's second line (`.ms`): what waits on the reader in the waiting
+ *  orange, a decision waiting for review in the decisions' violet, a check that passed in the
+ *  passed green and one that failed in the failed red, every other state quiet. Each is a word
+ *  and a shape as well (R6, R17). */
+export const pageStateText = {
+  decision: "text-page-decision",
+  failed: "text-page-failed",
+  passed: "text-page-passed",
+  quiet: "text-page-quiet",
+  waiting: "text-page-waiting-text",
+} as const;
+
 for (const ground of ["page-paper", "page-pane"]) {
-  for (const ink of ["page-ink", "page-muted", "page-quiet"]) {
+  for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"]) {
     registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
   }
 }
@@ -889,7 +950,42 @@ for (const [kind, tint] of [
 ] as const) {
   registerText(`${kind} text on ${tint}`, pageColor(kind), pageColor(tint));
 }
+// The words a row draws in its kind's colour - its tag, its state, a waiting question's
+// options - on the focused row's ground, and the marks of a Contents entry on the pane and on
+// its marked row: text, so 4.5:1 wherever it is drawn, the focused row included (WCAG 1.4.3).
+for (const kind of [
+  "page-check",
+  "page-child-text",
+  "page-decision",
+  "page-failed",
+  "page-issue",
+  "page-not-run",
+  "page-passed",
+  "page-question",
+  "page-statement",
+  "page-step",
+  "page-waiting-text",
+]) {
+  registerText(`${kind} text on page-pane`, pageColor(kind), pageColor("page-pane"));
+}
+registerText(
+  "page-child-text text on page-paper",
+  pageColor("page-child-text"),
+  pageColor("page-paper")
+);
+for (const kind of ["page-statement", "page-decision", "page-child-text", "page-failed"]) {
+  registerText(`${kind} text on page-mark`, pageColor(kind), pageColor("page-mark"));
+}
 // A bullet and a waiting dot are shapes beside the words that name them (WCAG 1.4.11).
+//
+// The agent's bullet, `page-bullet` (the prototype's `#A8A29E`), is not registered: it reads
+// 2.52:1 on the paper, under 1.4.11's 3:1, and is kept because it is never what says a thing.
+// Whose words a turn is is said by the author's name and its shape in the row's margin, and an
+// untyped turn's bullet says nothing else (R9, R34); whether a branch is folded is said by its
+// fold control's name, `aria-expanded`, and the count of what it holds beside its one line
+// (R1). The same holds for a context row's `page-hair` bullet, whose row is marked by its quiet
+// words. A kind whose bullet were the only thing telling it apart would have to be registered
+// here and pass.
 for (const ground of ["page-paper", "page-pane"]) {
   for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"]) {
     registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);

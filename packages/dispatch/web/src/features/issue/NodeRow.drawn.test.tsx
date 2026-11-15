@@ -9,21 +9,24 @@ import { displayTree } from "../../__tests__/display-trees";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
-import type { OneLineBox } from "./one-line";
 import {
   type AuthorKind,
   authorKind,
   CONTROL_LABELS,
   type GapKind,
+  NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
 
 /**
- * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R7, R8).
+ * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
+ * R34, and the architect's ruling 1 on R1).
  *
  * The row is rendered on its own rather than through `IssueTree`, because what these rows are
  * about is the words and the shapes one node draws: the tree's fold, its keys and its placements
- * are read in `IssueTree.test.tsx` and `issue-tree.test.ts`.
+ * are read in `IssueTree.test.tsx` and `issue-tree.test.ts`. Where a row is cut is read from the
+ * browser's own layout, which no DOM of a unit test lays out, so the cut is read by the browser
+ * suite's c-row.
  */
 
 function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
@@ -43,17 +46,34 @@ function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): Tree
   };
 }
 
-/** Who made a node the model holds no author for, as the tree names one (`AgentText.author`). */
-const NOBODY_RECORDED = { kind: authorKind(undefined), name: CONTROL_LABELS.unknown_author };
+/** Who made a node, as the tree names them (`AgentText.author`). */
+type Author = { kind: AuthorKind; name: string; reader: boolean };
 
-/** One row, drawn with its body open, as the focused row draws it. `oneLineBox` draws the row
- *  on one line, cut to that reading of the tree's width; `author` is who made it, as the tree
- *  names them (`AgentText.author`); `answerer` the person whose answer an ask carries. */
+/** Who made a node the model holds no author for, as the tree names one (`AgentText.author`). */
+const NOBODY_RECORDED: Author = {
+  kind: authorKind(undefined),
+  name: CONTROL_LABELS.unknown_author,
+  reader: false,
+};
+
+/** One row, drawn with its body open, as the focused row draws it, unless `body` is false;
+ *  `author` is who made it, as the tree names them (`AgentText.author`); `answerer` the person
+ *  whose answer an ask carries; `expanded` and `folded` its fold, for a node that holds any. */
 function renderRow(
   drawn: TreeNode,
-  oneLineBox?: OneLineBox,
-  author: { kind: AuthorKind; name: string } = NOBODY_RECORDED,
-  answerer?: string
+  {
+    answerer,
+    author = NOBODY_RECORDED,
+    body = true,
+    expanded,
+    folded,
+  }: {
+    answerer?: string;
+    author?: Author;
+    body?: boolean;
+    expanded?: boolean;
+    folded?: number;
+  } = {}
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -62,18 +82,18 @@ function renderRow(
         <NodeRow
           {...(answerer === undefined ? {} : { answerer })}
           author={author}
-          body
+          body={body}
           context={false}
+          {...(expanded === undefined ? {} : { expanded })}
+          {...(folded === undefined ? {} : { folded })}
           focused={false}
-          indent={0}
           isClosed={false}
           level={1}
           node={drawn}
-          oneLine={oneLineBox !== undefined}
-          oneLineBox={oneLineBox}
           onFocus={() => {}}
           onPin={() => {}}
           onToggle={() => {}}
+          ownAnswer={false}
           pinned={false}
           rowKey="row"
           tabStop={false}
@@ -92,13 +112,14 @@ beforeAll(async () => {
 test("an author is drawn by a name and a shape of its own kind", () => {
   // A comment, which a person and an agent both write: a decision's body draws Keep and
   // Change, which are writes, and this row is about the words and the shape alone.
-  const drawn = (author: { kind: AuthorKind; name: string }) => {
-    const view = renderRow(node({ id: "comment-1", type: "comment" }), undefined, author);
+  const drawn = (author: Author) => {
+    const view = renderRow(node({ id: "comment-1", type: "comment" }), { author });
     try {
       const shown = view.container.querySelector("[data-node-author]");
       const shape = shown?.querySelector("svg[data-glyph]");
       return {
         chrome: shown?.querySelector("[data-page-chrome]") !== null,
+        margin: shown?.closest("[data-node-margin]") !== null,
         name: shape?.getAttribute("aria-label"),
         role: shape?.getAttribute("role"),
         text: shown?.textContent,
@@ -109,17 +130,20 @@ test("an author is drawn by a name and a shape of its own kind", () => {
     }
   };
   // The word is the author's name, and the shape is drawn beside it rather than in place of it,
-  // exactly as the type's shape and the state's shape are. The shape carries its own accessible
-  // name: a reader who cannot see it still hears what kind of author it stands for.
-  expect(drawn({ kind: "person", name: "alice" })).toEqual({
+  // exactly as the type's shape and the state's shape are, at the right of the row (R34). The
+  // shape carries its own accessible name: a reader who cannot see it still hears what kind of
+  // author it stands for.
+  expect(drawn({ kind: "person", name: "alice", reader: false })).toEqual({
     chrome: false,
+    margin: true,
     name: "Written by a person",
     role: "img",
     text: "alice",
     token: "author-person",
   });
-  expect(drawn({ kind: "agent", name: "Planner" })).toEqual({
+  expect(drawn({ kind: "agent", name: "Planner", reader: false })).toEqual({
     chrome: false,
+    margin: true,
     name: "Written by an agent",
     role: "img",
     text: "Planner",
@@ -129,6 +153,7 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   // as the page's rather than as somebody's name, with a shape neither other kind draws.
   expect(drawn(NOBODY_RECORDED)).toEqual({
     chrome: true,
+    margin: true,
     name: "Written by an author nobody recorded",
     role: "img",
     text: "Author unknown",
@@ -136,49 +161,107 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   });
 });
 
-// R1, R9, INFRA-1150 R3: an answered ask carries the person's answer in its own row and its own
-// body, and no row of its own: who answered by a name and a shape, and what they chose and wrote
-// as the store holds it, character for character. The row draws the first line of it; a row
-// drawn on one line has no width for it, and its body draws it.
-test("an answered ask draws the answer in its own row and body, word for word", () => {
+// R34: a typed node draws its kind as one tag, its word and its shape, in the margin at the
+// right of its row and never before its words; a turn of the conversation draws no tag. R9: the
+// time it was made is drawn after its author in the page's short form.
+test("a typed node draws its kind as one tag at the right, and a turn draws none", () => {
+  // Noon of a day of the year the test runs in, so its day is the 5th from UTC-11 to UTC+11 and
+  // the page's short form draws no year.
+  const at = `${new Date().getFullYear()}-11-05T12:00:00Z`;
+  const drawn = (type: NodeType) => {
+    const view = renderRow(node({ at, id: `${type}-1`, text: "Words of the node.", type }));
+    try {
+      const tag = view.container.querySelector("[data-node-tag]");
+      return {
+        afterWords: tag === null || tag.closest("[data-node-margin]") !== null,
+        tag: tag?.textContent ?? null,
+        token: tag?.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+        time: view.container.querySelector("[data-node-time]")?.textContent ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn("requirement")).toEqual({
+    afterWords: true,
+    tag: NODE_TYPE_NAMES.requirement,
+    time: "5 Nov",
+    token: "requirement",
+  });
+  expect(drawn("check")).toMatchObject({ tag: NODE_TYPE_NAMES.check, token: "check" });
+  expect(drawn("comment")).toMatchObject({ tag: null, time: "5 Nov" });
+  expect(drawn("message")).toMatchObject({ tag: null });
+});
+
+// R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
+// line, cut at its first sentence end, and how many nodes it holds. The focus draws its words
+// whole.
+test("a folded branch draws its first line and its count, and its focus its words", () => {
+  const text = "The page draws the whole issue in one reading. Nothing is lost on the way.";
+  const folded = node({ held: 3, id: "comment-1", text, type: "comment" });
+  const shut = renderRow(folded, { body: false, expanded: false, folded: 3 });
+  try {
+    expect(shut.container.querySelector("[data-node-first-line]")?.textContent).toBe(
+      "The page draws the whole issue in one reading.…"
+    );
+    expect(shut.container.querySelector("[data-node-count]")?.textContent).toBe(
+      `3 ${CONTROL_LABELS.folded_rows}`
+    );
+    expect(shut.container.querySelector("[data-node-words]")).toBeNull();
+    // The bullet is the branch's fold control, named by what pressing it does.
+    expect(shut.getByRole("button", { name: CONTROL_LABELS.unfold })).toBeDefined();
+  } finally {
+    shut.unmount();
+  }
+  const focused = renderRow(folded, { body: true, expanded: false, folded: 3 });
+  try {
+    expect(focused.container.querySelector("[data-node-first-line]")).toBeNull();
+    expect(focused.container.querySelector("[data-node-words]")?.textContent).toBe(text);
+  } finally {
+    focused.unmount();
+  }
+});
+
+// R1, R9, INFRA-1150 R3, ruling 1: an answered ask carries the person's answer in its own row,
+// and no row of its own: who answered by a name and a shape, what they chose among the ask's own
+// options, and what they wrote as the store holds it, character for character and whole.
+test("an answered ask draws the answer in its own row, word for word", () => {
   const text = "The preset row keeps its labels above that width.\n\nBelow it, one control.";
   const asked = node({
     answer: { by: { id: "alice", kind: "user" }, selected: ["1280 px"], text },
     id: "ask-1",
+    options: [{ description: "Where the rail fits.", label: "1280 px" }, { label: "1024 px" }],
     state: "answered",
     text: "At which width does the identity block condense?",
     type: "ask",
   });
-  const planner = { kind: "agent" as const, name: "Planner" };
-  const wraps = renderRow(asked, undefined, planner, "alice");
+  const planner: Author = { kind: "agent", name: "Planner", reader: false };
+  const view = renderRow(asked, { answerer: "alice", author: planner });
   try {
-    const rows = wraps.container.querySelectorAll("[data-node-row]");
+    const rows = view.container.querySelectorAll("[data-node-row]");
     expect(rows.length).toBe(1);
-    const line = wraps.container.querySelector("[data-node-answer]");
+    const line = view.container.querySelector("[data-node-answer]");
     expect(line?.querySelector("[data-page-chrome]")?.textContent).toBe("Answer");
     expect(line?.querySelector("[data-answer-author]")?.textContent).toBe("alice");
     expect(line?.querySelector("[data-answer-author] svg")?.getAttribute("data-glyph")).toBe(
       "author-person"
     );
-    // The label, the answerer, then the first line, cut at its first sentence as every first
-    // line is, with the rest after it.
-    expect(line?.textContent).toBe("AnsweraliceThe preset row keeps its labels above that width.…");
-    const body = wraps.container.querySelector("[data-node-body] [data-node-answer-body]");
-    expect(body?.querySelector("[data-answer-text]")?.textContent).toBe(text);
+    expect(line?.querySelector("[data-answer-text]")?.textContent).toBe(text);
+    // The option the person chose is marked in the ask's own list, and the body adds what an
+    // option says beside its name.
     expect(
-      [...(body?.querySelectorAll("[data-answer-choice]") ?? [])].map((one) => one.textContent)
-    ).toEqual(["1280 px"]);
+      [...view.container.querySelectorAll("[data-node-option]")].map((one) => [
+        one.getAttribute("data-node-option"),
+        one.textContent,
+      ])
+    ).toEqual([
+      ["chosen", "●1280 px — Where the rail fits."],
+      ["", "○1024 px"],
+    ]);
     // The row's own author is still the asker's, and the answerer's name is no row author.
-    expect(wraps.container.querySelector("[data-node-author]")?.textContent).toBe("Planner");
+    expect(view.container.querySelector("[data-node-author]")?.textContent).toBe("Planner");
   } finally {
-    wraps.unmount();
-  }
-  const oneLine = renderRow(asked, treeOf(400), planner, "alice");
-  try {
-    expect(oneLine.container.querySelector("[data-node-answer]")).toBeNull();
-    expect(oneLine.container.querySelector("[data-answer-text]")?.textContent).toBe(text);
-  } finally {
-    oneLine.unmount();
+    view.unmount();
   }
 });
 
@@ -197,45 +280,6 @@ test("a decision the model marks unsure says so in one word", () => {
   };
   expect(unsure(true)).toBe("Unsure");
   expect(unsure(false)).toBeNull();
-});
-
-/** A reading of the tree's width whose face draws every character at half its size, which is
- *  what makes each line below a sum a reader can check by hand: 7 px a character of the
- *  row's `text-sm`. */
-function treeOf(width: number): OneLineBox {
-  return { family: "test", rem: 16, width, widthOf: (text, size) => text.length * size * 8 };
-}
-
-/** The first line a one-line row draws of `drawn` in a tree `width` px wide. */
-function oneLineOf(
-  drawn: TreeNode,
-  width: number,
-  author: { kind: AuthorKind; name: string }
-): string | null | undefined {
-  const view = renderRow(drawn, treeOf(width), author);
-  try {
-    return view.container.querySelector("[data-node-first-line]")?.textContent;
-  } finally {
-    view.unmount();
-  }
-}
-
-// R1, R9: a one-line row's first line is what its own box leaves it beside its other words,
-// the author's name and shape among them. The row is 10 px less than the tree (`border-l-2`,
-// `pr-2`), and a leaf's twisty, the comment's shape and word and the gaps between them take
-// 101 px of it; the author's shape, a name of 20 characters and its gap take 168 px more, and
-// the page's 14 characters for an author nobody recorded, 126 px.
-test("a one-line row's first line is what its author leaves it", () => {
-  const text = "The page draws the whole issue in one reading, with nothing lost.";
-  const commented = node({ id: "comment-1", text, type: "comment" });
-  const author = { kind: "agent" as const, name: "Planner of the issue" };
-  // 400 px: 120 px of line beside the named author's words, or 162 px beside the page's own
-  // words for nobody, each cut at the last word whose run and ellipsis fit.
-  expect(oneLineOf(commented, 400, author)).toBe("The page draws…");
-  expect(oneLineOf(commented, 400, NOBODY_RECORDED)).toBe("The page draws the…");
-  // 300 px: 20 px with the named author's - less than "The…" takes - so that line goes under
-  // them, where it has the row's whole 290 px.
-  expect(oneLineOf(commented, 300, author)).toBe("The page draws the whole issue in one…");
 });
 
 /** The few words a row draws for `gap`, and the sentence its body draws under them. */
@@ -284,15 +328,13 @@ function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {
       body
       context={false}
       focused={focused}
-      indent={0}
       isClosed={false}
       level={1}
       node={drawn}
-      oneLine={false}
-      oneLineBox={undefined}
       onFocus={() => setFocused(true)}
       onPin={() => {}}
       onToggle={() => {}}
+      ownAnswer={false}
       pinned={false}
       rowKey="row"
       tabStop={false}
@@ -351,14 +393,13 @@ test("a press inside a row does not scroll the page under it, and a key's focus 
 const MARKED = "## Store the notices\n\nA **decided** thing.\n\n- one `code` item";
 
 /** What a reader reads of one drawn row: whether its words hold any symbol the author typed,
- *  and what its body formats. */
+ *  and what its words format. */
 function drawnWords(view: RenderResult) {
-  const body = view.container.querySelector("[data-node-body]");
+  const words = view.container.querySelector("[data-node-words]");
   return {
-    bold: body?.querySelector("strong")?.textContent,
-    code: body?.querySelector("code")?.textContent,
-    firstLine: view.container.querySelector("[data-node-first-line]")?.textContent,
-    item: body?.querySelector("li")?.textContent,
+    bold: words?.querySelector("strong")?.textContent,
+    code: words?.querySelector("code")?.textContent,
+    item: words?.querySelector("li")?.textContent,
     symbols: /\*\*|##|`/u.test(view.container.querySelector("[data-node-row]")?.textContent ?? ""),
   };
 }
@@ -367,7 +408,6 @@ function drawnWords(view: RenderResult) {
 const MARKED_DRAWN = {
   bold: "decided",
   code: "code",
-  firstLine: "Store the notices A decided thing.…",
   item: "one code item",
   symbols: false,
 };
@@ -375,15 +415,27 @@ const MARKED_DRAWN = {
 // R20, c-plain-words: a decision's text is stored markdown, and the decisions read sends the
 // server's reading of it (`Decision.text_tree`). The row draws that reading, so the reader sees
 // a heading, bold words and a list, never the `##`, `**` and `-` the author typed, and the
-// browser parses nothing to get there.
+// browser parses nothing to get there. Folded, its one line holds none of those symbols either.
 test("a decision whose text holds bold draws no literal asterisks", () => {
-  const view = renderRow(
-    node({ id: "decisions-md#b-d1", text: MARKED, tree: displayTree(MARKED), type: "decision" })
-  );
+  const decision = node({
+    id: "decisions-md#b-d1",
+    text: MARKED,
+    tree: displayTree(MARKED),
+    type: "decision",
+  });
+  const view = renderRow(decision);
   try {
     expect(drawnWords(view)).toEqual(MARKED_DRAWN);
   } finally {
     view.unmount();
+  }
+  const folded = renderRow({ ...decision, held: 1 }, { body: false, expanded: false, folded: 1 });
+  try {
+    expect(folded.container.querySelector("[data-node-first-line]")?.textContent).toBe(
+      "Store the notices A decided thing.…"
+    );
+  } finally {
+    folded.unmount();
   }
 });
 
@@ -410,24 +462,24 @@ test("an ask, a comment and a message draw the server's reading of their text", 
 test("a node whose read sends no reading of its text draws the text as stored", () => {
   const view = renderRow(node({ id: "spec#b-r1", text: MARKED, type: "requirement" }));
   try {
-    const body = view.container.querySelector("[data-node-body]");
-    expect(body?.textContent).toContain("A **decided** thing.");
-    expect(body?.querySelector("strong")).toBeNull();
+    const words = view.container.querySelector("[data-node-words]");
+    expect(words?.textContent).toContain("A **decided** thing.");
+    expect(words?.querySelector("strong")).toBeNull();
   } finally {
     view.unmount();
   }
 });
 
 // R9: the tree is one tab stop and nothing inside a row takes one; a key reaches a row's links
-// (`useTreeKeymap.ts`'s `rowLinks`). A body drawn from a reading holds real links, and each is
+// (`useTreeKeymap.ts`'s `rowLinks`). Words drawn from a reading hold real links, and each is
 // out of the tab order too.
-test("the links a body draws are out of the tab order", async () => {
+test("the links a row's words draw are out of the tab order", async () => {
   const text =
     "Read [the notes](https://example.com/notes) and [the plan](https://example.com/plan).";
   const view = renderRow(node({ id: "comment-1", text, tree: displayTree(text), type: "comment" }));
   try {
     await waitFor(() => {
-      const links = [...view.container.querySelectorAll<HTMLElement>("[data-node-body] a[href]")];
+      const links = [...view.container.querySelectorAll<HTMLElement>("[data-node-words] a[href]")];
       expect(links.length).toBe(2);
       expect(links.map((link) => link.tabIndex)).toEqual([-1, -1]);
     });

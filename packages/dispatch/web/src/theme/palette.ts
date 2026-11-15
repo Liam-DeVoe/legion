@@ -93,6 +93,7 @@ export const TEAL_950 = swatch("teal-950", 0.277, 0.046, 192.524);
 export const INDIGO_400 = swatch("indigo-400", 0.673, 0.182, 276.935);
 export const INDIGO_950 = swatch("indigo-950", 0.257, 0.09, 281.288);
 export const PINK_400 = swatch("pink-400", 0.718, 0.202, 349.761);
+export const PINK_700 = swatch("pink-700", 0.525, 0.223, 3.958);
 export const PINK_950 = swatch("pink-950", 0.284, 0.109, 3.907);
 export const FUCHSIA_400 = swatch("fuchsia-400", 0.74, 0.238, 322.16);
 export const FUCHSIA_950 = swatch("fuchsia-950", 0.293, 0.136, 325.661);
@@ -115,6 +116,9 @@ export const GRAY_400 = swatch("gray-400", 0.707, 0.022, 261.325);
  */
 export const PAGE_PAPER = swatch("page-paper", 1, 0, 0);
 export const PAGE_INK = swatch("page-ink", 0.2161, 0.0061, 56.043);
+/** A node's words, the prototype's `.body` (`#292524`): one step off the ink, which the
+ *  reader's own words keep. */
+export const PAGE_WORDS = swatch("page-words", 0.2685, 0.0063, 34.298);
 export const PAGE_MUTED = swatch("page-muted", 0.4444, 0.0096, 73.639);
 export const PAGE_QUIET = swatch("page-quiet", 0.5534, 0.0116, 58.071);
 export const PAGE_LINE = swatch("page-line", 0.9378, 0.0046, 78.297);
@@ -122,6 +126,8 @@ export const PAGE_HAIR = swatch("page-hair", 0.8837, 0.0134, 82.401);
 export const PAGE_PANE = swatch("page-pane", 0.9848, 0.0013, 106.423);
 export const PAGE_MARK = swatch("page-mark", 0.9468, 0.0046, 78.298);
 export const PAGE_GUIDE = swatch("page-guide", 0.9232, 0.0026, 48.717);
+/** The bullet of an agent's words and of a node of no kind the prototype names (`#A8A29E`). */
+export const PAGE_BULLET = swatch("page-bullet", 0.7161, 0.0091, 56.259);
 export const PAGE_QUESTION = swatch("page-question", 0.5461, 0.2152, 262.881);
 export const PAGE_QUESTION_TINT = swatch("page-question-tint", 0.9705, 0.0142, 254.604);
 export const PAGE_PERSON_TINT = swatch("page-person-tint", 0.9513, 0.0217, 83.264);

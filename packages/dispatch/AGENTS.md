@@ -1118,7 +1118,8 @@ login, with an act made through a session naming the agent by what it is rather 
 and, for a node the model holds no author for, `CONTROL_LABELS.unknown_author` ("Author
 unknown") - and `AgentName`'s `author` prop draws a name by it, with the link and the state mark
 as ever. The issue page's tree rows spell the author as text through `author` (a row takes no
-focus inside itself and a one-line row sums its parts' widths), each beside one shape per kind
+focus inside itself), at the right end of the row's first line with the time after it (R34),
+each beside one shape per kind
 of author (`GLYPH_TOKENS.authors`: a person's, an agent's, and the `unknown` kind's, whose words
 are the page's own and carry `PAGE_CHROME_ATTRIBUTE` rather than `AUTHOR_TEXT_ATTRIBUTE`), and
 the panel's focused-node facts, its creator and the identity block's claim holder pass `author`.

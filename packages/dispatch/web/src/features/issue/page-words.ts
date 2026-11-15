@@ -58,7 +58,8 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
  * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = freeze({
-  ask: "ask",
+  /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
+  ask: "question",
   /** A `callout` block: a note somebody set apart from the text around it. The page draws the
    *  word a reader uses, never the schema's own token (R21). */
   callout: "note",
@@ -250,6 +251,22 @@ export const FILTER_SIGNAL_WORDS = freeze({
   /** After the number of decisions waiting for the reader's review (R35). */
   to_review: "to review",
 } as const);
+
+/**
+ * What each mark on an entry of the Contents pane counts in the branch under it, the
+ * prototype's `.cp` marks ("R2 ◆1 ◫1"): the statements, the decisions waiting for the reader's
+ * review, the child issues, and the statements a check of theirs failed. Each is drawn as its
+ * kind's shape and its count, and named by these words (R6, R22).
+ */
+export const CONTENTS_MARK_WORDS = freeze({
+  children: "child issues",
+  failing: "failing statements",
+  for_review: "decisions to review",
+  statements: "statements",
+} as const);
+
+/** One mark of a Contents entry, by its own token, which is its `data-contents-mark`. */
+export type ContentsMark = keyof typeof CONTENTS_MARK_WORDS;
 
 /** The four states the conversation panel can be read in (R12), in the order the panel offers
  *  them: everything the issue recorded, what the reader pinned, the questions alone, and what
@@ -701,6 +718,14 @@ export const CONTROL_LABELS = freeze({
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
   release_claim: "Release",
+  /** Opens, in place, the rest of the words a row cut at six lines, and closes them again: an
+   *  agent's words and an answered question are cut where more than 20 words would be hidden,
+   *  and the control says how many, "more · 80 words" (the architect's ruling 1 on R1, the
+   *  prototype's `CUT_LINES`). The count is the node's own and carries
+   *  `AUTHOR_TEXT_ATTRIBUTE`. */
+  read_more: "more",
+  read_less: "less",
+  read_more_words: "words",
   /** What reopening does, as the control's own words rather than a tooltip (R11). */
   reopen_into_backlog: "Reopen into Backlog",
   /** Why the repository shown may not be the issue's own, said beside the control rather than
@@ -1034,6 +1059,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
+  CONTENTS_MARK_WORDS,
   CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,

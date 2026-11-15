@@ -12,6 +12,7 @@ import type {
   NodeChip,
   NodeCounts,
   NodeFact,
+  NodeOption,
   TreeAsk,
 } from "./issue-tree";
 import {
@@ -59,6 +60,8 @@ export function blockNodeId(slug: string, blockId: string): string {
 
 /** One node as it is being built: a `TreeNode`'s own fields, plus where the model placed it. */
 export interface Draft {
+  /** When it was made, where its read records one (`TreeNode.at`). */
+  at?: string;
   author?: Actor;
   /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
   answer?: NodeAnswer;
@@ -68,6 +71,8 @@ export interface Draft {
   facts: NodeFact[];
   gaps: GapKind[];
   readonly id: string;
+  /** The choices an ask offers (`TreeNode.options`). */
+  options?: NodeOption[];
   order: number;
   /** The nodes this one sits under, in the order the model placed them: the first is where it is
    *  edited, every other a transclusion. `[]` is "under the issue". */
@@ -373,8 +378,17 @@ function addAsks(
     const id = slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
     const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.ask));
     placed.set(ask.id, id);
+    draft.at = ask.created_at;
     draft.author = ask.author;
     if (ask.answer !== null) draft.answer = answerOf(ask.answer);
+    if ((ask.options ?? []).length > 0) {
+      draft.options = (ask.options ?? []).map((option) => ({
+        ...(option.description === undefined || option.description === ""
+          ? {}
+          : { description: option.description }),
+        label: option.label,
+      }));
+    }
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
     draft.source = textSourceOf("ask", ask.id);
     draft.state = askState(ask);
@@ -480,6 +494,7 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
   turns.sort((one, other) => compareTimestamps(one.at, other.at) || one.id.localeCompare(other.id));
   turns.forEach((turn, index) => {
     const draft = add(drafts, blank(turn.id, turn.kind, ROOT_ORDER.turn + index));
+    draft.at = turn.at;
     draft.author = turn.author;
     draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
     draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
@@ -528,6 +543,7 @@ function addDecisions(
       const parent = asks.get(ask);
       return parent === undefined ? [] : [parent];
     });
+    if (decision.changed_at !== null) draft.at = decision.changed_at;
     draft.pointers = held?.pointers ?? {};
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
@@ -642,6 +658,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.text = check.text;
     (check.results ?? []).forEach((result, index) => {
       const row = add(drafts, blank(result.id, "result", index));
+      row.at = result.created_at;
       row.author = result.actor;
       row.facts = resultFacts(result);
       row.parents = [id];

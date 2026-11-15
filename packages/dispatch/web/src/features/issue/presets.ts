@@ -104,25 +104,36 @@ function heldBy(children: readonly TreeNode[]): number {
  * The tree as `preset`, `query` and the address's own node leave it. With no filter on the root
  * is always drawn, because an issue whose words filter matches nothing still has to say so
  * somewhere, and it is context whenever nothing matched it.
+ *
+ * `memo` is the spec's summary callout, which the head draws as the issue's three sentences
+ * (R8) and which is no row of the conversation (c-tree: "The memo callout is not a row of the
+ * outline"), unless an address names it.
  */
 export function presetView(
   root: TreeNode,
   preset: Preset,
   query: string,
-  named: ReadonlySet<string> = EMPTY
+  named: ReadonlySet<string> = EMPTY,
+  memo?: string
 ): PresetView {
   const wanted = query.trim().toLowerCase();
   return isFilter(preset)
     ? filterView(root, preset, wanted, named)
-    : conversationView(root, wanted, named);
+    : conversationView(root, wanted, named, memo);
 }
 
-/** The page with no filter on: the whole tree, or under a words filter each match with the chain
- *  above it as context. */
-function conversationView(root: TreeNode, wanted: string, named: ReadonlySet<string>): PresetView {
+/** The page with no filter on: the whole tree but the memo, or under a words filter each match
+ *  with the chain above it as context. */
+function conversationView(
+  root: TreeNode,
+  wanted: string,
+  named: ReadonlySet<string>,
+  memo: string | undefined
+): PresetView {
   const context = new Set<string>();
   const matched = new Set<string>();
   const prune = (node: TreeNode): TreeNode | undefined => {
+    if (node.id === memo && !named.has(node.id)) return undefined;
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);

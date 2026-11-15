@@ -6,9 +6,10 @@ import {
   DRAWN_LEVELS,
   type DrawnRow,
   frontier,
+  NARROW_LEVELS,
+  NOTHING_OPENED,
   treeRows,
   zoomBreadcrumb,
-  zoomedRows,
 } from "./tree-fold";
 
 /**
@@ -242,56 +243,53 @@ test("a requirement no check serves is open, and one outside the coverage read i
   expect(outside?.kind === "node" ? outside.folded : undefined).toBe(1);
 });
 
+/** A chain of documents `length` long under the issue, each holding the next, the last holding
+ *  one note: a branch as deep as a reader can open, with nothing on it open. */
+function chain(length: number): TreeNode {
+  let deepest = node(`doc-${length}`, "document", [node("note", "callout")]);
+  for (let at = length - 1; at > 0; at -= 1) {
+    deepest = node(`doc-${at}`, "document", [deepest]);
+  }
+  return node("CORE-1", "issue", [deepest]);
+}
+
+/** Every branch of `chain(length)` opened by the reader, and none opened in place. */
+function openedChain(length: number) {
+  return {
+    branches: new Set(Array.from({ length }, (_, at) => `doc-${at + 1}`)),
+    closed: new Set<string>(),
+    deeper: new Set<string>(),
+  };
+}
+
+// R16: from 1024 px up the outline draws three levels below the node it is rooted at, and a
+// branch the reader opens deeper than that is one row saying how many nodes it holds, which
+// opens them in place.
 test("a branch the reader opens below the drawn levels is one row saying how many it holds", () => {
-  const deep = node("CORE-1", "issue", [
-    node(
-      "spec#b-r1",
-      "requirement",
-      [
-        node(
-          "verification-md#b-c1",
-          "check",
-          [node("result-1", "result"), node("result-2", "result")],
-          { state: "failed" }
-        ),
-      ],
-      { counts: { checks: 1, planTasks: 0 } }
-    ),
-  ]);
-  // The check is on the frontier's path and drawn; what it holds is a set the reader opens,
-  // and the row says how many nodes that is.
-  const rows = treeRows(deep);
-  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-r1", "verification-md#b-c1"]);
-  expect(rowOf(rows, "verification-md#b-c1")).toMatchObject({ expanded: false, folded: 2 });
-  // Opened by the reader at the third level, the branch is one row saying how many nodes it
-  // holds rather than the nodes themselves.
-  const opened = treeRows(deep, {
-    branches: new Set(["verification-md#b-c1"]),
-    closed: new Set(),
-    deeper: new Set(),
-  });
-  expect(idsOf(opened)).toEqual([
-    "CORE-1",
-    "spec#b-r1",
-    "verification-md#b-c1",
-    "more:verification-md#b-c1",
-  ]);
+  const root = chain(4);
+  const opened = treeRows(root, openedChain(4));
+  // doc-1, doc-2 and doc-3 sit one, two and three levels below the issue, and are drawn; doc-3's
+  // own nodes would sit a fourth level down, so its branch is one row of its own.
+  expect(idsOf(opened)).toEqual(["CORE-1", "doc-1", "doc-2", "doc-3", "more:doc-3"]);
   const more = opened.at(-1);
   expect(more?.kind === "deeper" ? more.held : 0).toBe(2);
-  expect(more?.kind === "deeper" ? more.level : 0).toBe(DRAWN_LEVELS + 1);
+  expect(more?.kind === "deeper" ? more.level : 0).toBe(DRAWN_LEVELS + 2);
   // The row above it says how many nodes it holds that no row of their own draws, as a row
-  // whose own twisty is closed does: a reader of the tree pattern - c-keyboard's among them -
+  // whose own fold is closed does: a reader of the tree pattern - c-keyboard's among them -
   // takes a row carrying `aria-expanded` to hold children, and these are drawn as one line.
-  const branch = rowOf(opened, "verification-md#b-c1");
+  const branch = rowOf(opened, "doc-3");
   expect(branch?.kind === "node" ? branch.folded : undefined).toBe(2);
   expect(branch?.kind === "node" ? branch.expanded : undefined).toBe(true);
   // Opened in place, the branch is drawn where it stands.
-  const inPlace = treeRows(deep, {
-    branches: new Set(["verification-md#b-c1"]),
-    closed: new Set(),
-    deeper: new Set(["verification-md#b-c1"]),
-  });
-  expect(idsOf(inPlace)).toContain("result-2");
+  const inPlace = treeRows(root, { ...openedChain(4), deeper: new Set(["doc-3"]) });
+  expect(idsOf(inPlace)).toContain("doc-4");
+});
+
+// R16: below 1024 px the outline draws one level below the node it is rooted at, so a branch the
+// reader opens there is one row with its count straight away.
+test("below 1024 px one level is drawn below the node the outline is on", () => {
+  const opened = treeRows(chain(2), openedChain(2), [], NARROW_LEVELS);
+  expect(idsOf(opened)).toEqual(["CORE-1", "doc-1", "more:doc-1"]);
 });
 
 // R1: the reader's own hand outranks the frontier both ways. This is the open; the fold is the
@@ -368,22 +366,27 @@ test("the frontier holds every node above an open question and no question itsel
   expect([...frontier(issueWithQuestionAt(2))].sort()).toEqual(["CORE-1", "doc-1"]);
 });
 
-test("the zoomed tree opens on the issue with the question's path unfolded under it", () => {
-  const root = issueWithQuestionAt(2);
+// R16: below 1024 px the outline draws one level below the node it is on, except a path the
+// frontier holds open, which is drawn whatever its depth.
+test("below 1024 px the frontier's paths are drawn whatever their depth", () => {
+  const root = issueWithQuestionAt(3);
   // Nothing chosen is the issue itself, so every branch of it is one row away; the path down
-  // to the open question is unfolded under it, at the one level the narrow tree has.
-  const rows = zoomedRows(root, undefined);
-  expect(idsOf(rows)).toEqual(["CORE-1", "doc-1", "question", "other"]);
+  // to the open question is unfolded under it, a level a node.
+  const rows = treeRows(root, NOTHING_OPENED, [], NARROW_LEVELS);
+  expect(idsOf(rows)).toEqual(["CORE-1", "doc-1", "doc-2", "question", "other"]);
   expect(zoomBreadcrumb(root, undefined)).toEqual([]);
-  expect(rows.every((row) => row.level <= 2)).toBe(true);
-  const unfolded = rowOf(rows, "doc-1");
-  expect(unfolded?.kind === "node" ? unfolded.expanded : undefined).toBe(true);
+  expect(rowOf(rows, "question")?.level).toBe(4);
   const other = rowOf(rows, "other");
   expect(other?.kind === "node" ? other.folded : undefined).toBe(3);
-  // Zoomed into a node, the tree is that node and its children, under a breadcrumb that walks
-  // back to the issue.
-  const inside = zoomedRows(root, "doc-1");
-  expect(idsOf(inside)).toEqual(["doc-1", "question"]);
+  // Zoomed into a node, the outline is that node and what it holds, under a breadcrumb that
+  // walks back to the issue.
+  const doc = rowOf(rows, "doc-1");
+  const inside = treeRows(
+    doc?.kind === "node" ? doc.node : root,
+    NOTHING_OPENED,
+    ["CORE-1"],
+    NARROW_LEVELS
+  );
+  expect(idsOf(inside)).toEqual(["doc-1", "doc-2", "question"]);
   expect(zoomBreadcrumb(root, "doc-1").map((one) => one.id)).toEqual(["CORE-1"]);
-  expect(inside.every((row) => row.level <= 2)).toBe(true);
 });

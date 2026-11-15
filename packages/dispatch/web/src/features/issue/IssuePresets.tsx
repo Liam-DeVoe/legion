@@ -16,7 +16,6 @@ import {
 } from "../../theme/classes";
 import { useShortcutHelpOpener } from "../shell/shortcut-help-opener";
 import { useMediaQuery } from "../shell/useDialog";
-import { ZOOMED_TREE_QUERY } from "./IssueTree";
 import { presetPath } from "./issue-address";
 import { MENU_CLASS, MENU_ITEM_CLASS, NodeMenu } from "./NodeMenu";
 import { authorText, pageChrome } from "./page-structure";
@@ -47,11 +46,11 @@ import type { PresetSignal } from "./presets";
  * which the inventory of the page this one replaced holds each control to - and its signal, a
  * count beside the name, is its description (`aria-describedby`).
  *
- * The row has two shapes and no third. Past the width the tree zooms at (`ZOOMED_TREE_QUERY`,
- * `IssueTree.tsx`, whose negation decides this) it is the row of five. At 1024 px and below -
- * every phone - it is one control naming the one on, with its signal, which opens a menu of the
- * five; the Outline control stands beside it (R14). Nothing in either shape scrolls sideways:
- * what does not fit wraps (R18).
+ * The row has two shapes and no third. Above 1024 px it is the row of five; at 1024 px and below
+ * - every phone - it is one control naming the one on, with its signal, which opens a menu of
+ * the five, and below 1024 px the Outline control stands beside it (R2, R14). One query and its
+ * negation decide the two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither.
+ * Nothing in either shape scrolls sideways: what does not fit wraps (R18).
  */
 export function IssuePresets({
   active,
@@ -91,9 +90,8 @@ export function IssuePresets({
 }): ReactNode {
   const navigate = useNavigate();
   const openKeys = useShortcutHelpOpener();
-  // The row of five is drawn exactly where the tree is not zoomed: one query and its negation,
-  // so no width answers both shapes or neither (`ZOOMED_TREE_QUERY`).
-  const row = !useMediaQuery(ZOOMED_TREE_QUERY);
+  // The row of five is drawn exactly where the one control is not.
+  const row = !useMediaQuery(ONE_CONTROL_QUERY);
   // The page opens at most one menu at a time, so which one is open is one value.
   const [open, setOpen] = useState<OpenMenu>(nodeMenu ? "nodes" : undefined);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -313,6 +311,9 @@ export function IssuePresets({
 
 /** Which of the row's two menus is open; the page opens at most one at a time. */
 type OpenMenu = "nodes" | "presets" | undefined;
+
+/** The widths the row is one control at: 1024 px and below (R2). */
+const ONE_CONTROL_QUERY = "(max-width: 1024px)";
 
 /**
  * What one control draws after its name: its count, then the noun the count is in, or what of
