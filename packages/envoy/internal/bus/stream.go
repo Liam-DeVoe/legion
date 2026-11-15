@@ -147,11 +147,15 @@ func DeliverSubject(sessionID string) string {
 // nothing does (cmd/listener/connection_probe.go). It is not a relay frame header (Envoy-Subject
 // and the rest, cmd/listener/session_relay.go): the probe carries none of those, since a message on
 // the relay subject that carried them would be read as a frame and move the session's resume point
-// past the messages it stands for. Every subscriber of a relay subject answers a message carrying
-// this header done, when it carries a reply subject, before it decodes anything, and takes nothing
-// else from it: no frame, no envelope, no count. The plugins answer it in their shared consumer
-// delivery (packages/envoy-client/src/consumer-delivery.ts, RelayHeader.probe); one older than the
-// header answers the same bytes, which decode as no frame, done too.
+// past the messages it stands for. Every subscriber of a relay subject that stands for a session -
+// the plugins, and each stand-in for one in the tests, the load test and the end-to-end scripts -
+// answers a message carrying this header done, when it carries a reply subject, before it decodes
+// anything, and takes nothing else from it: no frame, no envelope, no count. The plugins answer it
+// in their shared consumer delivery (packages/envoy-client/src/consumer-delivery.ts,
+// RelayHeader.probe); one older than the header answers the same bytes, which decode as no frame,
+// done too. A subscriber that is no session and holds the subject only through a wildcard -
+// natstail on notifications.>, an end-to-end capture of every notification - passes it over
+// unanswered and takes nothing from it either: an answer would speak for a session it is not.
 const ConnectionProbeHeader = "Envoy-Probe"
 
 // KeptTopicPrefix begins the listener's kept lane: the role messages it kept because it could not

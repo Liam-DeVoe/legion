@@ -1302,10 +1302,10 @@ func main() {
 
 	// The store's watcher fills the records in the background, so wait for a read that delivered
 	// every one of them before serving, as the caches above are waited for (the state
-	// session.KnownSessions.Opened reads). Until that read this listener knows no stopped session:
-	// a send to one is the 404 this store exists to stop answering, GET
-	// /v1/registry/<id>?include=unresponsive,stopped is that 404 too, and a publish's recipient
-	// counts are left out.
+	// session.KnownSessions.Opened reads). Until that read this listener knows no stopped session
+	// beyond the live entries: a send to a session with no live entry is the 404 this store exists
+	// to stop answering, GET /v1/registry/<id>?include=unresponsive,stopped is that 404 too, and a
+	// publish's recipient counts are left out.
 	//
 	// Bounded at 30s, as its neighbours are, and it fails open: the store answers from whatever the
 	// watcher has delivered once a read completes, the counts stay out until Opened says the view
@@ -1314,7 +1314,7 @@ func main() {
 	// spend this budget on a bucket it may not open.
 	knownCacheReadyCtx, knownCacheReadyCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := known.WaitForCacheReady(knownCacheReadyCtx); err != nil {
-		logger.Warn("known-session cache warm-up did not complete; until it does a send to a stopped session answers 404 and a publish carries no recipient counts",
+		logger.Warn("known-session cache warm-up did not complete; until it does a send to a session with no live entry answers 404 and a publish carries no recipient counts",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
 	}
 	knownCacheReadyCancel()

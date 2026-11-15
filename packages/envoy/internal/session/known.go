@@ -671,10 +671,13 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // than ctx (bus.Bounded): an HTTP route passes its request's own context. A record whose content
 // equals the one the store holds is not written while that one is younger than
 // KnownSessionRefreshAge, so a session's 90-second heartbeat costs one write per refresh age
-// rather than one per heartbeat. What that skip compares is the stored record as the watcher
-// delivered it, or as this listener's own write left it, not a note this listener kept of what it
-// sent, so the throttle holds across every listener that serves the session, exactly as
-// store.Registry.UpsertWithin's does for an interest row.
+// rather than one per heartbeat. What that skip compares is this listener's own copy of the record
+// (cached), never the bucket: the record as this listener's watcher last delivered it, or as this
+// listener's own write left it (store.Registry.UpsertWithin, by contrast, reads the stored row). A
+// record another listener wrote is therefore compared as this listener's watcher last delivered
+// it: the throttle holds across every listener that serves the session once each one's watcher
+// has delivered the others' writes, and a write made before that compares an older copy, which
+// costs at most one write of a record the bucket already holds.
 //
 // A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
 // reads answer no record either, so nothing it could write would be read.

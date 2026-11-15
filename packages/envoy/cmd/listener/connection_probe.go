@@ -48,8 +48,10 @@ const connectionProbeTimeout = 1 * time.Second
 //
 // Only NATS's no-responders status (nats.ErrNoResponders) is stopped: no subscription on this
 // server's cluster holds the subject, which is what a plugin whose connection closed leaves. A
-// reply is connected, and so is a second of silence, which a subscriber that never answers - an
-// operator's natstail on notifications.>, say - leaves. Every other error is
+// reply is connected - a plugin answers done, and so does each stand-in for a session in the
+// tests, the load test and the end-to-end scripts - and so is a second of silence, which a
+// subscriber that holds the subject and is no session leaves: an operator's natstail on
+// notifications.>, say, passes the probe over unanswered and uncounted. Every other error is
 // connected too, and logged: a publish this listener's own grant denies (bus.ErrPublishDenied) and
 // a connection that is reconnecting say something about this listener, not about the session, and
 // a listener that cannot ask must not call every session of the deployment stopped.
