@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -58,18 +59,15 @@ type writeTx struct {
 	settle      []string
 }
 
-// inWrite runs fn in one transaction joined with the document service, after taking the change
-// log's lock and reading the project (refused PROJECT_NOT_FOUND when there is none), and commits
-// through the ledger, so the document writes fn makes commit with its rows or not at all. ctx, as
-// fn receives it, is the context Join returned.
+// inWrite runs fn in one transaction joined with the document service, after reading the project
+// (refused PROJECT_NOT_FOUND when there is none), and commits through the ledger, so the document
+// writes fn makes commit with its rows or not at all. ctx, as fn receives it, is the context Join
+// returned.
 //
-// Every registry write logs a change through the change log (its versions, readings and day rows
-// each fire a trigger of delivery_change_log), whose lock it then holds to its commit. It takes
-// that lock first, before the eval's lock, a reading's or a day row's lock or the `evals-md`
-// document's, as every writer of the registry and of the day rows does (delivery.LockChanges): a
-// writer that took it in the middle of its transaction, after a lock another writer holds while it
-// waits for this one, would wait on that writer in a cycle. So the change log's lock is held for
-// the whole of the write.
+// Every registry write logs a change for its versions, readings and day rows, whose triggers
+// record each in the change log's outbox (delivery_changes_pending, migration 20261115155340) and
+// take no lock, so the write never takes the change log's lock (delivery.LockChanges). Once it has
+// committed, committed moves those rows into the log (drainChanges) before the caller answers.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")
@@ -79,9 +77,6 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 		return fmt.Errorf("begin the eval write: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := delivery.LockChanges(ctx, tx); err != nil {
-		return err
-	}
 	documentCtx, ledger := s.documents.Join(ctx, tx)
 	defer ledger.Discard()
 	w, err := openWrite(ctx, tx, project)
@@ -94,7 +89,7 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 	if err := ledger.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval write: %w", err)
 	}
-	s.committed(w)
+	s.committed(ctx, w)
 	return nil
 }
 
@@ -113,13 +108,26 @@ func openWrite(ctx context.Context, tx pgx.Tx, project string) (*writeTx, error)
 }
 
 // committed is what w's commit owes, paid once its transaction has committed: the settlement of
-// each document it wrote is scheduled, and the document events it appended are published.
-func (s *Store) committed(w *writeTx) {
+// each document it wrote is scheduled, the document events it appended are published, and its
+// change rows are moved into the change log (drainChanges).
+func (s *Store) committed(ctx context.Context, w *writeTx) {
 	for _, artifactID := range w.settle {
 		s.documents.ScheduleSettlement(artifactID)
 	}
 	for _, event := range w.events {
 		s.events.Publish(event)
+	}
+	s.drainChanges(ctx)
+}
+
+// drainChanges moves the change rows a committed write recorded in the change log's outbox into
+// the log (delivery.DrainPending), in a short transaction of its own, so a reader of the log sees
+// them once the write answers. A drain that fails is logged and fails nothing: the write
+// committed, its pending rows with it, and their notification wakes every live process's hub,
+// which drains before it reads, as the refresher's next pass does.
+func (s *Store) drainChanges(ctx context.Context) {
+	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
+		slog.Warn("dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them", "error", err)
 	}
 }
 

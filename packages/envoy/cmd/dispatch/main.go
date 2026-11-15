@@ -389,6 +389,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The change rows an eval or Legion write recorded in the change log's outbox and never moved
+	// into delivery_changes, its process killed between its commit and its drain, are moved before
+	// this process serves (delivery.DrainPending, migration 20261115155339). Every live process's hub
+	// drains on the notification such a row sent at its commit; this boot is what moves them when
+	// none was alive, and its drain's notification wakes every hub listening by then, this process's
+	// refresher reading the moved rows on its first pass. A drain that fails is logged and the boot
+	// goes on: the hub drains before each read, and the refresher at each pass.
+	if moved, err := delivery.DrainPending(ctx, database.Pool); err != nil {
+		slog.Warn("dispatch: move the delivery changes left pending into the change log; the hub's and the refresher's drains move them", "error", err)
+	} else if moved > 0 {
+		slog.Info("dispatch: moved the delivery changes left pending into the change log", "moved", moved)
+	}
+
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
 	// documents stored before that. It runs here, in committed batches, rather than as migration
@@ -669,9 +682,10 @@ func main() {
 	//     registered on it (it serves the rooms resident in this process: it catches them up with
 	//     the other processes' writes and answers their room queries).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
-	//     above, and the embedding coverage pass (two processes' passes at once leave what one
-	//     leaves).
+	//     the drain of the delivery change log's outbox (two drains take turns on the change
+	//     log's lock and move each row once), retirePlainRefreshTokens, restoreDecidedWordings,
+	//     repairIssueAsks and SeedRepoProjects above, and the embedding coverage pass (two
+	//     processes' passes at once leave what one leaves).
 	leases, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)

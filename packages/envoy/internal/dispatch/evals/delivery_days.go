@@ -630,8 +630,9 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 // `last` fold of a window reads its newest day's. A write that counts what the row holds keeps the
 // row's time, so it rewrites nothing (built_by aside) and logs no change: the refresher writes the
 // row on every change that can move the count, most of which move nothing. builtBy is the running
-// build. Its transaction takes the change log's lock first (delivery.LockChanges), as every writer
-// of the day rows does.
+// build. Its change row waits in the change log's outbox, so the transaction takes no change log
+// lock, and is moved into the log once it has committed (drainChanges), as every writer of the day
+// rows does.
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
 	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
 	if err != nil {
@@ -642,9 +643,6 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 		return fmt.Errorf("begin the unowned-p0 row of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	if err := delivery.LockChanges(ctx, tx); err != nil {
-		return err
-	}
 	evalID, date := EvalID(project, SlugUnownedP0), measures.Midnight(day)
 	var now time.Time
 	var stored *float64
@@ -671,5 +669,6 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the unowned-p0 row of %s: %w", project, err)
 	}
+	s.drainChanges(ctx)
 	return nil
 }

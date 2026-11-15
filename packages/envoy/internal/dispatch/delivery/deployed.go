@@ -8,8 +8,11 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -105,21 +108,30 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 
 // recordDeployedEvent marks pr and appends its event in one transaction, and reports whether it did:
 // false when another writer marked the row first, or the row no longer names pr's issue.
+//
+// It locks the pull request's row first, at the level the marker's update takes, while it is still
+// unmarked and names pr's issue, then appends the event, and marks the row in its last statement,
+// whose change trigger takes the change log's lock (delivery.LockChanges): after every row lock the
+// transaction takes, the issue's included, and held for that statement and the commit alone. Every
+// other writer of a delivery_pull_requests row is one statement that takes the row's lock and then
+// the change log's, so the two wait on each other in one order.
 func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `
-		update delivery_pull_requests set deployed_event_at = now()
+	var unmarked bool
+	err = tx.QueryRow(ctx, `
+		select true from delivery_pull_requests
 		where repo = $1 and number = $2 and issue_key = $3 and deployed_event_at is null
-	`, pr.Repo, pr.Number, pr.IssueKey)
-	if err != nil {
-		return false, fmt.Errorf("mark the pull request: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
+		for no key update
+	`, pr.Repo, pr.Number, pr.IssueKey).Scan(&unmarked)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock the pull request: %w", err)
 	}
 	event, err := broker.Append(ctx, tx, model.Event{
 		IssueKey: &pr.IssueKey,
@@ -131,6 +143,11 @@ func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.B
 	})
 	if err != nil {
 		return false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		update delivery_pull_requests set deployed_event_at = now() where repo = $1 and number = $2
+	`, pr.Repo, pr.Number); err != nil {
+		return false, fmt.Errorf("mark the pull request: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit: %w", err)

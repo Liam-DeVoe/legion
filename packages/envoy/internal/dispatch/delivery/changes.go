@@ -46,8 +46,11 @@ type Change struct {
 	TNew    *time.Time
 }
 
-// The kinds of delivery change (Change.Kind), each the kind a table's trigger logs through
-// delivery_change_log, so a reader of the log compares with these rather than spell one again.
+// The kinds of delivery change (Change.Kind), each the kind a table's trigger logs, so a reader of
+// the log compares with these rather than spell one again. The delivery intake's five
+// (pull_request, run, run_job, session_group, settings) are written into delivery_changes by their
+// triggers (delivery_change_log, migration 0100); the eval and Legion kinds (issue_facts and the
+// rest) are recorded in the outbox and moved into the log by DrainPending.
 const (
 	ChangeKindPullRequest  = "pull_request"
 	ChangeKindRun          = "run"
@@ -65,31 +68,42 @@ const (
 const ChangeRetention = 24 * time.Hour
 
 // ChangesChannel is the Postgres notification channel a delivery change announces itself on: the
-// trigger that writes each delivery_changes row sends it at commit (migration 0100,
-// delivery_change_log). The Delivery page's live hub and the Legion facts consumer both listen
-// on it, and this package owns the row, so the name is declared here alone, as SettingsChannel
-// is beside the settings row.
+// trigger that writes each delivery_changes row (migration 0100, delivery_change_log), the trigger
+// that records each pending row (delivery_change_log_pending, 20261115155339) and the drain that
+// moves pending rows into the log (DrainPending) each send it, and Postgres delivers it at their
+// commit. The Delivery page's live hub and the Legion facts consumer both listen on it, and this
+// package owns the row, so the name is declared here alone, as SettingsChannel is beside the
+// settings row.
 const ChangesChannel = "delivery_changes"
 
 // LockChanges takes, for the rest of tx, the change log's lock: the transaction advisory lock
-// delivery_change_log takes before it allocates a change's seq, and holds to the commit, so seqs
-// commit in their order (migration 0100).
+// (6900, 0) every insert into delivery_changes takes before it draws a seq, and holds to its
+// commit (migration 0100). A seq is therefore drawn only once every row below it has committed or
+// rolled back, so a reader's cursor never skips a change row: a reader that has read through seq
+// never meets a row below it later.
 //
-// Writers that log changes never wait on each other in a cycle through this lock where each takes
-// it either last, after every other lock it takes, or first, before any, and no writer that takes
-// it first then waits for a lock that a writer taking it last holds. A one-statement write of a
-// delivery row takes it last, in its trigger, after its row's lock (0100's order). A transaction
-// of several statements, more than one of which may log a change or take a lock after one that
-// does, cannot: its first logging statement would take the lock in the middle, before the locks
-// of the statements after it, which another writer may hold while it waits for this one. Such a
-// transaction calls LockChanges first, before any other lock, and so holds the change log's lock
-// for its whole length: the eval registry's writes (evals.Store's readings write, register write
-// and seed, and the API's project creation, which seeds), the eval day-row refresher's day writes
-// and zero fills, the Legion facts consumer's write of a pass, and every write of a repository's
-// project mapping (api's lockRepoProjectWrite). The writers that take it last are the delivery
-// intake's writes of delivery rows, the session groups and the delivery settings, and none of the
-// writers that take it first locks one of those rows, or the session groups' lock, while it holds
-// the change log's.
+// A path takes the lock either first, before any row lock, or last, in the statement that ends its
+// transaction, after every row lock it takes; a one-statement write is the last-statement case. A
+// path that takes it last holds every row lock it needs when it waits, and a path that takes it
+// first locks no row a path taking it last ever holds, so no path holds the lock while it waits
+// for a lock a waiter for it holds, and the lock order has no cycle. A path that takes it last
+// holds it for its last statement and its commit; one that takes it first, for its whole
+// transaction, so those transactions are short.
+//
+//   - Last, in one statement: every one-statement write of a delivery row (a pull request, a run,
+//     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
+//     in one statement.
+//   - Last, in the statement that ends its transaction: the issue.deployed write
+//     (recordDeployedEvent), which locks its pull request's row first, appends the event, and
+//     marks the row last.
+//   - First, with LockChanges: every write of the session groups (lockSessionGroups) and of a
+//     repository's project mapping (api's lockRepoProjectWrite, and cmd/dispatch-seed's write of
+//     the projects it seeds), each a few statements; and the drain (DrainPending), which takes it
+//     before it locks the pending rows it moves.
+//
+// No eval, refresher or Legion facts write takes it: their changes wait in the outbox
+// (delivery_changes_pending, migration 20261115155339), and the drain moves them into the log in a
+// short transaction of its own after they commit.
 func LockChanges(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6900, 0)`); err != nil {
 		return fmt.Errorf("take the delivery change log's lock: %w", err)
@@ -97,9 +111,55 @@ func LockChanges(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// ChangesSince reads up to limit changes after seq, oldest first. seq is allocated in commit order
-// (each trigger takes one advisory lock before it inserts), so a reader that has read through seq
-// never meets a later commit below it.
+// drainBatch is the most pending rows one transaction of the drain moves. On the pod it was
+// measured on, a batch of 1,000 answered in 13 to 30 ms while the pod was quiet and in up to 94 ms,
+// a sampled hold up to 126 ms, while the api package's tests ran beside it, and 10,000 rows in one
+// statement held the change log's lock 118 to 328 ms; a quarter of that batch stays well under
+// R19's 100 ms under load too, and no burst, however large, holds the lock longer than one batch.
+const drainBatch = 250
+
+// DrainPending moves every committed pending change row (delivery_changes_pending, the outbox the
+// eval and Legion tables' triggers record their changes in) into delivery_changes, and answers how
+// many it moved. It moves them a batch at a time, each batch one statement of its own,
+// delivery_changes_drain (migration 20261115155339), never a statement of a caller's transaction,
+// and moves another batch while a whole one moved. So it holds the change log's lock for one
+// batch's statement and its commit at a time, whatever the burst: each batch takes the lock first,
+// before the pending rows it deletes, and moves the lowest pending ids in id order, keeping each
+// row's at. Where nothing is pending it answers 0 and takes no lock. Two drains take turns on the
+// lock, and each pending row is moved exactly once.
+//
+// A pending row's id is drawn at its insert and not at its commit, so seq follows the order the
+// drains move rows in, not the order their writers committed in; every seq is still drawn under
+// the lock (LockChanges), so a reader's cursor never skips a moved row. Its callers: each eval,
+// refresher and Legion facts write, right after its commit and before its route answers; the live
+// hub, before each read of the log; the refresher, at the start of each pass; and the server's
+// boot, before it serves. A writer killed between its commit and its drain loses nothing: its
+// pending row's notification reached every live process's hub at that commit, and each drains on
+// that wake, or else the next process's boot does.
+func DrainPending(ctx context.Context, pool *store.Pool) (int64, error) {
+	var total int64
+	for {
+		moved, err := drainOneBatch(ctx, pool)
+		total += moved
+		if err != nil || moved < drainBatch {
+			return total, err
+		}
+	}
+}
+
+// drainOneBatch moves up to drainBatch pending rows into delivery_changes in one statement of its
+// own, and answers how many it moved (DrainPending).
+func drainOneBatch(ctx context.Context, pool *store.Pool) (int64, error) {
+	var moved int64
+	if err := pool.QueryRow(ctx, `select delivery_changes_drain($1)`, drainBatch).Scan(&moved); err != nil {
+		return 0, fmt.Errorf("move the pending delivery changes into the change log: %w", err)
+	}
+	return moved, nil
+}
+
+// ChangesSince reads up to limit changes after seq, oldest first. Every seq is drawn under the
+// change log's lock (LockChanges), so a reader that has read through seq never meets a row below it
+// later: its cursor never skips a change row.
 func ChangesSince(ctx context.Context, q Querier, seq int64, limit int) ([]Change, error) {
 	rows, err := q.Query(ctx, `
 		select seq, at, kind, coalesce(run_kind, ''), coalesce(repo, ''), coalesce(ref, ''), t_old, t_new

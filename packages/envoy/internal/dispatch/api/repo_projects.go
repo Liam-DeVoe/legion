@@ -263,8 +263,8 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //
 //   - the change log's lock (delivery.LockChanges): the mapping's trigger logs a settings change
 //     under it (migration 20261113170752), and the write's later statements, a default switch of
-//     other mappings and the events, would otherwise run after it, so it is taken first, as every
-//     writer of several statements that logs a change takes it;
+//     other mappings and the events, would otherwise run after it, so it is taken first, before
+//     any row lock, as a path that takes it in a statement before its last one does;
 //   - repo's own advisory lock, which every writer of the mapping takes whether or not its row
 //     exists yet, so the mapping's project and its existence hold still from here on (a default
 //     switch in its project may still clear its is_default until the project lock below is held,

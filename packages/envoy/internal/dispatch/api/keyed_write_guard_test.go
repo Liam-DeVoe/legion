@@ -77,6 +77,12 @@ var keyedWriteGuardAllowed = map[string]string{
 	// and an admission deletes the rows of every process that is no member, so a count a crash
 	// left behind is cleared rather than replayed.
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
+	// The drain of the change log's outbox (delivery.DrainPending, a batch at a time), run after an
+	// eval write's own transaction committed and marked the key: it moves change rows any write
+	// committed, this one's among them, into delivery_changes in short transactions of its own, so it
+	// never holds the change log's lock for the write. A failure is only logged, the next drain moves
+	// the rows, and a repeat after a takeover finds them moved.
+	"delivery.drainOneBatch": "moves committed writes' change rows into the change log, after the write marked its key",
 }
 
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside

@@ -177,8 +177,10 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 }
 
 // The channels the delivery hub listens on. delivery.ChangesChannel carries no payload and is
-// notified as a delivery_changes row commits (migration 0100), and the delivery package declares
-// it beside the row; delivery_freshness carries the settings row's freshness columns as JSON
+// notified as a delivery_changes row commits (migration 0100), as a pending change row of the
+// change log's outbox commits (20261115155339), whose drain the hub runs before it reads, and as
+// a drain that moved rows commits, and the delivery package declares it beside the row;
+// delivery_freshness carries the settings row's freshness columns as JSON
 // (0100); legion.StateChannel carries a project key and is notified by the sampler after each
 // read of that project's Legion daemon, which is the only thing that moves a Legion board
 // besides Dispatch's own events.

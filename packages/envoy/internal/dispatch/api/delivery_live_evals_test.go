@@ -387,6 +387,11 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		t.Helper()
 		before, mark := latestChange(t, rig.database), rig.mark()
 		write()
+		// A write made by SQL records its eval changes in the outbox and drains nothing; the hub
+		// drains before it reads, and so does this read.
+		if _, err := delivery.DrainPending(t.Context(), rig.database.Pool); err != nil {
+			t.Fatalf("%s: drain the change log's outbox: %v", what, err)
+		}
 		changes, err := delivery.ChangesSince(t.Context(), rig.database.Pool, before, 100)
 		if err != nil {
 			t.Fatalf("%s: read the changes it logged: %v", what, err)

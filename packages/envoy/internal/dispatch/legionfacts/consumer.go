@@ -426,19 +426,18 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // stored facts as much as a row that moved. A failure leaves the cursors and the marks where they
 // were, so the next pass reads the same rows again.
 //
-// The transaction takes the change log's lock first (delivery.LockChanges): the rows' and the
-// filings' triggers log their changes under it, and the statements after the first that does
-// take more rows' locks, so taken by that first trigger it would be taken in the middle. The
-// pass's rows are computed before it begins, so it holds the lock for the writes alone.
+// The rows' and the filings' triggers record their changes in the change log's outbox (migration
+// 20261115155340) and take no lock, so the transaction never takes the change log's lock
+// (delivery.LockChanges); once it has committed, the pass moves them into the log
+// (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
+// their notification wakes every live hub, which drains before it reads, as the refresher does at
+// each pass.
 func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := delivery.LockChanges(ctx, tx); err != nil {
-		return nil, err
-	}
 	changed := []string{}
 	for _, project := range computed {
 		written, err := WriteProject(ctx, tx, project.facts)
@@ -465,6 +464,9 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit the Legion facts: %w", err)
+	}
+	if _, err := delivery.DrainPending(ctx, pool); err != nil && ctx.Err() == nil {
+		slog.Warn("dispatch: the Legion facts consumer could not move its changes into the delivery change log; the next drain moves them", "error", err)
 	}
 	return changed, nil
 }

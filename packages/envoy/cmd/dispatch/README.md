@@ -1129,10 +1129,10 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
 - The eval day-row refresher (`evals.Store.RunRefresher`, lease `eval-days`) keeps every project's `eval_days` true to its inputs.
-  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`) as do those of `issue_facts`, `issue_filings` (`20261113170751`), `repo_projects` (`20261113170752`) and the eval tables, and by `dispatch_events`.
+  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), as does that of `repo_projects` (`20261113170752`), and the triggers of `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261115155340`), and by `dispatch_events`.
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
-  A pass reads the changes and the events after its two cursors (`eval_days_cursor`, `20261113170753`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
+  A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261113170753`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
   A change cursor whose change has left the log is a loss only when that change was younger than its 24 hours, by the rule the delivery live hub reads its own cursor by: one pruned after its 24 hours lost nothing, and a loss begins every walk again.
   The pass then builds up to 28 days of each walk (`eval_days_walks`): every day from the first input day of the delivery and CI rows, of each project's Legion rows and of each project's logged evals, once per build and then each new UTC day, which writes the explicit zero rows of the days nothing happened on, and each project's `unowned-p0` row of today, once a day whether or not delivery settings exist.
   It asks for its next pass at once while a walk has days left, and otherwise at the earlier of the next UTC midnight and five minutes after the oldest delivery change passes its 24 hours, which the pass prunes (`delivery.PruneChanges`), so the change log keeps its retention where no GitHub App runs the reconcile that prunes it too, and the passes that prune a busy log run every five minutes rather than every 10 s.
@@ -1144,6 +1144,11 @@ A process that finds it held tries again
 — until a pass of its own runs, because the other process's pass may have read before the change that woke this one.
 
 **Boot passes** run once at start:
+
+- The drain of the delivery change log's outbox (`delivery.DrainPending`, `20261115155339`) runs once, before the process serves, with no lease: two drains take turns on the change log's lock and move each pending change once.
+  An eval or Legion write records its change in the outbox and drains it right after its commit; a write whose process was killed between the two leaves the change pending, and its commit's notification woke every live process's hub, which drains before it reads.
+  This drain moves what such a write left while no process was alive, logs `dispatch: moved the delivery changes left pending into the change log` with `moved=<n>`, and its own notification wakes every hub listening by then; this process's refresher reads the moved changes on its first pass.
+  A drain that fails is logged and the boot goes on, since the hub and the refresher drain again.
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
   After it only its identity steps run again:

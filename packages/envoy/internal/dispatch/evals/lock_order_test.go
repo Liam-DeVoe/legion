@@ -15,13 +15,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The registry's writes and the refresher's log their changes through delivery_change_log, which
-// takes the change log's lock (6900) and holds it to the commit (migration 0100). Each of them
-// takes that lock first, before any other (delivery.LockChanges), so none of them holds it while
-// it waits for a row another writer holds and that writer waits for the lock. The tests below run
-// two writers at once in the orders a review traced to a deadlock, each through the call its route
-// or the refresher makes, with the first writer paused, by a trigger of the test's own database,
-// at the step after which the old order waited on the second.
+// The registry's writes and the refresher's record their changes in the change log's outbox
+// (delivery_changes_pending, migration 20261115155340) and take no change log lock: each write's
+// drain moves them into the log in a short transaction of its own after it commits
+// (delivery.DrainPending). Before that, each took the change log's lock (6900) in a trigger in the
+// middle of its transaction, and then each took it first, before any other lock; in the first
+// order two writers waited on each other in a cycle. The tests below run two writers at once in
+// the orders a review traced to such a deadlock, each through the call its route or the refresher
+// makes, with the first writer paused, by a trigger of the test's own database, at the step after
+// which the old order waited on the second.
 
 // pauseKey is the advisory lock a paused insert waits for (pauseInserts).
 const pauseKey = int64(6900_4815)
@@ -60,8 +62,10 @@ func pauseInserts(t *testing.T, r rig, table, when string) pgx.Tx {
 }
 
 // race runs first until it waits on the pause holder holds, then second until it waits too,
-// behind the pause or behind first, then lets first on and answers both writers' errors. Each
-// writer runs under lockOrderBound, so a wait that never ends answers the deadline.
+// behind the pause or behind first, or answers, then lets first on and answers both writers'
+// errors. A second writer that needs no lock first holds answers at once: in the old orders it
+// waited on the change log's lock, which no eval writer takes any more. Each writer runs under
+// lockOrderBound, so a wait that never ends answers the deadline.
 func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) error) (error, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), lockOrderBound)
@@ -72,13 +76,28 @@ func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) e
 		t.Fatalf("the first writer never reached the pause")
 	}
 	go func() { secondDone <- second(ctx) }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, lockOrderBound); waiting < 2 {
-		t.Fatalf("the second writer never waited, behind the pause or the first writer")
+	var secondErr error
+	secondAnswered := false
+	for deadline := time.Now().Add(lockOrderBound); ; {
+		select {
+		case secondErr = <-secondDone:
+			secondAnswered = true
+		default:
+		}
+		if secondAnswered || storetest.WaitForLockWaiters(t, holder, 2, 10*time.Millisecond) >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the second writer neither waited, behind the pause or the first writer, nor answered")
+		}
 	}
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("let the first writer on: %v", err)
 	}
-	return <-firstDone, <-secondDone
+	if !secondAnswered {
+		secondErr = <-secondDone
+	}
+	return <-firstDone, secondErr
 }
 
 // requireNoDeadlock fails the test where err is not nil, saying where it is Postgres's deadlock.

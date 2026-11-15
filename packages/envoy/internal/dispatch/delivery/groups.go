@@ -141,7 +141,16 @@ func getSessionGroup(ctx context.Context, q Querier, id string) (SessionGroup, e
 // lockSessionGroups serialises every group write. The members' primary key and the name index
 // already refuse membership and name races; the lock is for the title rule, which reads other
 // groups' rows, so a rename and a removal checked at once cannot together strand a titled session.
+//
+// It is the first thing each group write does in its transaction, and it takes the change log's
+// lock before the groups' own (LockChanges): the write's group and member statements each log a
+// change, so the first of them would take the change log's lock in the middle of the transaction.
+// Taken first, it is held for the whole write, a few statements, and no writer that takes the
+// change log's lock last ever holds the groups' lock or a group's row.
 func lockSessionGroups(ctx context.Context, tx pgx.Tx) error {
+	if err := LockChanges(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('delivery-session-groups'))`); err != nil {
 		return fmt.Errorf("lock session groups: %w", err)
 	}

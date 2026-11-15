@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -37,9 +38,14 @@ func sessionActor(session string) string {
 
 // writeProjects writes the projects and their repository mappings. Each project has one default
 // mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use.
+// carrying a repository of their own use. Each mapping's trigger logs a settings change under the
+// change log's lock, so the transaction takes that lock first, before any row lock, as every
+// writer of several statements that logs a change does (delivery.LockChanges).
 func (r *seedRun) writeProjects(ctx context.Context) error {
 	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := delivery.LockChanges(ctx, tx); err != nil {
+			return err
+		}
 		for index, project := range r.plan.projects {
 			if _, err := tx.Exec(ctx, `
 				insert into projects (key, name, next_number, created_at, last_seq)

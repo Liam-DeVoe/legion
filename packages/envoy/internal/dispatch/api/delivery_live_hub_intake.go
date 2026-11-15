@@ -184,14 +184,20 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 }
 
 // catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
-// Before each read it checks for a lost cursor: a reset log, one holding no row as far as the
-// cursor, or one whose row at the cursor was recorded at another time than the hub read (a
-// TRUNCATE ... RESTART IDENTITY refilled past it, e2e/seed.ts:150); or a log pruned past changes
+// It first moves the change log's pending rows into the log (delivery.DrainPending): an eval or
+// Legion write's change rows wait there until a drain moves them, their notification wakes this
+// hub at the write's commit, and the write's own drain may not have run, its process killed
+// between the two. Before each read it checks for a lost cursor: a reset log, one holding no row as
+// far as the cursor, or one whose row at the cursor was recorded at another time than the hub read
+// (a TRUNCATE ... RESTART IDENTITY refilled past it, e2e/seed.ts:150); or a log pruned past changes
 // the hub never read, its row at the cursor gone while the hub had read nothing for longer than
 // the log's retention (a catch-up failing for a day), since the prune may then have taken changes
 // after the cursor too. A lost cursor moves to the newest row and marks every view dirty.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	if _, err := delivery.DrainPending(ctx, pool); err != nil {
+		return err
+	}
 	for {
 		h.mu.Lock()
 		seq, at, readAt := g.changeSeq, g.changeAt, g.changeRead

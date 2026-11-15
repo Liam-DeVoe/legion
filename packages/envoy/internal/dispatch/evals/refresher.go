@@ -242,12 +242,16 @@ func (r refreshed) sorted() []string {
 	return lines
 }
 
-// refresh is one pass: it seeds the projects it owes a seed (refresh.load, with seeds, the loop's
-// own), reads page after page of the two feeds until one comes back short and writes the days
-// each names, makes a batch of each walk, prunes the change log, and answers what it wrote and
-// when the loop should run again.
+// refresh is one pass: it moves the change log's pending rows into the log (delivery.DrainPending),
+// so the page it reads holds every change committed before it began, seeds the projects it owes a
+// seed (refresh.load, with seeds, the loop's own), reads page after page of the two feeds until one
+// comes back short and writes the days each names, makes a batch of each walk, prunes the change
+// log, and answers what it wrote and when the loop should run again.
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
+	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
+		return r.report, time.Time{}, err
+	}
 	if err := r.load(ctx, seeds); err != nil {
 		return r.report, time.Time{}, err
 	}

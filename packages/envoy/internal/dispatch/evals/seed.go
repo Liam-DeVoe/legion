@@ -87,10 +87,10 @@ type PendingSeed struct {
 
 // EnsureTx writes the catalogue into project in tx, the transaction that created the project, so
 // the project and its evals commit together or not at all. ctx is the context the document
-// service's Join of tx returned, whose ledger the caller commits. tx took the change log's lock
-// first, before any other (delivery.LockChanges), as every registry write does (inWrite), since
-// the seed's versions log their changes under it. Once tx has committed, the caller calls
-// Committed on the answer, and never when tx did not commit.
+// service's Join of tx returned, whose ledger the caller commits. The seed's versions record their
+// changes in the change log's outbox and take no lock, as every registry write's do (inWrite).
+// Once tx has committed, the caller calls Committed on the answer, and never when tx did not
+// commit.
 func (s *Store) EnsureTx(ctx context.Context, tx pgx.Tx, project string) (PendingSeed, error) {
 	w, err := openWrite(ctx, tx, project)
 	if err != nil {
@@ -103,11 +103,12 @@ func (s *Store) EnsureTx(ctx context.Context, tx pgx.Tx, project string) (Pendin
 	return PendingSeed{Seeded: seeded, store: s, write: w}, nil
 }
 
-// Committed schedules the settlement of the `evals-md` the seed wrote and publishes the document
-// events it appended, as Ensure does once its own transaction commits.
-func (p PendingSeed) Committed() {
+// Committed schedules the settlement of the `evals-md` the seed wrote, publishes the document
+// events it appended and moves its change rows into the change log, as Ensure does once its own
+// transaction commits.
+func (p PendingSeed) Committed(ctx context.Context) {
 	if p.store != nil {
-		p.store.committed(p.write)
+		p.store.committed(ctx, p.write)
 	}
 }
 

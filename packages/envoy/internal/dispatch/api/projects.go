@@ -7,7 +7,6 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -103,14 +102,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	// The project's evals and its `evals-md` (dispatch://INFRA-2916, R5) are written in the
 	// transaction that creates it, which the document service joins, so no reader ever sees the
-	// project without them and a refused create leaves neither. The seed's versions log their
-	// changes under the change log's lock, which this transaction takes first, before the
-	// project's row and every lock the seed takes, as every registry write does
-	// (delivery.LockChanges).
-	if err := delivery.LockChanges(r.Context(), tx); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+	// project without them and a refused create leaves neither. The seed's versions record their
+	// changes in the change log's outbox and take no lock (evals.Store.EnsureTx); Committed moves
+	// them into the log once the transaction has committed.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	var project model.Project
@@ -139,7 +133,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(event)
-	seeded.Committed()
+	seeded.Committed(r.Context())
 	WriteJSON(w, http.StatusCreated, project)
 }
 

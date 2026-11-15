@@ -756,9 +756,14 @@ func truncateChanges(t *testing.T, database *store.Store) {
 	}
 }
 
-// latestChange is the newest delivery change's seq.
+// latestChange is the change log's newest seq once its outbox is drained, as the hub drains it
+// before each read (delivery.DrainPending): a test that writes eval or facts rows by SQL, outside
+// the writers that drain after their commit, reads their changes in the log this way.
 func latestChange(t *testing.T, database *store.Store) int64 {
 	t.Helper()
+	if _, err := delivery.DrainPending(context.Background(), database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
 	seq, err := delivery.LatestChangeSeq(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest change: %v", err)

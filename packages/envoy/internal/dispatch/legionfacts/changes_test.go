@@ -35,10 +35,13 @@ func workedRow(issue string, first, last *time.Time) Row {
 	return Row{Project: factsProject, Issue: issue, OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last}
 }
 
-// changeLogHead is the newest change the log holds, which a check reads before its own write so
-// its assertions see only the rows that write logged.
+// changeLogHead is the newest change the log holds once the outbox is drained, which a check reads
+// before its own write so its assertions see only the rows that write logged.
 func changeLogHead(t *testing.T, pool *store.Pool) int64 {
 	t.Helper()
+	if _, err := delivery.DrainPending(t.Context(), pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
 	seq, err := delivery.LatestChangeSeq(t.Context(), pool)
 	if err != nil {
 		t.Fatalf("read the change log's head: %v", err)
@@ -46,9 +49,14 @@ func changeLogHead(t *testing.T, pool *store.Pool) int64 {
 	return seq
 }
 
-// changesLogged is every change after seq, oldest first.
+// changesLogged is every change after seq, oldest first. The facts' triggers record their changes
+// in the change log's outbox, and WriteProject is called here outside the pass that drains after
+// its commit (writePass), so it drains first, as the live hub drains before it reads.
 func changesLogged(t *testing.T, pool *store.Pool, seq int64) []delivery.Change {
 	t.Helper()
+	if _, err := delivery.DrainPending(t.Context(), pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
 	changes, err := delivery.ChangesSince(t.Context(), pool, seq, 1000)
 	if err != nil {
 		t.Fatalf("read the changes after %d: %v", seq, err)

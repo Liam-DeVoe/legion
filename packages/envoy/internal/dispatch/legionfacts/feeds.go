@@ -446,7 +446,7 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 }
 
 // readChangePage is the page of delivery changes after the cursor (delivery.ChangesSince, whose
-// seq is allocated in commit order): up to limit changes above after, of which it keeps the pull
+// cursor never skips a change row): up to limit changes above after, of which it keeps the pull
 // requests. A change's repo and ref name a row of delivery_pull_requests, whose issue_key is the
 // issue whose facts moved, and a pull request no issue carries names none.
 //

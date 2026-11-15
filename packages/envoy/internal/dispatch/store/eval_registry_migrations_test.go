@@ -49,10 +49,31 @@ func (c loggedChange) String() string {
 	return fmt.Sprintf("{kind %s, repo %s, ref %s, t_old %s, t_new %s}", c.kind, c.repo, c.ref, at(c.tOld), at(c.tNew))
 }
 
-// changeLogHead is the newest change the log holds, which a check reads before its own write so
-// its assertions see only the rows that write logged.
+// drainPending moves the change rows the eval and Legion tables' triggers recorded in the change
+// log's outbox into delivery_changes (delivery_changes_drain, migration 20261115155339), a batch
+// of 250 at a time as delivery.DrainPending does after a writer's commit, and answers how many it
+// moved.
+func drainPending(t *testing.T, store *Store) int64 {
+	t.Helper()
+	const batch = 250
+	var total int64
+	for {
+		var moved int64
+		if err := store.Pool.QueryRow(context.Background(), `select delivery_changes_drain($1)`, batch).Scan(&moved); err != nil {
+			t.Fatalf("drain the pending changes: %v", err)
+		}
+		total += moved
+		if moved < batch {
+			return total
+		}
+	}
+}
+
+// changeLogHead is the newest change the log holds once every pending change is drained, which a
+// check reads before its own write so its assertions see only the rows that write logged.
 func changeLogHead(t *testing.T, store *Store) int64 {
 	t.Helper()
+	drainPending(t, store)
 	var seq int64
 	if err := store.Pool.QueryRow(context.Background(),
 		`select coalesce(max(seq), 0) from delivery_changes`).Scan(&seq); err != nil {
@@ -61,9 +82,11 @@ func changeLogHead(t *testing.T, store *Store) int64 {
 	return seq
 }
 
-// changesAfter is every change logged after seq, oldest first.
+// changesAfter is every change logged after seq, oldest first, once every pending change is
+// drained.
 func changesAfter(t *testing.T, store *Store, seq int64) []loggedChange {
 	t.Helper()
+	drainPending(t, store)
 	rows, err := store.Pool.Query(context.Background(), `
 		select kind, coalesce(repo, ''), coalesce(ref, ''), t_old, t_new
 		from delivery_changes where seq > $1 order by seq
@@ -234,6 +257,112 @@ func TestAWriteOfReadingsLogsOneChangePerEval(t *testing.T) {
 	if superseded.RowsAffected() != 2 || len(changes) != 0 {
 		t.Fatalf("marking %d readings superseded logged %d changes; want two readings marked and no change", superseded.RowsAffected(), len(changes))
 	}
+}
+
+// TestTheEvalTriggersRecordTheirChangesPendingUntilADrainMovesThem: a transaction writing readings,
+// a version and a day row of an eval and an issue's stored Legion facts holds no change log lock
+// (6900) when it commits, and its four changes wait in the outbox, delivery_changes untouched,
+// until the drain moves them, each keeping the moment it was recorded; a drain with nothing
+// pending moves nothing.
+func TestTheEvalTriggersRecordTheirChangesPendingUntilADrainMovesThem(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEvalStore(t)
+	head := changeLogHead(t, store)
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, statement := range []string{
+		`insert into eval_readings (eval_id, series, row_kind, row_key, value, measured_at, recorded_by)
+		 values ('` + evalID + `', 'minutes', 'pull_request', 'acme/widgets#7', 3, '2026-11-04T09:00:00Z', '` + evalRecorder + `'::jsonb)`,
+		`insert into eval_series (eval_id, series, version, unit, role, is_primary, listed, agg)
+		 values ('` + evalID + `', 'minutes', 1, 'minutes', 'headline', true, true, 'quantile')`,
+		`insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		 values ('` + evalProject + `', '` + evalID + `', 'minutes', '', '2026-11-04', true, 1, 3, 'build-a')`,
+		`insert into issues (key, project_key, number, title, status, rank, created_by)
+		 values ('EVAL-1', 'EVAL', 1, 'Facts', 'done', 'U', '{"kind":"user","id":"alice"}')`,
+		`insert into issue_facts (project_key, issue_key) values ('EVAL', 'EVAL-1')`,
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	var holds bool
+	var pendingInTx int
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from pg_locks where locktype = 'advisory' and classid = 6900 and objid = 0 and objsubid = 2
+		               and pid = pg_backend_pid()),
+		       (select count(*) from delivery_changes_pending)
+	`).Scan(&holds, &pendingInTx); err != nil {
+		t.Fatal(err)
+	}
+	if holds {
+		t.Error("the transaction holds the change log's lock after its eval and facts writes, want none")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var pending []loggedChange
+	var recordedAt []time.Time
+	rows, err := store.Pool.Query(ctx, `select kind, coalesce(repo, ''), coalesce(ref, ''), t_old, t_new, at from delivery_changes_pending order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var change loggedChange
+		var at time.Time
+		if err := rows.Scan(&change.kind, &change.repo, &change.ref, &change.tOld, &change.tNew, &at); err != nil {
+			t.Fatal(err)
+		}
+		pending, recordedAt = append(pending, change), append(recordedAt, at)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	kinds := []string{}
+	for _, change := range pending {
+		kinds = append(kinds, change.kind)
+	}
+	if !slices.Equal(kinds, []string{"eval_readings", "eval_versions", "eval_days", "issue_facts"}) || pendingInTx != 4 {
+		t.Fatalf("the transaction recorded %v pending (%d seen inside it), want one eval_readings, eval_versions, eval_days and issue_facts change", kinds, pendingInTx)
+	}
+	var logged int64
+	if err := store.Pool.QueryRow(ctx, `select count(*) from delivery_changes where seq > $1`, head).Scan(&logged); err != nil {
+		t.Fatal(err)
+	}
+	if logged != 0 {
+		t.Errorf("the transaction wrote %d rows into delivery_changes itself, want none before a drain", logged)
+	}
+	if moved := drainPending(t, store); moved != 4 {
+		t.Fatalf("the drain moved %d changes, want the 4 pending", moved)
+	}
+	movedRows, err := store.Pool.Query(ctx, `select kind, at from delivery_changes where seq > $1 order by seq`, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := 0
+	for movedRows.Next() {
+		var kind string
+		var at time.Time
+		if err := movedRows.Scan(&kind, &at); err != nil {
+			t.Fatal(err)
+		}
+		if index >= len(pending) || kind != pending[index].kind || !at.Equal(recordedAt[index]) {
+			t.Errorf("moved change %d is %s at %s, want %v in id order, each at the moment it was recorded", index, kind, at, pending)
+		}
+		index++
+	}
+	if err := movedRows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if index != len(pending) {
+		t.Errorf("the log holds %d moved changes, want %d", index, len(pending))
+	}
+	if again := drainPending(t, store); again != 0 {
+		t.Errorf("a drain with nothing pending moved %d", again)
+	}
+	t.Logf("pending %v moved in id order, each keeping its recorded moment", pending)
 }
 
 // TestANewVersionLogsOneEvalVersionsChange: one version of a definition logs one eval_versions

@@ -16,6 +16,17 @@ body: |-
   `GET /api/v1/evals` reads every project, or the ones named. A refresher keeps the day rows true
   to their inputs from the delivery change feed, issue events and a daily tick, and the live hub
   has an `evals` view that wakes when a reading, a version or a day row of its project lands.
+  The eval writes, the refresher's and the Legion facts' record their changes in an outbox,
+  `delivery_changes_pending`, and never take the delivery change log's lock: a drain moves them
+  into `delivery_changes` 250 at a time, each batch a short statement of its own, run by the
+  writer right after its commit, by the live hub before each read, by the refresher at each pass
+  and by the server's boot before it serves, so a correction of 1,400 readings holds no lock the
+  delivery intake waits on, and no burst holds it longer than one batch.
+  A change whose writer died before its drain is moved by the next wake of any live process's
+  hub, which its commit's notification sends, else by the next server's boot. A run's jobs write
+  is one statement, the `issue.deployed` write marks its pull request in its last statement, and
+  the session groups' writes take the change log's lock first, so every path takes that lock
+  before its row locks or in the statement that ends its transaction.
   The per-issue Legion facts also store parked, queued and slot-wait hours, the role bars with
   their segments, idle hours by role, the hours after the first review, the children and the
   started and merged times, and the filings a Legion session made are stored in `issue_filings`.

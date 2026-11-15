@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
@@ -70,10 +69,9 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 // slugs name, and its members of families, written as WriteProjectDay says. The stale rows it
 // zeroes are those of slugs alone and the stale members it deletes those of families alone, so
 // the delivery and the Legion writes of one day leave each other's rows and members as they are.
-// what names the rows in a refusal. Its transaction takes the change log's lock first
-// (delivery.LockChanges): its upsert logs a change under that lock and its later statements take
-// more rows' locks, which a writer of the same rows holding them would make it wait for, holding
-// the change log's lock that writer waits for.
+// what names the rows in a refusal. Its upsert's change rows wait in the change log's outbox
+// (migration 20261115155340), so the transaction takes no change log lock, and they are moved into
+// the log once it has committed (drainChanges).
 func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
 	date := measures.Midnight(day.Day)
 	evalIDs := make([]string, len(slugs))
@@ -103,9 +101,6 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 		return fmt.Errorf("begin the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	defer tx.Rollback(ctx)
-	if err := delivery.LockChanges(ctx, tx); err != nil {
-		return err
-	}
 	if err := upsertDays(ctx, tx, day.Rows, builtBy); err != nil {
 		return err
 	}
@@ -176,6 +171,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
+	s.drainChanges(ctx)
 	return nil
 }
 
