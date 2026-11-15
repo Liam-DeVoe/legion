@@ -4610,7 +4610,11 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   They are limits of resuming by stream sequence, which every rule above rests on, not defects of those rules, and closing either would need another mechanism: a message's store time against the consumer's creation time, or a new stream identity at every restore.
   The first is a consumer the stream catches up with before anything restarts it: one an earlier build created past the end, or one an unreconciled whole loss of a one-copy stream left there ("The stream's sequences went back" below).
   Once the stream reaches that consumer's floor, the keep paths keep it, and the messages between the old end and its floor are skipped.
-  For an earlier build's consumer the window closes at the first restart of every relay that this build's listener makes at its start, which dispatch://INFRA-3635's roll is in production; measured on the real binary (dispatch://INFRA-3501): floor 17, a start at 18, messages 14 to 16 skipped.
+  For an earlier build's consumer, the window closes at this build's listener's start.
+  A live session's consumer is repaired by the relay restart the listener makes then.
+  A gone session has no relay, so its consumer is reached by the sweep's delete instead, whose first pass runs at the listener's start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by default), at most 256 consumers a pass.
+  dispatch://INFRA-3635's roll is that start in production.
+  The sweep's delete path was measured on the real binary (dispatch://INFRA-3501): the delete recorded floor 17, the next consumer started at 18, and messages 14 to 16 were skipped; this build's code gives the same result for that timing.
   The second is a restore from an older backup that keeps the stream's `envoy_stream_id`, after which the stream grows past a client's resume point R before that client returns.
   R + 1 then lies inside the stream, so the messages between the restored end and R are skipped, and no sequence tells that apart from a valid resume point.
   The Envoy move's window (dispatch://INFRA-810) copies the current streams with writes frozen, not an older backup, so it does not meet this.
@@ -4647,7 +4651,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   INFO `session consumer created at its resume record's floor, below the start the caller asked` reports a create that lowered a caller's start to the record's floor plus one.
   Its keys are `session_id`, `asked_start` (the caller's start), `record_floor` and `stream_id`, and its count is how often the record rule lowers a start.
   WARN `session resume floor past the stream's end, recorded at the sequence before the stream's first` reports a resume record whose floor was past the stream's end and was recorded at the sequence before the stream's first instead.
-  Its keys are `session_id`, `floor` (the floor asked), `recorded_floor` (the floor recorded, the stream's first sequence minus one, which is 0 for a stream that has stored nothing and for one whose first sequence is still 1), `stream_last_seq` and `stream_id`.
+  Its keys are `session_id`, `floor` (the floor asked), `recorded_floor` (the floor recorded, the stream's first sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still 1, and the stream's last sequence for a stream that age or a purge has emptied), `stream_last_seq` and `stream_id`.
   Each sequence is a JSON number (`slog.Uint64`), and each id is a JSON string (`slog.String`).
   A create line is written only after the server confirmed the create (`upsert(..., "create")` returned no error), so a create that failed writes none, and the retry that succeeds writes one.
   A create whose answer was lost while the server applied it writes no line.
@@ -4672,9 +4676,9 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 - **The resume record each delete writes:** before each delete the listener records the consumer's ack floor and the stream's identity on the session's resume lane, `notifications.envoy.resume.<session id>` (`bus.SessionResumeSubject`), one message per session:
   the stream carries that prefix (`bus.StreamCarriedSubjects`) where no consumer filter takes it (`bus.StreamSubjects`, and `consumerFilterSubjects` for a legacy durable's), no session may register a topic reaching it (`bus.ReachesPrivateStreamSubject`), and `POST /v1/messages/publish` refuses a topic under it `400`.
   The floor recorded is the consumer's ack floor, from the stream read the record's write makes (`bus.SessionConsumers.recordResumeFloorAt`), and `Delete` returns the floor it recorded.
-  A floor past the stream's end is recorded as the stream's first sequence minus one, not its last sequence: 0 only where the stream has stored nothing or still holds sequence 1.
+  A floor past the stream's end is recorded as the stream's first sequence minus one, with no cap at its last: 0 for a stream that has stored nothing or still holds sequence 1, and its last sequence for one that age or a purge emptied.
   Such a floor is a consumer's whose stream's sequences went back: every message the stream holds is below its next sequence and was never handed to it, so the session's next consumer starts at the stream's first sequence, the floor plus one, and skips none of them.
-  The session is handed again what it took at those sequences, which its plugin's ledger drops within 72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`) and the 20,000 frames it holds (`DELIVERY_LEDGER_LIMIT`, `packages/envoy-client/src/delivery-ledger.ts`).
+  The session is handed again what it took at those sequences, which its plugin's ledger drops within 72 hours and 20,000 frames (`DELIVERY_LEDGER_TTL_MS`, `DELIVERY_LEDGER_LIMIT`).
   The listener logs each such floor with the floor WARN line ("The log lines of a start" above).
   A consumer created for a session that carries no resume point of its own starts at that floor plus one rather than at the stream's end, so the session loses nothing it had not acked;
   a record naming another `envoy_stream_id` is ignored, and a record expires with the stream's own 72-hour retention, by when its floor would name a sequence the stream no longer holds.
@@ -4812,7 +4816,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   On the agent subject it logs `listener agent delivery failed` and raises a `delivery_failed` exception; on a followed topic it logs `listener delivery failed` and raises none.
   Only a registration writes that start (`sessionEntryFromSubscribe`), so a repair or a relay restart that creates the consumer below it leaves the entry above the consumer's real start until the session's next registration, every 90 s, rewrites it from `Ensure`'s answer.
   A create that clamps a start past the end to the stream's first sequence does that where an earlier build or a restored stream left a start past the end on the entry, and so does a restart at a floor the server lowered after data loss ("Data loss" above) or at the stream's first sequence after its sequences went back.
-  In that window the durable path NAKs a message between the two starts as above, though the consumer holds it and its relay delivers it; once the next registration rewrites the start, the path skips it.
+  In that window the durable path NAKs a message between the two starts while the session is live, as above, though the consumer holds it and its relay delivers it; once the next registration rewrites the start, the path skips it.
   An entry an earlier release wrote carries no start, which reads as today: the consumer holds every stored message of it.
 
 - **Lane receipts are gone:** a role forward is stored only.

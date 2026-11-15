@@ -17,8 +17,10 @@ body: |-
   record floor + 1 is lowered to that floor + 1 (one INFO line), so a session that comes back
   with the same resume point after a deregistration gets the messages stored while it was away
   and is not handed again what it acked. A delete whose floor is past the stream's end records
-  the sequence before the stream's first, not the stream's last sequence, with one WARN line:
+  the sequence before the stream's first, with one WARN line:
   `session resume floor past the stream's end, recorded at the sequence before the stream's first`.
+  That floor is 0 for a stream that has stored nothing or whose first sequence is still 1, and the
+  stream's last sequence for a stream that age or a purge has emptied.
   So the session's next consumer starts at the stream's first sequence too, through the same
   reset, and skips none of the messages the stream stored after that consumer's start was fixed.
   After a one-copy stream lost data, a restart of a consumer starts at the sequence after the
@@ -33,7 +35,10 @@ body: |-
   catches up with before anything restarts it (one an earlier build created past the end, or one
   an unreconciled whole loss of a one-copy stream left there) is kept once the stream reaches its
   floor, and the messages between the old end and that floor are skipped. For an earlier build's
-  consumer, that window closes at the restart of every relay that this build's listener makes at
-  its start. Second, after a restore from an older backup that keeps the stream's
+  consumer, the window closes at this build's listener's start. A live session's consumer is
+  repaired by the relay restart the listener makes then. A gone session has no relay, so its
+  consumer is reached by the sweep's delete instead, whose first pass runs at the listener's
+  start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by default), at most
+  256 consumers a pass. Second, after a restore from an older backup that keeps the stream's
   `envoy_stream_id`, a stream that grows past a client's resume point R before that client returns
   puts R + 1 inside the stream, so the messages between the restored end and R are skipped.

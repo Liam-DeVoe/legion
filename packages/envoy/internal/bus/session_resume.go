@@ -70,21 +70,24 @@ type SessionResumeRecord struct {
 // sequence, as the stream read this call makes reads it (streamState, whose read begins after this
 // call, and so after the read of the consumer the caller took floor from). A floor past the end is
 // recorded as the sequence before the stream's first (firstStart minus one, the stream's first
-// sequence minus one, which is 0 for a stream that has stored nothing and for one whose first
-// sequence is still 1), not as the stream's last sequence. Such a floor is the ack floor of a
-// consumer the stream's sequences went back under (ackFloor reads no lower than the floor the
-// server reports, and at least the sequence before the start of a consumer that has acked nothing):
-// one an earlier build created past the end, before create reset every start past the end, or one a
-// one-copy stream's loss of every message left unreconciled (RestartAtFloor); or it is the sequence
-// before the pending start a restart of such a consumer left when its create failed
-// (recordDroppedStart). Every message the stream holds is then at a sequence below that consumer's
-// next one, so none of them was ever handed to it, the ones stored after its start was fixed among
-// them. From the sequence before the stream's first, the next create of the session starts at the
-// stream's first sequence, whether its start is 0, which starts at the record's floor plus one, or
-// a caller's start, which the record rule lowers to that floor plus one (SessionConsumers.create),
-// as create's reset of a start past the end and the relay's restart of a consumer past the end do
-// (RestartAtFloor), and it skips none of those messages. A record of the stream's last sequence
-// would start that create at the sequence after it and skip every one of them. The cost is the
+// sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still 1,
+// and the stream's last sequence for a stream that age or a purge has emptied, whose first sequence
+// is then its last plus one). It is not capped at the stream's last sequence, as it was while
+// create reset a start past the end to the sequence after the stream's last; the two agree only for
+// a stream that age or a purge has emptied. Such a floor is the ack floor of a consumer the
+// stream's sequences went back under (ackFloor reads no lower than the floor the server reports,
+// and at least the sequence before the start of a consumer that has acked nothing): one an earlier
+// build created past the end, before create reset every start past the end, or one a one-copy
+// stream's loss of every message left unreconciled (RestartAtFloor); or it is the sequence before
+// the pending start a restart of such a consumer left when its create failed (recordDroppedStart).
+// Every message the stream holds is then at a sequence below that consumer's next one, so none of
+// them was ever handed to it, the ones stored after its start was fixed among them. From the
+// sequence before the stream's first, the next create of the session starts at the stream's first
+// sequence, whether its start is 0, which starts at the record's floor plus one, or a caller's
+// start, which the record rule lowers to that floor plus one (SessionConsumers.create), as create's
+// reset of a start past the end and the relay's restart of a consumer past the end do
+// (RestartAtFloor), and it skips none of those messages. Where the stream holds messages, a record
+// of its last sequence would start that create after them and skip every one. The cost is the
 // reset's own: the session is handed again what it was handed before at the sequences the stream
 // holds, which its plugin's ledger drops within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000
 // frames (DELIVERY_LEDGER_LIMIT, packages/envoy-client/src/delivery-ledger.ts).

@@ -564,23 +564,25 @@ func (state sessionStreamState) firstStart() uint64 {
 // call. A session id that names no consumer (SessionConsumerName) is no error and costs no
 // call, and nor is a consumer the stream does not hold.
 //
-// The floor returned is the one this call recorded on the session's resume lane, and it is the
-// one floor anyone holds for the session from here on: the consumer it was read from is gone,
-// so nothing moves it again, and the caller that gives the consumer back to a session that
-// registered meanwhile creates it at the sequence after this floor
-// (cmd/listener repairRegistered). It is the consumer's ack floor (ackFloor) for a consumer
-// this call deleted, and the sequence before the pending start for a missing consumer whose
-// start this call dropped (recordDroppedStart); and where that floor is past the stream's end,
-// which a consumer an earlier build created there holds and one a one-copy stream's whole loss
-// left unreconciled holds too, it is recorded and returned as the sequence before the stream's
-// first instead (recordResumeFloorAt): the stream's first sequence minus one, which is 0 for a
-// stream that has stored nothing and for one whose first sequence is still 1, not the stream's
-// last sequence. The messages the stream holds at the sequences up to its last were stored after
-// that consumer's start was fixed and were never handed to it, so the next create of the session
-// starts at the stream's first sequence, as create's reset of a start past the end and the relay's
-// restart do, and skips none of them. The session is then
-// handed again what it was handed before at those sequences, which its plugin's ledger drops
-// within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT,
+// The floor returned is the one this call recorded on the session's resume lane, and it is the one
+// floor anyone holds for the session from here on: the consumer it was read from is gone, so
+// nothing moves it again, and the caller that gives the consumer back to a session that registered
+// meanwhile creates it at the sequence after this floor (cmd/listener repairRegistered). It is the
+// consumer's ack floor (ackFloor) for a consumer this call deleted, and the sequence before the
+// pending start for a missing consumer whose start this call dropped (recordDroppedStart); and
+// where that floor is past the stream's end, which a consumer an earlier build created there holds
+// and one a one-copy stream's whole loss left unreconciled holds too, it is recorded and returned
+// as the sequence before the stream's first instead (recordResumeFloorAt), which is the stream's
+// first sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still
+// 1, and the stream's last sequence for a stream that age or a purge has emptied, whose first
+// sequence is then its last plus one. It is not capped at the stream's last sequence, as it was
+// while create reset a start past the end to the sequence after the stream's last; the two agree
+// only for a stream that age or a purge has emptied. The messages the stream holds at the sequences
+// up to its last were stored after that consumer's start was fixed and were never handed to it, so
+// the next create of the session starts at the stream's first sequence, as create's reset of a
+// start past the end and the relay's restart do, and skips none of them. The session is then handed
+// again what it was handed before at those sequences, which its plugin's ledger drops within 72
+// hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT,
 // packages/envoy-client/src/delivery-ledger.ts).
 //
 // The floor is 0 where this call recorded nothing, which is each of: a session id that names no

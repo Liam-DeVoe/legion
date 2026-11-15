@@ -373,8 +373,8 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // storedSeq, may need this listener's durable path, read from the subject alone, and when it does
 // not, how many sessions of this machine hold it in a consumer of their own
 // (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
-// consumer, so the durable path still takes it up and NAKs it, with a delivery exception on the
-// session's agent subject alone, since session.Resolve answers it with
+// consumer, so the durable path still takes it up and NAKs it while the session is live, with a
+// delivery exception on the session's agent subject alone, since session.Resolve answers it with
 // session.ErrNoSessionRecord). A role lane's subject always needs it. A session's agent subject
 // does unless the session's consumer holds it or the session is another listener's
 // (agentSubjectNeedsDelivery). Any other subject does when it matches a topic of an interest of
