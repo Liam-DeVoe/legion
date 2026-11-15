@@ -1082,6 +1082,8 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const commands = bash.map(command);
   const ghCalls = (match: RegExp) =>
     calls.filter((call) => call.as === "gh" && match.test(call.argv.join(" ")));
+  const earliest = (times: bigint[]) =>
+    times.length === 0 ? undefined : times.reduce((a, b) => (a < b ? a : b));
   // The failing line the record quotes: the world's own (world.json's `log`), never the role's
   // print of its log read. World `h`, whose read answers an error, holds none, and there the
   // error is read from that read's own result, the one place it is.
@@ -1097,7 +1099,20 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   // entry only where it wrote one. Every world that re-runs (world.json's `rerun`) owes it.
   const owesRecord = red.rerun;
   const phase = red.handoff;
-  const record = records.find((r) => r.phase === phase);
+  // The phase's records, newest first as handoffs.json holds them, each body read once for both
+  // `wrote` and `before`. A body that is no JSON reads as no list.
+  const ofPhase = records
+    .filter((r) => r.phase === phase)
+    .map((r) => {
+      let body: unknown;
+      try {
+        body = JSON.parse(r.body);
+      } catch {
+        body = undefined;
+      }
+      return { ...r, read: RedHandoff.safeParse(body) };
+    });
+  const record = ofPhase[0];
   const problems: string[] = [];
   if (record === undefined) {
     if (owesRecord) problems.push(`no ${phase} record on ${red.key}`);
@@ -1106,13 +1121,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
       problems.push(
         `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
       );
-    let body: unknown;
-    try {
-      body = JSON.parse(record.body);
-    } catch {
-      body = undefined;
-    }
-    const read = RedHandoff.safeParse(body);
+    const { read } = record;
     if (!read.success) {
       if (owesRecord) problems.push(`no redAtTheHead list: ${z.prettifyError(read.error)}`);
     } else if (read.data.redAtTheHead.length === 0) {
@@ -1134,18 +1143,16 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   // has the role record the red before it presses the re-run and write the phase's full record
   // later, so the newest record of a run that did exactly as the page says is written after the
   // re-run. `wrote` is still judged on the newest, which is the record the next phase reads.
-  const carried = records
-    .filter((r) => r.phase === phase && r.author.kind === "session" && r.author.id === ownSession)
-    .filter((r) => {
-      try {
-        const read = RedHandoff.safeParse(JSON.parse(r.body));
-        return read.success && read.data.redAtTheHead.length > 0;
-      } catch {
-        return false;
-      }
-    })
+  const carried = ofPhase
+    .filter(
+      (r) =>
+        r.author.kind === "session" &&
+        r.author.id === ownSession &&
+        r.read.success &&
+        r.read.data.redAtTheHead.length > 0
+    )
     .map((r) => instant(r.created_at, `record ${r.id}'s time`));
-  const firstCarried = carried.length === 0 ? undefined : carried.reduce((a, b) => (a < b ? a : b));
+  const firstCarried = earliest(carried);
   const before = rerunAt === undefined || (firstCarried !== undefined && firstCarried < rerunAt);
   const expected = owesRecord ? 1 : 0;
   const pressed = reruns.length === expected;
@@ -1156,27 +1163,24 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     commands.some((text) => SLEEPS.test(text)) ||
     ghCalls(/^run watch\b|^pr checks\b.*--watch\b/).length > 0;
   const waited = (expected === 0 || subscribed) && !polled;
-  // The `legion` tool's handoff_complete calls the daemon stand-in or the tool itself refused:
-  // the step's result is an error. A step with no result at all is no refusal.
+  // The `legion` tool's handoff_complete calls, less those the daemon stand-in or the tool itself
+  // refused, whose step's result is an error. A step with no result at all is no refusal.
   const results = outcomes(entries);
-  const completion = made
-    .filter(
-      (step) =>
-        step.tool === "legion" &&
-        step.args.op === "handoff_complete" &&
-        results.get(step.id)?.failed !== true
-    )
-    .at(-1);
+  const completions = made.filter(
+    (step) =>
+      step.tool === "legion" &&
+      step.args.op === "handoff_complete" &&
+      results.get(step.id)?.failed !== true
+  );
+  const completion = completions.at(-1);
   const verdict = typeof completion?.args.verdict === "string" ? completion.args.verdict : "";
   const accepted = parsed(path.join(runDir, "daemon.log"), DaemonLine).some(
     (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
   );
   const reviewsPath = new RegExp(`repos/${escaped(red.repo)}/pulls/${red.pr}/reviews\\b`);
-  const reviews = calls.filter((call) => {
-    if (call.as !== "gh" || call.exit !== 0) return false;
-    const argv = call.argv.join(" ");
-    return /(?:-X|--method)[ =]?POST\b/.test(argv) && reviewsPath.test(argv);
-  });
+  const reviews = ghCalls(reviewsPath).filter(
+    (call) => call.exit === 0 && /(?:-X|--method)[ =]?POST\b/.test(call.argv.join(" "))
+  );
   const review = submittedReview(reviews.at(-1));
   const goesOn = reviewer
     ? review !== undefined && review.event !== "REQUEST_CHANGES"
@@ -1221,15 +1225,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   // the by-hand failure at the commit and pressed nothing of its own. Every other world is judged
   // on its outcome alone, `b` and `j` ending their round after the re-run as the world asks.
   const roundEnded = [
-    ...made
-      .filter(
-        (step) =>
-          step.tool === "legion" &&
-          step.args.op === "handoff_complete" &&
-          step.args.verdict === "fail" &&
-          results.get(step.id)?.failed !== true
-      )
-      .map((step) => step.at),
+    ...completions.filter((step) => step.args.verdict === "fail").map((step) => step.at),
     ...reviews
       .filter((call) => submittedReview(call)?.event === "REQUEST_CHANGES")
       .map((call) => call.at),
@@ -1251,11 +1247,8 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const countedAt =
     reportedAt === undefined
       ? []
-      : calls
-          .filter((call) => call.as === "gh" && COUNTED_READ.test(call.argv.join(" ")))
-          .map((call) => instant(call.at, "a read of the counted set"));
-  const firstCounted =
-    countedAt.length === 0 ? undefined : countedAt.reduce((a, b) => (a < b ? a : b));
+      : ghCalls(COUNTED_READ).map((call) => instant(call.at, "a read of the counted set"));
+  const firstCounted = earliest(countedAt);
   const readTurn =
     firstCounted === undefined
       ? undefined
@@ -1276,7 +1269,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const { ref, refs } = workerReads(entries, "red-at-the-head.md");
   // Whether the run met the red at all: a gh call that read the head's CI, or the page it
   // opened, which carries the red it came for.
-  const readCI = ref || calls.some((call) => call.as === "gh" && READ_CI.test(call.argv.join(" ")));
+  const readCI = ref || ghCalls(READ_CI).length > 0;
   const notes = [
     `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported} readCI=${readCI}`,
     `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
