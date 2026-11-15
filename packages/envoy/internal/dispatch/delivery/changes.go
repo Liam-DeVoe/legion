@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,6 +70,32 @@ const ChangeRetention = 24 * time.Hour
 // on it, and this package owns the row, so the name is declared here alone, as SettingsChannel
 // is beside the settings row.
 const ChangesChannel = "delivery_changes"
+
+// LockChanges takes, for the rest of tx, the change log's lock: the transaction advisory lock
+// delivery_change_log takes before it allocates a change's seq, and holds to the commit, so seqs
+// commit in their order (migration 0100).
+//
+// Writers that log changes never wait on each other in a cycle through this lock where each takes
+// it either last, after every other lock it takes, or first, before any, and no writer that takes
+// it first then waits for a lock that a writer taking it last holds. A one-statement write of a
+// delivery row takes it last, in its trigger, after its row's lock (0100's order). A transaction
+// of several statements, more than one of which may log a change or take a lock after one that
+// does, cannot: its first logging statement would take the lock in the middle, before the locks
+// of the statements after it, which another writer may hold while it waits for this one. Such a
+// transaction calls LockChanges first, before any other lock, and so holds the change log's lock
+// for its whole length: the eval registry's writes (evals.Store's readings write, register write
+// and seed, and the API's project creation, which seeds), the eval day-row refresher's day writes
+// and zero fills, the Legion facts consumer's write of a pass, and every write of a repository's
+// project mapping (api's lockRepoProjectWrite). The writers that take it last are the delivery
+// intake's writes of delivery rows, the session groups and the delivery settings, and none of the
+// writers that take it first locks one of those rows, or the session groups' lock, while it holds
+// the change log's.
+func LockChanges(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6900, 0)`); err != nil {
+		return fmt.Errorf("take the delivery change log's lock: %w", err)
+	}
+	return nil
+}
 
 // ChangesSince reads up to limit changes after seq, oldest first. seq is allocated in commit order
 // (each trigger takes one advisory lock before it inserts), so a reader that has read through seq

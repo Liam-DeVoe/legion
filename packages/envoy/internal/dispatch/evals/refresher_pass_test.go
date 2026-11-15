@@ -54,7 +54,7 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 	}
 
 	pass := r.registry.newRefresh(r.build, r.now, r.batch)
-	if err := pass.load(ctx); err != nil {
+	if err := pass.load(ctx, r.seeds); err != nil {
 		t.Fatalf("load the pass: %v", err)
 	}
 	moveHours("EVAL-1", 7)

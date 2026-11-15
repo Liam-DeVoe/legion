@@ -1,28 +1,21 @@
 package evals
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // documentID is the id of project's evals-md, failing the test when it has none.
@@ -263,13 +256,15 @@ func showMinN(minN *int) string {
 }
 
 // TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet: alice sets the fields a person sets on
-// a computed eval (R5): deploy frequency's target, person, links and method and its series'
-// min_n, and merge to production's series' min_n. A release that changes deploy frequency's name
-// and its series' unit writes one version of each: they hold every field the catalogue owns as
-// the release states it, and carry forward alice's target, person, links, method block and min_n.
-// The same release changes the min_n of merge to production's series, which the catalogue states
-// for a series' first version alone, as it states the target: merge to production gets no
-// version, and alice's min_n stands. Alice's method text stands, and a second seed writes nothing.
+// a computed eval (R5): deploy frequency's target, person, links and method, and the min_n of
+// pr-ci's job series, the one series a read ranks by a min_n. A release that changes deploy
+// frequency's name and its series' unit writes one version of each: they hold every field the
+// catalogue owns as the release states it, and carry forward alice's target, person, links and
+// method block. The same release changes the min_n of pr-ci's job series, which the catalogue
+// states for a series' first version alone, as it states the target: pr-ci gets no version, and
+// alice's min_n stands. A later release that changes that series' unit writes its next version,
+// holding the release's unit and alice's min_n. Alice's method text stands, and a second seed
+// writes nothing.
 func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -281,32 +276,38 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	person, err := r.registry.Register(ctx, Registration{
 		Project: r.project, Slug: SlugDeployFrequency, Caller: alice, Target: Set(&target), Person: Set("alice"),
 		Links: Set(link), DocText: Set("Alice's method: count the deploys."),
-		Series: []SeriesChange{{Series: measures.SeriesDeploys, MinN: Set(&minN)}},
 	})
 	if err != nil {
 		t.Fatalf("alice's register write of %s: %v", SlugDeployFrequency, err)
 	}
 	if _, err := r.registry.Register(ctx, Registration{
-		Project: r.project, Slug: SlugMergeToProduction, Caller: alice,
-		Series: []SeriesChange{{Series: measures.SeriesMinutes, MinN: Set(&minN)}},
+		Project: r.project, Slug: SlugPRCI, Caller: alice,
+		Series: []SeriesChange{{Series: SeriesJobs, MinN: Set(&minN)}},
 	}); err != nil {
-		t.Fatalf("alice's register write of %s: %v", SlugMergeToProduction, err)
+		t.Fatalf("alice's register write of %s: %v", SlugPRCI, err)
 	}
-
-	withCatalogue(t, func(entries []catalogueEntry) {
+	jobsOf := func(entries []catalogueEntry, slug string) *Series {
 		for i := range entries {
-			switch entries[i].definition.Slug {
-			case SlugDeployFrequency:
-				entries[i].definition.Name = "Deploys a day"
-				entries[i].series[0].Unit = "deploy runs"
-			case SlugMergeToProduction:
+			if entries[i].definition.Slug == slug {
 				for j := range entries[i].series {
-					if entries[i].series[j].Series == measures.SeriesMinutes {
-						entries[i].series[j].MinN = &releasedMinN
+					if entries[i].series[j].Series == SeriesJobs {
+						return &entries[i].series[j]
 					}
 				}
 			}
 		}
+		t.Fatalf("the catalogue's %s holds no series %s", slug, SeriesJobs)
+		return nil
+	}
+
+	withCatalogue(t, func(entries []catalogueEntry) {
+		for i := range entries {
+			if entries[i].definition.Slug == SlugDeployFrequency {
+				entries[i].definition.Name = "Deploys a day"
+				entries[i].series[0].Unit = "deploy runs"
+			}
+		}
+		jobsOf(entries, SlugPRCI).MinN = &releasedMinN
 	})
 	released, err := r.registry.Ensure(ctx, r.project)
 	if err != nil {
@@ -324,14 +325,24 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 		newest.Person != "alice" || !sameLinks(newest.Links, person.Definition.Links) || newest.DocBlock != person.Definition.DocBlock {
 		t.Errorf("the release's version is %+v, want the catalogue's name and unit with alice's target, person, links and method block", newest)
 	}
-	if deploys.Version != 3 || deploys.Unit != "deploy runs" || deploys.MinN == nil || *deploys.MinN != minN {
-		t.Errorf("the release's series is version %d with unit %q and min_n %s, want version 3 holding the catalogue's unit and alice's min_n %d",
-			deploys.Version, deploys.Unit, showMinN(deploys.MinN), minN)
+	if deploys.Version != 2 || deploys.Unit != "deploy runs" {
+		t.Errorf("the release's series is version %d with unit %q, want version 2 holding the catalogue's unit", deploys.Version, deploys.Unit)
 	}
-	untouched, untouchedSeries := r.currentOf(t, SlugMergeToProduction)
-	if minutes := untouchedSeries[measures.SeriesMinutes]; untouched.Version != 1 || minutes.Version != 2 || minutes.MinN == nil || *minutes.MinN != minN {
-		t.Errorf("%s, whose series' min_n alone the release changed, is version %d with its series at version %d and min_n %s, want version 1 and alice's series version 2 with min_n %d",
-			SlugMergeToProduction, untouched.Version, minutes.Version, showMinN(minutes.MinN), minN)
+	untouched, untouchedSeries := r.currentOf(t, SlugPRCI)
+	if jobs := untouchedSeries[SeriesJobs]; untouched.Version != 1 || jobs.Version != 2 || jobs.MinN == nil || *jobs.MinN != minN {
+		t.Errorf("%s, whose job series' min_n alone the release changed, is version %d with its job series at version %d and min_n %s, want version 1 and alice's series version 2 with min_n %d",
+			SlugPRCI, untouched.Version, jobs.Version, showMinN(jobs.MinN), minN)
+	}
+
+	withCatalogue(t, func(entries []catalogueEntry) { jobsOf(entries, SlugPRCI).Unit = "seconds" })
+	later, err := r.registry.Ensure(ctx, r.project)
+	if err != nil {
+		t.Fatalf("seed %s with the later release's catalogue: %v", r.project, err)
+	}
+	_, laterSeries := r.currentOf(t, SlugPRCI)
+	if jobs := laterSeries[SeriesJobs]; later.Versions != 1 || later.Series != 1 || jobs.Version != 3 || jobs.Unit != "seconds" || jobs.MinN == nil || *jobs.MinN != minN {
+		t.Errorf("the later release's seed wrote %+v and left %s's job series at version %d with unit %q and min_n %s, want version 3 holding the release's unit and alice's min_n %d",
+			later, SlugPRCI, jobs.Version, jobs.Unit, showMinN(jobs.MinN), minN)
 	}
 	text, _ := r.document(t)
 	if !strings.Contains(text, "Alice's method: count the deploys.") || headings(text, SlugDeployFrequency) != 1 {
@@ -343,83 +354,157 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	}
 }
 
-// TestTheBootPassSeedsProjectsMadeBySQL: two projects inserted by SQL hold no seeded eval, which
-// UnseededProjects answers; the boot pass, under its lease, seeds both, after which none is
-// unseeded.
-func TestTheBootPassSeedsProjectsMadeBySQL(t *testing.T) {
+// TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget: in a project the seed has not
+// reached, a reading under a slug of the catalogue registers it as a logged eval with no target,
+// and a section whose method says no one has written one. The seed then makes it the catalogue's
+// computed eval with the catalogue's target, its inclusiveness and its judges, as the version 1 of
+// a project it seeds first holds them, since no person turned that target off, and with the
+// catalogue's method in its section, since no person wrote one. An eval a person's register write
+// wrote before the seed keeps that write's target, none here, and its section the method the
+// person wrote, where one did; where none did, it gets the catalogue's.
+func TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget(t *testing.T) {
 	r := newRig(t)
-	if _, err := r.database.Pool.Exec(t.Context(), `insert into projects (key, name) values ('BYSQL', 'Made by SQL')`); err != nil {
-		t.Fatalf("make project BYSQL: %v", err)
+	ctx := t.Context()
+	r.write(t, SlugDeployFrequency, alice, row(t, map[string]any{"series": measures.SeriesDeploys, "row_kind": "deploy", "value": 3, "measured_at": at(4, 9, 0)}))
+	for _, slug := range []string{SlugMergeToProduction, SlugPROpenToMerge} {
+		r.write(t, slug, alice, row(t, map[string]any{"series": measures.SeriesMinutes, "row_kind": "pull_request", "value": 30, "measured_at": at(4, 9, 0)}))
 	}
-	unseeded, err := r.registry.UnseededProjects(t.Context())
-	if err != nil || !slices.Equal(unseeded, []string{"BYSQL", r.project}) {
-		t.Fatalf("the unseeded projects are %v, %v, want BYSQL and %s", unseeded, err, r.project)
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugMergeToProduction, Caller: alice, Person: Set("bob")}); err != nil {
+		t.Fatalf("alice's register write of %s: %v", SlugMergeToProduction, err)
 	}
-	leases, err := r.database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the lease pool: %v", err)
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugPROpenToMerge, Caller: alice, DocText: Set("Alice's own method.")}); err != nil {
+		t.Fatalf("alice's register write of %s: %v", SlugPROpenToMerge, err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		r.registry.SeedEveryProject(ctx, leases)
-	}()
-	deadline := time.Now().Add(time.Minute)
-	for len(unseeded) > 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-		if unseeded, err = r.registry.UnseededProjects(t.Context()); err != nil {
-			t.Fatalf("read the unseeded projects: %v", err)
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	method := func(definition Definition) string {
+		t.Helper()
+		text, found, err := r.registry.Method(ctx, r.project, definition.DocBlock)
+		if err != nil || !found {
+			t.Fatalf("read the method of %s: found %t, %v", definition.EvalID, found, err)
+		}
+		return text
+	}
+	catalogued := entryOf(t, SlugDeployFrequency).definition
+	taken, _ := r.currentOf(t, SlugDeployFrequency)
+	t.Logf("%s after the seed: source %s, target %s inclusive %t judges %v", SlugDeployFrequency, taken.Source, showValue(taken.Target), taken.TargetInclusive, taken.TargetJudges)
+	if !taken.Computed() || !sameTarget(taken.Target, catalogued.Target) || taken.TargetInclusive != catalogued.TargetInclusive ||
+		!slices.Equal(taken.TargetJudges, catalogued.TargetJudges) {
+		t.Errorf("%s, which a reading registered, holds source %s and target %s inclusive %t judges %v after the seed; want the catalogue's %s inclusive %t judges %v",
+			SlugDeployFrequency, taken.Source, showValue(taken.Target), taken.TargetInclusive, taken.TargetJudges,
+			showValue(catalogued.Target), catalogued.TargetInclusive, catalogued.TargetJudges)
+	}
+	kept, _ := r.currentOf(t, SlugMergeToProduction)
+	if !kept.Computed() || kept.Target != nil || kept.Person != "bob" {
+		t.Errorf("%s, which alice's register write wrote, holds source %s, target %s and person %q after the seed; want it computed with her write's target, none, and person bob",
+			SlugMergeToProduction, kept.Source, showValue(kept.Target), kept.Person)
+	}
+	for _, definition := range []Definition{taken, kept} {
+		if text := method(definition); !strings.Contains(text, entryOf(t, definition.Slug).definition.Question) {
+			t.Errorf("%s's section, whose method no one wrote, holds %q after the seed; want the catalogue's method", definition.EvalID, text)
 		}
 	}
-	cancel()
-	<-stopped
-	if len(unseeded) != 0 {
-		t.Fatalf("a minute after the boot pass started, %v hold no seeded eval", unseeded)
+	if written, _ := r.currentOf(t, SlugPROpenToMerge); method(written) != "Alice's own method." {
+		t.Errorf("%s's section holds %q after the seed, want alice's method", written.EvalID, method(written))
 	}
-	for _, project := range []string{"BYSQL", r.project} {
+	text, _ := r.document(t)
+	for _, slug := range []string{SlugDeployFrequency, SlugMergeToProduction, SlugPROpenToMerge} {
+		if headings(text, slug) != 1 {
+			t.Errorf("evals-md holds %d sections of %s, want one", headings(text, slug), slug)
+		}
+	}
+}
+
+// seedPass runs the seeds of one refresher pass (refresh.load) with seeds, the loop's state, and
+// answers the projects whose seed it ran, in the order it ran them.
+func (r rig) seedPass(t *testing.T, seeds *seeding) []string {
+	t.Helper()
+	refresh := r.registry.newRefresh(testBuild, time.Now(), walkBatch)
+	if err := refresh.load(t.Context(), seeds); err != nil {
+		t.Fatalf("the refresher's load: %v", err)
+	}
+	return refresh.report.seeded
+}
+
+// TestTheRefreshersFirstPassSeedsEveryProjectAndLaterPassesTheOwed: the refresher's first pass in
+// a process seeds every project, so the catalogue a release changed reaches a project seeded
+// before it, and one made by SQL is seeded. Each later pass seeds the projects no seed has reached
+// and those whose seed failed, and no other: EVAL's seed of the release fails once, and the next
+// pass seeds EVAL alone, which then holds the release; a pass after it seeds nothing, and one
+// after a project is made by SQL seeds that project alone.
+func TestTheRefreshersFirstPassSeedsEveryProjectAndLaterPassesTheOwed(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	exec := func(what, statement string) {
+		t.Helper()
+		if _, err := r.database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	exec("make project BYSQL", `insert into projects (key, name) values ('BYSQL', 'Made by SQL')`)
+	withCatalogue(t, func(entries []catalogueEntry) {
+		for i := range entries {
+			if entries[i].definition.Slug == SlugDeployFrequency {
+				entries[i].definition.Name = "Deploys a day"
+			}
+		}
+	})
+	// A sequence is no part of the transaction it is read in, so the first seed of EVAL that
+	// writes a version fails and every later one passes.
+	exec("count EVAL's seeds", `create sequence evals_test_seeds`)
+	exec("fail EVAL's next seed once", `create function evals_test_fail_once() returns trigger language plpgsql as $$
+		begin
+			if nextval('evals_test_seeds') = 1 then
+				raise exception 'the test fails this seed once';
+			end if;
+			return new;
+		end $$`)
+	exec("fail EVAL's next seed once", `create trigger evals_test_fail_once before insert on eval_versions
+		for each row when (new.project_key = 'EVAL') execute function evals_test_fail_once()`)
+
+	seeds := &seeding{}
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"BYSQL", r.project}) {
+		t.Fatalf("the first pass seeded %v, want every project: BYSQL and %s", seeded, r.project)
+	}
+	if definition, _ := r.currentOf(t, SlugDeployFrequency); definition.Name == "Deploys a day" || !seeds.failed[r.project] {
+		t.Fatalf("the first pass's seed of %s, which the test failed, left %s named %q and failed %v", r.project, SlugDeployFrequency, definition.Name, seeds.failed)
+	}
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{r.project}) {
+		t.Fatalf("the pass after the failure seeded %v, want %s alone, whose seed failed", seeded, r.project)
+	}
+	if definition, _ := r.currentOf(t, SlugDeployFrequency); definition.Name != "Deploys a day" || len(seeds.failed) != 0 {
+		t.Errorf("after the pass that seeded %s again its %s is named %q and %v failed, want the release's name and none", r.project, SlugDeployFrequency, definition.Name, seeds.failed)
+	}
+	if seeded := r.seedPass(t, seeds); len(seeded) != 0 {
+		t.Errorf("a pass with every project seeded seeded %v, want none", seeded)
+	}
+	exec("make project LATER", `insert into projects (key, name) values ('LATER', 'Made by SQL later')`)
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"LATER"}) {
+		t.Errorf("the pass after LATER was made seeded %v, want LATER alone", seeded)
+	}
+	for _, project := range []string{"BYSQL", "LATER"} {
 		state := r.requireSeeded(t, project)
-		t.Logf("the boot pass seeded %s: %d versions, %d series versions, %d blocks of %s", project, state.versions, state.series, len(state.blocks), DocumentSlug)
+		t.Logf("the refresher seeded %s: %d versions, %d series versions, %d blocks of %s", project, state.versions, state.series, len(state.blocks), DocumentSlug)
 	}
-}
-
-// seedsOpened counts, by project, the seed transactions a traced registry opens: each opens with
-// the read of its project (openWrite).
-type seedsOpened struct {
-	mu    sync.Mutex
-	byKey map[string]int
-}
-
-func (s *seedsOpened) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "select name, now() from projects where key = $1") && len(data.Args) == 1 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.byKey[fmt.Sprint(data.Args[0])]++
-	}
-	return ctx
-}
-
-func (s *seedsOpened) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (s *seedsOpened) of(project string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.byKey[project]
 }
 
 // TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne: a project whose evals-md is a file is
-// refused EVALS_DOCUMENT_NOT_A_DOCUMENT by its seed, which is no failure the boot pass seeds
-// again as one. While the file stands, neither the boot pass nor the refresher's pass opens a
-// seed of it again, and the boot pass answers no failure for it; once the file is gone, the next
-// pass of either seeds it. FILED is first refused by the boot pass, and BYPASS, made by SQL with
-// a file of its own, by the refresher's pass.
+// refused EVALS_DOCUMENT_NOT_A_DOCUMENT by its seed, which is no failure a later pass seeds again
+// as one. While the file stands, no later pass of the refresher runs a seed of it again; once the
+// file is gone, the next pass seeds it. FILED is refused by the first pass, which seeds every
+// project, and BYPASS, made by SQL with a file of its own after it, by a later pass.
 func TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
 		t.Fatalf("seed %s: %v", r.project, err)
 	}
-	for _, project := range []string{"FILED", "BYPASS"} {
+	makeFiled := func(project string) {
+		t.Helper()
 		for _, statement := range []string{
 			`insert into projects (key, name) values ($1, $1)`,
 			`insert into artifacts (project_key, slug, name, kind, created_by) values ($1, 'evals-md', 'evals.md', 'file', '{"kind":"user","id":"alice"}')`,
@@ -429,53 +514,32 @@ func TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne(t *testing.T) {
 			}
 		}
 	}
-	opened := &seedsOpened{byKey: map[string]int{}}
-	registry := New(storetest.TracedStore(t, r.database, opened), r.documents, events.NewBroker())
-	load := func() {
-		t.Helper()
-		if err := registry.newRefresh(testBuild, time.Now(), walkBatch).load(ctx); err != nil {
-			t.Fatalf("the refresher's load: %v", err)
-		}
-	}
 	removeFile := func(project string) {
 		t.Helper()
 		if _, err := r.database.Pool.Exec(ctx, `delete from artifacts where project_key = $1 and slug = 'evals-md'`, project); err != nil {
 			t.Fatalf("remove the file of %s: %v", project, err)
 		}
 	}
-
-	failed, err := registry.seedEveryProject(ctx, []string{"FILED"})
-	var refusal *Error
-	if !errors.As(err, &refusal) || refusal.Code != CodeDocumentNotDocument || len(failed) != 0 || opened.of("FILED") != 1 {
-		t.Fatalf("the boot pass of FILED answered %v and the failures %v after %d seeds, want one seed refused %s and no failure to seed again",
-			err, failed, opened.of("FILED"), CodeDocumentNotDocument)
+	makeFiled("FILED")
+	seeds := &seeding{}
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{r.project, "FILED"}) || !seeds.refused["FILED"] || len(seeds.failed) != 0 {
+		t.Fatalf("the first pass seeded %v, holds %v refused and %v failed; want %s and FILED seeded, FILED refused and no failure to seed again",
+			seeded, seeds.refused, seeds.failed, r.project)
 	}
-	load()
-	if opened.of("BYPASS") != 1 {
-		t.Fatalf("the refresher's first load opened %d seeds of BYPASS, want 1", opened.of("BYPASS"))
+	makeFiled("BYPASS")
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"BYPASS"}) || !seeds.refused["BYPASS"] {
+		t.Fatalf("the pass after BYPASS was made seeded %v and holds %v refused; want BYPASS alone seeded and refused, FILED's file standing", seeded, seeds.refused)
 	}
-	if failed, err := registry.seedEveryProject(ctx, registry.refused.held()); err != nil || len(failed) != 0 {
-		t.Errorf("a boot pass while the files stand answered %v and the failures %v, want neither", err, failed)
+	if seeded := r.seedPass(t, seeds); len(seeded) != 0 {
+		t.Errorf("a pass while both files stand seeded %v, want none", seeded)
 	}
-	load()
-	if opened.of("FILED") != 1 || opened.of("BYPASS") != 1 {
-		t.Errorf("while the files stand the passes opened %d seeds of FILED and %d of BYPASS, want the one of each that was refused",
-			opened.of("FILED"), opened.of("BYPASS"))
-	}
-
 	removeFile("BYPASS")
-	load()
-	if opened.of("BYPASS") != 2 || opened.of("FILED") != 1 {
-		t.Errorf("after BYPASS's file went the refresher's load opened %d seeds of BYPASS and %d of FILED, whose file stands; want a second of BYPASS alone",
-			opened.of("BYPASS"), opened.of("FILED"))
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"BYPASS"}) {
+		t.Errorf("the pass after BYPASS's file went seeded %v, want BYPASS alone, FILED's file standing", seeded)
 	}
 	removeFile("FILED")
-	if failed, err := registry.seedEveryProject(ctx, registry.refused.held()); err != nil || len(failed) != 0 {
-		t.Fatalf("the boot pass after FILED's file went answered %v and the failures %v", err, failed)
-	}
-	if opened.of("FILED") != 2 || len(registry.refused.held()) != 0 {
-		t.Errorf("after FILED's file went the boot pass opened %d seeds of it and %v are held refused, want a second seed and none held",
-			opened.of("FILED"), registry.refused.held())
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"FILED"}) || len(seeds.refused) != 0 {
+		t.Errorf("the pass after FILED's file went seeded %v and holds %v refused, want FILED seeded and none held", seeded, seeds.refused)
 	}
 	for _, project := range []string{"FILED", "BYPASS"} {
 		state := r.requireSeeded(t, project)

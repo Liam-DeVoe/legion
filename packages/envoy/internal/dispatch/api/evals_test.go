@@ -80,6 +80,7 @@ func checkEvalEnvelope(t *testing.T, what string, body []byte) int {
 type evalRefusal struct {
 	Code  string           `json:"code"`
 	Error string           `json:"error"`
+	Field string           `json:"field"`
 	Rows  []evals.RowError `json:"rows"`
 }
 
@@ -1152,14 +1153,14 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 }
 
 // TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged: each day row records the
-// writer that made it, and a computed eval's fold reads only the computation's rows (R3). An eval's
-// source turns from logged to computed in two ways, and in neither does the computed eval fold a
-// reading logged while it was logged, though no refresher has rewritten that day: the seed makes
-// computed deploy-frequency, which a reading registered as logged in a project made by SQL; and a
-// register write makes computed an eval a reading registered. Each then reads "no data" and lists
-// no day row, since the computation has written none, until the computation writes its own row of
-// the day, which the eval then folds alone, beside the readings write's row of the same eval,
-// series and day.
+// writer that made it, and a computed eval's fold reads only the computation's rows (R3). An
+// eval's source turns from logged to computed one way: the seed makes computed deploy-frequency,
+// which a reading registered as logged in a project made by SQL. A register write that names a
+// computed source is refused EVAL_FIELD_INVALID naming source and leaves its eval logged, since
+// only the catalogue makes an eval computed. The seeded eval then reads "no data" and lists no day
+// row, since the computation has written none, until the computation writes its own row of the
+// day, which the eval then folds alone, beside the readings write's row of the same eval, series
+// and day.
 func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
@@ -1197,20 +1198,21 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	}
 	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals",
 		map[string]any{"slug": "flip", "source": evals.SourceFoldDeployFrequency}, "flip-computed")
-	if registered.Code != http.StatusCreated {
-		t.Fatalf("make flip computed: status %d, body %s", registered.Code, registered.Body.String())
+	if refusal := decodeBody[evalRefusal](t, registered); registered.Code != http.StatusBadRequest || refusal.Code != evals.CodeFieldInvalid || refusal.Field != "source" {
+		t.Fatalf("a register write making flip computed: status %d, body %s; want 400 %s naming source", registered.Code, registered.Body.String(), evals.CodeFieldInvalid)
 	}
-	for _, slug := range []string{evals.SlugDeployFrequency, "flip"} {
-		series, days := deploys(slug)
-		since := "null"
-		if series.DataSince != nil {
-			since = *series.DataSince
-		}
-		t.Logf("%s, computed now: deploys %s, data since %s, %d day rows listed", slug, showFigure(series.Window["deploys"]), since, days)
-		if series.Window["deploys"] != nil || series.DataSince != nil || days != 0 {
-			t.Errorf("%s, computed now and with no row of the computation's, reads deploys %s from %s and lists %d day rows; want no data and no row",
-				slug, showFigure(series.Window["deploys"]), since, days)
-		}
+	if series, days := deploys("flip"); series.Window["value"] == nil || *series.Window["value"] != 500 || days != 1 {
+		t.Errorf("after the refused write flip reads %v and lists %d day rows; want it logged, with the reading's 500 and its day's row", series.Window, days)
+	}
+	series, days := deploys(evals.SlugDeployFrequency)
+	since := "null"
+	if series.DataSince != nil {
+		since = *series.DataSince
+	}
+	t.Logf("%s, computed now: deploys %s, data since %s, %d day rows listed", evals.SlugDeployFrequency, showFigure(series.Window["deploys"]), since, days)
+	if series.Window["deploys"] != nil || series.DataSince != nil || days != 0 {
+		t.Errorf("%s, computed now and with no row of the computation's, reads deploys %s from %s and lists %d day rows; want no data and no row",
+			evals.SlugDeployFrequency, showFigure(series.Window["deploys"]), since, days)
 	}
 
 	// The computation's own row of the day, as the refresher writes it: three deploys, two with
@@ -1221,7 +1223,7 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	`, today); err != nil {
 		t.Fatalf("write the computation's row of deploy-frequency: %v", err)
 	}
-	series, days := deploys(evals.SlugDeployFrequency)
+	series, days = deploys(evals.SlugDeployFrequency)
 	stored := countRows(t, database, `select count(*) from eval_days where eval_id = 'SQL/deploy-frequency' and repo = '' and day = $1`, today)
 	t.Logf("with the computation's row deploy-frequency reads deploys %s and lists %d day rows; the day holds %d rows of it", showFigure(series.Window["deploys"]), days, stored)
 	if series.Window["deploys"] == nil || *series.Window["deploys"] != 3 || days != 1 || stored != 2 {

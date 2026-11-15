@@ -101,22 +101,36 @@ type lowered struct {
 	before  *time.Time
 }
 
-// load seeds every project no seed has reached (UnseededProjects, Ensure: a project a command or
-// a fixture wrote by SQL while the server ran) and reads the projects and the delivery settings.
-// A project whose seed fails is logged and seeded again by the next pass, but one whose seed was
-// refused for its `evals-md` only once that artifact is a document (seedRefusals); its day rows
-// are written all the same, since a day row needs no definition.
-func (r *refresh) load(ctx context.Context) error {
-	unseeded, err := r.store.UnseededProjects(ctx)
-	if err != nil {
+// load reads the projects and the delivery settings and seeds the projects the pass owes a seed
+// (the seed's rules, seed.go): every project on the first pass of this process, so the catalogue
+// this build states reaches every project; on a later pass every project no seed has reached
+// (UnseededProjects: one a command or a fixture wrote by SQL while the server ran); and on every
+// pass each project whose seed failed before, and each whose seed was refused for its `evals-md`
+// once that artifact is a document (seedRefusals). A project whose seed fails is logged and seeded
+// again by the next pass; its day rows are written all the same, since a day row needs no
+// definition. seeds is the loop's, which each pass reads and moves.
+func (r *refresh) load(ctx context.Context, seeds *seeding) error {
+	var err error
+	if r.projects, err = r.store.Projects(ctx); err != nil {
 		return err
 	}
-	if unseeded, err = r.store.refused.pending(ctx, r.store.database.Pool, unseeded); err != nil {
+	r.known = map[string]bool{}
+	for _, project := range r.projects {
+		r.known[project] = true
+	}
+	owed := r.projects
+	if seeds.everyProject {
+		if owed, err = r.store.UnseededProjects(ctx); err != nil {
+			return err
+		}
+	}
+	if owed, err = seeds.refused.pending(ctx, r.store.database.Pool, slices.Concat(owed, seeds.owed())); err != nil {
 		return err
 	}
-	for _, project := range unseeded {
+	for _, project := range owed {
 		_, err := r.store.Ensure(ctx, project)
-		r.store.refused.note(project, err)
+		seeds.note(project, err)
+		r.report.seeded = append(r.report.seeded, project)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -125,13 +139,7 @@ func (r *refresh) load(ctx context.Context) error {
 				"project", project, "error", err)
 		}
 	}
-	if r.projects, err = r.store.Projects(ctx); err != nil {
-		return err
-	}
-	r.known = map[string]bool{}
-	for _, project := range r.projects {
-		r.known[project] = true
-	}
+	seeds.everyProject = true
 	return r.loadSettings(ctx)
 }
 

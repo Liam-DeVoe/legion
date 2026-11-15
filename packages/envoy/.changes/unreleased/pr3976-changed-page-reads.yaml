@@ -6,5 +6,5 @@ body: |-
   `issues_open_p0` serves the unowned-P0 count and the live hub's read of open P0 issues. The
   timeline reads each deploy run's production jobs by name and its failed jobs through the new
   partial index `delivery_run_jobs_failed`, rather than every job of every run. The lease pool
-  holds two more connections, for the eval seed and the day-row refresher, so a process opens 109
-  connections at most.
+  holds one more connection, for the day-row refresher, whose first pass in a process also seeds
+  every project's evals, so a process opens 108 connections at most.

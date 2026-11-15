@@ -27,20 +27,21 @@ var refresherNow = deliverytest.DefaultNow.Add(12 * time.Hour)
 var refresherToday = measures.Midnight(refresherNow)
 
 // refresherRig is one test's refresher over a database of its own: the registry rig, the event
-// horizon a pass reads the log through, the moment and the build its passes run as, and the days
-// a pass walks of each walk.
+// horizon a pass reads the log through, the moment and the build its passes run as, the days a
+// pass walks of each walk, and the seeds its passes keep, as the loop keeps them.
 type refresherRig struct {
 	rig
 	horizon *events.Horizon
 	now     time.Time
 	build   string
 	batch   int
+	seeds   *seeding
 }
 
 func newRefresherRig(t *testing.T) *refresherRig {
 	t.Helper()
 	r := newRig(t)
-	return &refresherRig{rig: r, horizon: events.NewHorizon(r.database.Pool), now: refresherNow, build: testBuild, batch: walkBatch}
+	return &refresherRig{rig: r, horizon: events.NewHorizon(r.database.Pool), now: refresherNow, build: testBuild, batch: walkBatch, seeds: &seeding{}}
 }
 
 // pass makes one refresher pass as of the rig's clock, under its build, and answers what it wrote
@@ -53,7 +54,7 @@ func (r *refresherRig) pass(t *testing.T) (refreshed, time.Time) {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 	report, next, err := r.registry.refresh(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }})
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds)
 	if err != nil {
 		t.Fatalf("the refresher's pass failed: %v", err)
 	}

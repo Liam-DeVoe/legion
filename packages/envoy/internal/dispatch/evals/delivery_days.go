@@ -751,7 +751,10 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 // slugs name, and its members of families, written as WriteProjectDay says. The stale rows it
 // zeroes are those of slugs alone and the stale members it deletes those of families alone, so
 // the delivery and the Legion writes of one day leave each other's rows and members as they are.
-// what names the rows in a refusal.
+// what names the rows in a refusal. Its transaction takes the change log's lock first
+// (delivery.LockChanges): its upsert logs a change under that lock and its later statements take
+// more rows' locks, which a writer of the same rows holding them would make it wait for, holding
+// the change log's lock that writer waits for.
 func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
 	date := measures.Midnight(day.Day)
 	evalIDs := make([]string, len(slugs))
@@ -775,6 +778,9 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 		return fmt.Errorf("begin the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	defer tx.Rollback(ctx)
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return err
+	}
 	if err := upsertDays(ctx, tx, day.Rows, builtBy); err != nil {
 		return err
 	}
@@ -818,7 +824,8 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 // `last` fold of a window reads its newest day's. A write that counts what the row holds keeps the
 // row's time, so it rewrites nothing (built_by aside) and logs no change: the refresher writes the
 // row on every change that can move the count, most of which move nothing. builtBy is the running
-// build.
+// build. Its transaction takes the change log's lock first (delivery.LockChanges), as every writer
+// of the day rows does.
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
 	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
 	if err != nil {
@@ -829,6 +836,9 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 		return fmt.Errorf("begin the unowned-p0 row of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return err
+	}
 	evalID, date := EvalID(project, SlugUnownedP0), measures.Midnight(day)
 	var now time.Time
 	var stored *float64

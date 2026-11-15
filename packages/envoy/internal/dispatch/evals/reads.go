@@ -29,8 +29,8 @@ type Range struct {
 	To   time.Time
 }
 
-// Projects is every project's key, in key order: the projects the refresher and the boot seed
-// walk, and the ones a cross-project read reads where its caller names none.
+// Projects is every project's key, in key order: the projects the refresher walks and seeds on
+// its first pass, and the ones a cross-project read reads where its caller names none.
 func (s *Store) Projects(ctx context.Context) ([]string, error) {
 	rows, err := s.database.Pool.Query(ctx, `select key from projects order by key`)
 	if err != nil {

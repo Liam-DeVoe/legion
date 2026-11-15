@@ -14,15 +14,15 @@ import (
 // shows and a target judges, a judge naming one as `<series>.<stat>`. They are folded from the
 // stored day rows of the range (DayWindow), never from the population again (R12):
 //
-//   - a computed eval through the one fold its source names (computedFolds), which is the fold the
-//     delivery and Legion routes answer through too (R7), so one rule has one statement;
+//   - a computed eval through the one fold its source names (computedSources), which is the fold
+//     the delivery and Legion routes answer through too (R7), so one rule has one statement;
 //   - a logged eval through each series' own fold, its agg (aggStatistics), since no function
 //     computes it.
 //
-// computedFolds is the one table from a source to its fold. Every eval of the seeded catalogue
-// names a source it holds, which init checks when the package starts, so a computed eval whose
-// fold is missing fails every binary and every test that links this package rather than reading
-// "no data" on a page.
+// computedSources is the one table keyed by a computed source: its fold and its headline. Every
+// eval of the seeded catalogue names a source it holds, with both, which init checks when the
+// package starts, so a computed eval whose fold or headline is missing fails every binary and
+// every test that links this package rather than reading "no data" on a page.
 
 // Statistics is one series' figures over one range, by name. A figure the range holds no value of
 // is nil: "no data", never 0.
@@ -33,35 +33,54 @@ type Statistics map[string]*float64
 // fold has no figure of answers an empty Statistics.
 type seriesFold func(parts []measures.DayPart, days Range, series []string) map[string]Statistics
 
-// computedFolds is each computed eval's fold, by its source: the exported function the source
-// names, read out as statistics.
-var computedFolds = map[string]seriesFold{
-	SourceFoldDeployFrequency:   oneSeries(measures.SeriesDeploys, deployFrequencyStatistics),
-	SourceFoldDeployRunSuccess:  oneSeries(measures.SeriesRuns, deployRunSuccessStatistics),
-	SourceFoldLeadTime:          oneSeries(measures.SeriesMinutes, leadTimeStatistics),
-	SourceFoldReworkShare:       oneSeries(measures.SeriesPRs, reworkShareStatistics),
-	SourceFoldChangeFailureRate: changeFailureRateStatistics,
-	SourceFoldTimeToRestore:     oneSeries(measures.SeriesMinutes, timeToRestoreStatistics),
-	SourceFoldTiming:            oneSeries(measures.SeriesMinutes, timingStatistics),
-	// unowned-p0's day row is the count at the day's last refresh, which delivery.CountUnownedP0
-	// counts by delivery.ListUnownedP0's rule; a window reads its newest day's, the `last` fold.
-	SourceListUnownedP0: oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
-		return aggStatistics(AggLast, parts, SeriesUnownedP0)
-	}),
-	SourceFoldWorkTime:  byCut(metrics.FoldWorkTime, workTimeStatistics),
-	SourceFoldPhaseTime: byCut(metrics.FoldPhaseTime, phaseTimeStatistics),
-	SourceFoldIdleTime:  byCut(metrics.FoldIdleTime, idleTimeStatistics),
-	SourceFoldSlotWait:  byCut(metrics.FoldSlotWait, slotWaitStatistics),
-	SourceFoldRework:    byCut(metrics.FoldRework, reworkStatistics),
-	SourceFoldSplitting: byCut(metrics.FoldSplitting, splittingStatistics),
+// computedSource is what a computed eval's source names in this package: the fold of its day
+// parts, the exported function the source names read out as statistics; and its headline, the
+// statistic it states a series by, given the series' name before its cut, which is one the fold
+// states of that series (TestEveryCatalogueSeriesIsStatedByItsHeadline holds each to it).
+type computedSource struct {
+	fold     seriesFold
+	headline func(series string) string
 }
 
-// Every catalogue eval's source has its fold: checked once, when the package starts.
+// computedSources is each computed eval's fold and headline, by its source.
+var computedSources = map[string]computedSource{
+	SourceFoldDeployFrequency:   {oneSeries(measures.SeriesDeploys, deployFrequencyStatistics), stated("per_day")},
+	SourceFoldDeployRunSuccess:  {oneSeries(measures.SeriesRuns, deployRunSuccessStatistics), stated("rate")},
+	SourceFoldLeadTime:          {oneSeries(measures.SeriesMinutes, leadTimeStatistics), stated("median")},
+	SourceFoldReworkShare:       {oneSeries(measures.SeriesPRs, reworkShareStatistics), stated("rate")},
+	SourceFoldChangeFailureRate: {changeFailureRateStatistics, stated("rate")},
+	SourceFoldTimeToRestore:     {oneSeries(measures.SeriesMinutes, timeToRestoreStatistics), stated("median")},
+	SourceFoldTiming:            {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
+	// unowned-p0's day row is the count at the day's last refresh, which delivery.CountUnownedP0
+	// counts by delivery.ListUnownedP0's rule; a window reads its newest day's, the `last` fold.
+	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
+		return aggStatistics(AggLast, parts, SeriesUnownedP0)
+	}), stated("value")},
+	SourceFoldWorkTime:  {byCut(metrics.FoldWorkTime, workTimeStatistics), stated("median")},
+	SourceFoldPhaseTime: {byCut(metrics.FoldPhaseTime, phaseTimeStatistics), stated("median_per_issue")},
+	SourceFoldIdleTime:  {byCut(metrics.FoldIdleTime, idleTimeStatistics), stated("median")},
+	SourceFoldSlotWait:  {byCut(metrics.FoldSlotWait, slotWaitStatistics), stated("median")},
+	SourceFoldRework: {byCut(metrics.FoldRework, reworkStatistics), func(series string) string {
+		if series == metrics.SeriesSentBack {
+			return "share"
+		}
+		return "median"
+	}},
+	SourceFoldSplitting: {byCut(metrics.FoldSplitting, splittingStatistics), func(series string) string {
+		if series == metrics.SeriesHoursWithChildren || series == metrics.SeriesHoursWithoutChildren {
+			return "median"
+		}
+		return "issues"
+	}},
+}
+
+// Every catalogue eval's source has its fold and its headline: checked once, when the package
+// starts.
 func init() {
 	for _, entry := range catalogue {
-		if _, held := computedFolds[entry.definition.Source]; !held {
+		if source, held := computedSources[entry.definition.Source]; !held || source.fold == nil || source.headline == nil {
 			panic("evals: the catalogue eval " + entry.definition.Slug + " names the source " +
-				entry.definition.Source + ", which no fold of computedFolds answers")
+				entry.definition.Source + ", for which computedSources holds no fold and headline")
 		}
 	}
 }
@@ -69,20 +88,21 @@ func init() {
 // FoldStatistics is the statistics of each of series over parts, the day parts of one range of
 // days of definition's eval (those of other evals are passed over): by the fold definition's
 // source names for a computed eval, by each series' agg for a logged one. A computed eval whose
-// source names no fold of this package (one a register write named) answers no figure. A figure
-// the fold leaves outside what a float holds has no value: each day row holds finite parts (the
-// readings write refuses a row that would not, CodeReadingDayOverflow), but the parts of a range
-// of days can still sum past the largest float, and no read could answer that figure.
+// source names no fold of this package (one an older build's catalogue seeded, under a source this
+// build no longer holds) answers no figure. A figure the fold leaves outside what a float holds
+// has no value: each day row holds finite parts (the readings write refuses a row that would not,
+// CodeReadingDayOverflow), but the parts of a range of days can still sum past the largest float,
+// and no read could answer that figure.
 func FoldStatistics(definition Definition, series []Series, parts []measures.DayPart, days Range) map[string]Statistics {
 	var folded map[string]Statistics
-	fold, held := computedFolds[definition.Source]
+	source, held := computedSources[definition.Source]
 	switch {
 	case definition.Computed() && held:
 		names := make([]string, len(series))
 		for index, one := range series {
 			names[index] = one.Series
 		}
-		folded = fold(parts, days, names)
+		folded = source.fold(parts, days, names)
 	case definition.Computed():
 		folded = make(map[string]Statistics, len(series))
 		for _, one := range series {
@@ -105,16 +125,16 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 }
 
 // HeadlineStatistic is the statistic series, one of definition's, is stated by where nothing
-// names one: the figure its fold leads with. A computed eval's fold names its own
-// (computedHeadlines), since each fold states statistics of its own, which its series' agg need
+// names one: the figure its fold leads with. A computed eval's source names its own
+// (computedSources), since each fold states statistics of its own, which its series' agg need
 // not name (deploy-frequency's `deploys` sums its days and states per_day, deploys, with_prs and
 // with_prs_per_day, no `sum`); a logged series' agg names it. An eval's target with no judges
 // judges its primary series' headline statistic.
 func HeadlineStatistic(definition Definition, series Series) string {
 	if definition.Computed() {
-		if headline, held := computedHeadlines[definition.Source]; held {
+		if source, held := computedSources[definition.Source]; held {
 			base, _ := metrics.SplitCutSeries(series.Series)
-			return headline(base)
+			return source.headline(base)
 		}
 	}
 	switch series.Agg {
@@ -130,36 +150,6 @@ func HeadlineStatistic(definition Definition, series Series) string {
 		return "mean"
 	}
 	return "value"
-}
-
-// computedHeadlines is each computed fold's headline statistic of a series, by the fold's source
-// and the series' name before its cut: a statistic the fold states of that series
-// (TestEveryCatalogueSeriesIsStatedByItsHeadline holds each to it).
-var computedHeadlines = map[string]func(series string) string{
-	SourceFoldDeployFrequency:   stated("per_day"),
-	SourceFoldDeployRunSuccess:  stated("rate"),
-	SourceFoldLeadTime:          stated("median"),
-	SourceFoldReworkShare:       stated("rate"),
-	SourceFoldChangeFailureRate: stated("rate"),
-	SourceFoldTimeToRestore:     stated("median"),
-	SourceFoldTiming:            stated("median"),
-	SourceListUnownedP0:         stated("value"),
-	SourceFoldWorkTime:          stated("median"),
-	SourceFoldPhaseTime:         stated("median_per_issue"),
-	SourceFoldIdleTime:          stated("median"),
-	SourceFoldSlotWait:          stated("median"),
-	SourceFoldRework: func(series string) string {
-		if series == metrics.SeriesSentBack {
-			return "share"
-		}
-		return "median"
-	},
-	SourceFoldSplitting: func(series string) string {
-		if series == metrics.SeriesHoursWithChildren || series == metrics.SeriesHoursWithoutChildren {
-			return "median"
-		}
-		return "issues"
-	},
 }
 
 // stated is the headline of a fold that leads every series with one statistic.

@@ -4,53 +4,50 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The seed writes the catalogue into a project (dispatch://INFRA-2916, R1 and R5): every computed
 // eval as version 1, written_via seed, with its series, and one section of the project's
-// `evals-md` per eval, whose method block the version's doc_block names. It runs at three places,
-// so every project holds the catalogue however it was made: at boot under SeedLease, for every
-// project (SeedEveryProject); in the transaction that creates a project through the API (api's
-// createProject, through EnsureTx); and on the refresher's pass, for a project that a command or
-// a fixture wrote by SQL while the server ran (UnseededProjects, then Ensure).
+// `evals-md` per eval, whose method block the version's doc_block names. It runs at two places,
+// so every project holds the catalogue however it was made: in the transaction that creates a
+// project through the API (api's createProject, through EnsureTx); and on the day-row refresher's
+// passes (refresh.load), which seed every project on the first pass of each process, so a
+// catalogue the release changed reaches every project, and on each later pass every project no
+// seed has reached (UnseededProjects: one a command or a fixture wrote by SQL while the server
+// ran), with each project whose seed failed (seeding).
 //
 // A seed that finds an eval of the catalogue already written writes a new version of it only
-// where the release changed what the catalogue states of it, its own fields (the name, the
-// question, the decision, the failure modes, the number rule, the unit, the direction, the kind,
-// the source) or its series, or where its section is gone. The change is read against the version
-// the seed last wrote, which holds every field the catalogue owns as that seed's build stated it,
-// so every version the seed writes takes all of them from the catalogue. A person cannot set one
-// of them on a computed eval (the register write refuses it, computationField). Every field a
-// person sets is carried forward from the newest version, so no such write is accepted and then
-// lost at the next boot (R5): the target, its inclusiveness and its judges, the owner role and
-// the person, the issue, the links, the state and what replaced it, and the doc block. A series
-// is read and written the same way, each on its own, its min_n and its links carried forward:
-// the catalogue states a series' min_n for its first version alone, as it states the target. A
-// method block that exists is never written: a person's edit of it stands. An eval whose doc
-// block the document no longer holds (no version yet, the block deleted, or the document gone)
-// gets a section at the end of the document, and a version naming that section's block.
-
-// SeedLease is the lease the boot pass seeds every project under (SeedEveryProject), so two
-// processes that boot together write each project's catalogue once.
-const SeedLease = "eval-seed"
-
-// seedRetry is how long the boot pass waits before it tries again, when another process held the
-// lease or a project's seed failed.
-const seedRetry = time.Minute
+// where the release changed what the catalogue states of it, its Computation or its series'
+// SeriesComputation, or where its section is gone. The change is read against the version the
+// seed last wrote, which holds every field the catalogue owns as that seed's build stated it, so
+// every version the seed writes takes all of them from the catalogue. A person cannot set one of
+// them on a computed eval (the register write refuses it, computationField). Every field a person
+// sets is carried forward from the newest version, so no such write is accepted and then lost at
+// the next boot (R5): the target, its inclusiveness and its judges, the owner role and the person,
+// the issue, the links, the state and what replaced it, and the doc block. A series is read and
+// written the same way, each on its own, its min_n carried forward: the catalogue states a series'
+// min_n for its first version alone, as it states the target. A method block that exists is never
+// written: a person's edit of it stands. An eval whose doc block the document no longer holds (no
+// version yet, the block deleted, or the document gone) gets a section at the end of the
+// document, and a version naming that section's block.
+//
+// An eval the seed takes over, one of the catalogue's slugs a reading or a register write
+// registered before any seed of its project (a project made by SQL, or a slug a later release adds
+// to the catalogue), holds what that registration defaulted where the catalogue states a value.
+// The seed takes the catalogue's target, its inclusiveness and its judges where no register write
+// wrote a version of the eval, since no person had a write in which to set them; and its method
+// where the eval's section still holds the sentence its registration wrote
+// (registrationSentence), which says no one has written one.
 
 // Seeded is what one seed of a project wrote: the versions of definitions, the versions of
 // series, the sections of `evals-md`, and whether the seed created the document. A seed that
@@ -60,11 +57,6 @@ type Seeded struct {
 	Series   int
 	Sections int
 	Created  bool
-}
-
-// wrote reports whether the seed wrote anything.
-func (s Seeded) wrote() bool {
-	return s.Versions+s.Series+s.Sections > 0
 }
 
 // Ensure writes the catalogue into project in a transaction of its own (the seed's rules above),
@@ -92,8 +84,10 @@ type PendingSeed struct {
 
 // EnsureTx writes the catalogue into project in tx, the transaction that created the project, so
 // the project and its evals commit together or not at all. ctx is the context the document
-// service's Join of tx returned, whose ledger the caller commits. Once tx has committed, the caller
-// calls Committed on the answer, and never when tx did not commit.
+// service's Join of tx returned, whose ledger the caller commits. tx took the change log's lock
+// first, before any other (delivery.LockChanges), as every registry write does (inWrite), since
+// the seed's versions log their changes under it. Once tx has committed, the caller calls
+// Committed on the answer, and never when tx did not commit.
 func (s *Store) EnsureTx(ctx context.Context, tx pgx.Tx, project string) (PendingSeed, error) {
 	w, err := openWrite(ctx, tx, project)
 	if err != nil {
@@ -115,8 +109,8 @@ func (p PendingSeed) Committed() {
 }
 
 // UnseededProjects is every project that holds no version the seed wrote, in key order: a project
-// made by SQL since the boot pass, which the refresher's pass seeds (Ensure). It is one statement,
-// whose probe of each project is an index range of eval_versions_project.
+// made by SQL since the refresher's first pass, which its later passes seed (refresh.load). It is
+// one statement, whose probe of each project is an index range of eval_versions_project.
 func (s *Store) UnseededProjects(ctx context.Context) ([]string, error) {
 	rows, err := s.database.Pool.Query(ctx, `
 		select p.key from projects p
@@ -135,79 +129,36 @@ func (s *Store) UnseededProjects(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-// SeedEveryProject is the boot pass: Ensure for every project, under SeedLease, which covers a
-// project made by SQL and a catalogue the release changed. Another process that holds the lease
-// is seeding with its own build's catalogue, so a pass that finds it held tries again after
-// seedRetry until a pass of its own runs. A pass in which a project's seed failed is followed
-// after seedRetry by one that seeds again the projects that failed, and those alone; a project
-// whose seed was refused for its `evals-md` is seeded again once that artifact is a document
-// (seedRefusals), which each such pass reads. It returns when ctx is done.
-func (s *Store) SeedEveryProject(ctx context.Context, leases duty.Leases) {
-	var owed []string
-	first := true
-	duty.RunWoken(ctx, duty.WokenLoop{
-		Lease:  SeedLease,
-		Leases: leases,
-		MinGap: seedRetry,
-		Pass: func(ctx context.Context) time.Time {
-			projects := owed
-			if first {
-				every, err := s.Projects(ctx)
-				if err != nil {
-					if ctx.Err() == nil {
-						slog.Warn("dispatch: the eval seed failed; it runs again", "error", err, "after", seedRetry)
-					}
-					return time.Now().Add(seedRetry)
-				}
-				projects = every
-			}
-			failed, err := s.seedEveryProject(ctx, slices.Concat(projects, s.refused.held()))
-			first, owed = false, failed
-			if err != nil && ctx.Err() == nil {
-				slog.Warn("dispatch: the eval seed failed; it runs again", "error", err, "after", seedRetry)
-			}
-			if len(owed) > 0 || len(s.refused.held()) > 0 {
-				return time.Now().Add(seedRetry)
-			}
-			return time.Time{}
-		},
-	})
+// seeding is what the refresher's loop keeps of its seeds from one pass to the next
+// (refresh.load): whether a pass of this process has seeded every project yet, the projects
+// whose seed failed, which the next pass seeds again, and those whose seed was refused for their
+// `evals-md` (seedRefusals). One goroutine runs the loop's passes, so it takes no lock.
+type seeding struct {
+	everyProject bool
+	failed       map[string]bool
+	refused      seedRefusals
 }
 
-// seedEveryProject is one pass of the boot seed: Ensure of each of projects in turn, each in a
-// transaction of its own, so one project's failure leaves the others seeded, passing over each
-// whose seed was refused for its `evals-md` while that artifact is still no document
-// (seedRefusals.pending). It answers the projects whose seed failed otherwise, which the next pass
-// seeds again, and every failure joined. A project no row holds any more is no failure to seed
-// again: its seed is refused PROJECT_NOT_FOUND, and so is every later one.
-func (s *Store) seedEveryProject(ctx context.Context, projects []string) ([]string, error) {
-	projects, err := s.refused.pending(ctx, s.database.Pool, projects)
-	if err != nil {
-		return nil, err
-	}
-	var failures []error
-	var failed []string
-	var total Seeded
-	written := 0
-	for _, project := range projects {
-		seeded, err := s.Ensure(ctx, project)
-		s.refused.note(project, err)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("seed the evals of %s: %w", project, err))
-			var refusal *Error
-			if !errors.As(err, &refusal) {
-				failed = append(failed, project)
-			}
-			continue
+// owed is the projects a pass seeds besides those it reads to seed: every one whose seed failed,
+// and every one whose seed was refused for its document, in key order.
+func (s *seeding) owed() []string {
+	return slices.Concat(slices.Sorted(maps.Keys(s.failed)), slices.Sorted(maps.Keys(s.refused)))
+}
+
+// note records what a seed of project answered: a refusal for its document is held (seedRefusals),
+// any other failure is seeded again by the next pass, and a project no row holds any more is no
+// failure to seed again, since its seed is refused PROJECT_NOT_FOUND, and so is every later one.
+func (s *seeding) note(project string, err error) {
+	s.refused.note(project, err)
+	var refusal *Error
+	if err != nil && !errors.As(err, &refusal) {
+		if s.failed == nil {
+			s.failed = map[string]bool{}
 		}
-		if seeded.wrote() {
-			written++
-		}
-		total.Versions, total.Series, total.Sections = total.Versions+seeded.Versions, total.Series+seeded.Series, total.Sections+seeded.Sections
+		s.failed[project] = true
+		return
 	}
-	slog.Info("dispatch: the eval seed ran", "projects", len(projects), "projects_written", written,
-		"versions", total.Versions, "series", total.Series, "sections", total.Sections, "failed", len(failures))
-	return failed, errors.Join(failures...)
+	delete(s.failed, project)
 }
 
 // seedRefusals is the projects whose seed was refused because their `evals-md` artifact is no
@@ -215,55 +166,39 @@ func (s *Store) seedEveryProject(ctx context.Context, projects []string) ([]stri
 // (ensure, existingDocument), so it refuses such a project again for as long as the artifact
 // stands, and only a person's write of the artifact moves it. A seed of such a project is
 // therefore not tried again while one read says the artifact is still no document (pending),
-// rather than once a minute by the boot pass and once a pass by the refresher, each a
-// transaction of about ten statements. The zero value holds none.
-type seedRefusals struct {
-	mu       sync.Mutex
-	projects map[string]bool
-}
+// rather than once a pass, each a transaction of about ten statements. The zero value holds none.
+type seedRefusals map[string]bool
 
 // note records what a seed of project answered: a refusal for its document is held, and any other
 // answer lets go of one.
 func (r *seedRefusals) note(project string, err error) {
 	var refusal *Error
-	refused := errors.As(err, &refusal) && refusal.Code == CodeDocumentNotDocument
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !refused {
-		delete(r.projects, project)
+	if !errors.As(err, &refusal) || refusal.Code != CodeDocumentNotDocument {
+		delete(*r, project)
 		return
 	}
-	if r.projects == nil {
-		r.projects = map[string]bool{}
+	if *r == nil {
+		*r = seedRefusals{}
 	}
-	r.projects[project] = true
-}
-
-// held is every project whose refusal is held, in key order.
-func (r *seedRefusals) held() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Sorted(maps.Keys(r.projects))
+	(*r)[project] = true
 }
 
 // pending is projects, each once and in their order, less each whose refusal is held and whose
 // `evals-md` is still no document, which one statement reads for all of them. A held project
 // whose artifact is a document now, or gone, is let go of and kept, so its seed runs again.
-func (r *seedRefusals) pending(ctx context.Context, pool *store.Pool, projects []string) ([]string, error) {
+func (r seedRefusals) pending(ctx context.Context, pool *store.Pool, projects []string) ([]string, error) {
 	seen := make(map[string]bool, len(projects))
 	var unique, held []string
-	r.mu.Lock()
 	for _, project := range projects {
 		if seen[project] {
 			continue
 		}
 		seen[project] = true
 		unique = append(unique, project)
-		if r.projects[project] {
+		if r[project] {
 			held = append(held, project)
 		}
 	}
-	r.mu.Unlock()
 	if len(held) == 0 {
 		return unique, nil
 	}
@@ -278,13 +213,11 @@ func (r *seedRefusals) pending(ctx context.Context, pool *store.Pool, projects [
 	if err != nil {
 		return nil, fmt.Errorf("read the %s artifacts of the projects whose seed was refused: %w", DocumentSlug, err)
 	}
-	r.mu.Lock()
 	for _, project := range held {
 		if !slices.Contains(still, project) {
-			delete(r.projects, project)
+			delete(r, project)
 		}
 	}
-	r.mu.Unlock()
 	return slices.DeleteFunc(unique, func(project string) bool { return slices.Contains(still, project) }), nil
 }
 
@@ -299,11 +232,12 @@ type seedWrite struct {
 // catalogue, in the catalogue's order, before it reads what the project holds, so a second seed
 // of the project, a register write and a readings write of one of those evals each wait for it
 // and then read what it wrote. It then reads the newest version of each eval, the version the seed
-// last wrote, the current series and the series as the seed last wrote them, and the blocks of
-// `evals-md`; writes the missing sections in one write of the document; and writes the versions.
-// The locks are one batch of statements and the versions another, each sent in one round trip
-// and run in the order it was queued: a project's first seed writes 20 versions and 95 of series,
-// which one statement each would make 115 round trips.
+// last wrote, the current series and the series as the seed last wrote them, of an eval it takes
+// over its first version and whether a register write wrote one, and the blocks of `evals-md`;
+// writes the missing sections and the methods it takes over in one write of the document; and
+// writes the versions. The locks are one batch of statements and the versions another, each sent
+// in one round trip and run in the order it was queued: a project's first seed writes 20 versions
+// and 95 of series, which one statement each would make 115 round trips.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	locks := &pgx.Batch{}
@@ -348,53 +282,77 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	if err != nil {
 		return Seeded{}, err
 	}
+	taken, err := readTakeovers(ctx, w, newest, lastSeeded)
+	if err != nil {
+		return Seeded{}, err
+	}
 	document, found, err := existingDocument(ctx, w)
 	if err != nil {
 		return Seeded{}, err
 	}
+	var markdown string
 	var blocks []model.ArtifactBlock
-	if found {
+	switch {
+	case found && len(taken.firsts) > 0:
+		if markdown, blocks, err = s.documents.TextWithBlocks(ctx, document.id); err != nil {
+			return Seeded{}, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, w.project, err)
+		}
+	case found:
 		if blocks, err = s.documents.Blocks(ctx, document.id); err != nil {
 			return Seeded{}, fmt.Errorf("read the blocks of the %s document of %s: %w", DocumentSlug, w.project, err)
 		}
 	}
 
 	var sections []string
+	var replaced []model.EditOp
 	var writes []seedWrite
 	for i, entry := range catalogue {
 		existing, has := newest[ids[i]]
 		last, seeded := lastSeeded[ids[i]]
 		missing := !has || !hasBlock(blocks, existing.DocBlock)
+		first, takeover := taken.firsts[ids[i]]
+		unwritten := takeover && !missing && holdsRegistrationSentence(markdown, blocks, existing.DocBlock, first)
 		series := seriesToWrite(ids[i], entry.series, current[ids[i]], seededSeries[ids[i]])
-		if has && seeded && !missing && len(series) == 0 && !catalogueChanged(entry.definition, last) {
+		if has && seeded && !missing && len(series) == 0 && entry.definition.Computation.same(last.Computation) {
 			continue
 		}
 		next := existing
 		if !has {
 			next = Definition{EvalID: ids[i], ProjectKey: w.project, Slug: entry.definition.Slug, State: StateActive, Links: []Link{}}
+		}
+		if !has || (takeover && !taken.registered[ids[i]]) {
 			next.Target, next.TargetInclusive, next.TargetJudges = entry.definition.Target, entry.definition.TargetInclusive, entry.definition.TargetJudges
 		}
-		takeCatalogueFields(&next, entry.definition)
-		if missing {
+		next.Computation = entry.definition.Computation
+		switch {
+		case missing:
 			next.DocBlock = uuid.NewString()
 			sections = append(sections, sectionMarkdown(entry.definition.Slug, next.DocBlock, entry.method()))
+		case unwritten:
+			next.DocBlock = uuid.NewString()
+			replaced = append(replaced,
+				model.EditOp{Op: "insert", After: "block:" + existing.DocBlock, Markdown: methodBlock(next.DocBlock, entry.method())},
+				model.EditOp{Op: "delete", Block: existing.DocBlock})
 		}
 		next.Version = existing.Version + 1
 		next.WrittenVia, next.WrittenBy = ViaSeed, RegistryActor
 		writes = append(writes, seedWrite{definition: next, series: series})
 	}
 
-	seeded := Seeded{Sections: len(sections), Created: !found}
+	seeded := Seeded{Sections: len(sections) + len(replaced)/2, Created: !found}
 	switch {
 	case !found:
 		if err := s.createDocument(ctx, w, strings.Join(sections, "\n"), RegistryActor); err != nil {
 			return Seeded{}, err
 		}
-	case len(sections) > 0:
+	case len(sections) > 0 || len(replaced) > 0:
 		if err := lockDocumentOwner(ctx, w, document); err != nil {
 			return Seeded{}, err
 		}
-		ops := []model.EditOp{{Op: "insert", After: "end", Markdown: strings.Join(sections, "\n")}}
+		ops := replaced
+		if len(sections) > 0 {
+			ops = append(ops, model.EditOp{Op: "insert", After: "end", Markdown: strings.Join(sections, "\n")})
+		}
 		if err := s.editDocument(ctx, w, document, ops, RegistryActor); err != nil {
 			return Seeded{}, err
 		}
@@ -430,53 +388,80 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	return seeded, nil
 }
 
-// catalogueChanged reports whether the catalogue states a field it owns otherwise than last, the
-// version the seed last wrote: whether the release changed the eval.
-func catalogueChanged(catalogue, last Definition) bool {
-	return catalogue.Name != last.Name || catalogue.Question != last.Question || catalogue.NumberRule != last.NumberRule ||
-		catalogue.Decision != last.Decision || !slices.Equal(catalogue.FailureModes, last.FailureModes) ||
-		catalogue.Unit != last.Unit || catalogue.Direction != last.Direction || catalogue.Kind != last.Kind ||
-		catalogue.Source != last.Source
+// takeovers is what a seed reads of the evals of the catalogue it takes over (the seed's rules
+// above), each by its id: its version 1, the registration whose defaults it holds, and whether a
+// register write wrote any version of it, in which a person could have set its target.
+type takeovers struct {
+	firsts     map[string]Definition
+	registered map[string]bool
 }
 
-// takeCatalogueFields writes into next every field the catalogue owns (catalogueChanged's).
-func takeCatalogueFields(next *Definition, catalogue Definition) {
-	next.Name, next.Question, next.NumberRule, next.Decision = catalogue.Name, catalogue.Question, catalogue.NumberRule, catalogue.Decision
-	next.FailureModes, next.Unit, next.Direction = catalogue.FailureModes, catalogue.Unit, catalogue.Direction
-	next.Kind, next.Source = catalogue.Kind, catalogue.Source
+// readTakeovers reads the takeovers of the evals newest holds a version of and lastSeeded none,
+// in two statements, and none where there are none, as on every seed of a project seeded before.
+func readTakeovers(ctx context.Context, w *writeTx, newest, lastSeeded map[string]Definition) (takeovers, error) {
+	var ids []string
+	for id := range newest {
+		if _, seeded := lastSeeded[id]; !seeded {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return takeovers{}, nil
+	}
+	firsts, err := readDefinitions(ctx, w.Tx, `
+		select `+definitionColumns+` from eval_versions where project_key = $1 and eval_id = any($2) and version = 1
+	`, w.project, ids)
+	if err != nil {
+		return takeovers{}, err
+	}
+	rows, err := w.Query(ctx, `
+		select distinct eval_id from eval_versions where project_key = $1 and eval_id = any($2) and written_via = $3
+	`, w.project, ids, ViaRegister)
+	if err != nil {
+		return takeovers{}, fmt.Errorf("read which taken-over evals of %s a register write wrote: %w", w.project, err)
+	}
+	written, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return takeovers{}, fmt.Errorf("read which taken-over evals of %s a register write wrote: %w", w.project, err)
+	}
+	registered := make(map[string]bool, len(written))
+	for _, id := range written {
+		registered[id] = true
+	}
+	return takeovers{firsts: firsts, registered: registered}, nil
+}
+
+// holdsRegistrationSentence reports whether the block id of the document whose markdown and
+// blocks these are still holds the sentence the registration of first, an eval's version 1 that a
+// reading or a register write wrote, put in its section (registrationSentence): no one has
+// written the eval's method since.
+func holdsRegistrationSentence(markdown string, blocks []model.ArtifactBlock, id string, first Definition) bool {
+	held, found := blockMethod(markdown, blocks, id)
+	return found && sameMethod(held, registrationSentence(first.WrittenVia, first.WrittenBy, first.CreatedAt))
 }
 
 // seriesToWrite is the versions of the series of eval id a seed writes: version 1 of each series
 // of the catalogue the eval does not hold, and the next version of each one the seed never wrote
-// or whose fields the catalogue states otherwise than the version the seed last wrote of it
-// (seeded), with every field of the catalogue's, and the min_n and the links the series holds
-// carried forward. A series the release did not change is left as it is, whatever a person set
-// on it since.
+// or whose SeriesComputation the catalogue states otherwise than the version the seed last wrote
+// of it (seeded), with every field of the catalogue's and the min_n the series holds carried
+// forward. A series the release did not change is left as it is, whatever a person set on it
+// since. The min_n a series holds is carried forward, so the version the seed last wrote may hold
+// a person's, which no catalogue change is read against.
 func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Series) []Series {
 	var writes []Series
 	for _, want := range catalogue {
 		existing, has := current[want.Series]
-		if last, wasSeeded := seeded[want.Series]; has && wasSeeded && !seriesChanged(want, last) {
+		if last, wasSeeded := seeded[want.Series]; has && wasSeeded && want.SeriesComputation.same(last.SeriesComputation) {
 			continue
 		}
 		next := want
-		next.EvalID, next.Version, next.Links = id, existing.Version+1, []Link{}
+		next.EvalID, next.Version = id, existing.Version+1
 		if has {
-			next.MinN, next.Links = existing.MinN, existing.Links
+			next.MinN = existing.MinN
 		}
 		writes = append(writes, next)
 	}
 	return writes
-}
-
-// seriesChanged reports whether the catalogue states a series otherwise than last, the version
-// the seed last wrote of it: every field the catalogue owns, which is every field but the
-// version's own, its min_n and its links. The min_n a series holds is carried forward
-// (seriesToWrite), so the version the seed last wrote may hold a person's, which no catalogue
-// change is read against.
-func seriesChanged(catalogue, last Series) bool {
-	return catalogue.Unit != last.Unit || catalogue.Role != last.Role || catalogue.IsPrimary != last.IsPrimary ||
-		catalogue.Listed != last.Listed || catalogue.Agg != last.Agg
 }
 
 // readDefinitions answers the definitions statement reads, by eval id.

@@ -396,9 +396,11 @@ type readingBody struct {
 }
 
 // parseRows decodes and checks every row of a batch, with no database read, and answers the
-// readings it decoded (each with a new id) beside every refusal it found. now is the write's
-// time, which bounds each row's measured_at. A row whose JSON cannot be decoded answers its
-// refusal and no reading worth storing.
+// readings it decoded beside every refusal it found. now is the write's time, which bounds each
+// row's measured_at. A row whose JSON cannot be decoded answers its refusal and no reading worth
+// storing. Each reading's id is a new UUIDv7, minted in the batch's order, so the ids of one
+// batch sort as its rows do: the order a day row's refold reads the readings of one write in
+// (standingParts), which is the order its append took them in.
 func parseRows(evalID string, raw []json.RawMessage, now time.Time) ([]Reading, []RowError) {
 	rows := make([]Reading, len(raw))
 	var refused []RowError
@@ -439,7 +441,7 @@ func parseRow(evalID string, index int, raw json.RawMessage, now time.Time) (Rea
 		return Reading{}, refused
 	}
 	reading := Reading{
-		ID: uuid.NewString(), EvalID: evalID, Series: body.Series, RowKey: body.RowKey, RowKind: body.RowKind,
+		ID: uuid.Must(uuid.NewV7()).String(), EvalID: evalID, Series: body.Series, RowKey: body.RowKey, RowKind: body.RowKind,
 		Col: body.Col, Value: body.Value, ValueAbsentReason: body.ValueAbsentReason, Unit: body.Unit, N: body.N,
 		NUnit: body.NUnit, CILow: body.CILow, CIHigh: body.CIHigh, CILevel: body.CILevel,
 		Attributes: body.Attributes, Source: body.Source, Note: body.Note, Links: []Link{},

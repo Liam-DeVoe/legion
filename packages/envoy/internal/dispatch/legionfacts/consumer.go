@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
@@ -424,12 +425,20 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // stored rows changed, the deleted keys among them, because a row that went is a change of the
 // stored facts as much as a row that moved. A failure leaves the cursors and the marks where they
 // were, so the next pass reads the same rows again.
+//
+// The transaction takes the change log's lock first (delivery.LockChanges): the rows' and the
+// filings' triggers log their changes under it, and the statements after the first that does
+// take more rows' locks, so taken by that first trigger it would be taken in the middle. The
+// pass's rows are computed before it begins, so it holds the lock for the writes alone.
 func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return nil, err
+	}
 	changed := []string{}
 	for _, project := range computed {
 		written, err := WriteProject(ctx, tx, project.facts)

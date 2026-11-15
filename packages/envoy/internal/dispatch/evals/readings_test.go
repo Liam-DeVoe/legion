@@ -529,16 +529,12 @@ func sameValue(got, want *float64) bool {
 }
 
 // TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow: a reading logged under a computed
-// eval's slug is stored and answered by the items read, its series registered unlisted, and no
-// day row of the computed eval moves.
+// eval's slug, the seed's deploy-frequency, is stored and answered by the items read, its series
+// registered unlisted, and no day row of the computed eval moves.
 func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 	r := newRig(t)
-	if _, err := r.registry.Register(t.Context(), Registration{
-		Project: r.project, Slug: "deploy-frequency", Caller: RegistryActor,
-		Kind: Set(KindDelivery), Source: Set("computed:delivery/measures.Compute"), Unit: Set("deploys/day"),
-		Series: []SeriesChange{{Series: "deploys", Agg: Set(AggSum)}},
-	}); err != nil {
-		t.Fatalf("register the computed eval: %v", err)
+	if _, err := r.registry.Ensure(t.Context(), r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
 	}
 	written := r.write(t, "deploy-frequency", alice, row(t, map[string]any{
 		"series": "manual-count", "row_kind": "day", "row_key": "2026-11-06", "value": 3, "measured_at": at(6, 18, 0),
@@ -570,26 +566,16 @@ func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T)
 	r := newRig(t)
 	evalID := EvalID(r.project, "review-load")
 	if _, err := r.registry.Register(t.Context(), Registration{
-		Project: r.project, Slug: "review-load", Caller: alice, Kind: Set(KindExperiment), Source: Set("computed:evals.ComputedForTheTest"),
+		Project: r.project, Slug: "review-load", Caller: alice, Kind: Set(KindExperiment),
 		Series: []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}},
 	}); err != nil {
-		t.Fatalf("register review-load as computed: %v", err)
+		t.Fatalf("register review-load: %v", err)
 	}
+	// Only the seed makes an eval computed, and no register write turns a computed eval logged
+	// (R5), so the two versions are written here as the store holds them.
+	r.setSource(t, evalID, "computed:evals.ComputedForTheTest")
 	unfolded := r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 7, "measured_at": at(5, 9, 0)})).Readings[0]
-	// A register write no longer turns a computed eval logged (R5: its source is its computation's,
-	// computationField), so the logged version a register write stored before that rule is written
-	// here as it stored one: the newest version with source logged.
-	if _, err := r.database.Pool.Exec(t.Context(), `
-		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
-			failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
-			source, state, replaced_by, links, written_via, written_by)
-		select eval_id, version + 1, project_key, slug, name, question, number_rule, decision, doc_block,
-			failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
-			$2, state, replaced_by, links, written_via, written_by
-		from evals_current where eval_id = $1
-	`, evalID, SourceLogged); err != nil {
-		t.Fatalf("make review-load logged: %v", err)
-	}
+	r.setSource(t, evalID, SourceLogged)
 	r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "b", "value": 7, "measured_at": at(5, 10, 0)}))
 	before := r.day(t, evalID, "minutes", "", at(5, 0, 0))
 	r.write(t, "review-load", alice, row(t, map[string]any{
@@ -601,6 +587,24 @@ func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T)
 		t.Errorf("after the correction of the unfolded reading the day holds n %d, samples %v; want 2, [2 7]", after.N, samples)
 	}
 	t.Logf("the day held samples %v before the correction and %v after it", before.Samples, samples)
+}
+
+// setSource writes the next version of evalID, the newest with source in place of its own, as the
+// seed writes a computed one over a slug a reading registered, and as a register write stored a
+// logged one before R5's rule.
+func (r rig) setSource(t *testing.T, evalID, source string) {
+	t.Helper()
+	if _, err := r.database.Pool.Exec(t.Context(), `
+		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
+			failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
+			source, state, replaced_by, links, written_via, written_by)
+		select eval_id, version + 1, project_key, slug, name, question, number_rule, decision, doc_block,
+			failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
+			$2, state, replaced_by, links, written_via, written_by
+		from evals_current where eval_id = $1
+	`, evalID, source); err != nil {
+		t.Fatalf("make %s %s: %v", evalID, source, err)
+	}
 }
 
 // TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand: one batch correcting a
@@ -628,25 +632,9 @@ func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *
 		reading("minutes", 5, at(6, 9, 0), "acme/api", ""),
 	).Readings
 	evalID := EvalID(r.project, "build-minutes")
-	// The newest version again with another source, as the seed writes a computed one over a slug
-	// a reading registered, and as a register write stored a logged one before R5's rule.
-	setSource := func(source string) {
-		t.Helper()
-		if _, err := r.database.Pool.Exec(t.Context(), `
-			insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
-				failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
-				source, state, replaced_by, links, written_via, written_by)
-			select eval_id, version + 1, project_key, slug, name, question, number_rule, decision, doc_block,
-				failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
-				$2, state, replaced_by, links, written_via, written_by
-			from evals_current where eval_id = $1
-		`, evalID, source); err != nil {
-			t.Fatalf("make build-minutes %s: %v", source, err)
-		}
-	}
-	setSource("computed:evals.ComputedForTheTest")
+	r.setSource(t, evalID, "computed:evals.ComputedForTheTest")
 	r.write(t, "build-minutes", alice, reading("minutes", 100, at(5, 11, 0), "", ""))
-	setSource(SourceLogged)
+	r.setSource(t, evalID, SourceLogged)
 	r.write(t, "build-minutes", alice, reading("minutes", 6, at(6, 10, 0), "acme/web", ""))
 	r.write(t, "build-minutes", alice,
 		reading("minutes", 10, at(4, 9, 0), "acme/api", first[0].ID),
@@ -676,4 +664,53 @@ func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *
 				got.N, got.Samples, want.samples)
 		}
 	}
+}
+
+// TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection: a batch whose two readings of a day are
+// measured at one moment leaves the later of the two in the batch as the day's last, and the day's
+// samples in the batch's order. A later correction of a third reading of the day folds the day
+// again from the readings that stand, which keeps that last and that order: the fold reads the
+// standing readings in the order they were written, a batch's in its own order, never in an
+// order a tie leaves to chance. Each of 24 days holds such a tie, so an order that chance decides
+// keeps every day's last with a chance of one in 2^24.
+func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
+	r := newRig(t)
+	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
+	reading := func(key string, value float64, measured time.Time, replaces string) json.RawMessage {
+		fields := map[string]any{"series": "depth", "row_kind": "queue", "row_key": key, "value": value, "measured_at": measured}
+		if replaces != "" {
+			fields["replaces"] = replaces
+		}
+		return row(t, fields)
+	}
+	const days = 24
+	var tied []json.RawMessage
+	for day := 1; day <= days; day++ {
+		tied = append(tied,
+			reading(fmt.Sprintf("a-%d", day), 1, on(day, 9), ""),
+			reading(fmt.Sprintf("b-%d", day), 2, on(day, 9), ""),
+			reading(fmt.Sprintf("c-%d", day), 3, on(day, 8), ""))
+	}
+	written := r.write(t, "queue-depth", alice, tied...)
+	evalID := written.Definition.EvalID
+	check := func(when string, samples []float64) {
+		t.Helper()
+		flipped := 0
+		for day := 1; day <= days; day++ {
+			got := r.day(t, evalID, "depth", "", on(day, 0))
+			if got.LastValue == nil || *got.LastValue != 2 || !got.LastAt.Equal(on(day, 9)) || !slices.Equal(got.Samples, samples) {
+				flipped++
+				t.Errorf("%s, the row of %s holds last %s at %v and samples %v; want the batch's later reading at 09:00, 2, and samples %v",
+					when, on(day, 0).Format(time.DateOnly), showValue(got.LastValue), got.LastAt, got.Samples, samples)
+			}
+		}
+		t.Logf("%s: %d of %d days hold another last or order", when, flipped, days)
+	}
+	check("after the batch", []float64{1, 2, 3})
+	var corrections []json.RawMessage
+	for day := 1; day <= days; day++ {
+		corrections = append(corrections, reading(fmt.Sprintf("c-%d", day), 4, on(day, 8), written.Readings[3*(day-1)+2].ID))
+	}
+	r.write(t, "queue-depth", alice, corrections...)
+	check("after the correction", []float64{1, 2, 4})
 }

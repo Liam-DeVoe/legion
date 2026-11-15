@@ -3,6 +3,7 @@ package evals
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -208,15 +209,14 @@ func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
 	versionChanges := func(after int64) int {
 		return r.count(t, `select count(*) from delivery_changes where seq > $1 and kind = 'eval_versions' and repo = $2 and ref = $3`, after, r.project, evalID)
 	}
-	minN := 5
 	for _, write := range []struct {
 		what    string
 		wrote   bool
 		changes int
-	}{{"min_n set", true, 1}, {"min_n set again", false, 0}} {
+	}{{"unit set", true, 1}, {"unit set again", false, 0}} {
 		seq := head()
 		registered, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice,
-			Series: []SeriesChange{{Series: "minutes", MinN: Set(&minN)}}})
+			Series: []SeriesChange{{Series: "minutes", Unit: Set("minutes")}}})
 		if err != nil {
 			t.Fatalf("%s: %v", write.what, err)
 		}
@@ -233,8 +233,9 @@ func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
 // its code (R5). A register write of deploy frequency that names a field of its computation, each
 // in a write of its own beside a target, is refused EVAL_FIELD_COMPUTED naming that field as the
 // body spells it, and stores nothing: no version and no series version. One write of every field
-// a person sets on it is stored: its target, inclusiveness and judges, its series' min_n, the
-// owner role, person, issue, links and state, and its method. A logged eval takes every field.
+// a person sets on it is stored: its target, inclusiveness and judges, the owner role, person,
+// issue, links and state, and its method; and the min_n of pr-ci's job series, the one series min_n
+// is taken on (TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy). A logged eval takes every field.
 func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -291,18 +292,21 @@ func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T
 		Target: Set(&target), TargetInclusive: Set(true), TargetJudges: Set([]string{deploys + ".per_day"}),
 		OwnerRole: Set("implementer"), Person: Set("alice"), IssueKey: Set("EVAL-1"), Links: Set(link),
 		State: Set(StateActive), DocText: Set("Alice's method: count the deploys."),
-		Series: []SeriesChange{{Series: deploys, MinN: Set(&minN)}},
 	})
 	if err != nil {
 		t.Fatalf("a write of the fields a person sets on %s: %v", evalID, err)
 	}
-	held := map[string]Series{}
-	for _, one := range person.Series {
-		held[one.Series] = one
-	}
 	if definition := person.Definition; !person.Wrote || definition.Target == nil || *definition.Target != target || !definition.TargetInclusive ||
-		definition.Person != "alice" || definition.IssueKey != "EVAL-1" || len(definition.Links) != 1 || held[deploys].MinN == nil || *held[deploys].MinN != minN {
-		t.Errorf("the write of a person's fields left %+v with %s at min_n %s, want alice's target, owner, issue, link and min_n", definition, deploys, showMinN(held[deploys].MinN))
+		definition.Person != "alice" || definition.IssueKey != "EVAL-1" || len(definition.Links) != 1 {
+		t.Errorf("the write of a person's fields left %+v, want alice's target, owner, issue and link", definition)
+	}
+	ranked, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugPRCI, Caller: alice,
+		Series: []SeriesChange{{Series: SeriesJobs, MinN: Set(&minN)}}})
+	if err != nil {
+		t.Fatalf("a write of the min_n of %s's job series: %v", SlugPRCI, err)
+	}
+	if jobs := ranked.Series[slices.IndexFunc(ranked.Series, func(one Series) bool { return one.Series == SeriesJobs })]; jobs.MinN == nil || *jobs.MinN != minN {
+		t.Errorf("the write of %s's job series' min_n left min_n %s, want %d", SlugPRCI, showMinN(jobs.MinN), minN)
 	}
 
 	if _, err := r.registry.Register(ctx, Registration{
@@ -372,6 +376,133 @@ func TestALinkWhoseHrefIsNoHTTPURLIsRefused(t *testing.T) {
 		"links": []any{map[string]any{"rel": "via", "href": "HTTPS://CI.EXAMPLE/runs/1"}}}))
 	if links := written.Readings[0].Links; len(links) != 1 || links[0].Href != "HTTPS://CI.EXAMPLE/runs/1" {
 		t.Errorf("a reading linking an https URL in capitals stored the links %+v, want it as written", links)
+	}
+}
+
+// TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy: min_n is the fewest timed results a job needs
+// before it is ranked among pr-ci's slowest jobs (R5), and no other read ranks a series by it. A
+// register write of a min_n on any other series, of a computed eval or of a logged one, is refused
+// EVAL_FIELD_INVALID naming that series' min_n, and stores nothing; the one of pr-ci's job series
+// is stored, and the readers of it read it.
+func TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: "review-time", Caller: alice, Name: Set("Review time"),
+		Series: []SeriesChange{{Series: "minutes"}}}); err != nil {
+		t.Fatalf("register review-time: %v", err)
+	}
+	minN := 4
+	for _, test := range []struct {
+		slug   string
+		series []SeriesChange
+		field  string
+	}{
+		{SlugDeployFrequency, []SeriesChange{{Series: measures.SeriesDeploys, MinN: Set(&minN)}}, "series[0].min_n"},
+		{SlugMergeToProduction, []SeriesChange{{Series: measures.SeriesMinutes, MinN: Set[*int](nil)}}, "series[0].min_n"},
+		{SlugPRCI, []SeriesChange{{Series: SeriesJobs, MinN: Set(&minN)}, {Series: measures.SeriesMinutes, MinN: Set(&minN)}}, "series[1].min_n"},
+		{"review-time", []SeriesChange{{Series: "minutes", MinN: Set(&minN)}}, "series[0].min_n"},
+		{"review-time", []SeriesChange{{Series: "minutes", MinN: Set[*int](nil)}}, "series[0].min_n"},
+	} {
+		evalID := EvalID(r.project, test.slug)
+		before := r.count(t, `select count(*) from eval_series where eval_id = $1`, evalID)
+		_, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: test.slug, Caller: alice, Series: test.series})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != test.field {
+			t.Errorf("a min_n on %s's %s was answered %v (%+v), want %s naming %s", test.slug, test.field, err, refused, CodeFieldInvalid, test.field)
+			continue
+		}
+		if after := r.count(t, `select count(*) from eval_series where eval_id = $1`, evalID); after != before {
+			t.Errorf("the refused min_n on %s moved its series versions from %d to %d", test.slug, before, after)
+		}
+		t.Logf("refused %s on %s: %s", refused.Field, test.slug, refused.Message)
+	}
+	ranked, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugPRCI, Caller: alice,
+		Series: []SeriesChange{{Series: SeriesJobs, MinN: Set(&minN)}}})
+	if err != nil {
+		t.Fatalf("a min_n on pr-ci's job series: %v", err)
+	}
+	jobs := ranked.Series[slices.IndexFunc(ranked.Series, func(one Series) bool { return one.Series == SeriesJobs })]
+	if !ranked.Wrote || jobs.MinN == nil || *jobs.MinN != minN {
+		t.Errorf("a min_n of %d on pr-ci's job series wrote %t and left min_n %s, want it stored", minN, ranked.Wrote, showMinN(jobs.MinN))
+	}
+}
+
+// TestARegisterWriteMakesNoEvalComputed: a computed eval is the catalogue's, which the seed
+// writes; a register write that names a computed source, the catalogue's own or any other, of an
+// eval a reading registered or of one it registers, is refused EVAL_FIELD_INVALID naming source,
+// and stores nothing, so no logged eval is made computed and left reading "no data" for good. A
+// write of source logged is taken.
+func TestARegisterWriteMakesNoEvalComputed(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "value": 4, "measured_at": at(4, 9, 0)}))
+	for _, test := range []struct{ slug, source string }{
+		{"build-minutes", SourceFoldDeployFrequency},
+		{"build-minutes", "computed:evals.Invented"},
+		{"new-computed", SourceFoldTiming},
+	} {
+		evalID := EvalID(r.project, test.slug)
+		before := r.count(t, `select count(*) from eval_versions where eval_id = $1`, evalID)
+		_, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: test.slug, Caller: alice, Source: Set(test.source)})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != "source" {
+			t.Errorf("source %s on %s was answered %v (%+v), want %s naming source", test.source, test.slug, err, refused, CodeFieldInvalid)
+			continue
+		}
+		if after := r.count(t, `select count(*) from eval_versions where eval_id = $1`, evalID); after != before {
+			t.Errorf("the refused source on %s moved its versions from %d to %d", test.slug, before, after)
+		}
+		t.Logf("refused source %s on %s: %s", test.source, test.slug, refused.Message)
+	}
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: "build-minutes", Caller: alice, Source: Set(SourceLogged)}); err != nil {
+		t.Errorf("source logged on a logged eval: %v", err)
+	}
+	if definition, _ := r.currentOf(t, "build-minutes"); definition.Computed() {
+		t.Errorf("build-minutes reads source %s, want it logged", definition.Source)
+	}
+}
+
+// TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows: a logged series registered unlisted keeps
+// its readings' day rows unlisted, and a register write that lists it lists every day row it
+// holds, the project's and a repository's, in its own transaction, so a window that spans the
+// change folds every day of it, not only those written after; unlisting it again unlists them all.
+func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	slug := "queue-depth"
+	evalID := EvalID(r.project, slug)
+	list := func(listed bool) {
+		t.Helper()
+		if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: slug, Caller: alice, Name: Set("Queue depth"),
+			Series: []SeriesChange{{Series: "depth", Listed: Set(listed)}}}); err != nil {
+			t.Fatalf("list depth %t: %v", listed, err)
+		}
+	}
+	reading := func(key string, day int) json.RawMessage {
+		return row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": key, "value": float64(day), "measured_at": at(day, 9, 0),
+			"attributes": map[string]any{"repo": "acme/web"}})
+	}
+	list(false)
+	r.write(t, slug, alice, reading("a", 4), reading("b", 5))
+	list(true)
+	r.write(t, slug, alice, reading("c", 6))
+	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
+	for _, repos := range [][]string{nil, {"acme/web"}} {
+		days, err := r.registry.DayWindow(ctx, []string{r.project}, r.entries(t, evalID), repos, window, nil)
+		if err != nil {
+			t.Fatalf("read the window of %v: %v", repos, err)
+		}
+		t.Logf("the window of %v reads %v", repos, dayLabels(days))
+		if len(days) != 3 {
+			t.Errorf("the window of %v, which spans the listing, reads %v, want the rows of the 4th, 5th and 6th", repos, dayLabels(days))
+		}
+	}
+	list(false)
+	if listed := r.count(t, `select count(*) from eval_days where eval_id = $1 and listed`, evalID); listed != 0 {
+		t.Errorf("%d day rows of depth are listed after it was unlisted, want none", listed)
 	}
 }
 

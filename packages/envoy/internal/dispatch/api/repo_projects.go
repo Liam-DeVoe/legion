@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -260,6 +261,10 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 // the mapping as it stands under them (nil when repo has none). projects are the projects the write
 // may put the mapping in.
 //
+//   - the change log's lock (delivery.LockChanges): the mapping's trigger logs a settings change
+//     under it (migration 20261113170752), and the write's later statements, a default switch of
+//     other mappings and the events, would otherwise run after it, so it is taken first, as every
+//     writer of several statements that logs a change takes it;
 //   - repo's own advisory lock, which every writer of the mapping takes whether or not its row
 //     exists yet, so the mapping's project and its existence hold still from here on (a default
 //     switch in its project may still clear its is_default until the project lock below is held,
@@ -272,9 +277,12 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //     refuseRepoProjectInUse reads after it holds until the write commits.
 //
 // An issue create locks its project before the mapping too (createIssue), so the two never wait on
-// each other in a circle. Every writer of a mapping goes through here: the PUT, the DELETE and the
-// boot seed (SeedRepoProjects).
+// each other in a circle, and no issue write takes the change log's lock. Every writer of a
+// mapping goes through here: the PUT, the DELETE and the boot seed (SeedRepoProjects).
 func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))
 	`, repo); err != nil {

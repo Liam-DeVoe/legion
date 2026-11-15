@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -19,13 +20,11 @@ import (
 // Store is the registry over one Dispatch database. Its writes join the document service's
 // transaction (docs.API.Join), so the sections they write to `evals-md` commit with their rows,
 // and append the documents' events through the server's broker, which publishes them once the
-// transaction has committed. refused is the projects whose seed was refused for their `evals-md`
-// (seedRefusals), which the boot seed and the refresher's seed share.
+// transaction has committed.
 type Store struct {
 	database  *store.Store
 	documents docs.API
 	events    *events.Broker
-	refused   seedRefusals
 }
 
 // New is the registry over database, writing `evals-md` through documents and its events
@@ -59,10 +58,18 @@ type writeTx struct {
 	settle      []string
 }
 
-// inWrite runs fn in one transaction joined with the document service, after reading the
-// project (refused PROJECT_NOT_FOUND when there is none), and commits through the ledger, so the
-// document writes fn makes commit with its rows or not at all. ctx, as fn receives it, is the
-// context Join returned.
+// inWrite runs fn in one transaction joined with the document service, after taking the change
+// log's lock and reading the project (refused PROJECT_NOT_FOUND when there is none), and commits
+// through the ledger, so the document writes fn makes commit with its rows or not at all. ctx, as
+// fn receives it, is the context Join returned.
+//
+// Every registry write logs a change through the change log (its versions, readings and day rows
+// each fire a trigger of delivery_change_log), whose lock it then holds to its commit. It takes
+// that lock first, before the eval's lock, a reading's or a day row's lock or the `evals-md`
+// document's, as every writer of the registry and of the day rows does (delivery.LockChanges): a
+// writer that took it in the middle of its transaction, after a lock another writer holds while it
+// waits for this one, would wait on that writer in a cycle. So the change log's lock is held for
+// the whole of the write.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")
@@ -72,6 +79,9 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 		return fmt.Errorf("begin the eval write: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return err
+	}
 	documentCtx, ledger := s.documents.Join(ctx, tx)
 	defer ledger.Discard()
 	w, err := openWrite(ctx, tx, project)

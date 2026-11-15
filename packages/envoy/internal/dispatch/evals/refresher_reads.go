@@ -351,13 +351,17 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 }
 
 // insertZeroRows writes each of rows that no stored row has the key of (insertMissingDays), in one
-// transaction, as the pass's build.
+// transaction, as the pass's build, after the change log's lock (delivery.LockChanges): the
+// insert logs the rows it adds under that lock, which every writer of the day rows takes first.
 func (r *refresh) insertZeroRows(ctx context.Context, rows []DayRow) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the zero rows of %s: %w", rows[0].ProjectKey, err)
 	}
 	defer tx.Rollback(ctx)
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return err
+	}
 	if err := insertMissingDays(ctx, tx, rows, r.build); err != nil {
 		return err
 	}
@@ -381,6 +385,11 @@ func (r *refresh) insertZeroRows(ctx context.Context, rows []DayRow) error {
 // to the next one's (lead), and after its newest row the days up to today: so it generates and
 // probes the missing days alone, where the whole span from the first day would cost a probe of
 // every day the series holds on every readings write that reaches it.
+//
+// The statement runs in a transaction that takes the change log's lock first
+// (delivery.LockChanges), as the readings write does: the insert takes the rows' locks and then
+// its trigger the change log's, so taken in the trigger it would wait, holding a row a readings
+// write of the same day waits for, on a readings write that holds the change log's lock.
 func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
 	logged := `select eval_id from evals_current where project_key = $1 and source = $2`
 	args := []any{project, SourceLogged, r.today, r.build, writerReadings}
@@ -388,7 +397,15 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 		logged += ` and eval_id = any($6)`
 		args = append(args, ids)
 	}
-	tag, err := r.store.database.Pool.Exec(ctx, `
+	tx, err := r.store.database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin the zero rows of %s's logged evals: %w", project, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := delivery.LockChanges(ctx, tx); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, samples, built_by)
 		select stored.project_key, stored.eval_id, $5::text, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
 		from (
@@ -406,6 +423,9 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 	`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit the zero rows of %s's logged evals: %w", project, err)
 	}
 	return tag.RowsAffected(), nil
 }

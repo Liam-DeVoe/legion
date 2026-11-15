@@ -157,13 +157,14 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 		panic("evals: RefresherDeps.Build is empty, and the refresher needs the build this process is")
 	}
 	ctx = store.WithTransactionTracking(ctx)
+	seeds := &seeding{}
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  RefresherLease,
 		Leases: deps.Leases,
 		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Deliveries),
 		MinGap: sched.gap,
 		Pass: func(ctx context.Context) time.Time {
-			report, next, err := s.refresh(ctx, deps, sched)
+			report, next, err := s.refresh(ctx, deps, sched, seeds)
 			if err != nil && ctx.Err() == nil {
 				slog.Warn("dispatch: the eval day-row refresher's pass failed", "error", err)
 				next = time.Now().Add(sched.gap)
@@ -171,8 +172,8 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 			if ctx.Err() != nil {
 				return time.Time{}
 			}
-			if len(report.days) > 0 {
-				slog.Debug("dispatch: eval day rows refreshed", "days", len(report.days))
+			if len(report.days) > 0 || len(report.seeded) > 0 {
+				slog.Debug("dispatch: eval day rows refreshed", "days", len(report.days), "projects_seeded", len(report.seeded))
 			}
 			return next
 		},
@@ -180,10 +181,12 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 }
 
 // refreshed is what one pass wrote: each family's day of each project it built and wrote, which is
-// what a check of which days a change touches reads. The unowned-p0 row of today is recorded under
-// its slug, and a logged eval's zero fill under walkLogged and the day it filled through.
+// what a check of which days a change touches reads, and each project whose seed it ran, in the
+// order it ran them. The unowned-p0 row of today is recorded under its slug, and a logged eval's
+// zero fill under walkLogged and the day it filled through.
 type refreshed struct {
-	days map[builtDay]bool
+	days   map[builtDay]bool
+	seeded []string
 }
 
 // builtDay is one project's day of one family a pass wrote.
@@ -203,12 +206,13 @@ func (r refreshed) sorted() []string {
 	return lines
 }
 
-// refresh is one pass: it seeds the projects no seed has reached, reads page after page of the two
-// feeds until one comes back short and writes the days each names, makes a batch of each walk,
-// prunes the change log, and answers what it wrote and when the loop should run again.
-func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule) (refreshed, time.Time, error) {
+// refresh is one pass: it seeds the projects it owes a seed (refresh.load, with seeds, the loop's
+// own), reads page after page of the two feeds until one comes back short and writes the days
+// each names, makes a batch of each walk, prunes the change log, and answers what it wrote and
+// when the loop should run again.
+func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
-	if err := r.load(ctx); err != nil {
+	if err := r.load(ctx, seeds); err != nil {
 		return r.report, time.Time{}, err
 	}
 	safe, err := deps.Horizon.SafeOrAwait(ctx)

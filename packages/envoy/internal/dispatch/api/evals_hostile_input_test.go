@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
 // The tester's rows for INFRA-2916: inputs a careless or hostile agent can send to the eval
@@ -216,10 +218,12 @@ func TestAWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 }
 
 // TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField: a series' min_n is a whole number the
-// register write takes on a computed eval and a logged one alike (R5), and the store holds it as
-// a 32-bit integer. A min_n past 2,147,483,647 is refused with a stable {code, error} and stores
-// no version, as a min_n below 0 is, rather than reaching the store and answering 500; the largest
-// value the store holds is still taken.
+// register write takes on pr-ci's job series (R5), the one series a read ranks by one, and the
+// store holds it as a 32-bit integer. A min_n past 2,147,483,647 is refused with a stable {code,
+// error} and stores no version, as a min_n below 0 is, rather than reaching the store and
+// answering 500; the largest value the store holds is still taken. A logged eval's series is ranked
+// by no read, so any min_n on it, the largest the store holds included, is refused
+// EVAL_FIELD_INVALID naming the series' min_n.
 func TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
@@ -228,7 +232,10 @@ func TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField(t *testing.T) {
 	if logged.Code != http.StatusCreated {
 		t.Fatalf("register logged-min-n: status %d, body %s", logged.Code, logged.Body.String())
 	}
-	for _, eval := range []struct{ slug, series string }{{"pr-ci", "job:*"}, {"logged-min-n", "value"}} {
+	for _, eval := range []struct {
+		slug, series string
+		ranked       bool
+	}{{"pr-ci", "job:*", true}, {"logged-min-n", "value", false}} {
 		versions := func() int64 {
 			return countRows(t, database, `select count(*) from eval_series where eval_id = $1 and series = $2`, "EVL/"+eval.slug, eval.series)
 		}
@@ -242,11 +249,16 @@ func TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField(t *testing.T) {
 				t.Errorf("%s's refused min_n %d wrote versions of %s: %d before, %d after", eval.slug, minN, eval.series, before, after)
 			}
 		}
+		before := versions()
 		held := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals", map[string]any{
 			"slug": eval.slug, "series": []any{map[string]any{"series": eval.series, "min_n": 2147483647}},
 		}, eval.slug+"-min-n-largest")
-		if held.Code != http.StatusCreated {
+		switch refusal := decodeBody[evalRefusal](t, held); {
+		case eval.ranked && held.Code != http.StatusCreated:
 			t.Errorf("%s's series %s with min_n 2147483647: status %d, body %.300s; want 201", eval.slug, eval.series, held.Code, held.Body.String())
+		case !eval.ranked && (held.Code != http.StatusBadRequest || refusal.Code != evals.CodeFieldInvalid || refusal.Field != "series[0].min_n" || versions() != before):
+			t.Errorf("%s's series %s with min_n 2147483647: status %d, body %.300s, versions %d to %d; want 400 %s naming series[0].min_n and no version",
+				eval.slug, eval.series, held.Code, held.Body.String(), before, versions(), evals.CodeFieldInvalid)
 		}
 	}
 }

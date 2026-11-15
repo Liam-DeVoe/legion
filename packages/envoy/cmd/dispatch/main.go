@@ -619,10 +619,8 @@ func main() {
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain), the
-	//     task progress reconciliation (retrying, briefly, rows another writer held) and the eval
-	//     seed (evals.Store.SeedEveryProject), which takes the eval-seed lease with no period and,
-	//     like the four leased woken loops, retries until a pass of its own runs.
+	//     it, and repeats only its identity steps while another identity's rows remain) and the
+	//     task progress reconciliation (retrying, briefly, rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -984,20 +982,17 @@ func main() {
 	})
 	// dispatch://INFRA-2916: every project holds the computed evals of the catalogue, each with
 	// its section of the project's evals-md. A project created through the API is seeded in its
-	// own transaction (api's createProject); this boot pass seeds every project, which covers one
-	// made by SQL and writes what this build's catalogue changed. It takes the eval-seed lease,
-	// so two processes booting together write each project once, and a process that finds the
-	// lease held seeds again once it is free, with its own build's catalogue.
-	evalStore := evals.New(database, documentService, broker)
-	go evalStore.SeedEveryProject(ctx, leases)
-	// The eval day-row refresher keeps every project's stored day rows (eval_days) true to their
-	// inputs: it rewrites the days each delivery change and issue event names, walks every day of
-	// each family from its first input day once per build and each new UTC day as it comes, which
-	// writes the explicit zero rows, seeds a project made by SQL since the boot pass, and prunes
-	// the delivery change log, which no reconcile prunes where no GitHub App runs one. It takes
+	// own transaction (api's createProject). The eval day-row refresher keeps every project's
+	// stored day rows (eval_days) true to their inputs: it rewrites the days each delivery change
+	// and issue event names, walks every day of each family from its first input day once per
+	// build and each new UTC day as it comes, which writes the explicit zero rows, and prunes the
+	// delivery change log, which no reconcile prunes where no GitHub App runs one. Its first pass
+	// in this process seeds every project, which covers one made by SQL and writes what this
+	// build's catalogue changed, and each later pass seeds a project made by SQL since. It takes
 	// the eval-days lease, so two processes woken by one commit build each day once, and reads the
 	// event log up to the safe horizon of the same events.Horizon the facts consumer reads. It
 	// records the build it runs as against every row and walk, as the facts consumer does.
+	evalStore := evals.New(database, documentService, broker)
 	go evalStore.RunRefresher(ctx, evals.RefresherDeps{
 		Horizon:    background.EventHorizon(),
 		Build:      processBuild(),

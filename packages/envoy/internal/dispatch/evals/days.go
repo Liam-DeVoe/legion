@@ -312,10 +312,14 @@ const loggedSpans = `logged_spans as materialized (
 const writtenWhileLogged = `exists (select from logged_spans s where r.recorded_at >= s.from_at and r.recorded_at < s.until_at)`
 
 // standingParts is, for each of keys, the parts of the readings its row folds that were stored
-// before the write (whose own readings written names), in the order they were written: the
-// standing readings of its day and series (of its repository, for a repository's row) that have a
-// value and were written while the eval was logged (writtenWhileLogged). One statement reads
-// every key's: the eval's standing readings of each day the keys name, once a day, through
+// before the write (whose own readings written names), in the order they were written: by the
+// write that stored them (recorded_at, its transaction's time) and, within one write, by id, which
+// is the batch's order (parseRows mints them so). That is the order an append took them in, so a
+// refold leaves the day's samples, sums and last value as the appends left them: two readings
+// measured at one moment keep the later one written as the day's last. They are the standing
+// readings of its day and series (of its repository, for a repository's row) that have a value
+// and were written while the eval was logged (writtenWhileLogged). One statement reads every
+// key's: the eval's standing readings of each day the keys name, once a day, through
 // eval_readings_row with that day's range in its index condition, each then matched to the keys
 // of its day. Joined to every key at once instead, the readings were planned, for a week's keys,
 // as one scan of the eval that each key then filtered whole.
@@ -344,7 +348,7 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 				and `+writtenWhileLogged+`
 		) r
 		join k on k.day = d.day and k.series = r.series and (k.repo = '' or r.repo = k.repo)
-		order by k.at, r.recorded_at, r.measured_at, r.id
+		order by k.at, r.recorded_at, r.id
 	`, evalID, series, repos, days, written)
 	if err != nil {
 		return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(keys), evalID, err)

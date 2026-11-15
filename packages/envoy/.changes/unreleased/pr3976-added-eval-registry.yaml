@@ -5,9 +5,10 @@ body: |-
   unit, direction, target, owner and the exported fold that computes it), with its series in
   `eval_series`, logged readings in `eval_readings`, and a section of the project's `evals-md`
   document holding its method. Every project is seeded with the catalogue when it is created and
-  at boot. `GET /api/v1/projects/{key}/evals` folds each eval's stored per-day rows (`eval_days`)
-  for a window and an optional compare range, with the verdict against its target and the first
-  day it has data; `GET .../evals/{slug}` answers its versions and its method text;
+  by the day-row refresher's first pass in each process. `GET /api/v1/projects/{key}/evals` folds
+  each eval's stored per-day rows (`eval_days`) for a window and an optional compare range, with
+  the verdict against its target and the first day it has data; `GET .../evals/{slug}` answers
+  its versions and its method text;
   `GET .../evals/{slug}/items` answers the rows behind a number in one shape for every row kind;
   `POST .../evals/{slug}/readings` takes a batch of readings under an `Idempotency-Key`, whole or
   not at all, and registers a slug no row holds; `POST /api/v1/projects/{key}/evals` registers or

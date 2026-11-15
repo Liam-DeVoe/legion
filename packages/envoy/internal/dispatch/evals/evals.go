@@ -21,6 +21,7 @@ package evals
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,8 +69,8 @@ const (
 )
 
 // The sources of the seeded catalogue's computed evals: SourceComputedPrefix and the one function
-// each folds through. The catalogue names them, computedFolds and computedHeadlines are keyed by
-// them, and api's items route answers each one's rows, so a source is spelled once.
+// each folds through. The catalogue names them, computedSources is keyed by them, and api's items
+// route answers each one's rows, so a source is spelled once.
 const (
 	SourceFoldDeployFrequency   = SourceComputedPrefix + "delivery/measures.FoldDeployFrequency"
 	SourceFoldDeployRunSuccess  = SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess"
@@ -111,34 +112,54 @@ type FailureMode struct {
 
 // Definition is one version of an eval's definition, every column of eval_versions. A nullable
 // text column is "" where it is null: Direction is "" until someone registers one, and IssueKey
-// and ReplacedBy are "" where they name nothing. Target is nil where the target is off.
+// and ReplacedBy are "" where they name nothing. Target is nil where the target is off. Its
+// Computation is the fields that say how the number is computed (R5), which the seeded catalogue
+// states of a computed eval; every other field is the version's own number, time and writer, or
+// one a person sets.
 type Definition struct {
-	EvalID          string        `json:"eval_id"`
-	Version         int           `json:"version"`
-	ProjectKey      string        `json:"project_key"`
-	Slug            string        `json:"slug"`
-	Name            string        `json:"name"`
-	Question        string        `json:"question"`
-	NumberRule      string        `json:"number_rule"`
-	Decision        string        `json:"decision"`
-	DocBlock        string        `json:"doc_block"`
-	FailureModes    []FailureMode `json:"failure_modes"`
-	Unit            string        `json:"unit"`
-	Direction       string        `json:"direction"`
-	Target          *float64      `json:"target"`
-	TargetInclusive bool          `json:"target_inclusive"`
-	TargetJudges    []string      `json:"target_judges"`
-	OwnerRole       string        `json:"owner_role"`
-	Person          string        `json:"person"`
-	IssueKey        string        `json:"issue_key"`
-	Kind            string        `json:"kind"`
-	Source          string        `json:"source"`
-	State           string        `json:"state"`
-	ReplacedBy      string        `json:"replaced_by"`
-	Links           []Link        `json:"links"`
-	WrittenVia      string        `json:"written_via"`
-	WrittenBy       model.Actor   `json:"written_by"`
-	CreatedAt       time.Time     `json:"created_at"`
+	EvalID     string `json:"eval_id"`
+	Version    int    `json:"version"`
+	ProjectKey string `json:"project_key"`
+	Slug       string `json:"slug"`
+	Computation
+	DocBlock        string      `json:"doc_block"`
+	Target          *float64    `json:"target"`
+	TargetInclusive bool        `json:"target_inclusive"`
+	TargetJudges    []string    `json:"target_judges"`
+	OwnerRole       string      `json:"owner_role"`
+	Person          string      `json:"person"`
+	IssueKey        string      `json:"issue_key"`
+	State           string      `json:"state"`
+	ReplacedBy      string      `json:"replaced_by"`
+	Links           []Link      `json:"links"`
+	WrittenVia      string      `json:"written_via"`
+	WrittenBy       model.Actor `json:"written_by"`
+	CreatedAt       time.Time   `json:"created_at"`
+}
+
+// Computation is every field of a definition that says how its number is computed (R5): its
+// name, question, number rule, decision, failure modes, unit, direction, kind and source. On a
+// computed eval the catalogue states them and the seed alone writes them (ensure), and a register
+// write naming one is refused (computationField); a logged eval's are its register writes'. It is
+// one struct so that each of those rules reads or writes all of it at once.
+type Computation struct {
+	Name         string        `json:"name"`
+	Question     string        `json:"question"`
+	NumberRule   string        `json:"number_rule"`
+	Decision     string        `json:"decision"`
+	FailureModes []FailureMode `json:"failure_modes"`
+	Unit         string        `json:"unit"`
+	Direction    string        `json:"direction"`
+	Kind         string        `json:"kind"`
+	Source       string        `json:"source"`
+}
+
+// same reports whether two computations state one number: every field the same, an empty list of
+// failure modes and none alike.
+func (c Computation) same(other Computation) bool {
+	return c.Name == other.Name && c.Question == other.Question && c.NumberRule == other.NumberRule &&
+		c.Decision == other.Decision && slices.Equal(c.FailureModes, other.FailureModes) && c.Unit == other.Unit &&
+		c.Direction == other.Direction && c.Kind == other.Kind && c.Source == other.Source
 }
 
 // Computed reports whether the eval's value is computed by a function rather than logged: its
@@ -166,19 +187,35 @@ func (d Definition) writer() string {
 	return writerReadings
 }
 
-// Series is one version of one series of an eval, every column of eval_series.
+// Series is one version of one series of an eval, every column of eval_series. Its
+// SeriesComputation is every field but the version's own number and time and its min_n, the one
+// field of a series a person sets on a computed eval (R5).
 type Series struct {
-	EvalID    string    `json:"eval_id"`
-	Series    string    `json:"series"`
-	Version   int       `json:"version"`
-	Unit      string    `json:"unit"`
-	Role      string    `json:"role"`
-	IsPrimary bool      `json:"is_primary"`
+	EvalID  string `json:"eval_id"`
+	Series  string `json:"series"`
+	Version int    `json:"version"`
+	SeriesComputation
 	MinN      *int      `json:"min_n"`
-	Listed    bool      `json:"listed"`
-	Agg       string    `json:"agg"`
-	Links     []Link    `json:"links"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// SeriesComputation is every field of a series that says how its eval's number is computed
+// (R5): the catalogue's on a computed eval, which the seed alone writes and a register write
+// naming one is refused (computationField), as Computation is of the definition.
+type SeriesComputation struct {
+	Unit      string `json:"unit"`
+	Role      string `json:"role"`
+	IsPrimary bool   `json:"is_primary"`
+	Listed    bool   `json:"listed"`
+	Agg       string `json:"agg"`
+	Links     []Link `json:"links"`
+}
+
+// same reports whether two series computations are the same: every field, each link's relation,
+// address, label and time.
+func (c SeriesComputation) same(other SeriesComputation) bool {
+	return c.Unit == other.Unit && c.Role == other.Role && c.IsPrimary == other.IsPrimary && c.Listed == other.Listed &&
+		c.Agg == other.Agg && sameLinks(c.Links, other.Links)
 }
 
 // Reading is one stored reading, every column of eval_readings. Replaces is the reading this one
@@ -339,8 +376,10 @@ const (
 	// CodeProjectNotFound: no project has the key.
 	CodeProjectNotFound = "PROJECT_NOT_FOUND"
 	// CodeFieldInvalid: a register write's field is outside the values its column allows (a
-	// kind, a source, a state, a direction, a way of writing, a target's judge, a series role or
-	// fold), or the write sets both doc_block and doc_text.
+	// kind, a state, a direction, a target's judge, a series role or fold, a min_n below 0 or past
+	// what the store holds), its source is not logged (only the seeded catalogue makes an eval
+	// computed), it sets a min_n on a series no read ranks by one (only pr-ci's job series), or it
+	// sets both doc_block and doc_text.
 	CodeFieldInvalid = "EVAL_FIELD_INVALID"
 	// CodeSeriesInvalid: a register write names a series with no name, or with whitespace, a
 	// control character or a `.` in it (a target judge is `<series>.<stat>`).

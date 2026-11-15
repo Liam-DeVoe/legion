@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -34,27 +35,25 @@ import (
 // series registered here for the first time is the headline and primary series when the eval has
 // no series yet, and a control series otherwise, folded by its last value (agg last) and listed,
 // unless the change sets those fields.
+//
+// The computation fields (ComputationChange, and a series' SeriesComputationChange) are a logged
+// eval's alone: on a computed eval the catalogue states them (computationField). A source is
+// logged: a computed eval is the seeded catalogue's alone, and a register write naming another
+// source is refused. A min_n is taken on pr-ci's job series alone, the one series a read ranks by
+// it (rankedByMinN), and refused on any other.
 type Registration struct {
 	Project string
 	Slug    string
 	Caller  model.Actor
 
-	Name            Field[string]
-	Question        Field[string]
-	NumberRule      Field[string]
-	Decision        Field[string]
+	ComputationChange
 	DocBlock        Field[string]
-	FailureModes    Field[[]FailureMode]
-	Unit            Field[string]
-	Direction       Field[string]
 	Target          Field[*float64]
 	TargetInclusive Field[bool]
 	TargetJudges    Field[[]string]
 	OwnerRole       Field[string]
 	Person          Field[string]
 	IssueKey        Field[string]
-	Kind            Field[string]
-	Source          Field[string]
 	State           Field[string]
 	ReplacedBy      Field[string]
 	// Links is the eval's whole list of links. Each link's RecordedAt is the server's: a link the
@@ -66,17 +65,100 @@ type Registration struct {
 	Series []SeriesChange
 }
 
+// ComputationChange is a register write's change of each field of a definition's Computation,
+// copied forward as Registration's fields are.
+type ComputationChange struct {
+	Name         Field[string]
+	Question     Field[string]
+	NumberRule   Field[string]
+	Decision     Field[string]
+	FailureModes Field[[]FailureMode]
+	Unit         Field[string]
+	Direction    Field[string]
+	Kind         Field[string]
+	Source       Field[string]
+}
+
+// applyTo writes into next each field the change sets.
+func (change ComputationChange) applyTo(next *Computation) {
+	change.Name.applyTo(&next.Name)
+	change.Question.applyTo(&next.Question)
+	change.NumberRule.applyTo(&next.NumberRule)
+	change.Decision.applyTo(&next.Decision)
+	change.FailureModes.applyTo(&next.FailureModes)
+	change.Unit.applyTo(&next.Unit)
+	change.Direction.applyTo(&next.Direction)
+	change.Kind.applyTo(&next.Kind)
+	change.Source.applyTo(&next.Source)
+	next.FailureModes = nonNil(next.FailureModes)
+}
+
+// named is the first field the change sets, as the body spells it (Computation's json name), or
+// "" where it sets none.
+func (change ComputationChange) named() string {
+	return firstSet([]namedField{
+		{"name", change.Name.Set}, {"question", change.Question.Set}, {"number_rule", change.NumberRule.Set},
+		{"decision", change.Decision.Set}, {"failure_modes", change.FailureModes.Set}, {"unit", change.Unit.Set},
+		{"direction", change.Direction.Set}, {"kind", change.Kind.Set}, {"source", change.Source.Set},
+	})
+}
+
 // SeriesChange is one series a register write registers or changes, by name, with each field it
 // sets, copied forward as Registration's are.
 type SeriesChange struct {
-	Series    string
+	Series string
+	SeriesComputationChange
+	MinN Field[*int]
+}
+
+// SeriesComputationChange is a register write's change of each field of a series'
+// SeriesComputation, copied forward as Registration's fields are.
+type SeriesComputationChange struct {
 	Unit      Field[string]
 	Role      Field[string]
 	IsPrimary Field[bool]
-	MinN      Field[*int]
 	Listed    Field[bool]
 	Agg       Field[string]
 	Links     Field[[]Link]
+}
+
+// applyTo writes into next each field the change sets, a link the series already holds keeping
+// the time it was first stored (stampLinks) and any other stored at now.
+func (change SeriesComputationChange) applyTo(next *SeriesComputation, now time.Time) {
+	change.Unit.applyTo(&next.Unit)
+	change.Role.applyTo(&next.Role)
+	change.IsPrimary.applyTo(&next.IsPrimary)
+	change.Listed.applyTo(&next.Listed)
+	change.Agg.applyTo(&next.Agg)
+	if change.Links.Set {
+		next.Links = stampLinks(change.Links.Value, next.Links, now)
+	}
+}
+
+// named is the first field the change sets, as the body spells it (SeriesComputation's json
+// name), or "" where it sets none.
+func (change SeriesComputationChange) named() string {
+	return firstSet([]namedField{
+		{"unit", change.Unit.Set}, {"role", change.Role.Set}, {"is_primary", change.IsPrimary.Set},
+		{"listed", change.Listed.Set}, {"agg", change.Agg.Set}, {"links", change.Links.Set},
+	})
+}
+
+// namedField is one field of a change by the name a body spells it with, and whether the change
+// sets it.
+type namedField struct {
+	name string
+	set  bool
+}
+
+// firstSet is the name of the first of fields the change sets, "" where it sets none.
+func firstSet(fields []namedField) string {
+	for _, field := range fields {
+		if field.set {
+			return field.name
+		}
+	}
+	return ""
 }
 
 // Registered is what a register write left: the eval's newest definition, the newest version of
@@ -94,7 +176,10 @@ type Registered struct {
 // transaction, copying forward every field the write does not set (Registration). Two writes of
 // one eval at once both land, in turn, as the next two versions: each takes the eval's lock
 // (lockEval) before it reads the version it writes after. A write of a computed eval that names a
-// field of its computation is refused, and stores nothing (computationField, R5).
+// field of its computation is refused, and stores nothing (computationField, R5), and so is a
+// write of a min_n no read ranks by (rankedByMinN). A version that lists or unlists a logged
+// eval's series lists or unlists that series' stored day rows in the same transaction
+// (relistDays).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
@@ -117,8 +202,15 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			if field := computationField(change, series); field != "" {
 				return fieldRefusal(CodeFieldComputed, field,
 					"%s is a field of the computation of %s, which its code defines (source %s): a register write of a computed eval sets "+
-						"its target, target_inclusive and target_judges, a series' min_n, owner_role, person, issue_key, links, state, replaced_by, doc_text and doc_block",
-					field, evalID, current.Source)
+						"its target, target_inclusive and target_judges, the min_n of %s's series %s, owner_role, person, issue_key, links, state, replaced_by, doc_text and doc_block",
+					field, evalID, current.Source, SlugPRCI, SeriesJobs)
+			}
+		}
+		for index, one := range change.Series {
+			if one.MinN.Set && !rankedByMinN(current, one.Series) {
+				return fieldRefusal(CodeFieldInvalid, fmt.Sprintf("series[%d].min_n", index),
+					"series %s of %s: min_n is the fewest timed results a job needs before it is ranked among %s's slowest jobs, and no read ranks this series by one: only %s's series %s takes a min_n",
+					one.Series, evalID, SlugPRCI, SlugPRCI, SeriesJobs)
 			}
 		}
 		next := current
@@ -162,7 +254,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			if !has {
 				nextSeries = firstSeries(evalID, seriesChange.Series, len(series) == 0, true, "")
 			}
-			seriesChange.applyTo(&nextSeries, existing.Links, w.now)
+			seriesChange.applyTo(&nextSeries, w.now)
 			if has && sameSeries(existing, nextSeries) {
 				continue
 			}
@@ -174,6 +266,11 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			if !inserted {
 				return fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", nextSeries.Version, nextSeries.Series, evalID)
 			}
+			if has && existing.Listed != stored.Listed && !answer.Definition.Computed() {
+				if err := relistDays(ctx, w.Tx, answer.Definition, stored); err != nil {
+					return err
+				}
+			}
 			series[stored.Series], answer.Wrote = stored, true
 		}
 		answer.Series = sortedSeries(series)
@@ -183,6 +280,30 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		return Registered{}, err
 	}
 	return answer, nil
+}
+
+// rankedByMinN reports whether a read ranks the series series of definition's eval by its min_n:
+// the job series of the catalogue's pr-ci, whose jobs the items route sorted by median and the
+// Pipeline rank among the slowest (SlowestJobsMinN, PipelineSlowestJobsMinN). No read of any other
+// series, a logged eval's included, reads a min_n, so a register write of one elsewhere would be
+// stored and then ignored (R5) and is refused instead.
+func rankedByMinN(definition Definition, series string) bool {
+	return definition.Computed() && definition.Slug == SlugPRCI && series == SeriesJobs
+}
+
+// relistDays writes series' listing into every day row the readings write keeps of it (writer
+// readings, the project's row and each repository's), definition being a logged eval: a window
+// read folds the listed rows alone (DayWindow), so a row stored before a version that listed its
+// series would otherwise stay out of every window, and one stored before a version that unlisted
+// it in. A row that holds the listing already is left as it is.
+func relistDays(ctx context.Context, tx pgx.Tx, definition Definition, series Series) error {
+	if _, err := tx.Exec(ctx, `
+		update eval_days set listed = $4, updated_at = now()
+		where project_key = $1 and eval_id = $2 and writer = $5 and series = $3 and listed <> $4
+	`, definition.ProjectKey, definition.EvalID, series.Series, series.Listed, writerReadings); err != nil {
+		return fmt.Errorf("list the day rows of series %s of %s as %t: %w", series.Series, definition.EvalID, series.Listed, err)
+	}
+	return nil
 }
 
 // firstDefinition is the definition an eval registered for the first time starts from, before
@@ -238,41 +359,25 @@ func ownerOf(caller model.Actor) (role, person string) {
 }
 
 func (change Registration) applyTo(next *Definition, now time.Time) {
-	change.Name.applyTo(&next.Name)
-	change.Question.applyTo(&next.Question)
-	change.NumberRule.applyTo(&next.NumberRule)
-	change.Decision.applyTo(&next.Decision)
+	change.ComputationChange.applyTo(&next.Computation)
 	change.DocBlock.applyTo(&next.DocBlock)
-	change.FailureModes.applyTo(&next.FailureModes)
-	change.Unit.applyTo(&next.Unit)
-	change.Direction.applyTo(&next.Direction)
 	change.Target.applyTo(&next.Target)
 	change.TargetInclusive.applyTo(&next.TargetInclusive)
 	change.TargetJudges.applyTo(&next.TargetJudges)
 	change.OwnerRole.applyTo(&next.OwnerRole)
 	change.Person.applyTo(&next.Person)
 	change.IssueKey.applyTo(&next.IssueKey)
-	change.Kind.applyTo(&next.Kind)
-	change.Source.applyTo(&next.Source)
 	change.State.applyTo(&next.State)
 	change.ReplacedBy.applyTo(&next.ReplacedBy)
 	if change.Links.Set {
 		next.Links = stampLinks(change.Links.Value, next.Links, now)
 	}
-	next.FailureModes = nonNil(next.FailureModes)
 	next.TargetJudges = nonNil(next.TargetJudges)
 }
 
-func (change SeriesChange) applyTo(next *Series, previous []Link, now time.Time) {
-	change.Unit.applyTo(&next.Unit)
-	change.Role.applyTo(&next.Role)
-	change.IsPrimary.applyTo(&next.IsPrimary)
+func (change SeriesChange) applyTo(next *Series, now time.Time) {
+	change.SeriesComputationChange.applyTo(&next.SeriesComputation, now)
 	change.MinN.applyTo(&next.MinN)
-	change.Listed.applyTo(&next.Listed)
-	change.Agg.applyTo(&next.Agg)
-	if change.Links.Set {
-		next.Links = stampLinks(change.Links.Value, previous, now)
-	}
 }
 
 // stampLinks is links with each RecordedAt the server's: the time a link already in previous
@@ -295,19 +400,16 @@ func stampLinks(links, previous []Link, now time.Time) []Link {
 // sameDefinition reports whether two versions define the same eval: every field but the
 // version's own number, time, writer and way of writing.
 func sameDefinition(a, b Definition) bool {
-	return a.EvalID == b.EvalID && a.Name == b.Name && a.Question == b.Question && a.NumberRule == b.NumberRule &&
-		a.Decision == b.Decision && a.DocBlock == b.DocBlock && slices.Equal(a.FailureModes, b.FailureModes) &&
-		a.Unit == b.Unit && a.Direction == b.Direction && sameTarget(a.Target, b.Target) &&
-		a.TargetInclusive == b.TargetInclusive && slices.Equal(a.TargetJudges, b.TargetJudges) &&
-		a.OwnerRole == b.OwnerRole && a.Person == b.Person && a.IssueKey == b.IssueKey && a.Kind == b.Kind &&
-		a.Source == b.Source && a.State == b.State && a.ReplacedBy == b.ReplacedBy && sameLinks(a.Links, b.Links)
+	return a.EvalID == b.EvalID && a.Computation.same(b.Computation) && a.DocBlock == b.DocBlock &&
+		sameTarget(a.Target, b.Target) && a.TargetInclusive == b.TargetInclusive && slices.Equal(a.TargetJudges, b.TargetJudges) &&
+		a.OwnerRole == b.OwnerRole && a.Person == b.Person && a.IssueKey == b.IssueKey && a.State == b.State &&
+		a.ReplacedBy == b.ReplacedBy && sameLinks(a.Links, b.Links)
 }
 
 // sameSeries reports whether two versions of a series are the same but for the version's own
 // number and time.
 func sameSeries(a, b Series) bool {
-	return a.Unit == b.Unit && a.Role == b.Role && a.IsPrimary == b.IsPrimary && sameMinN(a.MinN, b.MinN) &&
-		a.Listed == b.Listed && a.Agg == b.Agg && sameLinks(a.Links, b.Links)
+	return a.SeriesComputation.same(b.SeriesComputation) && sameMinN(a.MinN, b.MinN)
 }
 
 func sameTarget(a, b *float64) bool {
@@ -374,8 +476,13 @@ func validateRegistration(change Registration) error {
 			return fieldRefusal(CodeFieldInvalid, field.name, "%s %q is not one of %s", field.name, field.value.Value, strings.Join(field.set, ", "))
 		}
 	}
-	if change.Source.Set && !validSource(change.Source.Value) {
-		return fieldRefusal(CodeFieldInvalid, "source", "source %q is neither %s nor %s<function>", change.Source.Value, SourceLogged, SourceComputedPrefix)
+	// A computed eval is the seeded catalogue's alone, which the seed writes with the function its
+	// slug's day rows are built for: a register write that named one would make a logged eval
+	// computed with no builder of its rows, reading "no data" from then on, and the register write
+	// of a computed eval refuses source logged (computationField), so no write could undo it.
+	if change.Source.Set && change.Source.Value != SourceLogged {
+		return fieldRefusal(CodeFieldInvalid, "source", "source %q is not %s: a register write registers or changes a logged eval, and only the seeded catalogue makes an eval computed",
+			change.Source.Value, SourceLogged)
 	}
 	if change.TargetJudges.Set {
 		for index, judge := range change.TargetJudges.Value {
@@ -426,52 +533,25 @@ func validateRegistration(change Registration) error {
 // computationField is the first field change names that the computation of a computed eval
 // defines, as the body spells it, or "" where it names none (R5). On a computed eval a person sets
 // how the number is judged and who answers for it: the target, target_inclusive and
-// target_judges; a series' min_n; owner_role, person, issue_key, links, state and replaced_by;
-// and the method, through doc_text or doc_block. The catalogue states the rest from the code, and
-// the seed writes it again whenever a release changes it: the name, question, number rule,
-// decision, failure modes, unit, direction, kind and source, every field of a series but min_n,
-// and the series themselves, which the day builders write. series is the eval's series by name.
+// target_judges; the min_n of pr-ci's job series (rankedByMinN); owner_role, person, issue_key,
+// links, state and replaced_by; and the method, through doc_text or doc_block. The catalogue
+// states the rest from the code, and the seed writes it again whenever a release changes it: every
+// field of the definition's Computation and of each series' SeriesComputation, and the series
+// themselves, which the day builders write. series is the eval's series by name.
 func computationField(change Registration, series map[string]Series) string {
-	for _, field := range []struct {
-		name string
-		set  bool
-	}{
-		{"name", change.Name.Set}, {"question", change.Question.Set}, {"number_rule", change.NumberRule.Set},
-		{"decision", change.Decision.Set}, {"failure_modes", change.FailureModes.Set}, {"unit", change.Unit.Set},
-		{"direction", change.Direction.Set}, {"kind", change.Kind.Set}, {"source", change.Source.Set},
-	} {
-		if field.set {
-			return field.name
-		}
+	if name := change.ComputationChange.named(); name != "" {
+		return name
 	}
 	for index, one := range change.Series {
 		at := fmt.Sprintf("series[%d]", index)
 		if _, held := series[one.Series]; !held {
 			return at + ".series"
 		}
-		for _, field := range []struct {
-			name string
-			set  bool
-		}{
-			{"unit", one.Unit.Set}, {"role", one.Role.Set}, {"is_primary", one.IsPrimary.Set},
-			{"listed", one.Listed.Set}, {"agg", one.Agg.Set}, {"links", one.Links.Set},
-		} {
-			if field.set {
-				return at + "." + field.name
-			}
+		if name := one.SeriesComputationChange.named(); name != "" {
+			return at + "." + name
 		}
 	}
 	return ""
-}
-
-// validSource reports whether source is one eval_versions' check allows: logged, or computed:
-// followed by the function's name, which holds no whitespace.
-func validSource(source string) bool {
-	if source == SourceLogged {
-		return true
-	}
-	function, computed := strings.CutPrefix(source, SourceComputedPrefix)
-	return computed && function != "" && !strings.ContainsFunc(function, unicode.IsSpace)
 }
 
 // validSeriesName refuses a series name that is empty or holds whitespace, a control character

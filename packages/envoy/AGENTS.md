@@ -2524,7 +2524,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a mapping that issues name is neither deleted nor moved to another project (`409 REPO_PROJECT_IN_USE`, counted under the mapping's row lock);
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
   Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
-  an advisory lock on the repository, the event owners of every project it touches, then the row.
+  the delivery change log's lock first (`delivery.LockChanges`, since the mapping's trigger logs a `settings` change under it), then an advisory lock on the repository, the event owners of every project it touches, then the row.
   So two writes to one repository serialize, even while it has no row yet, and the seed's own additions are announced like any other.
 
 - A closed issue (`closed_at` set) still takes its conversation: a new comment - issue-level, a thread reply, a reply on an ask, one anchored to a quote of one of its documents, and that thread's replies - and a new message, from a person or an agent, with their deliveries, retries and the mentioned or targeted agent's reply.
