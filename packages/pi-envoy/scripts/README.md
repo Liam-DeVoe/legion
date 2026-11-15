@@ -421,9 +421,14 @@ batch); no tool call names a path its world hides (by `rig.sh world`: under the 
 issue workspaces, the work directory or any label's checkout, the other runs' given included)
 outside its own directory, `/tmp` and what its world shows again; no tool call reads another
 process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
-`/var/run/secrets`; and no `web_search` call, and no `bash`, `read` or `fetch` call that reaches a
-host other than the loopback, the hosts its pane's URLs name and the model gateway its profile's
-`models.yml` names. A run's own writes outside its directory are recorded and are no verdict on
+`/var/run/secrets`, by either name; and no call reaches a host other than the loopback, the hosts
+its pane's URLs name and the model gateway its profile's `models.yml` names. A URL is text until
+something runs it: every `web_search` reaches off the world; a `bash` command, a `read`, a
+`fetch`, an `eval` cell's code, a here-document an interpreter reads on stdin and a file the run
+wrote and then ran are read for the hosts they reach; an `eval` cell's `tool.<name>(…)` call is
+read as a direct call of that tool would be; text a call writes (a `--body`, a commit message, a
+message to Envoy, a file never run) reaches nothing; and a tool nobody named has every argument
+read. A run's own writes outside its directory are recorded and are no verdict on
 it. Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
 every transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing
 and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, naming

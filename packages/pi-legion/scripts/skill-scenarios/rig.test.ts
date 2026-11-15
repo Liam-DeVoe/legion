@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -4299,6 +4300,62 @@ sleep() { command sleep 0.05; }`;
         "threads-closed-text-fixes-head-1",
         "threads-closed-text-fixes-head-9",
       ]);
+    }
+  );
+
+  // Catches: a shown path that is a link whose target lies under a cover, bound back at the link
+  // itself: the link stays visible, its target is covered, and `mkdir -p` on the dangling link
+  // answers `File exists`, so no run starts. Measured by the tester on 2026-11-15 with the rig's
+  // own node_modules/zod, which every bun install makes a link into the root's .bun store, and a
+  // root whose node_modules is itself a link into a covered workspace (/legion/scratch/tmp/
+  // head-checkout's into the issue workspace). Here the rig's directory lies outside the
+  // scratch root, as the tester's did, and its zod resolves through both links into the root,
+  // which the scratch root covers; the gh stand-in, which imports zod, must load inside the run.
+  // The covered root sorts after the tree, as /legion/workspaces sorts after /legion/scratch, so
+  // the link is bound back before its target is.
+  test.skipIf(withoutNamespace)(
+    "a rig whose node_modules/zod links into a covered root boots, and the gh stand-in imports zod in the run",
+    () => {
+      const work = freshDir("launch-linked");
+      const scratch = freshDir("launch-linked-workspace");
+      // zod as bun installs it: a package under the root's .bun store, under the scratch root.
+      let modules = RIG;
+      while (modules !== "/" && !existsSync(path.join(modules, "node_modules", "zod")))
+        modules = path.dirname(modules);
+      const store = path.join(scratch, "root", "node_modules");
+      const zod = path.join(".bun", "zod@pin", "node_modules", "zod");
+      cpSync(realpathSync(path.join(modules, "node_modules", "zod")), path.join(store, zod), {
+        recursive: true,
+        dereference: true,
+      });
+      // The rig's tree, outside the scratch root: its root's node_modules a link into the store,
+      // and its package's node_modules/zod a link through that one, as bun lays them out.
+      const tree = freshDir("launch-linked-tree");
+      symlinkSync(store, path.join(tree, "node_modules"));
+      const here = path.join(tree, "packages", "pi-legion", "scripts", "skill-scenarios");
+      mkdirSync(here, { recursive: true });
+      mkdirSync(path.join(tree, "packages", "pi-legion", "node_modules"));
+      symlinkSync(
+        path.join("..", "..", "..", "node_modules", zod),
+        path.join(tree, "packages", "pi-legion", "node_modules", "zod")
+      );
+      for (const file of ["gh-standin.ts", "gh-call.ts", "run-records.ts"])
+        cpSync(path.join(RIG, file), path.join(here, file));
+      const { run, result, out } = launched(
+        work,
+        "threads-closed-text-fixes-head-1",
+        `bun ${here}/gh-standin.ts gh --open; echo "gh=$?"`,
+        [],
+        { env: { TMPDIR: scratch }, here }
+      );
+      expect(out).toBe("gh=0\nexit=0\n");
+      expect(result.code).toBe(0);
+      expect(readFileSync(path.join(run, "calls.jsonl"), "utf8")).toContain('"opened"');
+      // The world shows the link where bun reads it and the store where the link resolves.
+      expect(world(run)).toContain(
+        `ro ${path.join(tree, "packages", "pi-legion", "node_modules", "zod")}`
+      );
+      expect(world(run)).toContain(`ro ${realpathSync(path.join(store, zod))}`);
     }
   );
 

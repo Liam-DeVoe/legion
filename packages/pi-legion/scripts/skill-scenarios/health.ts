@@ -42,9 +42,15 @@
  *      (`otherProcess`);
  *  12. credentials: no tool call names a path under /var/run/legion or /var/run/secrets, by
  *      either name (`credentialReach`);
- *  13. off-world network: no `web_search` call, and no `bash`, `read` or `fetch` call that reaches
- *      a host other than the loopback, the hosts its pane's URLs name and the model gateway its
- *      profile's models.yml names (`offWorld`).
+ *  13. off-world network: no call reaches a host other than the loopback, the hosts its pane's URLs
+ *      name and the model gateway its profile's models.yml names (`offWorld`): no `web_search`
+ *      call; no host a `bash` command reaches (`bashHosts`), a here-document an interpreter runs
+ *      included; no host an `eval` cell reaches (`evalHosts`): each `tool.<name>(…)` call of it by
+ *      that tool's own reading, and every network URL in the rest of it, in any language; no
+ *      http(s) URL a `read`, `fetch` or `grep` is given as its path; no network URL in a file the
+ *      run wrote and then ran (`fileRuns`); and no network URL in any string argument of a tool
+ *      TEXT_TOOLS does not name, a tool nobody named included. A URL in text a call writes (a
+ *      review body, a reply, a commit message, a file never run) is a link, not a reach.
  * Rules 6 and 8 to 13 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
  * and each subagent's) through score.ts's readers. The run's own directory is the one its pane
  * file names (`SKILL_SCENARIO_RUN`, which the transcripts' paths are written under) and the
@@ -62,6 +68,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
 import { z } from "zod";
 import {
   answerOf,
@@ -551,22 +558,112 @@ const TEXT_FLAG =
  * `body`, `title` or `message`. */
 const FIELD_FLAG = /(^|\s)(-f|-F|--field|--raw-field)(=|[ \t]+)((?:'[^']*'|"[^"]*"|[^\s'"])+)/g;
 
+/** A host a call reaches, with the text that names it and, for a URL a program holds, where that
+ * program is (` in a here-document python3 runs`). */
+interface Reach {
+  readonly host: string;
+  readonly named: string;
+  readonly via?: string;
+}
+
+/** The interpreters whose program health reads: the shells and the languages an agent writes a
+ * script in. `jq` is none: a jq program reaches no host, so a body it reads is data. */
+const INTERPRETER = /^(?:python[\d.]*|node|bun|deno|sh|bash|zsh|dash|ksh|perl|ruby|php)$/;
+/** The shells, whose program health reads as a `bash` command's (`bashHosts`). */
+const SHELL = /^(?:sh|bash|zsh|dash|ksh)$/;
+/** A script's first line naming a shell as its interpreter. */
+const SHELL_SHEBANG = /^#![^\n]*\b(?:ba|z|da|k)?sh\b/;
+/** A redirection with its target, which a command's words leave out. */
+const REDIRECTION = /(?:\d+|&)?[<>]{1,2}\|?[ \t]*\S*/g;
+/** A redirection of a command's output, `>` or `>>`, with its target, relative or not. */
+const OUTPUT = /(?:^|[^<>&\d])1?(>>?)\|?[ \t]*['"]?([^\s'";&|()<>`]+)/g;
+
+/** Each command of shell text by SHELL_COMMAND: its first word, that word's base name, the rest of
+ * its text, and where the command lies in the text. */
+function commandsOf(code: string) {
+  return [...code.matchAll(SHELL_COMMAND)].map((hit) => ({
+    word: hit[1] ?? "",
+    name: path.posix.basename(hit[1] ?? ""),
+    rest: hit[2] ?? "",
+    at: hit.index ?? 0,
+    end: (hit.index ?? 0) + hit[0].length,
+  }));
+}
+
+/** A command's words after its first, unquoted, with its redirections left out. */
+function wordsOf(rest: string): string[] {
+  return [...rest.replace(REDIRECTION, " ").matchAll(WORD)].map((word) =>
+    word[0].replace(/^(['"])(.*)\1$/, "$2")
+  );
+}
+
+/** The program an interpreter command runs: its first operand, a script's path (`python3 f.py`,
+ * `bun run f.ts`) or a program given inline (`python3 -c '…'`, which names no file the run
+ * wrote); `-` for a program it reads on stdin (`python3 -`, `node`, `bash -s arg`); or undefined
+ * for a command that is no interpreter. */
+function programOf(name: string, words: readonly string[]): string | undefined {
+  if (!INTERPRETER.test(name)) return undefined;
+  if (SHELL.test(name) && words.includes("-s")) return "-";
+  const operands = words.filter((word) => word === "-" || !word.startsWith("-"));
+  if ((name === "bun" || name === "deno") && operands[0] === "run") operands.shift();
+  return operands[0] ?? "-";
+}
+
+/** The interpreter that runs the here-document whose `<<` lies at `at` in `code` as its program:
+ * an interpreter that reads its program on stdin (`python3 - <<EOF`), or one a bare `cat` pipes
+ * the body into (`cat <<EOF | node`). Undefined for every other command, whose body is text it
+ * writes or data it reads: `cat > f`, `tee`, `gh … --body-file -`, `git commit -F -`, `jq`. */
+function bodyRunner(code: string, at: number): string | undefined {
+  const commands = commandsOf(code);
+  const index = commands.findIndex((one) => one.at <= at && at < one.end);
+  const owner = commands[index];
+  if (owner === undefined) return undefined;
+  const words = wordsOf(owner.rest);
+  if (programOf(owner.name, words) === "-") return owner.name;
+  const next = commands[index + 1];
+  return owner.name === "cat" &&
+    words.length === 0 &&
+    next !== undefined &&
+    code[next.at] === "|" &&
+    code.slice(owner.end, next.at).trim() === "" &&
+    programOf(next.name, wordsOf(next.rest)) === "-"
+    ? next.name
+    : undefined;
+}
+
+/** The host of every network URL in `text`. */
+function urlHosts(text: string): Reach[] {
+  return [...text.matchAll(NETWORK_URL)].map((hit) => ({
+    host: hostName(hit[1] ?? ""),
+    named: hit[0],
+  }));
+}
+
+/** Every host a program reaches: a shell script's as a `bash` command's (`bashHosts`), and the
+ * host of every network URL any other language's program holds, whatever it does with it. */
+function programHosts(text: string, shell: boolean): Reach[] {
+  return shell ? bashHosts(text) : urlHosts(text);
+}
+
 /** Every host a `bash` command reaches, with the text that names it: the host of every network
- * URL in it but those in text it writes (here-document bodies, and the values of TEXT_FLAG and of
- * a `body`, `title` or `message` FIELD_FLAG), the scp-form remote of a `git` or `jj` command, a
- * curl or wget operand that names a host without a scheme, and the host a `gh api --hostname`
- * names. */
-function bashHosts(command: string): { host: string; named: string }[] {
-  const code = withoutBodies(command).code;
+ * URL in it but those in text it writes (the values of TEXT_FLAG and of a `body`, `title` or
+ * `message` FIELD_FLAG, and here-document bodies but those an interpreter runs, `bodyRunner`), the
+ * scp-form remote of a `git` or `jj` command, a curl or wget operand that names a host without a
+ * scheme, and the host a `gh api --hostname` names. */
+function bashHosts(command: string): Reach[] {
+  const { code, bodies } = withoutBodies(command);
   const reached = code
     .replace(TEXT_FLAG, (_all, lead, flag, separator) => `${lead}${flag}${separator}''`)
     .replace(FIELD_FLAG, (all, lead, flag, separator, value) =>
       /^['"]?(?:body|title|message)=/.test(value) ? `${lead}${flag}${separator}''` : all
     );
-  const hosts = [...reached.matchAll(NETWORK_URL)].map((hit) => ({
-    host: hostName(hit[1] ?? ""),
-    named: hit[0],
-  }));
+  const hosts = urlHosts(reached);
+  for (const body of bodies) {
+    const runner = bodyRunner(code, body.at);
+    if (runner !== undefined)
+      for (const one of programHosts(body.text, SHELL.test(runner)))
+        hosts.push({ ...one, via: one.via ?? ` in a here-document ${runner} runs` });
+  }
   for (const hit of code.matchAll(SHELL_COMMAND)) {
     const name = path.posix.basename(hit[1] ?? "");
     const words = [...(hit[2] ?? "").matchAll(WORD)].map((word) =>
@@ -592,6 +689,61 @@ function bashHosts(command: string): { host: string; named: string }[] {
     });
   }
   return hosts;
+}
+
+/** The files a `bash` command writes a here-document's body into, with the body: `cat > f`,
+ * `cat >> f` (`append`), `tee f`, `tee -a f`. */
+function bashScripts(command: string): { path: string; text: string; append: boolean }[] {
+  const { code, bodies } = withoutBodies(command);
+  const commands = commandsOf(code);
+  return bodies.flatMap((body) => {
+    const owner = commands.find((one) => one.at <= body.at && body.at < one.end);
+    if (owner?.name === "tee") {
+      const words = wordsOf(owner.rest);
+      const append = words.includes("-a") || words.includes("--append");
+      return words
+        .filter((word) => !word.startsWith("-"))
+        .map((file) => ({ path: file, text: body.text, append }));
+    }
+    if (owner?.name !== "cat") return [];
+    return [...owner.rest.matchAll(OUTPUT)].map((hit) => ({
+      path: hit[2] ?? "",
+      text: body.text,
+      append: hit[1] === ">>",
+    }));
+  });
+}
+
+/** A shell's quoted string. */
+const SHELL_QUOTED = /'[^']*'|"(?:\\.|[^"\\])*"/g;
+/** The program a shell is given inline: `sh -c '<program>'`, `bash -lc "<program>"`. */
+const SHELL_INLINE =
+  /\b(?:ba|z|da|k)?sh[ \t]+(?:-[a-z]*c|-\w+[ \t]+-c)[ \t]+('[^']*'|"(?:\\.|[^"\\])*")/g;
+
+/** The files a `bash` command runs as a program, with what runs each: an interpreter's script
+ * (`python3 f.py`, `bash f.sh`, `bun run f.ts`), a file `source` or `.` reads, a command named by
+ * its path (`./f`), and each of those in a program a shell is given inline (`sh -c '…'`). A
+ * quoted string of more than one word or line is text the command is given (a commit message, a
+ * `--run` note), whose commands run nothing. A command substitution starts a command of its own,
+ * so `body=$(cat f)` runs `cat`, not `f`: SHELL_COMMAND reads `body=$(cat` as one assignment. */
+function bashRuns(command: string): { path: string; runner: string }[] {
+  const code = withoutBodies(command).code;
+  const inline = [...code.matchAll(SHELL_INLINE)].flatMap((hit) =>
+    bashRuns((hit[1] ?? "").slice(1, -1))
+  );
+  const spoken = code
+    .replace(SHELL_QUOTED, (quoted) => (/[\s;&|`]/.test(quoted) ? "''" : quoted))
+    .replace(/\$\(|`/g, "$& ");
+  return commandsOf(spoken)
+    .flatMap((one) => {
+      const words = wordsOf(one.rest);
+      const program = programOf(one.name, words);
+      if (program !== undefined && program !== "-") return [{ path: program, runner: one.name }];
+      if ((one.name === "source" || one.name === ".") && words[0] !== undefined)
+        return [{ path: words[0], runner: "source" }];
+      return one.word.includes("/") ? [{ path: one.word, runner: one.word }] : [];
+    })
+    .concat(inline);
 }
 
 /** A profile's models.yml, as far as its providers' addresses. */
@@ -625,34 +777,367 @@ function worldHosts(run: Run): Set<string> {
   return hosts;
 }
 
-/** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`):
- * a `bash` command's (`bashHosts`), a `read` or `fetch` of an http(s) URL, and every `web_search`
- * call, which always leaves it. No tool is taken out of a profile for this: a profile without a
- * tool is a world that differs from production. */
-function offWorld(run: Run): string | undefined {
-  const hosts = worldHosts(run);
+/** A tool call as a transcript records it, with the transcript it is in and when. */
+type Call = Run["calls"][number];
+
+/** The tools whose arguments rule 13 reads as text a call writes or sends, never as a host it
+ * reaches, each with why. A tool neither here nor read by a door of its own (`reachesOf`) has
+ * every string argument read for a network URL, so a tool nobody named is read too. */
+const TEXT_TOOLS: Readonly<Record<string, string>> = {
+  write:
+    "its content is a file's text; a file the run goes on to run is read where it runs (`fileRuns`)",
+  edit: "its input is a file's text; a file the run goes on to run is read where it runs (`fileRuns`)",
+  task: "its prompts are a subagent's instructions; the subagent's own calls are transcripts of the run, read as any",
+  todo: "its items are the agent's own list of steps",
+  envoy_publish: "its message is text a session of the run's Envoy reads",
+  envoy_send: "its message is text a session of the run's Envoy reads",
+  legion: "its summary and decision are text the run's daemon, a host of its world, records",
+  report_issue: "its content is a report on a tool, which the harness records",
+  ...Object.fromEntries(
+    dispatchToolSpecs.map((spec) => [
+      spec.name,
+      "a Dispatch tool: its arguments are text and refs the run's Dispatch, a host of its world, records or reads",
+    ])
+  ),
+};
+/** The tools that read the `path` (or `url`) they are given: an http(s) URL there is fetched. A
+ * `grep`'s pattern is text it searches for. */
+const PATH_READERS = new Set(["read", "fetch", "web_fetch", "grep"]);
+
+/** The call a tool call is: a `write` to an `xd://<tool>` device is a call of that tool with the
+ * arguments its content holds (a content that is no JSON object is its one `content`). */
+function deviceCall(call: Call): Call & { shown: string } {
+  const target = call.tool === "write" ? (stringArg(call.args, "path") ?? "") : "";
+  if (!target.startsWith("xd://")) return { ...call, shown: call.tool };
+  const content = stringArg(call.args, "content") ?? "";
+  let args: ToolArgs = { content };
+  try {
+    args = ToolArgs.safeParse(JSON.parse(content)).data ?? args;
+  } catch {}
+  return { ...call, tool: target.slice("xd://".length), args, shown: `write ${target}` };
+}
+
+/** Every string a value holds, in its arrays and objects too. */
+function stringsOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsOf);
+  return typeof value === "object" && value !== null ? Object.values(value).flatMap(stringsOf) : [];
+}
+
+/** A file the run wrote, as far as its text, and the call that wrote it last. */
+interface Written {
+  readonly path: string;
+  readonly text: string;
+  readonly tool: string;
+  readonly file: string;
+}
+
+/** Whether two paths the run named are one file: equal once normalized, or the one relative and
+ * the other ending in it (`fetch.py`, `<ws>/fetch.py`), since a transcript does not say the cwd. */
+function sameFile(one: string, other: string): boolean {
+  const [a, b] = [path.posix.normalize(one), path.posix.normalize(other)];
+  return (
+    a === b ||
+    (!b.startsWith("/") && a.endsWith(`/${b}`)) ||
+    (!a.startsWith("/") && b.endsWith(`/${a}`))
+  );
+}
+
+/** The files a call writes and the text it writes into each: a `write` call's content, an `edit`
+ * call's input appended to each file it edits, a here-document a `bash` command writes to a file
+ * (`bashScripts`), and each of those an `eval` cell's session tool calls write (`evalToolCalls`). */
+function writtenText(call: Call): { path: string; text: string; append: boolean }[] {
+  if (call.tool === "eval")
+    return (evalToolCalls(stringArg(call.args, "code") ?? "") ?? []).flatMap((one) =>
+      writtenText({ ...call, tool: one.tool, args: one.args })
+    );
+  if (call.tool === "write")
+    return [
+      {
+        path: stringArg(call.args, "path") ?? "",
+        text: stringArg(call.args, "content") ?? "",
+        append: false,
+      },
+    ];
+  if (call.tool === "edit") {
+    const input = stringArg(call.args, "input") ?? "";
+    const edited = [...input.matchAll(EDIT_HEADER)].map((hit) => hit[1] ?? "");
+    const named = stringArg(call.args, "path");
+    return [...edited, ...(named === undefined ? [] : [named])].map((file) => ({
+      path: file,
+      text: input,
+      append: true,
+    }));
+  }
+  return call.tool === "bash" ? bashScripts(stringArg(call.args, "command") ?? "") : [];
+}
+
+/** A Python or JavaScript string literal on one line, with its text. */
+const STRING_LITERAL = /(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+/** The command a subprocess call of an eval cell runs, as its first argument: a string literal
+ * or a list of them (`execSync("bun f.ts")`, `subprocess.run(["python3", "f.py"])`,
+ * `os.system(…)`), or Bun's shell (`` $`bun f.ts` ``). */
+const SUBPROCESS =
+  /\b(?:execSync|execFileSync|execFile|exec|spawnSync|spawn|system|popen|Popen|run|call|check_call|check_output|getoutput|getstatusoutput)\s*\(\s*(\[[^\]\n]*\]|(['"`])(?:\\.|(?!\2)[^\\\n])*\2)|\$(`[^`]*`)/g;
+/** A file an eval cell loads as code by its path: Python's `runpy.run_path`, `execfile` and
+ * `exec(open(…))`, JavaScript's `require`, `import(…)` and `import … from`; and a module Python
+ * imports by its name (`import fetch`, `from fetch import …`). */
+const EVAL_LOAD =
+  /\b(?:run_path|execfile|require|import)\s*\(\s*(['"`])([^'"`\n]+)\1|\bexec\s*\(\s*open\s*\(\s*(['"])([^'"\n]+)\3|\bfrom\s+(['"])([^'"\n]+)\5|^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import|import[ \t]+([\w.]+))/gm;
+
+/** The files an `eval` cell runs: each it loads as code (EVAL_LOAD), and each the command of a
+ * subprocess call of it runs (SUBPROCESS, read by `bashRuns`). A file a string of the cell names
+ * otherwise (`open("f")`, a message quoting `` `bun f.ts` ``) it does not run. */
+function evalRuns(code: string): { path: string; runner: string }[] {
+  const commands = [...code.matchAll(SUBPROCESS)].map((hit) =>
+    [...(hit[1] ?? hit[3] ?? "").matchAll(STRING_LITERAL)].map((word) => word[2] ?? "").join(" ")
+  );
+  return [
+    ...commands.flatMap(bashRuns),
+    ...[...code.matchAll(EVAL_LOAD)].map((hit) => ({
+      path: hit[2] ?? hit[4] ?? hit[6] ?? `${(hit[7] ?? hit[8] ?? "").replace(/\./g, "/")}.py`,
+      runner: "eval",
+    })),
+  ];
+}
+
+/** The files the run wrote (`written`) that a call runs, with whether each is read as a shell
+ * script: a file a `bash` command runs (`bashRuns`), the files its own here-documents write
+ * (`bashScripts`, `cat > f <<EOF … EOF; python3 f`) among them, or an `eval` cell runs
+ * (`evalRuns`), by its path or, for a module a cell loads with no extension, by that path with
+ * one. */
+function fileRuns(call: Call, written: readonly Written[]): { file: Written; shell: boolean }[] {
+  const command = call.tool === "bash" ? (stringArg(call.args, "command") ?? "") : "";
+  const runs =
+    call.tool === "bash"
+      ? bashRuns(command)
+      : call.tool === "eval"
+        ? evalRuns(stringArg(call.args, "code") ?? "")
+        : [];
+  const files = [...written, ...record(bashScripts(command), written, call.tool, call.file)];
+  return runs.flatMap((run) => {
+    const file = files.findLast(
+      (one) =>
+        sameFile(one.path, run.path) ||
+        (run.runner === "eval" && sameFile(one.path.replace(/\.[cm]?[jt]s$/, ""), run.path))
+    );
+    if (file === undefined) return [];
+    const shell =
+      SHELL.test(run.runner) ||
+      run.runner === "source" ||
+      (!INTERPRETER.test(run.runner) &&
+        (/\.(?:sh|bash)$/.test(file.path) || SHELL_SHEBANG.test(file.text)));
+    return [{ file, shell }];
+  });
+}
+
+/** The end (one past it) of the Python or JavaScript string literal whose quote is at `at`: a
+ * triple-quoted Python string, a JavaScript template with the code of each `${…}` skipped as code,
+ * or a one-line string; -1 for one that does not end. */
+function literalEnd(code: string, at: number): number {
+  const quote = code[at] ?? "";
+  if (quote === "`") {
+    for (let i = at + 1; i < code.length; i++) {
+      if (code[i] === "\\") i++;
+      else if (code[i] === "`") return i + 1;
+      else if (code.startsWith("${", i)) {
+        i = closer(code, i + 2, "}");
+        if (i < 0) return -1;
+      }
+    }
+    return -1;
+  }
+  const fence = code.startsWith(quote.repeat(3), at) ? quote.repeat(3) : quote;
+  for (let i = at + fence.length; i < code.length; i++) {
+    if (code[i] === "\\") i++;
+    else if (code.startsWith(fence, i)) return i + fence.length;
+    else if (code[i] === "\n" && fence.length === 1) return -1;
+  }
+  return -1;
+}
+
+/** The brackets of Python and JavaScript, by their opener. */
+const CLOSERS: Readonly<Record<string, string>> = { "(": ")", "[": "]", "{": "}" };
+
+/** Where the `close` lies that ends the code from `at`, past nested brackets and string literals
+ * (`literalEnd`); -1 for code it does not end in, or that closes another bracket first. */
+function closer(code: string, at: number, close: string): number {
+  const open: string[] = [];
+  for (let i = at; i < code.length; i++) {
+    const char = code[i] ?? "";
+    if (char === "'" || char === '"' || char === "`") {
+      const end = literalEnd(code, i);
+      if (end < 0) return -1;
+      i = end - 1;
+    } else if (CLOSERS[char] !== undefined) open.push(CLOSERS[char]);
+    else if (char === ")" || char === "]" || char === "}") {
+      if (open.length === 0) return char === close ? i : -1;
+      if (open.pop() !== char) return -1;
+    }
+  }
+  return -1;
+}
+
+/** The name a string literal is given by the text before it: `key:`, `"key":` or `key=`, a
+ * Python string's prefix (`f`, `r`, `b`) between. */
+const KEYED = /(?:(\w+)|(["'])(\w+)\2)\s*[:=]\s*[rbfuRBFU]{0,2}$/;
+
+/** A Python f-string's prefix (`f`, `rf`, `Fr`) right before its quote. */
+const F_STRING = /[rRbBuU]?[fF][rRbBuU]?$/;
+
+/** The arguments a session tool call's argument text gives, as far as its string literals: each
+ * by its key (`{path: "…"}`, `path="…"`, `{"path": "…"}`), the rest by place (`_0`, `_1`, a
+ * quoted key among them); and the code of each `${…}` in a JavaScript template and each `{…}` in
+ * a Python f-string among them (`{{` is a brace of the text). Undefined for text whose literals
+ * or expressions do not end. */
+function literalArgs(text: string): { args: ToolArgs; code: string[] } | undefined {
+  const args: ToolArgs = {};
+  const code: string[] = [];
+  let place = 0;
+  for (let at = 0; at < text.length; at++) {
+    const quote = text[at] ?? "";
+    if (quote !== "'" && quote !== '"' && quote !== "`") continue;
+    const end = literalEnd(text, at);
+    if (end < 0) return undefined;
+    const fence = quote !== "`" && text.startsWith(quote.repeat(3), at) ? 3 : 1;
+    const value = text.slice(at + fence, end - fence);
+    const opener = quote === "`" ? "${" : F_STRING.test(text.slice(0, at)) ? "{" : undefined;
+    for (let i = opener === undefined ? -1 : value.indexOf(opener); i >= 0; ) {
+      if (opener === "{" && value[i + 1] === "{") {
+        i = value.indexOf(opener, i + 2);
+        continue;
+      }
+      const close = closer(value, i + (opener?.length ?? 0), "}");
+      if (close < 0) return undefined;
+      code.push(value.slice(i + (opener?.length ?? 0), close));
+      i = value.indexOf(opener ?? "", close + 1);
+    }
+    const key = KEYED.exec(text.slice(0, at));
+    args[key?.[1] ?? key?.[3] ?? `_${place++}`] = value;
+    at = end - 1;
+  }
+  return { args, code };
+}
+
+/** A session tool an eval cell calls by name, `tool.<name>(`, in Python or JavaScript. */
+const TOOL_CALL = /\btool\.(\w+)\s*\(/g;
+
+/** Each session tool call of an eval cell (TOOL_CALL), in the cell's order: its tool, the
+ * arguments its string literals give (`literalArgs`), the code of the expressions among them, and
+ * where its argument text lies. Undefined for a cell with a call whose brackets or literals do
+ * not end. */
+function evalToolCalls(code: string) {
+  const calls: { tool: string; args: ToolArgs; code: string[]; open: number; close: number }[] = [];
+  for (const hit of code.matchAll(TOOL_CALL)) {
+    const open = (hit.index ?? 0) + hit[0].length;
+    const close = closer(code, open, ")");
+    const given = close < 0 ? undefined : literalArgs(code.slice(open, close));
+    if (given === undefined) return undefined;
+    calls.push({ tool: hit[1] ?? "", ...given, open, close });
+  }
+  return calls;
+}
+
+/** Every host an `eval` cell reaches: each session tool call of it (`evalToolCalls`) by the
+ * reading its tool gets as a call of its own (`reachesOf`: none for a tool of TEXT_TOOLS,
+ * `bashHosts` for `bash`, the URL a `read` is given, the class default for a tool nobody named),
+ * given the files the run wrote, those the cell's calls before it wrote included, and the code of
+ * each expression among its literals; then every network URL in the rest of the cell, those
+ * calls blanked. A cell with a call whose brackets or literals do not end is read whole as code. */
+function evalHosts(call: Call, written: readonly Written[]): Reach[] {
+  const code = stringArg(call.args, "code") ?? "";
+  const calls = evalToolCalls(code);
+  if (calls === undefined) return urlHosts(code);
+  const rest = code.split("");
+  const reached: Reach[] = [];
+  const seen = [...written];
+  for (const one of calls) {
+    const inner = { ...call, tool: one.tool, args: one.args };
+    for (const hit of [
+      ...reachesOf(inner, seen),
+      ...one.code.flatMap((expression) => evalHosts({ ...call, args: { code: expression } }, seen)),
+    ])
+      reached.push({ ...hit, via: hit.via ?? ` in the cell's tool.${one.tool} call` });
+    seen.push(...record(writtenText(inner), seen, call.tool, call.file));
+    rest.fill(" ", one.open, one.close);
+  }
+  return [...reached, ...urlHosts(rest.join(""))];
+}
+
+/** Every host a call reaches, by its tool: a `bash` command's (`bashHosts`); an `eval` cell's
+ * (`evalHosts`), in whatever language; an http(s) URL a `read`, `fetch` or `grep` is given as
+ * its path; and for a file the call runs that the run wrote (`fileRuns`), every host its
+ * program reaches. A tool of TEXT_TOOLS reaches none by its arguments; any other tool reaches the
+ * host of every network URL in any string argument but `i`, the intent every call names. */
+function reachesOf(call: Call, written: readonly Written[]): Reach[] {
+  const ran = fileRuns(call, written).flatMap(({ file, shell }) =>
+    programHosts(file.text, shell).map((one) => ({
+      ...one,
+      via: ` in ${file.path}, which a ${file.tool} call in ${file.file} wrote and it runs`,
+    }))
+  );
+  if (call.tool === "bash") return [...bashHosts(stringArg(call.args, "command") ?? ""), ...ran];
+  if (call.tool === "eval") return [...evalHosts(call, written), ...ran];
+  if (PATH_READERS.has(call.tool))
+    return (stringArg(call.args, "url") ?? stringArg(call.args, "path") ?? "")
+      .split(";")
+      .flatMap((one) =>
+        /^https?:\/\//i.test(one) ? urlHosts(one).map((hit) => ({ ...hit, named: one })) : []
+      );
+  if (TEXT_TOOLS[call.tool] !== undefined) return [];
+  return Object.entries(call.args)
+    .filter(([key]) => key !== "i")
+    .flatMap(([, value]) => stringsOf(value).flatMap(urlHosts));
+}
+
+/** The files `writes` leaves, given the files the run had `written` before it: a write that
+ * appends keeps the text the file held, by a write earlier in `writes` too. */
+function record(
+  writes: readonly { path: string; text: string; append: boolean }[],
+  written: readonly Written[],
+  tool: string,
+  file: string
+): Written[] {
+  const made: Written[] = [];
+  for (const one of writes) {
+    const before = one.append
+      ? [...written, ...made].findLast((held) => sameFile(held.path, one.path))
+      : undefined;
+    made.push({ path: one.path, text: `${before?.text ?? ""}${one.text}`, tool, file });
+  }
+  return made;
+}
+
+/** The first call of `calls` that reaches a host not in `hosts`, as a reason, read in the order the
+ * calls were made (a transcript's own order where two calls share a time): every `web_search` call,
+ * which always leaves the world, and the hosts each call reaches (`reachesOf`), given the files the
+ * calls before it wrote. */
+export function offWorldReach(
+  calls: readonly Call[],
+  hosts: ReadonlySet<string>
+): string | undefined {
   const allowed = [...hosts].join(", ");
-  for (const call of run.calls) {
+  const written: Written[] = [];
+  const ordered = calls
+    .map((call, index) => ({ call, index }))
+    .sort((a, b) => a.call.at - b.call.at || a.index - b.index);
+  for (const { call: made } of ordered) {
+    const call = deviceCall(made);
     if (call.tool === "web_search")
-      return `off-world network: a web_search call in ${call.file} searches the web, which no host of the run's world serves`;
-    const reached =
-      call.tool === "bash"
-        ? bashHosts(stringArg(call.args, "command") ?? "")
-        : ["read", "fetch", "web_fetch"].includes(call.tool)
-          ? [stringArg(call.args, "url") ?? stringArg(call.args, "path") ?? ""].flatMap((one) =>
-              /^https?:\/\//i.test(one)
-                ? [...one.matchAll(NETWORK_URL)].map((hit) => ({
-                    host: hostName(hit[1] ?? ""),
-                    named: one,
-                  }))
-                : []
-            )
-          : [];
-    const off = reached.find((one) => !hosts.has(one.host));
+      return `off-world network: a ${call.shown} call in ${call.file} searches the web, which no host of the run's world serves`;
+    const off = reachesOf(call, written).find((one) => !hosts.has(one.host));
     if (off !== undefined)
-      return `off-world network: a ${call.tool} call in ${call.file} reaches ${off.host} (${off.named}), no host of the run's world (${allowed})`;
+      return `off-world network: a ${call.shown} call in ${call.file} reaches ${off.host} (${off.named})${off.via ?? ""}, no host of the run's world (${allowed})`;
+    written.push(...record(writtenText(call), written, call.shown, call.file));
   }
   return undefined;
+}
+
+/** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`,
+ * `offWorldReach`). No tool is taken out of a profile for this: a profile without a tool is a
+ * world that differs from production. */
+function offWorld(run: Run): string | undefined {
+  return offWorldReach(run.calls, worldHosts(run));
 }
 
 /** Commands whose operands are files they write: every operand, or the last, which is the
@@ -691,9 +1176,9 @@ function bashWrites(command: string): string[] {
   ].map((hit) => hit[2] ?? "");
   for (const hit of code.matchAll(SHELL_COMMAND)) {
     const name = path.posix.basename(hit[1] ?? "");
-    const words = [
-      ...(hit[2] ?? "").replace(/(?:\d+|&)?[<>]{1,2}\|?[ \t]*\S*/g, " ").matchAll(WORD),
-    ].map((word) => word[0].replace(/^(['"])(.*)\1$/, "$2"));
+    const words = [...(hit[2] ?? "").replace(REDIRECTION, " ").matchAll(WORD)].map((word) =>
+      word[0].replace(/^(['"])(.*)\1$/, "$2")
+    );
     const operands = words.filter((word) => !word.startsWith("-"));
     if (name === "dd")
       written.push(...words.filter((word) => word.startsWith("of=")).map((word) => word.slice(3)));

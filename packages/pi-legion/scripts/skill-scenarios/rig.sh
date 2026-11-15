@@ -837,11 +837,12 @@ pane_var() {
 #   cover        hidden behind an empty tmpfs: a path a run names under one, outside its own
 #                directory and every rw and ro path, is one the run reached out of its world;
 #   credentials  hidden the same way: any path a run names under one is a reach for a credential;
-#   rw, ro       shown again at its own path, writable or read-only, where it exists.
+#   rw, ro       shown again at its own path, writable or read-only, where it exists; a path that
+#                is a link, or lies under one, is shown at what it resolves to as well.
 # Anything a cover hides that no rw or ro line shows again is out of the run's world, and /tmp is
 # the run's own $R/tmp (private_world's last bind).
 world_paths() {
-  local R=$1 work=$2 P=$3 co=$4 pane=$5 pin_dir=${6:-} workspaces=/legion/workspaces dir file entry
+  local R=$1 work=$2 P=$3 co=$4 pane=$5 pin_dir=${6:-} workspaces=/legion/workspaces dir file entry kind real
   # Hidden. The scratch root the caller's TMPDIR names: on a Legion pod every role of the issue
   # writes there, and it holds the work directory, the base label's checkout and every extraction
   # of a tree (rig-at-<commit>, head-checkout).
@@ -901,7 +902,15 @@ world_paths() {
     # outside the scratch root.
     entry=$(pane_var PUBLIC_LEAK_CHECK "$pane")
     [ -z "$entry" ] || printf 'ro %s\n' "$(dirname -- "$entry")"
-  } | LC_ALL=C sort -k2 | uniq
+  } | while read -r kind entry; do
+    # A shown path that is a link, or lies under one, is shown at what it resolves to as well, read
+    # here before anything is covered: a link the cover leaves visible resolves there once its
+    # target is bound back (zod's node_modules/zod is a link into the root's .bun store, which may
+    # lie under a cover), and a link the cover hides is shown again at its own path.
+    printf '%s %s\n' "$kind" "$entry"
+    real=$(realpath -m -- "$entry")
+    [ "$real" = "$entry" ] || printf '%s %s\n' "$kind" "$real"
+  done | LC_ALL=C sort -k2 | uniq
 }
 
 # The script launch.sh runs as root of a user, mount and PID namespace of its own (`unshare -Urm
@@ -910,7 +919,11 @@ world_paths() {
 # cwd as its arguments, then the agent's command. It reads $R/namespace.txt (world_paths) and:
 #   1. mounts a tmpfs on /dev/shm, its holder, and binds each rw and ro path there, $R first;
 #   2. covers each cover and credentials path with an empty tmpfs;
-#   3. binds each held path back onto its own path, read-only unless it is rw, $R first;
+#   3. binds each held path back onto its own path, read-only unless it is rw, $R first. A path a
+#      link the covers left visible still resolves elsewhere is left as it is: world_paths declared
+#      what it resolves to, which is bound back at that path, and the link reaches it there. The
+#      mount point is made for the target, never for the link, whose `mkdir -p` answers `File
+#      exists` once its target is covered;
 #   4. binds $R/tmp onto /tmp, and the held paths under /tmp again, since that bind hides them;
 #   5. drops the holder for an empty /dev/shm of the run's own, marks $R/namespace-ready, and
 #      starts the command in a second user namespace that maps it back to this user's uid and gid.
@@ -932,7 +945,7 @@ done </dev/shm/plan
 while read -r kind p; do
   case $kind in cover | credentials) [ ! -d "$p" ] || mount -t tmpfs tmpfs "$p" || exit 1 ;; esac
 done </dev/shm/plan
-back() { mkdir -p "$3" && mount --bind "/dev/shm/$1" "$3" && { [ "$2" = rw ] || mount -o remount,bind,ro "$3"; }; }
+back() { [ "$(realpath -m -- "$3")" = "$3" ] || return 0; mkdir -p "$3" && mount --bind "/dev/shm/$1" "$3" && { [ "$2" = rw ] || mount -o remount,bind,ro "$3"; }; }
 while read -r i kind p; do back "$i" "$kind" "$p" || exit 1; done </dev/shm/held
 mount --bind "$R/tmp" /tmp || exit 1
 while read -r i kind p; do
