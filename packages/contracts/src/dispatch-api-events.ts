@@ -222,6 +222,14 @@ export type DispatchEvent =
       readonly type: "ask.asked_of";
       readonly payload: AskEventPayload;
     })
+  /** The reviewer's hold of a decision block ended (INFRA-3231's R5): the ask, as it now stands,
+   *  reaches its reader's Inbox and the open-ask counts. It is quiet: no session gets it as a
+   *  card, and an open page refetches its Inbox and counts on it. A rewrite the review applied
+   *  comes first as its own `ask.edited`. */
+  | (DispatchEventBase & {
+      readonly type: "ask.reviewed";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;

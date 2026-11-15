@@ -1681,6 +1681,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "ask.edited": event("ask.edited", { anchor: null, id: "ask-1" }),
   "ask.follower_added": event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   "ask.follower_removed": event("ask.follower_removed", { ask_id: "ask-1", session_id: "s1" }),
+  "ask.reviewed": event("ask.reviewed", { anchor: null, id: "ask-1" }),
   "ask.handed_back": event("ask.handed_back", { anchor: null, id: "ask-1" }),
   "ask.opened": event("ask.opened", { anchor: null, id: "ask-1" }),
   "ask.resolved": event("ask.resolved", { anchor: null, id: "ask-1" }),

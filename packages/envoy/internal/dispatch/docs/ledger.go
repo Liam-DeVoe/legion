@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -627,7 +628,20 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 		if err := recordLatestEditSource(ctx, l.tx, artifactID, write.actor); err != nil {
 			return err
 		}
-		if err := recordAskAuthors(ctx, l.tx, artifactID, writtenAskAuthors(write)); err != nil {
+		authors := writtenAskAuthors(write)
+		if events.PersonTyped(ctx) && write.tree != nil {
+			// A person typed this write in a session: every ask block it leaves in the document is
+			// recorded as theirs, so the settlement that rewords one of them reads the rewording as
+			// the person's and reviews none of it (readPersonTypedAskBlocks). The settlement that
+			// indexes a block deletes its row (deleteSettledAskAuthors), so the mark lasts one
+			// settlement.
+			for id := range askBlockIDs(write.tree) {
+				if _, recorded := authors[id]; !recorded {
+					authors[id] = *write.actor
+				}
+			}
+		}
+		if err := recordAskAuthors(ctx, l.tx, artifactID, authors); err != nil {
 			return err
 		}
 	}

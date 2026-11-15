@@ -792,6 +792,11 @@ func (s *server) storeArtifact(
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
 	s.publish(r.Context(), published...)
+	if kind == "doc" {
+		// An agent's document version is saved at once and reviewed after the save
+		// (DISPATCH_REVIEWER_DOCUMENTS=after), its findings sent to the writer.
+		s.reviewDocumentAfterSave(r, actor, input, artifact.ID, artifact.IssueKey, documentMarkdown)
+	}
 	var blocks *documentBlocks
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
@@ -1373,6 +1378,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
 	s.publish(r.Context(), published...)
+	if edit.Changed {
+		// An agent's document version is saved at once and reviewed after the save
+		// (DISPATCH_REVIEWER_DOCUMENTS=after), its findings sent to the writer.
+		s.reviewDocumentAfterSave(r, actor, input, artifact.ID, artifact.IssueKey, "")
+	}
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}

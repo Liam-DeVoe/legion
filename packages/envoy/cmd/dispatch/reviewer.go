@@ -37,9 +37,11 @@ func newReviewer(cfg writingSettings, pacer *modelpace.Pacer) (*api.Reviewer, er
 	}
 	slog.Info("dispatch: the reviewer reads agents' texts to people", "kind", group.Kind, "deployment", group.Deployment,
 		"stand_in", group.StandIn, "asks", cfg.ReviewAsks, "issues", cfg.ReviewIssues, "comments", cfg.ReviewComments,
-		"messages", cfg.ReviewMessages, "rules", cfg.ReviewerRules)
+		"messages", cfg.ReviewMessages, "documents", cfg.ReviewDocuments, "decision_blocks", cfg.ReviewDecisionBlocks,
+		"rules", cfg.ReviewerRules)
 	return api.NewReviewer(api.ReviewerConfig{
 		Asks: cfg.ReviewAsks, Issues: cfg.ReviewIssues, Comments: cfg.ReviewComments, Messages: cfg.ReviewMessages,
+		Documents: cfg.ReviewDocuments, DecisionBlocks: cfg.ReviewDecisionBlocks,
 		Rules:        rules,
 		Model:        reviewer.Model{Model: model, Pace: pace, Timeout: cfg.ReviewerTimeout},
 		Timeout:      cfg.ReviewerTimeout,

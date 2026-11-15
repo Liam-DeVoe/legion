@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // lockedComment is the prologue of every change to an existing comment - resolve, reopen,
@@ -280,6 +281,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), event)
 	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
+	// An agent's edit of a comment a person already sees is reviewed after its save, with no
+	// hold (Decision 8 of INFRA-3231's plan).
+	s.reviewAfterSave(r, actor, input, reviewer.KindComment, comment.ID, reviewer.Text{Body: comment.Body}, commentReviewSubject(comment))
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 

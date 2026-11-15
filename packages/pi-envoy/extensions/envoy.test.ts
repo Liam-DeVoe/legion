@@ -12931,6 +12931,44 @@ console.log(JSON.stringify(args));
       expect(matchInjectedUserTurn("ses_delivery", turn)).toBe(DIRECT_MESSAGE_ID);
     });
 
+    // INFRA-3231's reviewer sends the writer its findings on a held text as a delivery frame of
+    // its own (Decision 5 of its plan): a message.created from Dispatch's system actor whose
+    // message id is the held text's id, which Dispatch stores as no message. It reaches the
+    // session's main conversation as a card that starts a turn: no side turn answers it, no
+    // accept is asked (only a person's Send is one), and nothing reads a message by that id.
+    test("a reviewer's findings frame about a held text starts a main turn", async () => {
+      const heldID = "66666666-6666-4666-8666-666666666666";
+      const findings = `Dispatch holds your comment ${heldID}. Run dispatch held-edit ${heldID}.`;
+      const sideTurns: string[] = [];
+      const { accepts, agent, delivered, fixture, posts, sends } = await bootDirectSession(
+        "reviewer-findings-frame",
+        {
+          idle: () => true,
+          sideTurn: (prompt) => {
+            sideTurns.push(prompt);
+            return "";
+          },
+        }
+      );
+
+      agent.push(
+        directDispatchEnvelope("steer", "reviewer-findings-frame", {
+          actor: { id: "dispatch-reviewer", kind: "system" },
+          body: findings,
+          messageID: heldID,
+        })
+      );
+      await delivered(1);
+
+      expect(accepts).toEqual([]);
+      expect(posts).toEqual([]);
+      expect(sideTurns).toEqual([]);
+      expect(fixture.userMessages).toEqual([]);
+      expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual(["envoy-message"]);
+      expect(JSON.stringify(fixture.deliveries[0]?.content)).toContain(`held-edit ${heldID}`);
+      expect(sends[0]?.options).toMatchObject({ triggerTurn: true });
+    });
+
     // Send is Enter at the terminal (no deliverAs); Aside lands at the next step. The frame's
     // mode and text are what any publisher wrote, so Dispatch's answer decides both.
     for (const [index, [frameMode, storedMode, options]] of (

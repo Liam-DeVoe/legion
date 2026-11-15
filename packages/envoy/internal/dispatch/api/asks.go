@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -629,6 +630,23 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// previous wording, which no other write would ever store.
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
+	// An agent's edit of an ask a person already sees is reviewed after its save, with no hold
+	// (Decision 8 of INFRA-3231's plan); a decision block whose hold has not ended takes the edit
+	// as its writer's edit of the held text, reviewed again before the block reaches an Inbox. A
+	// person's typed edit is reviewed by nobody, and ends such a hold with the block as they left it.
+	switch {
+	case personTypedWrite(r):
+		if ask.BlockID != nil && s.deps.Store != nil {
+			if ended, err := s.endHeldDecisionBlockForPerson(r.Context(), s.deps.Store.Pool, ask.ID); err != nil {
+				slog.Warn("dispatch: end a decision block's hold for a person's edit", "ask", ask.ID, "error", err)
+			} else {
+				ended()
+			}
+		}
+	case !s.editedHeldDecisionBlock(r.Context(), ask):
+		kind, text, subject := askReviewSubject(ask)
+		s.reviewAfterSave(r, actor, input, kind, ask.ID, text, subject)
+	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
@@ -1120,6 +1138,11 @@ var (
 		where a.issue_key = $1 order by a.created_at, a.id`
 	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 and a.state = 'open' order by a.created_at, a.id`
+	// listIssueAsksQueryWaiting is the issue detail's open asks (its "Waiting on you"), which leave
+	// out a decision block the reviewer holds from people's Inboxes (askNotHeld); the issue's own
+	// ask list, its conversation, shows it.
+	listIssueAsksQueryWaiting = `select ` + askReadColumns + ` ` + askReadFrom + `
+		where a.issue_key = $1 and a.state = 'open' and ` + askNotHeld + ` order by a.created_at, a.id`
 	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 and a.state = 'answered' order by a.created_at, a.id`
 	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
@@ -1131,10 +1154,12 @@ var (
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",
-// "open", or "answered"), each with its opening event id, its block document, the part ids of its
+// "open", "answered", or "waiting": the open asks less a decision block the reviewer holds from
+// people's Inboxes), each with its opening event id, its block document, the part ids of its
 // options and answer with its part revision (attachAskPartIDs), and WaitingOn when open. The
 // newest reply in each ask's thread is returned keyed by ask id; an ask nobody has replied to has
-// no entry. The issue detail's `open_asks` and the issue's own ask list read through it.
+// no entry. The issue detail's `open_asks` reads the waiting asks through it, and the issue's
+// own ask list the rest.
 func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
 	var query, value string
 	switch {
@@ -1143,6 +1168,8 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 		switch state {
 		case "open":
 			query = listIssueAsksQueryOpen
+		case "waiting":
+			query = listIssueAsksQueryWaiting
 		case "answered":
 			query = listIssueAsksQueryAnswered
 		default:

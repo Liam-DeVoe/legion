@@ -250,7 +250,8 @@ func (p *PgVersioned) appendWrites(ctx context.Context, room string, head int64,
 		statements = append(statements, upsert)
 	}
 	if len(askAuthors) > 0 {
-		askArgs, err := askAuthorsArgs(room, askAuthors)
+		// A browser's update is a person's own, never a command typed in a session.
+		askArgs, err := askAuthorsArgs(room, askAuthors, false)
 		if err != nil {
 			return nil, 0, err
 		}

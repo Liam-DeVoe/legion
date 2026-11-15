@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -1204,6 +1205,8 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+	// PersonTyped is PersonTypedPayload's mark: a person typed the command that made the review.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
@@ -1819,6 +1822,8 @@ type AskEventPayload struct {
 	// transaction (events.ThreadLogins), so a viewer knows whether their Inbox can have moved.
 	// Absent on every other ask event; [] when nobody has a row.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// PersonTyped is PersonTypedPayload's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // NewReferenceChangesPayload states what a write moved on a typed event payload.
@@ -1874,6 +1879,8 @@ type IssueEventPayload struct {
 	Ancestors    []string      `json:"ancestors,omitzero"`
 	ThreadLogins []string      `json:"thread_logins,omitzero"`
 	Forced       *ForcedCreate `json:"forced,omitempty"`
+	// PersonTyped is PersonTypedPayload's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // ForcedCreate is IssueEventPayload.Forced: what the near-copy refusal named when a create went
@@ -1908,6 +1915,26 @@ type AskEditEventPayload struct {
 	// after an opening or a hand-back is not quiet, even when a thread reply left the request
 	// waiting on its agent.
 	Quiet bool `json:"quiet,omitempty"`
+	// Rewrite is set on the ask.edited of a rewrite (INFRA-3231's Decision 23): whose rewrite it
+	// is, who asked for it and why. Previous holds the original wording.
+	Rewrite *AskRewriteEdit `json:"rewrite,omitempty"`
+	// PersonTyped is PersonTypedPayload's mark: a person typed the command that made the edit.
+	PersonTyped bool `json:"person_typed,omitempty"`
+}
+
+// The kinds of a rewrite (AskRewriteEdit.By): a person's Rewrite, and the reviewer's of R5.
+const (
+	RewriteByPerson   = "person"
+	RewriteByReviewer = "reviewer"
+)
+
+// AskRewriteEdit is the record of a rewrite an ask.edited carries: By is RewriteByPerson or
+// RewriteByReviewer, AskedBy who asked for it (the person, or Dispatch's reviewer), and Reason
+// why (the person's reason, or the reviewer's findings).
+type AskRewriteEdit struct {
+	By      string `json:"by"`
+	AskedBy Actor  `json:"asked_by"`
+	Reason  string `json:"reason"`
 }
 
 // NewAskEditEventPayload builds the payload of an `ask.edited` event.
@@ -2774,6 +2801,8 @@ type CommentEventPayload struct {
 	// Replies row on the comment's thread (its ask, else its root) once the comment is in, read
 	// in its own transaction (events.ThreadLogins). Absent on every other comment event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// PersonTyped is PersonTypedPayload's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // Message is a short update, optionally linked to an issue and threaded under another message.
@@ -2850,6 +2879,50 @@ type MessageEventPayload struct {
 	// Inbox an Agent row of that thread sits in, and [] when no person opened the thread. Carried
 	// by message.created and message.answered; absent on a delivery frame.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// PersonTyped is PersonTypedPayload's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
+}
+
+// PersonTypedPayload is payload with the mark that a person typed the command that made the write
+// in a session (Dispatch-Person-Typed: 1, Decision 26 of INFRA-3231's plan), so a reader of the
+// event log (the records job, internal/dispatch/wordrecords) reads its text as that person's
+// though a session is its actor: person_typed: true on the payload of each event a text write
+// emits, the comment, message, ask, issue and review payloads and a document's artifact.created
+// and artifact.version, of the same type it was handed. Any other payload is handed back as it
+// came.
+func PersonTypedPayload(eventType string, payload any) any {
+	switch p := payload.(type) {
+	case CommentEventPayload:
+		p.PersonTyped = true
+		return p
+	case MessageEventPayload:
+		p.PersonTyped = true
+		return p
+	case AskEventPayload:
+		p.PersonTyped = true
+		return p
+	case AskAnsweredEventPayload:
+		p.PersonTyped = true
+		return p
+	case AskEditEventPayload:
+		p.PersonTyped = true
+		return p
+	case IssueEventPayload:
+		p.PersonTyped = true
+		return p
+	case ArtifactReviewEventPayload:
+		p.PersonTyped = true
+		return p
+	case map[string]any:
+		switch eventType {
+		case "artifact.created", "artifact.version", "ask.resolved":
+			marked := make(map[string]any, len(p)+1)
+			maps.Copy(marked, p)
+			marked["person_typed"] = true
+			return marked
+		}
+	}
+	return payload
 }
 
 // UserAgentStateEventPayload is `user_agent_state.updated`: one viewer's Clear or read mark on

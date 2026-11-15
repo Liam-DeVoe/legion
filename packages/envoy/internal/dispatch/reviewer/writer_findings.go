@@ -35,7 +35,9 @@ type FindingsFrame struct {
 type frameData struct {
 	ID, Kind, Rewrite, NotApplied, TimeLeft, EditCommand string
 	Findings                                             []Finding
-	Held, PostsRewrite                                   bool
+	// Block is a held decision block, which shows in its document while its hold keeps it out of
+	// its reader's Inbox.
+	Held, Block, PostsRewrite bool
 }
 
 // editCommands are the dispatch commands that change a posted text of a kind.
@@ -49,7 +51,7 @@ var editCommands = map[Kind]string{
 // Body is the frame's text.
 func (f FindingsFrame) Body() (string, error) {
 	data := frameData{
-		ID: f.ID, Kind: f.Kind.spoken(), Findings: f.Findings, Held: f.Held,
+		ID: f.ID, Kind: f.Kind.spoken(), Findings: f.Findings, Held: f.Held, Block: f.Held && f.Kind == KindDecisionBlock,
 		PostsRewrite: f.PostsRewrite && f.Rewrite != nil && f.NotApplied == nil,
 		TimeLeft:     spokenDuration(f.TimeLeft), EditCommand: editCommands[f.Kind],
 	}

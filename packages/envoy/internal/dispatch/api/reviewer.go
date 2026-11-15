@@ -83,8 +83,17 @@ var reviewerActor = model.Actor{Kind: "system", ID: "dispatch-reviewer"}
 // ReviewerConfig is the reviewer as cmd/dispatch configured it from DISPATCH_REVIEWER_*.
 type ReviewerConfig struct {
 	// Asks, Issues, Comments and Messages are each kind's choice: ReviewOff, ReviewAfter or
-	// ReviewHold. An empty choice is ReviewOff.
+	// ReviewHold. An empty choice is ReviewOff. The choice also says whether an agent's edit of a
+	// posted text of the kind is reviewed after the save (Decision 8): any choice but ReviewOff.
 	Asks, Issues, Comments, Messages string
+	// Documents is the choice for a document version an agent saves (DISPATCH_REVIEWER_DOCUMENTS):
+	// ReviewOff or ReviewAfter; a version is never held.
+	Documents string
+	// DecisionBlocks is the choice for a decision block an agent writes in a document
+	// (DISPATCH_REVIEWER_DECISION_BLOCKS): ReviewOff, ReviewAfter, or ReviewHold, which shows the
+	// block in its document and keeps it out of every person's Inbox, counts and notices until
+	// the review ends (decision_blocks.go).
+	DecisionBlocks string
 	// Rules are the rule sets the reviewer applies (DISPATCH_REVIEWER_RULES); nil is
 	// DefaultReviewerRules.
 	Rules []reviewer.RuleSet
@@ -116,7 +125,7 @@ var DefaultReviewerRules = []reviewer.RuleSet{reviewer.RuleNoslop, reviewer.Rule
 
 // NewReviewer is the reviewer cfg describes, its zero fields given their defaults.
 func NewReviewer(cfg ReviewerConfig) *Reviewer {
-	for _, choice := range []*string{&cfg.Asks, &cfg.Issues, &cfg.Comments, &cfg.Messages} {
+	for _, choice := range []*string{&cfg.Asks, &cfg.Issues, &cfg.Comments, &cfg.Messages, &cfg.Documents, &cfg.DecisionBlocks} {
 		*choice = cmp.Or(*choice, ReviewOff)
 	}
 	cfg.Timeout = cmp.Or(cfg.Timeout, reviewer.DefaultTimeout)
@@ -145,13 +154,18 @@ func (rv *Reviewer) setting(kind reviewer.Kind) string {
 		return rv.config.Comments
 	case reviewer.KindMessage:
 		return rv.config.Messages
+	case reviewer.KindDocument:
+		return rv.config.Documents
+	case reviewer.KindDecisionBlock:
+		return rv.config.DecisionBlocks
 	}
 	return ReviewOff
 }
 
 // reviewsAny reports whether the reviewer reads any kind of text, before or after its post.
 func (rv *Reviewer) reviewsAny() bool {
-	return rv != nil && slices.ContainsFunc([]string{rv.config.Asks, rv.config.Issues, rv.config.Comments, rv.config.Messages},
+	return rv != nil && slices.ContainsFunc(
+		[]string{rv.config.Asks, rv.config.Issues, rv.config.Comments, rv.config.Messages, rv.config.Documents, rv.config.DecisionBlocks},
 		func(choice string) bool { return choice != ReviewOff })
 }
 
@@ -199,14 +213,16 @@ type postedReview struct {
 
 // reviewWrite is the reviewer's hook on a write of a kind it may hold. It reads the write when an
 // agent session makes it (writingCheckReads; the Legion daemon's session is left out), no plugin
-// generated it (generatedText) and a person reads it (writingCheckReader), by the kind's setting:
-// hold stores the write as a held text, answers the write's own response shape built from the
-// held row with an added `held` object, starts the review in the background and answers false;
-// after answers true with the review the handler starts once its write committed (reviewPosted);
-// off leaves the write to the writing check (writingCheck). A write that names a held text as its
-// parent or as the text it answers is held beside it whatever the setting says, and posts right
-// after it, through its own review where the setting is hold. Call it as writingCheck is called:
-// once the input is decoded and the actor resolved, before any transaction.
+// generated it (generatedText), no person typed it in a session (personTypedWrite) and a person
+// reads it (writingCheckReader), by the kind's setting: hold stores the write as a held text,
+// answers the write's own response shape built from the held row with an added `held` object,
+// starts the review in the background and answers false; after answers true with the review the
+// handler starts once its write committed (reviewPosted); off leaves the write to the writing
+// check (writingCheck). A person's typed write posts at once, recorded exempt_person_typed. A write
+// that names a held text as its parent or as the text it answers is held beside it whatever the
+// setting says, and posts right after it, through its own review where the setting is hold and no
+// person typed it. Call it as writingCheck is called: once the input is decoded and the actor
+// resolved, before any transaction.
 func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, write reviewedWrite) (*postedReview, bool) {
 	rv := s.deps.Reviewer
 	if !rv.reviewsAny() || s.deps.Store == nil {
@@ -219,10 +235,16 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		return nil, false
 	}
 	method, route := routeOf(r)
+	typed := personTypedWrite(r)
+	if typed && parent == nil {
+		// A person's own typed write posts at once, whatever the kind's setting (Decision 26).
+		s.recordPersonTyped(r, actor, input, cmp.Or(write.project, s.projectOfText(ctx, write.subject)))
+		return nil, true
+	}
 	setting := rv.setting(write.kind)
 	reader, project := "", write.project
 	reviews := false
-	if checked, _ := writingCheckReads(actor); checked && setting != ReviewOff && !generatedText(r, method+" "+route) {
+	if checked, _ := writingCheckReads(actor); checked && !typed && setting != ReviewOff && !generatedText(r, method+" "+route) {
 		if parent != nil {
 			reader = parent.reader
 		} else if reader, err = s.writingCheckReader(ctx, r, method+" "+route, actor, input); err != nil {
@@ -254,12 +276,14 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		return &postedReview{kind: write.kind, text: write.text, subject: subject, event: event}, true
 	}
 	if !holds {
-		// A write that waits on a held text and that the reviewer does not read before it posts:
-		// the writing check reads it now, as it reads any write.
+		// A write that waits on a held text and that the reviewer does not read before it posts
+		// (a person's typed write among them): the writing check reads it now, as it reads any
+		// write, and it posts right after the text it waits on.
 		s.writingCheck(w, r, actor, input)
 	}
 	s.holdWrite(w, r, actor, write, heldWriteOf{
 		route: method + " " + route, reader: reader, project: project, parent: parent, reviewed: holds, event: event,
+		personTyped: typed,
 	})
 	return nil, false
 }
@@ -410,6 +434,14 @@ func (s *server) reviewHeld(ctx context.Context, id string) {
 	}
 	subject := write.subject
 	subject.Text, subject.Writer, subject.Reader, subject.At = write.text, row.writer, row.reader, row.writtenAt
+	if write.kind == reviewer.KindDecisionBlock {
+		// A held decision block is in its document already, and its writer may have reworded
+		// it since the hold: the review reads the ask as it now stands.
+		if subject, err = s.decisionBlockSubject(ctx, row); err != nil {
+			s.decideHeld(ctx, row, heldDecision{outcome: reviewPostedUnreviewed, detail: "its ask could not be read: " + err.Error()})
+			return
+		}
+	}
 	reviewed, err := s.review(ctx, subject)
 	if ctx.Err() != nil {
 		return

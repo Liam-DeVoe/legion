@@ -1,8 +1,13 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  DISPATCH_PERSON_TYPED_HEADER,
+  IDEMPOTENCY_KEY_HEADER,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -945,6 +950,55 @@ describe("the dispatch CLI", () => {
     ]);
     for (const request of posted) {
       expect(request.body, request.path).toMatchObject({ body: whole });
+    }
+  });
+
+  // A person's own typed command (Decision 26 of INFRA-3231): the CLI reads
+  // DISPATCH_PERSON_TYPED once at start and takes it out of its own environment before it starts
+  // any child, so the tmux it asks for the session's pane (a real process, a `tmux` of the
+  // test's own on PATH that writes the environment it was started with) inherits nothing, and
+  // its write carries Dispatch-Person-Typed: 1. The same call with no variable sends no header.
+  test("a person's typed call marks its write and hands no child DISPATCH_PERSON_TYPED", async () => {
+    const bin = join(stateDir, "bin");
+    const seen = join(stateDir, "tmux-env");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "tmux"),
+      `#!/bin/sh\nenv >> ${JSON.stringify(seen)}\necho '---' >> ${JSON.stringify(seen)}\necho 'main:1.0 %1'\n`
+    );
+    chmodSync(join(bin, "tmux"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    const marks: (string | null)[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") marks.push(request.headers.get(DISPATCH_PERSON_TYPED_HEADER));
+      return fetch(request);
+    }) as typeof fetch;
+    try {
+      for (const typed of [true, false]) {
+        if (typed) process.env.DISPATCH_PERSON_TYPED = "1";
+        const { code, stdout } = await run(
+          ["comment", "--issue", "DSP-1", "--body", "This names the problem."],
+          { ...omp, TMUX_PANE: "%1", ...(typed ? { DISPATCH_PERSON_TYPED: "1" } : {}) },
+          "",
+          fetchImpl
+        );
+        expect(code, stdout).toBe(0);
+        expect(process.env.DISPATCH_PERSON_TYPED).toBeUndefined();
+      }
+    } finally {
+      process.env.PATH = path;
+      delete process.env.DISPATCH_PERSON_TYPED;
+    }
+    expect(marks).toEqual(["1", null]);
+    const children = readFileSync(seen, "utf-8")
+      .split("---\n")
+      .filter((run) => run !== "");
+    expect(children.length).toBe(2);
+    for (const child of children) {
+      expect(child).toContain("PATH=");
+      expect(child).not.toContain("DISPATCH_PERSON_TYPED");
     }
   });
 

@@ -207,9 +207,10 @@ export async function runDispatchCli(
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
   }
-  // Whether a person typed this call's line (Decision 26 of INFRA-3231), read once, here: such a
-  // call is never refused to show the written rules. INFRA-3231's task t08 extends
-  // personTypedCall and hands this value to the Dispatch client.
+  // Whether a person typed this call's line (Decision 26 of INFRA-3231), read once, here, and
+  // taken out of this process's environment and of `env` before anything below starts a child:
+  // such a call is never refused to show the written rules, and its Dispatch client marks every
+  // write it sends with Dispatch-Person-Typed: 1.
   const personTyped = personTypedCall(env);
   // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
   // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
@@ -556,6 +557,7 @@ export async function runDispatchCli(
       config,
       env,
       ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+      ...(personTyped ? { personTyped } : {}),
       subscriptions,
     });
     text = result.text;

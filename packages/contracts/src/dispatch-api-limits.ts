@@ -124,6 +124,17 @@ export const IDEMPOTENCY_REPLAYED_HEADER = "Idempotency-Replayed";
  */
 export const DISPATCH_GENERATED_TEXT_HEADER = "Dispatch-Generated-Text";
 
+/**
+ * The request header (`1`) the `dispatch` command puts on every write it makes when a person typed
+ * the command themselves in a session (`!dispatch …` through pi-envoy's typed shell, which sets
+ * `DISPATCH_PERSON_TYPED=1` for that command alone). Dispatch reads it on every write route: the
+ * write posts at once, with no hold and no review whatever the reviewer's settings say,
+ * `writing_check_events` records it as `exempt_person_typed` with its session, and the event the
+ * write emits carries `person_typed: true`, so the records job reads it as the person's text. A
+ * Dispatch that does not know the header ignores it.
+ */
+export const DISPATCH_PERSON_TYPED_HEADER = "Dispatch-Person-Typed";
+
 /** The longest `IDEMPOTENCY_KEY_HEADER` value, in characters. */
 export const IDEMPOTENCY_KEY_MAX = 128;
 

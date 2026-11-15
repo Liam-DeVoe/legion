@@ -4,6 +4,7 @@ import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
+  personTypedFields,
   type ReplyBlock,
   ReplyBlockSchema,
   referenceChangesFields,
@@ -107,6 +108,7 @@ export const messageEventPayloadFields = {
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,
+  ...personTypedFields,
 };
 
 export const WrittenMessageEventPayloadSchema = z

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -63,13 +64,16 @@ type heldRow struct {
 	dependsOn                       string
 	writtenAt                       time.Time
 	postedAt                        *time.Time
+	// personTyped is a write a person typed in a session, held beside the text it waits on: its
+	// post marks its events person_typed (Decision 26).
+	personTyped bool
 }
 
 // heldColumns are the columns scanHeld reads, in its order.
 const heldColumns = `id, kind, route, request, original, actor, coalesce(writer, ''), coalesce(reader, ''),
 	coalesce(project, ''), coalesce(issue_key, ''), state, revision, reviewed, findings, rewrite,
 	coalesce(not_applied, ''), coalesce(outcome, ''), coalesce(reason, ''), coalesce(detail, ''),
-	coalesce(writer_answer, ''), deadline, coalesce(depends_on, ''), written_at, posted_at`
+	coalesce(writer_answer, ''), deadline, coalesce(depends_on, ''), written_at, posted_at, person_typed`
 
 func scanHeld(row pgx.Row) (heldRow, error) {
 	var held heldRow
@@ -77,7 +81,7 @@ func scanHeld(row pgx.Row) (heldRow, error) {
 	if err := row.Scan(&held.id, &held.kind, &held.route, &held.request, &original, &actor, &held.writer, &held.reader,
 		&held.project, &held.issueKey, &held.state, &held.revision, &held.reviewed, &findings, &rewrite,
 		&held.notApplied, &held.outcome, &held.reason, &held.detail, &held.answer, &held.deadline, &held.dependsOn,
-		&held.writtenAt, &held.postedAt); err != nil {
+		&held.writtenAt, &held.postedAt, &held.personTyped); err != nil {
 		return heldRow{}, err
 	}
 	if err := json.Unmarshal(original, &held.original); err != nil {
@@ -140,6 +144,15 @@ func (h heldRow) write() (reviewedWrite, error) {
 		return replay.reviewed(reviewer.Kind(h.kind)), nil
 	}
 	switch reviewer.Kind(h.kind) {
+	case reviewer.KindDecisionBlock:
+		var hold decisionBlockHold
+		if err := json.Unmarshal(h.request, &hold); err != nil {
+			return reviewedWrite{}, err
+		}
+		return reviewedWrite{
+			kind: reviewer.KindDecisionBlock, request: hold, text: h.original,
+			subject: reviewer.Subject{AskID: hold.AskID, IssueKey: h.issueKey}, holdable: true,
+		}, nil
 	case reviewer.KindAsk:
 		var create askCreate
 		if err := json.Unmarshal(h.request, &create); err != nil {
@@ -241,7 +254,7 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select id, state, coalesce(reader, ''), coalesce(project, '')
 		from held_texts
-		where id = any($1) and state not in ('posted', 'failed')
+		where id = any($1) and state not in ('posted', 'failed') and kind <> 'decision_block'
 		order by seq desc limit 1`, named).Scan(&parent.id, &parent.state, &parent.reader, &parent.project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -260,6 +273,9 @@ type heldWriteOf struct {
 	reviewed bool
 	// event is the writing_check_events row of the write, its outcome left to set.
 	event store.WritingCheckEvent
+	// personTyped is a write a person typed in a session (Decision 26), which waits on parent and
+	// is never reviewed.
+	personTyped bool
 }
 
 // holdWrite stores write as a held text and answers the write: its id reserved (an issue's key
@@ -326,12 +342,12 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 	var writtenAt time.Time
 	if err := tx.QueryRow(ctx, `
 		insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, issue_key,
-			state, reviewed, outcome, depends_on)
+			state, reviewed, outcome, depends_on, person_typed)
 		values ($1, $2, $3, $4, $5, $6, nullif($7, ''), nullif($8, ''), nullif($9, ''), nullif($10, ''),
-			$11, $12, nullif($13, ''), nullif($14, ''))
+			$11, $12, nullif($13, ''), nullif($14, ''), $15)
 		returning written_at`,
 		id, string(write.kind), of.route, request, original, author, writerOf(actor), of.reader, of.project,
-		write.subject.IssueKey, state, of.reviewed, outcome, dependsOn).Scan(&writtenAt); err != nil {
+		write.subject.IssueKey, state, of.reviewed, outcome, dependsOn, of.personTyped).Scan(&writtenAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -698,7 +714,8 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 	}
 }
 
-// runHeldPost runs the held text's create path.
+// runHeldPost runs the held text's create path. A write a person typed posts with its events
+// marked theirs (events.WithPersonTyped).
 func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 	write, err := row.write()
 	if err != nil {
@@ -706,6 +723,9 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 	}
 	if row.outcome == reviewRewritePosted && row.rewrite != nil {
 		write = withRewrite(write, *row.rewrite)
+	}
+	if row.personTyped {
+		ctx = events.WithPersonTyped(ctx)
 	}
 	held := &heldPost{id: row.id}
 	switch create := write.request.(type) {
@@ -748,6 +768,8 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 		}
 	case heldReplay:
 		return s.postReplay(ctx, row, create, held)
+	case decisionBlockHold:
+		return s.releaseDecisionBlock(ctx, row, held)
 	}
 	return nil
 }

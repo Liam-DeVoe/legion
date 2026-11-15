@@ -339,7 +339,7 @@ func issueSummaryJoins(readAdvances bool) string {
 	left join (
 		select a.issue_key, count(*) as total
 		from asks a
-		where a.state = 'open' and a.issue_key in (select key from subjects)
+		where a.state = 'open' and ` + askNotHeld + ` and a.issue_key in (select key from subjects)
 		group by a.issue_key
 	) open_asks on open_asks.issue_key = i.key
 	left join (
@@ -896,7 +896,7 @@ type issueDetail struct {
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
-// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
+// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks ("waiting") with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
 // the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
@@ -929,7 +929,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		artifacts = scanned
 		return err
 	})
-	first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
+	// The detail's open asks are its "Waiting on you": a decision block the reviewer holds from
+	// people's Inboxes is left out of them, as INFRA-3552's R5 lists that read.
+	first.Queue(listIssueAsksQueryWaiting, key).Query(func(rows pgx.Rows) error {
 		scannedAsks, scannedReplies, err := scanAskReads(rows)
 		asks, replies = scannedAsks, scannedReplies
 		return err

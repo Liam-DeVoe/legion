@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // issueUpdatedNow is the value every write that stamps an issue's updated_at itself sets it to:
@@ -611,6 +612,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).
 		// It runs after the publish so every event reaches subscribers in commit order.
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
+	}
+	// An agent's retitle of an issue a person already sees is reviewed after its save, with no
+	// hold (Decision 8 of INFRA-3231's plan).
+	if before.Title != after.Title {
+		s.reviewAfterSave(r, actor, input, reviewer.KindIssue, key, reviewer.Text{Title: after.Title}, reviewer.Subject{IssueKey: key})
 	}
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }

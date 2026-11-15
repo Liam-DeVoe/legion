@@ -41,15 +41,22 @@ export const WRITING_RULES_SETTINGS_MS = 10 * 60_000;
 /**
  * Whether this call runs a person's own typed line: `DISPATCH_PERSON_TYPED=1`, which pi-envoy's
  * typed shell puts before a `!dispatch …` line a person typed (INFRA-3231, Decision 26). The
- * command reads it once, when it starts, and refuses no write of such a call.
+ * command reads it once, when it starts, and refuses no write of such a call; it gives the value
+ * to the `DispatchClient` it makes, which sends `Dispatch-Person-Typed: 1` on each write.
  *
- * INFRA-3231's task t08 extends this function: the command then also deletes the variable from
- * its own environment before it starts a child process, and gives the value to the
- * `DispatchClient` it makes, which sends `Dispatch-Person-Typed: 1` on each write.
+ * It takes the variable as it reads it: it deletes it from `env`, the command's own copy of its
+ * environment, and from `process.env`, before the command starts any child process (jj, git, ps,
+ * a configured `/bin/sh -c` command, agent-secrets), so no program the command starts, and no
+ * agent such a program starts, inherits it.
  */
-export function personTypedCall(env: Readonly<Record<string, string | undefined>>): boolean {
+export function personTypedCall(env: Record<string, string | undefined>): boolean {
   // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
-  return env["DISPATCH_PERSON_TYPED"] === "1";
+  const typed = env["DISPATCH_PERSON_TYPED"] === "1";
+  // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
+  delete env["DISPATCH_PERSON_TYPED"];
+  // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
+  delete process.env["DISPATCH_PERSON_TYPED"];
+  return typed;
 }
 
 /** What `writingRulesRefusal` reads for one call. */

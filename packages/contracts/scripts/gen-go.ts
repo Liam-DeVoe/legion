@@ -8,6 +8,7 @@ import {
   DISPATCH_GENERATED_TEXT_HEADER,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_PERSON_TYPED_HEADER,
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
@@ -503,6 +504,13 @@ const IdempotencyReplayedHeader = ${JSON.stringify(IDEMPOTENCY_REPLAYED_HEADER)}
 // Generated from DISPATCH_GENERATED_TEXT_HEADER in packages/contracts so the server and the
 // plugins name it once.
 const GeneratedTextHeader = ${JSON.stringify(DISPATCH_GENERATED_TEXT_HEADER)}
+
+// PersonTypedHeader is the request header (1) the dispatch command puts on every write of a
+// command a person typed in a session. The server reads it on every write route: the write posts
+// at once with no review, is recorded exempt_person_typed, and its event carries person_typed.
+// Generated from DISPATCH_PERSON_TYPED_HEADER in packages/contracts so the server and the command
+// name it once.
+const PersonTypedHeader = ${JSON.stringify(DISPATCH_PERSON_TYPED_HEADER)}
 
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and

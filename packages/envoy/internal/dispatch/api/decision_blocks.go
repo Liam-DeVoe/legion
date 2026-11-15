@@ -1,0 +1,439 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
+)
+
+// decision_blocks.go is the reviewer of a decision block an agent writes in a document
+// (INFRA-3231's R5 and Decisions 3 and 23 of its plan). A decision block shows in its document
+// when the document is saved, so its ask row exists from the settlement that opens it; the
+// reviewer cannot hold it from the document, only from the people who would be asked to act on it.
+// By DISPATCH_REVIEWER_DECISION_BLOCKS:
+//
+//   - hold: in the settlement's own transaction the ask gets held_until, which every Inbox read
+//     and every open-ask count reads (askNotHeld), and a held_texts row of kind decision_block
+//     under the ask's id carries its review, the writer's frame and window, and the sweep, as for
+//     any held text. Its post ends the hold: the ask's held_until goes back to null and a quiet
+//     ask.reviewed event tells an open page to refetch its Inbox and counts; where the outcome is
+//     rewrite_posted, the reviewer's rewrite is applied first (rewriteDecisionBlock).
+//   - after: the block is reviewed after its settlement commits, with the findings sent to the
+//     writer and nothing held.
+//
+// A block a person typed in a session (doc_ask_block_authors.person_typed) is never held nor
+// reviewed, and is recorded exempt_person_typed. An open block whose wording a later write moves is
+// reviewed after that write with no hold, unless its hold has not ended, when the move is its
+// writer's edit of the held text and is reviewed again before the block reaches an Inbox.
+
+// decisionBlockRoute is the route a decision block's records name: the settlement that opened it,
+// which no request of its own makes.
+const decisionBlockRoute = "SETTLE decision block"
+
+// askNotHeld is the condition every read of an Inbox or an open-ask count adds for the ask aliased
+// a: no reviewer's hold of a decision block keeps it out (asks.held_until, migration
+// 20261115104117).
+const askNotHeld = `(a.held_until is null or a.held_until <= now())`
+
+// decisionBlockHold is a held decision block's request: the ask whose block is held.
+type decisionBlockHold struct {
+	DecisionBlock bool   `json:"decision_block"`
+	AskID         string `json:"ask_id"`
+}
+
+// decisionBlockReviewer is the server as the document service's AskBlockReviewer.
+type decisionBlockReviewer struct{ s *server }
+
+var _ docs.AskBlockReviewer = decisionBlockReviewer{}
+
+// heldDecisionBlockBound is how long a hold keeps a decision block out of people's Inboxes when
+// nothing ends it: the review's bound and the writer's window, with a minute more.
+func (rv *Reviewer) heldDecisionBlockBound() time.Duration {
+	return rv.config.Timeout + rv.config.WriterWindow + time.Minute
+}
+
+// decisionBlockReview is the reader and the project of the decision block ask, read in q, and
+// whether the reviewer reads it at all: an agent session's block (the Legion daemon's left out)
+// that a person waits on.
+func (s *server) decisionBlockReview(ctx context.Context, q queryer, ask model.Ask, author model.Actor) (reader, project string, reads bool, err error) {
+	if checked, _ := writingCheckReads(author); !checked {
+		return "", "", false, nil
+	}
+	if reader, err = askWaitingOnPerson(ctx, q, ask.ID); err != nil {
+		return "", "", false, err
+	}
+	if err := q.QueryRow(ctx, `
+		select coalesce(i.project_key, ar.project_key, '')
+		from asks a left join issues i on i.key = a.issue_key left join artifacts ar on ar.id = coalesce(a.artifact_id, a.block_artifact_id)
+		where a.id = $1`, ask.ID).Scan(&project); err != nil {
+		return "", "", false, fmt.Errorf("read the project of decision block %s: %w", ask.ID, err)
+	}
+	return reader, project, reader != "", nil
+}
+
+// decisionBlockEvent is the writing_check_events row of a decision block author wrote.
+func decisionBlockEvent(author model.Actor, reader, project string) store.WritingCheckEvent {
+	method, route, _ := strings.Cut(decisionBlockRoute, " ")
+	event := store.WritingCheckEvent{
+		Route: route, Method: method, ActorKind: author.Kind, ActorID: author.ID, Reader: reader, Project: project,
+	}
+	if author.Act != nil {
+		event.ActSession, event.TokenID = author.Act.Session, author.Act.TokenID
+	}
+	return event
+}
+
+// AskBlockOpened holds or reviews the new decision block ask, by the setting, in the settlement's
+// transaction tx. A block a person typed is recorded exempt_person_typed and opens as it is.
+func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, ask model.Ask, author model.Actor, personTyped bool) (func(), error) {
+	s := d.s
+	rv := s.deps.Reviewer
+	if personTyped {
+		if checked, _ := writingCheckReads(author); !checked {
+			return nil, nil
+		}
+		reader, project, _, err := s.decisionBlockReview(ctx, tx, ask, author)
+		if err != nil {
+			return nil, err
+		}
+		event := decisionBlockEvent(author, reader, project)
+		event.Outcome = writingCheckPersonTyped
+		return func() { s.recordWritingCheck(s.postContext(), event) }, nil
+	}
+	setting := rv.setting(reviewer.KindDecisionBlock)
+	if setting == ReviewOff || s.deps.Store == nil {
+		return nil, nil
+	}
+	reader, project, reads, err := s.decisionBlockReview(ctx, tx, ask, author)
+	if err != nil || !reads {
+		return nil, err
+	}
+	event := decisionBlockEvent(author, reader, project)
+	if setting == ReviewAfter {
+		kind, text, subject := askReviewSubject(ask)
+		text.Kind = kind
+		subject.Text, subject.Writer, subject.Reader = text, writerOf(author), reader
+		review := &postedReview{kind: kind, text: text, subject: subject, event: event}
+		return func() { s.reviewPosted(s.postContext(), review, ask.ID) }, nil
+	}
+	request, err := json.Marshal(decisionBlockHold{DecisionBlock: true, AskID: ask.ID})
+	if err != nil {
+		return nil, err
+	}
+	_, text, _ := askReviewSubject(ask)
+	text.Kind = reviewer.KindDecisionBlock
+	original, err := json.Marshal(text)
+	if err != nil {
+		return nil, err
+	}
+	actor, err := json.Marshal(author)
+	if err != nil {
+		return nil, err
+	}
+	issueKey := ""
+	if ask.IssueKey != nil {
+		issueKey = *ask.IssueKey
+	}
+	if _, err := tx.Exec(ctx, `update asks set held_until = now() + $2::interval where id = $1`,
+		ask.ID, intervalOf(rv.heldDecisionBlockBound())); err != nil {
+		return nil, fmt.Errorf("hold decision block %s: %w", ask.ID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, issue_key, state, reviewed)
+		values ($1, 'decision_block', $2, $3, $4, $5, nullif($6, ''), $7, nullif($8, ''), nullif($9, ''), 'reviewing', true)`,
+		ask.ID, decisionBlockRoute, request, original, actor, writerOf(author), reader, project, issueKey); err != nil {
+		return nil, fmt.Errorf("hold decision block %s: %w", ask.ID, err)
+	}
+	event.Outcome = reviewHeld
+	return func() {
+		s.recordWritingCheck(s.postContext(), event)
+		s.startReview(ask.ID)
+	}, nil
+}
+
+// AskBlockReworded is a write that moved the open decision block ask's wording from previous. A
+// write a person typed in a session is theirs: it is reviewed by nobody and recorded
+// exempt_person_typed (personTypedBlockEdit). While the block's hold has not ended any other move
+// is its writer's edit of the held text, reviewed again before the block reaches an Inbox
+// (heldDecisionBlockEdit); else it is reviewed after the write, by the setting, with no hold.
+// Dispatch's own rewrite (the reviewer's actor) starts no review.
+func (d decisionBlockReviewer) AskBlockReworded(ctx context.Context, tx pgx.Tx, ask model.Ask, previous model.AskEditPrevious, editor model.Actor, personTyped bool) (func(), error) {
+	s := d.s
+	if editor == reviewerActor || s.deps.Store == nil {
+		return nil, nil
+	}
+	if personTyped {
+		return s.personTypedBlockEdit(ctx, tx, ask, editor)
+	}
+	if after, edited, err := s.heldDecisionBlockEdit(ctx, tx, ask.ID); err != nil || edited {
+		return after, err
+	}
+	if s.deps.Reviewer.setting(reviewer.KindDecisionBlock) == ReviewOff {
+		return nil, nil
+	}
+	reader, project, reads, err := s.decisionBlockReview(ctx, tx, ask, editor)
+	if err != nil || !reads {
+		return nil, err
+	}
+	kind, text, subject := askReviewSubject(ask)
+	text.Kind = kind
+	subject.Text, subject.Writer, subject.Reader = text, writerOf(editor), reader
+	review := &postedReview{kind: kind, text: text, subject: subject, event: decisionBlockEvent(editor, reader, project)}
+	return func() { s.reviewPosted(s.postContext(), review, ask.ID) }, nil
+}
+
+// personTypedBlockEdit is a person's typed rewording of the decision block ask (Decision 26 of
+// INFRA-3231's plan), in the settlement's transaction tx: no review reads it, it is recorded
+// exempt_person_typed, and a hold of the block that has not ended ends now
+// (endHeldDecisionBlockForPerson).
+func (s *server) personTypedBlockEdit(ctx context.Context, tx pgx.Tx, ask model.Ask, editor model.Actor) (func(), error) {
+	var record *store.WritingCheckEvent
+	if checked, _ := writingCheckReads(editor); checked {
+		reader, project, _, err := s.decisionBlockReview(ctx, tx, ask, editor)
+		if err != nil {
+			return nil, err
+		}
+		event := decisionBlockEvent(editor, reader, project)
+		event.Outcome = writingCheckPersonTyped
+		record = &event
+	}
+	ended, err := s.endHeldDecisionBlockForPerson(ctx, tx, ask.ID)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		if record != nil {
+			s.recordWritingCheck(s.postContext(), *record)
+		}
+		ended()
+	}, nil
+}
+
+// endHeldDecisionBlockForPerson ends, in q, the hold of the decision block id that has not ended,
+// with the block as a person's typed edit left it (posted_as_written), so no reviewer's rewrite is
+// written over their words. What it returns records that and posts the block once q commits; it
+// does nothing for a block nobody holds.
+func (s *server) endHeldDecisionBlockForPerson(ctx context.Context, q queryer, id string) (func(), error) {
+	const detail = "a person typed an edit of the block in a session"
+	held, err := scanHeld(q.QueryRow(ctx, `
+		update held_texts
+		set state = 'posting', outcome = 'posted_as_written', detail = $2, deadline = null, claimed_at = null,
+			updated_at = now()
+		where id = $1 and kind = 'decision_block' and state in ('reviewing', 'awaiting_writer')
+		returning `+heldColumns, id, detail))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return func() {}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("end the hold of decision block %s for a person's edit: %w", id, err)
+	}
+	return func() {
+		s.recordHeld(s.postContext(), held, reviewPostedAsWritten, nil, detail)
+		s.detached.goDetached(s.postReady)
+	}, nil
+}
+
+// heldDecisionBlockEdit takes, in q, a move of the held decision block id's wording as its
+// writer's edit: the review starts again on the new wording, and the frame's window with it. It
+// reports whether id is a decision block whose hold has not ended, with what to run once q
+// commits.
+func (s *server) heldDecisionBlockEdit(ctx context.Context, q queryer, id string) (func(), bool, error) {
+	row, err := scanHeld(q.QueryRow(ctx, `
+		update held_texts
+		set revision = revision + 1, state = 'reviewing', findings = '[]', rewrite = null, not_applied = null,
+			deadline = null, claimed_at = null, updated_at = now()
+		where id = $1 and kind = 'decision_block' and state in ('reviewing', 'awaiting_writer')
+		returning `+heldColumns, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("take the edit of held decision block %s: %w", id, err)
+	}
+	return func() {
+		s.recordHeld(s.postContext(), row, reviewEdited, nil, "")
+		s.startReview(id)
+	}, true, nil
+}
+
+// editedHeldDecisionBlock is heldDecisionBlockEdit for an edit already committed (PATCH
+// /api/v1/asks/{id} writes the block and the row in one transaction, so no settlement rewords it):
+// it reports whether ask is a decision block whose hold has not ended, whose review it restarted.
+func (s *server) editedHeldDecisionBlock(ctx context.Context, ask model.Ask) bool {
+	if ask.BlockID == nil || s.deps.Store == nil {
+		return false
+	}
+	after, edited, err := s.heldDecisionBlockEdit(ctx, s.deps.Store.Pool, ask.ID)
+	if err != nil {
+		slog.Warn("dispatch: take an edit of a held decision block", "ask", ask.ID, "error", err)
+		return false
+	}
+	if edited {
+		after()
+	}
+	return edited
+}
+
+// decisionBlockSubject is the held decision block row's subject for its review: the ask as it now
+// stands (its writer may have reworded it since the hold), its writer and its reader.
+func (s *server) decisionBlockSubject(ctx context.Context, row heldRow) (reviewer.Subject, error) {
+	subject, err := reviewer.AskSubject(ctx, s.deps.Store, row.id)
+	if err != nil {
+		return reviewer.Subject{}, err
+	}
+	subject.Writer, subject.Reader = row.writer, row.reader
+	return subject, nil
+}
+
+// releaseDecisionBlock is a held decision block's post: in one transaction it applies the
+// reviewer's rewrite where the outcome is rewrite_posted and the ask is still open
+// (rewriteDecisionBlock), ends the hold, appends the quiet ask.reviewed an open page refetches its
+// Inbox and counts on, and marks the held row posted.
+func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *heldPost) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
+	defer ledger.Discard()
+	if err := held.lock(ctx, tx); err != nil {
+		return err
+	}
+	unlocked, err := s.loadAsk(ctx, tx, row.id)
+	if err != nil {
+		return err
+	}
+	owner := ownerOf(unlocked.IssueKey, unlocked.ArtifactID)
+	_, open, err := ownerStatus(documentCtx, tx, owner, ownerRowLock)
+	if err != nil {
+		return err
+	}
+	ask, err := s.lockAskForTransition(documentCtx, tx, unlocked.ID)
+	if err != nil {
+		return err
+	}
+	var published []model.Event
+	var previous *model.AskEditPrevious
+	if row.outcome == reviewRewritePosted && row.rewrite != nil && open && ask.State == "open" && ask.BlockID != nil {
+		before := model.NewAskEditPrevious(ask)
+		record := model.AskRewriteEdit{By: model.RewriteByReviewer, AskedBy: reviewerActor, Reason: findingsReason(row.findings)}
+		rewritten, event, err := s.rewriteDecisionBlock(documentCtx, tx, ask, *row.rewrite, record)
+		if err != nil {
+			return err
+		}
+		ask, previous = rewritten, &before
+		published = append(published, event)
+	}
+	if _, err := tx.Exec(ctx, `update asks set held_until = null where id = $1`, ask.ID); err != nil {
+		return err
+	}
+	payload, err := events.AskEventPayload(ctx, tx, ask, model.ReferenceChanges{})
+	if err != nil {
+		return err
+	}
+	event, err := s.appendEvent(documentCtx, tx, owner.event("ask.reviewed", reviewerActor, payload))
+	if err != nil {
+		return err
+	}
+	published = append(published, event)
+	if err := held.finish(ctx, tx); err != nil {
+		return err
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		return err
+	}
+	s.publish(ctx, published...)
+	if previous != nil {
+		s.storeDisplayTrees(ctx, ask.ID, texttrees.AskWrittenTexts(
+			texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
+	}
+	return nil
+}
+
+// findingsReason is the reviewer's findings as the reason its rewrite records: each finding's
+// words and why they break their rule.
+func findingsReason(findings []reviewer.Finding) string {
+	reasons := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		reasons = append(reasons, fmt.Sprintf("%q: %s", finding.Quote, finding.Why))
+	}
+	return strings.Join(reasons, "; ")
+}
+
+// rewriteDecisionBlock is the one path that applies a rewrite to a decision block (Decision 23 of
+// INFRA-3231's plan): rewrite's wording is written into the ask's `:::ask` block, which the
+// document's next version holds, and into its row, and the ask.edited it appends holds the
+// original wording (previous), who asked for the rewrite and why (record). The reviewer's rewrite
+// of a held decision block (releaseDecisionBlock) calls it, and a person's Rewrite of a decision
+// block calls it with record.By model.RewriteByPerson. ctx is the document context of tx's ledger
+// (docs.API.Join), and the caller has locked the ask's owner and its row; it publishes the
+// event once tx commits.
+func (s *server) rewriteDecisionBlock(ctx context.Context, tx pgx.Tx, ask model.Ask, rewrite reviewer.Text, record model.AskRewriteEdit) (model.Ask, model.Event, error) {
+	blockArtifact, err := blockArtifactOf(ask)
+	if err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	previous := model.NewAskEditPrevious(ask)
+	question, multiple := rewrite.Body, rewrite.Multiple
+	edit := docs.AskBlockEdit{Question: &question, Multiple: &multiple}
+	if rewrite.Options != nil {
+		options := make([]model.AskOption, len(rewrite.Options))
+		for i, option := range rewrite.Options {
+			options[i] = model.AskOption{Label: option.Label, Description: option.Description}
+		}
+		edit.Options = &options
+	}
+	stored, err := s.deps.Docs.SetAskBlockText(ctx, blockArtifact, *ask.BlockID, edit, record.AskedBy)
+	if err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	ask.Question, ask.Multiple, ask.Urgency = stored.Question, stored.Multiple, stored.Urgency
+	if !stored.SeveralOptionLists {
+		ask.Options = stored.Options
+	}
+	options, err := encodeJSON(ask.Options)
+	if err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	var editedAt time.Time
+	if err := tx.QueryRow(ctx, `
+		update asks set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = now()
+		where id = $1 returning edited_at`,
+		ask.ID, ask.Question, options, ask.Multiple, ask.Urgency).Scan(&editedAt); err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	ask.EditedAt = timestampPtr(&editedAt)
+	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
+	changes, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
+	if err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	if changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, changes); err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	payload := model.NewAskEditEventPayload(ask, previous, record.AskedBy, changes)
+	payload.Rewrite = &record
+	event, err := s.appendEvent(ctx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event("ask.edited", record.AskedBy, payload))
+	if err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return model.Ask{}, model.Event{}, err
+	}
+	return ask, event, nil
+}

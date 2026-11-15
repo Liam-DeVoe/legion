@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -41,6 +42,8 @@ type heldCaller struct {
 // heldReplay is a write kept whole: its method, path, query, body and caller. Replay marks the
 // stored request as one, apart from a kind's own decoded request. Text and Subject are the
 // reviewer's text and where it stands, for a reply the reviewer reads; zero for any other write.
+// PersonTyped is a write a person typed in a session (Dispatch-Person-Typed: 1), which runs again
+// with that header.
 type heldReplay struct {
 	Replay      bool             `json:"replay"`
 	Method      string           `json:"method"`
@@ -51,6 +54,7 @@ type heldReplay struct {
 	Caller      heldCaller       `json:"caller"`
 	Text        reviewer.Text    `json:"text"`
 	Subject     reviewer.Subject `json:"subject"`
+	PersonTyped bool             `json:"person_typed,omitempty"`
 }
 
 // isReplay reports whether a held text's request is a write kept whole.
@@ -178,6 +182,9 @@ func (s *server) runReplay(ctx context.Context, replay heldReplay, held *heldPos
 	if replay.ContentType != "" {
 		request.Header.Set("Content-Type", replay.ContentType)
 	}
+	if replay.PersonTyped {
+		request.Header.Set(contracts.PersonTypedHeader, "1")
+	}
 	if !replay.Caller.Human {
 		// The caller is resolved already (resolvedCallerKey): this names a bearer caller to a
 		// route that asks whether one is there, and is never read as a token.
@@ -221,7 +228,7 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 	rv := s.deps.Reviewer
 	method, route := routeOf(r)
 	setting := rv.setting(kind)
-	if !rv.reviewsAny() || s.deps.Store == nil || setting == ReviewOff || generatedText(r, method+" "+route) {
+	if !rv.reviewsAny() || s.deps.Store == nil || setting == ReviewOff || generatedText(r, method+" "+route) || personTypedWrite(r) {
 		return nil, s.writingCheck(w, r, actor, input)
 	}
 	if checked, _ := writingCheckReads(actor); !checked {
@@ -412,7 +419,7 @@ func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route strin
 	}
 	replay := heldReplay{
 		Replay: true, Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
-		ContentType: r.Header.Get("Content-Type"), Body: body, Caller: caller,
+		ContentType: r.Header.Get("Content-Type"), Body: body, Caller: caller, PersonTyped: personTypedWrite(r),
 	}
 	request, err := json.Marshal(replay)
 	if err != nil {
@@ -427,10 +434,10 @@ func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route strin
 	id := uuid.NewString()
 	if _, err := s.deps.Store.Pool.Exec(ctx, `
 		insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, state,
-			reviewed, outcome, depends_on)
+			reviewed, outcome, depends_on, person_typed)
 		values ($1, 'request', $2, $3, '{}', $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), 'posting',
-			false, 'not_reviewed', $8)`,
-		id, route, request, author, writerOf(caller.Actor), parent.reader, parent.project, parent.id); err != nil {
+			false, 'not_reviewed', $8, $9)`,
+		id, route, request, author, writerOf(caller.Actor), parent.reader, parent.project, parent.id, replay.PersonTyped); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

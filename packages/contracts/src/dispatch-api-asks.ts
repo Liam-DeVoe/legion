@@ -18,7 +18,7 @@ import {
 import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
 import { type IssueRouteReach, issueFields } from "./dispatch-api-issues";
 import { ASK_TURNS } from "./dispatch-api-limits";
-import { referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
+import { personTypedFields, referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
 import { ASK_URGENCIES } from "./dispatch-tools";
 
 /**
@@ -281,6 +281,7 @@ export const askEventPayloadFields = {
   ...askFields,
   ...referenceChangesFields,
   ...threadLoginsFields,
+  ...personTypedFields,
   restored: z.boolean().optional(),
 };
 
@@ -310,6 +311,16 @@ export const WrittenAskEditEventPayloadSchema = z
      *  after an opening or a hand-back included, even when a thread reply left the request waiting
      *  on its agent. */
     quiet: z.literal(true).optional(),
+    /** On the `ask.edited` of a rewrite (INFRA-3231's Decision 23): whose rewrite it is (`by`: a
+     *  person's Rewrite or the reviewer's), who asked for it and why. `previous` holds the
+     *  original wording. Absent on every other edit. */
+    rewrite: z
+      .strictObject({
+        by: z.enum(["person", "reviewer"]),
+        asked_by: ActorSchema,
+        reason: z.string(),
+      })
+      .optional(),
   })
   .readonly();
 

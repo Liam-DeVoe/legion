@@ -94,6 +94,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return event.payload.anchor?.orphaned
         ? "Ask lost its quote"
         : "Ask re-anchored after an edit";
+    case "ask.reviewed":
+      return `Ask reviewed and shown: ${event.payload.question}`;
     case "comment.created":
     case "comment.answered":
       return event.payload.body;

@@ -411,6 +411,13 @@ const IdempotencyReplayedHeader = "Idempotency-Replayed"
 // plugins name it once.
 const GeneratedTextHeader = "Dispatch-Generated-Text"
 
+// PersonTypedHeader is the request header (1) the dispatch command puts on every write of a
+// command a person typed in a session. The server reads it on every write route: the write posts
+// at once with no review, is recorded exempt_person_typed, and its event carries person_typed.
+// Generated from DISPATCH_PERSON_TYPED_HEADER in packages/contracts so the server and the command
+// name it once.
+const PersonTypedHeader = "Dispatch-Person-Typed"
+
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and
 // the keys every client mints cannot drift apart.

@@ -10,6 +10,7 @@ import {
 import { ASK_TURNS, DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
+  personTypedFields,
   ReplyBlockSchema,
   referenceChangesFields,
   threadLoginsFields,
@@ -129,6 +130,7 @@ export const commentEventPayloadFields = {
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,
+  ...personTypedFields,
 };
 
 export const WrittenCommentEventPayloadSchema = z

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -40,6 +41,9 @@ const (
 	// writingCheckGenerated is text a plugin generated rather than an agent wrote, posted on one
 	// of generatedTextRoutes with contracts.GeneratedTextHeader. The check does not read it.
 	writingCheckGenerated = "exempt_generated"
+	// writingCheckPersonTyped is a write a person typed themselves in a session: the write
+	// carried contracts.PersonTypedHeader. Neither the check nor the reviewer reads it.
+	writingCheckPersonTyped = "exempt_person_typed"
 )
 
 // generatedTextRoutes are the routes a plugin posts the text it generates on (a person's
@@ -52,6 +56,54 @@ var generatedTextRoutes = []string{"POST /api/v1/messages/{id}/reply", "POST /ap
 // generatedTextRoutes whose contracts.GeneratedTextHeader is "1".
 func generatedText(r *http.Request, pattern string) bool {
 	return r.Header.Get(contracts.GeneratedTextHeader) == "1" && slices.Contains(generatedTextRoutes, pattern)
+}
+
+// personTypedWrite reports whether r is a write a person typed in a session (Decision 26 of
+// INFRA-3231's plan): its contracts.PersonTypedHeader is "1", which the dispatch command sends on
+// every write of a command pi-envoy's typed shell ran for a person. The server reads it on every
+// write route: the write posts at once, with no hold and no review whatever the reviewer's
+// settings say, is recorded exempt_person_typed, and its events carry person_typed
+// (markPersonTyped). Like the generated-text header it is the client's to set: a session that
+// sends it itself skips the review, and each use is counted with its session.
+func personTypedWrite(r *http.Request) bool {
+	return r.Method != http.MethodGet && r.Header.Get(contracts.PersonTypedHeader) == "1"
+}
+
+// markPersonTyped gives a write a person typed in a session the context that marks its events
+// (events.WithPersonTyped), so the event the write emits carries person_typed: true.
+func markPersonTyped(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if personTypedWrite(r) {
+			r = r.WithContext(events.WithPersonTyped(r.Context()))
+		}
+		handler(w, r)
+	}
+}
+
+// recordPersonTyped records a write a person typed in a session as exempt_person_typed, with the
+// session it was typed in, the person who reads it and the project it stands in, whether or not
+// the writing check and the reviewer are on: R8's counts show each use apart. A write that
+// carries no prose is not recorded, as the check records none.
+func (s *server) recordPersonTyped(r *http.Request, actor model.Actor, input any, project string) {
+	if len(proseFieldsOf(input)) == 0 {
+		if carrier, ok := input.(unreadUploadCarrier); !ok || carrier.unreadUpload() == "" {
+			return
+		}
+	}
+	method, route := routeOf(r)
+	event := store.WritingCheckEvent{
+		Route: route, Method: method, ActorKind: actor.Kind, ActorID: actor.ID,
+		TokenID: s.writingCheckTokenID(r, actor), Outcome: writingCheckPersonTyped, Project: project,
+	}
+	if actor.Act != nil {
+		event.ActSession = actor.Act.Session
+	}
+	reader, err := s.writingCheckReader(r.Context(), r, method+" "+route, actor, input)
+	if err != nil {
+		event.Detail = "the reader could not be decided: " + err.Error()
+	}
+	event.Reader = reader
+	s.recordWritingCheck(r.Context(), event)
 }
 
 // WritingCheckModel is the model the writing check's reader calls, as GET /api/v1/writing-check
@@ -127,6 +179,10 @@ type unreadUploadCarrier interface{ unreadUpload() string }
 // (generatedText), and it records that person on every row. Call it once input is decoded and
 // actor resolved, and before any transaction, lock or write.
 func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor model.Actor, input any) bool {
+	if personTypedWrite(r) {
+		s.recordPersonTyped(r, actor, input, "")
+		return true
+	}
 	check := s.deps.WritingCheck
 	if !check.on() {
 		return true

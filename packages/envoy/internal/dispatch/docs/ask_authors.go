@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -299,16 +300,18 @@ func storableAskBlockID(id string) bool {
 }
 
 // askAuthorsStatement records a document's ask block authors, keeping the author an earlier
-// registration of a block already recorded.
+// registration of a block already recorded; person_typed marks the blocks of a write a person
+// typed in a session (events.PersonTyped).
 const askAuthorsStatement = `
-	insert into doc_ask_block_authors (artifact_id, block_id, actor)
-	select $1::uuid, block, actor from unnest($2::text[], $3::jsonb[]) as author(block, actor)
+	insert into doc_ask_block_authors (artifact_id, block_id, actor, person_typed)
+	select $1::uuid, block, actor, $4::boolean from unnest($2::text[], $3::jsonb[]) as author(block, actor)
 	on conflict (artifact_id, block_id_key(block_id)) do nothing`
 
 // askAuthorsArgs is askAuthorsStatement's arguments for authors, keyed by block id, and nil when
 // none of them can name a durable row (storableAskBlockID). An append queues the statement with
-// them among its own writes (appendUpdateTxClass), which go in one round trip.
-func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) {
+// them among its own writes (appendUpdateTxClass), which go in one round trip. personTyped is
+// whether a person typed the write in a session.
+func askAuthorsArgs(room string, authors map[string]model.Actor, personTyped bool) ([]any, error) {
 	blocks := make([]string, 0, len(authors))
 	encoded := make([]string, 0, len(authors))
 	for block, actor := range authors {
@@ -325,13 +328,15 @@ func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) 
 	if len(blocks) == 0 {
 		return nil, nil
 	}
-	return []any{room, blocks, encoded}, nil
+	return []any{room, blocks, encoded, personTyped}, nil
 }
 
 // recordAskAuthors records authors, keyed by block id, in tx, keeping the author an earlier
-// registration of a block already recorded.
+// registration of a block already recorded. A write a person typed in a session
+// (events.PersonTyped on ctx) records its blocks as theirs, which the settlement that opens their
+// asks reads (readPersonTypedAskBlocks).
 func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
-	args, err := askAuthorsArgs(room, authors)
+	args, err := askAuthorsArgs(room, authors, events.PersonTyped(ctx))
 	if err != nil || args == nil {
 		return err
 	}
@@ -363,8 +368,8 @@ func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stampe
 		return nil
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into doc_ask_block_authors (artifact_id, block_id, actor)
-		select recorded.artifact_id, renamed.minted, recorded.actor
+		insert into doc_ask_block_authors (artifact_id, block_id, actor, person_typed)
+		select recorded.artifact_id, renamed.minted, recorded.actor, recorded.person_typed
 		from unnest($2::text[], $3::text[]) as renamed(previous, minted)
 		join doc_ask_block_authors recorded on recorded.artifact_id = $1 and recorded.block_id = renamed.previous
 		on conflict (artifact_id, block_id_key(block_id)) do nothing
@@ -399,6 +404,25 @@ func readRecordedAskAuthors(ctx context.Context, q Queryer, room string) (map[st
 		return nil, fmt.Errorf("read the document's ask block authors: %w", err)
 	}
 	return recorded, nil
+}
+
+// readPersonTypedAskBlocks is the ask blocks of room a person typed in a session
+// (doc_ask_block_authors.person_typed), whose asks a settlement opens unheld and unreviewed.
+func readPersonTypedAskBlocks(ctx context.Context, q Queryer, room string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `select block_id from doc_ask_block_authors where artifact_id = $1 and person_typed`, room)
+	if err != nil {
+		return nil, fmt.Errorf("read the document's ask blocks a person typed: %w", err)
+	}
+	defer rows.Close()
+	typed := make(map[string]bool)
+	for rows.Next() {
+		var block string
+		if err := rows.Scan(&block); err != nil {
+			return nil, fmt.Errorf("read the document's ask blocks a person typed: %w", err)
+		}
+		typed[block] = true
+	}
+	return typed, rows.Err()
 }
 
 // deleteSettledAskAuthors deletes, in a settlement's transaction, the durable author of each block

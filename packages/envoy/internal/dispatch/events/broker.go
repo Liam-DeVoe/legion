@@ -189,7 +189,12 @@ func (b *Broker) AppendAll(ctx context.Context, tx pgx.Tx, events []model.Event)
 	actors := make([][]byte, len(events))
 	payloads := make([][]byte, len(events))
 	notifies := make([]bool, len(events))
+	// A write a person typed in a session marks the text events it appends as theirs (WithPersonTyped).
+	personTyped := PersonTyped(ctx)
 	for index, e := range events {
+		if personTyped {
+			e.Payload = model.PersonTypedPayload(e.Type, e.Payload)
+		}
 		if ownerless(e) {
 			e.Seq = 0
 		} else {
@@ -455,6 +460,10 @@ func Quiet(e model.Event) bool {
 	case "comment.anchor_refreshed", "ask.anchor_refreshed":
 		// Refresh is a document mutation side effect, not a human addressing its
 		// author. Retain it for every stream consumer without waking anyone.
+		return true
+	case "ask.reviewed":
+		// The end of the reviewer's hold of a decision block (INFRA-3231's R5): an open page
+		// refetches its Inbox and counts on it, and no session is told of it as a card.
 		return true
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",

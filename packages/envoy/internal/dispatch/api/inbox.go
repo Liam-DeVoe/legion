@@ -113,7 +113,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		       sn.snoozed_until
 		`+askReadFrom+`
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
-		where a.state = 'open'
+		where a.state = 'open' and `+askNotHeld+`
 		  and (i.key is null or i.closed_at is null)
 		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
 		  and ($2 = ''

@@ -59,18 +59,20 @@ export async function heldCommand(context: CommandContext): Promise<DispatchTool
 export async function heldEditCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
   const options = args.options;
+  // Each read once, so the check below narrows what the spread writes (a field set to undefined
+  // is not a field left out, under exactOptionalPropertyTypes).
+  const question = optionalString(args, "question");
+  const title = optionalString(args, "title");
+  const spec = optionalString(args, "spec");
+  const body = optionalString(args, "body");
   const input: HeldEditInput = {
-    ...(optionalString(args, "question") === undefined
-      ? {}
-      : { question: optionalString(args, "question") }),
+    ...(question === undefined ? {} : { question }),
     ...(Array.isArray(options)
       ? { options: options as NonNullable<HeldEditInput["options"]> }
       : {}),
-    ...(optionalString(args, "title") === undefined
-      ? {}
-      : { title: optionalString(args, "title") }),
-    ...(optionalString(args, "spec") === undefined ? {} : { spec: optionalString(args, "spec") }),
-    ...(optionalString(args, "body") === undefined ? {} : { body: optionalString(args, "body") }),
+    ...(title === undefined ? {} : { title }),
+    ...(spec === undefined ? {} : { spec }),
+    ...(body === undefined ? {} : { body }),
     actor,
   };
   const held = await client.editHeld(stringArg(args, "held"), input);

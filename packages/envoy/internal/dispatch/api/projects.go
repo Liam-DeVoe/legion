@@ -24,7 +24,7 @@ const projectListQuery = `
 			from asks a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
-			where a.state = 'open'
+			where a.state = 'open' and ` + askNotHeld + `
 			  and (i.key is null or i.closed_at is null)
 			group by coalesce(i.project_key, ar.project_key)
 		) open_asks on open_asks.project_key = p.key

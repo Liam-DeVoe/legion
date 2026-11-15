@@ -134,6 +134,58 @@ func (s *server) getHeld(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, row.read())
 }
 
+// heldReadRoutes are the reads by id of a text the reviewer may hold, each with the path value that
+// names the text.
+var heldReadRoutes = map[string]string{
+	"GET /api/v1/asks/{id}":     "id",
+	"GET /api/v1/comments/{id}": "id",
+	"GET /api/v1/messages/{id}": "id",
+	"GET /api/v1/issues/{key}":  "key",
+}
+
+// heldTextError is the 409 HELD_TEXT answer: the text a session read by its id is held, under
+// HeldID, which GET /api/v1/held/{id} reads.
+type heldTextError struct {
+	Error  string `json:"error"`
+	Code   string `json:"code"`
+	HeldID string `json:"held_id"`
+}
+
+// answerHeldRead answers a session's read by id of a held ask, comment, message or issue with 409
+// HELD_TEXT and the held id (Decision 4 of INFRA-3231's plan): the text exists for every agent, and
+// GET /api/v1/held/{id} reads it. A person's read is the route's own, which finds no such text: no
+// person reads a held text before it posts. Any other read is not wrapped.
+func (s *server) answerHeldRead(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	param, held := heldReadRoutes[route.Method+" "+route.Pattern]
+	if !held {
+		return handler
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.deps.Reviewer.reviewsAny() || s.deps.Store == nil {
+			handler(w, r)
+			return
+		}
+		id := r.PathValue(param)
+		var isHeld bool
+		if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+			select exists (
+				select 1 from held_texts
+				where id = $1 and state not in ('posted', 'failed') and kind not in ('request', 'decision_block'))`,
+			id).Scan(&isHeld); err != nil || !isHeld {
+			handler(w, r)
+			return
+		}
+		if _, human, err := s.optionalActor(r); err != nil || human {
+			handler(w, r)
+			return
+		}
+		WriteJSON(w, http.StatusConflict, heldTextError{
+			Error: "this text is held by the reviewer and has not posted; read it with GET /api/v1/held/" + id,
+			Code:  "HELD_TEXT", HeldID: id,
+		})
+	}
+}
+
 // heldOption is one option of an ask a held text's edit or a draft writes: a label and what it
 // causes.
 type heldOption struct {
@@ -216,6 +268,11 @@ func (s *server) editHeld(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if row.kind == string(reviewer.KindDecisionBlock) {
+		_ = tx.Rollback(ctx)
+		s.editHeldDecisionBlock(w, r, row, input)
+		return
+	}
 	write, err := row.write()
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -246,6 +303,63 @@ func (s *server) editHeld(w http.ResponseWriter, r *http.Request) {
 	s.recordHeld(ctx, row, reviewEdited, nil, "")
 	s.startReview(row.id)
 	updated, err := s.loadHeld(ctx, s.deps.Store.Pool, row.id, false)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, updated.read())
+}
+
+// editHeldDecisionBlock is PATCH /api/v1/held/{id} for a held decision block: its wording lives in
+// its document's `:::ask` block, so the edit runs as the writer's PATCH /api/v1/asks/{id}, which
+// writes the block and the row and takes it as the writer's edit of the held text, reviewed again
+// (editedHeldDecisionBlock). A block takes its question and its options alone.
+func (s *server) editHeldDecisionBlock(w http.ResponseWriter, r *http.Request, row heldRow, input heldEditInput) {
+	if input.Title != nil || input.Spec != nil || input.Body != nil {
+		writeError(w, "HELD_EDIT_INPUT", http.StatusBadRequest, "a decision block takes its question and its options alone")
+		return
+	}
+	if input.Question == nil && input.Options == nil {
+		writeError(w, "HELD_EDIT_INPUT", http.StatusBadRequest, "the edit changes nothing: give question, options or both")
+		return
+	}
+	edit := map[string]any{}
+	if input.Question != nil {
+		edit["question"] = *input.Question
+	}
+	if input.Options != nil {
+		edit["options"] = askOptionsOf(*input.Options)
+	}
+	if input.Actor != nil {
+		edit["actor"] = input.Actor
+	}
+	body, err := json.Marshal(edit)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	caller, err := s.captureCaller(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	answer, err := s.runReplay(r.Context(), heldReplay{
+		Replay: true, Method: http.MethodPatch, Path: "/api/v1/asks/" + row.id, ContentType: "application/json",
+		Body: body, Caller: caller,
+	}, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if answer.status >= 300 {
+		for key, values := range answer.header {
+			w.Header()[key] = values
+		}
+		w.WriteHeader(answer.status)
+		_, _ = w.Write(answer.body.Bytes())
+		return
+	}
+	updated, err := s.loadHeld(r.Context(), s.deps.Store.Pool, row.id, false)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

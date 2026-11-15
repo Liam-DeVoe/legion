@@ -30,7 +30,15 @@
 --
 -- depends_on is the held text a later write named as its parent or as the text it answers; such a
 -- write is held beside it and posts right after it, in seq order. written_at is the time of the
--- write.
+-- write. person_typed marks a write a person typed in a session (Dispatch-Person-Typed: 1,
+-- Decision 26 of INFRA-3231's plan) that waits on a held parent: it is never reviewed, and its
+-- post marks its event person_typed.
+--
+-- A decision_block is a decision block an agent wrote in a document with
+-- DISPATCH_REVIEWER_DECISION_BLOCKS=hold (api/decision_blocks.go): its ask row exists and its
+-- document shows it, so the row under the ask's id holds only its review, its writer's window and
+-- what posts, and its post ends the hold (asks.held_until), applying the reviewer's rewrite as a
+-- new version of its document where the outcome is rewrite_posted.
 --
 -- A new table no earlier release names: nothing existing is read or rewritten, and the release
 -- before this one neither reads nor writes it, so this rolls (cmd/dispatch/README.md, "Database
@@ -38,7 +46,8 @@
 -- `migrationid` requires of every migration past the numbered series.
 create table held_texts (
   id text primary key,
-  kind text not null check (kind in ('ask', 'issue', 'comment', 'message', 'request')),
+  kind text not null constraint held_texts_kind
+    check (kind in ('ask', 'issue', 'comment', 'message', 'request', 'decision_block')),
   route text not null,
   request jsonb not null,
   original jsonb not null,
@@ -64,6 +73,7 @@ create table held_texts (
   depends_on text references held_texts (id),
   seq bigint generated always as identity,
   written_at timestamptz not null default now(),
+  person_typed boolean not null default false,
   posted_at timestamptz,
   updated_at timestamptz not null default now(),
   constraint held_texts_deadline check (state <> 'awaiting_writer' or deadline is not null),

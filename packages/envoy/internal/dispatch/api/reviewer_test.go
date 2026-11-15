@@ -63,7 +63,9 @@ func reviewStandIn(t *testing.T) *modeltest.Model {
 	return modeltest.New(t,
 		modeltest.Rule{
 			Match: func(request modeltest.Request) bool {
-				return isReview(request) && strings.Contains(reviewedText(request), vacuousPhrase) && strings.Contains(reviewedText(request), `kind="ask"`)
+				text := reviewedText(request)
+				return isReview(request) && strings.Contains(text, vacuousPhrase) &&
+					(strings.Contains(text, `kind="ask"`) || strings.Contains(text, `kind="decision_block"`))
 			},
 			Reply: modeltest.Reply{Text: standInReview(t, vacuousPhrase, map[string]any{
 				"body": "Ship the reviewer?\nThe test of the held ask fails on its first call.",

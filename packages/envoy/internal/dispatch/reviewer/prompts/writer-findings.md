@@ -1,5 +1,7 @@
 {{define "writer-findings"}}
-{{- if .Held -}}
+{{- if .Block -}}
+Dispatch keeps your {{.Kind}} {{.ID}} out of its reader's Inbox until you act on it. It shows in its document. A reviewer read it and found {{len .Findings}} {{if eq (len .Findings) 1}}problem{{else}}problems{{end}} for its reader.
+{{- else if .Held -}}
 Dispatch holds your {{.Kind}} {{.ID}}. No person can see it until you act on it. A reviewer read it and found {{len .Findings}} {{if eq (len .Findings) 1}}problem{{else}}problems{{end}} for its reader.
 {{- else -}}
 Dispatch posted your {{.Kind}} {{.ID}}. A reviewer read it after the post and found {{len .Findings}} {{if eq (len .Findings) 1}}problem{{else}}problems{{end}} for its reader.

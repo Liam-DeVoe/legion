@@ -83,6 +83,7 @@ import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
   DISPATCH_GENERATED_TEXT_HEADER,
+  DISPATCH_PERSON_TYPED_HEADER,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -284,6 +285,11 @@ export interface DispatchClientOptions {
   /** Send no write: every request but a GET or a HEAD throws `DispatchWriteHeld` and sends
    *  nothing, before it presents the credential. */
   readonly holdWrites?: boolean | undefined;
+  /** Whether a person typed the command this client serves (`DISPATCH_PERSON_TYPED=1`, which the
+   *  `dispatch` command reads once at start): each write then carries
+   *  `DISPATCH_PERSON_TYPED_HEADER: 1`, and Dispatch posts it at once with no review, counted
+   *  apart. The client never reads the environment for it; a plugin's own client passes nothing. */
+  readonly personTyped?: boolean | undefined;
 }
 
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
@@ -857,6 +863,8 @@ export class DispatchClient {
   readonly #madeAt: number;
   /** `DispatchClientOptions.holdWrites`. */
   readonly #holdWrites: boolean;
+  /** `DispatchClientOptions.personTyped`. */
+  readonly #personTyped: boolean;
 
   constructor(
     baseUrl: string,
@@ -872,6 +880,7 @@ export class DispatchClient {
     this.#retryNoRoute = options.retryNoRoute ?? true;
     this.#madeAt = this.#now();
     this.#holdWrites = options.holdWrites === true;
+    this.#personTyped = options.personTyped === true;
   }
 
   /** The secret this client presents, which an excerpt of someone else's answer redacts; "" while
@@ -1947,7 +1956,8 @@ export class DispatchClient {
    * say nothing, so they rely on what an answer or `/healthz` showed within
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
    * `extraHeaders` go on every attempt beside the client's own. A client made with `holdWrites`
-   * sends no request but a GET or a HEAD: any other throws `DispatchWriteHeld` here.
+   * sends no request but a GET or a HEAD: any other throws `DispatchWriteHeld` here. A client made
+   * with `personTyped` marks every request but a GET or a HEAD with `DISPATCH_PERSON_TYPED_HEADER`.
    */
   async #send(
     method: string,
@@ -1971,6 +1981,9 @@ export class DispatchClient {
     // that cannot answer throws here, out of the loop's reach, rather than being taken for a
     // failed attempt.
     const headers: Record<string, string> = { ...extraHeaders, Accept: accept };
+    if (this.#personTyped && method !== "GET" && method !== "HEAD") {
+      headers[DISPATCH_PERSON_TYPED_HEADER] = "1";
+    }
     let presented = await this.#credential.headers(method, url);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (method !== "POST" && method !== "PATCH") {

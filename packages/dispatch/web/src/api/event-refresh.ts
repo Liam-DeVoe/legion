@@ -431,19 +431,23 @@ function isAskEvent(event: DispatchEvent): boolean {
     event.type === "ask.answered" ||
     event.type === "ask.resolved" ||
     event.type === "ask.follower_added" ||
-    event.type === "ask.follower_removed"
+    event.type === "ask.follower_removed" ||
+    event.type === "ask.reviewed"
   );
 }
 
 /** The ask events that open or close an ask: the sidebar's per-project open-ask counts and an
  *  issue's pinned row (`open_asks`) move with them. An edit, a hand-back, a hand-on to another
  *  person, an anchor refresh or a follower change moves neither: the ask stays open, and only
- *  whose list it sits in can change. A block event can open or retract a decision block's ask. */
+ *  whose list it sits in can change. A block event can open or retract a decision block's ask.
+ *  The end of the reviewer's hold of a decision block (`ask.reviewed`) brings an ask the counts
+ *  left out into them. */
 function movesOpenAsks(event: DispatchEvent): boolean {
   return (
     event.type === "ask.opened" ||
     event.type === "ask.answered" ||
     event.type === "ask.resolved" ||
+    event.type === "ask.reviewed" ||
     event.type === "block.repaired" ||
     event.type === "block.invalid"
   );

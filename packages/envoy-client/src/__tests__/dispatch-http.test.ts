@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type ArchitectureSource,
   DISPATCH_GENERATED_TEXT_HEADER,
+  DISPATCH_PERSON_TYPED_HEADER,
   type IssueSummary,
   type ItemBlocks,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
@@ -600,6 +601,48 @@ describe("DispatchClient", () => {
     );
     expect(sent).toEqual(["1", null]);
     expect(requestBody(requests[0] as RecordedRequest)).toEqual(body);
+  });
+
+  // A person's own typed command (Decision 26 of INFRA-3231): the client the dispatch command
+  // builds with personTyped marks every write, whatever its route, and no read; a client built
+  // without it, as every plugin's own is, marks nothing. The client reads no environment for it.
+  test("sends the person-typed header on every write only when constructed with it", async () => {
+    const before = process.env.DISPATCH_PERSON_TYPED;
+    process.env.DISPATCH_PERSON_TYPED = "1";
+    try {
+      for (const [personTyped, mark] of [
+        [true, "1"],
+        [false, null],
+      ] as const) {
+        const { fetchImpl, requests } = fakeFetch([
+          jsonResponse({ key: "DSP-1" }, 200),
+          jsonResponse({ key: "DSP-1", title: "Retitled" }, 200),
+          jsonResponse({}, 201),
+        ]);
+        const client = new DispatchClient(
+          "http://dispatch.test/",
+          bearerCredential("secret"),
+          fetchImpl,
+          personTyped ? { personTyped } : {}
+        );
+        await client.getIssue("DSP-1").catch(() => undefined);
+        await client.updateIssue("DSP-1", { title: "Retitled" }).catch(() => undefined);
+        await client.deliveryReply("comment", "comment-1", { actor, attempt: 1, body: "Done." });
+        expect(
+          requests.map((request) => [
+            request.init.method ?? "GET",
+            new Headers(request.init.headers).get(DISPATCH_PERSON_TYPED_HEADER),
+          ])
+        ).toEqual([
+          ["GET", null],
+          ["PATCH", mark],
+          ["POST", mark],
+        ]);
+      }
+    } finally {
+      if (before === undefined) delete process.env.DISPATCH_PERSON_TYPED;
+      else process.env.DISPATCH_PERSON_TYPED = before;
+    }
   });
 
   test("maps a structured conflict response into DispatchServiceError candidates", async () => {

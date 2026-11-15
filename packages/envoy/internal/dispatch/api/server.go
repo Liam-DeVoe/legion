@@ -710,6 +710,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.mux = mux
+	// The document service tells the reviewer of each decision block a settlement opens or
+	// rewords, in the settlement's own transaction (decision_blocks.go).
+	if service, ok := deps.Docs.(interface{ SetAskBlockReviewer(docs.AskBlockReviewer) }); ok {
+		service.SetAskBlockReviewer(decisionBlockReviewer{s: s})
+	}
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -757,6 +762,8 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	replays := s.keyedReplays()
 	for _, route := range routes {
 		handler := route.Handler
+		// A session's read by id of a held text answers 409 HELD_TEXT with the held id.
+		handler = s.answerHeldRead(route, handler)
 		upload := route.Method+" "+route.Pattern == issueUploadRoute
 		if !upload {
 			// Inside the keyed layer, so a write kept beside a held text it names answers a repeat
@@ -785,6 +792,9 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			// (broker_token.go).
 			handler = s.writeNeedsASignedInPerson(handler)
 			handler = s.refuseChangedLogin(handler)
+			// Outermost of the write layers, so every layer below and the handler see a write a
+			// person typed in a session as one, and every event it appends is marked theirs.
+			handler = markPersonTyped(handler)
 		}
 		// Outside the two scope checks and outside the GET test, so it runs before them and
 		// before every handler, on a read as on a write: the whole id it resolves a path

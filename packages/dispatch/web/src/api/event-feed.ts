@@ -42,6 +42,7 @@ const knownEventTypes: Record<EventType, true> = {
   "artifact.changes_requested": true,
   "ask.opened": true,
   "ask.anchor_refreshed": true,
+  "ask.reviewed": true,
   "ask.edited": true,
   "ask.handed_back": true,
   "ask.asked_of": true,
