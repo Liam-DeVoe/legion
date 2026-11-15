@@ -548,7 +548,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
-  countedOncePerFile("Three waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
   // The reviewer pushes nothing since dispatch://INFRA-764 — a text finding is the thread the
   // implementer fixes and the reviewer then resolves, not a commit of the reviewer's — so the
   // carrying commit is no more its work than the merger's, and its part says so rather than
