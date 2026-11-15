@@ -119,10 +119,11 @@ func awaitBucketApplied[T any](bucket string, missing func(error) bool, read fun
 	}
 }
 
-// bucketMissing reports whether err is a member's answer that the bucket's stream is not there,
-// however the legacy or the jetstream package names it: the answer a member that has not applied
-// a create of it gives (bucketAppliedInterval).
-func bucketMissing(err error) bool {
+// BucketMissing reports whether err is an answer that the bucket's stream is not there, however
+// the legacy or the jetstream package names it: the answer a member that has not applied a create
+// of it gives (bucketAppliedInterval), and the answer to the lookup of a bucket nobody has created
+// yet (the listener's task relay, which never creates the bucket it opens).
+func BucketMissing(err error) bool {
 	return errors.Is(err, nats.ErrBucketNotFound) || errors.Is(err, jetstream.ErrBucketNotFound) ||
 		errors.Is(err, nats.ErrStreamNotFound) || errors.Is(err, jetstream.ErrStreamNotFound)
 }
@@ -237,7 +238,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
 	// so the two are the same request, and it names its own error rather than leave each caller
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
-	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
+	// still reads the member's "bucket not found" through it (BucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
 		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) {
@@ -281,7 +282,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
-			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
+			kv, err = awaitBucketApplied(config.Bucket, BucketMissing, lookUpBucket)
 		} else {
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
@@ -514,7 +515,7 @@ func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (K
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(kv.Bucket(), BucketMissing, open)
 	} else {
 		watch, err = open()
 	}

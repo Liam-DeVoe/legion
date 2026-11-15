@@ -2,8 +2,6 @@ package core_test
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +18,9 @@ import (
 // taskKey is one claim's key in the task bucket.
 const taskKey = "legion-example-infra-1-implementer"
 
-// taskBucketConfig is the bucket as the daemon creates it (the plan's decision 4): one revision of
-// each key, kept on file, with no TTL, on one copy, this server's replica count.
+// taskBucketConfig is the bucket as the daemon creates it
+// (packages/daemon/internal/daemon/taskbucket.go): one revision of each key, kept on file, with no
+// TTL, on one copy, this server's replica count.
 var taskBucketConfig = jetstream.KeyValueConfig{
 	Bucket: legiontasks.Bucket, History: 1, Storage: jetstream.FileStorage, Replicas: 1,
 }
@@ -253,17 +252,5 @@ func requireTaskUpdatesCaughtUp(t *testing.T, watcher jetstream.KeyWatcher) {
 // to subject among errs.
 func requireSubscribeRefused(t *testing.T, errs <-chan error, subject string) {
 	t.Helper()
-	want := `Subscription to "` + subject + `"`
-	timeout := time.After(10 * time.Second)
-	for {
-		select {
-		case err := <-errs:
-			if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), want) {
-				return
-			}
-			t.Logf("another asynchronous error: %v", err)
-		case <-timeout:
-			t.Fatalf("the server reported no permissions violation of the subscribe to %s", subject)
-		}
-	}
+	requireRefused(t, errs, "Subscription", subject)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/legiontasks"
 )
@@ -114,9 +117,8 @@ func createTaskBucketOn(t *testing.T, js jetstream.JetStream) jetstream.KeyValue
 	return kv
 }
 
-// taskEpoch is the bucket's epoch as every program spells it: its stream's creation time
-// (legiontasks.Epoch), read as the daemon reads it.
-func taskEpoch(t *testing.T, js jetstream.JetStream) string {
+// taskStreamInfo is the task bucket's stream as js reads it now.
+func taskStreamInfo(t *testing.T, js jetstream.JetStream) *jetstream.StreamInfo {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -124,20 +126,21 @@ func taskEpoch(t *testing.T, js jetstream.JetStream) string {
 	if err != nil {
 		t.Fatalf("read the task bucket's stream: %v", err)
 	}
-	return legiontasks.Epoch(stream.CachedInfo().Created)
+	return stream.CachedInfo()
+}
+
+// taskEpoch is the bucket's epoch as every program spells it: its stream's creation time
+// (legiontasks.Epoch), read as the daemon reads it.
+func taskEpoch(t *testing.T, js jetstream.JetStream) string {
+	t.Helper()
+	return legiontasks.Epoch(taskStreamInfo(t, js).Created)
 }
 
 // lastTaskRevision is the revision of the task bucket's latest write, its stream's last sequence:
 // a delete's, which the delete itself does not answer.
 func lastTaskRevision(t *testing.T, js jetstream.JetStream) uint64 {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stream, err := js.Stream(ctx, legiontasks.Stream)
-	if err != nil {
-		t.Fatalf("read the task bucket's stream: %v", err)
-	}
-	return stream.CachedInfo().State.LastSeq
+	return taskStreamInfo(t, js).State.LastSeq
 }
 
 // encodedTask is task number's value as the bucket holds it.
@@ -444,13 +447,7 @@ func TestTaskRelayFrameNamesTheRevisionAndEpoch(t *testing.T) {
 	session := startTaskStandIn(t, rig.url, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	claimTaskRole(t, rig.sessionConsumerRig, sessionID, claim)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	stream, err := js.Stream(ctx, legiontasks.Stream)
-	cancel()
-	if err != nil {
-		t.Fatalf("read the task bucket's stream: %v", err)
-	}
-	created := stream.CachedInfo().Created
+	created := taskStreamInfo(t, js).Created
 
 	revision := putTask(t, kv, claim, 5)
 	frame := session.next(t, 5*time.Second)
@@ -496,7 +493,7 @@ func TestTaskRelayFrameNamesTheRevisionAndEpoch(t *testing.T) {
 	awaitAcked(t, rig.consumers, sessionID, seq)
 
 	// The daemons create the bucket again: a new epoch, its revisions from 1.
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = js.DeleteKeyValue(ctx, legiontasks.Bucket)
 	cancel()
 	if err != nil {
@@ -513,6 +510,48 @@ func TestTaskRelayFrameNamesTheRevisionAndEpoch(t *testing.T) {
 	}
 	session.next(t, 15*time.Second).require(t, claim, legiontasks.OpPut, epoch, 1, encodedTask(t, 6))
 	session.none(t, time.Second)
+}
+
+// What the relay relayed of a key is kept only while it holds the key's record: a bucket deleted
+// and created again drops it for every key of the earlier bucket, a key the new one lacks
+// included, and a frame that was out when a read dropped its key's record records nothing.
+func TestTaskRelayKeepsWhatItRelayedOnlyOfAKeyItHolds(t *testing.T) {
+	relay := &taskRelay{
+		wake:    make(chan struct{}, 1),
+		pending: map[string]struct{}{},
+		records: map[string]taskRecord{},
+		relayed: map[string]taskRelayed{},
+	}
+	cache := taskCache{relay}
+	const kept, gone = "legion-infra-infra-2811-1-implementer", "legion-infra-infra-2811-2-implementer"
+	// readBucket is one whole read of the bucket, delivering a put of each key in turn.
+	readBucket := func(read kvwatch.Read, keys ...string) {
+		cache.BeginRead(read)
+		for index, key := range keys {
+			cache.Apply(kvwatch.Entry{Key: key, Op: kvwatch.OpPut, Revision: uint64(index + 1)}, read)
+		}
+		cache.CompleteRead(read)
+	}
+	readBucket(kvwatch.Read{Epoch: 1, Created: time.Unix(1, 0)}, kept, gone)
+	firstEpoch := relay.epoch
+	for _, key := range []string{kept, gone} {
+		relay.relayedTo(key, taskRelayed{session: "ses_task_kept", epoch: firstEpoch, revision: relay.records[key].revision})
+	}
+	if len(relay.relayed) != 2 {
+		t.Fatalf("the relay keeps %v as relayed, want both keys of the bucket", relay.relayed)
+	}
+
+	// The bucket is deleted and created again, holding kept alone.
+	readBucket(kvwatch.Read{Epoch: 2, Recreated: true, Created: time.Unix(2, 0)}, kept)
+	if sent, ok := relay.relayed[gone]; ok {
+		t.Fatalf("the relay keeps %+v as relayed of %s, which the bucket created again does not hold", sent, gone)
+	}
+
+	// A frame of gone, published from the earlier bucket's record before the read dropped it.
+	relay.relayedTo(gone, taskRelayed{session: "ses_task_kept", epoch: firstEpoch, revision: 2})
+	if sent, ok := relay.relayed[gone]; ok {
+		t.Fatalf("the relay recorded %+v as relayed of %s after a read dropped its record", sent, gone)
+	}
 }
 
 // Every listener watches the bucket, and only the one that relays the session's own consumer
@@ -697,6 +736,53 @@ func TestTaskRelayWithoutTheGrantKeepsServingAndLogsTheGrant(t *testing.T) {
 			t.Fatalf("the refused lookup was also logged as another failure %d times", lines)
 		}
 	})
+}
+
+// A refusal is read off the connection only when the server reported it since the open or watch
+// that failed began. nats.go keeps a connection's last error until a reconnect, and a reload that
+// grants the bucket's reads keeps the connection, so the violation an earlier watch drew is still
+// the last error when a later one fails for another reason: that failure is any other failure's
+// WARN, not the refusal's ERROR naming a subject the grant may hold by now. The violation the
+// failed call drew itself is the refusal, an ERROR naming the subject.
+func TestTaskRelayReadsARefusalOnlyOfTheCallThatFailed(t *testing.T) {
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, natsgo.InboxPrefix+">")
+	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
+	if err != nil {
+		t.Fatalf("connect as the listener's user: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	var logs bytes.Buffer
+	relay := &taskRelay{ctx: context.Background(), logger: logging.NewWithWriter("test-machine", &logs), interval: taskTestInterval}
+	// A watch's consumer create, which the server refuses with no answer, so the watch times out.
+	refused := "$JS.API.CONSUMER.CREATE." + legiontasks.Stream + ".watch.$KV." + legiontasks.Bucket + ".>"
+
+	before := conn.LastError()
+	if err := conn.Publish(refused, nil); err != nil {
+		t.Fatalf("send the watch's consumer create: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the consumer create: %v", err)
+	}
+	if last := conn.LastError(); !errors.Is(last, natsgo.ErrPermissionViolation) {
+		t.Fatalf("the refused consumer create left the last error %v, want the server's permissions violation", last)
+	}
+	relay.failed(conn, before, natsgo.ErrTimeout)
+
+	// The next interval's watch fails for another reason, and the server reports nothing of it.
+	relay.refusalLogged = false
+	relay.failed(conn, conn.LastError(), natsgo.ErrTimeout)
+
+	refusals := logRecords(logs.String(), taskRelayRefusedLine, func(record map[string]any) bool {
+		return record["level"] == "ERROR" && record["missing_subject"] == refused
+	})
+	failures := logRecords(logs.String(), taskRelayFailedLine, func(record map[string]any) bool {
+		return record["level"] == "WARN"
+	})
+	if refusals != 1 || failures != 1 {
+		t.Fatalf("the refused watch and the later failure were logged as %d refusals and %d other failures, want one of each:\n%s",
+			refusals, failures, logs.String())
+	}
 }
 
 // A bucket the Legion daemons have not created yet is waited for quietly: one INFO line, no

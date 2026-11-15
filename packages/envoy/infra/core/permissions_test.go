@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/routing"
 	"github.com/sjawhar/envoy/legiontasks"
 )
 
@@ -116,7 +117,7 @@ var taskBucketReadPublish = []string{
 
 // listenerPublish is the listener's own publish grant: the base grant, then the session consumers'
 // calls, then the task bucket's reads.
-var listenerPublish = append(append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...), taskBucketReadPublish...)
+var listenerPublish = slices.Concat(listenerBasePublish, sessionConsumerPublish, taskBucketReadPublish)
 
 // listenerSubscribe is the listener's subscribe grant for example-host-a: reply inboxes, then the
 // role lanes in the machine's queue group and in the one every listener shares.
@@ -411,26 +412,17 @@ var taskBucketCalls = []string{
 }
 
 // subjectAdmits reports whether pattern, a grant's entry with any queue group after a space cut
-// off, admits subject as NATS matches them: token by token, `*` taking any one token and a last
-// `>` the one or more that are left.
+// off, admits subject as NATS matches them (routing.Match): token by token, `*` taking any one
+// token and a last `>` the one or more that are left.
 func subjectAdmits(pattern, subject string) bool {
-	want, got := strings.Split(strings.Fields(pattern)[0], "."), strings.Split(subject, ".")
-	for i, token := range want {
-		if token == ">" && i == len(want)-1 {
-			return len(got) > i
-		}
-		if i >= len(got) || (token != "*" && token != got[i]) {
-			return false
-		}
-	}
-	return len(want) == len(got)
+	return routing.Match(strings.Fields(pattern)[0], subject)
 }
 
 // requireNoTaskBucketGrant requires that no entry of p names the task bucket or its stream and
 // that no publish entry admits any call on the bucket, a wildcard's included.
 func requireNoTaskBucketGrant(t *testing.T, p core.Permissions) {
 	t.Helper()
-	for _, entry := range append(append([]string{}, p.Publish.Allow...), p.Subscribe.Allow...) {
+	for _, entry := range slices.Concat(p.Publish.Allow, p.Subscribe.Allow) {
 		require.NotContains(t, entry, "legion_tasks", "the entry %q names the task bucket", entry)
 	}
 	for _, entry := range p.Publish.Allow {

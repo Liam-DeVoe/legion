@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -30,15 +28,6 @@ const taskRelayInterval = 30 * time.Second
 
 // taskRelayName labels the task relay's KV watcher and its lines (kvwatch.New).
 const taskRelayName = "task relay"
-
-// taskFrameReplyToken is the token of every task frame's reply subject under the session relays'
-// reply inbox (sessionRelays.replyPrefix). The relay asks nothing of the session, and a client that
-// knows task frames answers none; one that does not refuses a frame without the session relay's
-// headers by answering it done (packages/envoy-client's consumer delivery). That answer reaches
-// sessionRelays.onReply, which acts on a token only when a session frame awaits it, and no session
-// frame's token holds a dot (base 36 has none), so the answer finds no frame and is ignored: it acks
-// no message of the session's consumer.
-const taskFrameReplyToken = "task.frame"
 
 // The lines the task relay writes that an operator, or a test, reads by their text.
 const (
@@ -113,14 +102,12 @@ type taskRelayed struct {
 type taskRelay struct {
 	// client is the main bus connection, which opens and watches the bucket.
 	client *bus.Client
-	// relays are the session relays: which sessions this listener relays (wanted), the reply inbox
-	// a frame's reply subject is under (replyPrefix), and the session-consumer connection a frame
-	// is published on (delivery.consumers), as the session relays publish theirs.
+	// relays are the session relays: which sessions this listener relays (owned, wanted), whether
+	// it gives consumer delivery (delivery.consumerGrantHeld), and the publish of a task frame on a
+	// session's relay subject (publishTaskFrame).
 	relays   *sessionRelays
 	registry *store.Registry
 	logger   *logging.Logger
-	// granted is closed once this listener gives consumer delivery (consumerGrantHeld).
-	granted <-chan struct{}
 	// interval is taskRelayInterval, and openWait the JetStream wait of each lookup of the bucket
 	// (bus.RequestTimeout); a test shortens both. Set before run starts and read-only after.
 	interval time.Duration
@@ -152,7 +139,8 @@ type taskRelay struct {
 	epoch   string
 	reading bool
 	seen    map[string]struct{}
-	// records is each key's newest record in the bucket, and relayed what was last relayed of each.
+	// records is each key's newest record in the bucket, and relayed what was last relayed of each,
+	// held only for a key records holds (relayedTo), so dropping a record drops it too.
 	records map[string]taskRecord
 	relayed map[string]taskRelayed
 
@@ -177,7 +165,6 @@ func startTaskRelay(client *bus.Client, relays *sessionRelays, registry *store.R
 		relays:      relays,
 		registry:    registry,
 		logger:      logger,
-		granted:     relays.delivery.consumerGrantHeld(),
 		interval:    interval,
 		openWait:    openWait,
 		reconnected: make(chan struct{}, 1),
@@ -201,7 +188,7 @@ func (r *taskRelay) run() {
 	select {
 	case <-r.ctx.Done():
 		return
-	case <-r.granted:
+	case <-r.relays.delivery.consumerGrantHeld():
 	}
 	r.repair(false)
 	tick := time.NewTicker(r.interval)
@@ -224,12 +211,15 @@ func (r *taskRelay) run() {
 // repair opens the bucket and starts its watch while there is none, and watches it again on the
 // current connection when the watcher ended, its copy needs a read nothing is making
 // (kvwatch.Watcher.NeedsRead), or reconnected says a reconnect brought a new connection. A failure
-// is logged as its kind is (failed), and the next interval or reconnect tries again.
+// is logged as its kind is (failed), and the next interval or reconnect tries again. The
+// connection's last error is read before the call, so that a refusal an earlier call drew is not
+// read as this one's (newViolation).
 func (r *taskRelay) repair(reconnected bool) {
 	conn := r.client.Connection()
 	r.mu.Lock()
 	w := r.watcher
 	r.mu.Unlock()
+	before := conn.LastError()
 	var err error
 	switch {
 	case w == nil:
@@ -240,7 +230,7 @@ func (r *taskRelay) repair(reconnected bool) {
 		return
 	}
 	if err != nil {
-		r.failed(conn, err)
+		r.failed(conn, before, err)
 		return
 	}
 	r.waitLogged, r.failLogged = false, false
@@ -275,12 +265,13 @@ func (r *taskRelay) open(conn *nats.Conn) error {
 // failed logs err, a failed open or watch of the bucket on conn, as its kind is logged: a bucket
 // that does not exist yet with one INFO line until the watch is up, a refusal under the listener's
 // grant with one ERROR an interval naming the subject refused, anything else with one WARN until
-// the watch is up. A failure an open still in flight at stop brings back is logged by nobody.
-func (r *taskRelay) failed(conn *nats.Conn, err error) {
+// the watch is up. before is conn's last error as it stood before the call (refusedTaskSubject).
+// A failure an open still in flight at stop brings back is logged by nobody.
+func (r *taskRelay) failed(conn *nats.Conn, before, err error) {
 	if r.ctx.Err() != nil {
 		return
 	}
-	if taskBucketAbsent(err) {
+	if bus.BucketMissing(err) {
 		if !r.waitLogged {
 			r.waitLogged = true
 			r.logger.Info(taskRelayWaitLine,
@@ -289,7 +280,7 @@ func (r *taskRelay) failed(conn *nats.Conn, err error) {
 		}
 		return
 	}
-	if subject, refused := refusedTaskSubject(err, conn); refused {
+	if subject, refused := refusedTaskSubject(err, conn, before); refused {
 		if !r.refusalLogged {
 			r.refusalLogged = true
 			r.logger.Error(taskRelayRefusedLine,
@@ -309,46 +300,37 @@ func (r *taskRelay) failed(conn *nats.Conn, err error) {
 	}
 }
 
-// taskBucketAbsent reports whether err says the bucket, or its stream, does not exist.
-func taskBucketAbsent(err error) bool {
-	return errors.Is(err, nats.ErrBucketNotFound) || errors.Is(err, nats.ErrStreamNotFound) ||
-		errors.Is(err, jetstream.ErrBucketNotFound) || errors.Is(err, jetstream.ErrStreamNotFound)
-}
-
-// serverPublishRefusal reads the subject of the server's refusal of a publish, `Permissions
-// Violation for Publish to "<subject>"`, which it writes with %q (bus's publishRefusal).
-var serverPublishRefusal = regexp.MustCompile(`Publish to ("(?:[^"\\]|\\.)*")`)
-
 // refusedTaskSubject is the subject of the task bucket the server refused this listener's user,
 // and whether err, a failed open or watch on conn, came of such a refusal. The open's lookup names
 // its refusal itself (bus.OpenKeyValue answers bus.ErrPublishDenied with the subject); a watch's
 // consumer create, whose subject carries a name nats.go makes, draws only silence, so the
-// connection's last error is read for it, the server's violation, which counts when it names a
-// subject of the task bucket: no other part of the listener sends one.
-func refusedTaskSubject(err error, conn *nats.Conn) (string, bool) {
-	for _, text := range []string{err.Error(), lastErrorText(conn)} {
-		match := serverPublishRefusal.FindStringSubmatch(text)
-		if match == nil {
+// connection's last error is read for it when the server reported it since before, the last error
+// as it stood before the call (newViolation): the server's violation, which counts when it names a
+// subject of the task bucket, since no other part of the listener sends one.
+func refusedTaskSubject(err error, conn *nats.Conn, before error) (string, bool) {
+	for _, refusal := range []error{err, newViolation(conn, before)} {
+		if refusal == nil {
 			continue
 		}
-		subject, unquoteErr := strconv.Unquote(match[1])
-		if unquoteErr == nil && taskBucketSubject(subject) {
+		if subject, ok := bus.RefusedPublishSubject(refusal); ok && taskBucketSubject(subject) {
 			return subject, true
 		}
 	}
 	return "", false
 }
 
-// lastErrorText is the text of conn's last error when it is the server's permissions violation, and
-// "" otherwise.
-func lastErrorText(conn *nats.Conn) string {
-	if conn == nil {
-		return ""
+// newViolation is conn's last error when it is the server's permissions violation and is not
+// before, the last error as it stood before the call that failed, and nil otherwise. nats.go keeps
+// a connection's last error until a reconnect, and a reload of the server's configuration that
+// grants the bucket's reads changes the grant without one, so a refusal an earlier open or watch
+// drew stays the last error through every later failure on that connection. nats.go records each
+// violation as a new error value, so a refusal this call drew is never before (bus.SameError).
+func newViolation(conn *nats.Conn, before error) error {
+	last := conn.LastError()
+	if !errors.Is(last, nats.ErrPermissionViolation) || bus.SameError(last, before) {
+		return nil
 	}
-	if last := conn.LastError(); errors.Is(last, nats.ErrPermissionViolation) {
-		return last.Error()
-	}
-	return ""
+	return last
 }
 
 // taskBucketSubject reports whether subject is one a call on the task bucket sends: an API call on
@@ -391,15 +373,16 @@ func (r *taskRelay) relayPending() {
 // relayKey relays key's current record to the holder of role key, when the bucket holds a record
 // of key, role key's claim record names a holder this listener relays (sessionRelays.wanted), and
 // that record has not already been relayed to that holder. The claim is read from the role bucket
-// within roleHolderReadTimeout (roleLaneClaims.RoleClaim), only for a key the bucket holds. A claim
-// that could not be read, or a frame that could not be published, is relayed again at the key's
-// next record or the role's next change in the copy (a renewal, or the copy's repair).
+// within roleHolderReadTimeout (roleLaneClaims.RoleClaim), only for a key the bucket holds and only
+// while this listener holds its machine's durable binding, without which it relays no session. A
+// claim that could not be read, or a frame that could not be published, is relayed again at the
+// key's next record or the role's next change in the copy (a renewal, or the copy's repair).
 func (r *taskRelay) relayKey(key string) {
 	r.mu.Lock()
 	record, held := r.records[key]
 	epoch, last := r.epoch, r.relayed[key]
 	r.mu.Unlock()
-	if !held {
+	if !held || !r.relays.owned.Load() {
 		return
 	}
 	claim, err := roleLaneClaims{r.registry}.RoleClaim(r.ctx, key)
@@ -433,9 +416,7 @@ func (r *taskRelay) relayKey(key string) {
 			slog.String("error", err.Error()))
 		return
 	}
-	r.mu.Lock()
-	r.relayed[key] = sent
-	r.mu.Unlock()
+	r.relayedTo(key, sent)
 	r.logger.Info(taskRelayRelayedLine,
 		slog.String("claim", key),
 		slog.String("session_id", holder),
@@ -444,10 +425,20 @@ func (r *taskRelay) relayKey(key string) {
 		slog.Uint64("revision", record.revision))
 }
 
-// publish publishes record, key's record of epoch, to holder as a task frame: a core message on
-// the holder's relay subject carrying the four legiontasks headers and the value's bytes as the
-// bucket holds them, empty for a delete, with a reply subject whose answers are ignored
-// (taskFrameReplyToken).
+// relayedTo records sent as what was last relayed of key, unless a read dropped key's record while
+// its frame was out (taskCache): what was relayed is kept only of a key whose record the relay
+// holds, so it goes with that record and never outlives it.
+func (r *taskRelay) relayedTo(key string, sent taskRelayed) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, held := r.records[key]; held {
+		r.relayed[key] = sent
+	}
+}
+
+// publish publishes record, key's record of epoch, to holder as a task frame
+// (sessionRelays.publishTaskFrame): a core message on the holder's relay subject carrying the four
+// legiontasks headers and the value's bytes as the bucket holds them, empty for a delete.
 func (r *taskRelay) publish(key, holder, epoch string, record taskRecord) error {
 	header := nats.Header{}
 	header.Set(legiontasks.HeaderClaim, key)
@@ -456,12 +447,7 @@ func (r *taskRelay) publish(key, holder, epoch string, record taskRecord) error 
 	header.Set(legiontasks.HeaderOp, record.op)
 	ctx, cancel := context.WithTimeout(r.ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	return r.relays.delivery.consumers.Publish(ctx, &nats.Msg{
-		Subject: bus.DeliverSubject(holder),
-		Reply:   r.relays.replyPrefix + taskFrameReplyToken,
-		Header:  header,
-		Data:    record.value,
-	})
+	return r.relays.publishTaskFrame(ctx, holder, header, record.value)
 }
 
 // disconnected is the relay's disconnect hook: its copy stops following the bucket
@@ -529,14 +515,15 @@ func (r *taskRelay) end(ctx context.Context) {
 type taskCache struct{ r *taskRelay }
 
 // BeginRead starts a read of the bucket: its epoch is the bucket's as the read reads it, and a
-// recreated bucket's revisions number from 1 again, so the records of the earlier one are dropped
-// and every record the new one holds is relayed.
+// recreated bucket's revisions number from 1 again, so the records of the earlier one, and what
+// was relayed of them, are dropped and every record the new one holds is relayed.
 func (c taskCache) BeginRead(read kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if read.Recreated {
 		clear(r.records)
+		clear(r.relayed)
 	}
 	r.epoch = legiontasks.Epoch(read.Created)
 	r.reading = true

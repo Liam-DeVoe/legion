@@ -252,7 +252,7 @@ type sessionDelivery struct {
 	deleteMu   sync.Mutex
 	deletes    sync.WaitGroup
 	deletesOff bool
-	// grantMu guards the refusal episode below, and grantHeld.
+	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
 	// want of it; zero while no refusal episode runs. noGrantLogged is set once the episode's one
@@ -260,11 +260,11 @@ type sessionDelivery struct {
 	// registration. A consumer call that succeeds ends the episode.
 	noGrantUntil  time.Time
 	noGrantLogged bool
-	// grantHeld is closed once a session consumer call of this listener has succeeded: its NATS
-	// user holds the session consumers' calls, so this listener gives its sessions consumer
-	// delivery (consumerGrantHeld). It is made on first use, so a sessionDelivery a test builds
-	// as a literal has one too.
-	grantHeld chan struct{}
+	// grantHeld is closed, once (grantHeldOnce), when a session consumer call of this listener has
+	// succeeded: its NATS user holds the session consumers' calls, so this listener gives its
+	// sessions consumer delivery (consumerGrantHeld).
+	grantHeld     chan struct{}
+	grantHeldOnce sync.Once
 }
 
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
@@ -285,7 +285,7 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, logg
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	return &sessionDelivery{consumers: consumers, logger: logger, now: time.Now}, nil
+	return &sessionDelivery{consumers: consumers, logger: logger, now: time.Now, grantHeld: make(chan struct{})}, nil
 }
 
 // close closes the session-consumer connection, if one is open.
@@ -864,10 +864,10 @@ func (m *sessionDelivery) grantRefused() bool {
 // delivery (holdsConsumerGrant).
 func (m *sessionDelivery) granted() {
 	m.grantMu.Lock()
-	defer m.grantMu.Unlock()
 	m.noGrantUntil = time.Time{}
 	m.noGrantLogged = false
-	m.holdsConsumerGrantLocked()
+	m.grantMu.Unlock()
+	m.holdsConsumerGrant()
 }
 
 // holdsConsumerGrant records that a session consumer call of this listener succeeded: granted's
@@ -880,35 +880,13 @@ func (m *sessionDelivery) granted() {
 // configuration says so, and a listener connecting as a host or Dispatch user is refused every one
 // of those calls. consumerGrantHeld is closed from here on.
 func (m *sessionDelivery) holdsConsumerGrant() {
-	m.grantMu.Lock()
-	defer m.grantMu.Unlock()
-	m.holdsConsumerGrantLocked()
-}
-
-// holdsConsumerGrantLocked is holdsConsumerGrant, with grantMu held.
-func (m *sessionDelivery) holdsConsumerGrantLocked() {
-	held := m.consumerGrantLocked()
-	select {
-	case <-held:
-	default:
-		close(held)
-	}
+	m.grantHeldOnce.Do(func() { close(m.grantHeld) })
 }
 
 // consumerGrantHeld is closed once a session consumer call of this listener has succeeded
 // (holdsConsumerGrant): from then on the listener gives its sessions consumer delivery, and the
 // task relay, which relays only to such sessions, opens the task bucket (taskRelay.run).
 func (m *sessionDelivery) consumerGrantHeld() <-chan struct{} {
-	m.grantMu.Lock()
-	defer m.grantMu.Unlock()
-	return m.consumerGrantLocked()
-}
-
-// consumerGrantLocked is grantHeld, made on first use, with grantMu held.
-func (m *sessionDelivery) consumerGrantLocked() chan struct{} {
-	if m.grantHeld == nil {
-		m.grantHeld = make(chan struct{})
-	}
 	return m.grantHeld
 }
 

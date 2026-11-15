@@ -102,7 +102,14 @@ func connectGranted(t *testing.T, uri, seed string, maxWait time.Duration) (*nat
 // subject among errs.
 func requirePublishRefused(t *testing.T, errs <-chan error, subject string) {
 	t.Helper()
-	want := `Publish to "` + subject + `"`
+	requireRefused(t, errs, "Publish", subject)
+}
+
+// requireRefused waits up to 10 s for the server's permissions violation of call to subject among
+// errs, call as the violation names it: `Publish` or `Subscription`.
+func requireRefused(t *testing.T, errs <-chan error, call, subject string) {
+	t.Helper()
+	want := call + ` to "` + subject + `"`
 	timeout := time.After(10 * time.Second)
 	for {
 		select {
@@ -112,7 +119,7 @@ func requirePublishRefused(t *testing.T, errs <-chan error, subject string) {
 			}
 			t.Logf("another asynchronous error: %v", err)
 		case <-timeout:
-			t.Fatalf("the server reported no permissions violation of the publish to %s", subject)
+			t.Fatalf("the server reported no permissions violation naming %s", want)
 		}
 	}
 }
