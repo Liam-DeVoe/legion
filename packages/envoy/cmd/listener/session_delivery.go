@@ -121,7 +121,8 @@ type sessionDeliveryOutcome struct {
 	epoch string
 	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
 	// beside the epoch: a stored message below it is in no consumer, so the durable path takes it
-	// up and raises a delivery exception for it (session.SessionEntry.ConsumerStart).
+	// up and NAKs it, with a delivery exception on the session's agent subject alone
+	// (session.SessionEntry.ConsumerStart).
 	consumerStart uint64
 	// ackFloor is the stream sequence the session's consumer had everything acked through when
 	// this registration's consumer call read it (bus.SessionConsumerStart.AckFloor). It is where
