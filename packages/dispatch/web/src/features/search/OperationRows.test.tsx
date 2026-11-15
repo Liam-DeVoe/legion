@@ -750,7 +750,12 @@ test("a send through the run answers what became of its delivery, as the direct 
   // Each send is its own run's: a run writes each of its invocations once.
   const hook = renderHook(
     ({ runId }: { readonly runId: string }) =>
-      useGoingOperations({ answer: sendAnswer(runId, words), askNow: () => false, hits: [], words }),
+      useGoingOperations({
+        answer: sendAnswer(runId, words),
+        askNow: () => false,
+        hits: [],
+        words,
+      }),
     {
       initialProps: { runId: "run-1" },
       wrapper: ({ children }: { readonly children: ReactNode }) => (
