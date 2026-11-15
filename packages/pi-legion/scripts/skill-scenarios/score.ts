@@ -3527,7 +3527,8 @@ const RIG_DIR = path.join(RIG_ROOT, "packages/pi-legion/scripts/skill-scenarios"
 /** The directories of a run that are the agent's own (rig.sh's base_env and worker_fixture): its
  * working copies, the bare remote it pushes to, its HOME, its TMPDIR, its transcripts and the
  * state its pane's prompt parts are staged in. Every other path under the run directory is the
- * rig's record of the world, which a run may not read and still be scored. */
+ * rig's record of the world, which a run may not read and still be scored, save a file the run
+ * itself wrote whole before it read it (unscored). */
 const RUN_DIRS_THE_AGENT_OWNS = [
   "cwd",
   "ws",
@@ -3571,6 +3572,15 @@ const RECORD_FILES: Record<string, true> = Object.fromEntries(
  *     record of the world, the wrappers under bin/ among them; or of one of the record's files by
  *     a relative name (RECORD_FILES), as a `cd` into the run directory and a `cat world.json` do.
  *     The label rule above cannot see this for the head arm, whose checkout the rig runs from.
+ *     A file under the run directory that a tool call of the run wrote whole before the read is the
+ *     agent's own, not the record: the `path` of a `write` call, or in a `bash` or eval call the
+ *     file of a `>` redirection, a file `tee` names, or the target of a `cp` or `mv` whose sources
+ *     are the agent's own (writtenWhole), each by that exact absolute path. Before is earlier in
+ *     the call, or in an earlier call in runCalls's order (each transcript in turn, so a write in
+ *     one transcript counts for a read in another only when runCalls reads it first). An append
+ *     (`>>`, `tee -a`) or an `edit` call keeps the text already in the file, so it makes no file
+ *     the agent's own: a read of a file the rig made, as worker.env or world.json, stays a rig
+ *     error, as does a read of a path the run never wrote.
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
@@ -3600,27 +3610,53 @@ function unscored(
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
   const own = path.posix.normalize(runDir);
+  // Each file a tool call of the run wrote whole, by its absolute path, as the walk below reaches
+  // the call: the agent's own text, never the rig's.
+  const written = new Set<string>();
+  // Whether a path is the agent's own, not the rig's record of the run's world: a path outside
+  // the run directory, under a directory the agent owns, or a file written whole before.
+  const agents = (target: string): boolean => {
+    const at = path.posix.normalize(target);
+    if (!at.startsWith(`${own}/`)) return true;
+    return (
+      RUN_DIRS_THE_AGENT_OWNS.includes(at.slice(own.length + 1).split("/")[0] ?? "") ||
+      written.has(at)
+    );
+  };
   for (const call of calls) {
-    const named: string[] = [];
+    // Each path the call reads, and whether it was the agent's own when the call read it.
+    const named: { target: string; mine: boolean }[] = [];
+    const reads = (target: string) => {
+      named.push({ target, mine: agents(target) });
+    };
     // A record file a READERS command names by a relative path, as `cd <run dir> && cat
     // world.json` does: no absolute path carries it, so its name is what gives it away.
     const relative: string[] = [];
-    if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));
+    if (call.tool === "read") reads(strings(field(call.args, "path")).join(""));
+    if (call.tool === "write")
+      written.add(path.posix.normalize(strings(field(call.args, "path")).join("")));
     if (call.tool === "bash" || call.tool === "eval") {
       const source = strings(call.tool === "bash" ? field(call.args, "command") : call.args).join(
         "\n"
       );
-      for (const hit of withoutBodies(source).code.matchAll(SHELL_COMMAND))
-        if (READERS[hit[1] ?? ""] === true) {
-          named.push(...[...(hit[2] ?? "").matchAll(ABSOLUTE_PATH)].map(([found]) => found));
+      for (const [, command = "", rest = ""] of withoutBodies(source).code.matchAll(
+        SHELL_COMMAND
+      )) {
+        // What a command writes comes before what it reads: the file `cat >` fills and the file
+        // `cp` copies to are written, never read.
+        for (const { target, from } of writtenWhole(command, rest))
+          if (from.every((file) => file.startsWith("/") && agents(file)))
+            written.add(path.posix.normalize(target));
+        if (READERS[command] === true) {
+          for (const [found] of rest.matchAll(ABSOLUTE_PATH)) reads(found);
           relative.push(
-            ...(hit[2] ?? "").split(/\s+/).filter((word) => RECORD_FILES[word.replace(/^\.\//, "")])
+            ...rest.split(/\s+/).filter((word) => RECORD_FILES[word.replace(/^\.\//, "")])
           );
         }
-      if (call.tool === "eval")
-        named.push(...[...source.matchAll(OPENED)].map((hit) => hit[2] ?? ""));
+      }
+      if (call.tool === "eval") for (const hit of source.matchAll(OPENED)) reads(hit[2] ?? "");
     }
-    for (const target of named) {
+    for (const { target, mine } of named) {
       if (!target.startsWith("/")) continue;
       const read = path.posix.normalize(target);
       for (const [other, checkout] of labels)
@@ -3634,9 +3670,10 @@ function unscored(
       // stand-in's source before its record and its re-run, and scored a pass.
       if (read === RIG_DIR || read.startsWith(`${RIG_DIR}/`))
         return `a ${call.tool} call reads the rig itself: ${read}`;
-      const inRun = read.startsWith(`${own}/`) ? read.slice(own.length + 1) : undefined;
-      if (inRun !== undefined && !RUN_DIRS_THE_AGENT_OWNS.includes(inRun.split("/")[0] ?? ""))
-        return `a ${call.tool} call reads its run's record of the world: ${read}`;
+      // A file the run wrote whole itself is its own, wherever under the run directory it sits.
+      // Measured on 2026-11-15: trial-i-ablate-2 made <run>/tmp-reviewer/ beside its TMPDIR and
+      // filled its review body there with `cat >`, which this rule took for a read: unscored.
+      if (!mine) return `a ${call.tool} call reads its run's record of the world: ${read}`;
       if (new RegExp(SKILL_NAMED.source).test(read) && !allowed.some((dir) => read.startsWith(dir)))
         return `a ${call.tool} call reads a skill outside ${label}'s own: ${read}`;
     }
@@ -3654,6 +3691,39 @@ const READERS: Record<string, true> = Object.fromEntries(
 /** A file an eval cell opens in its own language: Python's `open(…)` or `Path(…)`, Bun's
  * `Bun.file(…)`, given a literal path. */
 const OPENED = /\b(?:open|Path|Bun\.file)\(\s*[rbf]?(["'`])([^"'`\n]+)\1/g;
+/** A redirection in a shell command's text: its operator (`>`, `>>`, `<`, `<<`, after a stream's
+ * number or not) and the word it takes, quoted or not. */
+const REDIRECTION = /(?:(?<!\S)\d+)?(>>?|<<?-?)&?[ \t]*("[^"]*"|'[^']*'|[^\s"'<>]+)/g;
+/** The files a shell command writes whole, each by an absolute path, with the words its text comes
+ * from: the file of a `>` redirection and each file `tee` names, filled with the command's own
+ * output (no words), and the target of `cp` or `mv` (its `-t` directory, else its last word),
+ * filled from the other files it names. An append (`>>`, `tee -a`) keeps the text already in the
+ * file, so it writes none whole. `rest` is the command's text after its first word. */
+function writtenWhole(command: string, rest: string): { target: string; from: string[] }[] {
+  const unquoted = (word: string) => word.replace(/^(["'])(.*)\1$/, "$2");
+  const whole: { target: string; from: string[] }[] = [];
+  for (const [, operator, word = ""] of rest.matchAll(REDIRECTION))
+    if (operator === ">") whole.push({ target: unquoted(word), from: [] });
+  const words = rest
+    .replace(REDIRECTION, " ")
+    .split(/\s+/)
+    .filter((word) => word !== "" && !/[<>]/.test(word))
+    .map(unquoted);
+  if (command === "tee" && !words.some((word) => word === "--append" || /^-[A-Za-z]*a/.test(word)))
+    for (const word of words) whole.push({ target: word, from: [] });
+  if (command === "cp" || command === "mv") {
+    const option = words.findIndex((word) =>
+      /^(?:-[A-Za-z]*t|--target-directory(?:=|$))/.test(word)
+    );
+    const inline = /^(?:--target-directory=|-[A-Za-z]*?t)(.+)$/.exec(words[option] ?? "")?.[1];
+    const at = option < 0 ? words.length - 1 : inline === undefined ? option + 1 : option;
+    whole.push({
+      target: inline ?? words[at] ?? "",
+      from: words.filter((word, place) => place !== at && !word.startsWith("-")),
+    });
+  }
+  return whole.filter(({ target }) => target.startsWith("/"));
+}
 
 /** Where a run's tools may name an absolute path without reaching outside its sandbox, besides the
  * work directory and the label's checkout. */

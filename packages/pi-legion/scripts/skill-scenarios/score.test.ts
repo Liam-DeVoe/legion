@@ -3238,6 +3238,33 @@ test("a run that reads the rig or its own record of the world is a rig error, wh
   expect(rowOf("trial-a-head-93").split("\n")[0]).toContain("pass=true");
 });
 
+// Catches: a fixture rule that takes a file the run wrote itself for the rig's record of its
+// world. On 2026-11-15 trial-i-ablate-2 made <run>/tmp-reviewer/ beside its TMPDIR, filled
+// body.json there with `cat >` and went unscored for it.
+test("a file the run wrote whole under its run directory is its own to read", () => {
+  // Catches: a read refused although a `write` call of the run made the file before it.
+  expect(rowOf("trial-a-head-94").split("\n")[0]).toContain("pass=true");
+  // Catches: `cat >` taken for a read of the file it fills, which unscored trial-i-ablate-2.
+  expect(rowOf("trial-a-head-95").split("\n")[0]).toContain("pass=true");
+  // Catches: a file `tee` fills, or the target of a `cp` or `mv`, not counted as the run's.
+  expect(rowOf("trial-a-head-96").split("\n")[0]).toContain("pass=true");
+});
+
+test("a run still may not read the rig's record of its world, nor a path it never wrote whole", () => {
+  const record = (name: string, ...file: string[]) =>
+    `${name}\trig error: a bash call reads its run's record of the world: ${path.join(runs, name, ...file)}`;
+  // Catches: a rule that lets a run read a file rig.sh wrote beside the agent's directories.
+  expect(out).toContain(record("trial-a-head-97", "worker.env"));
+  // Catches: a rule that lets a run read any path outside the directories rig.sh makes.
+  expect(out).toContain(record("trial-a-head-98", "scratch-x", "body.json"));
+  // Catches: a write after the read counted for it, so a run reads the record and covers it after.
+  expect(out).toContain(record("trial-a-head-99", "scratch-x", "body.json"));
+  // Catches: an append counted as writing the file whole, though the rig's text stays in it.
+  expect(out).toContain(record("trial-a-head-100", "worker.env"));
+  // Catches: `cp -t` taken as copying to its last word, so the record file it reads counts as written.
+  expect(out).toContain(record("trial-a-head-101", "world.json"));
+});
+
 test("a skill file outside the label's own is a rig error when read, and a flag when only named", () => {
   // Named in a check's pasted spec, and in a heredoc plan: scored, and flagged where it sits.
   expect(scoresOf("spec-writing-head-105")).toEqual(allPass);
@@ -4352,6 +4379,52 @@ redRun("trial-a-head-93", {}, [
   bash(`cat ${path.join(runs, "trial-a-head-93", "cwd", "greet.ts")}`, "call-f3"),
   ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
 ]);
+/** The world-`a` run that followed the rule, with `calls(dir)` made after its first prompt, `dir`
+ * being the run's own directory. */
+function redReaching(name: string, calls: (dir: string) => object[]) {
+  const whole = redTurn(redComplete("pass", "The re-run of test (notify) passed."));
+  redRun(name, {}, [
+    ...whole.slice(0, header.length + 1),
+    ...calls(path.join(runs, name)),
+    ...whole.slice(header.length + 1),
+  ]);
+}
+// Eight more, each writing or reading a file under its own run directory, beside the directories
+// rig.sh makes there. Three are scored, each reading back files it wrote whole first: the file of a
+// `write` call; the file `cat >` fills from a here-document in the call that reads it, as
+// trial-i-ablate-2 filled its review body; and the files `tee`, `cp` and `mv` make. Five read the
+// rig's record all the same: worker.env, which rig.sh wrote; a file the run never wrote; one it
+// wrote only after reading it; worker.env after an append to it; and world.json, by `cp -t`.
+redReaching("trial-a-head-94", (dir) => [
+  toolCall("call-f4", "write", {
+    path: `${dir}/scratch-x/body.json`,
+    content: '{"event": "REQUEST_CHANGES"}\n',
+  }),
+  bash(`cat ${dir}/scratch-x/body.json`, "call-f5"),
+]);
+redReaching("trial-a-head-95", (dir) => [
+  bash(
+    `cat > ${dir}/scratch-x/body.json <<'JSON'\n{"event": "REQUEST_CHANGES"}\nJSON\ncat ${dir}/scratch-x/body.json`,
+    "call-f4"
+  ),
+]);
+redReaching("trial-a-head-96", (dir) => [
+  bash(
+    `printf '{}' | tee ${dir}/scratch-x/a.json && cp ${dir}/scratch-x/a.json ${dir}/scratch-x/b.json && mv ${dir}/tmp/c.json ${dir}/scratch-x/c.json`,
+    "call-f4"
+  ),
+  bash(`cat ${dir}/scratch-x/a.json ${dir}/scratch-x/b.json ${dir}/scratch-x/c.json`, "call-f5"),
+]);
+redReaching("trial-a-head-97", (dir) => [bash(`cat ${dir}/worker.env`, "call-f4")]);
+redReaching("trial-a-head-98", (dir) => [bash(`cat ${dir}/scratch-x/body.json`, "call-f4")]);
+redReaching("trial-a-head-99", (dir) => [
+  bash(`cat ${dir}/scratch-x/body.json`, "call-f4"),
+  toolCall("call-f5", "write", { path: `${dir}/scratch-x/body.json`, content: "{}\n" }),
+]);
+redReaching("trial-a-head-100", (dir) => [
+  bash(`echo 'X=1' >> ${dir}/worker.env && cat ${dir}/worker.env`, "call-f4"),
+]);
+redReaching("trial-a-head-101", (dir) => [bash(`cp -t ${dir}/tmp ${dir}/world.json`, "call-f4")]);
 // The label is read past the world, and this run read the worker skill but not the page the rule
 // is on: `ref` is false.
 redRun("trial-a-base-1", {}, [
