@@ -1247,9 +1247,9 @@ func (WaitDeclared) isFact() {}
 // routed to its session. Token is the claim the reporting session holds, on Issue's Role, as the
 // route's one read of the claim names them. The engine ends that wait of the claim, if it has no
 // end yet, in the fact's own transaction (workflow's waitNews), and answers whether this fact
-// ended it (Result.WaitEnded). The route applies none while the claim's update round is open,
-// since the round's own ask reaches the session as a role message (D9 of dispatch://INFRA-2040's
-// plan).
+// ended it (Result.WaitEnded). The route applies none for a report of the claim's own update
+// ask (record.IsUpdateAskKey), which reaches the session as a role message and is no news (D9 of
+// dispatch://INFRA-2040's plan).
 type WaitNews struct {
 	Token  claim.Token
 	Issue  string

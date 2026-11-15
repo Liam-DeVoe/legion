@@ -106,21 +106,23 @@ func (s *server) wait(w http.ResponseWriter, r *http.Request) {
 }
 
 // WaitNewsRequest is the body of POST /legion/v1/claims/wait-news: the claim the reporting session
-// holds, that session, the claim's secret, and the id of the wait that news reached the session
-// after (dispatch://INFRA-2040 R3's second end), as the wait route's answer named it.
+// holds, that session, the claim's secret, the id of the wait that news reached the session after
+// (dispatch://INFRA-2040 R3's second end), as the wait route's answer named it, and the reported
+// delivery's own dedupe key, verbatim, which a person's message has none of.
 type WaitNewsRequest struct {
-	ClaimToken claim.Token `json:"claimToken"`
-	SessionID  string      `json:"sessionId"`
-	Secret     string      `json:"secret"`
-	WaitID     string      `json:"waitId"`
+	ClaimToken  claim.Token `json:"claimToken"`
+	SessionID   string      `json:"sessionId"`
+	Secret      string      `json:"secret"`
+	WaitID      string      `json:"waitId"`
+	DeliveryKey string      `json:"deliveryKey,omitempty"`
 }
 
 // WaitNewsResponse is the body POST /legion/v1/claims/wait-news answers: whether the report ended
-// the wait it names, and the claim's update round when one was open, during which a report ends
-// nothing. False keeps the wait standing in the plugin.
+// the wait it names, and whether the delivery it reported is the claim's own update ask, which
+// is no news. False keeps the wait standing in the plugin.
 type WaitNewsResponse struct {
-	Ended bool   `json:"ended"`
-	Round string `json:"round,omitempty"`
+	Ended     bool `json:"ended"`
+	UpdateAsk bool `json:"updateAsk,omitempty"`
 }
 
 // waitNews is a phase worker's plugin reporting that news reached its session after it declared
@@ -129,21 +131,23 @@ type WaitNewsResponse struct {
 // the claim and holds the call to the session the claim records exactly as the wait route does,
 // since the wait is the declaring session's own.
 //
-// The claim is read once, with the secret (authenticated), and the update round is read from
-// that read before anything is applied. While the claim's update round is open, the report ends
-// nothing: the round's own ask reaches the session as a message to its role, which no plugin can
-// tell from other news (D9 of dispatch://INFRA-2040's plan). The route then answers `ended:
-// false` with the round, records nothing, and logs it, so the same report sent once the round has
-// ended applies.
+// The claim is read once, with the secret (authenticated). A report whose delivery key is a key
+// of the claim's own update ask (record.IsUpdateAskKey, bare or behind the listener's role-forward
+// mark) ends nothing: an update round and its ask end no wait (R3), and the ask reaches the
+// session as a message to its role, which the plugin reports as it reports every other delivery
+// (dispatch://INFRA-2040 D9). The route then answers `ended: false` and `updateAsk: true`,
+// records nothing, and logs it with the key. The key names the claim and not the round, so a
+// report of the ask sent again after its round has ended is still the ask. Every other report,
+// with any other key or none, is news, whether or not an update round is open.
 //
-// Otherwise it applies intake.WaitNews under `wait-news:<claimToken>:<waitId>`, through
-// intake.ApplyFact, and answers whether that fact ended the wait (workflow's waitNews). The event
-// id names the claim beside the wait, since a wait's id is in the record every role reads
-// (read_record): a report of another claim's wait id changes no wait (EndWait matches the claim
-// too) and marks no event the wait's own claim reports under. A report naming a wait a newer
-// declaration replaced, or one already ended, answers `ended: false` and changes nothing; so does
-// a second report of the same wait, which ApplyFact answers as a duplicate before any handler
-// runs, since the first report is the one that ended it.
+// News is applied as intake.WaitNews under `wait-news:<claimToken>:<waitId>`, through
+// intake.ApplyFact, and the route answers whether that fact ended the wait (workflow's
+// waitNews). The event id names the claim beside the wait, since a wait's id is in the record
+// every role reads (read_record): a report of another claim's wait id changes no wait (EndWait
+// matches the claim too) and marks no event the wait's own claim reports under. A report naming
+// a wait a newer declaration replaced, or one already ended, answers `ended: false` and changes
+// nothing; so does a second report of the same wait, which ApplyFact answers as a duplicate
+// before any handler runs, since the first report is the one that ended it.
 func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	var req WaitNewsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
@@ -170,10 +174,10 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
 		return
 	}
-	if held.UpdateRound != "" {
-		s.log.Info("wait: news during an update round ends nothing", "claim", req.ClaimToken, "issue", held.Issue,
-			"role", held.Role, "wait", req.WaitID, "round", held.UpdateRound)
-		writeJSON(w, http.StatusOK, WaitNewsResponse{Round: held.UpdateRound})
+	if record.IsUpdateAskKey(req.ClaimToken, req.DeliveryKey) {
+		s.log.Info("wait: the update ask is no news", "claim", req.ClaimToken, "issue", held.Issue,
+			"role", held.Role, "wait", req.WaitID, "key", req.DeliveryKey)
+		writeJSON(w, http.StatusOK, WaitNewsResponse{UpdateAsk: true})
 		return
 	}
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", "wait-news:"+string(req.ClaimToken)+":"+req.WaitID, intake.WaitNews{

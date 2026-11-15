@@ -1555,9 +1555,10 @@ package api
 // wakeAt, declaredAt}}` (`api.WaitResponse`), or refuses with `WAIT_TEXT_REQUIRED`,
 // `WAIT_TOO_SOON` or `WAIT_TOO_FAR` (400), or `WAIT_NOT_OPEN_PHASE` or `WAIT_HELD_BY_DESIGN_GATE`
 // (409), and records nothing. `POST /legion/v1/claims/wait-news` (`api.WaitNewsRequest`: the
-// claim, its session, its secret and the `waitId` the declaration's answer named) answers
-// `{ended}`, with `round` beside it while the claim's update round is open, during which a report
-// ends nothing (`api.WaitNewsResponse`). Each refuses a stale plugin's claim with the
+// claim, its session, its secret, the `waitId` the declaration's answer named and, optional, the
+// reported delivery's own `deliveryKey`) answers `{ended}` (`api.WaitNewsResponse`), and
+// `{ended: false, updateAsk: true}` for a key of the claim's own update ask, which ends nothing
+// and records nothing (record.IsUpdateAskKey). Each refuses a stale plugin's claim with the
 // stale-contract 409 as every claim route does (refuseIfStaleClaim), and neither refuses a caller
 // by a contract of its own: a plugin below 125 knows neither route and sends neither.
 // Every claim view of `GET /legion/v1/state` gains `wait` (`api.WaitView`, the four keys the

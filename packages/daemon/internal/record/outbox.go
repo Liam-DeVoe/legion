@@ -2,6 +2,8 @@ package record
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1162,6 +1164,70 @@ func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
 // put in front of it, since the text names the round and the topic it goes to is the role's own
 // claim on issue.
 func (p UpdateAsk) Message(string) string { return p.Text }
+
+const (
+	// updateAskKeyPrefix begins every key UpdateAskKey writes: the Envoy listener's own publish
+	// key begins so too.
+	updateAskKeyPrefix = "publish."
+	// roleForwardKeyPrefix is the mark the Envoy listener puts in front of the key of a message it
+	// forwards to the holder of a role's topic (contracts.RoleForwardDedupePrefix in the envoy
+	// module, an internal package this module cannot import), so a host may hand the update ask
+	// to its session under it.
+	roleForwardKeyPrefix = "envoy.role.forward."
+	// updateAskTagLabel is hashed in front of a claim's token into the claim's tag
+	// (updateAskTag), so the tag is a hash of the token that nothing else takes.
+	updateAskTagLabel = "legion update ask\x00"
+	// updateAskOpeningLayout writes a round's opening into the key's second half: in UTC, to the
+	// microsecond.
+	updateAskOpeningLayout = "2006-01-02T15:04:05.000000Z07:00"
+)
+
+// updateAskKeyShape is the shape of every key UpdateAskKey writes: `publish.` and 32 lowercase
+// hex digits, a key of the shape the Envoy listener mints for a publish, which
+// MINTED_DEDUPE_KEY_PATTERN in packages/contracts accepts.
+var updateAskKeyShape = regexp.MustCompile(`^publish\.[0-9a-f]{32}$`)
+
+// UpdateAskKey is the dedupe key the daemon publishes the ask of round to token's claim under
+// (the daemon's updateAsk), where openedAt is when the round was opened on that claim
+// (supervise.Claim.UpdateOpenedAt), nil when the claim records no opening. It is `publish.`,
+// then 16 hex digits of a SHA-256 of a fixed label and the token (the claim's tag), then 16 hex
+// digits of a SHA-256 of the round's id and the opening, written in UTC and cut to whole
+// microseconds, or of the round's id alone when there is no opening (dispatch://INFRA-2040 D9).
+//
+// The key has the shape the listener mints for a publish, so the listener keeps it as the
+// daemon gave it, the Envoy client keeps it on the card it hands the session
+// (dedupeKeyNamesItsEvent in packages/contracts), and the session's plugin reports it with news
+// (api's waitNews), where IsUpdateAskKey tells the ask from every other delivery. It is derived
+// rather than kept in the row: the row is deleted once the ask is published, and a report of the
+// ask can come after the round has ended. One claim and one round opening give one key, so a
+// second row of the same ask — the sweep enqueues one when it fails to mark the first (the
+// daemon's askRound) — is the repeat the listener and each host drop. The opening is cut to the
+// microsecond the store keeps, so a daemon that restored the claim from the store derives the key
+// the daemon that opened the round did.
+func UpdateAskKey(token claim.Token, round string, openedAt *time.Time) string {
+	opening := round
+	if openedAt != nil {
+		opening += "\x00" + openedAt.UTC().Truncate(time.Microsecond).Format(updateAskOpeningLayout)
+	}
+	sum := sha256.Sum256([]byte(opening))
+	return updateAskKeyPrefix + updateAskTag(token) + hex.EncodeToString(sum[:8])
+}
+
+// IsUpdateAskKey is whether key is a key UpdateAskKey writes for token's claim, of any round,
+// bare or behind one mark of the listener's role forward. It reads the claim's tag alone, so a
+// report of the claim's own update ask is known after its round has ended, as when the plugin
+// sends a report again after a relaunch. A key another publisher minted carries the claim's tag
+// by chance once in 2^64.
+func IsUpdateAskKey(token claim.Token, key string) bool {
+	key, _ = strings.CutPrefix(key, roleForwardKeyPrefix)
+	return updateAskKeyShape.MatchString(key) && strings.HasPrefix(key, updateAskKeyPrefix+updateAskTag(token))
+}
+
+// updateAskTag is the first half of the hex digits of every UpdateAskKey of token's claim.
+func updateAskTag(token claim.Token) string {
+	sum := sha256.Sum256([]byte(updateAskTagLabel + string(token)))
+	return hex.EncodeToString(sum[:8])
+}
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {

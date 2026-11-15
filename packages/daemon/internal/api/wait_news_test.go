@@ -17,11 +17,18 @@ import (
 )
 
 // news posts the report of c's plugin that news reached its session after the declaration of the
-// wait id names.
+// wait id names: a person's message, which carries no delivery key.
 func (h *waitHarness) news(c liveClaim, id string) *httptest.ResponseRecorder {
 	h.t.Helper()
+	return h.delivered(c, id, "")
+}
+
+// delivered posts the report of c's plugin that a delivery under key reached its session after
+// the declaration of the wait id names, the key verbatim as the plugin read it off the delivery.
+func (h *waitHarness) delivered(c liveClaim, id, key string) *httptest.ResponseRecorder {
+	h.t.Helper()
 	return h.request(http.MethodPost, "/legion/v1/claims/wait-news", WaitNewsRequest{ClaimToken: c.token,
-		SessionID: c.session, Secret: c.secret, WaitID: id}, nil)
+		SessionID: c.session, Secret: c.secret, WaitID: id, DeliveryKey: key}, nil)
 }
 
 // newsAnswer asserts recorder is a news report's 200 and answers its body.
@@ -90,6 +97,56 @@ func (h *waitHarness) endRound(t *testing.T, c liveClaim) {
 	}
 }
 
+// updateAskKey is the key the daemon publishes the ask of the round c's claim is in under
+// (record.UpdateAskKey, the daemon's updateAsk): of the claim, its round and the opening it
+// records for that round.
+func (h *waitHarness) updateAskKey(t *testing.T, c liveClaim) string {
+	t.Helper()
+	machine, _ := h.supervisor.Machine(c.token)
+	held := machine.Claim()
+	if held.UpdateRound == "" || held.UpdateOpenedAt == nil {
+		t.Fatalf("the claim %s records round %q opened at %v, want a round with its opening", c.token, held.UpdateRound, held.UpdateOpenedAt)
+	}
+	return record.UpdateAskKey(c.token, held.UpdateRound, held.UpdateOpenedAt)
+}
+
+// noNewsLines is every `wait: the update ask is no news` line logs holds for wait id under key.
+func noNewsLines(logs, id, key string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(logs, "\n") {
+		if strings.Contains(line, `msg="wait: the update ask is no news"`) && strings.Contains(line, " wait="+id+" ") &&
+			strings.HasSuffix(line, " key="+key) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// wantNoNews asserts that the report recorder answered is the claim's own update ask under key:
+// the answer is not ended and names the update ask, wait id has no end and still stands, the
+// report was applied as no fact, and it was logged once more, with the claim, the issue, the role,
+// the wait and the key, than the logged lines given.
+func (h *waitHarness) wantNoNews(t *testing.T, c liveClaim, id, key string, recorder *httptest.ResponseRecorder, logged int) {
+	t.Helper()
+	if answer := newsAnswer(t, recorder); answer != (WaitNewsResponse{UpdateAsk: true}) {
+		t.Fatalf("the report of the claim's own update ask under %s = %+v, want not ended, the update ask", key, answer)
+	}
+	if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].ID != id || !rows[0].EndedAt.IsZero() {
+		t.Fatalf("claim_waits holds %+v after the report of the update ask, want wait %s with no end", rows, id)
+	}
+	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+		t.Fatalf("the wait does not stand after the report of the update ask under %s", key)
+	}
+	if newsApplied(t, h.harness, id) {
+		t.Fatalf("the report of the update ask under %s was applied as a fact; it must record nothing", key)
+	}
+	lines := noNewsLines(h.logs.String(), id, key)
+	if len(lines) != logged+1 {
+		t.Fatalf("the report of the update ask under %s was logged %d times, want %d; the log is:\n%s", key, len(lines), logged+1, h.logs)
+	}
+	wantLogged(t, lines[logged], "level=INFO", "claim="+string(c.token), "issue=LEGION-208", "role=implementer")
+}
+
 // The plugin's report that news reached the session after the declaration ends the wait it names
 // (dispatch://INFRA-2040 R3's second end): the answer says ended, the wait is ended with the cause
 // that news reached the session, by the report's own fact, and no longer stands, and the end is
@@ -106,7 +163,7 @@ func TestWaitNewsEndsTheWaitItNamesAndASecondReportEndsNothing(t *testing.T) {
 	wait := declared(t, h.declare(c, "the review of LEGION-207's pull request", waitNow.Add(time.Hour)))
 
 	if answer := newsAnswer(t, h.news(c, wait.ID)); answer != (WaitNewsResponse{Ended: true}) {
-		t.Fatalf("the report's answer = %+v, want ended and no round", answer)
+		t.Fatalf("the report's answer = %+v, want ended, and not the update ask", answer)
 	}
 	endedBy := "api/wait-news:" + string(c.token) + ":" + wait.ID
 	rows := waitRows(t, h.harness, c.token)
@@ -187,55 +244,108 @@ func TestWaitNewsNamingAReplacedWaitChangesNothing(t *testing.T) {
 	}
 }
 
-// While the claim's update round is open, a news report ends nothing (D9 of dispatch://INFRA-2040's
-// plan): the round's own ask reaches the session as a message to its role, which the plugin
-// reports as news. The route reads the round from its one read of the claim before it applies
-// anything, answers not ended with the round, records nothing — no end, no applied fact — and
-// logs it with the claim, the issue, the role, the wait and the round. The same report sent once
-// the round has ended is applied, and ends the wait.
-func TestWaitNewsDuringAnUpdateRoundEndsNothingUntilTheRoundEnds(t *testing.T) {
+// A report whose delivery key is the claim's own update ask ends nothing (dispatch://INFRA-2040
+// D9): the round's ask reaches the session as a message to its role, which the plugin reports with
+// the delivery's key, and an update round and its ask end no wait (R3). The key is the one the
+// daemon published the ask under, bare as the listener keeps it and behind the role-forward mark
+// a host may hand it on under. Each report answers not ended and names the update ask, records
+// nothing — no end, no applied fact — and is logged with the claim, the issue, the role, the wait
+// and the key. The same report sent again once the round has ended, as the plugin sends a report
+// that had no answer in time, is still the ask and ends nothing, and the wait then still ends for
+// news.
+func TestWaitNewsOfTheClaimsOwnUpdateAskEndsNothingDuringItsRoundOrAfter(t *testing.T) {
 	h := newWaitHarness(t)
 	h.waitIssue(phase.Implementing, nil)
 	c := h.waitingWorker(t, claim.RoleImplementer)
 	wait := declared(t, h.declare(c, "the review of LEGION-207's pull request", waitNow.Add(time.Hour)))
 	h.openRound(t, c)
+	key := h.updateAskKey(t, c)
+	forwarded := "envoy.role.forward." + key
 
-	if answer := newsAnswer(t, h.news(c, wait.ID)); answer != (WaitNewsResponse{Round: testUpdateRound}) {
-		t.Fatalf("the report's answer during the round = %+v, want not ended, naming round %s", answer, testUpdateRound)
-	}
-	if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || !rows[0].EndedAt.IsZero() {
-		t.Fatalf("claim_waits holds %+v after a report during the round, want wait %s with no end", rows, wait.ID)
-	}
-	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
-		t.Fatal("the wait does not stand after a report during the update round")
-	}
-	if newsApplied(t, h.harness, wait.ID) {
-		t.Fatal("the report during the round was applied as a fact; it must record nothing")
-	}
-	wantLogged(t, logLine(t, h.logs, "wait: news during an update round ends nothing"), "claim="+string(c.token),
-		"issue=LEGION-208", "role=implementer", "wait="+wait.ID, "round="+testUpdateRound)
+	h.wantNoNews(t, c, wait.ID, key, h.delivered(c, wait.ID, key), 0)
+	h.wantNoNews(t, c, wait.ID, forwarded, h.delivered(c, wait.ID, forwarded), 0)
 
 	h.endRound(t, c)
 
+	h.wantNoNews(t, c, wait.ID, key, h.delivered(c, wait.ID, key), 1)
+	h.wantNoNews(t, c, wait.ID, forwarded, h.delivered(c, wait.ID, forwarded), 1)
+
 	if answer := newsAnswer(t, h.news(c, wait.ID)); answer != (WaitNewsResponse{Ended: true}) {
-		t.Fatalf("the report's answer once the round ended = %+v, want ended and no round", answer)
+		t.Fatalf("a person's message after the update ask's reports = %+v, want ended", answer)
 	}
 	if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].EndCause != workflow.WaitEndNews {
-		t.Fatalf("claim_waits holds %+v once the round ended, want wait %s ended with cause %q", rows, wait.ID, workflow.WaitEndNews)
+		t.Fatalf("claim_waits holds %+v, want wait %s ended with cause %q", rows, wait.ID, workflow.WaitEndNews)
+	}
+}
+
+// While the claim's update round is open, every report but one of the claim's own update ask is
+// news and ends the wait (R3 whole, dispatch://INFRA-2040 D9): a delivery under a key the listener
+// minted, the same behind the role-forward mark, a role message under an outbox row's key, a
+// person's message with no key, and the ask of the same round to another claim of the issue,
+// whose key carries that claim's tag and not this one's. Each answer says ended and names no
+// update ask, the wait is ended by the report's own fact, and no line calls it the update ask.
+func TestWaitNewsDuringAnUpdateRoundEndsTheWaitForEveryKeyButTheClaimsOwnAsk(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  func(h *waitHarness, c liveClaim) string
+	}{
+		{name: "a key the listener minted", key: func(*waitHarness, liveClaim) string {
+			return "publish.0123456789abcdef0123456789abcdef"
+		}},
+		{name: "a minted key behind the role-forward mark", key: func(*waitHarness, liveClaim) string {
+			return "envoy.role.forward.publish.0123456789abcdef0123456789abcdef"
+		}},
+		{name: "an outbox row's key", key: func(*waitHarness, liveClaim) string { return record.OutboxKey(41) }},
+		{name: "a person's message, with no key", key: func(*waitHarness, liveClaim) string { return "" }},
+		{name: "another claim's update ask", key: func(h *waitHarness, c liveClaim) string {
+			other := newLiveClaim(h.t, h.harness, "LEGION-208", claim.RoleTester)
+			machine, _ := h.supervisor.Machine(c.token)
+			mine := machine.Claim()
+			key := record.UpdateAskKey(other.token, mine.UpdateRound, mine.UpdateOpenedAt)
+			if !record.IsUpdateAskKey(other.token, key) || key == h.updateAskKey(h.t, c) {
+				h.t.Fatalf("the tester's ask key %s is not the tester's own or is the implementer's", key)
+			}
+			return key
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWaitHarness(t)
+			h.waitIssue(phase.Implementing, nil)
+			c := h.waitingWorker(t, claim.RoleImplementer)
+			wait := declared(t, h.declare(c, "the review of LEGION-207's pull request", waitNow.Add(time.Hour)))
+			h.openRound(t, c)
+			key := tc.key(h, c)
+
+			if answer := newsAnswer(t, h.delivered(c, wait.ID, key)); answer != (WaitNewsResponse{Ended: true}) {
+				t.Fatalf("the report under %q during the round = %+v, want ended, and not the update ask", key, answer)
+			}
+			endedBy := "api/wait-news:" + string(c.token) + ":" + wait.ID
+			if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].EndCause != workflow.WaitEndNews || rows[0].EndedBy != endedBy {
+				t.Fatalf("claim_waits holds %+v, want wait %s ended with cause %q by %s", rows, wait.ID, workflow.WaitEndNews, endedBy)
+			}
+			if waitStands(t, h.harness, c, claim.RoleImplementer) {
+				t.Fatal("the wait still stands after news during the update round")
+			}
+			if strings.Contains(h.logs.String(), "wait: the update ask is no news") {
+				t.Fatalf("a report under %q was logged as the update ask; the log is:\n%s", key, h.logs)
+			}
+		})
 	}
 }
 
 // The update round's relaunch of the same session leaves the wait standing: the round's pod goes,
 // the claim's process is found gone and launched again at the next launch generation on the
 // session it had, which registers again, and the round then ends (R3: "an update round and its
-// task" and "a relaunch of the same session" end no wait). A report the relaunched plugin sends
-// during the round ends nothing; one it sends once the round has ended ends the wait.
+// task" and "a relaunch of the same session" end no wait). The relaunched plugin's report of the
+// round's ask, which it may be handed again after the relaunch, ends nothing either, during the
+// round and after it; its report of news once the round has ended ends the wait.
 func TestWaitStandsThroughTheUpdateRoundsRelaunchOfTheSameSession(t *testing.T) {
 	h := newWaitHarness(t)
 	h.waitIssue(phase.Implementing, nil)
 	c := h.waitingWorker(t, claim.RoleImplementer)
 	wait := declared(t, h.declare(c, "the review of LEGION-207's pull request", waitNow.Add(time.Hour)))
 	h.openRound(t, c)
+	key := h.updateAskKey(t, c)
 	before := h.stored(c.token)
 
 	relaunched := c
@@ -246,9 +356,7 @@ func TestWaitStandsThroughTheUpdateRoundsRelaunchOfTheSameSession(t *testing.T) 
 		t.Fatalf("the claim after the round's relaunch is at generation %d in session %q, want past %d in %q",
 			after.Generation, after.Session, before.Generation, c.session)
 	}
-	if answer := newsAnswer(t, h.news(relaunched, wait.ID)); answer != (WaitNewsResponse{Round: testUpdateRound}) {
-		t.Fatalf("the relaunched plugin's report during the round = %+v, want not ended, naming round %s", answer, testUpdateRound)
-	}
+	h.wantNoNews(t, relaunched, wait.ID, key, h.delivered(relaunched, wait.ID, key), 0)
 	h.endRound(t, c)
 
 	if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].ID != wait.ID || !rows[0].EndedAt.IsZero() ||
@@ -258,9 +366,10 @@ func TestWaitStandsThroughTheUpdateRoundsRelaunchOfTheSameSession(t *testing.T) 
 	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
 		t.Fatal("the wait does not stand after the update round's relaunch of the session that declared it")
 	}
+	h.wantNoNews(t, relaunched, wait.ID, key, h.delivered(relaunched, wait.ID, key), 1)
 
 	if answer := newsAnswer(t, h.news(relaunched, wait.ID)); answer != (WaitNewsResponse{Ended: true}) {
-		t.Fatalf("the relaunched plugin's report once the round ended = %+v, want ended", answer)
+		t.Fatalf("the relaunched plugin's report of news once the round ended = %+v, want ended", answer)
 	}
 }
 

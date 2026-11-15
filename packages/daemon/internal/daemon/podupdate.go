@@ -1290,8 +1290,10 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // (workflowRuntime.enqueueOutbox), and each claim is marked afterwards (supervise's
 // Machine.PodUpdateAsked), which is the order tellUpdateStalled and markUpdateTold keep for the
 // notice. An enqueue that fails marks nothing, and the next tick asks again. A mark that fails
-// leaves that claim unmarked, and the next tick asks it a second time, which costs one message
-// rather than an ask never published.
+// leaves that claim unmarked, and the next tick asks it a second time, rather than leave an ask
+// never published. The second row goes under the first's key, since one claim and one round
+// opening give one key (record.UpdateAskKey), so the listener and each host drop it as the
+// repeat it is.
 //
 // A claim whose machine is deciding something now (Machine.Deciding, which waits on nothing) is
 // asked at a later tick. The mark is written under the machine's lock, and the decision in flight

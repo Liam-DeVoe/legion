@@ -79,10 +79,10 @@ const schemas: Record<string, z.ZodType> = {
   // text, its time and when the daemon recorded the declaration (`api.WaitResponse`).
   "wait.json": LegionWaitResponse,
   // What a phase worker's plugin's report of news after the declaration comes back as
-  // (`api.WaitNewsResponse`): one that ended the wait, and one received while the claim's update
-  // round was open, which ended nothing and names the round.
+  // (`api.WaitNewsResponse`): one that ended the wait, and one whose delivery was the claim's own
+  // update ask, which ended nothing and says so.
   "wait-news.json": LegionWaitNewsResponse,
-  "wait-news-round.json": LegionWaitNewsResponse,
+  "wait-news-update-ask.json": LegionWaitNewsResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -138,6 +138,17 @@ const schemas: Record<string, z.ZodType> = {
   "stale-entry.json": z.strictObject({
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
+  }),
+  // Nor this one: one claim, one update round and the time it was opened on the claim, to the
+  // microsecond, with the key the daemon publishes that round's ask to the claim's role under
+  // (`record.UpdateAskKey`). `internal/record`'s TestUpdateAskKeyIsTheContractFixturesKey holds
+  // the daemon's derivation to it, and `src/envelope.test.ts` holds the Envoy client's dedupe
+  // rule to keeping that key, so a plugin can report it with the delivery.
+  "update-ask-key.json": z.strictObject({
+    claimToken: z.string().min(1),
+    round: z.string().min(1),
+    openedAt: LegionInstant,
+    key: z.string().regex(/^publish\.[0-9a-f]{32}$/),
   }),
 };
 
@@ -1215,6 +1226,13 @@ const waitNewsRequest = {
   waitId: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
 };
 
+/** The same report of a delivery under its own key: the update ask's key from
+ * `update-ask-key.json`, behind the listener's role-forward mark as a host may hand it on. */
+const waitNewsDeliveryRequest = {
+  ...waitNewsRequest,
+  deliveryKey: "envoy.role.forward.publish.26d039781ce852c069c5873a1f1d3ab7",
+};
+
 // What only a real body can prove, route by route: the body each route sends parses, and a body
 // missing a required field is refused. That a body carrying a key no schema names is refused is
 // held at every depth by the census above, for every request schema the module exports.
@@ -1321,6 +1339,8 @@ test("every request the plugin sends parses and names its required fields", () =
     ["wait", LegionWaitRequest, waitRequest],
     // The plugin's report of news after the declaration, authenticated as the wait is.
     ["wait news", LegionWaitNewsRequest, waitNewsRequest],
+    // The same report of a delivery under its own key, which the daemon reads verbatim.
+    ["wait news of a delivery", LegionWaitNewsRequest, waitNewsDeliveryRequest],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -1355,12 +1375,16 @@ test("a wait refuses an empty text and a time without seconds", () => {
 });
 
 // A news report names the wait it is about, the id the declaration's answer gave: a body with no
-// wait id, or an empty one, is refused before it is sent.
-test("a news report refuses a body that names no wait", () => {
+// wait id, or an empty one, is refused before it is sent. A delivery's key is sent when the
+// delivery has one and left out when it has none, never sent empty.
+test("a news report refuses a body that names no wait, and an empty delivery key", () => {
   const nameless: Record<string, unknown> = { ...waitNewsRequest };
   delete nameless.waitId;
   expect(LegionWaitNewsRequest.safeParse(nameless).success).toBeFalse();
   expect(LegionWaitNewsRequest.safeParse({ ...waitNewsRequest, waitId: "" }).success).toBeFalse();
+  expect(
+    LegionWaitNewsRequest.safeParse({ ...waitNewsRequest, deliveryKey: "" }).success
+  ).toBeFalse();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {
