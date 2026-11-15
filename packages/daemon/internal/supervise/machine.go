@@ -2824,12 +2824,16 @@ func (m *Machine) endProcess(ctx context.Context, cause string) error {
 // two is the claim the paragraph above forbids: retired, and still recording its round. A
 // crash or a failed write between them would leave exactly that behind.
 //
-// A retirement records nothing of what the process it lets go ended (noEnd): it is no relaunch,
-// suspension or failure, but the operator's stop, the tree's or the issue's close, or the agent's
-// own exit, each of which ends the claim's work on purpose, so a record left on it would tell a
-// later retry of the claim that work it ended on purpose was lost.
-func (m *Machine) retire(ctx context.Context) error {
-	m.letGo(ctx, noEnd)
+// A retirement records what the process it lets go ended under cause (letGo), and its one write
+// above carries the record (persist, or retirePending's transaction), as every let-go's own write
+// does (recordEnd). A stop passes its own cause (endStopped): `legion claims retry` relaunches a
+// stopped claim on the session it records, which is an operator's retry in the words of
+// dispatch://INFRA-3276 R3, so the turn the stop cut off and the background work it ended are
+// told to that session's next turn (relaunchSentence). The tree's or the issue's close and the
+// agent's own exit pass noEnd: each ends the claim's work on purpose, so a record left on it
+// would tell a later start of the claim that work it ended on purpose was lost.
+func (m *Machine) retire(ctx context.Context, cause string) error {
+	m.letGo(ctx, cause)
 	m.claim.State = StateRetired
 	drops := m.dropsUpdateTask()
 	if drops {

@@ -116,7 +116,12 @@ type ActivityReport struct {
 // process go found, written so that it reads after "because" (EndedWork.Cause). noEnd is the
 // cause of a let-go that records nothing: a launch of a claim that records no process to let go
 // — a spawn, a resume, a retry, and every relaunch whose process an earlier step of the same
-// recovery already let go — and a retirement, which ends the claim (retire).
+// recovery already let go — and a retirement that ends the claim's work on purpose, the tree's
+// or the issue's close and the agent's own exit (retire). endStopped is a stop's (RequestStop:
+// `legion claims stop`, the operator's close of a tree stopping its other claims, and the daemon
+// stopping a controller it launched once the deployment leaves the controller to its operator),
+// since the operator's retry relaunches a stopped claim on the session it records, and that
+// session's next turn reads what the stop ended (dispatch://INFRA-3276 R3).
 //
 // The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can
@@ -129,6 +134,7 @@ const (
 	endStalePlugin = "it ran an older plugin and was started again on the current one"
 	endDisplaced   = "its pod was replaced"
 	endRepointed   = "its address changed"
+	endStopped     = "its claim was stopped"
 )
 
 // endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.
@@ -206,8 +212,8 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // untold again and the record written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
-// launch's, the suspension's, the failure's, or the death's charge — carries it, and the untelling
-// with it. So it costs the relaunch one read and waits for nothing else.
+// launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
+// it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
 func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	m.untellInFlight()
 	if cause == noEnd || m.claim.Locator == nil {

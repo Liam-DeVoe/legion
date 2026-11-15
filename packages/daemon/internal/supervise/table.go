@@ -1924,8 +1924,10 @@ func (m *Machine) busyTurnBegun(delivery string) {
 //     has not ended; suspending it mid-turn";
 //   - a failure of the claim (fail): "supervise: claim failed";
 //   - a retirement (retire), which writes no line of its own: the agent's own exit says
-//     "supervise: the agent reported its exit" before it, and a stop or the workflow's close of
-//     the issue or the tree retires the claim with no line at all;
+//     "supervise: the agent reported its exit" before it, a stop that ended work of the agent
+//     says "supervise: the relaunch ended work the agent had running" under the stop's cause
+//     (recordEnd, endStopped), and the workflow's close of the issue or the tree retires the
+//     claim with no line at all;
 //   - a stale-plugin relaunch of a claim whose turn is not waited out (relaunchStale):
 //     "supervise: the process speaks another plugin contract; relaunching it onto the current
 //     plugin" — one that is waited out says "supervise: the process speaks another plugin
@@ -2467,15 +2469,17 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	return retry(m, ctx, ev)
 }
 
-// stop ends one claim: the runtime releases it, and it retires. A release that fails changes
-// nothing, so the stop can be asked again. The tree's root claim ends only with its tree: a
-// retired root would leave the orphan sweep's known set, which would then take whatever the
-// runtime holds for the root issue — under a sandbox, its Sandbox, and with it the pod and the
-// disk that pod owns. Any other
-// stop of it is refused, naming the operator's close when it is that close which ends the tree.
+// stop ends one claim: the runtime releases it, and it retires, recording what the released
+// process ended under the stop's own cause (endStopped, retire), so the operator's retry of the
+// claim tells its next process the turn the stop cut off and the background work it ended. A
+// release that fails changes nothing, so the stop can be asked again. The tree's root claim ends
+// only with its tree: a retired root would leave the orphan sweep's known set, which would then
+// take whatever the runtime holds for the root issue — under a sandbox, its Sandbox, and with it
+// the pod and the disk that pod owns. Any other stop of it is refused, naming the operator's close
+// when it is that close which ends the tree.
 func stop(m *Machine, ctx context.Context, _ Event) error {
 	if !m.claim.treeRoot() {
-		return m.end(ctx)
+		return m.end(ctx, endStopped)
 	}
 	closable, err := m.treeClosable(ctx)
 	if err != nil {
@@ -2487,7 +2491,7 @@ func stop(m *Machine, ctx context.Context, _ Event) error {
 // treeClose is the workflow's close of the tree, which ends the root claim too. It is the
 // workflow's own decision: it stops every claim of a tree whose linger expired, and the issue
 // record it still holds for that tree is exactly what TreeClosable refuses on, so it is not asked.
-func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx) }
+func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
 
 // issueClose is the workflow's close of a child issue as done: it releases the claim through the
 // runtime, which ends at most this role's process and forgets the claim. It deletes no issue
@@ -2517,7 +2521,7 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.release(ctx); err != nil {
 		return err
 	}
-	return m.retire(ctx)
+	return m.retire(ctx, noEnd)
 }
 
 // forgetSession drops the named session record from a processless claim: the operator's
@@ -2547,7 +2551,7 @@ func operatorClose(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.closeRefusal(ctx); err != nil {
 		return err
 	}
-	return m.end(ctx)
+	return m.end(ctx, noEnd)
 }
 
 // operatorCloseRetired answers a close of a claim that has already retired. The outcome the
@@ -2590,12 +2594,13 @@ func (m *Machine) treeClosable(ctx context.Context) (bool, error) {
 }
 
 // end releases the claim's process and retires the claim, which is what every stop and close does
-// once it is allowed.
-func (m *Machine) end(ctx context.Context) error {
+// once it is allowed, recording what that process ended under cause (retire): the stop's own
+// (endStopped), and noEnd for a close, which ends the claim's work on purpose.
+func (m *Machine) end(ctx context.Context, cause string) error {
 	if err := m.release(ctx); err != nil {
 		return err
 	}
-	return m.retire(ctx)
+	return m.retire(ctx, cause)
 }
 
 // rootStopRefusal is ErrRootStop with what stops the root's process in state instead: a suspension,
@@ -2661,7 +2666,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // that cannot release or suspend its process is logged and the claim moves all the same: a
 // finished agent's claim never stays live, its secret still authenticating. A root's stop records
 // what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
-// retirement records nothing (retire).
+// retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
@@ -2675,7 +2680,7 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.release(ctx); err != nil {
 		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)
 	}
-	return m.retire(ctx)
+	return m.retire(ctx, noEnd)
 }
 
 // openPodUpdate records this claim's update round (PodUpdateOpen). The daemon's sweep posts the

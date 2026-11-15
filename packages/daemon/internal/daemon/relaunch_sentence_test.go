@@ -4,13 +4,16 @@ package daemon
 // (dispatch://INFRA-3276 R3), end to end over the real supervision, the real workflow and a real
 // Postgres, with a faked runtime: a root architect relaunched holding a task and holding none,
 // either one's catch-up, and the catch-up of one whose relaunch also lost its session; the
-// daemon-launched controller's start message; and a phase worker's resume task behind the daemon's
-// own delivery of the sentence.
+// daemon-launched controller's start message; a phase worker's resume task behind the daemon's
+// own delivery of the sentence; and the phase task the operator's retry gives a phase worker the
+// operator stopped in its task's turn.
 
 import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -490,5 +494,112 @@ func (r *readyWorkerRig) dueNow() {
 	r.t.Helper()
 	if _, err := r.pool.Exec(context.Background(), "update outbox set next_at = now() - interval '1 second'"); err != nil {
 		r.t.Fatalf("bring the waiting rows forward: %v", err)
+	}
+}
+
+// The operator's stop of a phase worker in the turn of its phase's task, its session reporting a
+// subagent, and the operator's plain retry after it (dispatch://INFRA-3276 R3, an operator's
+// retry), each through the operator's own routes, as `legion claims stop` and `legion claims
+// retry` send them. The stop records on the claim's row what it ended, under its own cause: the
+// turn, that turn's task, and the subagent. The retry starts the worker's phase again (api's
+// retryStart), whose rows relaunch the stopped claim on the session it recorded and hand it the
+// phase's task, and the resumed process's first prompt is that task behind the sentence naming
+// the stop and the subagent. The stop retired the task its turn confirmed, so the phase's task
+// was in no turn of the stopped process, and the sentence says that the turn the agent was in
+// was interrupted, never its previous turn on this task (supervise's EndedWork.inFrontOf).
+func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded(t *testing.T) {
+	rig := newReadyWorkerRig(t)
+	ctx := context.Background()
+	// The operator's own routes over this rig's supervisor and workflow, wired as the daemon wires
+	// them (newFreshSessionRig). The answer of a claim route carries the claim's step record,
+	// which the supervisor reads from the store itself (supervisor.Step), so the supervisor holds
+	// the rig's store for it.
+	rig.sup.store = rig.st
+	operatorAPI := api.NewServer("127.0.0.1", 8437, api.Options{
+		Supervisor: rig.sup, BootTokens: api.NewBootTokens(rig.st), Project: "legion", DispatchProject: "LEGION",
+		OperatorToken: freshSessionOperatorToken, Controller: rig.st, Trees: rig.st, Releaser: rig.rt, Pool: rig.pool,
+		Record: rig.runner.records, Handlers: rig.runner.handlers, RoleFor: workflow.RoleFor, Log: quietLogger(),
+	}).Handler
+	operator := func(request string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/legion/v1/operator/claims/"+string(rig.token)+"/"+request, nil)
+		r.Header.Set("Authorization", "Bearer "+freshSessionOperatorToken)
+		recorder := httptest.NewRecorder()
+		operatorAPI.ServeHTTP(recorder, r)
+		return recorder
+	}
+
+	// The issue is at work, so it holds the admission slot its work holds: the task half of the
+	// retry's start, which relaunches the stopped claim, is claimable only while its issue holds
+	// one (workflow.StartOrOwe, record.NeedsSlot), as newFreshSessionRig seeds it.
+	if _, err := rig.pool.Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rig.issue.Key); err != nil {
+		t.Fatalf("seed the issue's admission slot: %v", err)
+	}
+
+	// The tester is in the turn of its phase's task, and its session reports a subagent running.
+	handleAll(t, rig.machine, supervise.StreamTurnStart{Claim: rig.token})
+	rig.report("subagent")
+	working := rig.claim()
+	if working.State != supervise.StateWorking || working.Pending == nil || working.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("the tester is %s holding %+v, want it working the task its turn confirmed", working.State, working.Pending)
+	}
+	before, resumes := len(rig.conn.Prompts()), rig.relaunched()
+
+	if recorder := operator("stop"); recorder.Code != http.StatusOK {
+		t.Fatalf("the operator's stop = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	stored, err := rig.st.Claims(ctx)
+	if err != nil {
+		t.Fatalf("read the claims: %v", err)
+	}
+	retired := storedOf(t, stored, rig.token)
+	if retired.State != supervise.StateRetired || retired.Pending != nil {
+		t.Fatalf("after the stop the store holds the tester %s holding %+v, want it retired with the task its turn confirmed retired",
+			retired.State, retired.Pending)
+	}
+	ended := retired.EndedWork
+	if ended.At.IsZero() {
+		t.Errorf("the stop recorded %+v, want the moment of its let-go", ended)
+	}
+	ended.At = time.Time{}
+	if want := (supervise.EndedWork{Cause: "its claim was stopped", Generation: working.Generation, Turn: true, TaskTurn: true,
+		Background: true, Kinds: []string{"subagent"}, Reported: true}); !reflect.DeepEqual(ended, want) {
+		t.Fatalf("the stop recorded %+v on the claim's row, want %+v", ended, want)
+	}
+
+	if recorder := operator("retry"); recorder.Code != http.StatusAccepted {
+		t.Fatalf("the operator's retry of the stopped tester = %d, want 202; body %s", recorder.Code, recorder.Body)
+	}
+	// A start is two rows (workflow.StartOrOwe): the relaunch leaves a retired claim to the row
+	// that carries the task, so the drain runs until both have run.
+	for range 3 {
+		rig.run()
+	}
+	if got := rig.relaunched(); got != resumes+1 {
+		t.Fatalf("the retry resumed the tester's session %d times, want once", got-resumes)
+	}
+	rig.boot()
+
+	prompts := rig.conn.Prompts()
+	if len(prompts) != before+1 {
+		t.Fatalf("the resumed tester was sent %+v, want the phase's task alone", prompts[before:])
+	}
+	held, sent := rig.claim().Pending, prompts[before]
+	if held == nil || held.Relaunch() || held.Interrupted || held.Phase != phase.Testing || held.ID != sent.DeliveryID ||
+		!strings.HasSuffix(sent.Message, "\n\n"+held.Task) {
+		t.Fatalf("the resumed tester was sent %+v holding %+v, want the testing phase's task behind the stop's sentence", sent, held)
+	}
+	for _, says := range []string{
+		"Your previous process ended because its claim was stopped.",
+		"The turn you were in was interrupted.",
+		"Each subagent that you started stopped with that process.",
+		"Then continue the task.",
+	} {
+		if !strings.Contains(sent.Message, says) {
+			t.Errorf("the phase's task was sent as %q, want it to say %q", sent.Message, says)
+		}
+	}
+	if strings.Contains(sent.Message, "Your previous turn on this task was interrupted.") {
+		t.Errorf("the phase's task was sent as %q, which says its own turn was interrupted: it was in no turn of the stopped process", sent.Message)
 	}
 }

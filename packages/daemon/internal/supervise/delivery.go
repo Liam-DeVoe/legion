@@ -235,8 +235,11 @@ type sentences struct{ abandoned, ended bool }
 //     prompt carries that record's sentence in front of its task (relaunchSentence): the cause,
 //     the turn and the background work that let-go cut off, whatever the task. It also says what
 //     interruptedTask would say of a task taken back from that turn — it begins with the turn of
-//     this task being interrupted where the record says the task was in it (EndedWork.TaskTurn) —
-//     so a task carries the one sentence and not both.
+//     this task being interrupted where the record says the claim's task was in it
+//     (EndedWork.TaskTurn) and this is the task that let-go took back (Interrupted) — so a task
+//     carries the one sentence and not both. In front of any other task, such as the new task of
+//     its phase that the operator's retry gives a worker a stop cut off in its task's turn, it
+//     says instead that the turn the agent was in was interrupted (EndedWork.inFrontOf).
 //   - A task taken back from a turn (Interrupted) whose record has been told, or that no record
 //     names, still says its turn was interrupted, under the cause the claim's record names
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
@@ -282,7 +285,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	case relaunch:
 		// Its text is the record's sentence already.
 	case c.EndedWork.Tells():
-		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork, true)+"\n\n", true
+		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
 	case d.Interrupted && !oldTurn:
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}

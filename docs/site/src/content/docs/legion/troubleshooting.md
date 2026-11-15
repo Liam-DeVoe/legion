@@ -1242,9 +1242,13 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 - **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
   whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
   `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
-  a relaunch, a suspension or a failure that ended the process while work of its agent ran. A
-  suspension that lands over a process the daemon had already found gone, as a fresh session
-  over a dead role does, records the death in the runtime's words, not the suspension. The claim
+  a relaunch, a suspension, a failure or a stop that ended the process while work of its agent
+  ran. A stop is `legion claims stop`, the operator's close of a tree stopping its other claims,
+  or the daemon stopping a controller it launched, and its cause is `its claim was stopped`:
+  `legion claims retry` without `--fresh-session` resumes the stopped claim's session, which is
+  told what the stop ended. A suspension that lands over a process the daemon had already found
+  gone, as a fresh session over a dead role does, records the death in the runtime's words, not
+  the suspension. The claim
   records it (the `ended_work` column of its row), and the first prompt the next process is sent
   carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
   none, alone

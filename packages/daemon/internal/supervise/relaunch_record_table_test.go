@@ -176,8 +176,9 @@ func relaunchesOntoTheCurrentPlugin(c *letGoCell) {
 	c.h.must(StalePlugin{Claim: c.h.token, Trigger: "sweep"})
 }
 
-// stopsForTheOperator is the operator's stop (stop, end, retire), which puts the claim where the
-// operator's retry reaches it: retired (RequestOperatorRetry's row, operatorRetry).
+// stopsForTheOperator is the operator's stop (stop, end, retire), which records what it ended
+// under its own cause (endStopped) and puts the claim where the operator's retry reaches it:
+// retired (RequestOperatorRetry's row, operatorRetry).
 func stopsForTheOperator(c *letGoCell) {
 	c.h.t.Helper()
 	c.h.must(RequestStop{Claim: c.h.token})
@@ -470,12 +471,13 @@ func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo 
 //   - A stall backstop in no turn and idle with its task's result to come: the table ignores the
 //     backstop outside StateWorking (fillTable's onStallBackstop rows).
 //
-// Two let-gos record nothing: the operator's stop, which retires the claim (retire's noEnd) while
-// settle retires the task a turn confirmed, and whose retry lets nothing go (revive's noEnd), so
-// the retried process is sent nothing; and the operator's suspension of the idle claim whose
-// task's result is still to come and whose report says nothing runs, which takes nothing back
-// (suspendNow) and so cuts off no turn, no task's turn and no reported work (recordEnd's early
-// return), while settle retires the task.
+// Two let-gos record nothing, both over the idle claim whose task's result is still to come and
+// whose report says nothing runs: the operator's stop and the operator's suspension, each of which
+// takes nothing back (stop, suspendNow) and so cuts off no turn, no task's turn and no reported
+// work (recordEnd's early return), while settle retires the task. In every other state the stop
+// records under its own cause (endStopped) and settle retires any task a turn confirmed, and the
+// retry that follows lets nothing go (revive's noEnd), so the retried process, holding no task,
+// is sent the stop's record alone: of a turn cut off, the turn it was in and never the task's.
 func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 	subagent := []string{"subagent"}
 	var (
@@ -552,12 +554,12 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		{kind: stalePlugin, state: compaction, keeps: StateWorking},
 		{kind: stalePlugin, state: turnUnderCompaction, keeps: StateWorking},
 
-		{kind: operatorRetry, state: noTurn, sent: sentNothing},
-		{kind: operatorRetry, state: inATurn, sent: sentNothing},
-		{kind: operatorRetry, state: resultToCome, sent: sentNothing},
+		{kind: operatorRetry, state: noTurn, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorRetry, state: inATurn, record: recorded{cause: endStopped, turn: true, taskTurn: true}, sent: sentRecordAlone, says: saysTurnCut},
+		{kind: operatorRetry, state: resultToCome, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
 		{kind: operatorRetry, state: resultToComeQuiet, sent: sentNothing},
-		{kind: operatorRetry, state: compaction, sent: sentNothing},
-		{kind: operatorRetry, state: turnUnderCompaction, sent: sentNothing},
+		{kind: operatorRetry, state: compaction, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorRetry, state: turnUnderCompaction, record: recorded{cause: endStopped, turn: true}, sent: sentRecordAlone, says: saysTurnCut},
 
 		{kind: stallBackstop, state: noTurn, keeps: StateIdle},
 		{kind: stallBackstop, state: inATurn, record: recorded{cause: stalledTurn, turn: true, taskTurn: true}, sent: sentTaskTakenBack, says: saysTaskTurn},

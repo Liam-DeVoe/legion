@@ -118,6 +118,91 @@ func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 	}
 }
 
+// The operator's stop of a worker in the turn of its task records that turn as the task's, under
+// the stop's own cause (recordEnd, endStopped), and settle retires the task the turn confirmed.
+// The operator's retry then hands the relaunched process a new task before its ready, as api's
+// retryStart starts the worker's phase again, and that task was in no turn of the stopped process.
+// So the sentence in front of it names the stop's cause, the turn the agent was in and the
+// subagent the report named, and never says the agent's previous turn on this task was
+// interrupted (EndedWork.inFrontOf). The control is a death in the task's turn, which takes the
+// task back (interrupted): the task sent again is the one that was in the turn, and is told so.
+func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testing.T) {
+	const (
+		task = "implement the plan"
+		next = "review it"
+	)
+	died := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+	for _, tc := range []struct {
+		name, cause string
+		// letGo lets the process go in the turn of its task and brings the next process up to
+		// ready; it answers the task that process is sent first.
+		letGo       func(h *harness) string
+		interrupted bool
+		// because is the sentence's statement of why the process ended, says the statement it
+		// makes of the turn cut off, and saysNot the one it must not make.
+		because, says, saysNot string
+	}{
+		{
+			name:  "the operator's stop, then the operator's retry with a new task",
+			cause: endStopped,
+			letGo: func(h *harness) string {
+				h.t.Helper()
+				h.must(RequestStop{Claim: h.token})
+				h.wantState(StateRetired)
+				if p := h.claim().Pending; p != nil {
+					h.t.Fatalf("the stopped claim holds %+v, want the task its turn confirmed retired", p)
+				}
+				h.must(RequestOperatorRetry{Claim: h.token})
+				h.must(RequestDeliver{Claim: h.token, Task: next, Generation: 5})
+				h.relaunched()
+				return next
+			},
+			because: "Your previous process ended because " + endStopped + ".",
+			says:    saysTurnCut, saysNot: saysTaskTurn,
+		},
+		{
+			name:  "a death in the task's turn",
+			cause: died,
+			letGo: func(h *harness) string {
+				h.t.Helper()
+				h.observe(runtime.Gone)
+				h.relaunched()
+				return task
+			},
+			interrupted: true,
+			because:     "Your process ended because " + died + ".",
+			says:        saysTaskTurn, saysNot: saysTurnCut,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateWorking)
+			if p := h.pending(); p.Task != task || p.ConfirmedAt.IsZero() {
+				t.Fatalf("the working claim holds %+v, want its task confirmed by the turn", p)
+			}
+			h.advance(time.Second)
+			h.reportActivity("subagent")
+			at, cut := h.clock.Now(), h.generation()
+
+			want := tc.letGo(h)
+
+			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Generation: cut, Turn: true, TaskTurn: true,
+				Background: true, Kinds: []string{"subagent"}, Reported: true})
+			sent, p := h.wantPrompts(2)[1], h.pending()
+			if sent.DeliveryID != p.ID || p.Task != want || p.Interrupted != tc.interrupted ||
+				!strings.HasSuffix(sent.Message, "\n\n"+want) {
+				t.Fatalf("the next process was sent %+v first as %+v, want the task %q, interrupted = %v, behind the record's sentence",
+					sent, p, want, tc.interrupted)
+			}
+			wantSays(t, sent.Message, tc.because, tc.says, saysSubagentStopped, "Then continue the task.")
+			wantSaysNot(t, sent.Message, tc.saysNot)
+			if strings.Count(sent.Message, "interrupted") != 1 {
+				t.Errorf("the prompt %q says a turn was interrupted more than once, want one sentence of the let-go", sent.Message)
+			}
+		})
+	}
+}
+
 // A claim that holds nothing when its new process is ready is given a delivery of the daemon's own
 // that carries the sentence alone: no phase, no run, no entry, an id the busy answer's
 // take-back keeps the prefix of (rotateTaskID). The acknowledgement tells nothing; the turn that
@@ -531,9 +616,14 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 		h.must(StreamTurnEnd{Claim: testToken})
 		h.must(RequestDeliver{Claim: testToken, Task: "review it", Generation: 5})
 		next := h.prompts()[len(h.prompts())-1]
-		if want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + "review it"; next.Message != want {
+		// The death took back the task whose turn it cut off, and a turn of the relaunched process
+		// has worked that task since. This task was in no turn of the dead process, so the sentence
+		// in front of it tells the turn cut off as the one the agent was in (EndedWork.inFrontOf).
+		if want := relaunchSentence(h.claim().EndedWork.inFrontOf(h.pending()), true) + "\n\n" + "review it"; next.Message != want {
 			t.Fatalf("the next task was sent as %q, want %q: the sentence goes again until a prompt this daemon sent is taken", next.Message, want)
 		}
+		wantSays(t, next.Message, saysTurnCut)
+		wantSaysNot(t, next.Message, saysTaskTurn)
 	})
 }
 

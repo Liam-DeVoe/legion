@@ -27,7 +27,9 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 //
 //   - why the process ended, in the record's own words (EndedWork.Cause), which read after
 //     "because" and quote whatever of them is not the daemon's (endDied, endFailed); for a task
-//     whose turn the let-go cut off it says first that this turn was interrupted;
+//     whose turn the let-go cut off (EndedWork.TaskTurn) it says first that this turn was
+//     interrupted, and Delivery.message hands it a record of the task's turn only in front of
+//     the task that let-go took back (EndedWork.inFrontOf);
 //   - whether a turn was cut off, and that its tool calls in flight were never answered, or that
 //     the agent was in no turn;
 //   - for a turn cut off, what of the background work ended: first each kind of it the record
@@ -128,6 +130,22 @@ func relaunchSentence(ended EndedWork, task bool) string {
 		said = append(said, "Before you start any of that work again, check what it already did.")
 	}
 	return strings.Join(said, " ")
+}
+
+// inFrontOf is the record as the sentence in front of task d tells it (Delivery.message). The
+// turn of the claim's task the record says was cut off (EndedWork.TaskTurn) is d's own only where
+// d is the task the let-go took back from that turn (Delivery.Interrupted, interrupted): a let-go
+// that takes nothing back leaves the task a turn confirmed to settle, which retires it, and a
+// confirmed task is never sent again. So any other task was never in that turn: the operator's
+// retry of a worker a stop cut off in its task's turn is the case, since the stop retires that
+// task and the retry gives the claim a new task of its phase (api's retryStart). In front of such
+// a task the turn cut off is told as the sentence alone tells it (RelaunchSentence): as the turn
+// the agent was in, never as this task's.
+func (e EndedWork) inFrontOf(d Delivery) EndedWork {
+	if !d.Interrupted {
+		e.Turn, e.TaskTurn = e.Turn || e.TaskTurn, false
+	}
+	return e
 }
 
 // backgroundKinds names each kind of background work a report named, in the report's order, for
