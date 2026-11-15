@@ -161,6 +161,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         text: postHistorySummary(
           "Comment",
           refTarget(ref, "comment", id),
+          id,
           await throughPostCorrections(input.tool, configUrl, client.commentHistory(id))
         ),
         details:
@@ -203,6 +204,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         text: postHistorySummary(
           "Message",
           dispatchChildRef(dispatchIssueRef(messageIssue), "message", id),
+          id,
           await throughPostCorrections(
             input.tool,
             configUrl,

@@ -15479,6 +15479,50 @@ test("a post nobody edited lists no earlier body, and --history is refused off o
   expect(requests).toBe(0);
 });
 
+// Dispatch answers at most 200 rows of a post's history, newest first, and this command has no
+// flag that reads the rows before them, so a full page ends with the route that reads them, at
+// the oldest time it printed. A shorter page holds every row and says nothing more.
+test("dispatch read --history of a full page ends with the route that reads the older rows", async () => {
+  const read = async (kind: "comment" | "message", id: string, count: number) => {
+    const { result } = await runCorrection(
+      "dispatch_read",
+      { ref: `dispatch://DSP-42/${kind}/${id}`, history: true },
+      (pathname) => {
+        if (pathname === `/api/v1/comments/${id}`) return { comment: commentRow(), replies: [] };
+        if (pathname === `/api/v1/messages/${id}`) return { message: messageRow(), replies: [] };
+        return {
+          deleted_at: null,
+          deleted_by: null,
+          entries: Array.from({ length: count }, (_, index) => ({
+            body: `text ${count - index}`,
+            edited_by: sessionA,
+            edited_at: new Date(Date.UTC(2026, 10, 11, 9) - index * 60_000).toISOString(),
+          })),
+        };
+      }
+    );
+    return result.text.split("\n");
+  };
+
+  const full = await read("comment", correctedComment, 200);
+  expect(full).toHaveLength(1 + 200 * 2 + 1);
+  expect(full.slice(-3)).toEqual([
+    "2026-11-11T05:41:00.000Z · session session-42",
+    "Body: text 1",
+    `This is the newest page, and a page holds 200 rows: GET /api/v1/comments/${correctedComment}/history?before=2026-11-11T05:41:00.000Z reads any older rows.`,
+  ]);
+  expect((await read("message", correctedMessage, 200)).at(-1)).toBe(
+    `This is the newest page, and a page holds 200 rows: GET /api/v1/messages/${correctedMessage}/history?before=2026-11-11T05:41:00.000Z reads any older rows.`
+  );
+
+  const short = await read("comment", correctedComment, 199);
+  expect(short).toHaveLength(1 + 199 * 2);
+  expect(short.slice(-2)).toEqual([
+    "2026-11-11T05:42:00.000Z · session session-42",
+    "Body: text 1",
+  ]);
+});
+
 // The plugins release from main as this merges, while Dispatch's own server is deployed by hand
 // (dispatch://INFRA-1464), so each of these commands runs for a while against a server that has
 // no route by which an agent edits or deletes a post or reads the bodies one replaced. Each says

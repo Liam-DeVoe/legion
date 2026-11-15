@@ -209,19 +209,29 @@ function postBodyLines(post: {
   return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${post.body}`];
 }
 
+/** The most rows one answer of a post's history holds, newest first: Dispatch's `maxEventPage`
+ *  (packages/envoy/internal/dispatch/api/events.go), which its `postHistory` (post_history.go)
+ *  reads a page at. `?before=` the oldest time of a page answers the page after it. */
+const POST_HISTORY_PAGE = 200;
+
 /**
- * What `dispatch read --history` prints: each body an edit or a delete of the post replaced,
- * newest first, under the time of that write and the actor that made it. A post nobody edited
- * lists none. A deleted post gives no part of its body to any read, so its list carries the
- * deleted mark and the times alone.
+ * What `dispatch read --history` prints: each body an edit or a delete of the post `id`
+ * replaced, newest first, under the time of that write and the actor that made it. A post
+ * nobody edited lists none. A deleted post gives no part of its body to any read, so its list
+ * carries the deleted mark and the times alone. Dispatch answers one page, so a full page
+ * (`POST_HISTORY_PAGE` rows) ends with the route that reads the rows before its oldest time:
+ * this command has no flag that reads them.
  */
 export function postHistorySummary(
   kind: "Comment" | "Message",
   ref: string,
+  id: string,
   read: PostHistoryRead
 ): string {
   const entries = read.entries ?? [];
   const deleted = read.deleted_at != null;
+  const oldest = entries.at(-1);
+  const route = `/api/v1/${kind === "Comment" ? "comments" : "messages"}/${id}/history`;
   return [
     `${kind} history: ${ref}`,
     ...(read.deleted_at == null ? [] : [deletedMark(read.deleted_at, read.deleted_by)]),
@@ -231,6 +241,11 @@ export function postHistorySummary(
           `${entry.edited_at} · ${actorText(entry.edited_by)}`,
           ...(deleted ? [] : [`Body: ${entry.body}`]),
         ])),
+    ...(entries.length < POST_HISTORY_PAGE || oldest === undefined
+      ? []
+      : [
+          `This is the newest page, and a page holds ${POST_HISTORY_PAGE} rows: GET ${route}?before=${oldest.edited_at} reads any older rows.`,
+        ]),
   ].join("\n");
 }
 
