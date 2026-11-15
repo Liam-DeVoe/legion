@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -62,15 +62,26 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	return pool, t.Context()
 }
 
-// deliveryTestLeases is the lease pool an intake reconciles its durable under (duty.Exclusive on
-// consumerLease(durable)), taken from the test's own pool. Each lease is held on a connection of
-// its own, so a test can hold the lease from one caller while an intake tries for it from
-// another.
-func deliveryTestLeases(t *testing.T, pool *store.Pool) duty.Leases {
+// deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
+// (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
+// connection of its own, so a test can hold the lease from one caller while an intake tries for it
+// from another.
+func deliveryTestLeases(t *testing.T, pool *store.Pool) *pgxpool.Pool {
 	t.Helper()
-	leases, err := pool.Leases()
+	return storetest.Leases(t, pool)
+}
+
+// deliveryTestIntakeLeases is the reservation StartIntakes takes in the server, made here on the
+// test's own pool (ReserveIntakeLeases).
+func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
+	t.Helper()
+	callers, err := pool.Leases()
 	if err != nil {
 		t.Fatalf("open the leases pool: %v", err)
+	}
+	leases, err := ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
 	}
 	return leases
 }
@@ -235,6 +246,21 @@ func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	was := headWriteMaxDeliveries
 	headWriteMaxDeliveries = deliveries
 	t.Cleanup(func() { headWriteMaxDeliveries = was })
+}
+
+// ackWaitPastTheRun makes the delivery durable's ack wait longer than any run of the package, for
+// one test: intakeAckWait derives it from intakeMessageTimeout, here six hours, so the durable the
+// intakes create (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for an
+// acknowledgement. A row whose message must reach a process by a hand-back or a take-over's
+// recreate at the ack floor calls it before it starts any intake: the server's own redelivery
+// once the ack wait expires then never comes inside the run, so a wait the row leaves unbounded
+// fails on a broken hand-back rather than passing on that redelivery. Its restore is registered
+// before the row's intakes start, so it runs once they have stopped.
+func ackWaitPastTheRun(t *testing.T) {
+	t.Helper()
+	was := intakeMessageTimeout
+	intakeMessageTimeout = 6 * time.Hour
+	t.Cleanup(func() { intakeMessageTimeout = was })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

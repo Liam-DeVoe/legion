@@ -56,7 +56,7 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 	// under test is the store's, and a registration reaches the store only once it has its
 	// consumer.
 	now := clocktest.Held()
-	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t), clock: now}), "test-machine", logging.New("test"))
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), clock: now}), "test-machine", logging.New("test"))
 	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux, clock: now}
 }
 

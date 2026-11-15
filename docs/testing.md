@@ -446,11 +446,27 @@ Up to 2026-11-15 the guards and their readings were:
   `envoy-go-race-docs`: 65 minutes, against `internal/dispatch/docs`'s 1881.151 s.
   `envoy-go-docs-finalizers`: 45 minutes, against `internal/dispatch/docs`'s 1261.698 s.
 
-- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 25 minutes, against 718.638 s; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
+- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 25 minutes, against 718.638 s; `dispatch-two-builds`: 30 minutes, against 526.292 s over its 2 green merge-group runs; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
 
 - `envoy-infra-go`: 10 minutes for the unit step, against `gcp`'s 28.059 s, and 30 for each natslive call, against `core`'s 124.22 s on a restored cache, since a cold cache installs four tools first.
   `envoy-smoke`: 5 minutes for the smoke test (16.133 s) and 15 for the live tests (145.791 s).
   `envoy-go-checks` and `airlock-lean`: 10 minutes for each command, against at most 121.054 s, the two-minute fuzz.
+
+Each `bun test` step of `ci.yaml` that runs no package script passes the row-deadline preload and a `--timeout` of at least twice the slowest row or hook its command ran under 8 busy loops on 2 CPUs in a builds Job at 61b66deb, and the step's comment there gives that reading (R5):
+
+- `test`: claude-envoy's `tests/build-inputs.test.ts` 10,000 ms, against 2,992.78 ms; `scripts/third-party-notices.test.ts` 5,000 ms, against 396.72 ms; `scripts/semantic-line-breaks.test.ts` 5,000 ms, against 806.66 ms; `scripts/priorities-seed.test.ts` 5,000 ms, against 797.60 ms.
+  `scripts/dispatch` 15,000 ms, against 5,190.57 ms; `scripts/sessions` 5,000 ms, against its `beforeAll`'s 2,197.48 ms; `scripts/approval-eval` 5,000 ms, against 196.24 ms.
+
+- `test`, `bun test scripts/e2e/lib`: 60,000 ms, against `held-port.test.ts`'s `beforeAll`, which builds the real envoy-listener, 21,991.12 ms on a warm Go cache, and the slowest row's 13,106.99 ms.
+  Before dispatch://INFRA-3149 the step passed no `--timeout` and ran on Bun's default of 5,000 ms, which killed `scripts/e2e/lib/smoke-cleanup.test.ts`'s `smoke-main-clean` teardown row at 8.3 s in merge-group run 43708116445 (#4046's queue run, at `e21be234`).
+  Over 60 `test` jobs on 2026-11-15, 08:14Z to 11:16Z, that file's 600 rows took 111 ms at the median, 241 ms at the 95th percentile and 8.3 s at the slowest, that row of run 43708116445.
+  In a 2-CPU pod its slowest row took 4.5 s beside 8 busy loops and 7.4 s beside 16, and 20 of 20 runs of each passed under a 30 s limit while 5 of 20 failed at Bun's 5 s default (measured for dispatch://INFRA-3621).
+  The guard stays 60,000 ms, which the hook's 21,991.12 ms sets.
+
+- `conflicts-script`: `scripts/conflicts` 5,000 ms, against 1,986.02 ms.
+
+- `envoy-session-stall`: envoy-client's `nats-stall.test.ts` 120,000 ms, against a row's 50,109.26 ms and its `beforeAll`'s 25,685.20 ms; `test/session-stall.ts` 180,000 ms, against 60,810.22 ms; pi-envoy's NATS path freeze 90,000 ms, against 30,499.69 ms; claude-envoy's channel stall 120,000 ms, against 53,001.47 ms.
+  The two suites of the real CLI against a real Dispatch take 120,000 ms each, against their `beforeAll`s, which build and start that server: 52,389.38 ms for the design-gate advice and 45,890.03 ms for the moved-approval advice.
 
 A command a person or an issue pod runs takes its reading from the machines that run it, which are slower than CI's.
 `packages/envoy/internal/dispatch/api` took up to 1471.384 s under `-race` in `envoy-go-race-api`, and a plain run is faster (about 600 s on a workstation), so every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 50m`:
@@ -508,7 +524,7 @@ A run that reports nothing is no proof on its own: the check runs at a garbage c
 with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects, with `-timeout 45m` against the job's slowest green run of 1261.698 s.
 The command above gives 60 minutes because an issue pod's run of the package took 1690 s (recorded on dispatch://INFRA-3149).
-It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is one of the nine slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.

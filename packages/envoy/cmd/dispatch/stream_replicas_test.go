@@ -351,7 +351,9 @@ func TestADefaultDispatchStartOnASingleServerCreatesEverythingAtOneCopyAndTheNex
 
 // keeperPeriod is how far this row moves the client's clock to reach the keeper's next pass: the
 // bus's own period (its defaultKeepInterval, 30 s) and a second, so a pass armed at any point of
-// this row is due once the clock has moved.
+// this row is due once the clock has moved. The client's refresh of the deployed stream's subjects
+// is armed on the same clock a minute on, past it, so a deadline within keeperPeriod is the
+// keeper's.
 const keeperPeriod = 31 * time.Second
 
 // The Dispatch server's publisher, started as main starts it, keeps the stream once its
@@ -373,8 +375,12 @@ func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
 	// The keeper's next pass is a deadline armed on the fake: the row moves the clock past it
 	// only once the keeper has armed it, so no pass is missed and none is waited for in real
 	// time.
-	fake.AwaitArmed(t, "the keeper's next pass", 1)
-	fake.Advance(keeperPeriod)
+	due := fake.Now().Add(keeperPeriod)
+	testwait.Until(t, fmt.Sprintf("the keeper to arm its next pass, within %s", keeperPeriod), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, func(deadline time.Time) bool { return !deadline.After(due) })
+	})
+	fake.Set(due)
 	testwait.Until(t, "the keeper's pass to restore the lowered stream to the deployment's settings", func() (string, bool) {
 		info, err := js.StreamInfo(bus.Stream)
 		if err != nil {

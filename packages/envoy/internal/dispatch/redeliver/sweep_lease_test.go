@@ -36,11 +36,7 @@ const webhookRedeliveryLease = "webhook-redelivery"
 // lease, so this pool's database carries the migrations.
 func redeliverTestLeases(t *testing.T) duty.Leases {
 	t.Helper()
-	leases, err := storetest.Open(t).Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
-	return leases
+	return storetest.Leases(t, storetest.Open(t).Pool)
 }
 
 // captureDefaultLogs collects what the lease itself logs, which goes to the default logger rather

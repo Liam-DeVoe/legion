@@ -17,8 +17,8 @@ import (
 // (INFRA-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement, and
 // stores the forward once however often it is sent (its Nats-Msg-Id). The window is a deadline on
 // the client's clock, which stands still here, so a wait that ran out its window instead would
-// never return. On a subject no stream captures and nobody subscribes it returns
-// ErrForwardNotStored once the test moves the clock to that deadline.
+// never return. On a subject no stream captures and nobody subscribes, the server's no-responders
+// answer ends the wait with ErrForwardNotStored, with that clock still standing (PendingForward.Wait).
 func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) {
 	clock := clocktest.New(fakeStart)
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithClock(clock))
@@ -64,13 +64,8 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	}
 	unstored := make(chan error, 1)
 	go func() { unstored <- forward.Wait() }()
-	deadline := clock.AwaitArmed(t, "the window of the forward no stream stores", 1)[0]
-	if len(unstored) != 0 {
-		t.Fatalf("the wait of a forward no stream stores answered %v before its window", <-unstored)
-	}
-	clock.Set(deadline)
-	if err := testwait.Receive(t, "the wait of a forward no stream stores to end at its window", unstored); !errors.Is(err, bus.ErrForwardNotStored) {
-		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored", err)
+	if err := testwait.Receive(t, "the wait of a forward no stream stores to end at the server's no-responders answer, with the clock standing still", unstored); !errors.Is(err, bus.ErrForwardNotStored) || !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored wrapping the server's no-responders answer", err)
 	}
 }
 

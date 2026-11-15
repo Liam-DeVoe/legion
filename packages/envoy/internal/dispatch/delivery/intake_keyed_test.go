@@ -258,6 +258,7 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 // process to bind the durable is handed it at once rather than after the ack wait; the message in
 // its handler then finishes and is acknowledged by the stopping intake.
 func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
+	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
@@ -329,6 +330,7 @@ func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 // stopping intake gives back reaches the standby only once its handler of that key has ended or
 // given up its GitHub call.
 func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
+	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
@@ -386,28 +388,16 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 		}
 		return false
 	}
-	// The standby binds the durable once the stopping intake has given its binding up, with that
-	// intake's handler of pull request 1 still held. A message of pull request 2 published then is
-	// the later action whose effect proves what the standby was handed: the server hands a
-	// consumer's redeliveries out before new messages, so a message of pull request 1 the stopping
-	// intake gave back before its handler ended reached the standby before pull request 2 did, and
-	// the durable's delivered count holds it once pull request 2 is handled.
-	waitFor(t, func() bool { return deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
-		return "the standby never bound the durable the stopping intake gave up"
-	})
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 2, mergedPullRequest(2))
-	waitFor(t, func() bool { return slices.Equal(held.of("2"), []string{"start 2", "end 2"}) }, func() string {
-		return fmt.Sprintf("the standby never handled pull request 2: its events %q", held.of("2"))
-	})
+	// The standby polls for the hold every durableBindInterval and finds it live, since the
+	// stopping intake holds it until its stop has ended, so several of its polls go by with the
+	// stopping intake's handler of pull request 1 still held. Only once that stop releases the
+	// hold does the standby take the durable over, and its take-over recreates the durable, which
+	// starts its delivered count afresh, so the order across the hand-over is read off the fetches.
+	testwait.Span(t, 4*durableBindInterval, "a poll of the standby's leaves nothing to read: it finds the hold live and says it stands by once per standbyLogEvery, it does real NATS and Postgres I/O, which synctest cannot hold, and no action of the row is ordered after its next poll")
 	if events := held.of("1"); overlapped(events) {
 		held.release()
 		t.Fatalf("pull request 1's events across the hand-over = %q: the standby started the pull request's next message "+
 			"while the stopping intake's handler of the one before it was still waiting on GitHub", events)
-	}
-	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 3 {
-		held.release()
-		t.Fatalf("the durable delivered %d messages by the time the standby handled pull request 2, want 3 (pull request 1's two to the stopping intake, pull request 2's to the standby): "+
-			"the stopping intake gave pull request 1's next message back while its handler of the one before it was still waiting on GitHub", delivered)
 	}
 
 	held.release()
@@ -474,6 +464,7 @@ const bindReturnsAfterSignal = 2 * time.Second
 // it -- that much later. The intake's clock is a fake the row moves: the stop's deadline is armed
 // at the signal, before the bind returns, and the fake reaching it ends the stop.
 func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.T) {
+	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
@@ -528,6 +519,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 // yet routed when the intake stops, is negatively acknowledged rather than handled, and the next
 // process to bind the durable handles it.
 func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
+	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	// The first decode, the workflow run's in the callback, waits until unblock: the messages
@@ -586,9 +578,9 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 	}
 }
 
-// A handler that finishes inside the stop of a live link has its message acknowledged there and
-// then, not when the stop releases what it holds (intake_delivery.go's acknowledgeOrHold). Held
-// to the end of the stop, that message keeps one of the next holder's four in-flight slots
+// A handler that finishes inside the stop has its message acknowledged there and then, where the
+// handler finished (intake.go's deliver), not when the stop releases what it holds. Held to the
+// end of the stop, that message keeps one of the next holder's four in-flight slots
 // (intakeMaxAckPending) for every second the stop waits for the slowest handler -- during a
 // rolling deploy, a slot of the very process this stop is handing the durable to.
 //
@@ -772,14 +764,16 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	}
 }
 
-// A stop after the client replaced its connection drains the subscription the intake bound again
-// itself on the new connection: the connection event gave the subscription the client had
-// restored up, and the bind poll took the durable afresh under its lease, so the handle the
-// intake holds is its own and live rather than the one the closed connection took with it. The
-// durable loses its subscriber as the stop begins, so a message published while a handler still
-// runs is not handed to the stopping process, which would hand it back and be handed it again;
-// the stop logs no failed drain, and the next process to bind the durable handles the message.
-func TestAStopAfterAReplacedConnectionDrainsTheSubscriptionTheIntakeBoundAgain(t *testing.T) {
+// A stop after the client replaced its connection drains the subscription the client bound again
+// on the new connection, which is the one delivering, rather than the handle subscribe returned,
+// which the closed connection took with it. The intake stays the durable's holder throughout: its
+// hold is Postgres's and a replaced NATS connection takes nothing from it, so nothing here rebinds
+// and the live handle is the client's own. The durable loses its subscriber as the stop begins, so
+// a message published while a handler still runs is not handed to the stopping process, which would
+// hand it back and be handed it again; the stop logs no failed drain, and the next process to bind
+// the durable handles the message.
+func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *testing.T) {
+	ackWaitPastTheRun(t)
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -799,28 +793,20 @@ func TestAStopAfterAReplacedConnectionDrainsTheSubscriptionTheIntakeBoundAgain(t
 	intake.clock = clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 	stop := runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
-	// Read before the close, so the wait below can tell the delivery the intake binds afterwards
-	// from the one the closed connection carried.
-	intake.mu.Lock()
-	replaced := intake.delivering
-	intake.mu.Unlock()
 
-	// The client dials a connection to replace the closed one and binds its registration there.
+	// The client dials a connection to replace the closed one and binds its registration there: a
+	// handle of its own, not the one subscribe returned.
 	natsClient.Conn.Close()
 	testwait.Receive(t, "the client's reconnect hooks to run", hooked)
-	// The intake gives that restored subscription up on its connection event and binds the durable
-	// again under its lease, so what it holds is a delivery of its own: a different object from the
-	// one before the close, whose handle is live and whose durable the server reports bound. Until
-	// all three hold, the stop below would be draining something other than what this row measures.
-	var delivery *intakeDelivery
-	waitFor(t, func() bool {
-		intake.mu.Lock()
-		delivery = intake.delivering
-		intake.mu.Unlock()
-		return delivery != replaced && delivery.sub.IsValid() && deliveryConsumerInfo(t, natsClient).PushBound
-	}, func() string {
-		return "the intake never gave the subscription the client restored up and bound the delivery durable again on its new connection"
+	waitFor(t, func() bool { return natsClient.SubOK() && deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+		return "the client never bound the intake's subscription again on its new connection"
 	})
+	intake.mu.Lock()
+	delivery := intake.delivering
+	intake.mu.Unlock()
+	if delivery.sub.IsValid() {
+		t.Fatal("the handle subscribe returned is still valid on the replaced connection; the test proves nothing")
+	}
 
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)
@@ -844,17 +830,18 @@ func TestAStopAfterAReplacedConnectionDrainsTheSubscriptionTheIntakeBoundAgain(t
 			t.Errorf("the stop logged %q (%v)", message, record["error"])
 		}
 	}
+	// The stop drained the subscription before pull request 2 was published, so the durable had
+	// no subscriber to hand it to: a delivery of it to the stopping intake, which would have
+	// handed it back, counts here. Read before the next process takes the durable over, since
+	// its take-over recreates the durable and starts the count afresh.
+	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 0 {
+		t.Fatalf("the durable delivered %d message(s) after the stop drained its subscription, want none: pull request 2 was handed to the stopping intake after its stop began", delivered)
+	}
 
 	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("2"), []string{"start 2", "end 2"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 2's events = %q, want %q: the next process handles the message published during the stop", events, want)
-	}
-	// Once everything is acknowledged the durable's deliveries are final: pull request 2 was
-	// delivered once, to the next process. A delivery of it to the stopping intake, which would
-	// have handed it back, is a second.
-	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 1 {
-		t.Fatalf("the durable delivered pull request 2 %d time(s), want once, to the next process: it was handed to the stopping intake after its stop began", delivered)
 	}
 }
 

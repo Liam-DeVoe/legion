@@ -70,7 +70,7 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 	if started.StatusCode != http.StatusServiceUnavailable || errorCodeOf(string(body)) != "SIGNIN_UNAVAILABLE" {
 		t.Fatalf("/auth/start while the sign-in issuer is down: %d %s, want 503 SIGNIN_UNAVAILABLE", started.StatusCode, body)
 	}
-	process.waitForLog(t, "issuer="+signInIssuer.URL())
+	process.waitForLog(t, `msg="oidc: discover the issuer`, "issuer="+signInIssuer.URL())
 
 	signInIssuer.FailDiscovery(0)
 	podIssuer.FailDiscovery(0)

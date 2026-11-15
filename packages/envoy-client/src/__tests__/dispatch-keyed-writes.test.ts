@@ -155,13 +155,10 @@ const posted = {
 } as unknown as CommentWriteResponse;
 
 function client(fetchImpl: typeof fetch, retry: DispatchWriteRetry, signal?: AbortSignal) {
-  return new DispatchClient(
-    "http://dispatch.test",
-    bearerCredential("secret"),
-    fetchImpl,
+  return new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     signal,
-    retry
-  );
+    writeRetry: retry,
+  });
 }
 
 function failure(call: Promise<unknown>): Promise<Error> {
@@ -1289,9 +1286,9 @@ describe("DispatchClient's uploads on a real connection", () => {
 
   const upload = (url: string, size: number, silence: HeldCuts) => {
     const stop = new AbortController();
-    const sending = new DispatchClient(url, bearerCredential("secret"), fetch, stop.signal, {
-      ...DISPATCH_WRITE_RETRY,
-      armSilence: silence.armSilence,
+    const sending = new DispatchClient(url, bearerCredential("secret"), fetch, {
+      signal: stop.signal,
+      writeRetry: { ...DISPATCH_WRITE_RETRY, armSilence: silence.armSilence },
     }).artifact("DSP-1", {
       name: "build.tar",
       file: new Blob([new Uint8Array(size).fill(97)]),

@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
@@ -145,6 +148,149 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	}
 	if left := existingTables(t, s, "broker_schema_migrations"); len(left) != 0 {
 		t.Errorf("the migration that gave up committed %v; want its whole transaction rolled back", left)
+	}
+}
+
+// The runner pins its transaction (pgmigrate.Pin) right after its advisory lock, so the statements
+// it runs before the first migration's own pin are bounded by LockTimeout too: the create table of
+// broker_schema_migrations and the first applied check. Here another connection holds ACCESS
+// EXCLUSIVE on an existing broker_schema_migrations in an open transaction. The first applied
+// check is the statement that waits: on PostgreSQL 18.6, create table if not exists takes no lock
+// on a table that exists, and the check reads the table under ACCESS SHARE. migrate gives up after
+// LockTimeout with a lock-timeout error (SQLSTATE 55P03) rather than wait for as long as the holder
+// lives.
+//
+// Control: remove the pgmigrate.Pin call after the advisory lock in migrate, and migrate waits
+// until the shared wait's own bound cancels it.
+func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
+	ctx := context.Background()
+	s := emptySchemaStore(t)
+	if _, err := s.Pool.Exec(ctx, "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
+		t.Fatalf("create the version table: %v", err)
+	}
+	holder, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect the holder: %v", err)
+	}
+	t.Cleanup(func() { holder.Close(context.Background()) })
+	held, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder's transaction: %v", err)
+	}
+	defer held.Rollback(ctx)
+	if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
+		t.Fatalf("hold the version table: %v", err)
+	}
+	set := fstest.MapFS{
+		"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
+	}
+
+	bounded := testwait.Context(t)
+	started := time.Now()
+	err = s.migrate(bounded, set)
+	waited := time.Since(started)
+	if bounded.Err() != nil {
+		t.Fatalf("migrate waited %s for the held version table, until the shared wait's own bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), err)
+	}
+	// Postgres's own lock_timeout cancelled it, the one Pin sets to pgmigrate.LockTimeout right
+	// after the runner's advisory lock: a wait that ended any other way — the holder letting go, a
+	// statement timeout, this test's context — is not the bound this row is about.
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03), Postgres cancelling it at the %s lock_timeout Pin sets", err, waited.Round(time.Millisecond), pgmigrate.LockTimeout)
+	}
+	// And that lock_timeout is LockTimeout and no shorter. A loaded machine only makes the wait
+	// longer, so this check cannot fail for load. A check that the wait ended soon after
+	// LockTimeout could, so the shared wait's bound above is what holds the wait from above.
+	if waited < pgmigrate.LockTimeout {
+		t.Errorf("migrate gave up after %s, before the %s lock timeout: the first applied check ran under a shorter lock_timeout", waited.Round(time.Millisecond), pgmigrate.LockTimeout)
+	}
+	if left := existingTables(t, s, "guard_first"); len(left) != 0 {
+		t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
+	}
+}
+
+// A migration whose own text runs a session SET, one without LOCAL, leaves that setting on its
+// connection past the commit. The runner resets that connection's session before it goes back to
+// the pool (releaseMigrationConn, pgmigrate.ResetSession), so after migrate returns no connection
+// the pool can give carries the migration's statement_timeout or search_path. The test holds as
+// many connections as the pool can give at once (its MaxConns) and reads each, because the
+// migration ran on one of them. The store's database is the test's own (emptySchemaStore), and no
+// connection option sets its search_path, so the reset gives back the server's default, which a
+// new connection reads too. The control runs the same SETs in a committed transaction on a
+// connection of its own and reads them back: the SETs survive a commit, so the row shows that the
+// reset clears them.
+//
+// Control: remove the pgmigrate.ResetSession call from releaseMigrationConn, so the connection
+// goes back as it is, and this fails: a pooled connection reads 77s and the row's schema.
+func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
+	ctx := context.Background()
+	s := emptySchemaStore(t)
+	// The schema is the row's own: the database it lives in is dropped when the row ends.
+	schema := "broker_migrate_leak"
+	leaked := schema + ", public"
+	set := fstest.MapFS{
+		"migrations/0001_schema.up.sql": {Data: []byte("create schema " + schema)},
+		"migrations/0002_leak.up.sql":   {Data: []byte("set statement_timeout = '77s'; set search_path = " + leaked)},
+	}
+	if err := s.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	const read = "select current_setting('statement_timeout'), current_setting('search_path')"
+
+	// A new connection reads the values that the reset gives, which every pooled connection must
+	// read after migrate.
+	fresh, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect a new connection: %v", err)
+	}
+	t.Cleanup(func() { fresh.Close(context.Background()) })
+	var wantTimeout, wantSearchPath string
+	if err := fresh.QueryRow(ctx, read).Scan(&wantTimeout, &wantSearchPath); err != nil {
+		t.Fatalf("read a new connection's settings: %v", err)
+	}
+	if wantTimeout == "77s" || wantSearchPath == leaked {
+		t.Fatalf("a new connection already reads the migration's settings (%q, %q), so the row proves nothing", wantTimeout, wantSearchPath)
+	}
+
+	acquire := testwait.Context(t)
+	held := make([]*pgxpool.Conn, 0, s.Pool.Config().MaxConns)
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for i := range s.Pool.Config().MaxConns {
+		conn, err := s.Pool.Acquire(acquire)
+		if err != nil {
+			t.Fatalf("acquire pooled connection %d of %d: %v", i+1, s.Pool.Config().MaxConns, err)
+		}
+		held = append(held, conn)
+	}
+	for i, conn := range held {
+		var timeout, searchPath string
+		if err := conn.QueryRow(ctx, read).Scan(&timeout, &searchPath); err != nil {
+			t.Fatalf("read pooled connection %d's settings: %v", i+1, err)
+		}
+		if timeout != wantTimeout || searchPath != wantSearchPath {
+			t.Errorf("pooled connection %d reads statement_timeout %q and search_path %q; want %q and %q, the values the reset gives: the migration's session SET reached the pool", i+1, timeout, searchPath, wantTimeout, wantSearchPath)
+		}
+	}
+
+	control, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("control: connect: %v", err)
+	}
+	t.Cleanup(func() { control.Close(context.Background()) })
+	if _, err := control.Exec(ctx, "begin; set statement_timeout = '77s'; set search_path = "+leaked+"; commit"); err != nil {
+		t.Fatalf("control: run the SETs in a committed transaction: %v", err)
+	}
+	var controlTimeout, controlSearchPath string
+	if err := control.QueryRow(ctx, read).Scan(&controlTimeout, &controlSearchPath); err != nil {
+		t.Fatalf("control: read the settings: %v", err)
+	}
+	if controlTimeout != "77s" || controlSearchPath != leaked {
+		t.Fatalf("control: after a committed SET the connection reads %q and %q; want 77s and %q: the SETs do not survive a commit, so the row proves nothing", controlTimeout, controlSearchPath, leaked)
 	}
 }
 

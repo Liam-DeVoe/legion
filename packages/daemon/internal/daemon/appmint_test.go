@@ -129,6 +129,12 @@ type booting struct {
 // clk, and returns at once, so the test can drive clk while the boot waits on it.
 func bootOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, clk clock.Clock, log *slog.Logger) *booting {
 	t.Helper()
+	return bootOnGitHub(t, cfg, tokens, repositoriesGitHub(t), clk, log)
+}
+
+// bootOnGitHub is bootOn with the daemon reading GitHub's REST API at githubAPI.
+func bootOnGitHub(t *testing.T, cfg config.Config, tokens appauth.Tokens, githubAPI string, clk clock.Clock, log *slog.Logger) *booting {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &booting{done: make(chan error, 1)}
 	o := overrides{
@@ -136,7 +142,7 @@ func bootOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, clk clock.Cl
 		runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 		clock:          clk,
 		workflowTokens: tokens,
-		githubAPI:      repositoriesGitHub(t),
+		githubAPI:      githubAPI,
 	}
 	b.obs = observing(&o)
 	go func() { b.done <- run(ctx, cfg, log, o) }()

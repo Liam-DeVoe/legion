@@ -80,7 +80,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 
 		// The client's clock stands still, so its keeper makes no pass, and the cap read below is
 		// the start's own write.
-		client, err := ConnectOwningStream([]string{uri}, WithClock(keeperClock()))
+		client, err := ConnectOwningStream([]string{uri}, keeperClock().option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -97,7 +97,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 			t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, streamMaxConsumers)
 		}
 		clock := keeperClock()
-		client, err := ConnectOwningStream([]string{uri}, WithClock(clock))
+		client, err := ConnectOwningStream([]string{uri}, clock.option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -125,7 +125,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 			t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, streamMaxConsumers)
 		}
 		clock := keeperClock()
-		client, err := ConnectOwningStream([]string{uri}, WithClock(clock))
+		client, err := ConnectOwningStream([]string{uri}, clock.option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}

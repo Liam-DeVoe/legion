@@ -81,6 +81,15 @@ func mappingRigWith(t *testing.T, installs *installations, opts ...func(*workflo
 // mappingRigJS is mappingRigWith with the JetStream it opened, for a test that publishes on it.
 func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
 	t.Helper()
+	return mappingRigDriven(t, installs, nil, opts...)
+}
+
+// mappingRigDriven is mappingRigJS whose boot reads the mapping (loadMapping, then nameMapping) on
+// a goroutine of its own while drive, when set, runs on the test goroutine: a boot that waits on
+// the rig's fake clock (waitOutLimits) is moved past that wait by drive, and the rig is returned
+// once the boot has read the mapping. A boot still waiting when the test ends is stopped then.
+func mappingRigDriven(t *testing.T, installs *installations, drive func(*workflowRuntime), opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
+	t.Helper()
 	ctx := context.Background()
 	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
@@ -105,10 +114,20 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	for _, opt := range opts {
 		opt(w)
 	}
-	if err := w.loadMapping(ctx); err != nil {
-		t.Fatal(err)
+	booting, stopBoot := context.WithCancel(ctx)
+	t.Cleanup(stopBoot)
+	booted := make(chan error, 1)
+	go func() {
+		err := w.loadMapping(booting)
+		if err == nil {
+			err = w.nameMapping(booting)
+		}
+		booted <- err
+	}()
+	if drive != nil {
+		drive(w)
 	}
-	if err := w.nameMapping(ctx); err != nil {
+	if err := testwait.Receive(t, "the rig's boot to read the mapping", booted); err != nil {
 		t.Fatal(err)
 	}
 	heard, err := w.heardAtBoot(ctx)

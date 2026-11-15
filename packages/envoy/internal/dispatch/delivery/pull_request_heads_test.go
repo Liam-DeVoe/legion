@@ -1383,13 +1383,30 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 	}
 }
 
+// branchCommitsMigration is the migration that creates branch_commits, the table
+// withoutBranchCommits drops. Its restore replays it to put the table back, rather than keeping a
+// second copy of its `create table` here and in step with it by hand: Migrate skips every version
+// schema_migrations already records, so forgetting the version makes the table exactly as the
+// migration does.
+const branchCommitsMigration = 20261107234701
+
 // withoutBranchCommits drops branch_commits from the test's own database, so a write of it fails
-// the way a write fails. Nothing puts it back: no other test reads that database, and it is
+// the way a write fails. It answers restore, which puts the table back, for the row that needs it
+// again while it still runs; nothing else does: no other test reads that database, and it is
 // dropped once the test ends (deliveryTestPool).
-func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
+func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
 		t.Fatalf("drop branch_commits: %v", err)
+	}
+	return func() {
+		t.Helper()
+		if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
+			t.Fatalf("forget the migration of branch_commits: %v", err)
+		}
+		if err := (&store.Store{Pool: pool}).Migrate(ctx); err != nil {
+			t.Fatalf("put branch_commits back: %v", err)
+		}
 	}
 }
 

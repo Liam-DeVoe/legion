@@ -114,7 +114,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		}
 
 		clock := keeperClock()
-		client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithClock(clock))
+		client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), clock.option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -169,7 +169,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 			}
 
 			clock := keeperClock()
-			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithClock(clock))
+			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), clock.option())
 			if err != nil {
 				t.Fatalf("the start against a stream with no cap on a server that caps none: %v, want no update and no refusal", err)
 			}
@@ -192,7 +192,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 				t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, olderServerDeployedCap)
 			}
 
-			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithClock(keeperClock()))
+			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), keeperClock().option())
 			if err == nil {
 				client.Close()
 				t.Fatal("the start raised the cap on a server that cannot take the change, want a refusal")

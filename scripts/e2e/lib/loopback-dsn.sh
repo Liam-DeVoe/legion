@@ -2,7 +2,8 @@
 # The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with: which host
 # libpq reads from that DSN, and the connection string that gives the run its own database on
 # that host. lib/loopback-dsn.py answers both, and this file addresses it beside itself, so it
-# needs nothing of its caller's. lib/rig.sh sources it, and so does
+# needs nothing of its caller's. A third helper, empty_public_schema, empties the database a run
+# was given, so that a server migrates it from nothing. lib/rig.sh sources this file, and so does
 # scripts/e2e/envoy-session-delivery.sh, which sources no rig: that proof keeps an await_port_file
 # and a keep_port of its own, written for its own pid map.
 # Sourced, never run.
@@ -17,17 +18,17 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Ten call sites read a DSN with this guard before they start anything, because the server must
+# Eleven call sites read a DSN with this guard before they start anything, because the server must
 # be this machine's. Eight are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh, dispatch-session-settings.sh and
 # stage1-skeleton.sh. The ninth is lib/two-builds.sh, the harness the two two-builds proofs
 # share, which reads DATABASE_URL once for dispatch-two-builds.sh and
 # dispatch-search-two-builds.sh. The tenth is lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each of the nine proofs that make that run: behind-entry-fence.sh,
-# child-adoption.sh, claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh,
-# late-completion.sh, phase-entry-converge.sh, provider-error-retry.sh and role-prompt-rule.sh.
-# Seven of the ten call sites call this function.
+# reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
+# sources it. The eleventh call site is busy-relaunch-delivery.sh's negative control, which reads
+# LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
+# lib/live-daemon-proof.sh sources. Eight of the eleven call sites call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, and stage1-skeleton.sh with run_database_uri alone, each of which
 # begins with this guard's own check. Every proof that writes a server its caller's DSN names
@@ -48,7 +49,7 @@
 # them give every server they start a database of the run's own, in the connection string
 # run_database_url or run_database_uri below rebuilds, which libpq read back inside the helper.
 #
-# The other two read the DSN a second time, with pgx. lib/two-builds.sh:289, which starts both
+# The other two read the DSN a second time, with pgx. lib/two-builds.sh:284, which starts both
 # servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh, gives Dispatch the
 # caller's raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
 # (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The
@@ -128,11 +129,55 @@ run_database_uri() {
   _loopback_dsn "$1" "$2" "$3" "$5" --dbname "$4" --uri
 }
 
+# empty_public_schema URL empties the public schema of the database URL names, so that a server
+# migrates it from nothing, and returns psql's status, so the caller ends the run in its own words:
+#
+#   empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+#
+# Every table, view, routine and type of the public schema goes, and the extensions it holds stay.
+# `vector` is installed by the cluster's master role (0072_embeddings_core.up.sql says so, and
+# takes it as given with `create extension if not exists`), which the role a run connects as need
+# not be, so dropping the schema would leave a database no build can migrate. A Legion pod's test
+# server is one such case: every database made from its template1 holds `vector`, and its login
+# may not create it again. One caller runs it, lib/two-builds.sh's two_builds_reset_database:
+# verification-results.sh and dispatch-claimant-delivery.sh make a database of their own instead
+# (run_database_uri above), which `create database` copies from template1 with its extensions.
+empty_public_schema() {
+  local reset_sql="do \$\$
+declare object record;
+begin
+  for object in select table_name, table_type from information_schema.tables where table_schema = 'public' loop
+    if object.table_type = 'VIEW' then
+      execute format('drop view if exists public.%I cascade', object.table_name);
+    else
+      execute format('drop table if exists public.%I cascade', object.table_name);
+    end if;
+  end loop;
+  for object in
+    select p.oid::regprocedure as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
+  loop
+    execute format('drop routine if exists %s cascade', object.signature);
+  end loop;
+  for object in
+    select t.oid::regtype as name from pg_type t join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public' and t.typtype in ('e', 'c', 'd')
+      and not exists (select 1 from pg_depend d where d.objid = t.oid and d.deptype = 'e')
+      and not exists (select 1 from pg_class c where c.oid = t.typrelid and c.relkind <> 'c')
+  loop
+    execute format('drop type if exists %s cascade', object.name);
+  end loop;
+end
+\$\$;"
+  psql "$1" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
+    -c "$reset_sql" >/dev/null
+}
+
 # _loopback_dsn VAR NAME DSN WHAT [--dbname DATABASE [--uri]] assigns VAR what
 # lib/loopback-dsn.py printed for the DSN, which is the host, the rebuilt connection string or
-# URI, or the one refusal line, and returns that helper's own status. The three helpers above
-# share this one call to it. The locals' names are ones no caller passes: printf -v would
-# otherwise assign the local.
+# URI, or the one refusal line, and returns that helper's own status. require_loopback_dsn,
+# run_database_url and run_database_uri share this one call to it. The locals' names are ones no
+# caller passes: printf -v would otherwise assign the local.
 #
 # The DSN goes to the helper through the environment of this command substitution's own subshell.
 # `env NAME=$DSN python3 …` would put the password in env(1)'s argument list, which

@@ -512,9 +512,13 @@ func testReleaseClaimLane(t *testing.T) {
 		_, delivered := publisher.snapshot()
 		return len(client.statusWrites()) == 1 && len(delivered) == 1
 	})
-	if left := outboxRowsOf(t, pool, claimIssue); left != 1 {
-		t.Fatalf("rows left on %s = %d, want the waiting release alone", claimIssue, left)
-	}
+	// A delivered row leaves the outbox when its finish commits, which comes after the delivery
+	// the wait above saw, so the count is waited for rather than read once: read once, it can run
+	// between the two and find a delivered row still there.
+	testwait.Until(t, "the rows left on "+claimIssue+" to be the waiting release alone (the count read)", func() (int, bool) {
+		left := outboxRowsOf(t, pool, claimIssue)
+		return left, left == 1
+	})
 	if got := client.statusWrites(); !slices.Equal(got, []string{"icebox"}) {
 		t.Fatalf("statuses written = %v, want the one icebox write", got)
 	}

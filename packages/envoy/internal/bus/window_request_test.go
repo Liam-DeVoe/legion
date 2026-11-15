@@ -93,7 +93,8 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	const uncaptured = "notifications.role.request-receipt"
 	responder(t, url, uncaptured)
 	outcome := window.Request(uncaptured, forwardEnvelope("receipt"), bus.RequestOptions{MsgID: bus.ForwardMsgID("receipt", uncaptured)})
-	timeout := clock.AwaitArmed(t, "the timeout of the Request its receiver answers with a receipt", 1)[0]
+	timeout := clock.Now().Add(bus.PublishAcknowledgementTimeout)
+	awaitArmedAt(t, clock, "the timeout of the Request its receiver answers with a receipt", timeout.Equal)
 	clock.Set(timeout)
 	if err := answerOf(t, outcome); !errors.Is(err, bus.ErrNotAcknowledged) {
 		t.Fatalf("a Request its receiver answered with an empty receipt returned %v, want ErrNotAcknowledged: the stream stored nothing of it", err)
@@ -103,7 +104,8 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 // A Request nobody answers ends when its timeout runs out, as not acknowledged, never as a lost
 // connection: the server's no-responders answer is no acknowledgement and does not end the wait.
 // The timeout is a timer on the client's clock, armed at the request's own window from its send,
-// which the row reads before it moves the clock to it.
+// which the row waits to see armed, among the client's other timers, before it moves the clock to
+// it.
 func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 	clock := requestClock()
 	_, _, client := requestClient(t, bus.WithClock(clock))
@@ -111,10 +113,8 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 	started := clock.Now()
 	outcome := client.WindowUntil(nil).Request("notifications.role.request-nobody", forwardEnvelope("nobody"),
 		bus.RequestOptions{MsgID: bus.ForwardMsgID("nobody", "notifications.role.request-nobody")})
-	timeout := clock.AwaitArmed(t, "the unanswered Request's timeout beside the keeper's period", 2)[0]
-	if want := started.Add(bus.PublishAcknowledgementTimeout); !timeout.Equal(want) {
-		t.Fatalf("the Request armed its timeout at %s, want its %s window from the send", timeout.Sub(started), bus.PublishAcknowledgementTimeout)
-	}
+	timeout := started.Add(bus.PublishAcknowledgementTimeout)
+	awaitArmedAt(t, clock, fmt.Sprintf("the unanswered Request's timeout, its %s window from the send", bus.PublishAcknowledgementTimeout), timeout.Equal)
 	if len(outcome) != 0 {
 		t.Fatalf("an unanswered Request answered %v before its timeout", <-outcome)
 	}
@@ -138,7 +138,9 @@ func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 
 	confirmed := window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
 		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed")})
-	clock.Set(clock.AwaitArmed(t, "the timeout of the Request whose publish was confirmed", 1)[0])
+	confirmedTimeout := clock.Now().Add(bus.PublishAcknowledgementTimeout)
+	awaitArmedAt(t, clock, "the timeout of the Request whose publish was confirmed", confirmedTimeout.Equal)
+	clock.Set(confirmedTimeout)
 	if err := answerOf(t, confirmed); !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
 		t.Fatalf("an unanswered Request whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", err)
 	}
@@ -150,7 +152,9 @@ func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 	thaw := server.Freeze(t)
 	unconfirmed := window.Request("notifications.role.request-unconfirmed", forwardEnvelope("unconfirmed"),
 		bus.RequestOptions{MsgID: bus.ForwardMsgID("unconfirmed", "notifications.role.request-unconfirmed")})
-	clock.Set(clock.AwaitArmed(t, "the timeout of the Request whose flush the frozen server never answers", 1)[0])
+	unconfirmedTimeout := clock.Now().Add(bus.PublishAcknowledgementTimeout)
+	awaitArmedAt(t, clock, "the timeout of the Request whose flush the frozen server never answers", unconfirmedTimeout.Equal)
+	clock.Set(unconfirmedTimeout)
 	err := answerOf(t, unconfirmed)
 	connected := client.Connected()
 	thaw()

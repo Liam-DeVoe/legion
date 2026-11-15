@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -123,4 +125,37 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 		t.Fatalf("bind %s after the child exited: %v; want it free", held.Addr, err)
 	}
 	_ = rebound.Close()
+}
+
+// StartThen runs afterExit once the process has exited and before it closes Exited, so a test
+// that waits on Exited sees what afterExit did. afterExit here holds until the row lets it go, and
+// the row reads Exited while it holds: an Exited closed before afterExit returned is closed then.
+func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
+	// -test.run=^$ makes this test binary run no test and exit 0.
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	var runs int
+	entered := make(chan bool, 1)
+	release := make(chan struct{})
+	child := StartThen(t, "the exiting child", cmd, func() {
+		entered <- cmd.ProcessState != nil
+		<-release
+		runs++
+	})
+	// Registered after StartThen's own cleanup, so it runs first: a row that fails while afterExit
+	// holds lets it go before that cleanup waits for Exited.
+	letGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letGo)
+	if exitedFirst := testwait.Receive(t, "afterExit to start once the child exited", entered); !exitedFirst {
+		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+	}
+	select {
+	case <-child.Exited:
+		t.Fatalf("Exited closed while afterExit was still running")
+	default:
+	}
+	letGo()
+	child.WaitExit(t, "its start")
+	if runs != 1 {
+		t.Fatalf("afterExit had run %d times when Exited closed; want 1", runs)
+	}
 }

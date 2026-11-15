@@ -242,7 +242,11 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 // The order is the whole of what it reads. The other pods are waited for as idle-release
 // candidates first, because a pod the idle rule would keep for a reason of its own says nothing
 // about the gate; the gate line's count is taken after that wait, so the lines read after the
-// release belong to the passes that made it.
+// release belong to the passes that made it. The teardown's own line is written only after the
+// runtime has deleted the pod, its Sandbox and its disk (the outbox's SuspendIssue, then its
+// line), which is what the release wait reads, so the line is waited for on the log stream rather
+// than read once: read at once, a release that has deleted everything and not yet written its
+// line reads as no release at all, which a loaded run of the whole package met.
 func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 	t.Helper()
 	others := idleRigOtherIssues(rig, issue)

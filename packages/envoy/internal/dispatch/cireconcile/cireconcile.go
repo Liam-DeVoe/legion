@@ -134,7 +134,9 @@ type Reconciler struct {
 	// PassTimeout is how long one pass may run, which its caller sets to the interval its loop
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
 	// logs its one line and leaves the next pass the cursor it reached. Zero is Interval, the
-	// period the loop runs the pass on in every deployment.
+	// period the loop runs the pass on in every deployment. A rate limit GitHub answers as the
+	// bound falls is still written to the shared ledger after it, for up to githubapp's
+	// limitRecordTimeout (5 s), so a pass's last write can end that much past PassTimeout.
 	PassTimeout time.Duration
 	// Clock is the time a pass's bound (PassTimeout), the gap it leaves between two REST
 	// requests (Pace) and the wait each query earns (graphQLPace) run on: clock.Real when nil,

@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -38,9 +39,7 @@ func TestAPublishWaitingForAReconnectWakesOnTheReconnect(t *testing.T) {
 		item := contracts.Envelope{EventID: "evt-reconnect-wake", Topic: "notifications.role.reconnect-wake"}
 		published <- client.PublishCoreContext(context.Background(), item.Topic, item)
 	}()
-	if armed := still.AwaitArmed(t, "the publish's reconnect wait to arm its recheck", 1)[0]; !armed.Equal(still.Now().Add(reconnectRecheck)) {
-		t.Fatalf("the reconnect wait rechecks at %s, want %s on", armed, reconnectRecheck)
-	}
+	awaitRecheck(t, still)
 	server.Start(t)
 
 	if err := testwait.Receive(t, "the publish waiting through the reconnect to return with the clock standing still", published); err != nil {
@@ -85,19 +84,40 @@ func TestAPublishWaitingForAReconnectWhoseEventIsDelayedStillReturns(t *testing.
 		item := contracts.Envelope{EventID: "evt-reconnect-delayed", Topic: "notifications.role.reconnect-delayed"}
 		published <- client.PublishCoreContext(context.Background(), item.Topic, item)
 	}()
-	recheck := clock.AwaitArmed(t, "the publish's reconnect wait to arm its recheck", 1)[0]
-	if want := clock.Now().Add(reconnectRecheck); !recheck.Equal(want) {
-		t.Fatalf("the reconnect wait rechecks at %s, want %s on", recheck, reconnectRecheck)
-	}
+	recheck := awaitRecheck(t, clock)
 	server.Start(t)
 
 	testwait.Receive(t, "the client's reconnect", reconnected)
 	// The recheck is still armed, so the wait has not ended: it stops its timer whenever it returns.
-	if armed := clock.Armed(); len(armed) != 1 || len(published) != 0 {
-		t.Fatalf("with the reconnect's event held and no recheck due, the publish's wait has %v armed and answered %d times, want its recheck armed and no answer", armed, len(published))
+	if armed := clock.Armed(); countArmedAt(armed, recheck) != 1 || len(published) != 0 {
+		t.Fatalf("with the reconnect's event held and no recheck due, the publish's wait has %v armed and answered %d times, want its one recheck armed at %s and no answer", armed, len(published), recheck)
 	}
 	clock.Set(recheck)
 	if err := testwait.Receive(t, "the publish to return at its recheck with the reconnect's event still held", published); err != nil {
 		t.Fatalf("the publish waiting through the reconnect answered %v, want nil", err)
 	}
+}
+
+// awaitRecheck waits for the publish's reconnect wait to arm its recheck reconnectRecheck after the
+// clock's present, and answers that deadline. The client arms other timers on the same clock (the
+// refresh of the deployed stream's subjects, a minute on), so the recheck is told by its deadline.
+func awaitRecheck(t *testing.T, clock *clocktest.Fake) time.Time {
+	t.Helper()
+	recheck := clock.Now().Add(reconnectRecheck)
+	testwait.Until(t, fmt.Sprintf("the publish's reconnect wait to arm its recheck at %s, among the deadlines armed", recheck), func() ([]time.Time, bool) {
+		armed := clock.Armed()
+		return armed, countArmedAt(armed, recheck) > 0
+	})
+	return recheck
+}
+
+// countArmedAt is how many of armed are at.
+func countArmedAt(armed []time.Time, at time.Time) int {
+	count := 0
+	for _, deadline := range armed {
+		if deadline.Equal(at) {
+			count++
+		}
+	}
+	return count
 }

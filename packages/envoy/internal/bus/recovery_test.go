@@ -115,8 +115,8 @@ func TestSubOK_NoSubscription(t *testing.T) {
 // which it arms on the client's clock, for either transport. The test moves the clock to the bound
 // once the publish has armed it, and the publish ends there with its deadline passed.
 func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
-	// Publish routes each topic to its transport (bus.UsesCoreTransport), so both cases are the
-	// one call a caller makes.
+	// Publish routes each topic to its transport (bus.Client.UsesCoreTransport), so both cases are
+	// the one call a caller makes.
 	cases := []struct {
 		name  string
 		topic string

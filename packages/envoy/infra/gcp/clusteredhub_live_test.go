@@ -411,9 +411,9 @@ type hubServer struct {
 }
 
 // commandArgs is the container's own arguments (--config /etc/nats-config/nats.conf, with the
-// ConfigMap's mount replaced by the server's directory, podArgs), then a command-line override for
-// each other value of nats.conf that a pod fixes, since three servers here share one host and
-// filesystem.
+// ConfigMap's mount replaced by the server's directory, podArgs), then -D, the one argument the
+// test adds for itself, then a command-line override for each other value of nats.conf that a pod
+// fixes, since three servers here share one host and filesystem.
 func (s *hubServer) commandArgs() []string {
 	var routes []string
 	for _, other := range s.peers {
@@ -422,6 +422,11 @@ func (s *hubServer) commandArgs() []string {
 		}
 	}
 	return append(slices.Clone(s.podArgs),
+		// -D, debug logging, which no pod runs with: nats-server v2.15.1 prints a Raft group's
+		// election and vote lines only at debug level (server/raft.go: initRaftNode sets the node's
+		// dflag from the server's debug flag, and debug prints nothing without it), and startLogged
+		// prints a server's output only when the test failed, so a failed election shows its votes.
+		"-D",
 		// port: 4222, the client port each pod has to itself.
 		"-p", strconv.Itoa(s.client),
 		// http_port: 8222, the monitoring port.
@@ -1093,6 +1098,16 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}
 	forceCoLocated("the JetStream meta leader leads " + r3 + " before the publisher starts")
 
+	// The servers' debug output names the stream's Raft group in each of its election and vote
+	// lines (RAFT [<node> - <group>]), so the line logged at the kill gives the group with the
+	// kill's time, in the layout and local clock of those lines. The group is read here, where a
+	// read costs the kill nothing, and a group's name never changes.
+	r3Info, err := js.StreamInfo(r3)
+	require.NoError(t, err)
+	require.NotNil(t, r3Info.Cluster, "%s reports its cluster", r3)
+	require.NotEmpty(t, r3Info.Cluster.RaftGroup, "%s names its Raft group", r3)
+	group := r3Info.Cluster.RaftGroup
+
 	publisher := connectHub(t, urls, r.keys.operatorSeed)
 	pubJS, err := publisher.JetStream()
 	require.NoError(t, err)
@@ -1175,6 +1190,8 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}
 	killed.kill(t)
 	killedAt := time.Now()
+	t.Logf("(b) SIGKILL to %s, which led %s's Raft group %s, at %s",
+		killed.name, r3, group, killedAt.Format("2006/01/02 15:04:05.000000"))
 	atKill := acked.Load()
 	require.EqualValues(t, pauseAt, atKill, "the publisher is held at its %dth message while its leader is killed", pauseAt)
 	// Every message after this one is published into the outage and the elections that follow,
@@ -1191,8 +1208,17 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}
 	var newLeader string
 	// nats-server v2.15.1's Raft waits a random 4-9 s without the leader's heartbeat before a
-	// follower campaigns (server/raft.go, minElectionTimeoutDefault and maxElectionTimeoutDefault),
-	// which this wait sits through.
+	// follower campaigns (server/raft.go, minElectionTimeoutDefault and maxElectionTimeoutDefault).
+	// A candidate writes its term and its vote for itself to disk before it sends its vote request
+	// (requestVote, writeTermVote). When the other survivor's timer fires inside that window, both
+	// are candidates in one term, each refuses the other (processVoteRequest), and the group waits
+	// for a second draw: a split vote. Measured: 13 of 12,482 runs of this phase in a scratch
+	// harness took a second round, every one a split vote, one of them at 15.40 s; CI run
+	// 43462859890 failed this wait at 15 s with the same signature (dispatch://INFRA-3529). One
+	// round is at most 9 s plus 0.8 s (maxCampaignTimeoutDefault), the campaign of a survivor that
+	// refused a candidate with a shorter log. This wait sits through every round the election
+	// takes, and so does the publisher, which retries each message until this binary runs out of
+	// time.
 	within(t, "a new stream leader after the SIGKILL", func() error {
 		l, err := streamLeader()
 		if err != nil {
@@ -1213,7 +1239,8 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	// server/jetstream_cluster.go:1481-1497), and it decides that before it decides which server
 	// leads the stream. The meta election is an independent random 4-9 s draw (server/raft.go,
 	// minElectionTimeoutDefault and maxElectionTimeoutDefault), so the stream election above is no
-	// sign that it finished, and this waits that draw and its vote out however long they take.
+	// sign that it finished. The meta group takes split votes as the stream's group does, and this
+	// waits its draws and votes out however many rounds they take.
 	within(t, "a new JetStream meta leader after the SIGKILL, with its own election in its log", func() error {
 		name, err := agreedMetaLeader(survivors)
 		if err != nil {

@@ -71,7 +71,7 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	if frame := process.openAgentView(t); frame.Type != "ended" || frame.Reason != "dropped" {
 		t.Fatalf("an agent view while NATS is down first sent %+v, want it ended as dropped", frame)
 	}
-	process.waitForLog(t, "NATS is not connected")
+	process.waitForLog(t, `msg="webhook redelivery sweep failed"`, "NATS is not connected")
 
 	srv.Start(t)
 	process.waitForHealth(t, "nats true", func(health healthBody) bool {
@@ -104,7 +104,7 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	})
 
 	for _, durable := range deliveryDurables {
-		process.waitForLog(t, "name="+durable)
+		process.waitForLog(t, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
 	process.requireAgentViewRelays(t, testnats.Connect(t, natsURL))
 }
@@ -296,7 +296,7 @@ func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn
 	}
 }
 
-// ───── shared with multiprocess_test.go ─────────────────────────────────────
+// ───── shared with multiprocess_test.go and the two-build tests (processes_test.go) ──
 
 // logLines is every line of the process's output that holds all of parts, which is how a slog
 // text line is matched: the message and the attribute that narrows it.
