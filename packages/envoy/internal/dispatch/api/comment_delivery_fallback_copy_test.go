@@ -514,8 +514,17 @@ type queuedMention struct {
 // it moves that clock past the window itself (envoy.CallWindow).
 func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention {
 	t.Helper()
+	return aMentionQueuedOnClock(t, route, clocktest.Held())
+}
+
+// aMentionQueuedOnClock is aMentionQueuedBehindAStalledSend with the server's clock named. A test
+// that counts the tries a listener take-over allows passes a fake whose Now stands still
+// (clocktest.New): the take-over window is read on the server's clock (takeoverRetry.again), and a
+// Held fake's Now reads the wall clock as well, so the wall time a loaded machine spends between
+// the test's moves would count toward that window and decide how many tries start inside it.
+func aMentionQueuedOnClock(t *testing.T, route string, clock *clocktest.Fake) queuedMention {
+	t.Helper()
 	listener, state := newMentionListener(t)
-	clock := clocktest.Held()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, clock: clock,
 	})

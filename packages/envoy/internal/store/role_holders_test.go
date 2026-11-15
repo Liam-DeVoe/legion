@@ -146,22 +146,22 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 		}
 	}
 	putRoleClaim(t, rawRoles, "reviewer", "ses_a")
-	waitFor(t, "a condition the test waits for", held("ses_a", "restored", "reviewer"))
+	waitFor(t, "RolesHeldBy(ses_a) to answer [restored reviewer]", held("ses_a", "restored", "reviewer"))
 
 	putRoleClaim(t, rawRoles, "reviewer", "ses_b")
-	waitFor(t, "a condition the test waits for", held("ses_b", "reviewer"))
-	waitFor(t, "a condition the test waits for", held("ses_a", "restored"))
+	waitFor(t, "RolesHeldBy(ses_b) to answer [reviewer]", held("ses_b", "reviewer"))
+	waitFor(t, "RolesHeldBy(ses_a) to answer [restored]", held("ses_a", "restored"))
 
 	if err := rawRoles.Delete("reviewer"); err != nil {
 		t.Fatalf("delete reviewer's claim: %v", err)
 	}
-	waitFor(t, "a condition the test waits for", held("ses_b"))
+	waitFor(t, "RolesHeldBy(ses_b) to answer no role once reviewer's claim is deleted", held("ses_b"))
 
 	if _, err := rawRoles.Put("restored", []byte(`{"holder_session_id":""}`)); err != nil {
 		t.Fatalf("store a claim naming no holder: %v", err)
 	}
-	waitFor(t, "a condition the test waits for", held("ses_a"))
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, "RolesHeldBy(ses_a) to answer no role once restored's claim names no holder", held("ses_a"))
+	waitFor(t, "the log to say the role claim watcher found a claim it cannot read", func() bool {
 		return strings.Contains(logs.String(), "role claim watcher found a claim it cannot read")
 	})
 
@@ -182,7 +182,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 		}
 	}})
 	reg.roleWatcher.Start()
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, "the gated role claim view to be servable", func() bool {
 		return servableView(reg)
 	})
 
@@ -225,7 +225,7 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 	if err := js.DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, "RolesHeldBy(ses_a) to refuse with ErrRoleViewNotReady once the role bucket is gone", func() bool {
 		_, err := reg.RolesHeldBy("ses_a")
 		return errors.Is(err, ErrRoleViewNotReady)
 	})
@@ -265,7 +265,7 @@ func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []stri
 // starts the view again knows the claims reached it before it did.
 func waitForHeld(t *testing.T, reg *Registry, sessionID string, want ...string) {
 	t.Helper()
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, fmt.Sprintf("RolesHeldBy(%s) to answer %v", sessionID, want), func() bool {
 		roles, err := reg.RolesHeldBy(sessionID)
 		return err == nil && slices.Equal(roles, want)
 	})
@@ -321,7 +321,7 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 	waitForHeld(t, reg, "ses_holder", "planner", "reviewer")
 
 	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1)
-	waitFor(t, "a condition the test waits for", reg.roleWatcher.Ready)
+	waitFor(t, "the restarted role claim view's first scan to end at its idle bound", reg.roleWatcher.Ready)
 	if roles, err := reg.RolesHeldBy("ses_holder"); !errors.Is(err, ErrRoleViewNotReady) {
 		t.Fatalf("after a first scan the idle timer ended, RolesHeldBy(ses_holder) = %v, %v; want ErrRoleViewNotReady", roles, err)
 	}
@@ -409,7 +409,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	}
 	putRoleClaim(t, old, "planner", "ses_holder")
 	oldArchitect := putRoleClaim(t, old, "architect", "ses_other")
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, "RolesHeldBy to answer [planner reviewer] for ses_holder and [architect] for ses_other", func() bool {
 		holder, errHolder := reg.RolesHeldBy("ses_holder")
 		other, errOther := reg.RolesHeldBy("ses_other")
 		return errHolder == nil && errOther == nil &&
@@ -439,7 +439,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	reg.roleWatcher.Stop()
 	reg.roleWatcher = kvwatch.New("role claims", reg.roles(), cache)
 	reg.roleWatcher.Start()
-	waitFor(t, "a condition the test waits for", reg.roleWatcher.Ready)
+	waitFor(t, "the gated role claim view's first scan to end", reg.roleWatcher.Ready)
 	heldOnceComplete(t, reg, "ses_holder", []string{"planner", "reviewer"})
 
 	if err := js.DeleteKeyValue(bus.RoleClaimBucket); err != nil {
@@ -461,7 +461,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 		t.Fatalf("with the refill short of the holder's claim, ses_holder holds %v, want the copy it had, [planner reviewer]", got)
 	}
 	release()
-	waitFor(t, "a condition the test waits for", reg.roleWatcher.Following)
+	waitFor(t, "the released refill to complete, so the view follows the recreated bucket", reg.roleWatcher.Following)
 	if got := heldRoles(t, reg, "ses_holder"); !slices.Equal(got, []string{"reviewer"}) {
 		t.Fatalf("after the refill ses_holder holds %v, want [reviewer]: a claim only the old bucket had outlived the reset", got)
 	}

@@ -418,12 +418,21 @@ func framesOfTheQueuedComment(listener *mentionListener) (sends int, keys []stri
 // ATTEMPT's mode in the key the frames went under different keys and s1 was handed the comment
 // twice.
 //
-// The server runs the take-over window every deployment runs, on a fake clock: a missed receipt
-// is a take-over's failure, so the Retry tries again inside that window, and it settles failed
-// only once every one of its tries has missed its receipt. The test holds every answer to those
-// tries and moves the clock through each try's window and backoff.
+// The server runs the take-over window every deployment runs, on a fake clock that stands still
+// between the test's moves (aMentionQueuedOnClock): a missed receipt is a take-over's failure, so
+// the Retry tries again inside that window, and it settles failed only once every one of its tries
+// has missed its receipt. The test holds every answer to those tries and moves the clock only to
+// the deadlines the server armed - each try's window and the backoff after it - and ends a try's
+// window only once that try has landed at the stand-in: the first's frame is recorded, and each
+// later one is held there (answerWhileCallsAreHeld). So no wall time counts toward the window, and
+// the Retry makes retryTries tries whatever the machine's load.
 func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) {
-	lane := aMentionQueuedBehindAStalledSend(t, "")
+	// The tries the take-over window allows (listenerTakeoverWindow, 12 s from the first) when
+	// every receipt misses its window (envoy.CallWindow, 5 s), with the backoffs takeoverRetry.again
+	// sleeps between them (takeoverFirstBackoff, doubling): tries start at 0, 5.25 s and 10.75 s,
+	// and a fourth would start at 16.75 s, past the window.
+	const retryTries = 3
+	lane := aMentionQueuedOnClock(t, "", clocktest.New(time.Now()))
 	lane.listener.dropRepeats()
 	// The Retry's frame reaches s1 and its answer is held until the test moves the server's
 	// clock past the window the listener client gives the call, below.
@@ -446,8 +455,10 @@ func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) 
 	releaseRetries := lane.listener.hold("s1")
 	t.Cleanup(releaseRetries)
 	// The first try's receipt misses its window: its answer is held at the listener, and the
-	// window is the only thing that ends that call. The tries after it are held the same way,
-	// and the wait moves the clock through their windows and the backoffs between them.
+	// window is the only thing that ends that call. The clock has not moved since the lane began,
+	// so that window, armed before the frame that landed went out, ends one envoy.CallWindow on.
+	// The tries after it are held the same way, and the wait moves the clock through their
+	// windows and the backoffs between them.
 	lane.clock.Advance(envoy.CallWindow)
 	retried := decodeBody[commentDeliveryRead](t, answerWhileCallsAreHeld(t, lane.clock, &lane.listener.calls, answered))
 	if retried.Attempt != 2 || retried.Delivery != "btw" || retried.State != "failed" ||
@@ -457,6 +468,13 @@ func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) 
 	}
 	answerRetry()
 	releaseRetries()
+	// The listener records a try's frame before it holds the try's answer, and the clock ended a
+	// try's window only once that try had landed - the first above, each later one held at the
+	// stand-in - so the frames recorded by now are every try the Retry made.
+	if tries, _, _ := framesOfTheQueuedComment(lane.listener); tries != retryTries {
+		t.Fatalf("the Retry made %d tries of the queued comment, want %d: the take-over window allows a try "+
+			"after each missed receipt only while that try still starts inside it", tries, retryTries)
+	}
 
 	// Nothing else can send that attempt now: its lane is gone and the Retry failed, so the
 	// delivery sweep owes it.
@@ -471,9 +489,9 @@ func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) 
 	}
 	sends, keys, handedOver := framesOfTheQueuedComment(lane.listener)
 	wantKey := model.CommentMentionIdempotencyKey(lane.queued, "session:s1", "steer")
-	if sends < 2 || !slices.Equal(keys, []string{wantKey}) {
-		t.Fatalf("the listener took %d sends of the queued comment under keys %v, want the Retry's tries and "+
-			"the sweep's, every one under the mention's key %q", sends, keys, wantKey)
+	if sends != retryTries+1 || !slices.Equal(keys, []string{wantKey}) {
+		t.Fatalf("the listener took %d sends of the queued comment under keys %v, want %d: the Retry's %d tries "+
+			"and the sweep's one, every one under the mention's key %q", sends, keys, retryTries+1, retryTries, wantKey)
 	}
 	if handedOver != 1 {
 		t.Fatalf("s1 was handed %d frames of the queued comment, want the Retry's first alone: every later "+

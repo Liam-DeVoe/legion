@@ -148,7 +148,7 @@ func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	waitFor(t, "a condition the test waits for", registry.watcher.Ready)
+	waitFor(t, "the registry's interest cache to be ready (its warm-up scan ended)", registry.watcher.Ready)
 	return registry
 }
 
@@ -603,8 +603,8 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	t.Cleanup(registry.StopWatch)
 	registry.watcher.Start()
 	registry.roleWatcher.Start()
-	waitFor(t, "a condition the test waits for", registry.watcher.Ready)
-	waitFor(t, "a condition the test waits for", registry.roleWatcher.Ready)
+	waitFor(t, "the interest warm-up to end, its scan stalled past the idle bound", registry.watcher.Ready)
+	waitFor(t, "the role claim warm-up to end", registry.roleWatcher.Ready)
 
 	collector := collectorOf(registry)
 	collector.scanIdle = idle
@@ -759,7 +759,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	waitFor(t, "a condition the test waits for", func() bool { _, err := js.AccountInfo(); return err == nil })
+	waitFor(t, "the granted server's JetStream to answer an account info", func() bool { _, err := js.AccountInfo(); return err == nil })
 	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: natsgo.FileStorage})
 	if err != nil {
 		t.Fatalf("create the interest bucket: %v", err)
@@ -771,7 +771,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	waitFor(t, "a condition the test waits for", registry.watcher.Ready)
+	waitFor(t, "the registry's interest cache to be ready over the seeded markers and live keys", registry.watcher.Ready)
 	return grantedServer{srv: srv, conn: conn, registry: registry, js: js, kv: kv}
 }
 

@@ -82,7 +82,7 @@ func newRepairRig(t *testing.T, seed func(roles natsgo.KeyValue)) *repairRig {
 func (rig *repairRig) scheduled() *kvwatchtest.Wait {
 	rig.t.Helper()
 	var wait *kvwatchtest.Wait
-	waitFor(rig.t, "a condition the test waits for", func() bool {
+	waitFor(rig.t, "the role claim watcher to arm its next scheduled read", func() bool {
 		wait = rig.waits.Armed()
 		return wait != nil
 	})
@@ -316,7 +316,7 @@ func TestTheFirstReadOfAnEpochCountsNoRepair(t *testing.T) {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	want := map[string][]string{"ses_a": {"reviewer"}, "ses_c": {"lead"}}
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, fmt.Sprintf("the view to hold the recreated bucket's claims, RolesBySession = %v", want), func() bool {
 		held, err := rig.reg.RolesBySession()
 		return err == nil && maps.EqualFunc(held, want, slices.Equal)
 	})
@@ -377,7 +377,7 @@ func TestARepairMidScanKeepsAClaimGrantedWhileTheReadRuns(t *testing.T) {
 	rig.reg.roleWatcher = kvwatch.New("role claims", rig.reg.roles(), cache,
 		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.After))
 	rig.reg.roleWatcher.Start()
-	waitFor(t, "a condition the test waits for", func() bool { return servableView(rig.reg) })
+	waitFor(t, "the rebuilt role claim view to be servable", func() bool { return servableView(rig.reg) })
 
 	scheduled.Store(true)
 	report, fired := rig.fire(rig.due())
@@ -482,7 +482,7 @@ func TestARepairCountsADeleteItDeliversOnceAndAReleaseNotAtAll(t *testing.T) {
 	rig.reg.roleWatcher = kvwatch.New("role claims", rig.reg.roles(), cache,
 		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.After))
 	rig.reg.roleWatcher.Start()
-	waitFor(t, "a condition the test waits for", func() bool { return servableView(rig.reg) })
+	waitFor(t, "the rebuilt role claim view to be servable", func() bool { return servableView(rig.reg) })
 
 	missing.Store(true)
 	if err := rig.roles.Delete(deleted); err != nil {
@@ -494,7 +494,7 @@ func TestARepairCountsADeleteItDeliversOnceAndAReleaseNotAtAll(t *testing.T) {
 		t.Fatalf("with the delete of %s's claim missed, the copy names %q for it, want %s", deleted, got, holder)
 	}
 	putRoleClaim(t, rig.roles, passed, "ses_other")
-	waitFor(t, "a condition the test waits for", func() bool { return holderOf(rig.reg, passed) == "ses_other" })
+	waitFor(t, fmt.Sprintf("the view to name ses_other for %s", passed), func() bool { return holderOf(rig.reg, passed) == "ses_other" })
 
 	scheduled.Store(true)
 	report, fired := rig.fire(rig.due())
@@ -545,7 +545,7 @@ func TestARescanBringsBackAClaimNeitherTheRecordNorTheCopyNames(t *testing.T) {
 	if _, err := rig.interests.Put(holder, []byte(undecodableInterestRecord)); err != nil {
 		t.Fatalf("store %s's interest record: %v", holder, err)
 	}
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, "the copy to drop "+holder+"'s interest, its record now undecodable", func() bool {
 		_, cached := rig.reg.Cached(holder)
 		return !cached
 	})

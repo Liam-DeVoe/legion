@@ -148,7 +148,7 @@ func rebuiltRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, *holdingCache,
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the opened registry's interest copy to complete a read and follow its bucket", reg.watcher.Following)
 	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	reg.watcher.End(ctx)
@@ -197,7 +197,7 @@ func TestTheInterestListIsRefusedUntilAReadCompletes(t *testing.T) {
 	}
 
 	completion.open()
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the held first read to complete, so the copy follows its bucket", reg.watcher.Following)
 	items, err := reg.List()
 	if err != nil {
 		t.Fatalf("List after the read: %v", err)
@@ -216,7 +216,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	defer cleanup()
 	reg, held, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 	// The old bucket's revisions run well past the new bucket's.
 	for range 20 {
 		putInterest(t, delayed.KeyValue, Interest{SessionID: "ses_filler", MachineID: "m1", Topics: []string{"notifications.filler"}})
@@ -246,7 +246,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	if err := reg.Rewatch(conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	waitFor(t, "a condition the test waits for", func() bool { return reg.watcher.Epoch() == 1 && reg.watcher.Following() })
+	waitFor(t, "the watch on the recreated bucket (epoch 1) to complete its read and follow it", func() bool { return reg.watcher.Epoch() == 1 && reg.watcher.Following() })
 
 	read.open()
 	if err := <-done; err != nil {
@@ -294,7 +294,7 @@ func TestAReadThroughSpanningTheReadsCompletionAddsOnlyWhatTheBucketHolds(t *tes
 	deleted := gone[len(gone)-1].Revision()
 
 	completion.open()
-	waitFor(t, "a condition the test waits for", func() bool {
+	waitFor(t, "the read to complete with ses_gone fenced at its delete's revision", func() bool {
 		reg.mu.RLock()
 		defer reg.mu.RUnlock()
 		return reg.watcher.Following() && reg.cache.FenceFor(reg.watcher.Epoch(), "ses_gone") == deleted
@@ -399,11 +399,11 @@ func TestTheReaperKeepsARowWrittenWhileItsCopyHeldNoRevisionForTheKey(t *testing
 	defer cleanup()
 	reg, held, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	stale := time.Now().Add(-20 * time.Minute).UnixMilli()
 	putInterest(t, delayed.KeyValue, Interest{SessionID: "ses_x", MachineID: "m1", Topics: []string{"notifications.old"}, UpdatedAt: stale})
-	waitFor(t, "a condition the test waits for", func() bool { _, ok := reg.Cached("ses_x"); return ok })
+	waitFor(t, "the copy to hold ses_x's stale row", func() bool { _, ok := reg.Cached("ses_x"); return ok })
 
 	js, err := conn.JetStream()
 	if err != nil {
@@ -457,12 +457,12 @@ func TestAnUnsubscribeKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
 	defer cleanup()
 	reg, _, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	const sessionID = "ses_unsub"
 	const kept, dropped, added = "notifications.kept", "notifications.dropped", "notifications.added"
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept, dropped}})
-	waitFor(t, "a condition the test waits for", func() bool { _, ok := reg.Cached(sessionID); return ok })
+	waitFor(t, "the copy to hold "+sessionID+"'s row", func() bool { _, ok := reg.Cached(sessionID); return ok })
 	// From here the copy is delivered nothing: it holds the row the unsubscribe reads, and the
 	// bucket holds the row another listener's registration stored after it.
 	reg.StopWatch()
@@ -491,13 +491,13 @@ func TestARoleClaimKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
 	defer cleanup()
 	reg, _, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	const sessionID = "ses_role_claim_fence"
 	const kept, added = "notifications.kept", "notifications.added"
 	const role, roleTopic = "legion-controller", "notifications.role.legion-controller"
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept}})
-	waitFor(t, "a condition the test waits for", func() bool { _, ok := reg.Cached(sessionID); return ok })
+	waitFor(t, "the copy to hold "+sessionID+"'s row", func() bool { _, ok := reg.Cached(sessionID); return ok })
 	// From here the copy is delivered nothing: it holds the row the claim would merge into, and
 	// the bucket holds the row another listener's registration stored after it.
 	reg.StopWatch()
@@ -527,14 +527,14 @@ func TestAPlannedWriteThatWouldStoreNothingIsRefusedWhenTheRowMoved(t *testing.T
 	defer cleanup()
 	reg, _, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, "a condition the test waits for", reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	const sessionID = "ses_planned_skip_fence"
 	const kept, added = "notifications.kept", "notifications.added"
 	// The row is stamped now, so a heartbeat that merges to it is young enough to leave alone
 	// (InterestRefreshAge) and the plan below would store nothing.
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept}, UpdatedAt: time.Now().UnixMilli()})
-	waitFor(t, "a condition the test waits for", func() bool { _, ok := reg.Cached(sessionID); return ok })
+	waitFor(t, "the copy to hold "+sessionID+"'s row", func() bool { _, ok := reg.Cached(sessionID); return ok })
 	plan, err := reg.PlanInterest(context.Background(), sessionID, []string{kept})
 	if err != nil {
 		t.Fatalf("plan the registration of %s: %v", sessionID, err)

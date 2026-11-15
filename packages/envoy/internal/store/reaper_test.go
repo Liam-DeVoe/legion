@@ -790,7 +790,7 @@ func TestTheRoleClaimReaperLogsAPassThatFailedUnderALiveLoopAtError(t *testing.T
 	defer endLoop()
 	const cycleFailed = "role claim reaper cycle failed"
 	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, 10*time.Millisecond, 0, 0)
-	waitFor(t, "a condition the test waits for", func() bool { return logLines(logs, cycleFailed) > 0 })
+	waitFor(t, "the live loop to log its first "+cycleFailed+" line", func() bool { return logLines(logs, cycleFailed) > 0 })
 	line := logLine(t, logs, cycleFailed)
 	endLoop()
 	testwait.Receive(t, "the role claim reaper loop to end after its context", done)

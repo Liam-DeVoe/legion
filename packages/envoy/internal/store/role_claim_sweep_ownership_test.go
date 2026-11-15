@@ -87,7 +87,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		}
 	}})
 	reg.roleWatcher.Start()
-	waitFor(t, "a condition the test waits for", func() bool { return servableView(reg) })
+	waitFor(t, "the gated role claim view to be servable", func() bool { return servableView(reg) })
 
 	// claimAndDropTheTopic has session claim role through the registry, so the claim reaches the
 	// view through the write rather than the watcher, and then takes the role's topic back off
