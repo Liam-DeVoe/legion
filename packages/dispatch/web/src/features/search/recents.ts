@@ -97,10 +97,10 @@ export function recordRecent(login: string | undefined, item: RecentItem): void 
  */
 export function useRecordRecents(): void {
   const login = useQuery(whoAmIQuery()).data?.login;
-  const location = usePageAddress();
-  const issueRoute = parseIssuePath(location.pathname, location.search);
+  const address = usePageAddress();
+  const issueRoute = parseIssuePath(address.pathname, address.search);
   const issueKey = issueRoute?.key;
-  const documentRoute = documentRouteOf(location.pathname, location.search);
+  const documentRoute = documentRouteOf(address.pathname, address.search);
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   const artifact = useProjectArtifact(documentRoute);
   const issueTitle = issue.data?.title;

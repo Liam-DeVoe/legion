@@ -41,7 +41,7 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
 type IssueView = "list" | "board";
 
 export function ProjectPage(): ReactNode {
-  const location = usePageAddress();
+  const address = usePageAddress();
   const navigate = useNavigate();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
@@ -58,7 +58,7 @@ export function ProjectPage(): ReactNode {
     (stored) => stored === "shown",
     (shown) => (shown ? "shown" : "hidden")
   );
-  const route = parseProjectPath(location.pathname, location.search);
+  const route = parseProjectPath(address.pathname, address.search);
   const projectKey = route?.project;
   const inbox = useQuery({
     queryKey: ["inbox", projectKey],

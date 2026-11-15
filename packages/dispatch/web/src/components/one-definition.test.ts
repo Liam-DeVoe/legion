@@ -16,8 +16,12 @@ import { stripComments } from "../__tests__/strip-comments";
  *
  * It carries no allow-list and names no exception, deliberately: a mark it finds is a mark to
  * take out, and a control a page genuinely lacks is a control to add here, where every page
- * gets it. Comments are stripped first so this file and the pages it scans can both describe
- * the marks in prose without being refused for it.
+ * gets it. Comments are stripped first (`__tests__/strip-comments.ts`, which leaves a `/*` or a
+ * `//` inside a string, a template or a regular expression where it is) so this file and the
+ * pages it scans can both describe the marks in prose without being refused for it. Each mark
+ * is then matched against the whole file rather than a line at a time, because the formatter
+ * breaks a long construct across lines: a long `<table` sits alone at the end of its line, and
+ * a `navigate({` has its `search:` on a line below.
  */
 
 const FEATURES_ROOT = join(import.meta.dir, "..", "features");
@@ -26,6 +30,8 @@ const FEATURES_ROOT = join(import.meta.dir, "..", "features");
 interface Mark {
   /** What was found, and what to draw instead. */
   readonly what: string;
+  /** Matched against the whole stripped file, so a `\s` in it spans the formatter's line breaks;
+   *  each match is reported at the line it starts on. */
   readonly pattern: RegExp;
 }
 
@@ -33,11 +39,11 @@ interface Mark {
 const SHARED_MARKS: readonly Mark[] = [
   {
     what: 'writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
-    pattern: /type="search"/,
+    pattern: /type=(?:\{\s*)?["'`]search["'`]/,
   },
   {
     what: "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
-    pattern: /<table[\s/>]/,
+    pattern: /<table(?![\w-])/,
   },
   {
     what: "writes a `data-control` attribute by hand — a page draws the control, which carries its own name from `components/control-names.ts`",
@@ -90,7 +96,9 @@ const ADDRESS_MARKS: readonly Mark[] = [
   },
   {
     what: "navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
-    pattern: /navigate\(\s*(?:["'`][^"'`]*\?|\{[^}]*\bsearch\s*:)/,
+    // A path holding `?`, or an object naming `search` among its own keys; a key of an object
+    // nested in it is not the query, and a template's `${…}` inside it is skipped whole.
+    pattern: /navigate\(\s*(?:["'`][^"'`]*\?|\{(?:[^{}]|\{[^{}]*\})*?\bsearch\s*[:,}])/,
   },
   {
     what: "redirects with the router's own `<Navigate>` — `lib/page-address.ts`'s `AddressRedirect`",
@@ -99,6 +107,10 @@ const ADDRESS_MARKS: readonly Mark[] = [
   {
     what: "reads or writes the address through the browser's own location (`window.location`) — `lib/page-address.ts`'s `usePageAddress` to read it, `useAddressUpdate` or `useAddressNavigate` to write it",
     pattern: /\b(?:window|document|globalThis)\.location\b/,
+  },
+  {
+    what: "reads the browser's own location through the bare global (`location.search`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
+    pattern: /(?<![\w$.])location\??\.[A-Za-z_$]/,
   },
   {
     what: "writes the address through the browser's own history (`history.pushState` / `history.replaceState`), behind the router's back — `lib/page-address.ts`'s `useAddressUpdate` or `useAddressNavigate`",
@@ -115,9 +127,13 @@ const TABLE_MODULE = '"@tanstack/react-table"';
  * the library's types - a `ColumnDef`, a `Row`, a `SortingState` - and the project List augments
  * its column `meta` through `declare module`, which has to sit beside the columns it describes.
  *
- * A statement is read whole, from its own `import` or `declare` to the specifier it ends at, so
- * a multi-line `import type { … } from "@tanstack/react-table"` is read as the one `import type`
- * it is rather than as the bare `}` on the line the specifier sits on.
+ * A statement is read whole, from where it starts to the specifier it ends at. It starts at its
+ * own `import`, `export` or `declare`, or after the `;` that ends the statement before it,
+ * whichever comes later. So a multi-line `import type { … } from "@tanstack/react-table"` is
+ * read as the one `import type` it is rather than as the bare `}` on the line the specifier sits
+ * on, and an `export { … } from "@tanstack/react-table"` after it is read as the re-export it is
+ * rather than as the tail of that `import type`. A re-export of the library's types,
+ * `export type { … }`, names types as an `import type` does.
  */
 function tableImportRefusals(relativePath: string, source: string): string[] {
   const refused: string[] = [];
@@ -127,17 +143,18 @@ function tableImportRefusals(relativePath: string, source: string): string[] {
     at = source.indexOf(TABLE_MODULE, at + 1)
   ) {
     const before = source.slice(0, at);
-    const keyword = /\b(?:import|declare)\b/g;
-    let start = -1;
+    const keyword = /\b(?:import|export|declare)\b/g;
+    let start = before.lastIndexOf(";") + 1;
     for (let match = keyword.exec(before); match !== null; match = keyword.exec(before)) {
-      start = match.index;
+      start = Math.max(start, match.index);
     }
-    const statement = source.slice(start === -1 ? at : start, at + TABLE_MODULE.length);
+    const statement = source.slice(start, at + TABLE_MODULE.length).trimStart();
     const allowed =
-      /^import\s+type\b/.test(statement) ||
+      /^(?:import|export)\s+type\b/.test(statement) ||
       /^declare\s+module\s+"@tanstack\/react-table"$/.test(statement);
     if (!allowed) {
-      const line = source.slice(0, start === -1 ? at : start).split("\n").length;
+      const statementStart = at + TABLE_MODULE.length - statement.length;
+      const line = source.slice(0, statementStart).split("\n").length;
       refused.push(
         `${relativePath}:${line} imports \`@tanstack/react-table\` as a value — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
       );
@@ -167,18 +184,23 @@ const FEATURE_FILES = collectFeatureFiles(FEATURES_ROOT).map(
   (file) => [join("features", file.slice(FEATURES_ROOT.length + 1)), file] as const
 );
 
-/** Every refusal one file earns, each naming the file, the line and what was found there. */
+/** Every refusal one file earns, each naming the file, the line and what was found there.
+ *  `source` is the file as it stands on disk; its comments are stripped here. */
 function refusals(relativePath: string, source: string): string[] {
+  const code = stripComments(source, relativePath);
   const marks = ADDRESS_FEATURES.some((feature) => relativePath.startsWith(`features/${feature}/`))
     ? [...SHARED_MARKS, ...ADDRESS_MARKS]
     : SHARED_MARKS;
-  const lines = source.split("\n");
-  const found = lines.flatMap((line, index) =>
-    marks
-      .filter(({ pattern }) => pattern.test(line))
-      .map(({ what }) => `${relativePath}:${index + 1} ${what}`)
-  );
-  return [...found, ...tableImportRefusals(relativePath, source)];
+  const found = marks
+    .flatMap(({ pattern, what }) =>
+      Array.from(code.matchAll(new RegExp(pattern.source, `${pattern.flags}g`)), (match) => ({
+        line: code.slice(0, match.index).split("\n").length,
+        what,
+      }))
+    )
+    .sort((left, right) => left.line - right.line)
+    .map(({ line, what }) => `${relativePath}:${line} ${what}`);
+  return [...found, ...tableImportRefusals(relativePath, code)];
 }
 
 describe("no page builds a control or an address of its own", () => {
@@ -202,7 +224,112 @@ describe("no page builds a control or an address of its own", () => {
     expect(refusals("features/architecture/Gone.tsx", source)).toEqual([]);
   });
 
+  // Each form below is one the formatter or an ordinary page writes, and the guard has to read
+  // through it: a construct broken across lines, a second spelling of a mark, the browser's
+  // bare `location`, a re-export after an `import type`, and a `/*` inside a string.
+
+  test("a `<table` the formatter leaves alone at the end of its line is refused", () => {
+    const source = [
+      "export const Probe = () => (",
+      "  <table",
+      '    aria-label="A table whose attributes are long enough to go one to a line"',
+      '    className="w-full"',
+      "  >",
+      "    <tbody />",
+      "  </table>",
+      ");",
+    ].join("\n");
+    expect(refusals("features/inbox/Probe.tsx", source)).toEqual([
+      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
+    ]);
+  });
+
+  test("a `navigate({` whose `search` is on a later line is refused", () => {
+    const source = [
+      "export function useOpenBugs(navigate: (to: { pathname: string; search: string }) => void) {",
+      "  return () =>",
+      "    navigate({",
+      '      pathname: "/projects/CORE/issues",',
+      '      search: "?label=bug",',
+      "    });",
+      "}",
+    ].join("\n");
+    expect(refusals("features/project/open-bugs.ts", source)).toEqual([
+      "features/project/open-bugs.ts:3 navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
+    ]);
+    // The key written short is the same query, and a nested object's `search` or a `/search`
+    // path is not one.
+    expect(refusals("features/project/open-bugs.ts", "navigate({ pathname, search });")).toEqual([
+      "features/project/open-bugs.ts:1 navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
+    ]);
+    expect(
+      refusals(
+        "features/project/open-bugs.ts",
+        `navigate({ pathname: \`/search/\${key}\`, state: { search: "x" } });`
+      )
+    ).toEqual([]);
+  });
+
+  test('a search box spelled `type={"search"}` is refused', () => {
+    const source = 'export const Probe = () => <input aria-label="Search" type={"search"} />;';
+    expect(refusals("features/inbox/Probe.tsx", source)).toEqual([
+      'features/inbox/Probe.tsx:1 writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
+    ]);
+  });
+
+  test("a page of the seven that reads the bare global `location.search` is refused", () => {
+    const source = [
+      "export function probeQuery(): string {",
+      "  return location.search;",
+      "}",
+    ].join("\n");
+    expect(refusals("features/inbox/probe-query.ts", source)).toEqual([
+      "features/inbox/probe-query.ts:2 reads the browser's own location through the bare global (`location.search`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
+    ]);
+    // The page address under a name of its own, and a feature outside the seven, are left alone.
+    const named = ["const address = usePageAddress();", "export const search = address.search;"];
+    expect(refusals("features/inbox/probe-query.ts", named.join("\n"))).toEqual([]);
+    expect(refusals("features/architecture/probe-query.ts", source)).toEqual([]);
+  });
+
+  test("a value re-export of the table library after an `import type` is refused", () => {
+    const source = [
+      'import type { ColumnDef } from "@tanstack/react-table";',
+      'export { useReactTable } from "@tanstack/react-table";',
+    ].join("\n");
+    expect(refusals("features/inbox/probe-table.ts", source)).toEqual([
+      "features/inbox/probe-table.ts:2 imports `@tanstack/react-table` as a value — the one table is `components/DataTable.tsx`, which re-exports `flexRender`",
+    ]);
+    // A re-export of the library's types names types, as the `import type` does.
+    const types = [
+      'import type { ColumnDef } from "@tanstack/react-table";',
+      'export type { Row } from "@tanstack/react-table";',
+    ].join("\n");
+    expect(refusals("features/inbox/probe-table.ts", types)).toEqual([]);
+  });
+
+  test('a box and a `<table` after `accept="image/*"` and before a doc comment are refused', () => {
+    const source = [
+      "export const Upload = () => (",
+      "  <form>",
+      '    <input accept="image/*" type="file" />',
+      '    <input aria-label="Search" type="search" />',
+      "    <table>",
+      "      <tbody />",
+      "    </table>",
+      "  </form>",
+      ");",
+      "",
+      "/** A later doc comment, whose close is where the old strip's comment ended. */",
+      "export const after = 1;",
+    ].join("\n");
+    expect(refusals("features/inbox/Upload.tsx", source)).toEqual([
+      'features/inbox/Upload.tsx:4 writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
+      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
+    ]);
+  });
+
   test.each(FEATURE_FILES)("%s draws the shared controls", (relativePath, file) => {
-    expect(refusals(relativePath, stripComments(readFileSync(file, "utf8")))).toEqual([]);
+    expect(refusals(relativePath, readFileSync(file, "utf8"))).toEqual([]);
   });
 });

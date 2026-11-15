@@ -59,7 +59,7 @@ interface SelectedItemLanding {
  * the page is unambiguous.
  */
 function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): SelectedItemLanding {
-  const location = usePageAddress();
+  const address = usePageAddress();
   const route = item === undefined ? undefined : itemReference(owner, item);
   // Only an id written short is resolved; the hook reads nothing for a route that writes every
   // id whole.
@@ -70,7 +70,7 @@ function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): Se
   if (item === undefined || whole === undefined || whole === item.id) {
     return { candidates, id: whole, rewrite: undefined };
   }
-  return { candidates, id: whole, rewrite: addressWithParam(location, item.kind, whole) };
+  return { candidates, id: whole, rewrite: addressWithParam(address, item.kind, whole) };
 }
 
 export function ArtifactDocument({

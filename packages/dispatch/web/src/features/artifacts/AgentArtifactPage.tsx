@@ -18,8 +18,8 @@ import { ArtifactQueryStates } from "./ArtifactQueryStates";
  * never this page.
  */
 export function AgentArtifactPage(): ReactNode {
-  const location = usePageAddress();
-  const route = parseAgentArtifactPath(location.pathname, location.search);
+  const address = usePageAddress();
+  const route = parseAgentArtifactPath(address.pathname, address.search);
   const artifact = useQuery({
     ...agentArtifactQuery(route?.session, route?.slug),
     enabled: route !== undefined,

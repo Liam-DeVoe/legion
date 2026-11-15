@@ -111,7 +111,8 @@ const DYNAMIC_CLASS_CONSTRUCTION_PATTERN = /\$\{[^}]+\}-|-\$\{[^}]+\}/;
 
 describe("no dynamic Tailwind class construction in classes.ts", () => {
   test("classes.ts never glues a hyphen directly onto a template expression", () => {
-    const source = stripComments(readFileSync(join(WEB_SRC_ROOT, "theme", "classes.ts"), "utf8"));
+    const classesPath = join(WEB_SRC_ROOT, "theme", "classes.ts");
+    const source = stripComments(readFileSync(classesPath, "utf8"), classesPath);
     const lines = source.split("\n");
     const offenders = lines
       .map((line, index) => ({ line, number: index + 1 }))
