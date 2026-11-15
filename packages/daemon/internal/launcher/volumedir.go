@@ -67,7 +67,7 @@ func handleOf(file *os.File, path string) (*dirHandle, error) {
 	root, err := rootOverDescriptor(file)
 	if err != nil {
 		_ = file.Close()
-		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+		return nil, &quotedPathError{op: "open", path: path, err: err}
 	}
 	return &dirHandle{file: file, root: root, path: path}, nil
 }
@@ -120,11 +120,33 @@ func (d *dirHandle) ReadDir() ([]os.DirEntry, error) {
 }
 
 // named is err with the descriptor path os.Root raises it against replaced by the path this
-// handle was opened through, so a line in the pod's log names a directory of the volume.
+// handle was opened through, so a line in the pod's log names a directory of the volume, and
+// quoted (quotedPathError).
 func (d *dirHandle) named(err error, name string) error {
-	var path *fs.PathError
-	if err != nil && errors.As(err, &path) {
-		path.Path = filepath.Join(d.path, name)
+	var failed *fs.PathError
+	if err != nil && errors.As(err, &failed) {
+		return &quotedPathError{op: failed.Op, path: filepath.Join(d.path, name), err: failed.Err}
 	}
 	return err
+}
+
+// quotedPathError is an operation of the trimmer's that failed on a path of the volume. It reads
+// as the fs.PathError of the same failure would, with the path quoted: every name below a cache
+// root is one a role chose, and a name holding a newline would otherwise begin a line of its own
+// in the pod's log (TestAnAgeThatCannotBeReadIsLoggedWithTheRoleChosenNameQuoted). It unwraps to
+// the error the operation failed with, so errors.Is asks it what the kernel answered.
+type quotedPathError struct {
+	op   string
+	path string
+	err  error
+}
+
+func (e *quotedPathError) Error() string { return quotedPathText(e.op, e.path, "", e.err) }
+
+func (e *quotedPathError) Unwrap() error { return e.err }
+
+// quotedPathText is how every error of the trimmer's that names a path reads: the operation, the
+// path quoted, what is said of the path if anything (removalFailure's depth), and the error.
+func quotedPathText(op, path, said string, err error) string {
+	return op + " " + strconv.Quote(path) + said + ": " + err.Error()
 }

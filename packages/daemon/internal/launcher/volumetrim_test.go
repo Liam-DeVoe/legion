@@ -2926,6 +2926,66 @@ func TestARemovalThatFailsPartWayIsLoggedWithTheRoleChosenNameQuoted(t *testing.
 	}
 }
 
+// The sweep's line for an entry whose age could not be read names the entry and the guard's error
+// with every name a role chose quoted, so a name holding a newline is written with it escaped and
+// the line stays one line of the pod's log (quotedPathError). The entry is an immediate child of
+// bun's install cache whose name holds a newline and a line of text after it, and its child b1 is
+// a directory the age read cannot pass: made 0000, its open fails (openElementAt), and made 0400,
+// it opens and its listing fails (dirHandle.named). The negative controls are each of those two
+// answering the fs.PathError it raised, which put the role's line of text in the log as a line of
+// its own, "forged: a line the role wrote/b1: permission denied", for the child of that mode.
+func TestAnAgeThatCannotBeReadIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the test process is root, which opens and lists a directory whatever its mode: an age read that fails cannot be staged for it")
+	}
+	for _, child := range []struct {
+		what string
+		mode os.FileMode
+	}{
+		{what: "a child that cannot be opened", mode: 0},
+		{what: "a child that cannot be listed", mode: 0o400},
+	} {
+		t.Run(child.what, func(t *testing.T) {
+			f := newTrimFixture(t, 1)
+			root := f.roots[3]
+			if root.Entry != ImmediateChildren {
+				t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache, whose entries are its immediate children", root)
+			}
+			entry := f.addTree(filepath.Join(root.Path, "tool\nforged: a line the role wrote"), root.Entry)
+			blocked := filepath.Join(entry.path, "b1")
+			if err := os.Chmod(blocked, child.mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+			f.useVolume(steady(90))
+			f.setSettings(trimSettings())
+			tr := f.trimmer()
+
+			tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+			var unread []string
+			for _, line := range f.linesWritten() {
+				for _, written := range strings.Split(line, "\n") {
+					if strings.HasPrefix(written, "forged:") {
+						t.Errorf("the trimmer wrote %q as a line of its own, which is text of the name a role chose", written)
+					}
+				}
+				if strings.Contains(line, "the age of "+strconv.Quote(entry.path)) {
+					unread = append(unread, line)
+				}
+			}
+			if len(unread) != 1 {
+				t.Fatalf("the trimmer reported %d entries whose age could not be read, want the one of %q; it wrote %q", len(unread), entry.path, f.linesWritten())
+			}
+			if strings.Contains(unread[0], "\n") {
+				t.Errorf("the trimmer wrote %q, whose error holds a newline of the name a role chose", unread[0])
+			}
+			if want := "openat " + strconv.Quote(blocked) + ": " + unix.EACCES.Error(); !strings.HasSuffix(unread[0], want) {
+				t.Errorf("the trimmer wrote %q, want the guard's error to name the child as %s", unread[0], want)
+			}
+		})
+	}
+}
+
 // No sweep starts while one is running, and the next reading comes one interval after the sweep
 // ends rather than one interval after it began: the trimmer makes a new interval clock when the
 // sweep returns, so a sweep that ran for ten intervals is not followed by ten readings at once.

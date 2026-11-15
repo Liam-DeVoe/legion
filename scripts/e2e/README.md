@@ -237,7 +237,10 @@ Each item below names a script, then what it proves.
   a closed issue takes a result for an `after_merge` check and still refuses a document write 409 `ISSUE_CLOSED`;
   a `default_branch` result stands at the branch for a commit the compare calls `behind` and at no basis for one it calls `diverged`;
   and a result whose issue resolves to a repository the installation lookup does not find is answered unknown, with the unreadable repository as the reason.
-  Run against a base binary (`DISPATCH_BIN`), it is the change's negative control
+  Three more cases run the `dispatch` command as a process against that server.
+  The command refuses a bare `-` given to any text flag its help lists but `dispatch artifact --path`, with exit 2 and a line that names the flag's `-file` twin.
+  It keeps every other value of a text flag byte for byte.
+  Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), it is the change's negative control
 
 - `child-adoption.sh`
 
@@ -265,6 +268,16 @@ Each item below names a script, then what it proves.
   the same completion naming the head the record holds is taken `200` and puts the issue in `reviewing`;
   from `reviewing`, a phase the tester no longer works, that completion sent again and one naming a newer record of the phase are each answered `409 HANDOFF_NOT_CURRENT_PHASE`, naming no task as owed, with nothing recorded and the issue still in `reviewing`;
   and once the registered reviewer has moved the work back into testing over `POST /legion/v1/phase/backward`, with nothing pushed between, that same completion at that same head is refused `409 HANDOFF_STALE_ENTRY`, naming the move back, with nothing recorded and the issue still in `testing`
+
+- `merge-wait-readable.sh`
+
+  a reader of the state can tell a head that stopped from a head that is moving, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the reviews, the push, the synchronize and the pushes onto the base as GitHub envelopes and every assertion a read of `GET /legion/v1/state`:
+  an approved head GitHub answers `blocked` for carries a `mergeWait` object naming the head, the state, when it was read, when GitHub last moved the pull request, the head's own concluded check runs and the head and state the architect and the reviewer were told of;
+  a read that only confirms that answer moves `stateReadAt` and nothing else, which is what tells a head read a minute ago from one nothing has read for a day;
+  a read that answers `behind` moves the state and the stamp together;
+  a push that moves the head takes the object away with the approval, and the reviewer's approval of the new head brings it back on that head, with no `stateReadAt` until a read answers there and the new head's own check runs counted;
+  an issue whose round waits on nothing and an issue whose pull request the record does not hold open carry no `mergeWait` key at all;
+  and the wait ends when GitHub answers `clean`, which a settlement alone never does
 
 - `phase-entry-converge.sh`
 
@@ -394,7 +407,7 @@ Each item below names a script, then what it proves.
 ## On a GitHub-hosted runner
 
 [`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
-Eight scripts run there: `behind-entry-fence.sh`, `child-adoption.sh`, `conflict-no-takeover.sh`, `dispatch-claimant-delivery.sh`, `handoff-records.sh`, `phase-entry-converge.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
+Every script the `hosted` list of `.github/e2e-scripts.json` names runs there, and the `test` job of `ci.yaml` runs each of them too.
 None of them needs a secret, and none there may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
 Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with what its own header says it needs.
@@ -797,7 +810,7 @@ A file, URL or token that prevents Dispatch fails the baseline read, naming it; 
 The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
 
 It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue the daemon has started, and an issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review, until it is done, or until Dispatch takes it out of the workflow; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
+— a slot is one issue the daemon has started, held as root `AGENTS.md`'s "Admission" says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
 its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
@@ -2218,7 +2231,7 @@ A pass proves that and no more:
 
 - The pod is an issue pod; the daemon's own controller pod, under `controller: daemon`, is not launched or checked.
 
-Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each of which holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow:
+Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each holding a slot as root `AGENTS.md`'s "Admission" says:
 
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
   the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.
@@ -2822,7 +2835,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   **The merge does not close tree 1**, since children 3 and 4 are still in the workflow (INFRA-229):
   the daemon records it (`legion state`: the root's `pullRequest.state` `merged` while its phase stays `merging`) and logs `workflow: a merged root's close waits for the rest of its tree` with `waitingFor` naming both children in order;
   its architect gets one `pr-merged` notice naming the pull request and both;
-  the admission slot is still the root's, no production check is open, the Dispatch board still reads `retro`, no `workflow: tree lingers` line names tree 1, and no claim of tree 1 is suspended.
+  the root holds no slot (its row went at `accepting`), no production check is open, Dispatch still reads `retro`, no `workflow: tree lingers` line names tree 1, and no claim of it is suspended.
   The proof human then parks the children one at a time (`backlog`, each leaving the workflow with its planner suspended, and within 600 s with no Sandbox, no pod and no disk:
   the park deletes the child's Sandbox as a close does, and the disk goes with the pod, read inside the same wait, `child_parked`):
   child 3's park leaves the root in `merging`, and child 4's
@@ -2840,9 +2853,10 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `legion claims list --json` then shows all six claims `suspended` (`claim_states_are`).
   The close suspends every role of tree 1, architect to merger, within 1800 s, since the daemon's suspension of a role in a turn waits for that turn to end, and a wait that runs out names each role still unsuspended with whether its suspension is held for a turn;
   tree 1's events carry its architect's `issue.claimed`, and done leaves its root issue unclaimed.
-  Before the merge, `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-merge.json`):
-  the end state the implementer's `gh` left, its own threads and the bot's the reviewer named to it, since the merger resolves nothing and reads no thread state.
-  Control: the same record with the reviewer's thread unresolved fails
+
+  - Before the merge, `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-merge.json`):
+    the end state the implementer's `gh` left, its own threads and the bot's the reviewer named to it, since the merger resolves nothing and reads no thread state.
+    Control: the same record with the reviewer's thread unresolved fails
 
 - `production-check-bound`
 
@@ -3864,7 +3878,8 @@ Each item below names an input and its default, then what it means.
 - `DATABASE_URL` — required
 
   a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
-  The run drops and recreates its `public` schema before the server migrates it, and leaves what it wrote there for inspection
+  The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
+  It leaves what it wrote there for inspection
 
 - `DISPATCH_BIN` — unset
 
@@ -3958,26 +3973,39 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 
 ```sh
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
+  [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+  bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
 Runs on any Linux host with `go`, `bun`, `curl`, `psql`, `openssl` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker.
 It proves `comparisonReader` (`packages/envoy/internal/dispatch/api/results_comparison.go`) and `recordPullRequestHead` (`packages/envoy/internal/dispatch/delivery/pull_request_heads.go`) on the wire:
 the real `envoy-dispatch` records each result and says where its commit stands against the commits and branches its check compares with, and the head a `before_merge` result is compared with moves only because a pull-request event reached the bus.
 Two of its cases prove the rest of that answer:
-the bases each check names, read through the `dispatch results` command of this checkout as well as through the API, and the attribution that decides which issue a pull request's head answers for (`packages/envoy/internal/dispatch/delivery/attribution.go`), the reconcile's re-judging of a stored row included.
+the bases each check names, read through the `dispatch results` command as well as through the API, and the attribution that decides which issue a pull request's head answers for (`packages/envoy/internal/dispatch/delivery/attribution.go`), the reconcile's re-judging of a stored row included.
+Three more cases prove the `dispatch` command itself (`parseCommand` in `packages/envoy-client/src/dispatch-command.ts`).
+It refuses a bare `-` given to any text flag its help lists, except `dispatch artifact --path`, whose value names a local file.
+It keeps every other value of a text flag byte for byte.
 
 Each item below names an input and its default, then what it means.
 
 - `DATABASE_URL` — required
 
   a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
-  The run drops and recreates its `public` schema before the server migrates it, and leaves what it wrote there for inspection.
+  The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
+  In a Legion pod, a database that `createdb` makes on the server `LEGION_TEST_PG_DSN` names holds `vector`, so it serves.
+  The run leaves what it wrote there for inspection.
   The driver reads it too, as `VERIFICATION_RESULTS_E2E_DATABASE_URL`, for the one fixture no route of Dispatch can write: a stored pull request row of the attribution rule before this build's, since every write of this build stamps the rule it judges by
 
 - `DISPATCH_BIN` — unset
 
   a prebuilt `envoy-dispatch` to run; unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+
+- `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` — unset
+
+  the `bin/dispatch.ts` the driver runs in place of this checkout's `packages/envoy-client/bin/dispatch.ts`.
+  The script reads it before it drops the inherited variables, and refuses a value that is not a readable file.
+  The script makes the path absolute, because `dash-refused` runs the command in another directory.
+  A negative control names the command of another tree here, with no change to the checkout
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
@@ -3998,8 +4026,12 @@ The server also runs its delivery reconcile every two seconds, and its first pas
 the attribution case waits for one pass to re-judge two stored rows.
 
 The driver, `verification-results.ts`, acts as one session with the agent token (each write naming the session as `actor`) and as the person `alice` through `GET /auth/_dev/signin`.
-It reads two of its answers through the `dispatch` command of this checkout as well (`packages/envoy-client/bin/dispatch.ts` under `DISPATCH_HOST=omp`, the run's own `DISPATCH_URL` and token, and a scratch `HOME`), which is the surface a reviewer reads.
-Its setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — maps each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
+It also runs the `dispatch` command as a process: the `bin/dispatch.ts` that `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` names, else this checkout's `packages/envoy-client/bin/dispatch.ts`.
+The setup line names the command the run uses.
+Each run gets `DISPATCH_HOST=omp`, the run's own session, `DISPATCH_URL` and token, and a scratch `HOME`, and the driver gives it a stdin and a working directory when a step needs them.
+The bases case reads two of its answers through the command, which is the surface a reviewer reads.
+The three cases of a bare `-` drive the command for every step, and judge each step by its exit code and what it printed.
+The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — maps each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
 `acme/verification-live`'s `commits` names every commit a case records at, since the record route asks GitHub whether the repository holds a result's commit and refuses one it does not; the one commit it names nowhere is what the refusal case drives.
 `commit_pulls` is empty on purpose:
 the record route's read-through asks GitHub which pull requests name a result's commit, so with no answer there the only thing that can teach Dispatch a head is the envelope a case publishes.
@@ -4065,6 +4097,47 @@ Each item below names a case and how it is driven, then what must hold for it to
   the third is on the child's own branch, so the person's link stands above it;
   and the last envelope moves a head without moving its attribution, which appends no event, so an event marks a change and never a pass
 
+- `dash-refused` — one issue with the `before_merge` check `k1`, and eight calls of the command, in order.
+  Step 1 is the reported call, `dispatch result --issue <issue> --check k1 --role implementer --verdict pass --commit <commit> --run - --observed - --negative-control -`, with a here-document on stdin.
+  Step 2 gives `--run=-` alone, and step 3 gives `--observed -` with `--dry-run`.
+  Step 4 is `dispatch comment --issue <issue> --body -`, and step 5 is `dispatch message --issue <issue> --body -`.
+  Step 6 is `dispatch issue --project VRF --title -`.
+  Step 7 is the call the refusal of step 1 leads to: `--run-file <file A>`, `--observed-file -` with the here-document, and `--negative-control-file <file B>`.
+  Step 8 is `dispatch artifact --issue <issue> --name dash.txt --path -`, in a directory that holds a file named `-`
+
+  step 1 exits 2, prints exactly the first text of R1 of dispatch://INFRA-2618/spec and a line feed, and prints nothing on stderr.
+  When step 1 exits 0, the failure names the `run`, `observed` and `negative_control` that `k1` then stores.
+  Steps 2 to 5 each exit 2.
+  Between the `was not called` line and the `- Example:` line, each prints exactly the one problem line for the flag it gives `-`, and none prints a `- Allowed flags:` line.
+  Step 6 exits 2 and prints exactly the second text of that requirement and a line feed.
+  The project holds as many issues after step 6 as before it, each count read over every page of `GET /api/v1/issues?project=VRF`.
+  After step 6, the issue holds no result, no comment and no message.
+  Step 7 exits 0, and `k1` then holds one result, whose `run`, `observed` and `negative_control` equal the bytes of file A, the here-document and file B.
+  Step 8 exits 0, and version 1 of `dash.txt`, read through `GET /api/v1/issues/{key}/artifacts/dash-txt/versions/1`, holds the bytes of the file named `-`
+
+- `dash-refused-every-flag` — `dispatch --help`, then `dispatch <command> --help` for each command it lists.
+  For each `--X-file <path>` row whose `--X` the help lists with a value other than `<json>`, the case calls `dispatch <command> --X - --dry-run`.
+  It leaves out `--path-file` of `dispatch artifact`, because `--path` names a local file to upload
+
+  each call exits 2, and its output holds, as a whole line, the problem line that R1 gives for `--X`.
+  The case reads the line as well as the exit code, because a dry run that lacks a required flag also exits 2.
+  The case stops at the first call that fails, and names its command, its flag, its exit code and its output.
+  It prints each command with the flags it called, then the two counts.
+  It fails when it called fewer than 28 commands or fewer than 112 flags
+
+- `values-kept` — one issue with three `before_merge` checks, and five steps.
+  Step 1 records a result for the first check with `--run "go test ./internal/workflow/ -run 'AppendOnly|Line|StartWrittenOverAnOwedRow' -count=1"`, with `--observed-file -` fed the two lines `--- PASS: TestAppendOnly (0.00s)` and `ok`, and with `--negative-control "-run 'A|B' with the guard taken out: 2 tests fail"`.
+  Step 2 records a result for the second check with `--observed='--- PASS: TestLine (0.00s)'`, and with `--negative-control-file` naming a file that holds the one character `-` and no line feed.
+  Step 3 records a result for the third check with `--observed-file -` fed the one character `-` and no line feed.
+  Step 4 gives the third check `--observed '--- PASS: TestLine (0.00s)'`, the value as a word of its own.
+  Step 5 reads `GET /api/v1/issues/{key}/results`
+
+  steps 1 to 3 each exit 0.
+  Step 4 exits 2 and prints the whole line `- --observed needs a value`, as the command did before this change.
+  In step 5 each check holds one result.
+  Each stored `run`, `observed` and `negative_control` equals byte for byte what its step gave, and the stdin text of step 1 keeps both its line feeds.
+  A field that a step did not send reads as the empty string
+
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
@@ -4080,6 +4153,39 @@ go -C "$TMPDIR/base-src/packages/envoy" build -o "$TMPDIR/envoy-dispatch-base" .
 DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/verification-results.sh
 # → FAIL the-results-route-is-served: the record route answers 404 NOT_FOUND, no other case run,
 #   exit 1
+```
+
+The three cases of a bare `-` take their negative controls from `VERIFICATION_RESULTS_E2E_DISPATCH_CLI`, so the checkout does not change.
+For `dash-refused` and `dash-refused-every-flag`, the input names the command of a git worktree of the commit this change starts from:
+
+```sh
+git -C <checkout> worktree add --detach "$TMPDIR/<base tree>" <base commit>
+(cd "$TMPDIR/<base tree>" && bun install --frozen-lockfile)
+DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI="$TMPDIR/<base tree>/packages/envoy-client/bin/dispatch.ts" \
+  bash scripts/e2e/verification-results.sh
+# → FAIL dash-refused: step 1: dispatch result … --run - --observed - --negative-control - exited 0,
+#   want 2: k1 stores run "-", observed "-", negative_control "-"
+# → FAIL dash-refused-every-flag: step <n>: dispatch <command> <flag> - --dry-run exited <code>,
+#   want 2: its output holds no problem line for <flag>
+#   exit 1
+git -C <checkout> worktree remove --force "$TMPDIR/<base tree>"
+```
+
+For `values-kept`, the input names the command of a git worktree of this change's head, where the new rule refuses every value that starts with `-` and not the value `-` alone:
+
+```sh
+git -C <checkout> worktree add --detach "$TMPDIR/<head tree>" <head commit>
+(cd "$TMPDIR/<head tree>" && bun install --frozen-lockfile)
+# In "$TMPDIR/<head tree>/packages/envoy-client/src/dispatch-command.ts", the bare-`-` rule of
+# parseCommand tests `value === STDIN`: change that test to `value.startsWith(STDIN)`.
+DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI="$TMPDIR/<head tree>/packages/envoy-client/bin/dispatch.ts" \
+  bash scripts/e2e/verification-results.sh
+# → FAIL values-kept: step 1: dispatch result … exited 2, want 0, and its stdout holds the problem
+#   line for --negative-control
+#   exit 1
+git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 ```
 
 ## child-adoption.sh
@@ -4239,6 +4345,59 @@ The configuration, the store and its migrations, the HTTP API, the claim supervi
 The store is read for the tester's own `phases` row, which no route shows whole: the fence's input, whether the entry that row stands on was raised by a move back, and, after each refusal, the verdict and the handoff commit a refused completion must leave unwritten there, or, in `after a taken behind completion`, the completion that row already holds, unchanged.
 It is read in that step for the tester's completions the daemon holds as processed too (`processed_events`), which an answer before the fact adds none to.
 `BEHIND_ENTRY_FENCE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
+
+## merge-wait-readable.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/merge-wait-readable.sh     # → "merge wait readable e2e: PASS in <n>s", exit 0
+```
+
+Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
+A run takes about half a minute.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive` (`internal/daemon/merge_wait_readable_live_test.go`, `-tags e2e`) |
+| `proof` | the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds three roots in reviewing, each holding its tree's slot:
+one on an open pull request GitHub answers `blocked` for, which is the issue the six steps drive;
+one on an open pull request whose reviewer requests changes in step 5;
+and one whose pull request the record holds closed, its reviewer's approval standing at the head it was closed at.
+Facts enter only as production's do, as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream:
+CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `askMergeStateFor`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
+Every assertion is a read of `GET /legion/v1/state`:
+of the `mergeWait` object it decodes to for what the wait says, and of the body's own keys for what the daemon leaves off, since a key written empty and a key left off decode to one Go value and only one of them is what the daemon writes.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `merge-wait-appears` | CI's settlement of the head's own `lint` and `unit`, both concluded, then the reviewer's `APPROVE` of that head, which GitHub answers `blocked` for | the issue's `mergeWait`: `waitsOn` the approved head, `mergeState` `blocked`, a `stateReadAt`, `headUpdatedAt` GitHub's clock for the pull request, `checkRuns` the head's own 2, and `toldHead` and `toldState` once the architect has been told the round is stuck, with that one notice on its topic |
+| `a-confirming-read-moves-the-stamp` | CI's settlement of the same head again, its `lint` and `unit` re-run and concluded the same way, which asks the daemon to read GitHub for the round again while GitHub answers the same `blocked` about the same head, the base unmoved under it and nothing the round is judged by changed | `stateReadAt` strictly later than before and standing on a read the GitHub stand-in answered after that earlier stamp was sampled, with `mergeState`, `waitsOn`, `checkRuns` and both told marks unmoved, and the architect still told once — the step the proof exists for, since a daemon whose confirming read applied nothing would leave the stamp where it stood (dispatch://INFRA-3027) |
+| `a-changing-read` | the proof's first push onto the base, GitHub now answering that head `behind` | `mergeState` and `stateReadAt` both moved, on the same head, with `toldState` `behind`: a new state at the same head is a new finding |
+| `a-push-moves-the-head` | the implementer's push, GitHub's synchronize to the new head while GitHub answers nothing at all for it, then CI's settlement of one `unit` run there and the reviewer's `APPROVE` of that head | no `mergeWait` key at all between the push and the approval, since a push above the approved head ends the approval; then `waitsOn` the new head, `headUpdatedAt` the synchronize's own clock, `checkRuns` the new head's 1 where the old head's was 2, no `stateReadAt` and no `mergeState` while GitHub answers nothing, both told marks gone with the decision the new approval replaced, and the stamp appearing on the first read GitHub answers |
+| `the-negative-control` | the second issue's reviewer requesting changes, which ends its round | out of one state body: the driven issue carries `mergeWait`, the issue whose round ended carries no such key, and neither does the issue whose pull request the record holds closed, though its reviewer's approval stands at that head — the object is for an open pull request alone |
+| `the-wait-ends` | one more push onto the base, GitHub now answering the head `clean` | the issue in `accepting` with no `mergeWait` key and its pull request reading `mergeState` `clean`: the approval that stood ends the round |
+
+A settlement does not end this wait, which is why the last step is a read and not a settlement:
+on a head GitHub answers `blocked` for, the settlement that concludes the head's checks moves the round from waiting for a first answer to stuck, and both of those are waiting.
+The round stops waiting only when GitHub answers `clean`, `unstable` or `has_hooks` (`record.MergeState.Mergeable`).
+
+What the proof stands in for lies outside the rule:
+the broker is a native `nats-server`, GitHub is a REST stand-in for the pull requests the proof drives, whose answer for a head — `mergeable`, `mergeable_state`, `head.sha`, `base.ref` and `updated_at` — the steps set between them and which step 4 makes answer nothing at all, Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/live_proof_test.go`), Envoy's listener is the package's `noticeListener`, and the two Apps' tokens are placeholders — which is where the review App's login comes from too, so the reviews the proof publishes are the reviewer's own (`legion-review[bot]`, with no reviewer session recorded).
+No agent runs:
+the package's fake runtime launches whatever claim a move starts, provisioning its own workspace so the daemon clones nothing, and the proof acts as no role.
+The three issues, their pull requests and their slots are seeded through the store, as every daemon test seeds its fixture, and so is the closed issue's reviewer decision, which no review of the proof's writes.
+The configuration, the store and its migrations, the HTTP API, the JetStream consumers, the review round and its stuck notice, the merge-state ladder and the state build are the real ones.
+No route and no table is read but `GET /legion/v1/state` and the `processed_events` row each envelope's own transaction writes, which is what a step waits on before it reads.
+`MERGE_WAIT_READABLE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
 ## phase-entry-converge.sh
 
@@ -4907,10 +5066,10 @@ Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-se
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the nine proofs that make that run: [`behind-entry-fence.sh`](#behind-entry-fencesh), `child-adoption.sh`, `claim-compaction.sh`, [`conflict-no-takeover.sh`](#conflict-no-takeoversh), [`handoff-records.sh`](#handoff-recordssh), [`late-completion.sh`](#late-completionsh), [`phase-entry-converge.sh`](#phase-entry-convergesh), [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
+The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
-That is the first of two frames for the nine whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those nine run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
+That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
 That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
 
@@ -4959,8 +5118,9 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
-[`lib/rig.sh`](#librigsh) sources it, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the eight proofs that make its run.
+A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
+[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -4981,7 +5141,16 @@ Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this f
   WHAT is what the run does on that server, in a few words.
   This mode refuses every DSN the guard refuses, and a value the rebuilt string cannot carry as well, so [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it in their setup step as their one read of the DSN, before any build or service
 
-Both helpers share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
+- `empty_public_schema URL`
+
+  drops every table, view, routine and type of the `public` schema of the database URL names, and keeps the extensions that schema holds.
+  It returns the status of its `psql`, so the caller ends the run in its own words (`|| fail "could not empty the database's public schema"`).
+  The cluster's master role installs `vector` (`0072_embeddings_core.up.sql` takes it as given with `create extension if not exists`), and the role a run connects as need not be that role.
+  A `drop schema public cascade` would remove `vector` with the schema and leave a database no build can migrate.
+  A Legion pod's test server is one such case: every database made from its `template1` holds `vector`, and its login may not create it again.
+  [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) and [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_reset_database` call it
+
+`require_loopback_dsn` and `run_database_url` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
 
 ## lib/held-port.py
 
@@ -5714,7 +5883,7 @@ Each item below names a function, then what it does.
 
 - `two_builds_build NAME`, `two_builds_reset_database`, `two_builds_fake_envoy`
 
-  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
+  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
 
 - `two_builds_identity`
 
@@ -6291,7 +6460,7 @@ Each item below names a function, then what it does.
 ## lib/live-daemon-proof.sh
 
 The run a whole-daemon live proof makes around its driver.
-`child-adoption.sh`, `conflict-no-takeover.sh`, `behind-entry-fence.sh`, `phase-entry-converge.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh`, `role-prompt-rule.sh` and `late-completion.sh` differ only in what their driver proves, so each sets its own values and makes this run.
+Every entry script that sources this file differs from the others only in what its driver proves, so each sets its own values and makes this run.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run

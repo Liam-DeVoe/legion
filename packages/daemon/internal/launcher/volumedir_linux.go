@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -80,25 +81,25 @@ func (d *dirHandle) open(name string) (*dirHandle, error) {
 // volume, which the error names.
 func openElementAt(parent int, name, path string) (int, error) {
 	if !isOneName(name) {
-		return -1, &fs.PathError{Op: "openat", Path: path, Err: syscall.EINVAL}
+		return -1, &quotedPathError{op: "openat", path: path, err: syscall.EINVAL}
 	}
 	fd, err := openRetrying(func() (int, error) {
 		return unix.Openat(parent, name, volumeOpenFlags, 0)
 	})
 	if err != nil {
-		return -1, &fs.PathError{Op: "openat", Path: path, Err: err}
+		return -1, &quotedPathError{op: "openat", path: path, err: err}
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		_ = unix.Close(fd)
-		return -1, &fs.PathError{Op: "fstat", Path: path, Err: err}
+		return -1, &quotedPathError{op: "fstat", path: path, err: err}
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		// Asked of the descriptor and not of the open, because O_DIRECTORY is the flag this
 		// kernel follows a link under, and because an open that has already happened is the
 		// only reading of a name no role can move under it.
 		_ = unix.Close(fd)
-		return -1, &fs.PathError{Op: "openat", Path: path, Err: syscall.ENOTDIR}
+		return -1, &quotedPathError{op: "openat", path: path, err: syscall.ENOTDIR}
 	}
 	return fd, nil
 }
@@ -137,18 +138,14 @@ func openRetrying(open func() (int, error)) (int, error) {
 //
 // The error names what it failed on below dir by the entry's name, the name that failed and how
 // deep that name lay (removalFailure), so a line in the pod's log is the entry's path followed by
-// those two. A failure of the entry itself names it by that name alone, as a removalFailure at
-// depth 0, so every error of the removal quotes the names it carries. names is the buffer every
+// those two. A failure of the entry itself names it by that name alone (quotedPathError), so
+// every error of the removal quotes the names it carries. names is the buffer every
 // directory's names are read into, which the deleter makes once for all its removals
 // (VolumeTrimDelete): a directory's names are all read before any of them is removed, so one
 // buffer serves the whole tree.
 func removeEntryAt(dir *os.File, name string, names []byte) error {
 	removal := treeRemoval{names: names}
-	err := removal.remove(int(dir.Fd()), name)
-	if failed, ok := err.(*fs.PathError); ok {
-		return &removalFailure{op: failed.Op, top: failed.Path, name: failed.Path, err: failed.Err}
-	}
-	return err
+	return removal.remove(int(dir.Fd()), name)
 }
 
 // treeRemoval is one removeEntryAt: the buffer every directory's names are read into.
@@ -165,7 +162,7 @@ type treeRemoval struct {
 // path carried down to every level, and 1.5 MB with the name alone.
 func (r *treeRemoval) remove(parent int, name string) error {
 	if !isOneName(name) {
-		return &fs.PathError{Op: "unlinkat", Path: name, Err: syscall.EINVAL}
+		return &quotedPathError{op: "unlinkat", path: name, err: syscall.EINVAL}
 	}
 	if err := unlinkRetrying(parent, name, 0); err == nil || errors.Is(err, syscall.ENOENT) {
 		return nil
@@ -178,7 +175,7 @@ func (r *treeRemoval) remove(parent int, name string) error {
 		// Not a directory now, whatever the unlink met: unlinked as the name it is, or
 		// refused with the reason the kernel gives for that.
 		if err := unlinkRetrying(parent, name, 0); err != nil && !errors.Is(err, syscall.ENOENT) {
-			return &fs.PathError{Op: "unlinkat", Path: name, Err: err}
+			return &quotedPathError{op: "unlinkat", path: name, err: err}
 		}
 		return nil
 	case err != nil:
@@ -190,39 +187,39 @@ func (r *treeRemoval) remove(parent int, name string) error {
 		return under(name, emptied)
 	}
 	if err := unlinkRetrying(parent, name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, syscall.ENOENT) {
-		return &fs.PathError{Op: "unlinkat", Path: name, Err: err}
+		return &quotedPathError{op: "unlinkat", path: name, err: err}
 	}
 	return nil
 }
 
 // under is err, raised below the directory name, renamed to what it failed on from the directory
-// name is in: the error of a name in name, or of name itself, becomes a removalFailure under it,
-// and a removalFailure already under name is moved up a level in place. An error that names the
-// directory itself carries no path of its own.
+// name is in: the error of a name in name becomes a removalFailure under it, the error of name
+// itself names name (quotedPathError), and a removalFailure already under name is moved up a
+// level in place. An error that names the directory itself carries no path of its own.
 func under(name string, err error) error {
 	switch failed := err.(type) {
 	case *removalFailure:
 		failed.top = name
 		failed.depth++
 		return failed
-	case *fs.PathError:
-		if failed.Path == "" {
-			return &removalFailure{op: failed.Op, top: name, name: name, err: failed.Err}
+	case *quotedPathError:
+		if failed.path == "" {
+			failed.path = name
+			return failed
 		}
-		return &removalFailure{op: failed.Op, top: name, name: failed.Path, depth: 1, err: failed.Err}
+		return &removalFailure{op: failed.op, top: name, name: failed.path, depth: 1, err: failed.err}
 	}
 	return err
 }
 
 // removalFailure is a removal that failed in a directory's tree, named by the directory it is
-// in (top), the name that failed and how many levels below top that name lay (depth, 0 for top
-// itself), and never by the path between them: the deleter answers it as its reply and the sweep
-// logs it, so a failure deep in a tree is an error of a size set by two names rather than by the
-// tree's depth (TestARemovalThatFailsDeepInATreeAnswersABoundedError). It reads as the
-// fs.PathError of the same failure would, with the levels between top and name written as "..."
-// and the depth beside them where there are any, and with the path quoted: every name in it is
-// one a role chose, and a name holding a newline would otherwise begin a line of its own in the
-// pod's log (TestARemovalErrorQuotesTheNamesARoleChose).
+// in (top), the name that failed and how many levels below top that name lay (depth, 1 for a
+// name in top itself), and never by the path between them: the deleter answers it as its reply
+// and the sweep logs it, so a failure deep in a tree is an error of a size set by two names
+// rather than by the tree's depth (TestARemovalThatFailsDeepInATreeAnswersABoundedError). It
+// reads as quotedPathError does, with the levels between top and name written as "..." and the
+// depth beside them where there are any: every name in it is one a role chose
+// (TestARemovalErrorQuotesTheNamesARoleChose).
 type removalFailure struct {
 	op    string
 	top   string
@@ -232,13 +229,10 @@ type removalFailure struct {
 }
 
 func (f *removalFailure) Error() string {
-	switch f.depth {
-	case 0:
-		return fmt.Sprintf("%s %q: %v", f.op, f.top, f.err)
-	case 1:
-		return fmt.Sprintf("%s %q: %v", f.op, f.top+"/"+f.name, f.err)
+	if f.depth == 1 {
+		return quotedPathText(f.op, f.top+"/"+f.name, "", f.err)
 	}
-	return fmt.Sprintf("%s %q (depth %d): %v", f.op, f.top+"/.../"+f.name, f.depth, f.err)
+	return quotedPathText(f.op, f.top+"/.../"+f.name, " (depth "+strconv.Itoa(f.depth)+")", f.err)
 }
 
 func (f *removalFailure) Unwrap() error { return f.err }
@@ -253,16 +247,16 @@ const volumeRemovalPasses = 2
 var errStillFilling = fmt.Errorf("names were still appearing in it after %d passes over its names", volumeRemovalPasses)
 
 // empty removes every name of the directory fd holds open. It reads the names again after each
-// pass, for what was created while it removed, and stops at a pass that removed nothing, with the
-// first error of that pass. It makes volumeRemovalPasses passes at most: a directory that still
-// has names after them is answered rather than read again, since a writer that keeps creating
-// names would otherwise hold the removal, and the sweep waiting on it, for as long as it writes.
-// That answer is the first error any pass's names failed with, and errStillFilling only where
-// none failed: a name that cannot be removed is what would still stand once the writer stopped,
-// and errStillFilling in its place would hide it
-// (TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet). The same holds among the
-// names of one pass: a subdirectory still filling answers errStillFilling from below, and an
-// error of another name is preferred to it whichever the directory lists first (stillStanding,
+// pass, for what was created while it removed, and stops at a pass that removed nothing. It makes
+// volumeRemovalPasses passes at most: a directory that still has names after them is answered
+// rather than read again, since a writer that keeps creating names would otherwise hold the
+// removal, and the sweep waiting on it, for as long as it writes. Either answer is the first
+// error its names met that is not errStillFilling, and errStillFilling only where no other error
+// was met (stillStanding): the names of the pass that removed nothing, or of every pass where the
+// passes ran out, which answers errStillFilling of the directory itself where its names met no
+// error at all. A name that cannot be removed is what would still stand once the writer
+// stopped, so its error is preferred to a subdirectory's errStillFilling from below whichever
+// the directory lists first (TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet,
 // TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling). Its errors name what they
 // failed on from this directory, and the directory itself by no path at all (under).
 func (r *treeRemoval) empty(fd int) error {
@@ -270,7 +264,7 @@ func (r *treeRemoval) empty(fd int) error {
 	for pass := 1; ; pass++ {
 		names, err := r.read(fd)
 		if err != nil {
-			return &fs.PathError{Op: "getdents", Err: err}
+			return &quotedPathError{op: "getdents", err: err}
 		}
 		if len(names) == 0 {
 			return nil
@@ -279,7 +273,7 @@ func (r *treeRemoval) empty(fd int) error {
 			if failed != nil {
 				return failed
 			}
-			return &fs.PathError{Op: "getdents", Err: errStillFilling}
+			return &quotedPathError{op: "getdents", err: errStillFilling}
 		}
 		var first error
 		removed := false
