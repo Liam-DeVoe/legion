@@ -460,16 +460,20 @@ func TestRunTellsTheModelACallFailedInTheResultsOwnText(t *testing.T) {
 // the caller's deadline ends the run with the issue's one deadline code, and the run takes the
 // time the caller gave it rather than ending early.
 func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
+	// Serial: the run must last until the 250 ms deadline its caller gave it, read off the clock.
 	const window = 250 * time.Millisecond
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	ctx, cancel := context.WithTimeout(t.Context(), window)
 	defer cancel()
+	// The run may not end before its context's own deadline, which WithTimeout counted from the
+	// moment it was called. A clock started after that call starts late, so a run that ended
+	// exactly at its deadline would measure shorter than the window.
+	deadline, _ := ctx.Deadline()
 
-	start := time.Now()
 	err := answerer.Run(ctx, testReads().request("who owns the broadcast order"), stream.emit)
-	elapsed := time.Since(start)
+	ended := time.Now()
 
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -477,8 +481,8 @@ func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
 	}
-	if elapsed < window {
-		t.Errorf("the run ended %s in, before its %s deadline", elapsed, window)
+	if ended.Before(deadline) {
+		t.Errorf("the run ended %s before its %s deadline", deadline.Sub(ended), window)
 	}
 }
 
