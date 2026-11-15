@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -633,4 +634,63 @@ func TestSettingsChangeResponseGolden(t *testing.T) {
 		"nats_nkey_seed_file": {Failed: "nats: connect Envoy NATS: nats: no servers available for connection", Holder: config.HolderNATS, Old: "(withheld)", New: "(withheld)"},
 		"postgres_dsn":        {Refused: "the store's pool is connected at boot and holds every record the daemon is working from"},
 	}})
+}
+
+// A member of a keyed map named by its own path is answered with what the daemon did to it. The
+// route takes `projects.<KEY>.commit_issue_trailer_repos` and the holder settles it, as the
+// snapshot below shows; the diff compares `projects` whole, so the change is reported under
+// `projects`, and the path the caller named was answered unchanged. Spec version 41: the route's
+// answer for a key is what the daemon did. A caller who sets one member reads its own path's
+// line, and that line said nothing moved while the value moved.
+func TestAMemberOfTheProjectsBlockNamedByItsOwnPathIsAnsweredWithItsChange(t *testing.T) {
+	handler, live := settingsRouteServerOn(t, settingsRouteAppsFile, SettingsRouteAuth{}, nil)
+	const member = "projects.DEMO.commit_issue_trailer_repos"
+
+	recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
+		By:      "ana@example.com",
+		Changes: map[string]json.RawMessage{member: json.RawMessage(`["acme/widgets"]`)},
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the settings route = %d; body %s", recorder.Code, recorder.Body)
+	}
+	if repos := live.Snapshot().Projects["DEMO"].CommitIssueTrailerRepos; len(repos) != 1 || repos[0].String() != "acme/widgets" {
+		t.Fatalf("the holder reads %v for %s, want [acme/widgets]: the change did not settle, so this proves nothing", repos, member)
+	}
+	got := settingsAnswer(t, recorder)[member]
+	if got.Unchanged || got.Refused != "" || got.Failed != "" || got.Applied != string(config.OutcomeNextLaunch) || got.New == "" {
+		t.Errorf("the answer for %s = %+v, want it applied at the next launch with its new value: the value moved", member, got)
+	}
+}
+
+// The answer for a block compared whole names the value the daemon holds after the change, not
+// the one the caller asked for. A change of `projects` that carries a fixed member is applied
+// for its other members, and the fixed one is refused by its own path and stays at the boot's
+// value, as the snapshot shows. The block's own line reported the value asked for, with the
+// fixed member at the refused value, so a reader of that line — Dispatch's settings control,
+// which shows the new value — reads a memory mode the daemon refused.
+func TestTheProjectsBlockIsAnsweredWithTheValueTheDaemonHolds(t *testing.T) {
+	handler, live := settingsRouteServerOn(t, settingsRouteAppsFile, SettingsRouteAuth{}, nil)
+
+	recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
+		By: "ana@example.com",
+		Changes: map[string]json.RawMessage{
+			"projects": json.RawMessage(`{"DEMO": {"memory": {"mode": "on", "config_files": ["/etc/legion/memory.json"]}}}`),
+		},
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the settings route = %d; body %s", recorder.Code, recorder.Body)
+	}
+	answer := settingsAnswer(t, recorder)
+	if got := answer["projects.DEMO.memory.mode"]; got.Refused == "" {
+		t.Fatalf("the answer for projects.DEMO.memory.mode = %+v, want it refused: this proves nothing", got)
+	}
+	held := live.Snapshot().Projects
+	if held["DEMO"].Memory.Word() != config.MemoryOff || len(held["DEMO"].Memory.ConfigFiles) != 1 {
+		t.Fatalf("the holder holds %+v, want mode off and the one config file: this proves nothing", held["DEMO"].Memory)
+	}
+	if got, want := answer["projects"].New, config.Render(reflect.ValueOf(held)); got != want {
+		t.Errorf("the answer for projects reads New\n%s\nwant the value the daemon holds\n%s", got, want)
+	}
 }
