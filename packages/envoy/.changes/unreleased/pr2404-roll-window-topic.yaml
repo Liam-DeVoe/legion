@@ -11,7 +11,14 @@ body: |-
     subjects again before it judges a topic uncaptured, so such a topic stays in the session's
     filter and its registration, and the message is delivered. Topics no stream captures at all
     cost the NATS server at most one extra read of the stream every 250 ms, however many
-    registrations name them.
+    registrations and publishes name them. In the same window, a message published through the
+    older pod on such a topic was refused as a topic no session receives; the older pod now reads
+    the stream's subjects again first, so the publish is accepted and stored, and the session
+    receives it. Any other publish on such a topic from an older build now goes through JetStream
+    too: it went over core NATS, where the stream still stored it, but without the message id that
+    keeps a repeat to one copy and without confirming the store. And a slow read of the stream's
+    subjects that ends after a newer one no longer replaces the newer list with the older one,
+    including a read that ends while the listener sets up the stream.
 time: 2026-11-15T10:13:09.000000000Z
 custom:
     Issue: pr2404

@@ -710,7 +710,8 @@ func deliveryModeVerdict(sessionID string, entry session.SessionEntry, payload s
 // sendRequestBudget is the bus work a /v1 route does under the request's own context: the send
 // route's read of the target session, its read of the sender's interest record (senderStamp) and
 // its publish share it, and GET /v1/roles/<role> resolves its holder within it too. The publish
-// route spends it on the publish of a topic the stream captures, and a role send's first
+// route spends it on its fresh judgement of whether the stream captures the topic and on the
+// publish of one it captures, and a role send's first
 // resolution of the role's holder (sendToRole, every attempt of that resolution) is answered within
 // it too; a role send then runs on within publishDeliveryWindow (confirmed.go). GET
 // /v1/sessions, GET /v1/registry/<session_id> and GET /v1/interests/<session_id> read within it as
@@ -996,7 +997,8 @@ type deleteSessionResponse struct {
 // publishDeliveryWindow from the request's arrival has passed (sendToRole in
 // confirmed.go); a topic the stream captures is answered once the stream
 // stored it, and any other notifications. topic is
-// refused by name, since nothing would store it for a session to read. An
+// refused by name, since nothing would store it for a session to read, once a read
+// of the deployed stream's subjects again agrees (bus.Client.DeployedStreamCapturesFresh). An
 // explicit dedupe_key is used verbatim (a re-send a receiver's own dedupe
 // recognises); it is mutually exclusive with idempotency_key, may not begin
 // with roleForwardDedupePrefix, the mark the role arbiter drops on sight, and
@@ -1132,17 +1134,22 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// nothing retries into success, so it is the 400 the refusals above answer rather than a
 		// 504. Team topics are the namespace an agent names itself and the stream stores them
 		// (bus.StreamSubjects). The role lanes bus.Client.ReachesNoSession excepts are forwarded
-		// above.
-		if d.client.ReachesNoSession(request.Topic) {
+		// above. A topic the subjects this listener last read of the deployed stream leave
+		// uncaptured is refused only once a read of them again agrees
+		// (bus.Client.DeployedStreamCapturesFresh), as a registration leaves one out
+		// (splitUncapturedTopics): during a roll the newer build's start adds its subjects to the
+		// stream, and a publish through an older pod on a topic only they capture is stored, the
+		// transport the publish takes judged on that same read (bus.Client.PublishWithin).
+		// That judgement, the sender stamp's read and the publish take this one deadline, derived
+		// from the caller's own context, so this route too answers a bus it cannot reach rather
+		// than spending the caller's attempt.
+		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
+		defer cancel()
+		if d.client.ReachesNoSession(request.Topic) && !d.client.DeployedStreamCapturesFresh(ctx, request.Topic) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
 				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
 			return
 		}
-		// The sender stamp's read and the publish take this one deadline, derived from the
-		// caller's own context, so this route too answers a bus it cannot reach rather than
-		// spending the caller's attempt.
-		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
-		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 		if err := d.client.PublishWithin(ctx, item); err != nil {
 			record.refuseBusUnavailable(w, err)
