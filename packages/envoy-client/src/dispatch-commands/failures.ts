@@ -1,9 +1,4 @@
-import {
-  DispatchGatewayError,
-  DispatchNoRouteError,
-  DispatchServiceError,
-  isNoRoute,
-} from "../dispatch-http";
+import { DispatchGatewayError, DispatchNoRouteError, DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 
 /**
@@ -64,24 +59,24 @@ const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"
  * sentence that names the real cause. The plugins release from main as this merges while
  * Dispatch's own server is deployed by hand (dispatch://INFRA-1464), so for a while these
  * commands run against a server with no route by which an agent edits or deletes a post or reads
- * the bodies one replaced: its router answers `404 NOT_FOUND` "no route for …" (`isNoRoute`) to
- * both deletes, the message edit and the history reads, and a request every attempt of which was
- * answered that way arrives here as `DispatchNoRouteError`, whose own message is the one a
- * rolling release writes. Both are read as the server's age: a roll puts the route in place
- * within a minute, while a Dispatch that predates post corrections answers that way until it is
- * deployed, and only this sentence tells an agent which to expect. Its comment edit, the one
- * route that was
- * there before, refuses this release's call in one of two ways, by the credential. It first reads
- * the person it acts for (`actingPerson`), which answers a credential without the person scope
- * `403 OAUTH_SCOPE_REQUIRED`; the route at this head names no scope, so only an older build
- * answers that code there. A credential with that scope, a person's own token included, passes,
- * and the body is then decoded into an input that holds only `body`, `base_revision` and `blocks`,
- * with unknown fields disallowed; the body this client sends always carries `actor`, so that build
- * answers `400 INVALID_JSON` naming the unknown field `actor` before it compares the author. This
- * release's input takes `actor`, so only an older build answers that. Only the comment edit reads
- * either code as the server's age, and only in those exact forms: an `INVALID_JSON` naming any
- * other field is passed through. Without this, an agent is told its credential lacks a scope, or
- * that its own request was malformed, and goes asking a person for one or rewriting the call.
+ * the bodies one replaced: its router answers `404 NOT_FOUND` "no route for …" to both deletes,
+ * the message edit and the history reads. Every client call retries such an answer, so what
+ * arrives here is `DispatchNoRouteError`, which a server with the route never answers: a roll
+ * puts the route in place within a minute, while a Dispatch that predates post corrections
+ * answers that way until it is deployed, and only this sentence tells an agent which to expect.
+ * Its comment edit, the one route that was there before, refuses this release's call in one of
+ * two ways, by the credential. It first reads the person it acts for (`actingPerson`), which
+ * answers a credential without the person scope `403 OAUTH_SCOPE_REQUIRED`; the route at this
+ * head names no scope, so only an older build answers that code there. A credential with that
+ * scope, a person's own token included, passes, and that build then decodes the body into an
+ * input holding only `body`, `base_revision` and `blocks`, refusing an undeclared member; the
+ * body this client sends always carries `actor`, so it answers `400 INVALID_JSON` naming the
+ * unknown field `actor` before it compares the author. A build from #2461 on ignores an
+ * undeclared member, so only one older than that answers it, which production's `c823eba4` is.
+ * Only the comment edit reads either code as the server's age, and only in those exact forms: an
+ * `INVALID_JSON` naming any other field is passed through. Without this, an agent is told its
+ * credential lacks a scope, or that its own request was malformed, and goes asking a person for
+ * one or rewriting the call.
  */
 export async function throughPostCorrections<T>(
   tool: string,
@@ -97,7 +92,7 @@ export async function throughPostCorrections<T>(
         (dispatchAnswered(error, 400) &&
           error.code === "INVALID_JSON" &&
           error.message === OLDER_COMMENT_EDIT_ACTOR));
-    if (!isNoRoute(error) && !(error instanceof DispatchNoRouteError) && !commentEditIsAge) {
+    if (!(error instanceof DispatchNoRouteError) && !commentEditIsAge) {
       throw error;
     }
     throw new Error(

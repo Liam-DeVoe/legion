@@ -418,7 +418,7 @@ test("a reference answers the edit and the deletion of the post it names, or who
   const standing = blockRead("Beta as written.");
   // The words of the refusal decide nothing, either way: the block of the deleted post `m-1` is
   // refused in words that say nothing of a delete, and the block of the standing post `m-2` is
-  // refused in the very words the server once wrote for a deleted post. The post's own mark is
+  // refused in the very words the server writes for a deleted post. The post's own mark is
   // what each reading follows.
   reads.getReferences.mockImplementation((reference) =>
     reference.includes("/message/m-2#")

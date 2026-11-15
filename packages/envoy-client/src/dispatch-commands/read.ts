@@ -120,8 +120,13 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
    *  that the post is deleted. The fact is the post's own `deleted_at`, read from the post
    *  itself; the words of the server's refusal are never read, because a reader of prose breaks
    *  on the day the prose changes (`skill://dispatch`: branch on an error's code, never on its
-   *  text). Nothing for a block of a document or of an ask, neither of which a delete marks, for
-   *  a post that stands, and where the post's own read fails, which leaves the message as it is.
+   *  text). The message read is the issue's, as the message read below makes it, because
+   *  `GET /api/v1/messages/{id}` answers the root of that message's conversation rather than
+   *  the message named (`readableMessageThread`, `api/messages.go`): a deleted reply's block
+   *  would then say nothing, and a standing reply under a deleted root would say it falsely. A
+   *  message block's owner is always an issue. Nothing for a block of a document or of an ask,
+   *  neither of which a delete marks, for a post that stands, and where the post's own read
+   *  fails, which leaves the message as it is.
    */
   const deletedPostClause = async (ref: ParsedDispatchRef): Promise<string> => {
     const item = ref.item;
@@ -130,7 +135,9 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     }
     const deleted = await (item.kind === "comment"
       ? client.getComment(item.id).then((read) => read.comment.deleted_at)
-      : client.getMessageThread(item.id).then((read) => read.message.deleted_at)
+      : ref.owner.kind === "issue"
+        ? client.getMessage(ref.owner.issue, item.id).then((read) => read.message.deleted_at)
+        : Promise.resolve(undefined)
     ).catch(() => undefined);
     return deleted == null ? "" : ` This ${item.kind} is deleted.`;
   };

@@ -6256,16 +6256,23 @@ describe("executeDispatchTool", () => {
     const notFound = (error: string) => response({ error, code: "NOT_FOUND" }, 404);
     /** A read of `ref` against a server whose references route answers `to` and `from`, whose
      *  document lists `blocks` (none by default, so the read prints no type and no attribute),
-     *  and whose comment and message reads answer `post`: the read of a block the references
-     *  route cannot find reads the post that held it, for the mark that says the post is
-     *  deleted. The default post stands, as every post of these rows does but the deleted one.
-     *  The pending result, and the requests it sends. */
+     *  and whose comment and message reads answer `post`, which is given the path asked, so a
+     *  row answers one post of a conversation and not another: the read of a block the
+     *  references route cannot find reads the post that held it, for the mark that says the post
+     *  is deleted. A comment is read at `/api/v1/comments/<id>` and a message at that issue's
+     *  own `/api/v1/issues/<key>/messages/<id>`, which answers the message named rather than
+     *  its conversation's root. The default post stands, in the shape each read takes, as every
+     *  post of these rows does but the deleted ones. The pending result, and the requests it
+     *  sends. */
     const readBlock = (
       ref: string,
       to: () => Response,
       from: () => Response = () => response({ node: blockNode, edges: [] }),
       blocks: unknown[] = [],
-      post: () => Response = () => response({ comment: { deleted_at: null }, replies: [] })
+      post: (path: string) => Response = (path) =>
+        path.includes("/messages/")
+          ? response({ message: { deleted_at: null }, replies: [] })
+          : response({ comment: { deleted_at: null }, replies: [] })
     ) => {
       const requests: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -6282,9 +6289,10 @@ describe("executeDispatchTool", () => {
         }
         if (
           target.pathname.startsWith("/api/v1/comments/") ||
-          target.pathname.startsWith("/api/v1/messages/")
+          target.pathname.startsWith("/api/v1/messages/") ||
+          /^\/api\/v1\/issues\/[^/]+\/messages\//.test(target.pathname)
         ) {
-          return post();
+          return post(target.pathname);
         }
         throw new Error(`unexpected request: ${target.pathname}${target.search}`);
       };
@@ -6879,6 +6887,37 @@ describe("executeDispatchTool", () => {
             ).result
           ).text
         ).toBe(expected);
+      });
+
+      // A reply of a conversation has blocks of its own, and its block reference names the
+      // reply. The mark that decides is that reply's own, which only the issue's message read
+      // answers: `GET /api/v1/messages/{id}` answers the root of the conversation, whose mark
+      // is another post's, so reading it would miss a deleted reply and claim a standing one.
+      test("a block of a deleted reply says so, and one of a standing reply under a deleted root does not", async () => {
+        const root = "22222222-2222-4222-8222-222222222222";
+        const reply = "33333333-3333-4333-8333-333333333333";
+        const replyBlock = `dispatch://CORE-1/message/${reply}#b-b1`;
+        const gone = () => notFound(`no block "b1" in message ${reply}`);
+        // The server answers `/api/v1/issues/<key>/messages/<id>` with the message named, and
+        // `/api/v1/messages/<id>` with the root of that message's conversation, whatever message
+        // the path names (`readableMessageThread`). This fake answers both the same way, so a row
+        // tells a reading of the reply from a reading of the root.
+        const marks = (deleted: readonly string[]) => (path: string) => {
+          const read = path.startsWith("/api/v1/messages/") ? root : reply;
+          return response({
+            message: { deleted_at: deleted.includes(read) ? "2026-11-15T09:00:00Z" : null },
+            replies: [],
+          });
+        };
+
+        await expect(readBlock(replyBlock, gone, gone, [], marks([reply])).result).rejects.toThrow(
+          new Error(`No block b1 in dispatch://CORE-1/message/${reply}. This message is deleted.`)
+        );
+
+        // The root is the deleted one here, and the reply whose block is named stands.
+        await expect(readBlock(replyBlock, gone, gone, [], marks([root])).result).rejects.toThrow(
+          new Error(`No block b1 in dispatch://CORE-1/message/${reply}.`)
+        );
       });
 
       test("a comment block no current revision holds is an error naming the block and its comment", async () => {
@@ -15570,7 +15609,9 @@ const OLDER_DISPATCH =
   "this release's server, a correction is one more post saying what changed.";
 
 /** One call against a Dispatch older than the post corrections: the routes that build has answer
- *  through `answer`, and every other request gets its router's no-route 404. */
+ *  through `answer`, and every other request gets its router's no-route 404. The client retries
+ *  a no-route answer at 1 s, 2 s and 4 s before it gives up on the route, so the waits are taken
+ *  out: a row here measures the sentence, not the backoff. */
 function olderDispatch(
   tool: string,
   args: Record<string, unknown>,
@@ -15594,6 +15635,7 @@ function olderDispatch(
     config,
     env: {},
     exec: repoExec("owner/repo"),
+    sleep: async () => {},
     fetchImpl: fetchImpl as typeof fetch,
   });
 }
