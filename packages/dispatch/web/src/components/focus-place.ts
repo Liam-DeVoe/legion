@@ -288,7 +288,7 @@ function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLEleme
  *  nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { region } = loss;
-  let candidates: (HTMLElement | null | undefined)[] = [];
+  let candidates: HTMLElement[] = [];
   if (present(region)) {
     candidates = placesFrom(drawnIn(region, main), loss.index);
   } else {
@@ -299,7 +299,6 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     }
   }
   for (const candidate of candidates) {
-    if (candidate === null || candidate === undefined) continue;
     if (!candidate.isConnected || !rendered(candidate)) continue;
     if (land(candidate)) return;
   }
@@ -344,8 +343,7 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * the focus on (`handOn`) inside the region it was lost in: to the control the region now draws at
  * its place, else the nearest one before it however many went together, else the region itself,
  * so the page behind a modal dialog is never reached. Only a region that has gone hands the focus
- * out of it: from a
- * dialog that closed it goes only back to the place the dialog was opened from; a
+ * out of it: from a dialog that closed it goes only back to the place the dialog was opened from; a
  * dialog opened from the body - a single-key shortcut with nothing focused - leaves the focus on
  * the body, where the reader was, and never puts it in a text box whose next key would be typed.
  * An element the press disabled, itself or through the fieldset around it, gets the focus back
