@@ -279,17 +279,25 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	// lapse fires as the hold the last attempt found another process holding live lapses: the
 	// time that attempt's read left it on the database's clock, counted from the read's answer,
 	// so it fires after the lapse and never before. A standby whose holder died tries again then
-	// rather than at its next poll, which can come up to durableBindInterval after the lapse. An
-	// attempt that finds no hold held live leaves the timer as it was: one whose read failed keeps
-	// the lapse the read before it found, and a timer that fires once the hold has changed hands
-	// costs at most one attempt, the one the next poll would make.
+	// rather than at its next poll, which can come up to durableBindInterval after the lapse. The
+	// attempt it makes is an ordinary one, which reads the hold again and takes it only if no
+	// holder holds it live, so a holder whose renewal landed after the read the timer was armed
+	// from keeps its hold (TestAHolderThatRenewsBetweenAStandbysReadAndItsLapseTimerKeepsTheHold).
+	// An attempt that leaves this intake holding the hold stops the timer, so a lapse read before
+	// a poll took the hold fires no attempt later (TestAStandbyWhosePollTakesTheHoldLeavesNoLapseTimerToFire).
+	// Any other attempt that finds no hold held live leaves the timer as it was: one whose read
+	// failed keeps the lapse the read before it found, and a timer that fires once another process
+	// has taken the hold costs one attempt, which reads that process's hold and arms to its lapse.
 	lapse := time.NewTimer(time.Hour)
 	lapse.Stop()
 	defer lapse.Stop()
 	attempt := func() {
 		if d.subject == "" && ready() {
-			if left := d.attempt(ctx); left > 0 {
+			switch left := d.attempt(ctx); {
+			case left > 0:
 				lapse.Reset(left)
+			case d.hold != nil:
+				lapse.Stop()
 			}
 		}
 	}

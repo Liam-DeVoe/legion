@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -197,27 +198,124 @@ func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) 
 	}
 }
 
-// holdReads is a standby's lease pool that notes when each of its reads of its durable's hold
-// goes out. That read is the one statement it sends through QueryRow (duty.HoldToken).
+// holdReads is a standby's lease pool that notes each of its reads of its durable's hold, the one
+// statement it sends through QueryRow (duty.HoldToken): when it went out, when its answer was
+// scanned, how long it found the hold had left, and its error. A read that goes out while fail
+// reports true fails as a cut-off process's read does (cutOffRow). It notes each statement it
+// sends through Exec too, which while it holds no hold is its take (duty.TryHold).
 type holdReads struct {
 	intakeLeases
 
-	mu   sync.Mutex
-	sent []time.Time
+	mu    sync.Mutex
+	reads []holdRead
+	execs []leaseExec
+	fail  func(sent time.Time) bool
+}
+
+// holdRead is one read of the hold as holdReads noted it: left is how long it found the hold had
+// left, on the database's clock, and answered is zero until its answer is scanned.
+type holdRead struct {
+	sent, answered time.Time
+	left           time.Duration
+	err            error
+}
+
+// leaseExec is one statement a process sent through its lease pool's Exec: when the process sent
+// it, when it left for Postgres, when Postgres answered it, the rows it affected, and its error.
+type leaseExec struct {
+	sent, forwarded, answered time.Time
+	rows                      int64
+	err                       error
 }
 
 func (r *holdReads) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	sent := time.Now()
 	r.mu.Lock()
-	r.sent = append(r.sent, time.Now())
+	index := len(r.reads)
+	r.reads = append(r.reads, holdRead{sent: sent})
+	cut := r.fail != nil && r.fail(sent)
 	r.mu.Unlock()
-	return r.intakeLeases.QueryRow(ctx, sql, args...)
+	if cut {
+		r.answer(index, 0, errCutOff)
+		return cutOffRow{}
+	}
+	return notedHoldRead{row: r.intakeLeases.QueryRow(ctx, sql, args...), reads: r, index: index}
+}
+
+func (r *holdReads) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	sent := time.Now()
+	tag, err := r.intakeLeases.Exec(ctx, sql, arguments...)
+	r.mu.Lock()
+	r.execs = append(r.execs, leaseExec{sent: sent, forwarded: sent, answered: time.Now(), rows: tag.RowsAffected(), err: err})
+	r.mu.Unlock()
+	return tag, err
+}
+
+// failWhile makes every read that goes out while fail reports true for its send time fail.
+func (r *holdReads) failWhile(fail func(sent time.Time) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fail = fail
+}
+
+// answer notes the answer of the read at index.
+func (r *holdReads) answer(index int, left time.Duration, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reads[index].answered, r.reads[index].left, r.reads[index].err = time.Now(), left, err
+}
+
+// notedHoldRead is the row one read of the hold answers, which notes that answer as it is
+// scanned: duty.HoldToken scans the token and how long the hold has left, in microseconds.
+type notedHoldRead struct {
+	row   pgx.Row
+	reads *holdReads
+	index int
+}
+
+func (n notedHoldRead) Scan(dest ...any) error {
+	err := n.row.Scan(dest...)
+	var left time.Duration
+	if micros, ok := dest[len(dest)-1].(*int64); ok && err == nil {
+		left = time.Duration(*micros) * time.Microsecond
+	}
+	n.reads.answer(n.index, left, err)
+	return err
 }
 
 // times is when each read went out, in order.
 func (r *holdReads) times() []time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.Clone(r.sent)
+	times := make([]time.Time, len(r.reads))
+	for i, read := range r.reads {
+		times[i] = read.sent
+	}
+	return times
+}
+
+// noted is every read noted so far and every statement sent through Exec, each in order.
+func (r *holdReads) noted() ([]holdRead, []leaseExec) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.reads), slices.Clone(r.execs)
+}
+
+// awaitRead waits up to within for the first read that went out at or after from to be answered,
+// and answers it. what names that read in the failure.
+func (r *holdReads) awaitRead(t *testing.T, from time.Time, within time.Duration, what string) holdRead {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		reads, _ := r.noted()
+		if i := slices.IndexFunc(reads, func(read holdRead) bool { return !read.sent.Before(from) }); i >= 0 && !reads[i].answered.IsZero() {
+			return reads[i]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the standby's %s was not answered within %s: its reads went out at %v", what, within, r.times())
+		}
+		time.Sleep(lostReplyPoll)
+	}
 }
 
 // holdRow is the delivery durable's hold as one read of its row found it: the expiry the last
