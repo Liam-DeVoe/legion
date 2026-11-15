@@ -2,7 +2,9 @@
 # Drives the one statement in Dispatch that removes bytes (dispatch://INFRA-1149's c-erasure).
 # It writes a document, has a person approve a version of it, and writes a comment holding a
 # secret that version's markdown holds too. It plants the same bytes in rows of other nodes - a
-# document of another issue and a comment of that issue - which no erase here derives from.
+# document of another issue and a comment of that issue - which no erase here derives from, and
+# in an event of the comment's issue about the comment, whose payload holds them in a key as well
+# as in the string under it.
 #
 # It then erases two nodes, each as an operator does: `envoy-dispatch erase --node <node>` lists
 # every row it would delete, rewrite, redact or leave with the listing's digest and removes
@@ -11,22 +13,28 @@
 # comment, is listed and left with its version and its approval. The second is the block of the
 # document that holds the secret: its rows, its document's version holding the text and the
 # approval over it, its document's live state, search rows, windows and events. It proves, in
-# order: each run without --confirm refuses, and the block's listing holds the version and the
-# review it would end and the document whose live state it would replace; after the erases a
-# read of the comment's address answers what a deleted node answers, byte for byte, no tuple and
-# no projection row of either node remains, the version is gone and the review over it is gone,
-# reported by its issue and its version; the document still loads, the marker where the secret
-# was; a search of every column of every table of the database, which names no store and finds a
-# control row planted beside it, marks each row holding the secret as derived from an erased node
-# or not and finds none of the first kind; every row planted for the other nodes is byte for byte
-# what it was; the events rows the listings named stand with their payload redacted, the marker
-# naming the erase in each and the row's id, time and actor what they were before; each erase is
-# recorded in one `graph_erasures` row, which holds what was removed - the block's own version
-# and review by name - who ran it and when, and holds no erased text; every node left carries a
-# supertag of the closed list the store itself holds, so the erases wrote no node of their own;
-# `envoy-dispatch census --store` reads zero differences over rows it read; and the command's path
-# over HTTP answers 404 to the deployment's agent bearer and to a person's cookie alike, because
-# no route serves it.
+# order: each run without --confirm refuses; a run against a role, a page, a session or a
+# supertag node is refused, with --confirm too, and changes no row; a run whose --confirm names
+# the digest of another listing is refused and changes no row; the block's listing holds the
+# version and the review it would end and the document whose live state it would replace; after
+# the erases a read of the comment's address answers what a deleted node answers, byte for byte,
+# no tuple and no projection row of either node remains, the version is gone and the review over
+# it is gone, reported by its issue and its version; the document still loads, the marker where
+# the secret was; a search of every column of every table of the database, which names no store
+# and finds a control row planted beside it, marks each row holding the secret as derived from an
+# erased node or not and finds none of the first kind but the key of the planted event; every row
+# planted for the other nodes is byte for byte what it was; the events rows the listings named
+# stand with their payload redacted, the marker naming the erase in each and the row's id, time
+# and actor what they were before, and the planted event keeps its key holding the secret as it
+# was while the string under it is redacted; each erase is recorded in one `graph_erasures` row,
+# which holds what was removed - the block's own version and review by name - who ran it and
+# when, and holds no erased text; every node left carries a supertag of the closed list the store
+# itself holds, so the erases wrote no node of their own; `envoy-dispatch census --store` reads
+# zero differences over rows it read; the command's path over HTTP answers 404 to the
+# deployment's agent bearer and to a person's cookie alike, because no route serves it; and a
+# comment whose whole body is `Yes`, erased beside another issue's spec version and another
+# person's comment that each hold `Yes`, lists both of those rows as rows it leaves and leaves
+# them and their issue's events byte for byte what they were.
 #
 # Every read that wants zero after the erases - the nodes' tuples, the version, the four stores of
 # the erased nodes - runs before them as well and finds the rows that held the secret, and the
@@ -121,12 +129,13 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 key=""
 other_key=""
+yes_key=""
 lease_pid=""
 cleanup() {
   local code=$?
   local closing
   release_block_index
-  for closing in "$key" "$other_key"; do
+  for closing in "$key" "$other_key" "$yes_key"; do
     [[ -n "$closing" ]] || continue
     send PATCH "/api/v1/issues/$closing" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
@@ -236,43 +245,54 @@ release_block_index() {
   lease_pid=""
 }
 
-# erase SECTION ARGS...: runs `envoy-dispatch erase ARGS`, its output in $work/erase and its exit
+# run_erase ARGS...: runs `envoy-dispatch erase ARGS`, its output in $work/erase and its exit
 # status in $erase_code. The command reads DATABASE_URL from its own environment and no bearer
 # reaches it, so this driver's is kept out of the environment it runs in.
-erase() {
-  local section="$1"
-  shift
+run_erase() {
   erase_code=0
   env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
     envoy-dispatch erase "$@" >"$work/erase" 2>&1 || erase_code=$?
+}
+
+# erase SECTION ARGS...: run_erase, failing SECTION when the command could not run at all (exit 2
+# or above). A run against a node the erase refuses by its kind is read with run_erase alone.
+erase() {
+  local section="$1"
+  shift
+  run_erase "$@"
   [[ "$erase_code" -lt 2 ]] ||
     fail "$section" "run envoy-dispatch erase $*" "exited $erase_code: $(<"$work/erase")"
 }
 
-# held_anywhere SECTION NEEDLE COMMENT DOCUMENT REF: searches every column of every table of the
-# database for NEEDLE, and sets $answer to `columns <n>`, the number of columns searched, then one
-# line `<schema>.<table>.<column> <derived> <other>` for each column holding it. <other> counts
-# the rows that derive from the nodes this driver planted for others - the comment COMMENT and the
-# document DOCUMENT, whose address is REF - and <derived> every other row holding NEEDLE, which
-# can only derive from a node this driver erased. A row is the planted nodes' when its text names
-# one of them; a display tree (`text_trees`) names no node and is keyed by the digest of its text,
-# so it is theirs when that digest is the digest of one of their texts; and a project's term
+# held_anywhere SECTION NEEDLE COMMENT DOCUMENT REF KEPT: searches every column of every table of
+# the database for NEEDLE, and sets $answer to `columns <n>`, the number of columns searched, then
+# one line `<schema>.<table>.<column> <derived> <other>` for each column holding it. <other>
+# counts the rows that derive from the nodes this driver planted for others - the comment COMMENT
+# and the document DOCUMENT, whose address is REF - and <derived> every other row holding NEEDLE,
+# which can only derive from a node this driver erased. A row is the planted nodes' when its text
+# names one of them; a display tree (`text_trees`) names no node and is keyed by the digest of its
+# text, so it is theirs when that digest is the digest of one of their texts; and a project's term
 # statistics (`search_term_stats`) count a word for as long as any item of the project holds it,
 # which the planted comment does. A bytea is searched for NEEDLE's UTF-8 bytes (convert_to), since
 # its text form is hex; every other column for NEEDLE in its text form, which is how a jsonb, a
 # tsvector and an array spell what they hold. A column of a type that holds no text - a number, a
 # time, a uuid - is not searched.
 #
+# KEPT is the id of the one events row whose payload holds NEEDLE in a key, planted by E2: an
+# erase redacts what a payload says and never its shape, so that key stands by design, and E5
+# reads that row on its own. The search leaves it out and fails on any other row.
+#
 # The same session first writes NEEDLE into a table of its own, `erase_control`, temporary and
 # so dropped with the session, and searches it with the rest: a search that reached no row would
 # answer none for every column, and the caller reads the control's line to tell that apart.
 held_anywhere() {
   answer="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -v needle="$2" \
-    -v comment="$3" -v document="$4" -v ref="$5" -f - 2>"$work/psql" <<'SQL'
+    -v comment="$3" -v document="$4" -v ref="$5" -v kept="$6" -f - 2>"$work/psql" <<'SQL'
 select set_config('erase_driver.needle', :'needle', false) \g /dev/null
 select set_config('erase_driver.comment', :'comment', false) \g /dev/null
 select set_config('erase_driver.document', :'document', false) \g /dev/null
 select set_config('erase_driver.ref', :'ref', false) \g /dev/null
+select set_config('erase_driver.kept', :'kept', false) \g /dev/null
 create temp table erase_control (body text);
 insert into erase_control values ('planted beside the search: ' || :'needle');
 create temp table erase_held (place text, derived bigint, other bigint);
@@ -282,6 +302,7 @@ declare
   needle text := current_setting('erase_driver.needle');
   planted text[] := array[current_setting('erase_driver.comment'), current_setting('erase_driver.document'),
     current_setting('erase_driver.ref')];
+  kept bigint := current_setting('erase_driver.kept')::bigint;
   col record;
   test text;
   theirs text;
@@ -310,6 +331,9 @@ begin
         format('exists (select 1 from unnest(t.%I) b where position(convert_to($1, %L) in b) > 0)', col.column_name, 'UTF8')
       else format('position($1 in t.%I::text) > 0', col.column_name)
     end;
+    if col.table_schema = 'public' and col.table_name = 'events' then
+      test := test || ' and t.id <> $3';
+    end if;
     theirs := case
       when col.table_schema like 'pg_temp%' then 'false'
       when col.table_name = 'text_trees' then
@@ -323,7 +347,7 @@ begin
     end;
     execute format('select count(*) filter (where not (%s)), count(*) filter (where %s) from %I.%I t where %s',
       theirs, theirs, col.table_schema, col.table_name, test)
-      into derived, other using needle, planted;
+      into derived, other using needle, planted, kept;
     searched := searched + 1;
     if derived + other > 0 then
       insert into erase_held values (col.table_schema || '.' || col.table_name || '.' || col.column_name, derived, other);
@@ -346,6 +370,35 @@ listed_digest() {
 # listed_events FILE: the ids of the events rows the listing in FILE redacts, one per line.
 listed_events() {
   sed -n 's/^    events \([0-9][0-9]*\) .*$/\1/p' "$1"
+}
+
+# whole TABLE [CONDITION]: the SQL of one digest over every row of TABLE that CONDITION keeps,
+# each row read whole and the rows in any order.
+whole() {
+  printf "(select md5(coalesce(string_agg(md5(t::text), '' order by md5(t::text)), '')) from %s t%s)" \
+    "$1" "${2:+ where $2}"
+}
+
+# refused SECTION NODE: runs the erase against NODE, which it refuses by its kind before it reads
+# a row (grapherase.Erase), as an operator runs it: without --confirm, then with --confirm and the
+# digest that first run printed, the zero digest where it printed none. Each run must exit
+# non-zero and say the erase refuses NODE. A build that listed such a node rather than refusing it
+# would erase it here for real, and the caller's read of the store whole says so.
+refused() {
+  local own listing_code
+  run_erase --node "$2"
+  cp "$work/erase" "$work/refused.listing"
+  listing_code="$erase_code"
+  own="$(sed -n 's/^  listing digest: \([0-9a-f]\{64\}\)$/\1/p' "$work/refused.listing")"
+  run_erase --node "$2" --confirm "${own:-$(printf '%064d' 0)}"
+  [[ "$listing_code" != 0 ]] ||
+    fail "$1" "refuse $2 without --confirm" "exited 0: $(<"$work/refused.listing")"
+  grep -Fq "the erase refuses $2:" "$work/refused.listing" ||
+    fail "$1" "refuse $2 without --confirm" "no refusal of $2 in: $(<"$work/refused.listing")"
+  [[ "$erase_code" != 0 ]] ||
+    fail "$1" "refuse $2 with --confirm" "exited 0: $(<"$work/erase")"
+  grep -Fq "the erase refuses $2:" "$work/erase" ||
+    fail "$1" "refuse $2 with --confirm" "no refusal of $2 in: $(<"$work/erase")"
 }
 
 # E1: the inputs, and the database this run works on.
@@ -396,6 +449,33 @@ readonly node="comment:$comment"
 pass E2 "wrote $node"
 want_rows E2 "the comment is a node of the store" 1 \
   "select count(*) from graph_nodes where kind = 'comment' and id = '$comment'"
+
+# An event of the comment's issue about the comment (`id`, as model.CommentEventPayload names it)
+# whose payload holds the comment's text as a key and again in the string under that key. No write
+# of the server makes such a payload, so the driver writes it through SQL the way events.Broker
+# appends an event: the update advancing the issue's seq takes the transaction id before the
+# insert draws the event's id, and the event goes in at that seq, so the issue's next event takes
+# the next one. It goes in published, so the outbox never reads it and nothing but the erase acts
+# on it. The erase redacts what a payload says and never its shape (grapherase's redactPayload),
+# so E5 reads the key standing as it was while the string under it reads the marker.
+query E2 "plant an event of $key whose payload holds the comment's text in a key" \
+  "with owner as (
+     update issues set last_seq = last_seq + 1 where key = '$key' returning key, last_seq
+   )
+   insert into events (issue_key, seq, type, actor, payload, notify, published_at)
+   select key, last_seq, 'graph_erase.planted', jsonb_build_object('kind', 'session', 'id', '$session'),
+          jsonb_build_object('id', '$comment', '$leak', 'Quoted whole: $leak'), false, now()
+     from owner
+   returning id"
+[[ "$answer" =~ ^[1-9][0-9]*$ ]] ||
+  fail E2 "plant an event of $key whose payload holds the comment's text in a key" "read $answer, want its id"
+readonly key_event="$answer"
+readonly key_event_keys_sql="select string_agg(k, '|' order by k) from events e cross join lateral jsonb_object_keys(e.payload) k where e.id = $key_event"
+want_rows E2 "event $key_event holds the comment's text as a key" 1 \
+  "select count(*) from events where id = $key_event and payload ? '$leak' and payload->>'id' = '$comment'"
+query E2 "read the keys of event $key_event" "$key_event_keys_sql"
+readonly key_event_keys="$answer"
+pass E2 "planted event $key_event of $key about $node, its payload holding the comment's text as a key"
 
 # A second comment of the same session, which no erase touches: the store holds a session node
 # for the author of a comment (R19's row side), so a session whose only row the erase removes
@@ -469,6 +549,18 @@ readonly planted_sql="select md5(concat_ws('|',
        from document_block_texts b where b.artifact_id = '$other_document'),
     (select string_agg(w.kind || ':' || w.id || ':' || w.text_snapshot, ';' order by w.kind, w.id) from embeddings w
       where split_part(w.id, '#', 1) in ('$other_document', 'comment/$other_comment'))))"
+
+# What a refused run must leave as it was, read whole on both sides of it (E3, E4): every row of
+# the store's two tables and of the three a node is projected onto (grapherase's projectedTables),
+# the versions of both documents and the approvals of the first, and the id and the payload of
+# every event holding the secret. Those are the rows a run that went ahead would delete or
+# rewrite.
+readonly unchanged_sql="select md5(concat_ws('|', $(whole graph_nodes), $(whole graph_tuples),
+    $(whole comments), $(whole document_blocks), $(whole block_refs),
+    $(whole artifact_versions "t.artifact_id in ('$document', '$other_document')"),
+    $(whole artifact_reviews "t.artifact_id = '$document'"),
+    (select md5(coalesce(string_agg(t.id || ':' || t.payload::text, ';' order by t.id), ''))
+       from events t where t.payload::text like '%$secret%')))"
 
 # The reads E5 wants zero from, each stated once here and run on both sides of the erases: before
 # them each must find the rows that held the secret (E3), so after them each zero is an erase's
@@ -552,6 +644,28 @@ query E3 "read the id, time and actor of each event row holding the secret" \
      from events where payload::text like '%$secret%'"
 readonly events_before="$answer"
 
+# The nodes no erase may remove: a role, a page, a session and a supertag node, each one this
+# run's database holds. None of them holds text anybody wrote, so no erasure is owed for it, and
+# the event log keeps addressing a role, a page and a session while a type is data the block
+# schema seeds. Each run against one, with --confirm too, is refused, and the store read whole is
+# what it was after both.
+query E3 "read a supertag node of the store" "select id from graph_nodes where kind = 'supertag' order by id limit 1"
+[[ -n "$answer" ]] || fail E3 "read a supertag node of the store" "the store holds no supertag node"
+readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:$answer")
+for kept in "${kept_nodes[@]}"; do
+  want_rows E3 "the store holds $kept" 1 \
+    "select count(*) from graph_nodes where kind = '${kept%%:*}' and id = '${kept#*:}'"
+done
+query E3 "read the store whole before the runs against those nodes" "$unchanged_sql"
+readonly store_before_kept="$answer"
+for kept in "${kept_nodes[@]}"; do
+  refused E3 "$kept"
+  query E3 "read the store whole after the runs against $kept" "$unchanged_sql"
+  [[ "$answer" == "$store_before_kept" ]] ||
+    fail E3 "the runs against $kept changed no row" "the store read $answer after them, $store_before_kept before"
+  pass E3 "envoy-dispatch erase --node $kept, without --confirm and with it, was refused and changed no row"
+done
+
 # The comment's listing.
 erase E3 --node "$node"
 cp "$work/erase" "$work/comment.listing"
@@ -572,6 +686,9 @@ grep -Eq "^    leave public\.comments \(id\)=\($other_comment\) .*body" "$work/c
   fail E3 "the comment's listing leaves the other comment" "$(<"$work/comment.listing")"
 [[ -n "$(listed_events "$work/comment.listing")" ]] ||
   fail E3 "the comment's listing names its own event rows by id" "$(<"$work/comment.listing")"
+grep -Fqx "$key_event" < <(listed_events "$work/comment.listing") ||
+  fail E3 "the comment's listing names event $key_event, whose payload holds its text in a key and a string" \
+    "$(<"$work/comment.listing")"
 pass E3 "the listing of $node (digest $comment_digest) ends no version, names its own event rows, and leaves $document_ref, $other_ref and comment:$other_comment"
 want_rows E3 "the refused run wrote nothing" 1 \
   "select count(*) from comments where id = '$comment'"
@@ -637,6 +754,22 @@ pass E4 "the listing of $block_node (digest $block_digest) leaves $other_ref and
 want_rows E4 "the refused runs wrote nothing" 1 "$version_sql"
 want_rows E4 "the refused runs recorded no erasure of the block" 0 \
   "select count(*) from graph_erasures where node_id = '$block'"
+
+# The block's erase confirmed by the digest of another listing, the comment's: the run reads its
+# own listing again under its locks, finds a digest other than the one it was given, and removes
+# nothing, so the store read whole is what it was.
+query E4 "read the store whole before a run confirming another listing's digest" "$unchanged_sql"
+readonly store_before_mismatch="$answer"
+erase E4 --node "$block_node" --confirm "$comment_digest"
+[[ "$erase_code" == 1 ]] ||
+  fail E4 "refuse $block_node confirmed by the comment's digest" "exited $erase_code, want 1: $(<"$work/erase")"
+grep -Fq "nothing was removed: the listing this run read has digest $block_digest, and --confirm named $comment_digest" "$work/erase" ||
+  fail E4 "refuse $block_node confirmed by the comment's digest" "no such refusal in: $(<"$work/erase")"
+query E4 "read the store whole after the run confirming another listing's digest" "$unchanged_sql"
+[[ "$answer" == "$store_before_mismatch" ]] ||
+  fail E4 "the run confirming another listing's digest changed no row" \
+    "the store read $answer after it, $store_before_mismatch before"
+pass E4 "envoy-dispatch erase --node $block_node --confirm $comment_digest, the comment's listing's digest, was refused and changed no row"
 
 # The block's erase, confirmed by its listing's digest.
 erase E4 --node "$block_node" --confirm "$block_digest"
@@ -706,8 +839,10 @@ pass E5 "$document_ref still loads: its heading as it was, and the marker where 
 # the secret in four more (doc_updates, text_trees, document_search and search_term_queue,
 # measured 2026-11-13 at d92227ce05e3). This search names no store, so a store added later is
 # searched without anyone adding a line here. It marks each row it finds as the planted nodes'
-# or not, and a row that is not theirs can only derive from a node this driver erased.
-held_anywhere E5 "$secret" "$other_comment" "$other_document" "$other_ref"
+# or not, and a row that is not theirs can only derive from a node this driver erased. It leaves
+# out the event planted in E2, whose key holds the bytes by design and which is read on its own
+# below.
+held_anywhere E5 "$secret" "$other_comment" "$other_document" "$other_ref" "$key_event"
 held="$(printf '%s\n' "$answer" | grep -v "^columns " | grep -v "^pg_temp_[0-9]*\.erase_control\.body " || true)"
 derived="$(printf '%s\n' "$held" | awk 'NF == 3 && $2 > 0' || true)"
 [[ -z "$derived" ]] ||
@@ -728,11 +863,27 @@ for erased in "$node|$work/comment.listing" "$block_node|$work/block.listing"; d
   marker="[erased by envoy-dispatch erase ${erased%%|*}, recorded in graph_erasures]"
   while read -r event; do
     [[ -n "$event" ]] || continue
+    # The planted event's key holds the erased text by design, so it is read on its own below.
+    [[ "$event" != "$key_event" ]] || continue
     want_rows E5 "event $event, which the listing of ${erased%%|*} named, holds its marker and no erased text" 1 \
       "select count(*) from events where id = $event and position('$marker' in payload::text) > 0
          and position('$secret' in payload::text) = 0"
   done < <(listed_events "${erased#*|}")
 done
+# The planted event, which the comment's listing named. The erase redacts what a payload says and
+# never its shape, so its keys are what they were, the one holding the comment's text among them;
+# the string under that key reads the marker where the text was; and no string value of the
+# payload holds the text.
+marker="[erased by envoy-dispatch erase $node, recorded in graph_erasures]"
+query E5 "read the keys of event $key_event" "$key_event_keys_sql"
+[[ "$answer" == "$key_event_keys" ]] ||
+  fail E5 "event $key_event keeps its keys as they were" "now $answer, before the erase $key_event_keys"
+want_rows E5 "the string under event $key_event's key holding the comment's text reads the marker" 1 \
+  "select count(*) from events where id = $key_event and payload->>'$leak' = 'Quoted whole: $marker'"
+want_rows E5 "no string value of event $key_event holds the erased text" 0 \
+  "select count(*) from events e cross join lateral jsonb_path_query(e.payload, '\$.** ? (@.type() == \"string\")') v
+    where e.id = $key_event and position('$secret' in v #>> '{}') > 0"
+pass E5 "event $key_event keeps the key holding the comment's text as it was, and every string of its payload is redacted"
 query E5 "read the id, time and actor of each event row that held the secret" \
   "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'created_at', created_at, 'actor', actor) order by id), '[]'::jsonb)::text
      from events where id in (select (value->>'id')::bigint from jsonb_array_elements('$events_before'::jsonb))"
@@ -823,5 +974,72 @@ for path in "/api/v1/erase" "/api/v1/nodes/comment/$comment" "/api/v1/graph/eras
   done
 done
 pass E9 "the erase is reached by the command and the database credential alone: every HTTP path answers 404"
+
+# E10: an erase takes the bytes of its own node and nothing another node holds, however common
+# those bytes are. A comment whose whole body is `Yes` is erased beside another issue's spec
+# version and another person's comment that each hold `Yes`: the erase lists each of those two
+# rows as a row it leaves, and afterwards both rows and the events of their issue are byte for
+# byte what they were.
+send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
+  '{project: $p, title: "Store erasure check, a spec that says Yes", spec: "Yes, this spec says so too.", actor: {kind: "session", id: $s}}')"
+want_status 201 E10 "create an issue whose spec holds Yes"
+yes_key="$(jq -er '.key' "$work/body")" || fail E10 "create an issue whose spec holds Yes" "no key: $(body)"
+query E10 "read the spec of $yes_key" \
+  "select id::text || '|' || ref_key from artifacts where issue_key = '$yes_key' and is_primary"
+[[ "$answer" == *"|"* ]] || fail E10 "read the spec of $yes_key" "no spec artifact: $answer"
+yes_spec="${answer%%|*}"
+yes_spec_ref="${answer#*|}"
+person_send POST "/api/v1/issues/$yes_key/comments" '{"body":"Yes, I agree with that spec."}'
+want_status 201 E10 "write $login's comment holding Yes on $yes_key"
+yes_person_comment="$(jq -er '.id' "$work/body")" || fail E10 "write $login's comment holding Yes" "no id: $(body)"
+send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg s "$session" '{body: "Yes", actor: {kind: "session", id: $s}}')"
+want_status 201 E10 "write the comment whose whole body is Yes"
+yes_comment="$(jq -er '.id' "$work/body")" || fail E10 "write the comment whose whole body is Yes" "no id: $(body)"
+readonly yes_key yes_spec yes_spec_ref yes_person_comment yes_comment
+want_rows E10 "the comment whose whole body is Yes is a node of the store" 1 \
+  "select count(*) from graph_nodes where kind = 'comment' and id = '$yes_comment'"
+want_rows E10 "$yes_spec_ref version 1 holds Yes" 1 \
+  "select count(*) from artifact_versions where artifact_id = '$yes_spec' and number = 1 and position('Yes' in markdown) > 0"
+want_rows E10 "$login's comment holds Yes" 1 \
+  "select count(*) from comments where id = '$yes_person_comment' and position('Yes' in body) > 0"
+# The two rows of the other nodes and every event of their issue, read whole.
+readonly yes_others_sql="select md5(concat_ws('|',
+    (select c.id || ':' || c.body from comments c where c.id = '$yes_person_comment'),
+    (select string_agg(v.number || ':' || v.markdown, ';' order by v.number) from artifact_versions v where v.artifact_id = '$yes_spec'),
+    (select string_agg(e.id || ':' || e.payload::text, ';' order by e.id) from events e where e.issue_key = '$yes_key')))"
+
+# The listing and its confirmation run under the block-index pass's lease, as the erases above
+# do, so no tick writes a window of the comment between the two.
+hold_block_index E10
+query E10 "read the rows that hold Yes for other nodes, whole" "$yes_others_sql"
+readonly yes_others_before="$answer"
+erase E10 --node "comment:$yes_comment"
+cp "$work/erase" "$work/yes.listing"
+[[ "$erase_code" == 1 ]] ||
+  fail E10 "refuse comment:$yes_comment without --confirm" "exited $erase_code, want 1: $(<"$work/erase")"
+grep -Fq "nothing was removed" "$work/yes.listing" ||
+  fail E10 "refuse comment:$yes_comment without --confirm" "no refusal in: $(<"$work/yes.listing")"
+listed_digest E10 "$work/yes.listing"
+readonly yes_digest="$digest"
+grep -Eq "^    leave public\.artifact_versions .*\[$yes_spec_ref version 1 of $yes_key\] markdown\$" "$work/yes.listing" ||
+  fail E10 "the listing of comment:$yes_comment leaves $yes_spec_ref version 1, which holds Yes" "$(<"$work/yes.listing")"
+grep -Eq "^    leave public\.comments \(id\)=\($yes_person_comment\) .*body" "$work/yes.listing" ||
+  fail E10 "the listing of comment:$yes_comment leaves $login's comment, which holds Yes" "$(<"$work/yes.listing")"
+pass E10 "the listing of comment:$yes_comment (digest $yes_digest) leaves $yes_spec_ref version 1 and comment:$yes_person_comment"
+erase E10 --node "comment:$yes_comment" --confirm "$yes_digest"
+[[ "$erase_code" == 0 ]] ||
+  fail E10 "erase comment:$yes_comment" "exited $erase_code: $(<"$work/erase")"
+grep -Fq "removed by" "$work/erase" || fail E10 "erase comment:$yes_comment" "$(<"$work/erase")"
+release_block_index
+pass E10 "envoy-dispatch erase --node comment:$yes_comment --confirm $yes_digest removed it"
+want_rows E10 "no row of the comment whose whole body is Yes remains" 0 \
+  "select count(*) from comments where id = '$yes_comment'"
+want_rows E10 "no node of the comment whose whole body is Yes remains" 0 \
+  "select count(*) from graph_nodes where kind = 'comment' and id = '$yes_comment'"
+query E10 "read the rows that hold Yes for other nodes, whole, after the erase" "$yes_others_sql"
+[[ "$answer" == "$yes_others_before" ]] ||
+  fail E10 "$yes_spec_ref version 1, comment:$yes_person_comment and the events of $yes_key are as they were" \
+    "they read $answer after the erase, $yes_others_before before it"
+pass E10 "$yes_spec_ref version 1, $login's comment:$yes_person_comment and every event of $yes_key are byte for byte what they were"
 
 printf 'graph-erase.sh: every check passed\n'
