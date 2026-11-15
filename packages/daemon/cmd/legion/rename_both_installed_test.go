@@ -72,6 +72,72 @@ func TestARenamedRepositoryKeepsItsNewOwnersLeaseWhileTheAppIsInstalledOnBothOwn
 		})
 	}
 
+	run := bothInstalledGh(t)
+	for _, tc := range []struct{ repo, token string }{
+		{"sjawhar/legion", "ghs_implement_write_cybermonklabs"},
+		{"sjawhar/ygo", "ghs_implement_write_sjawhar"},
+	} {
+		t.Run("gh api repos/"+tc.repo, func(t *testing.T) {
+			code, out := run(t, "api", "repos/"+tc.repo)
+			if code != 0 || lastLine(out) != tc.token {
+				t.Fatalf("legion gh api repos/%s = exit %d, %q; want gh run with the directory holding %s", tc.repo, code, out, tc.token)
+			}
+		})
+	}
+}
+
+// `legion gh` decides by the directory each repository a command names is routed to, and never
+// by the owner alone. `gh search prs --repo sjawhar/legion --repo sjawhar/ygo` names one owner and
+// two directories: the pair moved sjawhar/legion to cybermonklabs, whose installation alone holds
+// it, so run under sjawhar's token the search would read that half as nothing and answer fewer
+// results with no error at all. It is refused, exit 2, naming both repositories and the directory
+// each routes to, and gh never runs. Naming the moved repository by both of its names is one
+// repository and one directory, and runs with cybermonklabs's. A command naming one repository,
+// moved or not, and one naming the owner alone run as they did before.
+func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testing.T) {
+	run := bothInstalledGh(t)
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		token string   // the token of the directory gh ran with; "" where the command is refused
+		named []string // what the refusal names
+	}{
+		{"the moved repository beside a sibling", []string{"search", "prs", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"}, "",
+			[]string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
+		{"the moved repository by both of its names", []string{"search", "prs", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
+		{"the moved repository alone", []string{"search", "prs", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
+		{"a sibling alone", []string{"search", "prs", "--repo", "sjawhar/ygo"}, "ghs_implement_write_sjawhar", nil},
+		{"the owner alone", []string{"search", "prs", "--owner", "sjawhar"}, "ghs_implement_write_sjawhar", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := run(t, tc.args...)
+			if tc.token != "" {
+				if code != 0 || lastLine(out) != tc.token {
+					t.Fatalf("legion gh %s = exit %d, %q; want gh run with the directory holding %s", strings.Join(tc.args, " "), code, out, tc.token)
+				}
+				return
+			}
+			// The stand-in gh prints the token it was run with, so a refusal that printed none
+			// is one where gh never ran.
+			if code != 2 || strings.Contains(out, "ghs_") {
+				t.Fatalf("legion gh %s = exit %d, %q; want exit 2 and gh never run", strings.Join(tc.args, " "), code, out)
+			}
+			for _, want := range tc.named {
+				if !strings.Contains(out, want) {
+					t.Errorf("legion gh %s refused with %q, want it to name %q", strings.Join(tc.args, " "), out, want)
+				}
+			}
+		})
+	}
+}
+
+// bothInstalledGh runs the real `legion gh` over bothInstalledBundle by the name `gh`, as a pane
+// runs it, and answers its exit status and everything it printed. The gh `legion gh` runs
+// answers its help as the real gh, which the wrapper reads every command with; the leak guard's
+// visibility read as private; and every other call by printing the token of the directory
+// GH_CONFIG_DIR names, which is the pick these tests read.
+func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, string) {
+	t.Helper()
 	gh := realGHForCapture(t)
 	root, defaultDir := bothInstalledBundle(t)
 	bin := t.TempDir()
@@ -83,32 +149,35 @@ func TestARenamedRepositoryKeepsItsNewOwnersLeaseWhileTheAppIsInstalledOnBothOwn
 	}
 	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n")
 	write("gh", "#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n")
-	// The gh `legion gh` runs: the real gh for its help, which the wrapper reads every command
-	// with; the leak guard's visibility read answered private; and every other call printing the
-	// token of the directory GH_CONFIG_DIR names, which is the pick this test reads.
 	write("real-gh", "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --help|-h|help|--version) exec '"+gh+"' \"$@\";; esac; done\n"+
 		"case \"$*\" in *'--jq .visibility'*) echo private; exit 0;; esac\n"+
 		"sed -n 's/^    oauth_token: //p' \"$GH_CONFIG_DIR/hosts.yml\"\n")
 	home := t.TempDir()
-	for _, tc := range []struct{ repo, token string }{
-		{"sjawhar/legion", "ghs_implement_write_cybermonklabs"},
-		{"sjawhar/ygo", "ghs_implement_write_sjawhar"},
-	} {
-		t.Run("gh api repos/"+tc.repo, func(t *testing.T) {
-			cmd := exec.Command("gh", "api", "repos/"+tc.repo)
-			cmd.Dir = home
-			cmd.Env = []string{
-				"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home,
-				"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "XDG_STATE_HOME=" + filepath.Join(home, ".state"),
-				"GH_TOKEN=", "GITHUB_TOKEN=", "GH_HOST=", "GH_NO_UPDATE_NOTIFIER=1", "GH_PROMPT_DISABLED=1",
-				"GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root, "LEGION_GH_PATH=" + filepath.Join(bin, "real-gh"),
-				"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
-			}
-			out, err := cmd.CombinedOutput()
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if err != nil || lines[len(lines)-1] != tc.token {
-				t.Fatalf("legion gh api repos/%s = %v, %q; want gh run with the directory holding %s", tc.repo, err, out, tc.token)
-			}
-		})
+	check := leakguardtest.Write(t, t.TempDir(), ghCheckPasses)
+	return func(t *testing.T, args ...string) (int, string) {
+		t.Helper()
+		cmd := exec.Command("gh", args...)
+		cmd.Dir = home
+		cmd.Env = []string{
+			"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home,
+			"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "XDG_STATE_HOME=" + filepath.Join(home, ".state"),
+			"GH_TOKEN=", "GITHUB_TOKEN=", "GH_HOST=", "GH_NO_UPDATE_NOTIFIER=1", "GH_PROMPT_DISABLED=1",
+			"GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root, "LEGION_GH_PATH=" + filepath.Join(bin, "real-gh"),
+			"PUBLIC_LEAK_CHECK=" + check,
+		}
+		out, err := cmd.CombinedOutput()
+		if exit, ok := err.(*exec.ExitError); ok {
+			return exit.ExitCode(), string(out)
+		}
+		if err != nil {
+			t.Fatalf("gh %q: %v", args, err)
+		}
+		return 0, string(out)
 	}
+}
+
+// lastLine is the last line out prints.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return lines[len(lines)-1]
 }

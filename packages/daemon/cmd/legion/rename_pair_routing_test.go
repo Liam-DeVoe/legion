@@ -86,6 +86,79 @@ func TestThePairsRepositoryTakesTheDirectoryOfTheOwnerHoldingItAndItsSiblingsThe
 	}
 }
 
+// A gh command is routed by every repository it names, each through ghConfigDirFor, and by every
+// owner a selector names alone, to that owner's own directory, and it runs only where they all
+// route to one directory (ghTargetOf, selectors.dir). The pair's `from` repository beside a
+// sibling of the owner it moved from names one owner and two directories, and is refused naming
+// both, as is the moved repository beside its old owner named alone; the moved repository named
+// by both of its names is one directory, cybermonklabs's. A command naming one repository, two
+// siblings, or the owner alone runs with the directory it ran with before. The refusals the
+// routing itself makes stay: an owner the bundle holds no directory for, and a pair whose `to`
+// owner it holds none for, which names the pair.
+func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *testing.T) {
+	root := pairRoutedBundle(t)
+	routed := func(owner, name string) (string, error) { return ghConfigDirFor(root, owner, name) }
+	for _, tc := range []struct {
+		argv        []string
+		dir         string   // the owner whose directory the command runs with; "" where it is refused
+		owner, repo string   // the repository the leak guard is told the call acts on
+		refuse      []string // what the refusal names
+	}{
+		{argv: []string{"search", "issues", "--repo", "sjawhar/legion"}, dir: "cybermonklabs", owner: "sjawhar", repo: "legion"},
+		{argv: []string{"api", "repos/sjawhar/legion/pulls"}, dir: "cybermonklabs", owner: "sjawhar", repo: "legion"},
+		{argv: []string{"search", "issues", "--repo", "sjawhar/ygo"}, dir: "sjawhar", owner: "sjawhar", repo: "ygo"},
+		{argv: []string{"search", "issues", "--owner", "sjawhar"}, dir: "sjawhar", owner: "sjawhar"},
+		{argv: []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "sjawhar/other"}, dir: "sjawhar", owner: "sjawhar"},
+		{argv: []string{"search", "issues", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, dir: "cybermonklabs"},
+		{argv: []string{"search", "issues", "--owner", "cybermonklabs", "--repo", "sjawhar/legion"}, dir: "cybermonklabs"},
+		{argv: []string{"search", "issues", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"},
+			refuse: []string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
+		{argv: []string{"search", "issues", "repo:sjawhar/ygo", "repo:sjawhar/legion"},
+			refuse: []string{"cybermonklabs (the qualifier repo:sjawhar/legion)", "sjawhar (the qualifier repo:sjawhar/ygo)"}},
+		{argv: []string{"search", "issues", "--owner", "sjawhar", "--repo", "sjawhar/legion"},
+			refuse: []string{"cybermonklabs (--repo sjawhar/legion)", "sjawhar (--owner sjawhar)"}},
+		{argv: []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "other/thing"}, refuse: []string{`the role's GitHub App is not installed on "other"`}},
+	} {
+		target, err := ghTargetOf(tc.argv, nil, savedGhHelp, noGitRepository, routed)
+		if tc.refuse != nil {
+			if err == nil {
+				t.Errorf("ghTargetOf(%q) = %+v, want a refusal", tc.argv, target)
+				continue
+			}
+			for _, want := range tc.refuse {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("ghTargetOf(%q) refused with %q, want it to name %q", tc.argv, err, want)
+				}
+			}
+			continue
+		}
+		if err != nil || target.dir != ghconfig.Dir(root, tc.dir) || target.owner != tc.owner || target.repo != tc.repo {
+			t.Errorf("ghTargetOf(%q) = %+v, %v; want %s's directory and the repository %q of %q", tc.argv, target, err, tc.dir, tc.repo, tc.owner)
+		}
+	}
+
+	// With no cybermonklabs directory, the pair routes its repository nowhere, and a command
+	// naming it beside a sibling is refused for the pair before the two are compared; the
+	// siblings alone still run with sjawhar's directory.
+	missing := filepath.Join(t.TempDir(), "gh")
+	if _, err := ghconfig.WriteBundle(missing, ghconfig.Bundle{
+		Default: "sjawhar",
+		Dirs:    map[string]ghconfig.Rendered{"sjawhar": ghconfig.Render("ghs_implement_write_sjawhar", "implement", time.Now().Add(time.Hour))},
+		Pairs:   []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	routedMissing := func(owner, name string) (string, error) { return ghConfigDirFor(missing, owner, name) }
+	argv := []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "sjawhar/legion"}
+	if target, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository, routedMissing); err == nil || !strings.Contains(err.Error(), "sjawhar/legion -> cybermonklabs/legion") {
+		t.Errorf("ghTargetOf(%q) = %+v, %v; want a refusal naming the pair", argv, target, err)
+	}
+	argv = []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "sjawhar/other"}
+	if target, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository, routedMissing); err != nil || target.dir != ghconfig.Dir(missing, "sjawhar") {
+		t.Errorf("ghTargetOf(%q) = %+v, %v; want sjawhar's directory", argv, target, err)
+	}
+}
+
 // A pair whose `to` owner the bundle holds no directory for — the App is installed on no such
 // account, or GitHub refused that owner's lease and the mint left the directory out — refuses the
 // request, naming the pair and the directory it has not. No token of the bundle reaches the

@@ -24,22 +24,26 @@ import (
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
 
-// runGh is `legion gh`, the gh a pane or pod runs. It reads the repository the command acts on,
-// and its owner, as gh resolves them (ghTargetOf) and execs the real gh (LEGION_GH_PATH) as `gh`
-// with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
-// LEGION_GH_OWNERS_DIR: the directory that answers for the repository the command names
+// runGh is `legion gh`, the gh a pane or pod runs. It reads the repositories the command acts on,
+// and their owners, as gh resolves them (ghTargetOf) and execs the real gh (LEGION_GH_PATH) as
+// `gh` with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
+// LEGION_GH_OWNERS_DIR: the one directory that answers for every repository the command names
 // (ghConfigDirFor), which is the owner's own — the one directory the bundle holds for that
 // account, whose token reaches every repository its installation holds — except for a
 // repository a configured rename moved to another owner, which is answered from the directory
-// of the owner holding it now. Every other command of one owner runs with that owner's one
-// directory — one naming one
-// of its repositories, one naming two, and one where a selector named the owner alone — since
-// the bundle holds no narrower token to run it with. A command naming no owner at all, in a
-// working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's. A
-// command it cannot read for certain, one naming two owners, one naming an owner the bundle
-// holds no directory for — an owner the role's App is not installed on — and one naming a
-// repository a pair moved to an owner the bundle holds no directory for are refused, exit 2,
-// naming why, and the real gh never runs: no token but the target owner's is ever sent.
+// of the owner holding it now. Every repository the command names is routed so, each on its own,
+// and every owner a selector names alone is routed to that owner's own directory, and they must
+// all be one directory: a command naming one or two of an owner's repositories no rename moved,
+// or the owner alone, runs with the owner's one directory, since the bundle holds no narrower
+// token to run it with, and one naming a moved repository by both of its names runs with the
+// directory of the owner holding it now. A command naming no owner at all, in a working
+// directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's. A command it
+// cannot read for certain, one whose repositories route to two directories (two owners'
+// repositories, or a repository a rename moved beside another of the owner it moved from), one
+// naming an owner the bundle holds no directory for — an owner the role's App is not installed
+// on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
+// refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
+// it cannot reach.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
@@ -90,7 +94,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if rateLimitRead {
 		target.command = "api"
 	} else {
-		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(gh, path) }, readGitRemotes)
+		// Every repository the command names is routed through the bundle's own pick, and the
+		// command refused where they route to two directories (selectors.dir), before the guard
+		// reads anything of it.
+		ownersDir := env["LEGION_GH_OWNERS_DIR"]
+		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(gh, path) }, readGitRemotes,
+			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
@@ -100,9 +109,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.owner != "" && target.repo != "" {
 		repo = target.owner + "/" + target.repo
 	}
-	// The guard, between the owner this command resolved and the gh it is about to run. The whole
-	// argv is what it reads, rather than the options a parser calls text: the shared check's own
-	// gh-guard reads full argv, and a private name is refusable wherever it stands. The call's
+	// The guard, between the directory this command resolved and the gh it is about to run. The
+	// whole argv is what it reads, rather than the options a parser calls text: the shared check's
+	// own gh-guard reads full argv, and a private name is refusable wherever it stands. The call's
 	// standard input goes with it, and whatever the guard read of it comes back to hand gh in
 	// this process's place (runGhChild).
 	//
@@ -147,15 +156,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
-	if target.owner != "" {
-		// target.repo is the one repository every selector of the command named, keyed as the
-		// bundle keys one, and "" where the command named the owner alone or two of its
-		// repositories (selectors.onlyRepository): a configured rename moved one repository, so
-		// only a command naming that one is routed away from its owner's own directory.
-		if dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
-		}
+	if target.dir != "" {
+		dir = target.dir
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
 	childEnv := make([]string, 0, len(env)+len(set)+3)
@@ -551,17 +553,18 @@ func withGitHubUseHTTPPath(env []string) ([]string, error) {
 	return append(out, key+"=credential.https://github.com.useHttpPath", value+"=true", fmt.Sprintf("GIT_CONFIG_COUNT=%d", count+1)), nil
 }
 
-// ghTarget is what a gh command names: owner, the lowercased owner of the repository it acts on,
-// and repo, that repository's lowercased name where every selector of the command named that one
-// repository of that owner and "" where they named more than one, where one named the owner
-// alone, and where none named a repository at all. A target with no owner is a command naming
-// none, whose token stays the one GH_CONFIG_DIR already names. command is the resolved command
-// path with no arguments. files are the files the command would send to GitHub as content
-// (ghSentFiles), which the leak guard reads the text of.
+// ghTarget is what a gh command names: dir, the gh directory every selector of the command is
+// routed to (selectors.dir), and "" for a command naming no owner, whose token stays the one
+// GH_CONFIG_DIR already names; owner, the lowercased owner of the repository it acts on, "" where
+// the selectors named no owner or two; and repo, that repository's name keyed as gh reads a name
+// of it where every selector of the command named that one repository of that owner and "" where
+// they named more than one, where one named the owner alone, and where none named a repository
+// at all. command is the resolved command path with no arguments. files are the files the
+// command would send to GitHub as content (ghSentFiles), which the leak guard reads the text of.
 type ghTarget struct {
-	owner, repo string
-	command     string
-	files       []leakguard.GhFile
+	dir, owner, repo string
+	command          string
+	files            []leakguard.GhFile
 }
 
 // ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
@@ -619,7 +622,7 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 
 // ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`), the zero
 // target when the command names no owner. It fails closed: whenever it cannot be certain which
-// owner the command targets it is an error, which names the argument it could not place, and
+// gh directory the command needs it is an error, which names the argument it could not place, and
 // nothing is sent. `gh --version` alone, and a command whose last --help is true, name none,
 // since gh only prints.
 //
@@ -651,15 +654,17 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 // whatever names it for a leaf that reads every remote (fromOwnRepository): GH_REPO for a leaf
 // that reads it, gh api's :owner and {repo} placeholders among them, and otherwise every
 // github.com repository the working directory's git remotes name (remotes), read as gh reads
-// them; a command naming no owner at all counts those too. They must all name one owner; two are
-// an error. The target's repository is the one repository they all name, which is none where a
-// selector names an owner alone — `orgs/<owner>/`, an owner:/org:/user: qualifier, an `<owner>`
-// argument, a team, a project, an owner option — since such a command reaches whatever else of
-// that owner's gh resolves. A GraphQL query naming its repository otherwise, by a node id or in
-// the query text, names none gh could resolve. GH_HOST naming another host than github.com, where
-// gh would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place
-// of any directory's token, are errors.
-func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error)) (ghTarget, error) {
+// them; a command naming no owner at all counts those too. Every repository they name, and every
+// owner one names alone — `orgs/<owner>/`, an owner:/org:/user: qualifier, an `<owner>` argument,
+// a team, a project, an owner option, since such a command reaches whatever else of that owner's
+// gh resolves — is routed through dirFor, the bundle's own pick (ghConfigDirFor), and they must
+// all route to one directory; two are an error (selectors.dir). The target's repository is the
+// one repository they all name, which is none where a selector names an owner alone. A GraphQL
+// query naming its repository otherwise, by a node id or in the query text, names none gh could
+// resolve. GH_HOST naming another host than github.com, where gh would send no token of the
+// bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's token, are
+// errors.
+func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return ghTarget{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
 	}
@@ -716,7 +721,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err != nil || parsed.help {
 		return ghTarget{}, err
 	}
-	sel := selectors{api: cmd.isAPI(), owners: map[string]string{}, repos: map[string]bool{}}
+	sel := selectors{api: cmd.isAPI()}
 	if err := sel.fromCommand(cmd, parsed); err != nil {
 		return ghTarget{}, err
 	}
@@ -725,20 +730,11 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	}
 	files := ghSentFiles(parsed)
 	command := strings.Join(cmd.path, " ")
-	switch len(sel.owners) {
-	case 0:
-		return ghTarget{command: command, files: files}, nil
-	case 1:
-		for owner := range sel.owners {
-			return ghTarget{owner: owner, repo: sel.onlyRepository(), command: command, files: files}, nil
-		}
+	dir, err := sel.dir(dirFor)
+	if err != nil {
+		return ghTarget{}, err
 	}
-	var listed []string
-	for owner, what := range sel.owners {
-		listed = append(listed, fmt.Sprintf("%s (%s)", owner, what))
-	}
-	slices.Sort(listed)
-	return ghTarget{}, fmt.Errorf("the command names more than one owner, %s, so it sends no token; name one repository", strings.Join(listed, " and "))
+	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command, files: files}, nil
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how
