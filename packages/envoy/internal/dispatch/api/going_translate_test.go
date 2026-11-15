@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // goingResolvingDoer answers the reads a translator makes to resolve a document slug or a session
@@ -42,15 +43,15 @@ func (goingResolvingDoer) Do(request *http.Request) (*http.Response, error) {
 // goingTranslatorConsumes names, per action, each argument a translator consumes by design rather
 // than forwarding to the request it builds, with why. Everything else an action takes must reach
 // the built request (its path, its body, a pre-request such as a reasoned close's message, or a
-// resolved document id), or TestEveryTranslatorForwardsOrConsumesEveryArgument fails.
+// resolved document id) or decide whether the write is sent at all (goingSendRefusal), under every
+// approval the writes route takes, or TestEveryTranslatorForwardsOrConsumesEveryArgument fails. An
+// upload's `force` is no entry: it is sent nowhere, and it decides whether an upload over a held
+// name is sent, which the test holds it to under each approval (goingUploadForceRefusal).
 var goingTranslatorConsumes = map[string]map[string]string{
 	// release and action pick which row of their tool the call performs; the row chosen is the
 	// request, so the value is read by chooseGoingRoute, not sent.
 	"dispatch_claim":  {"release": "picks the release row from the claim row"},
 	"dispatch_follow": {"action": "picks the follow or the unfollow row"},
-	// force is the dispatch CLI's own check of what the owner already holds under the name, made
-	// before the upload; the bar makes it at write time, so the upload itself does not send it.
-	"dispatch_artifact": {"force": "the CLI's own duplicate check, not sent by the upload"},
 }
 
 func goingRouteKey(r GoingRoute) string { return r.Method + " " + r.Pattern }
@@ -161,11 +162,27 @@ func goingCloneArgs(args map[string]any) map[string]any {
 	return clone
 }
 
-// goingTranslateRequests translates call for route with the path values given and serialises the
-// requests it builds — each request's method, path, query and body (its boundary-independent form
-// for a multipart upload) — so two translations are the same exactly where they build the same
-// requests.
-func goingTranslateRequests(route GoingRoute, args map[string]any, values map[string]string, session string) (string, error) {
+// goingGuardHeld is the read before a write of action makes where its call writes to an owner that
+// holds a document of the name it uploads under: the strictest read the write's send-time checks
+// (goingSendRefusal) meet, so every argument that decides one of them is held to it. A write of
+// any other action reads nothing here.
+func goingGuardHeld(action string, args map[string]any) goingObservation {
+	argument, uploads := goingUploadNames[action]
+	if !uploads {
+		return goingObservation{}
+	}
+	name := goingText(args, argument)
+	held := model.Artifact{ID: goingGuardUUID(9), Name: name, Slug: name, Kind: "doc",
+		Versions: []model.Version{{Number: 1, Authors: []model.Actor{{Kind: "user", ID: "alice"}}}}}
+	return goingObservation{target: held.ID, value: goingUploadBefore{ID: held.ID, Name: name, Version: 1}, held: &held}
+}
+
+// goingGuardWrite is what a write of action through route makes of call, approved as approved:
+// the requests its translation builds, serialised - each request's method, path, query and body
+// (its boundary-independent form for a multipart upload) - and the refusal the write meets before
+// it sends them (goingSendRefusal), against the read before goingGuardHeld makes, so two calls
+// make the same write exactly where they build the same requests and meet the same refusal.
+func goingGuardWrite(action string, route GoingRoute, args map[string]any, values map[string]string, session, approved string) (string, error) {
 	reader := goingReader{doer: goingResolvingDoer{}, base: ""}
 	call, err := route.translate(context.Background(), reader, goingCallInput{arguments: args, path: values, session: session})
 	if err != nil {
@@ -192,76 +209,85 @@ func goingTranslateRequests(route GoingRoute, args map[string]any, values map[st
 		built.Write(body)
 		built.WriteByte('\n')
 	}
+	prepared := goingPrepared{action: action, route: route, arguments: args, call: call}
+	if refused := goingSendRefusal(approved, prepared, goingGuardHeld(action, args), ""); refused != nil {
+		built.WriteString("refused: " + refused.Error() + "\n")
+	}
 	return built.String(), nil
 }
 
 // TestEveryTranslatorForwardsOrConsumesEveryArgument (merge guard): for every catalogue action
 // whose rows are translated by a hand-written translator (not goingArgumentsAsBody, which forwards
-// the whole argument map), every argument the action takes either reaches the request some row's
-// translator builds — its path, its body, a pre-request such as a reasoned close's message, or a
-// resolved document id — or is one goingTranslatorConsumes names for that action, with why. An
-// argument no row forwards and no reason names is a silent drop, as goingTranslateIssueUpdate
-// dropped `advances` after the merge added it. Actions are read from BuildGoingCatalogue, so a tool
-// spec's new argument is held to this at once. An argument is tested against each row it routes to
-// in turn, and passes as soon as one forwards it (a result's `check` is the record row's, not the
-// retract row's); an argument whose presence refuses a translation (a picture, a file path, a ref a
-// comment cannot take) is visibly consumed, not silently dropped, and passes.
+// the whole argument map), and under every approval the writes route takes (goingApprovals),
+// every argument the action takes either reaches the write - the request some row's translator
+// builds, its path, its body, a pre-request such as a reasoned close's message, or a resolved
+// document id, or the refusal the write meets before it is sent (goingSendRefusal) - or is one
+// goingTranslatorConsumes names for that action, with why. An argument no row forwards and no
+// reason names is a silent drop, as goingTranslateIssueUpdate dropped `advances` after the merge
+// added it, and as the writes route dropped an upload's `force` for a write the person picked.
+// Actions are read from BuildGoingCatalogue, so a tool spec's new argument is held to this at
+// once. An argument is tested against each row it routes to in turn, and passes as soon as one
+// forwards it (a result's `check` is the record row's, not the retract row's); an argument whose
+// presence refuses a translation (a picture, a file path, a ref a comment cannot take) is visibly
+// consumed, not silently dropped, and passes.
 func TestEveryTranslatorForwardsOrConsumesEveryArgument(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range catalogue.Actions() {
-		var rows []GoingRoute
-		for _, route := range action.Routes {
-			if !goingGuardIsArgumentsAsBody(route) {
-				rows = append(rows, route)
-			}
-		}
-		if len(rows) == 0 {
-			continue
-		}
-		for index, field := range action.Request {
-			forwarded, routed := false, false
-			for _, route := range rows {
-				base, session, ok := goingGuardBase(action, route)
-				if !ok {
-					t.Errorf("%s %s: no base call selects this row", action.Action, goingRouteKey(route))
-					continue
-				}
-				args := goingCloneArgs(base)
-				args[field.Name] = goingGuardValue(field, 1000+index)
-				chosen, values, ok := chooseGoingRoute(action, args, session)
-				if !ok || goingRouteKey(chosen) != goingRouteKey(route) {
-					// Setting this argument picks another row; it is tested there.
-					continue
-				}
-				routed = true
-				_, baseValues, _ := chooseGoingRoute(action, base, session)
-				baseline, err := goingTranslateRequests(route, base, baseValues, session)
-				if err != nil {
-					t.Errorf("%s %s: the base call does not translate: %v", action.Action, goingRouteKey(route), err)
-					continue
-				}
-				built, err := goingTranslateRequests(route, args, values, session)
-				if err != nil {
-					// The argument's presence refuses the translation, which the bar surfaces.
-					forwarded = true
-					break
-				}
-				if built != baseline {
-					forwarded = true
-					break
+	for _, approved := range goingApprovals {
+		for _, action := range catalogue.Actions() {
+			var rows []GoingRoute
+			for _, route := range action.Routes {
+				if !goingGuardIsArgumentsAsBody(route) {
+					rows = append(rows, route)
 				}
 			}
-			if forwarded || !routed {
+			if len(rows) == 0 {
 				continue
 			}
-			if _, consumed := goingTranslatorConsumes[action.Action][field.Name]; consumed {
-				continue
+			for index, field := range action.Request {
+				forwarded, routed := false, false
+				for _, route := range rows {
+					base, session, ok := goingGuardBase(action, route)
+					if !ok {
+						t.Errorf("%s %s: no base call selects this row", action.Action, goingRouteKey(route))
+						continue
+					}
+					args := goingCloneArgs(base)
+					args[field.Name] = goingGuardValue(field, 1000+index)
+					chosen, values, ok := chooseGoingRoute(action, args, session)
+					if !ok || goingRouteKey(chosen) != goingRouteKey(route) {
+						// Setting this argument picks another row; it is tested there.
+						continue
+					}
+					routed = true
+					_, baseValues, _ := chooseGoingRoute(action, base, session)
+					baseline, err := goingGuardWrite(action.Action, route, base, baseValues, session, approved)
+					if err != nil {
+						t.Errorf("%s %s: the base call does not translate: %v", action.Action, goingRouteKey(route), err)
+						continue
+					}
+					built, err := goingGuardWrite(action.Action, route, args, values, session, approved)
+					if err != nil {
+						// The argument's presence refuses the translation, which the bar surfaces.
+						forwarded = true
+						break
+					}
+					if built != baseline {
+						forwarded = true
+						break
+					}
+				}
+				if forwarded || !routed {
+					continue
+				}
+				if _, consumed := goingTranslatorConsumes[action.Action][field.Name]; consumed {
+					continue
+				}
+				t.Errorf("%s drops argument %q, approved %s: no row's translator forwards it to the request, no check before the write is sent reads it, and goingTranslatorConsumes names no reason",
+					action.Action, field.Name, approved)
 			}
-			t.Errorf("%s drops argument %q: no row's translator forwards it to the request, and goingTranslatorConsumes names no reason",
-				action.Action, field.Name)
 		}
 	}
 }

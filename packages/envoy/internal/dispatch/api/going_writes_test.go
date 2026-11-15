@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -1262,7 +1263,10 @@ func TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsOffered(t *testin
 	}
 	rig.wrote(t, "alice", fresh, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedAuto})
 
-	line := rig.wrote(t, "alice", over, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
+	// The person's pick of an upload over the notes still needs force, as the tool states it
+	// (TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved).
+	line := rig.wrote(t, "alice", over, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson,
+		"arguments": map[string]any{"force": true}})
 	if !jsonEqual(t, line.Before, `{"id":"`+notes+`","name":"notes","version":1}`) || line.Item != notes {
 		t.Fatalf("the person's upload over the notes answered %+v, want the notes at version 1 before it", line)
 	}
@@ -1282,7 +1286,9 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 	start := goingBrowserStart(t)
 	start.words = "save this as a doc"
 	start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
-	written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": "notes", "content": "# Notes\n\nWritten by the model.\n"}}})
+	// With force, so the upload is held to what the words name alone: an upload without it is
+	// refused whoever approved it (goingUploadForceRefusal).
+	written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": "notes", "content": "# Notes\n\nWritten by the model.\n", "force": true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1298,6 +1304,37 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 	rig.goingWriteRefusedNotAutomatic(t, run, "dispatch_artifact", nil)
 	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
 		t.Fatalf("the notes hold %d versions after the upload sent at once, want bob's one alone", versions)
+	}
+}
+
+// TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved (review round 5,
+// finding 3): `force` is what asks for the next version of a document the owner already holds
+// under the upload's name, as the tool states it. Without it the upload is refused, however it
+// came to run - at once, picked by the person, or confirmed - and the document keeps its one
+// version; with it the upload writes that next version, however it came to run.
+func TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Held notes", "The spec.\n").Key
+	for index, approved := range []string{goingApprovedAuto, goingApprovedPerson, goingApprovedConfirmed} {
+		t.Run(approved, func(t *testing.T) {
+			name := fmt.Sprintf("held-%d.md", index)
+			slug := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, name, "# Notes\n\nKept.\n").Artifact.Slug
+			upload := map[string]any{"issue": issue, "name": name, "content": "# Notes\n\nReplaced by the bar.\n"}
+			run := rig.proposed(t, "alice", true, "dispatch_artifact", upload)
+			refused := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": approved})
+			if refused.Code != http.StatusBadRequest || decodeBody[errorBody](t, refused).Code != codeGoingArguments ||
+				!strings.Contains(refused.Body.String(), "force") {
+				t.Fatalf("an upload over %s without force, approved %s, answered %d %s, want 400 %s naming force", name, approved, refused.Code, refused.Body.String(), codeGoingArguments)
+			}
+			if versions := rig.goingDocumentVersions(t, issue, slug); versions != 1 {
+				t.Fatalf("%s holds %d versions after the upload without force, want its one", name, versions)
+			}
+			forced := rig.proposed(t, "alice", true, "dispatch_artifact", goingWith(upload, "force", true))
+			rig.wrote(t, "alice", forced, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": approved})
+			if versions := rig.goingDocumentVersions(t, issue, slug); versions != 2 {
+				t.Fatalf("%s holds %d versions after the upload with force, want its next one written", name, versions)
+			}
+		})
 	}
 }
 
@@ -1511,23 +1548,30 @@ func TestGoingWriteOfSeveralRequestsResumesUnderANewKey(t *testing.T) {
 // TestGoingWriteWhoseValueAfterWasNotReadIsNeverUndoneAsNothing (review round 2, finding F): a
 // write that landed and whose read after failed is recorded as such, and its undo is refused,
 // 409 GOING_UNDO_AFTER_UNREAD, putting nothing back, rather than answered ok with nothing undone.
+// A document edit is the write whose value after is read after it (its route answers the token
+// it left and no content), so its read of the document's text after the edit is the read that
+// fails here.
 func TestGoingWriteWhoseValueAfterWasNotReadIsNeverUndoneAsNothing(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Read after, failed", "The spec.\n").Key
-	run := rig.proposed(t, "alice", false, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress"})
+	notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "read-after.md", "# Notes\n\nThe first line.\n")
+	run := rig.proposed(t, "alice", false, "dispatch_doc_edit", map[string]any{
+		"issue": issue, "artifact": notes.Artifact.Slug,
+		"ops": []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}},
+	})
 	inner := rig.served.inProcess
 	t.Cleanup(func() { rig.served.inProcess = inner })
-	patched, unread := false, false
+	edited, unread := false, false
 	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && patched && !unread {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/text") && edited && !unread {
 			unread = true
 			writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		patched = patched || r.Method == http.MethodPatch
+		edited = edited || (r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/edits"))
 		inner.ServeHTTP(w, r)
 	})
-	line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedPerson})
+	line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_doc_edit", "invocation": 0, "approved": goingApprovedPerson})
 	rig.served.inProcess = inner
 	if !line.Outcome.OK || !unread {
 		t.Fatalf("the write answered %+v with its read after failed=%v, want it landed", line, unread)
@@ -1539,8 +1583,9 @@ func TestGoingWriteWhoseValueAfterWasNotReadIsNeverUndoneAsNothing(t *testing.T)
 	if undone.Outcome.Status != http.StatusConflict || undone.Outcome.Code != codeGoingUndoAfterUnread || !goingUndoSettles(undone.Outcome) {
 		t.Fatalf("the undo answered %+v, want 409 %s, settled", undone.Outcome, codeGoingUndoAfterUnread)
 	}
-	if status := rig.issueRead(t, issue).Status; status != "in_progress" {
-		t.Fatalf("the issue is %s after the refused undo, want the write's in_progress left in place", status)
+	text := decodeBody[artifactText](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+notes.Artifact.ID+"/text", nil)).Markdown
+	if !strings.Contains(text, "opening line") {
+		t.Fatalf("the document reads %q after the refused undo, want the write's edit left in place", text)
 	}
 }
 

@@ -67,6 +67,11 @@ const (
 	// (goingRunWrite.AfterUnread): what it left is unknown, so nothing is put back, and a retry
 	// would only answer the same, which settles it.
 	codeGoingUndoAfterUnread = "GOING_UNDO_AFTER_UNREAD"
+	// codeGoingUndoBeforeUnread is a write that landed over a value its route answered it found
+	// and the read before it did not see (goingRunWrite.BeforeUnread): another writer changed the
+	// item between the two, so what the write replaced is unknown and nothing is put back, which a
+	// retry would only answer again.
+	codeGoingUndoBeforeUnread = "GOING_UNDO_BEFORE_UNREAD"
 	// codeGoingUndoInProgress is a run another undo of is under way: 429 with a Retry-After, so
 	// the retry reads what that undo recorded.
 	codeGoingUndoInProgress = "GOING_UNDO_IN_PROGRESS"
@@ -334,7 +339,10 @@ type goingUndoer struct {
 // that names an undo this server has none of for its action, 501 GOING_UNDO_UNSERVED, rather than
 // recorded undone with nothing undone. A write whose value after was never read
 // (goingRunWrite.AfterUnread) is refused, 409 GOING_UNDO_AFTER_UNREAD, for every kind but a
-// trace: what it left is unknown, so there is nothing to compare what is there now with.
+// trace: what it left is unknown, so there is nothing to compare what is there now with. A write
+// whose route found a value the read before it did not see (goingRunWrite.BeforeUnread) is
+// refused, 409 GOING_UNDO_BEFORE_UNREAD, for every kind but a trace: what it replaced is unknown,
+// so there is nothing to put back.
 func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) goingUndoLine {
 	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Now: json.RawMessage("null")}
 	if _, held := u.s.going.Lookup(write.Action); !held || write.Undo == "" {
@@ -352,6 +360,9 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 	case write.AfterUnread && kind != goingUndoTrace:
 		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread,
 			Message: "the value this write left was never read, so what it changed is unknown and nothing was undone: read the item to see what it holds"}
+	case write.BeforeUnread && kind != goingUndoTrace:
+		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
+			Message: "another writer changed the item between the read before this write and the write, so what the write replaced is unknown and nothing was undone: read the item to see what it holds"}
 	case kind == goingUndoTrace:
 		outcome = goingWriteOutcome{OK: true, Status: http.StatusOK,
 			Message: "recorded as undone: Dispatch serves no reverse of this write, so it stays as it is"}
@@ -472,7 +483,7 @@ func goingChanged(changes []string, restored []string) goingWriteOutcome {
 }
 
 // goingRank is the field an issue's rank is recorded under. Its value is the issue's place
-// (goingRankPlace): its rank and the neighbours it stood between, since a rank is written by
+// (issueRankPlace): its rank and the neighbours it stood between, since a rank is written by
 // naming neighbours.
 const goingRank = "rank"
 
@@ -514,7 +525,7 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 			}
 			return ids, "", nil
 		case goingRank:
-			var heldPlace, beforePlace, afterPlace goingRankPlace
+			var heldPlace, beforePlace, afterPlace issueRankPlace
 			if json.Unmarshal(held, &heldPlace) != nil || json.Unmarshal(before, &beforePlace) != nil || json.Unmarshal(after, &afterPlace) != nil {
 				return nil, "rank: the write's record holds no place to put the issue back in", nil
 			}
@@ -542,7 +553,7 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 					body["advances_revision"] = value.Revision
 				}
 			case goingRank:
-				var place goingRankPlace
+				var place issueRankPlace
 				if json.Unmarshal(after, &place) == nil {
 					expect[field] = place.Rank
 				} else {
@@ -566,7 +577,7 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 // order, and why it cannot where neither is. A read of the neighbours that failed is its error,
 // never a reason: the undo answers it as the server's own failure, which leaves the write
 // undoable.
-func (o goingObserver) rankRestore(ctx context.Context, key string, place goingRankPlace) (map[string]any, string, error) {
+func (o goingObserver) rankRestore(ctx context.Context, key string, place issueRankPlace) (map[string]any, string, error) {
 	names := make([]string, 0, 2)
 	for _, neighbour := range []*string{place.After, place.Before} {
 		if neighbour != nil {
@@ -750,7 +761,11 @@ func (u goingUndoer) writeBack(
 // document writes the content the document held before the edit back over it, as a further
 // version uploaded under the document's own name to its owner's route, where its content is still
 // what the edit left: the upload expects it (jsonArtifactUpload.ExpectSHA256), decided under the
-// document's own lock, so an edit another writer makes after the read is never written over.
+// document's own lock, so an edit another writer makes after the read is never written over. What
+// the edit left is the content read after it whose token is the one the edit's route answered it
+// left, and what it replaced the content read before it whose token is the one the route answered
+// it found (documentEdited): a write whose reads were not is recorded unread, and never reaches
+// here.
 func (u goingUndoer) document(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var before, after goingDocumentValue
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -760,7 +775,7 @@ func (u goingUndoer) document(ctx context.Context, write goingRunWrite) (any, go
 	if err := u.observer.read.get(ctx, goingArtifactPath(write.Target), &artifact); err != nil {
 		return nil, goingFailed(err)
 	}
-	now, err := u.observer.documentValue(ctx, artifact.ID)
+	now, _, err := u.observer.documentValue(ctx, artifact.ID)
 	if err != nil {
 		return nil, goingFailed(err)
 	}
@@ -778,7 +793,7 @@ func (u goingUndoer) document(ctx context.Context, write goingRunWrite) (any, go
 		"name": artifact.Name, "content": before.Content, "summary": u.reason,
 		"expect_sha256": docs.MarkdownSHA256(after.Content),
 	})
-	if read, err := u.observer.documentValue(ctx, artifact.ID); err == nil {
+	if read, _, err := u.observer.documentValue(ctx, artifact.ID); err == nil {
 		now = read
 	}
 	if outcome.Code == "DOCUMENT_CHANGED" {

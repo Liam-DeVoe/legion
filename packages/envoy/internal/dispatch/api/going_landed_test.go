@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -245,6 +246,54 @@ func TestGoingWriteWhoseRequestCommittedAndAnswered5xxIsNeverSentAgain(t *testin
 				if !goingLineOf(t, answer).Outcome.OK {
 					t.Fatalf("a press answered %s, want the write's line, landed", answer.Body.String())
 				}
+			}
+		})
+	}
+}
+
+// TestGoingWriteWhoseRouteRecordedItsFailureAndThenRefusedLandedNothing (review round 5, finding 2;
+// check c21): a one-source architecture sync the App cannot complete commits bookkeeping before its
+// route refuses it 409 SOURCE_ACCESS - the failure on the source's row and its event, and, for an
+// installation other than the one the row cached, that installation - none of which is the sync,
+// so none is a landing of the write's: the bar answers the route's refusal, a retry under the
+// write's key replays it, and a press under a key of its own runs the sync again.
+func TestGoingWriteWhoseRouteRecordedItsFailureAndThenRefusedLandedNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	// acme/denied is installed nowhere; acme/nobranch is installed (as 77, not the 1 its row
+	// caches) and holds no architecture branch (goingFixtureArchitectureGitHub).
+	for id, repo := range map[int]string{7: "acme/denied", 8: "acme/nobranch"} {
+		t.Run(repo, func(t *testing.T) {
+			if _, err := rig.database.Pool.Exec(context.Background(), `
+				insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
+				values ('DEMO', $1, $2, 'main', 1, '{"kind":"system","id":"test"}')`, id, repo); err != nil {
+				t.Fatalf("add the architecture source %s: %v", repo, err)
+			}
+			sync := http.MethodPost + " /api/v1/projects/DEMO/architecture-sources/" + repo + "/sync"
+			sent := 0
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method+" "+r.URL.Path == sync {
+					sent++
+				}
+				inner.ServeHTTP(w, r)
+			})
+			defer func() { rig.served.inProcess = inner }()
+			run := rig.proposed(t, "alice", false, "dispatch_architecture_sync", map[string]any{"project": "DEMO", "repo": repo})
+			write := map[string]any{"offer": "dispatch_architecture_sync", "invocation": 0, "approved": goingApprovedPerson}
+			presses := []*httptest.ResponseRecorder{
+				rig.keyedWrite(t, run, "press-sync-"+strconv.Itoa(id), write),
+				rig.keyedWrite(t, run, "press-sync-"+strconv.Itoa(id), write),
+				rig.keyedWrite(t, run, "press-sync-again-"+strconv.Itoa(id), write),
+			}
+			for _, press := range presses {
+				if press.Code != http.StatusConflict || decodeBody[errorBody](t, press).Code != "SOURCE_ACCESS" {
+					t.Fatalf("a press answered %d %s, want the sync route's own 409 SOURCE_ACCESS", press.Code, press.Body.String())
+				}
+			}
+			if sent != 2 {
+				t.Fatalf("%s was sent %d times, want twice: the retry under the key replays its refusal and the press under a key of its own runs it again", sync, sent)
 			}
 		})
 	}

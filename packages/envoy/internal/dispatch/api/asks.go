@@ -378,6 +378,29 @@ func askExpectationRefusal(ask model.Ask, expect map[string]json.RawMessage) err
 	return nil
 }
 
+// askEdited is what PATCH /api/v1/asks/{id} answers: the ask as the edit left it, and beside it
+// Previous, each part the edit names - question, options, multiple, urgency - as the ask held it
+// when the edit took its lock, spelled as an edit writes it (askFieldValue). A caller that undoes
+// the edit reads it here: what it reads of the ask before or after the edit may have moved on
+// either side of the edit's own transaction.
+type askEdited struct {
+	shapedAsk
+	Previous map[string]any `json:"previous"`
+}
+
+// askPartsNamed is each part of an ask the edit names, as goingAskFields names them.
+func askPartsNamed(input editAskInput) []string {
+	named := map[string]bool{"question": input.Question != nil, "options": input.Options != nil,
+		"multiple": input.Multiple != nil, "urgency": input.Urgency != nil}
+	parts := make([]string, 0, len(named))
+	for _, part := range goingAskFields {
+		if named[part] {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
 func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -508,6 +531,10 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := model.NewAskEditPrevious(ask)
+	found := make(map[string]any, 4)
+	for _, part := range askPartsNamed(input) {
+		found[part] = askFieldValue(ask, part)
+	}
 	if input.Question != nil {
 		ask.Question = *input.Question
 	}
@@ -616,7 +643,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// previous wording, which no other write would ever store.
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, askEdited{shapedAsk: newShapedAsk(ask, wantsDisplayTrees(r)), Previous: found})
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the

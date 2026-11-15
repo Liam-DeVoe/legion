@@ -115,6 +115,12 @@ type goingRunWrite struct {
 	// nothing the write left, so its undo cannot tell what to put back and undoes nothing
 	// (codeGoingUndoAfterUnread).
 	AfterUnread bool `json:"after_unread,omitempty"`
+	// BeforeUnread is a write that landed over a value its route answered it found and the read
+	// before it did not see - another writer changed the item between the two - where the route
+	// answers no value of what it replaced (a document edit, editArtifactResponse.PreviousToken):
+	// Before holds nothing the write replaced, so its undo undoes nothing
+	// (codeGoingUndoBeforeUnread).
+	BeforeUnread bool `json:"before_unread,omitempty"`
 	// Unchanged is a write its route answered changed nothing: a claim of an issue its caller
 	// already held, or a release of one nobody held. Its undo puts nothing back, whatever the
 	// reads before and after it saw, since another writer may have moved the claim between them.

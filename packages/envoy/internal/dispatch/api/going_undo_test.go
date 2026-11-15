@@ -754,7 +754,7 @@ func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T)
 	held, release := store.HoldsConnection(context.Background())
 	defer release()
 	observer := goingObserver{s: rig.served}
-	restore, why, err := observer.rankRestore(held, issue, goingRankPlace{After: &neighbour})
+	restore, why, err := observer.rankRestore(held, issue, issueRankPlace{After: &neighbour})
 	if err == nil || why != "" || restore != nil {
 		t.Fatalf("rankRestore on a read that failed answered %v, %q, %v; want its error and no reason", restore, why, err)
 	}

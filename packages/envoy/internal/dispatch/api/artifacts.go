@@ -201,9 +201,13 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 
 // artifactUploadResponse is the body POST /api/v1/issues/{key}/artifacts,
 // POST /api/v1/projects/{key}/artifacts and POST /api/v1/agents/{session_id}/artifacts answer.
+// PreviousVersion is the number of the newest version the upload wrote its next version over, as
+// its transaction found it under the owner's lock - 0 for a document that held none yet - and null
+// where the upload made the artifact.
 type artifactUploadResponse struct {
-	Artifact model.Artifact `json:"artifact"`
-	Version  model.Version  `json:"version"`
+	Artifact        model.Artifact `json:"artifact"`
+	Version         model.Version  `json:"version"`
+	PreviousVersion *int           `json:"previous_version"`
 }
 
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
@@ -582,6 +586,12 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The version this upload writes its next version over, as its own transaction finds it: none
+	// where it made the artifact.
+	var previousVersion *int
+	if !created {
+		previousVersion = new(nextNumber - 1)
+	}
 	var version model.Version
 	var summaryValue any
 	var documentSummary *string
@@ -762,7 +772,7 @@ func (s *server) storeArtifact(
 		advice.SupersededApproval = superseded
 		advice.MovedApprovalRequest = moved
 	}
-	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
+	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version, PreviousVersion: previousVersion}
 	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
 	// document reports with nothing to ride on: they are about the document alone, so they go
 	// out on their own shape here rather than being dropped with the issue state that failed,
@@ -1186,10 +1196,15 @@ type editArtifactResponse struct {
 	// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
 	// check reached no verdict - the publish failed and the room is reloading, or the room
 	// holds a tree too deep to read - which is not the same statement as the empty list.
-	LostOps      []int          `json:"lost_ops"`
-	Token        string         `json:"token"`
-	UnchangedOps []int          `json:"unchanged_ops"`
-	Version      *model.Version `json:"version"`
+	LostOps []int `json:"lost_ops"`
+	// Token is the document's token as the edit left it, and PreviousToken as the edit found it,
+	// both read in the edit's own transaction (docs.EditOutcome): a caller that undoes the edit
+	// tells by them whether what it read of the document before and after the edit is what the
+	// edit replaced and what it left.
+	Token         string         `json:"token"`
+	PreviousToken string         `json:"previous_token"`
+	UnchangedOps  []int          `json:"unchanged_ops"`
+	Version       *model.Version `json:"version"`
 }
 
 func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
@@ -1331,12 +1346,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		unchanged = []int{}
 	}
 	responsePayload := editArtifactResponse{
-		Applied:      edit.Applied,
-		Changed:      edit.Changed,
-		LostOps:      lostOps(ledger, artifact.ID),
-		Token:        edit.Token,
-		UnchangedOps: unchanged,
-		Version:      version,
+		Applied:       edit.Applied,
+		Changed:       edit.Changed,
+		LostOps:       lostOps(ledger, artifact.ID),
+		Token:         edit.Token,
+		PreviousToken: edit.PreviousToken,
+		UnchangedOps:  unchanged,
+		Version:       version,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of

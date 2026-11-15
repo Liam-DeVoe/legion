@@ -47,7 +47,7 @@ function uploadResponse() {
   if (version === undefined) {
     throw new Error("document fixture requires a version");
   }
-  return { artifact, version };
+  return { artifact, version, previous_version: null };
 }
 
 function renderList(artifacts: Artifact[]) {

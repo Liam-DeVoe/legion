@@ -75,6 +75,7 @@ test("confirming the staged file uploads it with the typed summary", async () =>
       number: 1,
       summary: "First draft",
     },
+    previous_version: null,
   });
   const view = renderHarness();
 

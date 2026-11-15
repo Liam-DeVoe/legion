@@ -144,12 +144,15 @@ func (a *recordedAnswer) response(request *http.Request) *http.Response {
 	}
 }
 
-// How a write came to run (goingRunWrite.Approved).
+// How a write came to run (goingRunWrite.Approved), and goingApprovals every one the writes route
+// takes.
 const (
 	goingApprovedAuto      = "auto"
 	goingApprovedPerson    = "person"
 	goingApprovedConfirmed = "confirmed"
 )
+
+var goingApprovals = []string{goingApprovedAuto, goingApprovedPerson, goingApprovedConfirmed}
 
 // The writes route's own refusals.
 const (
@@ -266,7 +269,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !slices.Contains([]string{goingApprovedAuto, goingApprovedPerson, goingApprovedConfirmed}, input.Approved) {
+	if !slices.Contains(goingApprovals, input.Approved) {
 		writeError(w, codeGoingInput, http.StatusBadRequest, "approved must be auto, person or confirmed")
 		return
 	}
@@ -351,18 +354,19 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		fresh.Undo = claim.write.Undo
 		claim.write, performer.landings.write = fresh, fresh.ID
 	}
-	observer := goingObserver{read: performer.reader(), s: s}
+	// landed reads whether the call's last request committed a change in its route's own
+	// transaction, as its landing records it there, for a route whose answer does not say (a
+	// follow).
+	observer := goingObserver{read: performer.reader(), s: s, landed: func(ctx context.Context) (bool, error) {
+		return performer.landings.landed(ctx, len(specs)-1, specs[len(specs)-1])
+	}}
 	before, err := observer.observe(ctx, prepared, nil, goingObservation{})
 	if err != nil {
 		claim.refuse(before, err)
 		return
 	}
-	if input.Approved == goingApprovedAuto && goingUploadsOver(prepared, before, run.Words) {
-		// Read now, under the owner the upload's route writes to: a document of its name may have
-		// been made since the proposal marked the upload automatic.
-		claim.refuse(before, errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"%s would write the next version of %q, a document its owner holds now, or may hold where the write cannot name its owner, and the words do not name, so it runs only when the person picks it: send it as approved person or confirmed",
-			input.Offer, goingText(arguments, goingUploadNames[input.Offer])))
+	if refused := goingSendRefusal(input.Approved, prepared, before, run.Words); refused != nil {
+		claim.refuse(before, refused)
 		return
 	}
 	// The call is known now: the claim holds, before anything of it is sent, the requests it
@@ -435,6 +439,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		claim.write.AfterUnread = true
 	default:
 		observed, err := observer.observe(ctx, prepared, answer, before)
+		claim.write.BeforeUnread = observed.beforeUnread
 		if err != nil {
 			// The write landed; only the read back of it failed, which the record says rather than
 			// losing the write, in the words goingFailed gives it, and marks, so its undo does not
@@ -451,10 +456,18 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	claim.write.Delivery, claim.write.Unchanged = after.delivery, after.unchanged
 	claim.write.Before, claim.write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
-	if after.stood != nil {
+	switch {
+	case after.stood != nil:
 		// What the route answered stood before it, in its own transaction, which no read before
 		// the write can say: another writer may have moved it between the two.
 		claim.write.Before = after.stood
+	case claim.write.BeforeUnread:
+		// The route found a value the read before did not see and answers none of it: what the
+		// write replaced is unknown.
+		claim.write.Before = json.RawMessage("null")
+		if !claim.write.AfterUnread {
+			claim.write.Outcome.Message = "the write landed over a value another writer left after the read before it, so the value it replaced was not read"
+		}
 	}
 	if claim.record(cmp.Or(after.issue, before.issue)) {
 		WriteJSON(w, http.StatusOK, goingWriteLineOf(claim.write))
@@ -839,6 +852,24 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input going
 	if settings.ConfirmWrites {
 		return errorf(http.StatusConflict, codeGoingConfirmationRequired,
 			"this person asked to confirm every write of the command bar: send it as approved confirmed once they have")
+	}
+	return nil
+}
+
+// goingSendRefusal is why a write whose read before is in may not be sent, nil where it may, for
+// the write as approved: an upload under the name of a document its owner holds and no force,
+// however the write came to run (goingUploadForceRefusal); and for one sent at once, an upload
+// that would write the next version of a document its owner holds, or may hold where it cannot
+// name its owner, and the words do not name (goingUploadsOver). Each is read now, under the owner
+// the upload's route writes to: a document of its name may have been made since the proposal.
+func goingSendRefusal(approved string, prepared goingPrepared, before goingObservation, words string) error {
+	if refused := goingUploadForceRefusal(prepared, before); refused != nil {
+		return refused
+	}
+	if approved == goingApprovedAuto && goingUploadsOver(prepared, before, words) {
+		return errorf(http.StatusConflict, codeGoingNotAutomatic,
+			"%s would write the next version of %q, a document its owner holds now, or may hold where the write cannot name its owner, and the words do not name, so it runs only when the person picks it: send it as approved person or confirmed",
+			prepared.action, goingText(prepared.arguments, goingUploadNames[prepared.action]))
 	}
 	return nil
 }

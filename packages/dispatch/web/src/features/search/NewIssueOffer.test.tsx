@@ -73,7 +73,10 @@ function openBar(settings: { label: string; session: string }): Stubs {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(
     {} as ArtifactUploadResponse
   );
-  const patchIssue = spyOn(api, "patchIssue").mockResolvedValue(issue("CORE-7"));
+  const patchIssue = spyOn(api, "patchIssue").mockResolvedValue({
+    ...issue("CORE-7"),
+    previous: {},
+  });
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as Message);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(

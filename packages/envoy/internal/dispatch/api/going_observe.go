@@ -4,8 +4,9 @@ package api
 // value a write is about to change and the value it left (goingObserver), each read in-process as
 // the caller through the caller's own Doer (goingReader), and the refusal a route answered one of
 // those reads or writes with (goingRefusal). The writes route (going_writes.go) records what the
-// observer read before and after a write; the undo (going_undo.go) reads the same values again to
-// tell whether another writer changed them since.
+// write's route answered its own transaction found and left, where the route answers them, over
+// what the observer read on either side of the write; the undo (going_undo.go) compares what is
+// there now with what the write left, in the statement of its own write back.
 
 import (
 	"cmp"
@@ -149,8 +150,17 @@ type goingObservation struct {
 	unchanged bool
 	stood     json.RawMessage
 	// ownerUnnamed is an upload whose route names no owner the read before could read
-	// (uploadedOver).
+	// (uploadedOver), and held the document the read before found under the upload's name, with
+	// its versions, which an upload without force is refused naming (goingUploadForceRefusal).
 	ownerUnnamed bool
+	held         *model.Artifact
+	// token is a document's token as the read that saw its value answered it, which a document
+	// edit's route answers too, for the document it found and the one it left (editArtifactResponse).
+	token string
+	// beforeUnread is a write whose route answered it found a value other than the one the read
+	// before saw: another writer changed the item between the two, and the route answers no value
+	// of what it replaced (goingRunWrite.BeforeUnread).
+	beforeUnread bool
 }
 
 // goingFields is the one field a write changes as an observation lists it, none for "".
@@ -163,10 +173,14 @@ func goingFields(field string) []string {
 
 // goingObserver reads the value a write is about to change and the value it left,
 // through the caller's own Doer. An issue's place in its project's ranking is read from the
-// store (rankPlace), since no route answers an issue's neighbours in rank order.
+// store (rankPlace), since no route answers an issue's neighbours in rank order. landed reports
+// whether the write's last request committed a change in its route's own transaction, as that
+// request's landing records it (goingLandings.landed): a follow answers 204 whether or not it
+// changed anything.
 type goingObserver struct {
-	read goingReader
-	s    *server
+	read   goingReader
+	s      *server
+	landed func(context.Context) (bool, error)
 }
 
 // The field each write that names no field of its own changes.
@@ -220,16 +234,24 @@ var goingAskFields = []string{"question", "options", "multiple", "urgency"}
 
 // observe reads what the prepared write changes: before it (answer nil) and after it, where
 // answer is what the write's route answered and before what the read before saw. A write that
-// changes a value of an item already there reads that value both times; a write that makes an
-// item reads nothing before it and reads the made item off its answer, but for an upload, which
-// reads before it the document its name writes the next version of, where there is one.
+// changes a value of an item already there reads that value before it, for a refusal's line, and
+// takes from its route's answer the value its transaction found and the one it left (stood and
+// value): an issue's fields, an ask's parts, a thread's resolution, a claim, a follow's change
+// (goingObserver.landed) and, for a document edit, the tokens that say whether the reads on either
+// side of the edit read the document it found and the one it left. A write that makes an item
+// reads nothing before it and reads the made item off its answer, but for an upload, which reads
+// before it the document its name writes the next version of, where there is one, and takes the
+// version it wrote over from its answer.
 func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answer []byte, before goingObservation) (goingObservation, error) {
 	path, arguments := prepared.call.path, prepared.arguments
 	fields := goingFields(goingWriteFields[prepared.action])
 	issue := goingText(arguments, "issue")
 	switch prepared.action {
 	case "dispatch_issue_update":
-		return o.issueFields(ctx, path["key"], goingIssueFieldsOf(arguments))
+		if answer == nil {
+			return o.issueFields(ctx, path["key"], goingIssueFieldsOf(arguments))
+		}
+		return goingIssueUpdated(answer, before)
 	case "dispatch_claim":
 		if answer == nil {
 			return o.claim(ctx, path["key"])
@@ -259,30 +281,31 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		}
 		return observed, nil
 	case "dispatch_edit_ask":
-		return o.askFields(ctx, path["id"], goingAskFieldsOf(arguments))
+		if answer == nil {
+			return o.askFields(ctx, path["id"], goingAskFieldsOf(arguments))
+		}
+		return goingAskEdited(answer, before)
 	case "dispatch_resolve_ask":
 		return o.askState(ctx, path["id"])
 	case "dispatch_resolve_comment":
-		return o.commentResolved(ctx, path["id"])
+		if answer == nil {
+			return o.commentResolved(ctx, path["id"])
+		}
+		return goingCommentResolved(answer, before)
 	case "dispatch_follow":
-		return o.following(ctx, path["id"], path["session_id"])
+		if answer == nil {
+			return o.following(ctx, path["id"], path["session_id"])
+		}
+		return o.followed(ctx, prepared, before)
 	case "dispatch_doc_edit":
-		if before.target != "" {
-			// The read after: an edit changes neither the document's id nor its issue, which the
-			// read before read, so only its content is read again.
-			observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
-			value, err := o.documentValue(ctx, before.target)
+		if answer == nil {
+			resolved, err := o.editedDocument(ctx, prepared)
 			if err != nil {
-				return observed, err
+				return goingObservation{fields: fields, issue: issue}, err
 			}
-			observed.value = value
-			return observed, nil
+			return o.document(ctx, resolved)
 		}
-		resolved, err := o.editedDocument(ctx, prepared)
-		if err != nil {
-			return goingObservation{fields: fields, issue: issue}, err
-		}
-		return o.document(ctx, resolved)
+		return o.documentEdited(ctx, answer, before)
 	}
 	if answer == nil {
 		if prepared.action == "dispatch_artifact" {
@@ -351,6 +374,27 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		observed := goingObservation{target: sent.ID, fields: fields, issue: issue, value: map[string]any{"id": sent.ID}}
 		if last := len(sent.Deliveries) - 1; last >= 0 {
 			observed.delivery = &sent.Deliveries[last]
+		}
+		return observed, nil
+	case "dispatch_artifact":
+		// The version the upload wrote its next version over is what its own transaction found
+		// under its owner's lock (artifactUploadResponse.PreviousVersion), which another upload
+		// may have written between the read before and the upload; none where it made the
+		// document.
+		var uploaded struct {
+			Artifact struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"artifact"`
+			PreviousVersion *int `json:"previous_version"`
+		}
+		if err := json.Unmarshal(answer, &uploaded); err != nil {
+			return goingObservation{}, fmt.Errorf("read the upload's answer: %w", err)
+		}
+		observed := goingObservation{target: uploaded.Artifact.ID, fields: fields, issue: issue,
+			value: map[string]any{"id": uploaded.Artifact.ID}, stood: json.RawMessage("null")}
+		if uploaded.PreviousVersion != nil {
+			observed.stood = goingJSONOrNull(goingUploadBefore{ID: uploaded.Artifact.ID, Name: uploaded.Artifact.Name, Version: *uploaded.PreviousVersion})
 		}
 		return observed, nil
 	}
@@ -449,31 +493,48 @@ func (o goingObserver) issueFields(ctx context.Context, key string, fields []str
 	return goingObservation{target: key, fields: fields, issue: key, value: values}, nil
 }
 
-// goingRankPlace is an issue's place in its project's ranking: its rank, and the issues just
-// before it (After, the rank route's `after`) and just after it (Before, its `before`) among every
-// issue of the project in rank order, the ordering the rank route places an issue in
-// (rankForInput). A neighbour is nil where the issue is first or last.
-type goingRankPlace struct {
-	Rank   string  `json:"rank"`
-	After  *string `json:"after"`
-	Before *string `json:"before"`
+// goingIssueUpdated is what an update of the issue's fields found and left, read off its route's
+// answer (issueUpdated): each field before.fields names as the update left it (value), and as the
+// update found it under the issue's lock (stood), the rank as the places the update answers. An
+// answer that does not say what the update found of a field it writes is the value after unread,
+// so the undo puts nothing back.
+func goingIssueUpdated(answer []byte, before goingObservation) (goingObservation, error) {
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
+	var issue map[string]json.RawMessage
+	if err := json.Unmarshal(answer, &issue); err != nil {
+		return observed, fmt.Errorf("read the update's answer: %w", err)
+	}
+	var previous map[string]json.RawMessage
+	if err := json.Unmarshal(issue["previous"], &previous); err != nil || previous == nil {
+		return observed, errors.New("the update's answer does not say what it found of the fields it wrote")
+	}
+	var key string
+	if json.Unmarshal(issue["key"], &key) == nil && key != "" {
+		observed.target, observed.issue = key, key
+	}
+	left, found := make(map[string]any, len(before.fields)), make(map[string]any, len(before.fields))
+	for _, field := range before.fields {
+		if _, answered := previous[field]; !answered {
+			return observed, fmt.Errorf("the update's answer does not say what it found of %s", field)
+		}
+		if field == goingRank {
+			var from, to issueRankPlace
+			if json.Unmarshal(previous[field], &from) != nil || json.Unmarshal(issue["rank_place"], &to) != nil || to.Rank == "" {
+				return observed, errors.New("the update's answer does not say the places it moved the issue between")
+			}
+			left[field], found[field] = to, from
+			continue
+		}
+		left[field], found[field] = goingIssueFieldValue(issue, field), goingIssueFieldValue(previous, field)
+	}
+	observed.value, observed.stood = left, goingJSONOrNull(found)
+	return observed, nil
 }
 
-// rankPlace reads the issue's place in its project's ranking.
-func (o goingObserver) rankPlace(ctx context.Context, key string) (goingRankPlace, error) {
-	var place goingRankPlace
-	err := o.s.deps.Store.Pool.QueryRow(ctx, `
-		select i.rank,
-		  (select p.key from issues p where p.project_key = i.project_key and p.key <> i.key and p.rank < i.rank
-		     order by p.rank desc limit 1),
-		  (select n.key from issues n where n.project_key = i.project_key and n.key <> i.key and n.rank > i.rank
-		     order by n.rank limit 1)
-		from issues i where i.key = $1
-	`, key).Scan(&place.Rank, &place.After, &place.Before)
-	if err != nil {
-		return goingRankPlace{}, fmt.Errorf("read %s's place in its project's ranking: %w", key, err)
-	}
-	return place, nil
+// rankPlace reads the issue's place in its project's ranking (issueRankPlace) from the store, as
+// the update itself reads it in its own transaction.
+func (o goingObserver) rankPlace(ctx context.Context, key string) (issueRankPlace, error) {
+	return readIssueRankPlace(ctx, o.s.deps.Store.Pool, key)
 }
 
 // goingUploadBefore is an upload's value before it where its name finds a document its owner
@@ -509,7 +570,7 @@ func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared,
 	for _, version := range artifact.Versions {
 		before.Version = max(before.Version, version.Number)
 	}
-	observed.target, observed.value = artifact.ID, before
+	observed.target, observed.value, observed.held = artifact.ID, before, &artifact
 	return observed, nil
 }
 
@@ -617,6 +678,35 @@ func (o goingObserver) askFields(ctx context.Context, id string, fields []string
 	return observed, nil
 }
 
+// goingAskEdited is what an ask's edit found and left, read off its route's answer (askEdited):
+// each part before.fields names as the edit left it (value) and as the edit found it under the
+// ask's lock (stood), each as an edit writes it (askFieldValue). An answer that does not say what
+// the edit found of a part it writes is the value after unread, so the undo puts nothing back.
+func goingAskEdited(answer []byte, before goingObservation) (goingObservation, error) {
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
+	var edited struct {
+		Question string                     `json:"question"`
+		Options  []model.AskOption          `json:"options"`
+		Multiple bool                       `json:"multiple"`
+		Urgency  string                     `json:"urgency"`
+		Previous map[string]json.RawMessage `json:"previous"`
+	}
+	if err := json.Unmarshal(answer, &edited); err != nil {
+		return observed, fmt.Errorf("read the edit's answer: %w", err)
+	}
+	ask := model.Ask{Question: edited.Question, Options: edited.Options, Multiple: edited.Multiple, Urgency: edited.Urgency}
+	left, found := make(map[string]any, len(before.fields)), make(map[string]any, len(before.fields))
+	for _, field := range before.fields {
+		previous, answered := edited.Previous[field]
+		if !answered {
+			return observed, fmt.Errorf("the edit's answer does not say what it found of the ask's %s", field)
+		}
+		left[field], found[field] = askFieldValue(ask, field), previous
+	}
+	observed.value, observed.stood = left, goingJSONOrNull(found)
+	return observed, nil
+}
+
 // askFieldValue is one part of an ask as an edit writes it: an option as its label and
 // description, which an edit takes, and nil for a part no edit writes.
 func askFieldValue(ask model.Ask, field string) any {
@@ -675,6 +765,32 @@ func (o goingObserver) commentResolved(ctx context.Context, id string) (goingObs
 	return observed, nil
 }
 
+// goingCommentResolved is what a resolve found and left of the thread, read off its route's
+// answer (resolvedComment): the resolution it left (value) and the one it found under the
+// comment's lock (stood). An answer that does not say what the resolve found is the value after
+// unread, so the undo reopens nothing.
+func goingCommentResolved(answer []byte, before goingObservation) (goingObservation, error) {
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
+	var resolved struct {
+		goingCommentResolution
+		Previous *goingCommentResolution `json:"previous"`
+	}
+	if err := json.Unmarshal(answer, &resolved); err != nil {
+		return observed, fmt.Errorf("read the resolve's answer: %w", err)
+	}
+	if resolved.Previous == nil {
+		return observed, errors.New("the resolve's answer does not say how it found the thread")
+	}
+	left, found := resolved.goingCommentResolution, *resolved.Previous
+	for _, resolution := range []*goingCommentResolution{&left, &found} {
+		if len(resolution.ResolvedBy) == 0 {
+			resolution.ResolvedBy = json.RawMessage("null")
+		}
+	}
+	observed.value, observed.stood = left, goingJSONOrNull(found)
+	return observed, nil
+}
+
 // goingFollowing is a follow's value: the session and whether it follows the ask.
 type goingFollowing struct {
 	Session   string `json:"session"`
@@ -689,6 +805,30 @@ func (o goingObserver) following(ctx context.Context, ask, session string) (goin
 		return observed, err
 	}
 	observed.value = goingFollowing{Session: session, Following: following}
+	return observed, nil
+}
+
+// followed is what a follow or an unfollow left, and what it found. Its route answers a follow
+// 204 whether or not the session followed the ask already, and an unfollow 404 where it did not,
+// so what a follow found is whether its own transaction committed a change, as its request's
+// landing records it in that transaction (goingObserver.landed).
+func (o goingObserver) followed(ctx context.Context, prepared goingPrepared, before goingObservation) (goingObservation, error) {
+	session := prepared.call.path["session_id"]
+	follows := prepared.route.Method == http.MethodPut
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue,
+		value: goingFollowing{Session: session, Following: follows}}
+	changed := true
+	if follows {
+		if o.landed == nil {
+			return observed, errors.New("whether the follow changed anything is unknown")
+		}
+		landed, err := o.landed(ctx)
+		if err != nil {
+			return observed, err
+		}
+		changed = landed
+	}
+	observed.stood = goingJSONOrNull(goingFollowing{Session: session, Following: follows != changed})
 	return observed, nil
 }
 
@@ -738,30 +878,66 @@ type goingDocumentValue struct {
 	Content string `json:"content"`
 }
 
-// document is the document's content and version, read by id.
+// document is the document's content and version, read by id, and the token of what the read
+// read (goingObservation.token).
 func (o goingObserver) document(ctx context.Context, id string) (goingObservation, error) {
 	var artifact goingDocumentRead
 	if err := o.read.get(ctx, goingArtifactPath(id), &artifact); err != nil {
 		return goingObservation{target: id, fields: goingFields("content")}, err
 	}
 	observed := goingObservation{target: artifact.ID, fields: goingFields("content"), issue: deref(artifact.IssueKey)}
-	value, err := o.documentValue(ctx, artifact.ID)
+	value, token, err := o.documentValue(ctx, artifact.ID)
 	if err != nil {
 		return observed, err
 	}
-	observed.value = value
+	observed.value, observed.token = value, token
 	return observed, nil
 }
 
-func (o goingObserver) documentValue(ctx context.Context, id string) (goingDocumentValue, error) {
+// documentValue is the document's content and version, and the token the text read answers of
+// that very content (artifactText).
+func (o goingObserver) documentValue(ctx context.Context, id string) (goingDocumentValue, string, error) {
 	var text struct {
 		Markdown string `json:"markdown"`
+		Token    string `json:"token"`
 		Version  *int   `json:"version"`
 	}
 	if err := o.read.get(ctx, goingArtifactPath(id, "text"), &text); err != nil {
-		return goingDocumentValue{}, err
+		return goingDocumentValue{}, "", err
 	}
-	return goingDocumentValue{Version: text.Version, Content: text.Markdown}, nil
+	return goingDocumentValue{Version: text.Version, Content: text.Markdown}, text.Token, nil
+}
+
+// documentEdited is what a document edit left, read after it and held to its route's answer, which
+// names the token of the document the edit found and of the one it left, read in the edit's own
+// transaction (editArtifactResponse). A read after whose token is not the one the edit left read
+// another writer's document: the value after is unread, so the undo writes nothing back. A read
+// before whose token is not the one the edit found read a document another writer changed before
+// the edit, so its content is not what the edit replaced, which nothing answers: the write is
+// marked so (beforeUnread), and its undo writes nothing back either.
+func (o goingObserver) documentEdited(ctx context.Context, answer []byte, before goingObservation) (goingObservation, error) {
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
+	var edited struct {
+		Token         string `json:"token"`
+		PreviousToken string `json:"previous_token"`
+	}
+	if err := json.Unmarshal(answer, &edited); err != nil {
+		return observed, fmt.Errorf("read the edit's answer: %w", err)
+	}
+	if edited.Token == "" || edited.PreviousToken == "" {
+		return observed, errors.New("the edit's answer does not name the document it found and the one it left")
+	}
+	observed.beforeUnread = edited.PreviousToken != before.token
+	value, token, err := o.documentValue(ctx, before.target)
+	if err != nil {
+		return observed, err
+	}
+	if token != edited.Token {
+		return observed, goingRefusal{Status: http.StatusConflict, Code: "DOCUMENT_CHANGED",
+			Message: "another writer changed the document after this edit, before what the edit left was read"}
+	}
+	observed.value, observed.token = value, token
+	return observed, nil
 }
 
 // goingJSONOrNull is value as JSON, the literal null for none.

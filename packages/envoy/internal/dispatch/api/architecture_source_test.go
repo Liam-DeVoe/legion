@@ -220,14 +220,19 @@ func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handle
 
 // goingFixtureArchitectureGitHub wires a GitHub App at a stand-in where acme/arch — the
 // command-bar row fixtures' architecture source — is readable, so a sync of it imports rather than
-// access-failing (IsAccessFailure of githubapp.ErrNoAppKey). It returns the App config and the
-// stand-in's base URL for a test server's options. The App's signing key is generated once for the
-// package, since every command-bar rig wires this.
+// access-failing (IsAccessFailure of githubapp.ErrNoAppKey), and where acme/nobranch is installed
+// and holds no architecture branch, so a sync of it resolves its installation and is then refused
+// (githubapp.ErrNoBranch). It returns the App config and the stand-in's base URL for a test
+// server's options. The App's signing key is generated once for the package, since every
+// command-bar rig wires this.
 func goingFixtureArchitectureGitHub(t *testing.T) (*auth.AppConfig, string) {
 	t.Helper()
 	fake := &fakeGitHubApp{
-		installations: map[string]string{"acme/arch": "read"},
-		repos:         map[string]*fakeArchitectureRepo{"acme/arch": {commit: shaInfra, files: infraFiles()}},
+		installations: map[string]string{"acme/arch": "read", "acme/nobranch": "read"},
+		repos: map[string]*fakeArchitectureRepo{
+			"acme/arch":     {commit: shaInfra, files: infraFiles()},
+			"acme/nobranch": {commit: shaInfra, branchMissing: true},
+		},
 	}
 	return &auth.AppConfig{ClientID: "Iv1.test", PEM: goingFixtureAppPEM(t)}, githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
 }

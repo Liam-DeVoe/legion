@@ -40,6 +40,7 @@ import {
   SEARCH_OPERATOR_PHRASE,
 } from "../src/dispatch-api";
 import {
+  ARTIFACT_NAME_EXISTS_RULE,
   DISPATCH_BLOCK_UNITS,
   DISPATCH_EVENT_BODY_MAX,
   DISPATCH_HANDOFF_BODY_MAX,
@@ -297,6 +298,12 @@ const SearchQueryHint = ${JSON.stringify(SEARCH_QUERY_HINT)}
 // a project key gives it. Generated from PROJECT_KEY_RULE in packages/contracts so the server and
 // the tool word it once.
 const ProjectKeyRule = ${JSON.stringify(PROJECT_KEY_RULE)}
+
+// ArtifactNameExistsRule is what the dispatch command says of an upload under the name of a
+// document the owner already holds, which the command refuses without force; the command bar's
+// writes refuse that upload the same way. Generated from ARTIFACT_NAME_EXISTS_RULE in
+// packages/contracts so the server and the tool word it once.
+const ArtifactNameExistsRule = ${JSON.stringify(ARTIFACT_NAME_EXISTS_RULE)}
 
 // ProjectKeyPattern is a whole project key, as the server creates them and the projects.key check
 // constraint holds. Generated from PROJECT_KEY_PATTERN in packages/contracts, which the dispatch

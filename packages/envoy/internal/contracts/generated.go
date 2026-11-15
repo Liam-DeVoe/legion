@@ -206,6 +206,12 @@ const SearchQueryHint = "search with a short phrase of a few words, not a passag
 // the tool word it once.
 const ProjectKeyRule = "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE"
 
+// ArtifactNameExistsRule is what the dispatch command says of an upload under the name of a
+// document the owner already holds, which the command refuses without force; the command bar's
+// writes refuse that upload the same way. Generated from ARTIFACT_NAME_EXISTS_RULE in
+// packages/contracts so the server and the tool word it once.
+const ArtifactNameExistsRule = "An upload under the name of a document the owner already holds is refused: it writes that document's next version, over the text it holds. Change a document with dispatch doc-edit. Send the upload again with force (--force) to write the next version."
+
 // ProjectKeyPattern is a whole project key, as the server creates them and the projects.key check
 // constraint holds. Generated from PROJECT_KEY_PATTERN in packages/contracts, which the dispatch
 // command checks a key against, so the two accept the same keys.

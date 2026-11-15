@@ -350,6 +350,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		s.writeHandlerError(w, err)
 		return
 	}
+	// found is the thread's resolution as a resolve found it under the comment's lock, which the
+	// resolve answers beside the comment it left (resolvedComment).
+	var found *threadResolution
 	switch action {
 	case "resolve":
 		// An orphaned suggestion's mark is gone, so it has no projection kind to carry; the
@@ -363,6 +366,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if kindErr == nil {
 			projectionKind = kind
 		}
+		found = &threadResolution{Resolved: comment.Resolved, ResolvedBy: comment.ResolvedBy, ResolvedAt: comment.ResolvedAt}
 		var resolvedAt time.Time
 		if err := tx.QueryRow(r.Context(), `
 			update comments
@@ -529,6 +533,10 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		WriteJSON(w, http.StatusOK, accepted)
 		return
 	}
+	if found != nil {
+		WriteJSON(w, http.StatusOK, resolvedComment{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), Previous: *found})
+		return
+	}
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
@@ -539,4 +547,21 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 type acceptedComment struct {
 	shapedComment
 	Lost *bool `json:"lost"`
+}
+
+// threadResolution is a thread's resolution as a comment's read answers it: whether it is
+// resolved, by whom and when, null for an open thread.
+type threadResolution struct {
+	Resolved   bool         `json:"resolved"`
+	ResolvedBy *model.Actor `json:"resolved_by"`
+	ResolvedAt *string      `json:"resolved_at"`
+}
+
+// resolvedComment is what POST /api/v1/comments/{id}/resolve answers: the comment as the resolve
+// left it, and beside it Previous, the thread's resolution when the resolve took the comment's
+// lock. A caller that undoes the resolve reads both here: what it reads of the thread before or
+// after the resolve may have moved on either side of the resolve's own transaction.
+type resolvedComment struct {
+	shapedComment
+	Previous threadResolution `json:"previous"`
 }

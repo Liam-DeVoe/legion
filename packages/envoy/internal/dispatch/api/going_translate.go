@@ -778,8 +778,9 @@ func goingUploadContent(arguments map[string]any) (string, error) {
 }
 
 // goingTranslateUpload uploads the content as a document of the issue or the project, as the
-// JSON form of the route takes it. `force` is the CLI's own check of what the owner holds under
-// the name, so it is not sent.
+// JSON form of the route takes it. `force` is no field of the route's: the writes route reads it
+// before it sends the upload, and refuses an upload over a name the owner holds without it,
+// however the write came to run (goingUploadForceRefusal), as the dispatch command does.
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {

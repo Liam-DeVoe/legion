@@ -12,6 +12,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"unicode"
@@ -19,6 +20,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -419,6 +422,61 @@ func goingUploadsOver(prepared goingPrepared, before goingObservation, words str
 	}
 	_, held := before.value.(goingUploadBefore)
 	return (held || before.ownerUnnamed) && !goingWordsName(words, goingText(prepared.arguments, argument))
+}
+
+// goingUploadForceRefusal is the refusal of an upload the write is about to send, however the
+// write came to run, under the name of a document its owner already holds - as the read before it
+// found one, under the owner its route writes to (uploadedOver), or may hold where it could name
+// no owner to read - with content to store and no `force`: force is what asks for that document's
+// next version, and without it the dispatch command refuses the upload, which the bar does in the
+// command's words (contracts.ArtifactNameExistsRule). An upload that stores nothing, its content
+// blank, is the route's to refuse under a held name whatever force says, as the command leaves it.
+// nil where the upload may be sent.
+func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) error {
+	argument, uploads := goingUploadNames[prepared.action]
+	if !uploads || prepared.arguments["force"] == true || strings.TrimSpace(goingText(prepared.arguments, "content")) == "" {
+		return nil
+	}
+	owner := "the owner this upload writes to"
+	if target, named := goingRouteUploadOwner(prepared.route, prepared.call.path); named {
+		switch {
+		case target.IssueKey != nil:
+			owner = "issue " + *target.IssueKey
+		case target.Project != "":
+			owner = "project " + target.Project
+		default:
+			owner = "session " + target.Session
+		}
+	}
+	var reason string
+	switch held := before.held; {
+	case held != nil && len(held.Versions) == 0:
+		reason = fmt.Sprintf("%s already holds %s (slug %s, kind %s), which has no version yet and which %s created.",
+			owner, held.Name, held.Slug, held.Kind, goingActorText(held.CreatedBy))
+	case held != nil:
+		newest := held.Versions[len(held.Versions)-1]
+		wrote := goingActorText(held.CreatedBy)
+		if len(newest.Authors) > 0 {
+			authors := make([]string, len(newest.Authors))
+			for index, author := range newest.Authors {
+				authors[index] = goingActorText(author)
+			}
+			wrote = strings.Join(authors, " and ")
+		}
+		reason = fmt.Sprintf("%s already holds %s (slug %s, kind %s) at version %d, which %s wrote.",
+			owner, held.Name, held.Slug, held.Kind, newest.Number, wrote)
+	case before.ownerUnnamed:
+		reason = fmt.Sprintf("%s cannot be named, so it may already hold %s.", owner, strings.TrimSpace(goingText(prepared.arguments, argument)))
+	default:
+		return nil
+	}
+	return GoingArgumentError{Action: prepared.action, Reason: reason + " " + contracts.ArtifactNameExistsRule}
+}
+
+// goingActorText names an actor as the dispatch command names a document's author: its kind and
+// its id.
+func goingActorText(actor model.Actor) string {
+	return actor.Kind + " " + actor.ID
 }
 
 // goingIDOf is an item's id as the words and an argument are compared by, and whether value is an
