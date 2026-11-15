@@ -21,6 +21,7 @@ import {
   serves,
   workerPane,
 } from "./daemon-pane";
+import { bundled, spawnChecked } from "./test-programs";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.
@@ -29,6 +30,10 @@ const skip = skipWithout("go");
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
 // directory under its state directory.
 const rig = temporaryDirectory("skill-scenarios-pane");
+
+/** The pane composer the rows run, a bundle built from worker-pane.ts for this suite, so no run
+ * of it transpiles it again (test-programs.ts). */
+const WORKER_PANE = bundled(path.join(import.meta.dir, "worker-pane.ts"));
 
 // The caller's home, where the profile's agent directory and its envoy.json live: a scratch one, so
 // no envoy.json of the person running the test is read.
@@ -703,9 +708,9 @@ test.skipIf(skip)(
         .map(([key, value]) => `${key}=${value}\n`)
         .join("")
     );
-    const built = Bun.spawnSync([
+    const built = spawnChecked([
       "bun",
-      path.join(import.meta.dir, "worker-pane.ts"),
+      WORKER_PANE,
       dir,
       path.join(dir, "base.env"),
       "13399",
@@ -752,9 +757,9 @@ test("worker-pane.ts refuses a world that names no default branch", () => {
       .map(([key, value]) => `${key}=${value}\n`)
       .join("")
   );
-  const built = Bun.spawnSync([
+  const built = spawnChecked([
     "bun",
-    path.join(import.meta.dir, "worker-pane.ts"),
+    WORKER_PANE,
     dir,
     path.join(dir, "base.env"),
     "13399",
@@ -779,9 +784,9 @@ test("worker-pane.ts refuses a world.json that is no JSON, naming the file", () 
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "world.json"), "{not json");
   writeFileSync(path.join(dir, "base.env"), "");
-  const built = Bun.spawnSync([
+  const built = spawnChecked([
     "bun",
-    path.join(import.meta.dir, "worker-pane.ts"),
+    WORKER_PANE,
     dir,
     path.join(dir, "base.env"),
     "13399",

@@ -7,6 +7,12 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { claimRefusal, countDefault, notCurrentPhase, refusalIn } from "./daemon-pane";
+import { bundled, spawnChecked } from "./test-programs";
+
+/** The daemon stand-in and the gh stand-in the rows start, each a bundle built from its source
+ * for this suite, so no start transpiles it again (test-programs.ts). */
+const DAEMON_STANDIN = bundled(path.join(import.meta.dir, "daemon-standin.ts"));
+const GH_STANDIN = bundled(path.join(import.meta.dir, "gh-standin.ts"));
 
 /** This checkout, the one the head label is built from, whose daemon's routes a stand-in reads
  * out of the run's built-from by default. */
@@ -69,19 +75,7 @@ async function standin(
   if (checkout !== "") writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
   const log = path.join(dir, "daemon.log");
   const child = Bun.spawn(
-    [
-      "bun",
-      path.join(import.meta.dir, "daemon-standin.ts"),
-      "0",
-      log,
-      token,
-      "skills1",
-      "LWEVAL-1",
-      dir,
-      role,
-      startIn,
-      completed,
-    ],
+    ["bun", DAEMON_STANDIN, "0", log, token, "skills1", "LWEVAL-1", dir, role, startIn, completed],
     { stdout: "pipe", stderr: "pipe" }
   );
   const reader = child.stdout.getReader();
@@ -146,7 +140,7 @@ async function standin(
 
 /** Runs git in `dir` under an identity of its own and no configuration of the host's. */
 function git(dir: string, ...args: string[]): string {
-  const result = Bun.spawnSync(
+  const result = spawnChecked(
     ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
     { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
   );
@@ -190,10 +184,10 @@ function pullRequest(dir: string, state = "CLEAN") {
   const review = (event: string, commit: string) => {
     const body = path.join(dir, `review-${event}.json`);
     writeFileSync(body, JSON.stringify({ commit_id: commit, event, body: "the round's review" }));
-    const call = Bun.spawnSync(
+    const call = spawnChecked(
       [
         "bun",
-        path.join(import.meta.dir, "gh-standin.ts"),
+        GH_STANDIN,
         "gh",
         "api",
         "--method",
@@ -826,9 +820,9 @@ test("a run of a label the rig models no daemon for fails the boot", () => {
       base: WORLD_BASE,
     })
   );
-  const boot = Bun.spawnSync([
+  const boot = spawnChecked([
     "bun",
-    path.join(import.meta.dir, "daemon-standin.ts"),
+    DAEMON_STANDIN,
     "0",
     path.join(dir, "daemon.log"),
     path.join(dir, "boot-token"),
@@ -1182,9 +1176,9 @@ test.skipIf(skip)(
         base: WORLD_BASE,
       })
     );
-    const boot = Bun.spawnSync([
+    const boot = spawnChecked([
       "bun",
-      path.join(import.meta.dir, "daemon-standin.ts"),
+      DAEMON_STANDIN,
       "0",
       path.join(dir, "daemon.log"),
       path.join(dir, "boot-token"),

@@ -15,6 +15,7 @@ import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { bundled, spawnChecked } from "./test-programs";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -28,6 +29,10 @@ const runs = path.join(work, "runs");
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
+/** The scorer the rows run as rig.sh runs it, a bundle built from score.ts for this suite, so no
+ * run of it transpiles score.ts and its imports again (test-programs.ts). Reserved here, above
+ * the hook below that runs it, for the same reason as `pushWork`. */
+const SCORE = bundled(path.join(import.meta.dir, "score.ts"));
 
 /**
  * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
@@ -338,7 +343,7 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // this file runs.
 stagings.push(() => {
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync(
+    const result = spawnChecked(
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
       { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
     );
@@ -5228,7 +5233,7 @@ const SEED_SETTINGS = [
   "core.autocrlf=false",
 ];
 const seedGit = (dir: string, env: Record<string, string | undefined>, args: string[]) => {
-  const result = Bun.spawnSync(
+  const result = spawnChecked(
     ["git", ...SEED_SETTINGS.flatMap((setting) => ["-c", setting]), "-C", dir, ...args],
     { env: seedGitEnv(env) }
   );
@@ -7011,7 +7016,7 @@ let scoredExitCode: number | null = null;
 // beforeEach/afterEach hook timed out" and says nothing about the scorer. 120s is this file's
 // own staging bound.
 beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  const scored = spawnChecked(["bun", SCORE, "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 }, 120_000);
@@ -7492,9 +7497,9 @@ test("threads-closed, text-fixes: a wake copied to a fourth role's topic fails",
 // 2026-11-09, where a publish read out of an `eval` cell scored `toldReviewer` with the reviewer
 // half booted on an empty prompt. Both read the one record of what Envoy accepted.
 test("published: the harness reads every message the score counts, in order", () => {
-  const read = Bun.spawnSync([
+  const read = spawnChecked([
     "bun",
-    path.join(import.meta.dir, "score.ts"),
+    SCORE,
     "published",
     path.join(runs, "threads-closed-text-fixes-head-29"),
     "reviewer",
@@ -7504,9 +7509,9 @@ test("published: the harness reads every message the score counts, in order", ()
   expect(sent).toHaveLength(1);
   expect(sent[0].topic).toEndWith("-reviewer");
   expect(sent[0].message).toContain(fix.fixed);
-  const none = Bun.spawnSync([
+  const none = spawnChecked([
     "bun",
-    path.join(import.meta.dir, "score.ts"),
+    SCORE,
     "published",
     path.join(runs, "threads-closed-text-fixes-head-29"),
     "implementer",
@@ -7514,9 +7519,9 @@ test("published: the harness reads every message the score counts, in order", ()
   expect(JSON.parse(none.stdout.toString())).toEqual([]);
   // Every message of a topic, in Envoy's own order, since Envoy delivers each one: a reviewer
   // handed only the last would be missing a wake its own run sent.
-  const both = Bun.spawnSync([
+  const both = spawnChecked([
     "bun",
-    path.join(import.meta.dir, "score.ts"),
+    SCORE,
     "published",
     path.join(runs, "threads-closed-text-fixes-head-30"),
     "reviewer",
@@ -7538,13 +7543,7 @@ test("published: a record this cannot read is reported, never thrown at the harn
   const broken = path.join(runs, "..", "published-unreadable");
   await Bun.write(path.join(broken, "published.jsonl"), '{"at":"2026-09-30T17:28:00.000Z"\n');
   await Bun.write(path.join(broken, "sessions", "run.jsonl"), `${JSON.stringify(header[0])}\n`);
-  const read = Bun.spawnSync([
-    "bun",
-    path.join(import.meta.dir, "score.ts"),
-    "published",
-    broken,
-    "reviewer",
-  ]);
+  const read = spawnChecked(["bun", SCORE, "published", broken, "reviewer"]);
   expect(read.exitCode).toBe(0);
   expect(JSON.parse(read.stdout.toString())).toEqual([]);
   expect(read.stderr.toString()).toContain("score.ts published:");
@@ -9074,14 +9073,7 @@ beforeAll(() => {
 });
 
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
-  const read = Bun.spawnSync([
-    "bun",
-    path.join(import.meta.dir, "score.ts"),
-    "live-read",
-    liveRun,
-    liveSkills,
-    liveLogs,
-  ]);
+  const read = spawnChecked(["bun", SCORE, "live-read", liveRun, liveSkills, liveLogs]);
   const text = read.stdout.toString();
   expect(read.exitCode).toBe(0);
   const skillChars = [...skillWhole].length;

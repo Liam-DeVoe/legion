@@ -1,7 +1,16 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeAll, expect, test } from "bun:test";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { sentBody } from "./gh-call";
 import {
@@ -12,6 +21,7 @@ import {
   WORLD_ROUTES,
   worldRouteOf,
 } from "./gh-routes";
+import { bundled, spawnChecked } from "./test-programs";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
 // has every pushing role read that head after its own push and stop when it is not its commit. A
@@ -20,7 +30,9 @@ import {
 // head, found the fixture's
 // commit and ended with a WAITING line instead of completing. So the stand-in reads the tip of the
 // run's own bare remote at the call, and serves the pull request's diff from it too.
-const STANDIN = path.join(import.meta.dir, "gh-standin.ts");
+// The rows spawn the stand-in's bundle, built from gh-standin.ts for this suite (test-programs.ts
+// says why: a spawn of the source transpiles it on every call).
+const STANDIN = bundled(path.join(import.meta.dir, "gh-standin.ts"));
 const made: string[] = [];
 /** rig.sh's own functions and top-level assignments, read out of the script: the routes every
  * world shares are fixture_write's, built here by running it, as rig.test.ts builds its worlds,
@@ -41,7 +53,7 @@ afterEach(() => {
 });
 
 function git(dir: string, ...args: string[]): string {
-  const result = Bun.spawnSync(
+  const result = spawnChecked(
     ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
     { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
   );
@@ -49,31 +61,32 @@ function git(dir: string, ...args: string[]): string {
   return result.stdout.toString().trim();
 }
 
-/** A run directory holding the routes rig.sh's fixture_write writes for every world, run here
- * against a pull request whose head is the first of two commits and whose body is "a body".
- * With `fixture` it is the run of a scenario that builds a worker world: the world.json
- * fixture_write writes and a bare remote of its own whose issue branch holds those two commits.
- * Without it, it is the run of a scenario that builds none, which has neither — rig.sh writes
- * the world and opens the remote together (worker_fixture), so no run of this rig has one and
- * not the other. No world routes `gh pr diff` (rig.sh's round_world): the diff is the run's own
- * remote's. No world routes the submit of a review either: the stand-in answers that from what
- * the run has already done (gh-standin.ts's reviewSubmission). */
-function runDir(options: { fixture: boolean }): { dir: string; first: string; second: string } {
-  const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-"));
-  made.push(dir);
-  const work = path.join(dir, "work");
+/** The run directory every `runDir` is a copy of: the routes rig.sh's fixture_write writes for
+ * every world, run here against a pull request whose head is the first of two commits and whose
+ * body is "a body", the world.json it writes, and a bare remote of its own whose issue branch
+ * holds those two commits. Nothing fixture_write writes names the directory, so a copy is the
+ * run it would have written there. It is built once, in the hook below, because building it is a
+ * dozen git and bash processes, which a row that built its own spent before its first call of
+ * the stand-in: measured on 2026-11-15 on a 2-CPU pod running two suites of this directory at
+ * once, a build took a median of 471 ms (933 ms at most) and a copy 130 ms (154 ms). Each row
+ * copies it, so no row reads what another wrote; the property each row checks is the one it
+ * checked on a directory of its own. */
+const template = temporaryDirectory("gh-standin-template");
+const heads = { first: "", second: "" };
+beforeAll(() => {
+  const work = path.join(template, "work");
   mkdirSync(work);
   git(work, "init", "-q", "-b", "legion/LWEVAL-1");
   writeFileSync(path.join(work, "greet.ts"), "export const greet = () => 1;\n");
   git(work, "add", "-A");
   git(work, "commit", "-qm", "the approved head");
-  const first = git(work, "rev-parse", "HEAD");
+  heads.first = git(work, "rev-parse", "HEAD");
   writeFileSync(path.join(work, "docs.md"), "the text fix\n");
   git(work, "add", "-A");
   git(work, "commit", "-qm", "docs: the text fix");
-  const second = git(work, "rev-parse", "HEAD");
-  git(work, "update-ref", "refs/heads/legion/LWEVAL-1", first);
-  const written = Bun.spawnSync(
+  heads.second = git(work, "rev-parse", "HEAD");
+  git(work, "update-ref", "refs/heads/legion/LWEVAL-1", heads.first);
+  const written = spawnChecked(
     [
       "bash",
       "-c",
@@ -86,21 +99,36 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
         "fixture_write '[]' '\"\"' '[]'",
       ].join("\n"),
       "-",
-      dir,
-      first,
+      template,
+      heads.first,
     ],
     { env: { ...process.env } }
   );
   if (written.exitCode !== 0) throw new Error(`fixture_write: ${written.stderr.toString()}`);
-  if (options.fixture) {
-    git(dir, "clone", "-q", "--bare", work, path.join(dir, "remote.git"));
-    git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", first);
-  } else rmSync(path.join(dir, "world.json"));
-  return { dir, first, second };
+  git(template, "clone", "-q", "--bare", work, path.join(template, "remote.git"));
+  git(path.join(template, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", heads.first);
+});
+
+/** A run directory of its own, a copy of `template`. With `fixture` it is the run of a scenario
+ * that builds a worker world: the world.json fixture_write writes and the bare remote. Without
+ * it, it is the run of a scenario that builds none, which has neither — rig.sh writes the world
+ * and opens the remote together (worker_fixture), so no run of this rig has one and not the
+ * other. No world routes `gh pr diff` (rig.sh's round_world): the diff is the run's own
+ * remote's. No world routes the submit of a review either: the stand-in answers that from what
+ * the run has already done (gh-standin.ts's reviewSubmission). */
+function runDir(options: { fixture: boolean }): { dir: string; first: string; second: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-"));
+  made.push(dir);
+  cpSync(template, dir, { recursive: true });
+  if (!options.fixture) {
+    rmSync(path.join(dir, "remote.git"), { recursive: true });
+    rmSync(path.join(dir, "world.json"));
+  }
+  return { dir, ...heads };
 }
 
 const headOf = (dir: string) =>
-  Bun.spawnSync(
+  spawnChecked(
     ["bun", STANDIN, "gh", "pr", "view", "1001", "--json", "headRefOid", "--jq", ".headRefOid"],
     {
       env: { ...process.env, SKILL_SCENARIO_RUN: dir },
@@ -112,7 +140,7 @@ const headOf = (dir: string) =>
 /** `gh api --method POST <route>` with `rest` after it, in the run under `dir`: the create of a
  * review and the submit of a pending one, as the reviewer's prompt makes them. */
 const apiPost = (dir: string, route: string, ...rest: string[]) =>
-  Bun.spawnSync(["bun", STANDIN, "gh", "api", "--method", "POST", route, ...rest], {
+  spawnChecked(["bun", STANDIN, "gh", "api", "--method", "POST", route, ...rest], {
     env: { ...process.env, SKILL_SCENARIO_RUN: dir },
   });
 const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
@@ -311,7 +339,7 @@ test("a submit that is the run's first gh call is refused, not thrown", () => {
 /** `gh <args…>` in the run under `dir`, with its status, its stdout and its stderr: the rows
  * below read a refusal's own text as well as the answer. */
 const ghCall = (dir: string, ...args: string[]) => {
-  const made = Bun.spawnSync(["bun", STANDIN, "gh", ...args], {
+  const made = spawnChecked(["bun", STANDIN, "gh", ...args], {
     env: { ...process.env, SKILL_SCENARIO_RUN: dir },
   });
   return {
@@ -887,7 +915,7 @@ test("a run with no worker fixture leaves the submit of a review to the routes",
 /** What the stand-in answers for `gh <args...>` in run directory `dir`, as `by` if the run names
  * an agent. */
 const answer = (dir: string, args: string[], by?: string) =>
-  Bun.spawnSync(["bun", STANDIN, "gh", ...args], {
+  spawnChecked(["bun", STANDIN, "gh", ...args], {
     env: {
       ...process.env,
       SKILL_SCENARIO_RUN: dir,
@@ -931,7 +959,7 @@ test("a world.json that does not parse exits with an error, and one with no base
   ]) {
     const { dir } = runDir({ fixture: true });
     writeFileSync(path.join(dir, "world.json"), text);
-    const call = Bun.spawnSync(["bun", STANDIN, "gh", "pr", "view", "1001"], {
+    const call = spawnChecked(["bun", STANDIN, "gh", "pr", "view", "1001"], {
       env: { ...process.env, SKILL_SCENARIO_RUN: dir },
     });
     expect(call.exitCode).toBe(2);
@@ -1041,7 +1069,7 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
   );
   writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(fixtures));
   const checks = () =>
-    Bun.spawnSync(["bun", STANDIN, "gh", "pr", "checks", "1001"], {
+    spawnChecked(["bun", STANDIN, "gh", "pr", "checks", "1001"], {
       env: { ...process.env, SKILL_SCENARIO_RUN: dir },
     });
   const merge = () => [
@@ -1080,7 +1108,7 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
 test("--open opens the record with one line and records no call", () => {
   const { dir } = runDir({ fixture: true });
   const open = () =>
-    Bun.spawnSync(["bun", STANDIN, "gh", "--open"], {
+    spawnChecked(["bun", STANDIN, "gh", "--open"], {
       env: { ...process.env, SKILL_SCENARIO_RUN: dir },
     });
   const recorded = () =>
@@ -1141,7 +1169,7 @@ test("a comparison of two commits is read from the run's own remote", () => {
 // commits a repository does not hold, and so does the stand-in, through the routes.
 test("a comparison the run's remote cannot resolve is 404, as GitHub answers it", () => {
   const { dir } = runDir({ fixture: true });
-  const call = Bun.spawnSync(
+  const call = spawnChecked(
     ["bun", STANDIN, "gh", "api", "repos/example/widgets/compare/deadbeef...cafed00d"],
     { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
   );
@@ -1233,7 +1261,7 @@ test("a compare ref that reads as an option is refused, not run, on either side"
     ["head", (option: string) => `${first}...${option}`],
   ] as [string, (option: string) => string][]) {
     const written = path.join(dir, `ref-wrote-this-${name}`);
-    const call = Bun.spawnSync(
+    const call = spawnChecked(
       [
         "bun",
         STANDIN,
@@ -1263,7 +1291,7 @@ test("a compare ref that reads as an option is refused, not run, on either side"
 test("a compare head that reads as an option writes no file through the counts either", () => {
   const { dir } = runDir({ fixture: true });
   const written = path.join(dir, "counts-wrote-this");
-  const call = Bun.spawnSync(
+  const call = spawnChecked(
     ["bun", STANDIN, "gh", "api", `repos/example/widgets/compare/main...--output=${written}`],
     { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
   );
@@ -1339,7 +1367,7 @@ test("a submit answered from the run's own record prints no route's stderr and e
 // round's own approval answered as a submission GitHub never took.
 test("a create whose body is on stdin as JSON lines leaves a pending review", () => {
   const { dir, first } = runDir({ fixture: true });
-  const created = Bun.spawnSync(
+  const created = spawnChecked(
     ["bun", STANDIN, "gh", "api", "--method", "POST", REVIEWS, "--input", "-"],
     {
       env: { ...process.env, SKILL_SCENARIO_RUN: dir },

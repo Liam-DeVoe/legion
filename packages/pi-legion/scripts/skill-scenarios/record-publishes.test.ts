@@ -5,11 +5,16 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
 import { connect } from "nats";
+import { bundled } from "./test-programs";
 
 // The recorder reads the bus, so a host with no NATS server runs none of this.
 const skip = skipWithout("nats-server");
 
 const work = temporaryDirectory("skill-scenarios-record");
+
+/** The recorder the rows start, a bundle built from record-publishes.ts for this suite, so no
+ * start transpiles it again (test-programs.ts). */
+const RECORDER = bundled(path.join(import.meta.dir, "record-publishes.ts"));
 
 /** A NATS server on a port the kernel picks, and the recorder subscribed to it, writing the run's
  * record. It returns the publisher's connection, a reader of the record and a stop for both.
@@ -38,10 +43,11 @@ async function recording(name: string, prefix: string) {
   const url = `nats://127.0.0.1:${listening.exec(printed)?.[1]}`;
   const file = path.join(dir, "published.jsonl");
   await Bun.write(file, "");
-  const recorder = Bun.spawn(
-    ["bun", path.join(import.meta.dir, "record-publishes.ts"), file, prefix],
-    { env: { ...process.env, SKILL_SCENARIOS_NATS_URL: url }, stdout: "pipe", stderr: "pipe" }
-  );
+  const recorder = Bun.spawn(["bun", RECORDER, file, prefix], {
+    env: { ...process.env, SKILL_SCENARIOS_NATS_URL: url },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const printing = recorder.stdout.getReader();
   let said = "";
   while (!said.includes("recording")) {
@@ -427,14 +433,11 @@ test("the record opens only once the server has taken the subscription", async (
       },
     },
   });
-  const recorder = Bun.spawn(
-    ["bun", path.join(import.meta.dir, "record-publishes.ts"), file, "legion-held-lweval-1-"],
-    {
-      env: { ...process.env, SKILL_SCENARIOS_NATS_URL: `nats://127.0.0.1:${bus.port}` },
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
+  const recorder = Bun.spawn(["bun", RECORDER, file, "legion-held-lweval-1-"], {
+    env: { ...process.env, SKILL_SCENARIOS_NATS_URL: `nats://127.0.0.1:${bus.port}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   try {
     // The subscription is at this bus and nothing has answered it, which is the moment the
     // record must still be empty. Nothing shows a line unwritten in no time at all, so this

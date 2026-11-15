@@ -1,0 +1,103 @@
+// How the rig's test files start the programs a run starts: each program built once per suite
+// into a bundle the rows spawn, and every child a row waits on synchronously read through one
+// check that turns a child bun test killed into an error that says so. Test files import this;
+// no run's world does.
+//
+// Why a bundle. A row that spawns `bun gh-standin.ts` pays for bun transpiling the stand-in and
+// every module it imports on each call, and some rows make a dozen calls. Measured on 2026-11-15
+// on a 2-CPU pod running two suites of this directory at once, `gh pr view` through the
+// stand-in's source took a median of 225 ms (467 ms at most) and through its bundle 162 ms
+// (293 ms). The bundle is built from the source in the suite's `beforeAll`, so every row still
+// runs the code of this checkout, and bun only loads it. The build is no more than 0.7 s of the
+// hook's bound on that host (score.ts's, the largest).
+//
+// Why the check. When a row outlives its bound, bun test kills the processes the row started
+// and the row's code runs on: a `Bun.spawnSync` returns with no exit code (`null`, which its
+// type does not admit) and a signal, so a row read `expect(read.code).toBe(1)` as
+// `Received: null` and a reader took it for a stand-in that answered nothing. A row that waits
+// on a `Bun.spawn` child is another matter: bun test reports it timed out and runs none of it
+// after the await, so nothing it reads of the killed child reaches the output, and no check of
+// that child would either.
+import { beforeAll } from "bun:test";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { BunPlugin, SpawnOptions, SyncSubprocess } from "bun";
+
+/** `cmds` short enough for an error: a `bash -c` script is the rig's own functions, hundreds of
+ * lines, of which the first is enough to name it. */
+function named(cmds: readonly string[]): string {
+  return cmds
+    .slice(0, 6)
+    .map((word) => {
+      const line = word.split("\n")[0] ?? "";
+      return line.length > 60 || line !== word ? `${line.slice(0, 60)}…` : word;
+    })
+    .concat(cmds.length > 6 ? ["…"] : [])
+    .join(" ");
+}
+
+/** `Bun.spawnSync(cmds, options)`, or an error naming the signal when the child ended by one
+ * (with `exitCode` null), so no row reads a killed child's `null` as the program's status. */
+export function spawnChecked<
+  const In extends SpawnOptions.Writable = "ignore",
+  const Out extends SpawnOptions.Readable = "pipe",
+  const Err extends SpawnOptions.Readable = "pipe",
+>(cmds: string[], options?: SpawnOptions.SpawnSyncOptions<In, Out, Err>): SyncSubprocess<Out, Err> {
+  const made = Bun.spawnSync(cmds, options);
+  // The type says `exitCode: number`; bun hands back null for a child a signal ended.
+  const code: number | null = made.exitCode;
+  if (made.signalCode !== undefined || code === null)
+    throw new Error(
+      `${named(cmds)} ended by ${made.signalCode ?? "no signal bun reported"} with no exit code, so it gave no answer to read. bun test kills the processes a row started when the row outlives its bound: 5000 ms, Bun's default, unless the row, the file's setDefaultTimeout or \`bun test --timeout\` names another`
+    );
+  return made;
+}
+
+/** Each place a module names itself, and what that is for the module at `file`. */
+const LOCATION = /\bimport\.meta\.(dirname|dir|filename|file|path|url)\b/g;
+function locationOf(file: string, key: string): string {
+  if (key === "dir" || key === "dirname") return path.dirname(file);
+  if (key === "file") return path.basename(file);
+  if (key === "url") return pathToFileURL(file).href;
+  return file;
+}
+/** A bundle runs from its own directory, so a module's `import.meta.dir` there names the
+ * bundle's and not the module's: daemon-pane.ts finds the Go programs it runs beside itself and
+ * score.ts the checkout two levels up. This writes each such name as the literal the source
+ * would have read where it lies, so the bundled module reaches what the source does. Bun's
+ * bundler already answers `import.meta.main` false in every module but the entry. */
+const OWN_LOCATION: BunPlugin = {
+  name: "own-location",
+  setup(build) {
+    build.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, async ({ path: file, loader }) => {
+      const text = await Bun.file(file).text();
+      if (text.search(LOCATION) < 0) return undefined;
+      return {
+        contents: text.replace(LOCATION, (_, key: string) => JSON.stringify(locationOf(file, key))),
+        loader,
+      };
+    });
+  },
+};
+
+/** The path of a bundle of the program at `source`, built from it in a `beforeAll` into a
+ * directory of the suite's own that its `afterAll` removes. Call it where `temporaryDirectory`
+ * may be called — a test file's module scope or a `describe` body — and spawn the path with
+ * `bun` as the source was: a `-t` filter that selects no row there builds nothing. The build
+ * takes the hook bound of the scope it is called in. */
+export function bundled(source: string): string {
+  const name = path.basename(source, path.extname(source));
+  const directory = temporaryDirectory(`bundle-${name}`);
+  beforeAll(async () => {
+    const built = await Bun.build({
+      entrypoints: [source],
+      target: "bun",
+      outdir: directory,
+      naming: "[name].js",
+      plugins: [OWN_LOCATION],
+    });
+    if (!built.success) throw new AggregateError(built.logs, `bun build ${source} failed`);
+  });
+  return path.join(directory, `${name}.js`);
+}

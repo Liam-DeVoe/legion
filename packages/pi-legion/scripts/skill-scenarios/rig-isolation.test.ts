@@ -11,6 +11,7 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { spawnChecked } from "./test-programs";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -39,7 +40,7 @@ const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
 // once, says which host refuses it and in its words, as the python3 rows' warning does. The row
 // of a refused run, and the one refused before the namespace, run everywhere.
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-const probe = Bun.spawnSync(
+const probe = spawnChecked(
   [
     "bash",
     "-c",

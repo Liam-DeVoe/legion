@@ -20,11 +20,16 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
+import { bundled, spawnChecked } from "./test-programs";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
 // one minute.
 setDefaultTimeout(60_000);
+
+/** The gh stand-in the rows call and put behind a pane's `gh`, a bundle built from gh-standin.ts
+ * for this suite, so no call transpiles it again (test-programs.ts). */
+const GH_STANDIN = bundled(path.join(import.meta.dir, "gh-standin.ts"));
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
@@ -74,7 +79,7 @@ function quotedAssignment(name: string): string {
 /** What rig.sh's namespace_probe prints and its status, under `env`: the probe every run's start
  * makes (require_namespace), in the same form launch.sh starts the agent in. */
 function namespaceProbe(env: Record<string, string>) {
-  const result = Bun.spawnSync(
+  const result = spawnChecked(
     ["bash", "-c", `${assignment("namespace_path")}\n${fn("namespace_probe")}\nnamespace_probe`],
     { env }
   );
@@ -142,7 +147,7 @@ function keyFile(mode: number): string {
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
-  const result = Bun.spawnSync(
+  const result = spawnChecked(
     [
       "bash",
       "-c",
@@ -171,7 +176,7 @@ describe("install_model_route", () => {
     );
     expect(models).toContain(`!exec ${path.join(dir, "model-key", "anthropic-key")}`);
     expect(models).toContain("https://api.anthropic.com");
-    const served = Bun.spawnSync([path.join(dir, "model-key", "anthropic-key")]);
+    const served = spawnChecked([path.join(dir, "model-key", "anthropic-key")]);
     expect(served.stdout.toString().trim()).toBe("sk-ant-rig-test-0000000000000000");
     expect(existsSync(path.join(dir, "key", "anthropic-key.log"))).toBe(true);
   });
@@ -472,7 +477,7 @@ describe("a setup that fails after install_model_route", () => {
 /** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
  * environment of PATH and the test's own HOME. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
-  const result = Bun.spawnSync(["bash", "-c", script, "-", ...args], {
+  const result = spawnChecked(["bash", "-c", script, "-", ...args], {
     env: { ...childEnv, ...env },
   });
   return {
@@ -510,7 +515,7 @@ function treeDigest(dir: string): string {
 // no .jj, and jj alone printed an empty commit line for it.
 describe("checkout_commit", () => {
   const git = (dir: string, ...args: string[]) => {
-    const result = Bun.spawnSync(
+    const result = spawnChecked(
       [
         "git",
         "-C",
@@ -641,7 +646,7 @@ describe("omp_ancestor", () => {
     const top = freshDir("omp-rig");
     mkdirSync(path.join(top, ".omp"));
     const work = path.join(top, "work");
-    const result = Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
+    const result = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
       env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
     });
     expect(result.exitCode).toBe(1);
@@ -1105,7 +1110,7 @@ describe("push_guard", () => {
           })
       );
       const real = (...args: string[]) =>
-        Bun.spawnSync([
+        spawnChecked([
           "/usr/bin/git",
           "-c",
           "user.name=A",
@@ -1121,7 +1126,7 @@ describe("push_guard", () => {
       expect(real("-C", src, "add", "-A").exitCode).toBe(0);
       expect(real("-C", src, "commit", "-qm", "init").exitCode).toBe(0);
       const push = () => {
-        const made = Bun.spawnSync(
+        const made = spawnChecked(
           ["/bin/sh", "-c", 'git -C "$1" push "$2" HEAD:refs/heads/main', "-", src, remote],
           {
             env: vars,
@@ -1258,7 +1263,7 @@ describe("scenario_case", () => {
   // calls scenario_case before it loads a label or locks the services).
   test("a batch of a cased scenario refuses an unset case before it starts anything", () => {
     const dir = freshDir("reviewer-batch");
-    const result = Bun.spawnSync(
+    const result = spawnChecked(
       ["bash", path.join(import.meta.dir, "rig.sh"), "batch", "reviewer-text-findings", "1", "x"],
       { env: { ...childEnv, SKILL_SCENARIOS_WORK: dir } }
     );
@@ -1379,7 +1384,7 @@ describe("worker_boot", () => {
     [
       "#!/bin/sh",
       `printf '%s\\n' "$*" >>"${path.join(dir, "pane-gh-args")}"`,
-      `exec "${process.execPath}" "${path.join(import.meta.dir, "gh-standin.ts")}" gh "$@"`,
+      `exec "${process.execPath}" "${GH_STANDIN}" gh "$@"`,
       "",
     ].join("\n");
 
@@ -1792,7 +1797,7 @@ describe("health", () => {
     const names = ["GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"];
     const printed = withoutGo
       ? undefined
-      : Bun.spawnSync(["go", "env", "-json", ...names], { stdout: "pipe", stderr: "pipe" });
+      : spawnChecked(["go", "env", "-json", ...names], { stdout: "pipe", stderr: "pipe" });
     const resolved: Record<string, string> =
       printed?.exitCode === 0 ? JSON.parse(printed.stdout.toString()) : {};
     callerGo = Object.fromEntries(Object.entries(resolved).filter(([, value]) => value !== ""));
@@ -1804,10 +1809,9 @@ describe("health", () => {
     // The go caches of the caller's, which the routes rule's `go run` compiles with: a HOME of
     // its own would have go build from an empty cache (goSettings).
     const go = goSettings();
-    const result = Bun.spawnSync(
-      ["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs],
-      { env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work"), ...vars } }
-    );
+    const result = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs], {
+      env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work"), ...vars },
+    });
     return {
       code: result.exitCode,
       stdout: result.stdout.toString(),
@@ -2872,7 +2876,7 @@ describe("fixture_write", () => {
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return (...args: string[]) =>
-      Bun.spawnSync(["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args], {
+      spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
         env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
       });
   }
@@ -3012,12 +3016,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   /** What the gh stand-in answers for `gh <args…>` in the world under `dir`: its status, its
    * stdout and its stderr, which is where a refusal's own text goes. */
   function call(dir: string, ...args: string[]) {
-    const made = Bun.spawnSync(
-      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-      {
-        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
-      }
-    );
+    const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
+      env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+    });
     return {
       code: made.exitCode,
       out: made.stdout.toString().trim(),
@@ -3669,12 +3670,9 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   /** What the gh stand-in answers `gh <args…>` in the world under `dir`, with an answer that is
    * one JSON value read as that value written compactly, whatever indentation jq gave it. */
   function gh(dir: string, ...args: string[]) {
-    const made = Bun.spawnSync(
-      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-      {
-        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
-      }
-    );
+    const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
+      env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+    });
     return {
       code: made.exitCode,
       out: compact(made.stdout.toString().trim()),
@@ -4375,12 +4373,9 @@ describe("the world answers every gh call the census found refused", () => {
     return dir;
   }
   function gh(dir: string, args: string[]) {
-    const made = Bun.spawnSync(
-      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-      {
-        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
-      }
-    );
+    const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
+      env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+    });
     return {
       code: made.exitCode,
       out: compact(made.stdout.toString().trim()),
@@ -4503,7 +4498,7 @@ describe("what the rig writes into a run's world", () => {
   function texts(dir: string, repositories: string[]): Map<string, string> {
     const env = { ...childEnv, GIT_CONFIG_GLOBAL: "/dev/null", JJ_CONFIG: "/dev/null" };
     const read = (cwd: string, ...argv: string[]) => {
-      const made = Bun.spawnSync(argv, { cwd, env });
+      const made = spawnChecked(argv, { cwd, env });
       if (made.exitCode !== 0) throw new Error(`${argv.join(" ")} in ${cwd}: ${made.stderr}`);
       return made.stdout.toString();
     };
@@ -5031,7 +5026,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     output = "answer.json",
     env: Record<string, string> = {}
   ) =>
-    Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
+    spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
       env: {
         ...childEnv,
         USER: "rig",
@@ -5348,7 +5343,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       recursive: true,
     });
     const rootWork = freshDir("judge-root-work");
-    const result = Bun.spawnSync(
+    const result = spawnChecked(
       ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
       {
         env: {
@@ -6254,7 +6249,7 @@ describe("the e2e drives that compose a pane through this rig", () => {
         files: [path.join(root, "scripts", "e2e", "plan-pointer-drive.ts")],
       })
     );
-    const tsc = Bun.spawnSync(["bunx", "tsc", "-p", config], { cwd: root, env: childEnv });
+    const tsc = spawnChecked(["bunx", "tsc", "-p", config], { cwd: root, env: childEnv });
     expect(`${tsc.stdout.toString()}${tsc.stderr.toString()}`).toBe("");
     expect(tsc.exitCode).toBe(0);
   });
