@@ -293,6 +293,7 @@ function issueUpdateProblem(value: unknown): string | undefined {
     Array.isArray(input.external_links) ||
     typeof input.route === "string" ||
     typeof input.parent === "string" ||
+    input.parent === null ||
     Array.isArray(input.blocked_by) ||
     Array.isArray(input.advances) ||
     (typeof input.components === "object" && input.components !== null) ||
@@ -730,8 +731,8 @@ export const dispatchToolSpecs = [
       "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
       "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
       "run, a document), set its " +
-      "route, set or clear its parent, replace the issues it is blocked by, replace the " +
-      "priorities it advances, attach it to " +
+      "route, set or clear its parent (--clear-parent clears it), replace the issues it is " +
+      "blocked by, replace the priorities it advances, attach it to " +
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
@@ -808,10 +809,14 @@ export const dispatchToolSpecs = [
         .string()
         .describe("Route the issue to role:<name> or session:<id>; an empty string clears it.")
         .optional(),
+      // Describes last, after `.nullable().optional()`, for the reason `priority` does.
       parent: z
         .string()
-        .describe("Parent issue key in the same project; an empty string clears the parent.")
-        .optional(),
+        .nullable()
+        .optional()
+        .describe(
+          "Parent issue key in the same project; null or an empty string clears the parent."
+        ),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(

@@ -250,7 +250,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const reason = optionalString(args, "reason");
   const title = optionalString(args, "title");
   const route = optionalString(args, "route");
-  const parent = optionalString(args, "parent");
+  const parent = optionalNullableString(args, "parent");
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
   const rankBefore = optionalString(args, "before");
