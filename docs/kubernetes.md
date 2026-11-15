@@ -344,7 +344,7 @@ Then:
 - `ensure` is idempotent and cheap when the server is up:
   it returns after one connection through the DSN itself (`psql … select 1`, with a connect timeout), and otherwise initialises and starts under `flock -o`.
   The `-o` closes the lock's descriptor in the child, without which the server inherits it and every later `ensure` waits on a lock the server holds for the pod's life.
-  That connection is a connection: a suite that has taken all `max_connections=100` slots makes each tick's `ensure` fail and log, and spend a slot trying, until the suite gives them back.
+  That connection is a connection: a suite that has taken every slot the server allows (the script's `max_connections`, which `packages/envoy/internal/dispatch/testlimits/testlimits_test.go` holds to `testlimits.ServerConnections` plus Postgres's default superuser reserve) makes each tick's `ensure` fail and log, and spend a slot trying, until the suite gives them back.
 
 - Each run of the script is bounded at 60 s.
   The first `ensure` runs before the launcher serves any role, and the daemon gives a pod 120 s to boot by default, so an `ensure` that hangs costs that pod a log line and not its boot.
@@ -2335,8 +2335,8 @@ The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABL
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
 
-**An issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API contract 138).**
-A release at contract 138 carries three changes to what the daemon and its plugins exchange and store.
+**An issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API contract 142).**
+A release at contract 142 carries three changes to what the daemon and its plugins exchange and store.
 
 The first is on every issue of `GET /legion/v1/state`.
 The release moves a recorded issue's repository onto the one Dispatch resolves the issue to, rather than keeping the repository the record was written with, and says so in four keys.
@@ -2344,12 +2344,12 @@ The release moves a recorded issue's repository onto the one Dispatch resolves t
 `repoChangePending` and `repoChangeReason` are a repository Dispatch has named that the daemon has not applied and why it has not, which is how a record that still names the old repository says why it does.
 Each pair is present or absent together, and an issue no correction has reached and nothing waits on carries none of the four.
 The issue's `pullRequest` is read beside them and takes no new key: a correction moves the issue's record alone, so `pullRequest.repo` is the repository the pull request was opened on, and an issue whose `repo` and `pullRequest.repo` name two repositories has open work on a repository it has left, which the daemon applies no GitHub event of to the issue any more.
-A caller in a pod whose claims record a contract below 138 is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
+A caller in a pod whose claims record a contract below 142 is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
 
 The second is a claim route, `POST /legion/v1/claims/owed`.
 It takes the claim token, session and secret that `claims/activity` takes, and answers `{"owes": <bool>, "work": <string>}`: whether the claim owes work now, read from the issue's record, and what that work is called (`the testing phase of LEGION-208`, `the production check of LEGION-208`), empty when nothing is owed.
 The end-of-turn reminder of both harnesses asks it at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
-A plugin below 138 calls no such route, and nothing else of the claim wire changes.
+A plugin below 142 calls no such route, and nothing else of the claim wire changes.
 `packages/contracts/src/legion-api.ts` holds the two bodies as `LegionOwedRequest` and `LegionOwedResponse`.
 
 The third is the resume task of a root a person answered, which the daemon now writes at each send rather than when it queues the task, because the design gate can move in between.
@@ -2367,7 +2367,7 @@ The same migration creates `workspace_bundle_refusals`, one row per issue whose 
 The idle rule marks no release of such an issue again until a role of its pod does something after that moment or the head moves ([Idle release](#idle-release)), and the refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
 A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 
-To roll this release back, re-pin the earlier image (contract 132 at the base this release was written on).
+To roll this release back, re-pin the earlier image (contract 133 at the base this release was written on).
 There is no `legion.yaml` key to put back and no column to drop:
 the earlier release names every column it reads and writes, so it boots with the nine and the new table in place, reads none of them and writes none of them.
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
@@ -4828,7 +4828,7 @@ The wakes are these:
 
 - a phase start, task, backward move, notice, phase-ended message, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
-- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact, or the daemon's own two-minute read).
+- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;

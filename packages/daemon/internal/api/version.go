@@ -1670,17 +1670,72 @@ package api
 // declares. Read the base's own number and every open pull request again at every forward merge
 // rather than from this line.)
 //
-// 138: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 133: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
+// the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
+// mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one rule
+// the engine reads to decide whether to ask GitHub about a round at all, so the object is on the
+// view for every round the daemon is reading for and for no other). Its fields are `waitsOn`, the
+// head the round waits on, which is the pull request's current head and the head the reviewer's
+// approval stands on; `mergeState`, the merge state the record holds for that head in GitHub's own
+// lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent when the record
+// holds no state for the head; `stateReadAt`, the moment of the daemon's last answering read of the
+// pull request (record.PullRequest.StateReadAt, whose doc says when it is zero), absent when the
+// record holds none, since a reader must never take a read at the zero instant for a time;
+// `headUpdatedAt`, the newest `updated_at` GitHub has given the pull request among its lifecycle
+// observations, absent when the record holds none; `checkRuns`, how many of the fence's runs are
+// stamped with that head, which is the runs a CI settlement has applied for it and so 0 until a
+// settlement has arrived, which is no evidence of what GitHub holds, written whatever its value so
+// that 0 is that reading rather than a gap in the view; and `toldHead` with `toldState`, the head
+// and state the architect and the reviewer were last told of once the round was reported stuck,
+// absent when the reviewer's decision records none. A caller from a pod whose claims record a
+// contract below 133 is served the state with no `mergeWait` on any issue at all — the key absent
+// rather than empty, since a strict reader before the contract that added a key refuses it whatever
+// it names (api's stateNarrowings, withoutMergeWait) — as a caller below 132 is served every member
+// of the waiting line that waits on another issue without its `kind`, one below 111 every issue
+// without `treeMovedAt` and `quietHours`, one below 98 the admission block without
+// `admission.held`, one below 94 every issue without `phaseEntry` and `givenEntry`, one below 87
+// every claim view without `leakCheckCause`, one below 85 every issue without `why` and every
+// member of the waiting line with its `place` and its `length` alone, one below 75 the claim views
+// and the issues without the nine keys the decided record added and the body without its `contract`
+// mark, one below 73 a body with no `claimsToRefresh`, one below 62 the workers without their
+// counts of the moves back, one below 58 the issues without their place in the admission line, one
+// below 57 the claim views with no `step`, one below 56 the stranded report without its retired
+// entries, one below 55 the issues without the gated steps, one below 53 a body with no
+// `wakesWaiting`, one below 51 the issues without the admission's trees, one below 49 one with no
+// memory draw and one below 46 the claim views without their update rounds; the bands compose, and
+// every reader from this contract on takes the object as optional. The daemon makes no read of
+// GitHub of its own for any of it: every field is the record as the daemon's own reads of the pull
+// request have left it, so a state request costs no GitHub call and the object says how old the
+// daemon's knowledge of the head is rather than what GitHub would answer now. The number is a
+// census of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
+// repository, taken at the moment the sites are written and never the base's number plus one,
+// because the open heads move the free number within the hour. The reading that chose this one was
+// taken at 2026-11-14T23:49:47Z-23:52:45Z, at the forward merge of main 8b0f29b9, over the 152 open
+// pull requests: main declares 132 (INFRA-3036's entry above, landed by #3715), and no open head
+// declares 133 or above, so 133 is the lowest number above the base's that no other open head
+// declares. This change keeps its number while it stands above its base, even when another open
+// head declares the same one: check-daemon-api-contract.sh compares a change with its base alone, a
+// renumber costs a push, a full check run and a test round, and the change that lands second is the
+// one renumbered (AGENTS.md). When the base declares this change's number or a higher one, the base
+// has taken it, and this change takes the free number at its next forward merge, from a census read
+// then, in one push. The readings that chose this change's earlier numbers are in its implement
+// handoffs on dispatch://INFRA-3027 rather than here, since each merge would make them false, and
+// the entries above keep the numbers they were read at. Read the base's own number and every open
+// head again at the next merge rather than from this entry, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
+// 142: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
 // not applied and why it has not. The four are the whole of the wire change: no key is removed,
 // no key changes its meaning, and an issue no correction has reached and nothing waits on carries
 // none of them, so most issues are served exactly as before. A plugin below this contract is
-// served every issue with the four stripped (`withoutRepositoryCorrection`), composed with the
-// seventeen narrowings 132 describes, because one built before sjawhar/legion#2788 reads the state
-// with a strict schema and would refuse the whole body for a key it does not name. It is the
-// eighteenth narrowing and the last row of stateNarrowings, after 132's.
+// served every issue with the four stripped (`withoutRepositoryCorrection`), composed with 133's
+// own narrowing and every narrowing 133 lists below it, because one built before
+// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
+// key it does not name. It is the last row of stateNarrowings, after 133's.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional.
 //
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
@@ -1692,7 +1747,7 @@ package api
 // and its production check — and what that work is called, "the testing phase of LEGION-208" or
 // "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
 // renders that answer in both harnesses and keeps no model of the phase of its own
-// (dispatch://INFRA-2746). A plugin below 138 calls no such route,
+// (dispatch://INFRA-2746). A plugin below 142 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1709,7 +1764,7 @@ package api
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
 // Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
 // writes: a row it keeps carries no sequence and its own clock, as before this release.
-// (This entry takes 138. It took 95 at the fifth forward merge of 2026-11-13, when main declared
+// (This entry takes 142. It took 95 at the fifth forward merge of 2026-11-13, when main declared
 // 87, held 95 through the sixth, which brought main in at 045ee0762538, #3677, declaring 94, and
 // took 101 at that sixth merge. The seventh brings main in at 0fde2dcff6e4, #3707, which declares
 // 98, landed by #3708. The reading of 2026-11-13T13:43:48Z, with
@@ -1750,13 +1805,22 @@ package api
 // 137 was then the lowest number above the base's 132 and above every number another open head
 // declared, and this entry took it. The reading of 2026-11-15T03:11:39Z, with main still
 // declaring 132, found #4046 declaring 137 beside 37 and 86 below the base and, above it, 125,
-// 126, 127, 130 (twice), 133 (twice), 134 (twice), 135 and 136 (twice), so 138 is the lowest
-// number above the base's 132 and above every number another open head declares, and this entry
-// takes it. A
+// 126, 127, 130 (twice), 133 (twice), 134 (twice), 135 and 136 (twice), so 138 was then the
+// lowest number above the base's 132 and above every number another open head declared, and
+// this entry took it. The twelfth merge brings main in at 76bff46e983f, #2461, which declares
+// 133, #3937's entry (2e546572f2b8) right below this one. The reading of
+// 2026-11-15T05:21:10Z, with main declaring 133, found #4017 declaring 138 beside 37, 86, 125
+// and 126 below the base, 133 at it and, above it, 134, 135, 136 (twice), 137, 139 (twice) and
+// 140, so 141 was then the lowest number above the base's 133 and above every number another
+// open head declared, and this entry took it. The reading of 2026-11-15T05:58:26Z, with main
+// still declaring 133, found #3575 and #3730 declaring 141 beside 37, 86, 125 and 126 below the
+// base and, above it, 134, 135, 137, 138, 139 (three times) and 140, so 142 is the lowest number
+// above the base's 133 and above every number another open head declares, and this entry takes
+// it. A
 // reading is of this file at refs/pull/<n>/head for every open pull request, not of a file list:
 // GitHub cuts a pull request's file list short, so one that changes more files than the page
 // holds answers without this path. Read the base's own number and every open pull request again
 // at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 138
+const DaemonAPIVersion = 142
