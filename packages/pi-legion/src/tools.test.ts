@@ -249,14 +249,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
   "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
   "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
-  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume that one. " +
+  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume that one, unless the operator suspended it. " +
   "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
   "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
   "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
   "again until your resume or the operator's. " +
   "resume starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
   "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
-  "The daemon refuses resume, suspend and stop for a claim the operator suspended, or whose " +
+  "The daemon refuses resume, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
   "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
   "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
   "refuse role controller as fresh_session and compact do. " +

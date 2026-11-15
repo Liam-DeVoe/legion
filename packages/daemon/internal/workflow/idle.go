@@ -103,9 +103,10 @@ const (
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
 	// deletion would take it with the pod.
 	IdleHoldUnownedClaimProcess
-	// IdleHoldUnownedOperatorSuspended: an operator's own suspension holds a claim of the pod
-	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
-	// operator's resume brings that role back into this pod.
+	// IdleHoldUnownedOperatorSuspended: a suspension that the operator, the controller or an
+	// architect holds over a claim of the pod (pods.IdleClaim.OperatorSuspended, read from
+	// supervise's SuspendSource.Holds), which no daemon rule undoes, and whose holder's resume
+	// brings that role back into this pod.
 	IdleHoldUnownedOperatorSuspended
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.

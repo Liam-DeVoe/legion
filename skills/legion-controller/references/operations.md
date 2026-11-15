@@ -265,7 +265,8 @@ the two commits `1e4bff5d` and `b6ba8a07`, and pushed
 `c0bdcc984..b6ba8a07d  rescue/INFRA-2709 -> legion/INFRA-2709` at 15:51:03Z. GitHub's
 `legion/INFRA-2709` then named `b6ba8a07`, the bundle's tip. The first run of step 2 at 15:02Z
 had refused the same workspace on its Bun links, under an earlier symlink rule that this
-section no longer has. Step 1 through `kubectl exec` from a controller's own pod is check k27's.
+section no longer has. No run has yet made step 1 through `kubectl exec` from a controller's own
+pod.
 
 ## A re-run of a CI run
 
