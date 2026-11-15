@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -43,7 +44,9 @@ type knownSessionRig struct {
 	clock time.Time
 }
 
-func newKnownSessionRig(t *testing.T) *knownSessionRig {
+// newKnownSessionRig is the rig on a server of its own, with watch added to the options of the
+// four bucket watchers it opens on the listener's connection (newKnownSessionRigOn).
+func newKnownSessionRig(t *testing.T, watch ...kvwatch.Option) *knownSessionRig {
 	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
@@ -51,15 +54,17 @@ func newKnownSessionRig(t *testing.T) *knownSessionRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newKnownSessionRigOn(t, client, url)
+	return newKnownSessionRigOn(t, client, url, watch...)
 }
 
-// newKnownSessionRigOn is newKnownSessionRig over a listener connected to a server the test chose,
-// one whose grant it set among them.
-func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSessionRig {
+// newKnownSessionRigOn is newKnownSessionRig over a listener's bus client the test connected
+// itself: to a server whose grant it set, or on a clock it chose. watch is added to the options of
+// the four bucket watchers the rig opens on client's connection: the three its harness opens
+// (newSessionConsumerRigWatching) and the known-session store's.
+func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string, watch ...kvwatch.Option) *knownSessionRig {
 	t.Helper()
-	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: time.Now()}
-	rig.known = openKnownSessionsOn(t, client.Conn, func() time.Time { return rig.clock })
+	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigWatching(t, client, url, watch), url: url, clock: time.Now()}
+	rig.known = openKnownSessionsOn(t, client.Conn, func() time.Time { return rig.clock }, watch...)
 	// The routes read the deps they were built over at each request, so the store set here is the
 	// one every route below answers from. The confirmation record is the publish route's own, as
 	// main wires it, for a role send.
@@ -68,13 +73,15 @@ func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSe
 	return rig
 }
 
-// openKnownSessionsOn opens the known-session store on conn with clock, and waits for its first
-// read of the bucket, as main's start waits for it.
-func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time) *session.KnownSessions {
+// openKnownSessionsOn opens the known-session store on conn with clock, its watcher built with
+// watch beside its own options (session.WithKnownSessionWatch), and waits for its first read of
+// the bucket, as main's start waits for it.
+func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time, watch ...kvwatch.Option) *session.KnownSessions {
 	t.Helper()
 	known, err := session.OpenKnownSessions(conn,
 		session.WithKnownSessionReplicas(1),
-		session.WithKnownSessionClock(clock))
+		session.WithKnownSessionClock(clock),
+		session.WithKnownSessionWatch(watch...))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -401,13 +408,23 @@ func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
 // A subscriber on the session's relay subject that never answers reads connected, after the
 // probe's second of silence and inside the send's budget. The subscriber heard the probe as the
 // probe is sent: the one header Envoy-Probe: 1, none of a relay frame's headers - which would have
-// it decode as a frame and move the session's resume point - and no body. The routes run on a
-// fake the row moves (stillClock): the send has not answered while the probe's second, armed on
-// it, is still to run, and answers once the row moves the fake through that second alone, short
-// of the send's budget.
+// it decode as a frame and move the session's resume point - and no body. The routes and the
+// listener's bus client run on one fake the row moves: the send has not answered while the probe's
+// second and RequestCore's own bound, both armed on it, are still to run, and answers once the row
+// moves the fake through that second alone, short of the send's budget. The probe's context ends
+// on the routes' clock and so reports no deadline (a fake's deadline context reports none), and
+// RequestCore arms its bound for such a request on the client's clock (bus.WithClock): on the real
+// clock that bound, not the row, could end the probe while a slow machine runs the row.
 func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
-	rig := newKnownSessionRig(t)
-	fake := rig.stillClock()
+	fake := clocktest.New(time.Now())
+	url := testnats.URL(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithClock(fake))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url)
+	rig.deps.clock = fake
 	startSecondListener(t, rig.url)
 
 	const quiet = "ses_silent_subscriber"
@@ -427,12 +444,26 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 	}
 
 	started := fake.Now()
+	probeEnds, budgetEnds := started.Add(connectionProbeTimeout), started.Add(sendRequestBudget)
+	// pastBudget is the deadlines pending on the fake and how many of them lie past the send's
+	// budget, which no bound of the route's reaches: before the send, the client's own timers from
+	// its connect (its keeper's period, its refresh of the stream's subjects); while the probe
+	// waits, RequestCore's own bound besides.
+	pastBudget := func() ([]time.Time, int) {
+		armed, past := fake.Armed(), 0
+		for _, deadline := range armed {
+			if deadline.After(budgetEnds) {
+				past++
+			}
+		}
+		return armed, past
+	}
+	_, standing := pastBudget()
 	answered := rig.sendInBackground(t, quiet, nil)
 	msg := testwait.Receive(t, "the silent subscriber to hear the send's probe", heard)
-	probeEnds := started.Add(connectionProbeTimeout)
-	testwait.Until(t, "the probe's second to be armed on the routes' clock", func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, probeEnds.Equal)
+	testwait.Until(t, "the probe's second, and RequestCore's own bound past the send's budget, to be armed on the fake", func() ([]time.Time, bool) {
+		armed, past := pastBudget()
+		return armed, slices.ContainsFunc(armed, probeEnds.Equal) && past > standing
 	})
 	select {
 	case recorder := <-answered:
@@ -708,8 +739,28 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 // on the consumer or stream-info subjects, and the probe of the API shows it is watching by seeing
 // the one call the test makes itself (watchJetStreamAPI, which
 // TestAHundredPublishesSendNoJetStreamAPIRequest uses too).
+//
+// The four bucket watchers the rig opens on the listener's connection - the interest registry's,
+// the role claims', the session registry's and the known-session store's - each read their
+// bucket's stream every 2 s (kvwatch's stream probe) on that same connection, so on time.AfterFunc
+// a run of sends that spanned one of those moments would count their reads as the route's. Their
+// timers run on a fake the row never moves, and so does the clock they measure a confirmation of
+// their stream by, so the gate on a record delivered while the row counts finds the confirmation
+// fresh and sends no read of its own either. The listener's bus client runs on the same fake
+// (bus.WithClock): its keeper's period and its refresh of the stream's subjects would each read the
+// notification stream on that connection, the request the row's own control call makes, and one
+// that came mid-window would end the count before the sends after it.
 func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
-	rig := newKnownSessionRig(t)
+	held := clocktest.New(time.Now())
+	url := testnats.URL(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithClock(held))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url,
+		kvwatch.WithAfterFunc(func(d time.Duration, f func()) kvwatch.Timer { return held.AfterFunc(d, f) }),
+		kvwatch.WithNow(held.Now))
 	const gone = "ses_stopped_api_free"
 	rig.register(t, gone, nil)
 	rig.stop(t, gone)

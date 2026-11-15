@@ -150,6 +150,7 @@ type sessionRegistryOpts struct {
 	lastSeenRetention time.Duration
 	log               *slog.Logger
 	clock             clock.Clock
+	watch             []kvwatch.Option
 }
 
 func WithSessionReplicas(n int) SessionRegistryOption {
@@ -211,6 +212,14 @@ func WithSessionLogger(log *slog.Logger) SessionRegistryOption {
 // a session's TTL rather than waiting that TTL out.
 func WithSessionClock(c clock.Clock) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.clock = c }
+}
+
+// WithSessionWatch adds options to the ones the registry's cache watcher is built with, after
+// them: the watcher's timers for a test (kvwatch.WithAfterFunc, kvwatch.WithNow), so its stream
+// probe and its other waits run on a clock the test holds rather than on time.AfterFunc. No
+// deployment sets it.
+func WithSessionWatch(options ...kvwatch.Option) SessionRegistryOption {
+	return func(o *sessionRegistryOpts) { o.watch = append(o.watch, options...) }
 }
 
 // cachedSession is a SessionEntry plus its local expiry deadline. JetStream
@@ -453,7 +462,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		log:               opts.log,
 	}
 	r.cache = newSessionCopy(r)
-	r.watcher = kvwatch.New("session registry", kv, sessionCache{r}, kvwatch.WithLogger(opts.log))
+	r.watcher = kvwatch.New("session registry", kv, sessionCache{r}, append([]kvwatch.Option{kvwatch.WithLogger(opts.log)}, opts.watch...)...)
 	// The watcher populates the cache asynchronously. A synchronous Keys()+per-key Get() loop
 	// blocks for seconds when the KV stream leader is on a remote node.
 	r.watcher.Start()

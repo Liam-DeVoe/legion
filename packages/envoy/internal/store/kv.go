@@ -61,10 +61,11 @@ type Registry struct {
 type OpenOption func(*openOpts)
 
 type openOpts struct {
-	replicas  int
-	clock     clock.Clock
-	log       *slog.Logger
-	roleWatch []kvwatch.Option
+	replicas      int
+	clock         clock.Clock
+	log           *slog.Logger
+	interestWatch []kvwatch.Option
+	roleWatch     []kvwatch.Option
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -103,6 +104,13 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 	return func(o *openOpts) { o.roleWatch = append(o.roleWatch, options...) }
 }
 
+// WithInterestWatch adds options to the interest registry's cache watcher's own, after them: the
+// watcher's timers for a test (kvwatch.WithAfterFunc, kvwatch.WithNow), so its stream probe and its
+// other waits run on a clock the test holds rather than on time.AfterFunc. No deployment sets it.
+func WithInterestWatch(options ...kvwatch.Option) OpenOption {
+	return func(o *openOpts) { o.interestWatch = append(o.interestWatch, options...) }
+}
+
 func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, clock: clock.Real(), log: slog.Default()}
 	for _, o := range options {
@@ -134,7 +142,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	}
 	r.cache = newInterestCopy(r)
 	r.roleHolders = newRoleHolderCopy(r)
-	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
+	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, append([]kvwatch.Option{kvwatch.WithLogger(opts.log)}, opts.interestWatch...)...)
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)
 	// No eager load: the watchers populate the caches asynchronously. A synchronous load of N
 	// individual kv.Get() calls blocks indefinitely when the KV stream leader is on a remote node.

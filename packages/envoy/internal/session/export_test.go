@@ -1,9 +1,6 @@
 package session
 
-import (
-	"github.com/sjawhar/envoy/internal/clock"
-	"github.com/sjawhar/envoy/internal/kvwatch"
-)
+import "github.com/sjawhar/envoy/internal/clock"
 
 // SetupNATS is setupNATS for the package's external tests, so they connect to the package's shared
 // test NATS in an account of their own.
@@ -16,13 +13,5 @@ var SetupNATS = setupNATS
 func withKnownSessionTimers(timers clock.Clock) KnownSessionsOption {
 	return func(o *knownSessionsOpts) {
 		o.timers = timers
-	}
-}
-
-// withKnownSessionWatch adds options to the ones the store's watcher is built with: a clock that
-// moves past the stale bound (kvwatch.WithNow), say. It is test-only: no deployment sets them.
-func withKnownSessionWatch(options ...kvwatch.Option) KnownSessionsOption {
-	return func(o *knownSessionsOpts) {
-		o.watch = append(o.watch, options...)
 	}
 }

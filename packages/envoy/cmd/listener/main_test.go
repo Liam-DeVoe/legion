@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -3751,7 +3752,18 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 // own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
 func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	return newListenerDeliveryHarnessWatching(t, client, nil, sessionOptions...)
+}
+
+// newListenerDeliveryHarnessWatching is newListenerDeliveryHarnessOn with watch added to the
+// options of the three bucket watchers the harness opens on client's connection: the interest
+// registry's, the role claims' (store.WithInterestWatch, store.WithRoleClaimWatch) and the session
+// registry's (session.WithSessionWatch). A test that counts the requests the listener sends on
+// that connection hands them timers it holds (kvwatch.WithAfterFunc, kvwatch.WithNow), so none of
+// their stream probes, which time.AfterFunc paces every 2 s, lands among the requests it counts.
+func newListenerDeliveryHarnessWatching(t *testing.T, client *bus.Client, watch []kvwatch.Option, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
+	t.Helper()
+	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithInterestWatch(watch...), store.WithRoleClaimWatch(watch...))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -3760,7 +3772,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
 	// registered in that window would be missing from what Match and Lookup answer.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
+	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1), session.WithSessionWatch(watch...)}, sessionOptions...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

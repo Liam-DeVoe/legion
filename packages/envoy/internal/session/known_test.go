@@ -706,7 +706,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // passed without waiting it out.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	watcherClock := clocktest.Held()
-	known, conn, grant, logged, timers := knownOverGrant(t, withKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
+	known, conn, grant, logged, timers := knownOverGrant(t, WithKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: stale, Topics: []string{topic}}); err != nil {
@@ -848,7 +848,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionTimers(timers),
-		withKnownSessionWatch(kvwatch.WithAfterFunc(after)))
+		WithKnownSessionWatch(kvwatch.WithAfterFunc(after)))
 	if err != nil {
 		t.Fatalf("open the store over a bucket its user may not open: %v", err)
 	}

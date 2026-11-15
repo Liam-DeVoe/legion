@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -48,7 +49,14 @@ func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegist
 
 func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
-	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
+	return newSessionConsumerRigWatching(t, client, url, nil, sessionOptions...)
+}
+
+// newSessionConsumerRigWatching is newSessionConsumerRigOn with watch added to the options of the
+// bucket watchers its harness opens (newListenerDeliveryHarnessWatching).
+func newSessionConsumerRigWatching(t *testing.T, client *bus.Client, url string, watch []kvwatch.Option, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
+	t.Helper()
+	harness := newListenerDeliveryHarnessWatching(t, client, watch, sessionOptions...)
 	// The connection is opened with the threshold this listener's own windows derive, as main
 	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
 	// deployment with these windows would give it.

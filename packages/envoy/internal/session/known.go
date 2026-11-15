@@ -107,8 +107,8 @@ type knownSessionsOpts struct {
 	// moves (withKnownSessionTimers, export_test.go). The records' own clock is now.
 	timers clock.Clock
 	// watch is what a test adds to the options the store's watcher is built with
-	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
-	// scan idle timeout. No deployment sets it.
+	// (WithKnownSessionWatch): a clock to move past the stale bound, timers the test holds, or a
+	// short scan idle timeout. No deployment sets it.
 	watch []kvwatch.Option
 }
 
@@ -132,6 +132,14 @@ func WithKnownSessionLogger(log *slog.Logger) KnownSessionsOption {
 // throttle with it. The cache watcher's stale bound is measured on its own clock (kvwatch.WithNow).
 func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 	return func(o *knownSessionsOpts) { o.now = now }
+}
+
+// WithKnownSessionWatch adds options to the ones the store's cache watcher is built with, after
+// them: the watcher's timers for a test (kvwatch.WithAfterFunc, kvwatch.WithNow), so its stream
+// probe and its other waits run on a clock the test holds rather than on time.AfterFunc, or a
+// clock that moves past the stale bound. No deployment sets it.
+func WithKnownSessionWatch(options ...kvwatch.Option) KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.watch = append(o.watch, options...) }
 }
 
 // KnownSessions is a cache-backed view of the envoy_known_sessions bucket: every session that
