@@ -432,6 +432,10 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 // whether the list names a service or the owner is no person at all, as is dropping the list from
 // a secret that already holds that kind. The list is written as the broker reads it, and
 // --requesters none removes it.
+//
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testing.T) {
 	// LISTED_KEY holds a service account, which the retag to that kind below decodes.
 	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.KindValue(policy.KindGoogleServiceAccount))
