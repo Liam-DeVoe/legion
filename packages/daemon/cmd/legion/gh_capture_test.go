@@ -46,12 +46,16 @@ type capturedRequest struct {
 // runs before gh reads the destination repository's visibility first, through a gh of its own,
 // and a visibility it cannot read refuses the call. That read is the first repository read a
 // command makes, so the first `GET /repos/<owner>/<name>` after each take is answered with a
-// visibility and every later one is refused as before — the command's own read of the same path
-// included, which is what keeps each case's exit status what it was.
+// visibility, private but for the repository public names, and every later one is refused as
+// before — the command's own read of the same path included, which is what keeps each case's
+// exit status what it was.
 type captureProxy struct {
 	url, caFile string
-	mu          sync.Mutex
-	requests    []capturedRequest
+	// public is the path of the one repository, `/repos/<owner>/<name>`, whose visibility the
+	// proxy answers public.
+	public   string
+	mu       sync.Mutex
+	requests []capturedRequest
 	// visibility is whether the next repository read is the guard's, to be answered.
 	visibility bool
 }
@@ -60,7 +64,8 @@ var capturedRESTOwner = regexp.MustCompile(`^/repos/([^/]+)/`)
 var capturedGitOwner = regexp.MustCompile(`^/([^/]+)/[^/]+/info/refs$`)
 var capturedRepository = regexp.MustCompile(`^/repos/[^/]+/[^/]+$`)
 
-func startCaptureProxy(t *testing.T) *captureProxy {
+// startCaptureProxy starts a captureProxy answering public for the one repository public, `<owner>/<name>`.
+func startCaptureProxy(t *testing.T, public string) *captureProxy {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -79,7 +84,7 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &captureProxy{caFile: filepath.Join(t.TempDir(), "ca.pem")}
+	p := &captureProxy{caFile: filepath.Join(t.TempDir(), "ca.pem"), public: "/repos/" + public}
 	if err := os.WriteFile(p.caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -172,13 +177,17 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	p.requests = append(p.requests, request)
 	// The guard's visibility read, answered once per command (captureProxy's doc).
 	guardsRead := p.visibility && r.Method == http.MethodGet && r.Host == "api.github.com" && capturedRepository.MatchString(r.URL.Path)
+	visibility := "private"
 	if guardsRead {
 		p.visibility = false
+		if r.URL.Path == p.public {
+			visibility = "public"
+		}
 	}
 	p.mu.Unlock()
 	if guardsRead {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"visibility":"private"}`)
+		_, _ = io.WriteString(w, `{"visibility":"`+visibility+`"}`)
 		return
 	}
 	switch {
@@ -267,16 +276,19 @@ func realGHForCapture(t *testing.T) string {
 // command gh's own help does not list, `gh extension exec`, a search qualifier it cannot read,
 // GH_HOST naming another host, an argument a later gh's usage names otherwise), one naming two
 // owners — an option or another repository naming one owner while gh takes the command's own from
-// the working directory or GH_REPO, or a workspace whose remotes name two — and one naming an owner
-// the bundle does not hold are refused with exit 2 and send nothing; no alias or extension runs,
-// none is installed, and gh's own help and version answer.
+// the working directory or GH_REPO, or a workspace whose remotes name two — and any command but a
+// read naming an owner the bundle does not hold are refused with exit 2 and send nothing. A read
+// of one such owner's repository first asks GitHub its visibility, with the issue owner's token:
+// answered private, it is refused after that one request; answered public, it carries the issue
+// owner's token on every request, and a write naming that same repository still sends nothing. No
+// alias or extension runs, none is installed, and gh's own help and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git on this machine")
 	}
-	proxy := startCaptureProxy(t)
+	proxy := startCaptureProxy(t, "octocat/spoon-knife")
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"}
@@ -390,7 +402,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	ghEnv := []string{testMainEnv + "=1"}
 	// check runs `legion gh args…` in dir: refused with exit 2 and refuse's text, sending nothing,
 	// or sending GitHub alone owner's token on every request. A refusal of an option a gh version
-	// lacks names both texts, joined by "||", either of which passes.
+	// lacks names both texts, joined by "||", either of which passes. A refusal naming owner is a
+	// read of a repository of an owner the bundle does not hold, refused after its one request,
+	// the read of that repository's visibility, which carries owner's token.
 	check := func(dir string, env, args []string, owner, refuse string) {
 		t.Helper()
 		what := "legion gh " + strings.Join(args, " ")
@@ -399,8 +413,12 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			if code != 2 || !slices.ContainsFunc(strings.Split(refuse, "||"), func(text string) bool { return strings.Contains(out, text) }) {
 				t.Errorf("%s = exit %d, %q; want exit 2 containing %q", what, code, out, refuse)
 			}
-			if sent := proxy.take(); len(sent) != 0 {
+			sent := proxy.take()
+			switch {
+			case owner == "" && len(sent) != 0:
 				t.Errorf("%s sent %+v, want nothing", what, sent)
+			case owner != "" && (len(sent) != 1 || sent[0].host != "api.github.com" || !capturedRepository.MatchString(sent[0].path) || sent[0].auth != "token "+tokens[owner]):
+				t.Errorf("%s sent %+v, want only the read of its repository's visibility, with %s's %q", what, sent, owner, "token "+tokens[owner])
 			}
 			return
 		}
@@ -412,8 +430,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	for _, tc := range []struct {
 		env    []string
 		args   []string
-		owner  string // the owner whose token every request carries; "" when refused
-		refuse string // the refusal's text, exit 2 and no request
+		owner  string // the owner whose token every request carries; "" when refused with no request
+		refuse string // the refusal's text, exit 2 and no request but owner's visibility read
 	}{
 		// The first re-review's reproductions.
 		{nil, []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, "sjawhar", ""},
@@ -473,11 +491,35 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/2"}, "sjawhar", ""},
 		{nil, []string{"api", "repos/acme/widgets"}, "acme", ""},
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
-		{nil, []string{"api", "repos/other/thing"}, "", `"other" is not an owner of this project`},
+		{nil, []string{"api", "repos/other/thing"}, "acme", `"other" is not an owner of this project`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
+
+	// A read of octocat/spoon-knife, which the proxy answers public, of an owner the bundle does
+	// not hold, carries acme's token, GH_CONFIG_DIR's, on every request it sends: the visibility
+	// read and the command's own. A write naming it sends nothing.
+	for _, args := range [][]string{
+		{"repo", "view", "octocat/spoon-knife", "--json", "nameWithOwner"},
+		{"api", "repos/octocat/spoon-knife/pulls/1", "--jq", ".state"},
+	} {
+		what := "legion gh " + strings.Join(args, " ")
+		code, out := runIn(home, ghEnv, os.Args[0], append([]string{"gh"}, args...)...)
+		if code == 0 || strings.Contains(out, "is not an owner of this project") {
+			t.Errorf("%s = exit %d, %q; want it run, and the capture proxy's refusal", what, code, out)
+		}
+		sent := proxy.take()
+		if len(sent) == 0 {
+			t.Errorf("%s sent GitHub nothing", what)
+		}
+		for _, r := range sent {
+			if r.host != "api.github.com" || r.auth != "token "+tokens["acme"] {
+				t.Errorf("%s sent %s%s with %q, want api.github.com with acme's %q", what, r.host, r.path, r.auth, "token "+tokens["acme"])
+			}
+		}
+	}
+	check(home, nil, []string{"pr", "comment", "1", "-R", "octocat/spoon-knife", "--body", "x"}, "", `"octocat" is not an owner of this project`)
 
 	// A command naming no repository, or naming another while gh takes the command's own from the
 	// working directory, acts on the repository gh reads from the working directory's git remotes,
@@ -515,7 +557,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"repo", "view", "--json", "nameWithOwner"}, "sjawhar", ""},
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
-		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "acme", `"octocat" is not an owner of this project`},
 		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).

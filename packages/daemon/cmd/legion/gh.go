@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
@@ -33,16 +35,19 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // repository, one naming two repositories of the one owner, one where a selector named the owner
 // alone beside a repository, and one whose repository the bundle holds no directory for, which
 // is every repository of an owner the role writes to one of. A command naming no owner at all,
-// in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's.
-// A command it cannot read for certain, one naming two owners, and one naming an owner the
-// bundle holds no directory for are refused, exit 2, naming why, and the real gh never runs: no
-// token but the target repository's or its owner's is ever sent.
+// in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's,
+// and so does a read-only command of one repository of an owner the bundle holds no directory for
+// that GitHub, asked under GH_CONFIG_DIR, reports public (ghConfigDir). A command it cannot read
+// for certain, one naming two owners, and any other naming an owner the bundle holds no
+// directory for are refused, exit 2, naming why, and the real gh never runs: no token but the
+// target repository's or its owner's is ever sent, but the issue owner's to read a public
+// repository.
 //
-// Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
-// refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
-// guard's own message, and gh never runs. Two calls pass unchecked: `legion gh auth
-// git-credential`, which answers above before any of this, and the shared check's own read of a
-// repository's visibility (ghVisibilityRead).
+// Before gh is handed anything, and after the directory is chosen, the leak guard reads the call
+// (leakguard.GhCall): a call it refuses, and one whose checks could not be made to run, are
+// refused here, exit 2, with the guard's own message, and gh never runs. Two calls pass
+// unchecked: `legion gh auth git-credential`, which answers above before any of this, and the
+// shared check's own read of a repository's visibility (ghVisibilityRead).
 //
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
@@ -97,11 +102,33 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.owner != "" && target.repo != "" {
 		repo = target.owner + "/" + target.repo
 	}
-	// The guard, between the owner this command resolved and the gh it is about to run. The whole
-	// argv is what it reads, rather than the options a parser calls text: the shared check's own
-	// gh-guard reads full argv, and a private name is refusable wherever it stands. The call's
-	// standard input goes with it, and whatever the guard read of it comes back to hand gh in
-	// this process's place (runGhChild).
+	visibilityRead := ghVisibilityRead(args, env)
+	// One guard serves the call twice: its visibility read decides a read of an owner the bundle
+	// holds no directory for (ghConfigDir), and its check clears the call below, reading again the
+	// public answer that read kept. The call log records the source of the first answer, the one
+	// the call read.
+	var guard *leakguard.Guard
+	if !rateLimitRead && !visibilityRead {
+		guard = leakguard.New(leakguard.Options{
+			OnVisibility: func(source leakguard.VisibilitySource) {
+				if visibilitySource == "" {
+					visibilitySource = string(source)
+				}
+			},
+		})
+	}
+	dir := env["GH_CONFIG_DIR"]
+	if target.owner != "" {
+		if dir, err = ghConfigDir(ctx, guard, env, target, visibilityRead); err != nil {
+			fmt.Fprintf(stderr, "legion gh: %v\n", err)
+			return 2
+		}
+	}
+	// The guard, between the directory this command resolved and the gh it is about to run. The
+	// whole argv is what it reads, rather than the options a parser calls text: the shared
+	// check's own gh-guard reads full argv, and a private name is refusable wherever it stands.
+	// The call's standard input goes with it, and whatever the guard read of it comes back to
+	// hand gh in this process's place (runGhChild).
 	//
 	// Three calls reach gh unchecked, each for a reason of its own. `legion gh auth
 	// git-credential` is one: it returned above, before any of this, because it is git's
@@ -122,16 +149,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	var buffered []byte
 	if rateLimitRead {
 		// This read has no repository or body for the guard to inspect.
-	} else if ghVisibilityRead(args, env) {
+	} else if visibilityRead {
 		// This process is the guard's own request. Its enclosing user call records the source of
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
 	} else {
-		guard := leakguard.New(leakguard.Options{
-			OnVisibility: func(source leakguard.VisibilitySource) {
-				visibilitySource = string(source)
-			},
-		})
 		buffered, err = guard.GhCall(ctx, leakguard.GhRequest{
 			Args:  args,
 			Stdin: os.Stdin,
@@ -139,13 +161,6 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			Files: target.files,
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
-		}
-	}
-	dir := env["GH_CONFIG_DIR"]
-	if target.owner != "" {
-		if dir, err = repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
@@ -165,6 +180,44 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return 2
 	}
 	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
+}
+
+// ghConfigDir is the gh directory target's command runs under: the bundle's directory of its
+// repository or of its owner (repositoryGHConfigDir). An owner the bundle holds no directory for
+// is refused there, and that refusal stands, unchanged, for every command but two, which run
+// under GH_CONFIG_DIR, the issue owner's directory, the one a command naming no owner runs under:
+//
+//   - a read-only command of one repository (ghTarget.read) that GitHub reports public, asked
+//     through the guard's own visibility read (leakguard.Guard.Visibility) with that directory's
+//     token, never unauthenticated, since GitHub allows an unauthenticated read sixty times an
+//     hour for each address and pods share addresses; and
+//   - that visibility read itself, the call ghVisibilityRead lets past the guard, which is the
+//     asking: it prints one word, and a repository the token cannot read answers none.
+//
+// A private or internal repository, a visibility that cannot be read and an answer that is no
+// visibility keep the refusal. A command that may write, and one naming no one repository — the
+// owner alone, two of its repositories, a search naming no repo: — keep it before anything is
+// asked, so a write is refused with nothing sent. The guard is the call's own, nil only for
+// visibilityRead and the rate-limit read, which names no owner.
+func ghConfigDir(ctx context.Context, guard *leakguard.Guard, env map[string]string, target ghTarget, visibilityRead bool) (string, error) {
+	dir, refused := repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo)
+	switch {
+	case refused == nil:
+		return dir, nil
+	case visibilityRead:
+		return env["GH_CONFIG_DIR"], nil
+	case target.read == "":
+		return "", refused
+	}
+	// The guard reads no visibility of a name ghVisibilityRead could not let past it, which the
+	// read through the `gh` wrapper would then run the guard for again (Guard.scanThrough).
+	if _, err := ghrepo.Parse("", target.read); err != nil {
+		return "", refused
+	}
+	if visibility, err := guard.Visibility(ctx, target.read); err != nil || visibility != leakguard.Public {
+		return "", refused
+	}
+	return env["GH_CONFIG_DIR"], nil
 }
 
 const ghCallLogBytes = 1 << 20
@@ -283,7 +336,8 @@ func ghRateLimitRead(argv []string) bool {
 // The guard's distinct read adds `--include` to receive rate-limit headers. Each must name
 // exactly the repository the variable names, and that name must parse as a repository GitHub
 // could serve, so a variable someone else set lets through one read of one repository and nothing
-// else.
+// else. That read is also the one call naming an owner the bundle holds no directory for that
+// runs under GH_CONFIG_DIR whatever GitHub answers it (ghConfigDir).
 func ghVisibilityRead(argv []string, env map[string]string) bool {
 	slug := env[leakguard.VisibilityReadVar]
 	if slug == "" {
@@ -550,9 +604,12 @@ func withGitHubUseHTTPPath(env []string) ([]string, error) {
 // alone, and where none named a repository at all. A target with no owner is a command naming
 // none, whose token stays the one GH_CONFIG_DIR already names. command is the resolved command
 // path with no arguments. files are the files the command would send to GitHub as content
-// (ghSentFiles), which the leak guard reads the text of.
+// (ghSentFiles), which the leak guard reads the text of. read is the one repository,
+// `<owner>/<repo>`, the command only reads (ghReadOf), "" for a command that may write and for
+// one that reads no one repository.
 type ghTarget struct {
 	owner, repo string
+	read        string
 	command     string
 	files       []leakguard.GhFile
 }
@@ -608,6 +665,144 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 		}
 	}
 	return files
+}
+
+// ghReadLeaves are the leaves of gh 2.98.0 that only read a repository, as their help says:
+// they view, list, diff, show checks or status, or search, and no option of theirs writes
+// (`--web` opens a browser, `--watch` polls). `repo clone` is one too: it writes nothing to
+// GitHub, since gh reads the repository and its parent and the git it runs fetches through the
+// wrapper's credential helper, which answers nothing for an owner the bundle holds no directory
+// for, so git clones a public repository with no token at all. Every other leaf writes to GitHub
+// (create, edit, comment, merge, close, review, fork, …) or may, and is none, and so are the
+// leaves that write only the working directory (`pr checkout`, `run download`, `release
+// download`), which no read this serves needs.
+var ghReadLeaves = map[string]bool{
+	"repo view": true, "repo list": true, "repo clone": true,
+	"pr view": true, "pr list": true, "pr diff": true, "pr checks": true, "pr status": true,
+	"issue view": true, "issue list": true, "issue status": true,
+	"release view": true, "release list": true,
+	"run view": true, "run list": true,
+	"workflow view": true, "workflow list": true,
+	"search code": true, "search commits": true, "search issues": true, "search prs": true, "search repos": true,
+}
+
+// ghReadOf is the one repository, `<owner>/<repo>`, the parsed command only reads, where owner is
+// the one owner it names and repo the one repository its selectors name: a leaf of
+// ghReadLeaves, or a `gh api` GET of a REST endpoint (ghAPIRead), naming repo; or one of the
+// GraphQL reads knives' audit makes (knivesAuditRead), naming the repository in its variables. It
+// is "" for every other command, one that may write and one naming no one repository alike. It
+// decides nothing but the directory a command naming an owner the bundle holds none for runs
+// under (ghConfigDir).
+func ghReadOf(cmd *ghCommand, parsed ghArgs, owner, repo string) string {
+	api := cmd.isAPI()
+	switch {
+	case api && slices.Equal(parsed.positionals, []string{"graphql"}):
+		return knivesAuditRead(parsed, owner)
+	case repo == "":
+		return ""
+	case api && ghAPIRead(parsed), !api && ghReadLeaves[strings.Join(cmd.path, " ")]:
+		return owner + "/" + repo
+	}
+	return ""
+}
+
+// ghAPIRead says whether the parsed `gh api` call is a GET of a REST endpoint, its every option
+// taking a value one that leaves the request a read: --method GET alone; a header asking for the
+// response's media type or API version, Accept and X-GitHub-Api-Version; and the host, which a
+// selector holds to github.com, the response's cache, its previews and its formatting. Any other,
+// --field, --raw-field and --input among them, which make gh send a body and so POST, and an
+// option a later gh adds, makes the call no read. gh 2.98.0's api options that take no value
+// shape the output or page through it, and write nothing. The endpoint is read as written, so
+// one with a `.` or `..` segment, which could reach another path than the one its selectors
+// read, is no read either.
+func ghAPIRead(parsed ghArgs) bool {
+	if len(parsed.positionals) != 1 {
+		return false
+	}
+	path := parsed.positionals[0]
+	if _, rest, found := strings.Cut(path, "://"); found {
+		_, path, _ = strings.Cut(rest, "/")
+	}
+	path, _, _ = strings.Cut(path, "?")
+	for _, segment := range strings.Split(path, "/") {
+		if unescaped, err := url.PathUnescape(segment); err != nil || unescaped == "." || unescaped == ".." {
+			return false
+		}
+	}
+	for name, values := range parsed.values {
+		for _, value := range values {
+			switch name {
+			case "hostname", "cache", "preview", "jq", "template":
+			case "method":
+				if value != "GET" {
+					return false
+				}
+			case "header":
+				header, _, _ := strings.Cut(value, ":")
+				if header = strings.TrimSpace(header); !strings.EqualFold(header, "Accept") && !strings.EqualFold(header, "X-GitHub-Api-Version") {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// knivesQueryHead opens both GraphQL reads knives v3.2.6's audit makes of the repository a fork's
+// pull requests live in, its upstream (sjawhar/knives src/forge/github.rs, sweep_query and
+// pull_facts_query): a query of the one repository its $owner and $name variables name.
+const knivesQueryHead = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
+
+// knivesSweepQuery is the audit's sweep of that repository's pull requests, the newest-updated
+// first, which it makes where it holds a cache of them.
+const knivesSweepQuery = knivesQueryHead + "pullRequests(orderBy: {field: UPDATED_AT, direction: DESC}, first: 100) " +
+	"{ pageInfo { hasNextPage } nodes { number updatedAt state } } } }"
+
+// knivesFactsFields are the pull requests the audit's batch of their facts asks for, by number,
+// each under its alias `p<number>`, between knivesQueryHead and knivesFactsTail.
+var knivesFactsFields = regexp.MustCompile(`^p[0-9]+: pullRequest\(number: [0-9]+\) \{ \.\.\.facts \}( p[0-9]+: pullRequest\(number: [0-9]+\) \{ \.\.\.facts \})*$`)
+
+// knivesFactsTail closes the audit's batch of pull requests' facts, the live batch it reads the
+// head of each of its open pull requests from, with the fragment each is read through.
+const knivesFactsTail = " } } fragment facts on PullRequest { number state reviewDecision headRefName headRefOid " +
+	"updatedAt isDraft url headRepositoryOwner { login } baseRefName mergeable mergeStateStatus mergeCommit { oid } " +
+	"additions deletions changedFiles headRef { name } body " +
+	"reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } } " +
+	"reviews(last: 100) { nodes { submittedAt } } commits(last: 100) { nodes { commit { committedDate } } } " +
+	"rollup: commits(last: 1) { nodes { commit { tree { oid } " +
+	"parents(first: 2) { pageInfo { hasNextPage } nodes { tree { oid } } } " +
+	"statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename " +
+	"... on CheckRun { name conclusion } ... on StatusContext { context state } } } } " +
+	"checkSuites(first: 100) { pageInfo { hasNextPage } nodes { conclusion checkRuns(first: 1) { totalCount } " +
+	"app { name } workflowRun { workflow { name } } } } } } } comments(last: 1) { nodes { createdAt } } }"
+
+// knivesAuditRead is the repository, `<owner>/<name>`, a `gh api graphql` call reads when it is
+// one of those two reads exactly as knives makes it, `-f owner=<owner> -f name=<name> -f
+// query=<query>` with no other option taking a value, and "" for any other GraphQL call, which
+// may write or read whatever its query names. owner is the call's one owner, the one its owner
+// variable names (selectors.fromAPI).
+func knivesAuditRead(parsed ghArgs, owner string) string {
+	fields := parsed.values["raw-field"]
+	if len(parsed.values) != 1 || len(fields) != 3 {
+		return ""
+	}
+	variables := map[string]string{}
+	for _, field := range fields {
+		key, value, _ := strings.Cut(field, "=")
+		variables[key] = value
+	}
+	query := variables["query"]
+	asked, head := strings.CutPrefix(query, knivesQueryHead)
+	asked, tail := strings.CutSuffix(asked, knivesFactsTail)
+	switch {
+	case len(variables) != 3 || !strings.EqualFold(variables["owner"], owner) || variables["name"] == "":
+		return ""
+	case query != knivesSweepQuery && !(head && tail && knivesFactsFields.MatchString(asked)):
+		return ""
+	}
+	return owner + "/" + ghconfig.RepositoryName(variables["name"])
 }
 
 // ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`), the zero
@@ -723,7 +918,8 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		return ghTarget{command: command, files: files}, nil
 	case 1:
 		for owner := range sel.owners {
-			return ghTarget{owner: owner, repo: sel.onlyRepository(), command: command, files: files}, nil
+			repo := sel.onlyRepository()
+			return ghTarget{owner: owner, repo: repo, read: ghReadOf(cmd, parsed, owner, repo), command: command, files: files}, nil
 		}
 	}
 	var listed []string

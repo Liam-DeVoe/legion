@@ -707,6 +707,61 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 	}
 }
 
+// ghTargetOf reads, beside the owner and the repository, whether the command only reads that one
+// repository: a view, list, diff, checks, status or search leaf, and `repo clone`, naming one
+// repository; a `gh api` GET of a REST endpoint of it, with --method GET alone, no field, no body
+// and no header but Accept or X-GitHub-Api-Version; and the two GraphQL reads knives' audit makes,
+// exactly as it makes them. A leaf that writes, a command naming the owner alone or two of its
+// repositories, a method other than GET however spelled, a field, a body, another header, an
+// endpoint with a `..` segment however escaped, and any other GraphQL call read nothing.
+func TestGhTargetOfReadsOnlyTheRepositoryOfAReadOnlyCommand(t *testing.T) {
+	sweep := "query=" + knivesSweepQuery
+	facts := func(fields string) string { return "query=" + knivesQueryHead + fields + knivesFactsTail }
+	for _, tc := range []struct {
+		argv []string
+		read string // "" where the command may write or reads no one repository
+	}{
+		{[]string{"repo", "view", "other/open", "--json", "nameWithOwner,id"}, "other/open"},
+		{[]string{"pr", "view", "https://github.com/Other/Open/pull/19126"}, "other/open"},
+		{[]string{"pr", "list", "-R", "other/open", "--state", "all", "--limit", "300", "--search", "author:acme", "--json", "number"}, "other/open"},
+		{[]string{"search", "issues", "repo:other/open", "is:open"}, "other/open"},
+		{[]string{"repo", "clone", "other/open", "--", "--depth=1"}, "other/open"},
+		{[]string{"api", "repos/other/open/pulls/19126", "--jq", ".state"}, "other/open"},
+		{[]string{"api", "-X", "GET", "https://api.github.com/repos/other/open/contents/src?ref=v1", "-H", "Accept: application/vnd.github.raw"}, "other/open"},
+		{[]string{"api", "graphql", "-f", "owner=Other", "-f", "name=Open", "-f", sweep}, "other/open"},
+		{[]string{"api", "graphql", "-f", facts("p7: pullRequest(number: 7) { ...facts }"), "-f", "owner=other", "-f", "name=open"}, "other/open"},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts("p7: pullRequest(number: 7) { ...facts } p9: pullRequest(number: 9) { ...facts }")}, "other/open"},
+		// Writes, and reads of no one repository.
+		{[]string{"pr", "comment", "1", "-R", "other/open", "--body", "x"}, ""},
+		{[]string{"pr", "create", "-R", "other/open", "--title", "t", "--body", "b"}, ""},
+		{[]string{"repo", "fork", "other/open", "--clone=false"}, ""},
+		{[]string{"issue", "edit", "1", "-R", "other/open", "--title", "t"}, ""},
+		{[]string{"repo", "list", "other"}, ""},
+		{[]string{"search", "issues", "org:other", "bug"}, ""},
+		{[]string{"api", "-X", "POST", "repos/other/open/forks"}, ""},
+		{[]string{"api", "--method=get", "repos/other/open"}, ""},
+		{[]string{"api", "-X", "GET", "-X", "DELETE", "repos/other/open"}, ""},
+		{[]string{"api", "repos/other/open/issues", "-f", "title=x"}, ""},
+		{[]string{"api", "repos/other/open/issues", "-F", "title=x"}, ""},
+		{[]string{"api", "repos/other/open/contents/x", "--input", "body.json"}, ""},
+		{[]string{"api", "repos/other/open", "-H", "X-HTTP-Method-Override: DELETE"}, ""},
+		{[]string{"api", "repos/other/open/../../graphql"}, ""},
+		{[]string{"api", "repos/other/open/%2E%2e/thing"}, ""},
+		{[]string{"api", "orgs/other/repos"}, ""},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", "query=mutation { addStar(input: {starrableId: \"R_1\"}) { clientMutationId } }"}, ""},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", sweep, "-f", "after=x"}, ""},
+		{[]string{"api", "graphql", "-F", "owner=other", "-f", "name=open", "-f", sweep}, ""},
+		{[]string{"api", "graphql", "--hostname", "github.com", "-f", "owner=other", "-f", "name=open", "-f", sweep}, ""},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts("p7: pullRequest(number: 7) { ...facts } viewer { login }")}, ""},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts("")}, ""},
+	} {
+		target, err := ghTargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
+		if err != nil || target.read != tc.read {
+			t.Errorf("ghTargetOf(%q) = %+v, %v; want it to read %q", tc.argv, target, err, tc.read)
+		}
+	}
+}
+
 // noGitRepository is the git remotes of a working directory that is no git repository: none.
 func noGitRepository() ([]ghRemote, error) { return nil, nil }
 
@@ -859,9 +914,11 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // reads each command from the real gh's own help. The real gh runs with GH_PATH naming the `gh`
 // wrapper first on PATH, so the git gh runs asks `legion gh auth git-credential`, which answers by
 // the path's repository as `legion git-credential` does; with useHttpPath on for github.com, and gh's
-// update check and prompts off. A command naming an owner the bundle holds no directory for is
-// refused, exit 2, naming the owner, and so are one it cannot read, a gh alias, and any command
-// when PATH's first gh is the real gh; the real gh never runs. In a clone of an owner's
+// update check and prompts off. A read of a repository GitHub reports private, of an owner the
+// bundle holds no directory for, is refused, exit 2, naming the owner (the rest of such an
+// owner's commands are TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor's), and
+// so are one it cannot read, a gh alias, and any command when PATH's first gh is the real gh; the
+// real gh never runs. In a clone of an owner's
 // repository, a command naming none runs as that repository's. Each of the three variables it needs is
 // required, and an unset one is named with exit 2; --help with no real gh to hand it to is
 // legion's usage.
@@ -872,10 +929,11 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The stub answers `[<command>] --help` with the saved help of that command, gh's own for none,
-	// as the real gh would, and every other run with its argv and GH_CONFIG_DIR, then the rest of
-	// the environment `legion gh` gives it.
+	// as the real gh would, a visibility read as GitHub would (ghStandInVisibility), and every
+	// other run with its argv and GH_CONFIG_DIR, then the rest of the environment `legion gh`
+	// gives it.
 	stub := filepath.Join(t.TempDir(), "gh")
-	script := ghStandInPrefix(help) +
+	script := ghStandInVisibility(help) +
 		"printf '%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$*\"\n" +
 		"printf 'env %s|%s|%s=%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
@@ -989,6 +1047,86 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	code, _, stderr := legionGh(t, map[string]string{}, "--help")
 	if code != 0 || !usageOf(stderr, "gh") {
 		t.Errorf("legion gh --help with no LEGION_GH_PATH = exit %d, stderr %q; want exit 0 and its usage", code, stderr)
+	}
+}
+
+// A read-only command naming one repository of an owner the bundle holds no directory for runs
+// under GH_CONFIG_DIR, the issue owner's directory, once GitHub, asked through the guard's own
+// visibility read under that same directory, reports the repository public: a REST GET of it, a
+// view of it, of its pull request and of its pull requests' list, and the GraphQL reads knives'
+// audit makes of a fork's upstream. Everything else naming that owner is refused as it always
+// was, exit 2, `"other" is not an owner of this project`, and gh runs for none of it: a write
+// naming that same repository, a GraphQL call that is no read of knives', and a command naming
+// the owner alone are refused before any visibility read; a read of a repository GitHub reports
+// private, and one whose visibility read fails, after that one read.
+func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInVisibility(help)+"printf '%s|%s\\n' \"$GH_CONFIG_DIR\" \"$*\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrappers := ghWrapperDir(t)
+	// run answers what `legion gh args…` exited with and printed, the directories its visibility
+	// reads ran under, one `under` line each, and whether any read ran under another.
+	run := func(t *testing.T, args []string) (code int, stdout, stderr string, reads int, elsewhere bool) {
+		t.Helper()
+		record := filepath.Join(t.TempDir(), "gh")
+		env := map[string]string{
+			"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+			"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+			"GH_STANDIN_RECORD": record,
+		}
+		code, stdout, stderr = legionGh(t, env, args...)
+		recorded := readRecord(t, record)
+		reads = strings.Count(recorded, "under ")
+		return code, stdout, stderr, reads, reads != strings.Count(recorded, "under "+defaultDir+"\n")
+	}
+	sweep := "query=" + knivesSweepQuery
+	facts := "query=" + knivesQueryHead + "p12: pullRequest(number: 12) { ...facts } p19126: pullRequest(number: 19126) { ...facts }" + knivesFactsTail
+	for _, args := range [][]string{
+		{"api", "repos/other/open/pulls/19126", "--jq", ".state"},
+		{"repo", "view", "other/open", "--json", "nameWithOwner,id"},
+		{"pr", "view", "https://github.com/Other/open/pull/19126", "--json", "state"},
+		{"pr", "list", "-R", "other/open", "--state", "all", "--limit", "300", "--search", "author:acme", "--json", "number"},
+		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", sweep},
+		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts},
+	} {
+		code, stdout, stderr, reads, elsewhere := run(t, args)
+		if want := defaultDir + "|" + strings.Join(args, " ") + "\n"; code != 0 || stdout != want {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and %q", args, code, stdout, stderr, want)
+		}
+		if reads == 0 || elsewhere {
+			t.Errorf("legion gh %q read the visibility %d times, under another directory than %s: %t; want it read under that one", args, reads, defaultDir, elsewhere)
+		}
+	}
+
+	refusal := `legion gh: "other" is not an owner of this project: ` + root + " holds no gh directory for it\n"
+	for _, tc := range []struct {
+		args  []string
+		reads int // the visibility reads made before the refusal
+	}{
+		{[]string{"pr", "comment", "1", "-R", "other/open", "--body", "x"}, 0},
+		{[]string{"pr", "create", "-R", "other/open", "--title", "t", "--body", "b"}, 0},
+		{[]string{"repo", "fork", "other/open", "--clone=false"}, 0},
+		{[]string{"api", "-X", "POST", "repos/other/open/forks"}, 0},
+		{[]string{"api", "repos/other/open/issues", "-f", "title=x"}, 0},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", "query=mutation { addStar(input: {starrableId: \"R_1\"}) { clientMutationId } }"}, 0},
+		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", sweep, "-f", "after=x"}, 0},
+		{[]string{"repo", "list", "other"}, 0},
+		{[]string{"api", "repos/other/thing", "--jq", ".full_name"}, 1},
+		{[]string{"repo", "view", "other/gone"}, 1},
+	} {
+		code, stdout, stderr, reads, elsewhere := run(t, tc.args)
+		if code != 2 || stdout != "" || stderr != refusal {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2, %q and no gh run", tc.args, code, stdout, stderr, refusal)
+		}
+		if reads != tc.reads || elsewhere {
+			t.Errorf("legion gh %q read the visibility %d times, under another directory than %s: %t; want %d", tc.args, reads, defaultDir, elsewhere, tc.reads)
+		}
 	}
 }
 
@@ -1110,6 +1248,24 @@ func ghStandInPrefix(help string) string {
 		"  echo public\n" +
 		"  exit 0\n" +
 		"fi\n"
+}
+
+// ghStandInVisibility is ghStandInPrefix whose visibility read answers as GitHub would for the
+// repository it names. Of other, an owner the bundle holds no directory for, other/open is
+// public, other/gone answers a 404 and no visibility, and every other repository is private.
+// Every repository of another owner is public, as ghStandInPrefix answers.
+// Each read records the directory it runs under, `under <GH_CONFIG_DIR>`, in GH_STANDIN_RECORD
+// after its `visibility` line.
+func ghStandInVisibility(help string) string {
+	return strings.Replace(ghStandInPrefix(help), "  echo public\n  exit 0\n",
+		"  printf 'under %s\\n' \"$GH_CONFIG_DIR\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n"+
+			"  case \"$"+leakguard.VisibilityReadVar+"\" in\n"+
+			"  other/open) echo public ;;\n"+
+			"  other/gone) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;\n"+
+			"  other/*) echo private ;;\n"+
+			"  *) echo public ;;\n"+
+			"  esac\n"+
+			"  exit 0\n", 1)
 }
 
 // ghRefusal is what the stand-in checks of this package print when they refuse a `legion gh`
