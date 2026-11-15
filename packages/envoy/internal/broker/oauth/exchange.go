@@ -46,10 +46,10 @@ const (
 	ClaimSession = "session"
 	// ClaimPerson is the person the session acts for.
 	ClaimPerson = "person"
-	// ClaimService is the service a token that names no person is, and is empty for every token
-	// that names one. It is written always, for the reason ClaimProjectScope is: a reader of the
-	// row never has to take an absent service as either "no service" or "a claim this build of
-	// the broker did not write".
+	// ClaimService is the service a token that names no person is, a machine's fleet or the
+	// service a read entry names, and is empty for every token that names one. It is written
+	// always, for the reason ClaimProjectScope is: a reader of the row never has to take an
+	// absent service as either "no service" or "a claim this build of the broker did not write".
 	ClaimService = "service"
 	// ClaimMachine is the machine a person signed in on acted through: the Google account the
 	// trade's actor token named (exchange.Claims.Actor). It is set only beside ClaimPerson, and
@@ -58,12 +58,14 @@ const (
 	// the actor token's issuer spells it, a Google subject rather than an account, so this is
 	// the name an introspection can answer and a reader can act on.
 	ClaimMachine = "machine"
-	// ClaimProjectScope is what ClaimProject means, one of oauthwire.ProjectScopeNamed or
-	// oauthwire.ProjectScopePerson. It is written always, so a reader never has to take an
-	// absent project as either "every project" or "none".
+	// ClaimProjectScope is what ClaimProject means, one of oauthwire.ProjectScopeNamed,
+	// oauthwire.ProjectScopePerson or oauthwire.ProjectScopeNone, the last for a read entry's
+	// token alone, which is granted oauthwire.ScopeRead beside it (writeProjectScope). It is
+	// written always, so a reader never has to take an absent project as "every project", "no
+	// project at all" or a claim nobody decided.
 	ClaimProjectScope = "project_scope"
 	// ClaimProject is the one project key a token of the named scope may write, and is absent
-	// from one of the person scope, which names none.
+	// from one of the person scope or of the none scope, neither of which names one.
 	ClaimProject = "project"
 )
 
@@ -559,9 +561,10 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 //
 // In order: the subject token's audience, which the library never checks and which a token minted
 // for another service would fail; the policy's decision, which names the session, the person or
-// the service, the project and the principal; and then the claims themselves, onto the session,
-// where the row the token is stored in carries them and an introspection answers from them, with
-// the principal beside them for claimSession.
+// the service, the project scope, the project and the principal; and then the claims themselves,
+// onto the session, where the row the token is stored in carries them and an introspection
+// answers from them, with the principal beside them for claimSession, and the one OAuth scope a
+// decision may carry granted on the request (writeProjectScope).
 //
 // The subject the library asks for is the principal, which every decision names: a token that
 // names a service and no person has no person to be the subject of, and a subject that is
@@ -639,15 +642,48 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		session.Extra[ClaimMachine] = claims.Actor
 	}
+	if err := writeProjectScope(request, session, claims); err != nil {
+		return "", err
+	}
+	return claims.Principal, nil
+}
+
+// writeProjectScope writes what claims.Scope decides onto the session the token is stored with,
+// and grants the OAuth scope that decision carries: the project scope's wire word under
+// ClaimProjectScope; the project under ClaimProject for a named token, and no project for any
+// other; and oauthwire.ScopeRead for exchange.ProjectScopeNone, the read entry's decision, and
+// no scope for any other.
+//
+// The entry decides the scope, and the request's own scope parameter never does. The exchange
+// client is registered for oauthwire.Scope alone (oauthstore.exchangeClient), so the library
+// refuses a request that names oauthwire.ScopeRead invalid_scope before decide runs, under every
+// entry; and it validates a requested scope without granting it, so a request under a read entry
+// that names oauthwire.Scope is granted oauthwire.ScopeRead here and nothing else, and the same
+// request under any other entry is granted nothing.
+//
+// Any other value, exchange.ProjectScopeUnset included, is a server error that names it, and
+// nothing is written or granted: read as the person scope, as a build before
+// exchange.ProjectScopeNone read every value that was not named, a Claims nobody filled in would
+// mint a token that writes every project its person may. No path through decide hands it one
+// today, since ExchangeConfig.Policy is a concrete *exchange.Set and each of its decisions sets
+// one of the three values below, so the refusal is what keeps a value that package adds later
+// from being minted as one of them before this switch learns its word.
+func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims) error {
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
 		session.Extra[ClaimProject] = claims.Project
-	default:
+	case exchange.ProjectScopePerson:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopePerson
 		delete(session.Extra, ClaimProject)
+	case exchange.ProjectScopeNone:
+		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNone
+		delete(session.Extra, ClaimProject)
+		request.GrantScope(oauthwire.ScopeRead)
+	default:
+		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s), which this broker writes no word for", int(claims.Scope), claims.Scope)
 	}
-	return claims.Principal, nil
+	return nil
 }
 
 // claimSession claims the session name decide wrote onto session for the principal it decided,

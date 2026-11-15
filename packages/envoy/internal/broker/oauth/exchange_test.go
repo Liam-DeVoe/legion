@@ -25,7 +25,7 @@ import (
 
 // The listed identities every exchange test is written against: pods of three accounts of one
 // cluster and runs of two workflows of one repository, each with the project and person an entry
-// gives it.
+// gives it, and pods of a fourth account a read entry lists, whose tokens only read.
 const (
 	exchangeGrant = "urn:ietf:params:oauth:grant-type:token-exchange"
 	account       = "system:serviceaccount:example-ns:example-worker"
@@ -45,6 +45,12 @@ const (
 	otherAccount = "system:serviceaccount:other-ns:example-worker"
 	otherProject = "OTHER"
 	otherPerson  = "mallory@example.com"
+	// readAccount is the account the read entry lists: its pods are minted a token that holds
+	// the scope read and the project scope none, names readService and readSession, and names no
+	// person and no project.
+	readAccount = "system:serviceaccount:example-ns:example-reader"
+	readService = "example-reader"
+	readSession = "example-reader-session"
 	// podAudience and workflowAudience are what each issuer's tokens must be minted for; a token
 	// carrying anything else is not spendable at this broker.
 	podAudience      = "https://broker.example"
@@ -56,20 +62,27 @@ const (
 	deviceAudience = "https://broker.example/signin"
 )
 
-// newPolicy builds the exchange's listed identities, failing the test on an entry it refuses.
-// machines are the Google accounts a test that drives the machine subject token lists; every
-// other test passes none.
+// newPolicy builds the exchange's listed identities with no read entry, failing the test on an
+// entry it refuses. machines are the Google accounts a test that drives the machine subject token
+// lists; every other test passes none.
 func newPolicy(t *testing.T, accounts []exchange.AccountEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) *exchange.Set {
 	t.Helper()
-	set, err := exchange.NewSet(accounts, workflows, machines, signInDomain)
+	return newPolicyReading(t, accounts, nil, workflows, machines...)
+}
+
+// newPolicyReading is newPolicy with read entries listed beside the accounts, as the exchange
+// fixture's own policy lists one.
+func newPolicyReading(t *testing.T, accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) *exchange.Set {
+	t.Helper()
+	set, err := exchange.NewSet(accounts, reads, workflows, machines, signInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
 	return set
 }
 
-// exchangeFixture is a fixture whose token exchange lists the accounts and workflows above, with
-// a local issuer standing in for the cluster's and another for GitHub's.
+// exchangeFixture is a fixture whose token exchange lists the accounts, the read entry and the
+// workflows above, with a local issuer standing in for the cluster's and another for GitHub's.
 type exchangeFixture struct {
 	*fixture
 	cluster    *oidctest.Issuer
@@ -95,12 +108,13 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtu
 		t.Fatalf("GitHub keys: %v", err)
 	}
 	config := oauth.ExchangeConfig{
-		Policy: newPolicy(t,
+		Policy: newPolicyReading(t,
 			[]exchange.AccountEntry{
 				{Account: account, Project: project, Person: person},
 				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
 				{Account: otherAccount, Project: otherProject, Person: otherPerson},
 			},
+			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
@@ -250,6 +264,175 @@ func TestAPodExchangesItsTokenForOneThatIntrospects(t *testing.T) {
 	}
 	if answer.ExpiresAt <= time.Now().Unix() {
 		t.Errorf("the token expires at %d, which is not in the future", answer.ExpiresAt)
+	}
+}
+
+// introspected is what the provider answers for token, failing the test on an error.
+func (f *exchangeFixture) introspected(t *testing.T, token string) oauthwire.Introspection {
+	t.Helper()
+	answer, err := f.provider.Introspect(context.Background(), token)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+	return answer
+}
+
+// readPodForm is an exchange request of a pod of the read entry's account, naming no session and
+// no scope, as the read entry's one client sends it.
+func (f *exchangeFixture) readPodForm(t *testing.T) url.Values {
+	t.Helper()
+	return exchangeForm(f.podTokenOf(t, readAccount, "pod-uid-reader"), oauthwire.SubjectTokenTypeKubernetes, "")
+}
+
+// TestAReadEntrysPodExchangesForATokenThatOnlyReads: a pod of the account the read entry lists
+// presents its projected token naming no scope and no session, and is answered a token that
+// introspects as exactly the read entry's: the scope read, the project scope none, the entry's
+// service and the session it fixes, no person and no project, bound to the key its proof named.
+// The entry fixes its session, so nothing was registered for the pod and none is needed. The
+// literal below is the answer every resource server reads a read-only token by, and a test of a
+// build that predates the read entry copies it with its words spelled out.
+func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	answer := f.introspected(t, f.exchanged(t, f.readPodForm(t), key))
+	want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: readSession, Service: readService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+	if answer != want {
+		t.Errorf("Introspect = %+v, want %+v", answer, want)
+	}
+	if answer.ExpiresAt <= time.Now().Unix() {
+		t.Errorf("the token expires at %d, which is not in the future", answer.ExpiresAt)
+	}
+	if rows := f.count(t, "oauth_pod_sessions"); rows != 0 {
+		t.Errorf("oauth_pod_sessions holds %d rows, want none: a read entry fixes its session and registers nothing", rows)
+	}
+}
+
+// TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing: the exchange client is
+// registered for the scope machine, so a request may name it, and the library validates it
+// without granting it. Under the read entry the token then holds read and nothing beside it;
+// under a named entry the same request is granted no scope at all, as it was before read entries
+// existed. The scope is the entry's to decide, never the request's.
+func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	read := f.readPodForm(t)
+	read.Set("scope", oauthwire.Scope)
+	if answer := f.introspected(t, f.exchanged(t, read, key)); answer.Scope != oauthwire.ScopeRead || answer.ProjectScope != oauthwire.ProjectScopeNone {
+		t.Errorf("a read entry's exchange naming the scope %s introspects as %+v, want the scope %q alone and the project scope %q",
+			oauthwire.Scope, answer, oauthwire.ScopeRead, oauthwire.ProjectScopeNone)
+	}
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	named := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+	named.Set("scope", oauthwire.Scope)
+	if answer := f.introspected(t, f.exchanged(t, named, key)); answer.Scope != "" || answer.ProjectScope != oauthwire.ProjectScopeNamed || answer.Project != project {
+		t.Errorf("a named entry's exchange naming the scope %s introspects as %+v, want no scope and the named project %s", oauthwire.Scope, answer, project)
+	}
+}
+
+// TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry: the exchange client is not registered
+// for the scope read, so the library refuses a request that names it invalid_scope before the
+// exchange decides anything, under a named entry and under the read entry alike, and stores no
+// token. The same request naming no scope is then answered, so what refused it was the scope.
+func TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	for _, c := range []struct {
+		name string
+		form func(*testing.T) url.Values
+	}{
+		{name: "a named entry", form: func(t *testing.T) url.Values {
+			return exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+		}},
+		{name: "the read entry", form: f.readPodForm},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			before := f.count(t, "oauth_access_tokens")
+			asked := c.form(t)
+			asked.Set("scope", oauthwire.ScopeRead)
+			status, body := f.exchange(t, asked, key)
+			if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
+				t.Fatalf("an exchange under %s naming the scope %s = %d %v, want 400 invalid_scope and no access token", c.name, oauthwire.ScopeRead, status, body)
+			}
+			if after := f.count(t, "oauth_access_tokens"); after != before {
+				t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+			}
+			f.exchanged(t, c.form(t), key)
+		})
+	}
+}
+
+// TestAReadEntrysPodNamingAnotherSessionIsRefused: the read entry fixes the session its token
+// names, so a pod of it that asks for any other is refused, and the refusal names the session the
+// entry fixes; no token is stored.
+func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	before := f.count(t, "oauth_access_tokens")
+	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, readAccount, "pod-uid-reader"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
+		t.Fatalf("a read entry's exchange naming another session = %d %v, want 400 invalid_request and no access token", status, body)
+	}
+	if hint, _ := body["error_description"].(string); !strings.Contains(hint, readSession) {
+		t.Errorf("the refusal reads %q, which does not name the session %s the entry fixes", hint, readSession)
+	}
+	if after := f.count(t, "oauth_access_tokens"); after != before {
+		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	}
+}
+
+// TestAReadTokenIsNoSubjectTokenForAnotherExchange: a read token presented back to the exchange
+// as an access token, the subject type a dev box's machine login trades under, is refused, and
+// nothing is minted from it: the token the exchange client was issued is not one it may trade
+// again, and a read token names no machine credential either.
+func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	read := f.exchanged(t, f.readPodForm(t), key)
+	before := f.count(t, "oauth_access_tokens")
+	status, body := f.exchange(t, exchangeForm(read, oauthwire.SubjectTokenTypeAccessToken, readSession), key)
+	if status != http.StatusBadRequest || body["access_token"] != nil {
+		t.Fatalf("an exchange of a read token = %d %v, want 400 and no access token", status, body)
+	}
+	if after := f.count(t, "oauth_access_tokens"); after != before {
+		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	}
+}
+
+// TestEveryOtherEntryMintsTheTokenItDidAndNoScope: beside the read entry, a pod of an account
+// whose entry fixes its session, a run of a workflow whose entry fixes its session, and a dev box
+// session trading its machine login are each answered exactly the token they were before read
+// entries existed, holding no OAuth scope. TestAPodExchangesItsTokenForOneThatIntrospects holds
+// the named pod's answer the same way.
+func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	deploy := func(claims map[string]any) {
+		claims["workflow_ref"] = repository + "/" + deployWorkflow + "@" + ref
+		claims["job_workflow_ref"] = claims["workflow_ref"]
+	}
+	for _, c := range []struct {
+		name  string
+		token string
+		want  oauthwire.Introspection
+	}{
+		{name: "a pod of a fixed-session account",
+			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
+			want:  oauthwire.Introspection{Active: true, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Project: project, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+		{name: "a run of a fixed-session workflow",
+			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
+			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Project: project, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+		{name: "a dev box session",
+			token: f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
+			want:  oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer := f.introspected(t, c.token)
+			c.want.ExpiresAt = answer.ExpiresAt
+			if answer != c.want {
+				t.Errorf("Introspect = %+v, want %+v", answer, c.want)
+			}
+		})
 	}
 }
 
