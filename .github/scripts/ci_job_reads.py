@@ -375,6 +375,10 @@ RULES = {
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
+    f"{ENVOY}/internal/dispatch/wordrecords/prompt_test.go": reads(
+        (f"{ENVOY}/cmd/writing-check/dataset/DATASET", "internal/dispatch/wordrecords/prompt_test.go:19 os.ReadFile ../../../cmd/writing-check/dataset/DATASET")),
+    f"{ENVOY}/internal/dispatch/writingcheck/plainwords/plainwords_test.go": reads(
+        ("skills/plain-words/**", "internal/dispatch/writingcheck/plainwords/plainwords_test.go:14 skillDirectory ../../../../../../skills/plain-words")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
