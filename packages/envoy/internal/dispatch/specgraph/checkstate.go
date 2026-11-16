@@ -206,21 +206,11 @@ func refusals(files Tree) map[string]string {
 // smallest id of the loop, and the loop refuses each of its statements, so that no state depends
 // on the order of the ids.
 func loopOf(files Tree, id string) []string {
-	statement := make(map[string]bool, len(files.Statements))
-	for _, s := range files.Statements {
-		statement[s.ID] = true
-	}
 	up, down := map[string][]string{}, map[string][]string{}
-	link := func(from, to string) {
-		if statement[to] {
-			up[from] = append(up[from], to)
-			down[to] = append(down[to], from)
-		}
-	}
-	for _, s := range files.Statements {
-		link(s.ID, s.Parent)
-		for _, served := range s.Serves {
-			link(s.ID, served)
+	for from, edges := range statementEdges(files.Statements) {
+		for _, e := range edges {
+			up[from] = append(up[from], e.to)
+			down[e.to] = append(down[e.to], from)
 		}
 	}
 	reachedUp, reachedDown := reached(up, id), reached(down, id)
@@ -231,6 +221,27 @@ func loopOf(files Tree, id string) []string {
 		}
 	}
 	return loop
+}
+
+// statementEdges is the parent and serves relations of each of statements to another of them, as
+// the edges of Validate's loop rule: a relation to an id that is no statement of the list is none.
+func statementEdges(statements []Statement) map[string][]edge {
+	held := make(map[string]bool, len(statements))
+	for _, s := range statements {
+		held[s.ID] = true
+	}
+	edges := map[string][]edge{}
+	for _, s := range statements {
+		if held[s.Parent] {
+			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: "parent"})
+		}
+		for _, id := range s.Serves {
+			if held[id] {
+				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: "serves"})
+			}
+		}
+	}
+	return edges
 }
 
 // reached is start and each node that edges lead to from it.
