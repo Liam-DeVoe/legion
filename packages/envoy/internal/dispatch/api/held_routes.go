@@ -532,8 +532,20 @@ func (s *server) answerHeldFrame(w http.ResponseWriter, r *http.Request, actor m
 	case input.Error != nil:
 		answer = "error: " + *input.Error
 	}
-	if _, err := s.deps.Store.Pool.Exec(ctx, `
+	// The answer is the request's own write: it commits in a transaction of the shared pool, whose
+	// commit step marks the request's key with it (keyed_write_guard_test.go).
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 		update held_texts set writer_answer = $2, updated_at = now() where id = $1`, row.id, answer); err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	if err := tx.Commit(ctx); err != nil {
 		s.writeHandlerError(w, err)
 		return true
 	}

@@ -671,11 +671,15 @@ func (s *server) postReady() {
 // outcome is rewrite_posted), the recorded actor and the reserved id, and reports whether it
 // posted. A post the create path refuses fails the held text with the refusal; any other failure
 // leaves it for the sweep to post again.
+//
+// A keyed route reaches it, since POST /api/v1/held/{id}/post posts before it answers, so each of
+// its writes commits in a transaction of the shared pool, as every write a keyed route reaches
+// does (keyed_write_guard_test.go). ctx is the post context (postContext), which carries no
+// request's Idempotency-Key, so those transactions take no commit step: the post is the held
+// text's own work, which the reviewer's sweep makes when no request does, and never a write of
+// the request that set it off.
 func (s *server) postHeld(ctx context.Context, id string) bool {
-	row, err := scanHeld(s.deps.Store.Pool.QueryRow(ctx, `
-		update held_texts set claimed_at = now()
-		where id = $1 and state = 'posting' and (claimed_at is null or claimed_at < now() - $2::interval)
-		returning `+heldColumns, id, intervalOf(s.deps.Reviewer.staleClaim())))
+	row, err := s.claimHeldPost(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false
 	}
@@ -694,9 +698,7 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 	case errors.Is(err, errHeldNotPosting):
 		return false
 	case errors.As(err, &refused) && refused.status < http.StatusInternalServerError:
-		if _, failErr := s.deps.Store.Pool.Exec(ctx, `
-			update held_texts set state = 'failed', detail = $2, claimed_at = null, updated_at = now()
-			where id = $1 and state = 'posting'`, row.id, "the post was refused: "+refused.message); failErr != nil {
+		if failErr := s.failHeldPost(ctx, row.id, "the post was refused: "+refused.message); failErr != nil {
 			slog.Warn("dispatch: fail a held text", "text", row.id, "error", failErr)
 		}
 		slog.Warn("dispatch: a held text's post was refused", "text", row.id, "code", refused.code, "error", refused.message)
@@ -705,12 +707,61 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 		if ctx.Err() == nil {
 			slog.Warn("dispatch: post a held text", "text", row.id, "error", err)
 		}
-		if _, releaseErr := s.deps.Store.Pool.Exec(context.WithoutCancel(ctx), `
-			update held_texts set claimed_at = null where id = $1 and state = 'posting'`, row.id); releaseErr != nil {
+		if releaseErr := s.releaseHeldPost(context.WithoutCancel(ctx), row.id); releaseErr != nil {
 			slog.Warn("dispatch: release a held text's post", "text", row.id, "error", releaseErr)
 		}
 		return false
 	}
+}
+
+// claimHeldPost takes the held text id for its post: it must be posting, with no post holding it
+// or one held past staleClaim. It answers pgx.ErrNoRows where the text is not one to take.
+func (s *server) claimHeldPost(ctx context.Context, id string) (heldRow, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return heldRow{}, err
+	}
+	defer tx.Rollback(ctx)
+	row, err := scanHeld(tx.QueryRow(ctx, `
+		update held_texts set claimed_at = now()
+		where id = $1 and state = 'posting' and (claimed_at is null or claimed_at < now() - $2::interval)
+		returning `+heldColumns, id, intervalOf(s.deps.Reviewer.staleClaim())))
+	if err != nil {
+		return heldRow{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return heldRow{}, err
+	}
+	return row, nil
+}
+
+// failHeldPost fails the held text id, still posting, with detail: its post was refused.
+func (s *server) failHeldPost(ctx context.Context, id, detail string) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		update held_texts set state = 'failed', detail = $2, claimed_at = null, updated_at = now()
+		where id = $1 and state = 'posting'`, id, detail); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// releaseHeldPost gives the held text id, still posting, back for the next post to take.
+func (s *server) releaseHeldPost(ctx context.Context, id string) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		update held_texts set claimed_at = null where id = $1 and state = 'posting'`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // runHeldPost runs the held text's create path. A write a person typed posts with its events

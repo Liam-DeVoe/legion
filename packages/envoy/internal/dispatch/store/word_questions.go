@@ -239,6 +239,11 @@ type DefineUse struct {
 // RecordDefineUse records a person's Define use as their question about those words: a done record
 // with the verdict asks_word_meaning, so the reader's words and the counts read it beside the
 // texts the records job classifies. A second call for one definition records nothing.
+//
+// The record belongs to the request that made the definition (POST /api/v1/definitions), so it
+// commits in a transaction of the pool: under a keyed request's context the commit step marks the
+// request's Idempotency-Key with it, as it marked the key with the definition, rather than
+// committing a row no mark covers.
 func (s *Store) RecordDefineUse(ctx context.Context, use DefineUse) error {
 	if use.DefinitionID == "" || use.Person == "" {
 		return errors.New("record a Define use: the definition and the person are required")
@@ -248,12 +253,20 @@ func (s *Store) RecordDefineUse(ctx context.Context, use DefineUse) error {
 		words = []string{}
 	}
 	at := cmp.Or(use.At, time.Now())
-	if _, err := s.Pool.Exec(ctx, `
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("record a Define use: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 		insert into word_questions (source, text_key, person, project, written_at, day, answers, verdict, words, model, state, attempts)
 		values ('define', 'define:' || $1, $2, nullif($3, ''), $4, ($4 at time zone 'UTC')::date, nullif($5, ''),
 			'asks_word_meaning', $6, nullif($7, ''), 'done', 1)
 		on conflict (text_key) do nothing`,
 		use.DefinitionID, use.Person, use.Project, at, use.Answers, words, use.Model); err != nil {
+		return fmt.Errorf("record a Define use: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("record a Define use: %w", err)
 	}
 	return nil

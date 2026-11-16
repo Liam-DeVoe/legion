@@ -121,7 +121,14 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // to its own `from <table> a`, whatever that caller indents its statement by.
 const askedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
+	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
+
+// ownerProjectJoin is the last of askedOfPersonJoins: the project of whichever of the issue i and
+// the document ar owns the row, as p. The writing check's readers of what a text is on and of a
+// document (textOwnerJoins and documentReader in api/writing_check_reader.go) reach the project
+// the same way, and append this one text rather than spell the join again, so the joins the rule
+// reads are written once (TestOneExpressionDecidesWhoWaitsInOneSpelling).
+const ownerProjectJoin = `
 	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and

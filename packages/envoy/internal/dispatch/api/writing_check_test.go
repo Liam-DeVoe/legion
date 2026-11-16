@@ -434,6 +434,18 @@ func proseRouteCases() []proseRouteCase {
 		{"PATCH /api/v1/comments/{id}", "body", token(http.MethodPatch, func(f writingCheckFixture) string { return "/api/v1/comments/" + f.comment }, field("body")), 0},
 		{"POST /api/v1/artifacts/{id}/rebuild", "markdown", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.spec + "/rebuild" }, field("markdown")), 0},
 		{"POST /api/v1/artifacts/{id}/reviews", "reason", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.notesID + "/reviews" }, field("reason", "state", "changes_requested")), 0},
+		// The versioned review names the version its writer read, which must be the version the
+		// review records: the document's latest settled version, as no approval request is open on
+		// it until the approval-requests case below opens one. A review writes no version, so both
+		// calls name the same one.
+		{"POST /api/v1/artifacts/{id}/versions/{number}/reviews", "reason", func(rig *writingCheckRig, text string) *httptest.ResponseRecorder {
+			version, err := settledVersionNumber(context.Background(), rig.database.Pool, rig.fixture.notesID)
+			if err != nil {
+				rig.t.Fatalf("read the settled version of the notes document: %v", err)
+			}
+			return rig.asTokenFor(checkWriter, http.MethodPost, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d/reviews", rig.fixture.notesID, version),
+				map[string]any{"reason": text, "state": "changes_requested"})
+		}, http.StatusCreated},
 		{"POST /api/v1/artifacts/{id}/approval-requests", "summary", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.notesID + "/approval-requests" }, field("summary")), 0},
 		{"POST /api/v1/artifacts/{id}/versions", "summary", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.notesID + "/versions" }, field("summary")), http.StatusCreated},
 		{"POST /api/v1/issues/{key}/artifacts/{slug}/versions", "summary", session(post, func(f writingCheckFixture) string {

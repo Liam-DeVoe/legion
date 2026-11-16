@@ -42,9 +42,9 @@ const (
 	// readerConversation is the person in the direct conversation with the session {session_id}:
 	// the author of its newest thread when a person opened it.
 	readerConversation readerRule = "conversation"
-	// readerAsk is the person the ask {id} waits on: the person it was handed to, else the reader
-	// of its issue or of its document's owner (textOwnerJoins), which is askedOfPersonExpression
-	// with an ask on an issue's document read through that issue.
+	// readerAsk is the person the ask {id} waits on: askedOfPersonExpression, read over
+	// textOwnerJoins, so an ask on an issue's document is read through that issue; an ask on a
+	// direct conversation's document that nobody handed on waits on the person in it.
 	readerAsk readerRule = "ask"
 	// readerAskReply is the author of the ask {id} when a person asked it, else the reader of the
 	// ask's issue or of its document's owner.
@@ -88,13 +88,14 @@ var writingCheckReaderRules = map[string]readerRule{
 	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":    readerProject,
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions": readerProject,
 
-	"POST /api/v1/artifacts/{id}/edits":             readerDocument,
-	"POST /api/v1/artifacts/{id}/rebuild":           readerDocument,
-	"POST /api/v1/artifacts/{id}/reviews":           readerDocument,
-	"POST /api/v1/artifacts/{id}/versions":          readerDocument,
-	"POST /api/v1/artifacts/{id}/asks":              readerDocument,
-	"POST /api/v1/artifacts/{id}/approval-requests": readerDocument,
-	"POST /api/v1/artifacts/{id}/comments":          readerComment,
+	"POST /api/v1/artifacts/{id}/edits":                     readerDocument,
+	"POST /api/v1/artifacts/{id}/rebuild":                   readerDocument,
+	"POST /api/v1/artifacts/{id}/reviews":                   readerDocument,
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": readerDocument,
+	"POST /api/v1/artifacts/{id}/versions":                  readerDocument,
+	"POST /api/v1/artifacts/{id}/asks":                      readerDocument,
+	"POST /api/v1/artifacts/{id}/approval-requests":         readerDocument,
+	"POST /api/v1/artifacts/{id}/comments":                  readerComment,
 
 	"PATCH /api/v1/asks/{id}":        readerAsk,
 	"POST /api/v1/asks/{id}/answer":  readerAskReply,
@@ -234,8 +235,7 @@ func documentReader(ctx context.Context, q queryer, id string) (string, error) {
 	err := q.QueryRow(ctx, `
 		select `+ownerReaderExpression+`, ar.session_id
 		from artifacts ar
-		left join issues i on i.key = ar.issue_key
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		left join issues i on i.key = ar.issue_key`+ownerProjectJoin+`
 		where ar.id = $1`, id).Scan(&login, &session)
 	if session != nil && err == nil {
 		return conversationReader(ctx, q, *session)
@@ -301,16 +301,16 @@ type answeredAsk struct {
 }
 
 // textOwnerJoins joins the issue i, the document ar and the project p of a comment or an ask
-// aliased by its first argument, for ownerReaderExpression. A text on a document carries the
-// document's id and no issue_key, so the issue is the text's own or else the document's: a text
-// on an issue's document is read by that issue's assignee, not by its project's default alone.
-// A document in a direct conversation names neither, and its reader is read by
-// conversationReader from ar.session_id.
+// aliased by its first argument, for ownerReaderExpression and askedOfPersonExpression. A text on
+// a document carries the document's id and no issue_key, so the issue is the text's own or else
+// the document's: a text on an issue's document is read by that issue's assignee, not by its
+// project's default alone. The project is reached as askedOfPersonJoins reaches it
+// (ownerProjectJoin). A document in a direct conversation names neither, and its reader is read
+// by conversationReader from ar.session_id.
 func textOwnerJoins(text string) string {
 	return `
 		left join artifacts ar on ar.id = ` + text + `.artifact_id
-		left join issues i on i.key = coalesce(` + text + `.issue_key, ar.issue_key)
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+		left join issues i on i.key = coalesce(` + text + `.issue_key, ar.issue_key)` + ownerProjectJoin
 }
 
 // textOwner is the reader of what a comment or an ask is on: owner as ownerReaderExpression read
@@ -327,13 +327,13 @@ func readAnsweredAsk(ctx context.Context, q queryer, id string) (answeredAsk, er
 		return answeredAsk{}, nil
 	}
 	var ask answeredAsk
-	var kind, author, askedOf, owner string
+	var kind, author, waitsOn, owner string
 	var session *string
 	err := q.QueryRow(ctx, `
-		select coalesce(a.author ->> 'kind', ''), coalesce(a.author ->> 'id', ''), coalesce(a.asked_of, ''),
-			`+ownerReaderExpression+`, ar.session_id
+		select coalesce(a.author ->> 'kind', ''), coalesce(a.author ->> 'id', ''),
+			coalesce(`+askedOfPersonExpression+`, ''), `+ownerReaderExpression+`, ar.session_id
 		from asks a`+textOwnerJoins("a")+`
-		where a.id = $1`, id).Scan(&kind, &author, &askedOf, &owner, &session)
+		where a.id = $1`, id).Scan(&kind, &author, &waitsOn, &owner, &session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return answeredAsk{}, nil
 	}
@@ -344,7 +344,11 @@ func readAnsweredAsk(ctx context.Context, q queryer, id string) (answeredAsk, er
 		return answeredAsk{}, err
 	}
 	ask.author = personLogin(kind, author)
-	ask.waitsOn = askedOf
+	// The expression is the person the ask was handed to, else owner as ownerReaderExpression
+	// reads it. A direct conversation's document has no issue and no project, so there it names
+	// only a person the ask was handed to, and an ask nobody handed on waits on the person in
+	// the conversation (textOwner).
+	ask.waitsOn = waitsOn
 	if ask.waitsOn == "" {
 		ask.waitsOn = ask.owner
 	}

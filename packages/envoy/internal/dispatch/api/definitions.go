@@ -198,12 +198,26 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inputs := recordInputs(record)
-	if _, err := s.deps.Store.Pool.Exec(ctx, `
+	// The definition is the request's own write, so it commits in a transaction of the shared
+	// pool: the commit step marks the request's Idempotency-Key committed with it, and a repeat
+	// after a crash is answered KEY_COMMITTED rather than defining the words a second time
+	// (keyed_write_guard_test.go).
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 		insert into definitions (id, person, ask_id, artifact_id, version, project, words, inputs, definitions,
 			failure, calls, writer, agent_question)
 		values ($1, $2, $3, $4, $5, nullif($6, ''), $7, $8, $9, nullif($10, ''), $11, nullif($12, ''), nullif($13, ''))`,
 		id, person.ID, where.askID, where.artifactID, where.version, where.project, words, inputs, encodedDefinitions,
 		failure, encodedCalls, writer, question); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -214,8 +228,7 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.sendSystemFrame(ctx, frame); err != nil {
 			slog.Warn("dispatch: send a definition's side question", "definition", id, "session", writer, "error", err)
-			if _, err := s.deps.Store.Pool.Exec(ctx, `
-				update definitions set writer = null, agent_question = null where id = $1`, id); err != nil {
+			if err := s.recordSideQuestionNotSent(ctx, id); err != nil {
 				slog.Warn("dispatch: record a side question not sent", "definition", id, "error", err)
 			}
 		}
@@ -226,6 +239,23 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusCreated, read)
+}
+
+// recordSideQuestionNotSent records that the definition id sent no side question after all: the
+// frame did not reach the session. It is the request's own write, so it commits in a transaction
+// of the shared pool, whose commit step marks the request's key with it, as the definition's
+// insert did.
+func (s *server) recordSideQuestionNotSent(ctx context.Context, id string) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		update definitions set writer = null, agent_question = null where id = $1`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // defineWords is a Define's selections, each trimmed, blank ones dropped, within the bounds.
@@ -527,9 +557,21 @@ func (s *server) answerDefinitionFrame(w http.ResponseWriter, r *http.Request, a
 		WriteJSON(w, http.StatusAccepted, definitionAnswerRead{ID: id, State: definitionAgentWaiting})
 		return true
 	}
-	if _, err := s.deps.Store.Pool.Exec(ctx, `
+	// The answer is the request's own write: it commits in a transaction of the shared pool, whose
+	// commit step marks the request's key with it (keyed_write_guard_test.go).
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 		update definitions set agent_answer = $2, agent_answered_at = now()
 		where id = $1::uuid and agent_answer is null`, id, *input.Body); err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	if err := tx.Commit(ctx); err != nil {
 		s.writeHandlerError(w, err)
 		return true
 	}

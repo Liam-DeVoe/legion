@@ -35,9 +35,16 @@ type WritingCheckEvent struct {
 	Project string
 }
 
-// InsertWritingCheckEvent records one decision of the writing check. It runs on the pool and
-// never inside the write's own transaction, so the caller logs a failure and lets the write go
-// on.
+// InsertWritingCheckEvent records one decision of the writing check. It runs in a transaction of
+// its own, never inside the write's own transaction, so the caller logs a failure and lets the
+// write go on.
+//
+// The row is the check's record of a write, and no part of the write: the check records it
+// before the write opens its transaction, and records it for a write that may never commit. So
+// its transaction takes no commit step a keyed request's context carries
+// (WithoutBeforeCommit). A mark taken here would answer a repeat after a crash KEY_COMMITTED for
+// a write nobody made; without it the repeat runs the write, and its check records a row of its
+// own.
 func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckEvent) error {
 	rules, fields := event.Rules, event.Fields
 	if rules == nil {
@@ -46,13 +53,21 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 	if fields == nil {
 		fields = []string{}
 	}
-	if _, err := s.Pool.Exec(ctx, `
+	tx, err := s.Pool.Begin(WithoutBeforeCommit(ctx))
+	if err != nil {
+		return fmt.Errorf("record writing check event: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 		insert into writing_check_events (
 			route, method, actor_kind, actor_id, act_session, token_id, outcome,
 			rules, fields, candidates, reader_ms, detail, reader, project
 		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, $10, $11, nullif($12, ''), nullif($13, ''), nullif($14, ''))
 	`, event.Route, event.Method, event.ActorKind, event.ActorID, event.ActSession, event.TokenID, event.Outcome,
 		rules, fields, event.Candidates, event.ReaderMS, event.Detail, event.Reader, event.Project); err != nil {
+		return fmt.Errorf("record writing check event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("record writing check event: %w", err)
 	}
 	return nil

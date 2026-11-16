@@ -278,23 +278,32 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 	return nil, false
 }
 
+// The project of the text a reply answers: messageProjectQuery a message's, the project of its
+// issue, and commentProjectQuery a comment's, the project of its issue or of its document.
+const (
+	messageProjectQuery = `select coalesce(i.project_key, '') from messages m left join issues i on i.key = m.issue_key where m.id = $1`
+	commentProjectQuery = `
+		select coalesce(i.project_key, ar.project_key, '')
+		from comments c
+		left join artifacts ar on ar.id = c.artifact_id
+		left join issues i on i.key = coalesce(c.issue_key, ar.issue_key)
+		where c.id = $1`
+)
+
 // projectOfReply is the project of the message or the comment a reply answers, "" where it has
 // none or the read fails.
 func (s *server) projectOfReply(ctx context.Context, kind reviewer.Kind, id string) string {
 	if _, err := uuid.Parse(id); err != nil {
 		return ""
 	}
-	query := `select coalesce(i.project_key, '') from messages m left join issues i on i.key = m.issue_key where m.id = $1`
-	if kind == reviewer.KindComment {
-		query = `
-			select coalesce(i.project_key, ar.project_key, '')
-			from comments c
-			left join artifacts ar on ar.id = c.artifact_id
-			left join issues i on i.key = coalesce(c.issue_key, ar.issue_key)
-			where c.id = $1`
-	}
 	var project string
-	if err := s.deps.Store.Pool.QueryRow(ctx, query, id).Scan(&project); err != nil {
+	var err error
+	if kind == reviewer.KindComment {
+		err = s.deps.Store.Pool.QueryRow(ctx, commentProjectQuery, id).Scan(&project)
+	} else {
+		err = s.deps.Store.Pool.QueryRow(ctx, messageProjectQuery, id).Scan(&project)
+	}
+	if err != nil {
 		return ""
 	}
 	return project
@@ -449,7 +458,8 @@ func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route strin
 
 // postReplay runs the kept write of row, the held text's post (held): a reply's route takes the
 // held row in its own transaction and marks it posted there; any other write's row is marked
-// posted once its route answered 2xx. A route's 4xx is the post's refusal.
+// posted once its route answered 2xx, in a transaction of its own on ctx, the post context
+// (postHeld says why). A route's 4xx is the post's refusal.
 func (s *server) postReplay(ctx context.Context, row heldRow, replay heldReplay, held *heldPost) error {
 	answer, err := s.runReplay(ctx, replay, held)
 	if err != nil {
@@ -457,10 +467,17 @@ func (s *server) postReplay(ctx context.Context, row heldRow, replay heldReplay,
 	}
 	switch {
 	case answer.status >= 200 && answer.status < 300:
-		_, err := s.deps.Store.Pool.Exec(ctx, `
+		tx, err := s.begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `
 			update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
-			where id = $1 and state = 'posting'`, row.id)
-		return err
+			where id = $1 and state = 'posting'`, row.id); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	case answer.status >= 400 && answer.status < 500:
 		return answer.refusal()
 	}
