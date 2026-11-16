@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -215,7 +216,10 @@ func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 // the pool (releaseMigrationConn, pgmigrate.ResetSession), so after migrate returns no connection
 // the pool can give carries the migration's statement_timeout or search_path. The test holds as
 // many connections as the pool can give at once (its MaxConns) and reads each, because the
-// migration ran on one of them. The store's database is the test's own (emptySchemaStore), and no
+// migration ran on one of them. The pool is capped at 4, which is what pgxpool's default
+// (max(4, NumCPU)) gives on CI's 4-CPU runner: left at that default on a many-CPU machine, the
+// pool asks for more connections than a Postgres at its default max_connections (100) has, as it
+// did for 288 on a 288-CPU box. The store's database is the test's own (emptySchemaStore), and no
 // connection option sets its search_path, so the reset gives back the server's default, which a
 // new connection reads too. The control runs the same SETs in a committed transaction on a
 // connection of its own and reads them back: the SETs survive a commit, so the row shows that the
@@ -225,7 +229,7 @@ func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 // goes back as it is, and this fails: a pooled connection reads 77s and the row's schema.
 func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
 	ctx := context.Background()
-	s := emptySchemaStore(t)
+	s := emptySchemaStore(t, "pool_max_conns=4")
 	// The schema is the row's own: the database it lives in is dropped when the row ends.
 	schema := "broker_migrate_leak"
 	leaked := schema + ", public"
@@ -295,12 +299,21 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 }
 
 // emptySchemaStore opens a store on an empty database of the test's own (ownDatabase), whose
-// public schema records no version yet. A test that migrates a set of its own needs one: a schema
-// that already recorded the broker's real versions would pass over the test set's numbers as
-// applied.
-func emptySchemaStore(t *testing.T) *Store {
+// public schema records no version yet, with params, extra connection parameters as key=value
+// (e.g. "pool_max_conns=4"), added to the URL. A test that migrates a set of its own needs one: a
+// schema that already recorded the broker's real versions would pass over the test set's numbers
+// as applied.
+func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
-	s, err := Open(context.Background(), ownDatabase(t))
+	databaseURL := ownDatabase(t)
+	for _, param := range params {
+		key, value, ok := strings.Cut(param, "=")
+		if !ok {
+			t.Fatalf("connection parameter %q is not key=value", param)
+		}
+		databaseURL = testdb.WithParameter(t, databaseURL, key, value)
+	}
+	s, err := Open(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}

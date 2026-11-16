@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,32 +72,54 @@ func closeIssueAgo(t *testing.T, database *store.Store, issueKey string, ago tim
 
 // A comment's anchor written while no room of this process holds the document is a cold write,
 // and its publish arms the settlement the room's update observer would have armed for a
-// published update (publishLiveWrite). A closed issue settles nothing: the settlement's warm-up
-// load is refused (allowInject, ErrIssueClosed) and settleRoomWithin ends there, leaving the
-// document's pending-settlement row for the resumption once the issue reopens. Counted as a
-// failure instead, each refusal was retried and the third failed the room (retrySettleLocked):
-// three ERROR lines behind the comment's 201, and then every write to the document answered 503
-// until the room recovered.
+// published update (publishLiveWrite). That settlement runs on the closed issue as on an open
+// one: its warm-up load carries the owner-verified mark, which allowInject admits on a closed
+// issue, and it commits, taking the document's pending-settlement row (clearSettlementPending).
+// When the warm-up load was refused (ErrIssueClosed) and the refusal counted as a failure, each
+// refusal was retried and the third failed the room (retrySettleLocked): three ERROR lines
+// behind the comment's 201, and then every write to the document answered 503 until the room
+// recovered. The settlement is held as it starts until the test has read the row the comment's
+// write left, so the row's going is the settlement's doing.
 func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	service, artifactID := newTestService(t)
 	settle := 50 * time.Millisecond
 	service.settle = settle
-	seedServiceText(t, service, artifactID, "before the close")
-	waitForLandedAppends(t, service, artifactID)
-	closeDocumentRoom(t, service, artifactID)
-	writeIssueClosed(t, service.store, "DOC-1", true)
-
 	var failed atomic.Bool
 	service.beforeFailedEviction = func(string) { failed.Store(true) }
-	started := make(chan struct{}, 1)
+	// hold is set once the seed has settled, and the first settlement to start after that, the one
+	// the comment's publish arms, is held there until the test lets it go.
+	var hold atomic.Bool
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	var release sync.Once
+	letSettle := func() { release.Do(func() { close(proceed) }) }
+	// Registered after the service's shutdown, so it runs before it: a test that fails while the
+	// settlement is held still lets it finish.
+	t.Cleanup(letSettle)
 	service.beforeSettleStart = func(string) {
-		select {
-		case started <- struct{}{}:
-		default:
+		if hold.CompareAndSwap(true, false) {
+			close(started)
+			<-proceed
 		}
 	}
+	seedServiceText(t, service, artifactID, "before the close")
+	waitForLandedAppends(t, service, artifactID)
+	ctx := context.Background()
+	owesNothing := func() bool {
+		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
+		return err == nil && !owed
+	}
+	// The seed's row is settled away while the issue is open, so the row read after the comment
+	// is the one the comment's write left.
+	settleCurrentGeneration(t, service, artifactID)
+	if !owesNothing() {
+		t.Fatal("the document still owes a settlement after the seed's settlement")
+	}
+	closeDocumentRoom(t, service, artifactID)
+	writeIssueClosed(t, service.store, "DOC-1", true)
+	hold.Store(true)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	anchored, err := commentAnchor(service, artifactID, "c1", "before", alice)
@@ -110,9 +133,14 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 		t.Fatal("the cold comment write loaded a room of the document")
 	}
 	testwait.Receive(t, "the cold write's settlement to start: one that never does means this test no longer covers the settlement its publish arms", started)
-	// The third refusal failed the room, each refusal arming a retry (retrySettleLocked): once no
-	// settlement of the service is armed, running or settling, nothing is left to refuse again, so
-	// the room's failure count read below is final.
+	if owed, err := settlementPending(ctx, service.store.Pool, artifactID); err != nil || !owed {
+		t.Fatalf("the document owes a settlement after the comment = %t (%v), want the pending-settlement row its write left", owed, err)
+	}
+	letSettle()
+	waitFor(t, "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
+	// A refusal counted as a failure failed the room on its third try, each refusal arming a retry
+	// (retrySettleLocked): once no settlement of the service is armed, running or settling, nothing
+	// is left to refuse again, so the room's failure count read below is final.
 	waitFor(t, "the closed issue's settlement to be neither armed, running nor retried", func() bool {
 		return settlementsIdle(service, artifactID)
 	})

@@ -3,12 +3,12 @@
 // against one server at once, and the poller's passes act on every row of their tables, so tests
 // that shared tables would act on each other's rows; with a database per test no test can see
 // another's rows, in its own package, a sibling package, or a concurrent run of either. Each
-// database is a clone of a template the test binary migrates once (internal/testpg's Template),
-// a test never gets the database the variable's URL names, and no function here returns that
-// URL. It also writes the rows only a database writer other than the broker could (Exec,
+// database is a clone of a template the test binary migrates once (internal/testpg/testdb's
+// Template), a test never gets the database the variable's URL names, and no function here returns
+// that URL. It also writes the rows only a database writer other than the broker could (Exec,
 // ForgeRequestSignature, CopyAsOtherKind), for the tests that pin what a release or an
 // authentication refuses. It is an ordinary package rather than a _test.go file so every broker
-// package can import it.
+// package can import it. It links no testcontainers package (TestStoretestLinksNoContainerRuntime).
 package storetest
 
 import (
@@ -25,13 +25,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // template is the database every URL and Open clones: an empty one carrying every broker
 // migration.
-var template = testpg.NewTemplate(testpg.BrokerServer, "broker",
+var template = testdb.NewTemplate(testdb.BrokerServer, "broker",
 	"func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }, or brokertest.Main outside Envoy",
 	func(ctx context.Context, databaseURL string) error {
 		st, err := store.Open(ctx, databaseURL)
@@ -88,7 +88,7 @@ func Main(run func() int) int {
 // Available reports whether BROKER_TEST_DATABASE_URL is set: whether URL, Open and DatabaseURL
 // would give a database rather than skip.
 func Available() bool {
-	return testpg.BrokerServer.Available()
+	return testdb.BrokerServer.Available()
 }
 
 // PerPodLoginSchema applies by hand the one statement the release after this one migrates:
@@ -114,7 +114,7 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 // when BROKER_TEST_DATABASE_URL is unset.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
-	return testpg.BrokerServer.Database(t, "broker_test")
+	return testdb.BrokerServer.Database(t, "broker_test")
 }
 
 // Querier is what AwaitLockWaiters polls through: a pool, or a connection of its own when the

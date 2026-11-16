@@ -72,7 +72,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // --- the corpus ---
@@ -628,7 +628,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	}
 	// The statements run in a database of the test's own, never in the one the server's
 	// variable names.
-	url := testpg.DispatchServer.Database(t, "pgmigrate_redaction")
+	url := testdb.DispatchServer.Database(t, "pgmigrate_redaction")
 	ctx := context.Background()
 	settings := [2]string{"on", "off"}
 	var conns [2]*pgconn.PgConn

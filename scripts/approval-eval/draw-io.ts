@@ -3,8 +3,8 @@ import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { CorpusError, listOf, recordOf, stringOf } from "./corpus-io";
 import type { ExcludedCase, SliceTargets, UndrawableKind } from "./draw";
-import type { IssueFacts } from "./never-decide";
-import type { ParentChange, TreeOutcome } from "./trees";
+import type { IssueFacts, NeverDecideSource } from "./never-decide";
+import type { NearDuplicateJoin, ParentChange, TreeOutcome } from "./trees";
 
 /**
  * The two files one draw writes that are read back, each with one owner: `draw.json`, the
@@ -71,6 +71,14 @@ export interface DrawRule {
   inputTokens: number;
   outputTokens: number;
   /**
+   * How many of the rule's answers each model gave, by the model each answer says served it:
+   * `the issue's facts` for the kind that takes no call, `none` for an answer naming no model.
+   * A draw written before draws recorded it has none.
+   */
+  servedModels?: Record<string, number>;
+  /** One line per case the rule read: where its answer came from and the model that served it. */
+  answers?: { caseId: string; source: NeverDecideSource; servedModel: string | null }[];
+  /**
    * What was done to the text the rule was handed, and the bound under which that stops
    * holding. A reader of this draw meets the rule's answers in `excluded.held` and may take
    * them for judgements made over checked text; the answers alone say nothing of what was done
@@ -127,6 +135,12 @@ export interface FinalTestDraw {
    * made after the tree's first ask opened, with the actor that made it (item 6).
    */
   parentChanges: Array<{ group: string; outcome: TreeOutcome; changes: ParentChange[] }>;
+  /**
+   * The near-duplicate joins the claim grouped by (dispatch://INFRA-3189 v8, "Grouping"): every
+   * pair of cases of the corpus, from two groups, whose evidence has a Jaccard similarity of word
+   * 5-grams at or above `threshold`, with the groups each case was in before the join.
+   */
+  nearDuplicates: { threshold: number; joins: NearDuplicateJoin[] };
 }
 
 /**

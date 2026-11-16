@@ -10,16 +10,16 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // ownDatabase creates an empty database of the test's own on the BROKER_TEST_DATABASE_URL server
-// (testpg), dropped when the test ends, and returns its URL; it skips the test when that variable
+// (testdb), dropped when the test ends, and returns its URL; it skips the test when that variable
 // is unset. This package's own tests cannot clone storetest's migrated template, since storetest
 // imports this package, and several of them are about migrating an empty database.
 func ownDatabase(t *testing.T) string {
 	t.Helper()
-	return testpg.BrokerServer.Database(t, "broker_store_test")
+	return testdb.BrokerServer.Database(t, "broker_store_test")
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {

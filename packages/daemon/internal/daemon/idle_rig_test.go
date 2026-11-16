@@ -861,9 +861,9 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 		// first: a release the pass did not make is a release nothing made, and the rows are
 		// the clock the idle rule is measured against (idlePass).
 		r.idlePass()
-		// One listing for the nine pods, not one each: the operator's route answers every claim
+		// One listing for the eleven pods, not one each: the operator's route answers every claim
 		// at once (daemon.claims, which daemon.claim reads to find one), and the pass this waits
-		// for reads the same rows through the same pool, so a wait that asked nine times a poll
+		// for reads the same rows through the same pool, so a wait that asked eleven times a poll
 		// would be taking the daemon's own Postgres away from the release it is waiting for.
 		claims := r.api.claims()
 		released := true

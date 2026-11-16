@@ -99,7 +99,7 @@
       "evidence_variable": "",
       "timeout_minutes": 20,
       "timeout_reading": "guard 240 s plus the longest green setup and upload of its 24 green e2e.yaml jobs up to 2026-11-15, 64 s: 304 s, in 20 minutes",
-      "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's test job already runs it",
+      "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
       "jj": false
     },
     {

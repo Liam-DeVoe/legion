@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -795,7 +795,7 @@ func loopTestDB(t *testing.T) *pgxpool.Pool {
 // session setting the database carries (search_path) reaches the sessions opened after it alone.
 func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
-	dsn := testpg.LegionServer.Database(t, "loopseed_test")
+	dsn := testdb.LegionServer.Database(t, "loopseed_test")
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)

@@ -43,7 +43,7 @@ The helpers:
   A package whose daemons migrate the database they are given takes one database for its run:
   `testdb.RunDatabaseMain` in its `TestMain`, and `testdb.RunDatabase` in each test.
 
-- PostgreSQL in `packages/envoy`: Dispatch's `internal/dispatch/store/storetest` (`Open`), the broker's `internal/broker/store/storetest`, and `internal/testpg` (`Server.Database`, and `Template`, which the two `storetest` packages clone).
+- PostgreSQL in `packages/envoy`: Dispatch's `internal/dispatch/store/storetest` (`Open`), the broker's `internal/broker/store/storetest`, and `internal/testpg/testdb` (`Server.Database`, and `Template`, which the two `storetest` packages clone).
 
 - Only those fixtures read a database URL from the environment (`LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `BROKER_TEST_DATABASE_URL`).
   They give a test a database that they made, and never the database that the URL names.
@@ -389,9 +389,9 @@ These rules are how a file leaves nothing behind:
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one rule here that holds only under a condition.
   Oh My Pi's native modules, about 116 MiB a pin, are hardlinked into each test's fresh HOME from one copy per binary at `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a cache that exists to be shared by both languages and either fills for the other.
-  The Go build and module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane` (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason:
-  CI's `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
-  scripts/e2e/lib` (`.github/workflows/ci.yaml`).
+  The Go build and module caches of the `go run` in `runDaemonPane` (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason:
+  CI's `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed `go-daemon-<runner os>-go<version>`, before it runs that scenario (`.github/workflows/ci-job-pi-legion.yaml`).
+  Those of `scripts/e2e/lib/held-port.test.ts` stay there too, although the `test` job that runs it restores no Go cache now that the daemon's Go suite is `daemon-go`'s.
   The condition is the rename: `fillNativesCache` in `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in it.
   So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its own volume, which Legion's runtime does for every role (`/legion/scratch/cache`).
   With `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
@@ -434,10 +434,10 @@ With a long test name and a socket under it, or under a directory made from it (
 ## Go's package deadline
 
 `go test` panics a package that runs longer than its `-timeout`, ten minutes by default (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
-Each Go command of `.github/workflows/ci.yaml` passes a `-timeout` of at least twice its slowest package over the job's 20 newest green merge-group runs (for the `test` job's two Go steps, its 15 since main's memory guard landed), and the step's comment there gives that reading (R5).
+Each Go command of a job of `.github/workflows/ci.yaml`, in the `ci-job-<id>.yaml` file that holds that job's steps, passes a `-timeout` of at least twice its slowest package over the job's 20 newest green merge-group runs (for `daemon-go`'s two Go steps, the 15 of the `test` job, which carried them, since main's memory guard landed), and the step's comment there gives that reading (R5).
 The guards and their readings, each read up to the date its item names or up to 2026-11-15 where it names none, were:
 
-- `test`, "Test the Go daemon": 15 minutes, against `internal/store`'s 342.597 s; the race step: 30 minutes, against `internal/daemon`'s 833.358 s under `-race`; both over the job's 15 green merge-group runs from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to 2026-11-16T05:39Z.
+- `daemon-go`, "Test the Go daemon": 15 minutes, against `internal/store`'s 342.597 s; the race step: 30 minutes, against `internal/daemon`'s 833.358 s under `-race`; both over the 15 green merge-group runs of the `test` job, which carried both steps until #2945, from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to 2026-11-16T05:39Z.
 
 - `envoy-go`: 20 minutes for the unit step, against `cmd/broker`'s 477.995 s; 10 minutes for each plain run of what the race build cannot run, against `internal/dispatch/docs`'s 49.044 s; 10 and 5 minutes for natslive's `internal/testnats` and `internal/bus` (3.538 s and 5.029 s); 300 s for the integration step (7.683 s).
 
@@ -452,10 +452,13 @@ The guards and their readings, each read up to the date its item names or up to 
   `envoy-smoke`: 5 minutes for the smoke test (16.133 s) and 15 for the live tests (145.791 s).
   `envoy-go-checks` and `airlock-lean`: 10 minutes for each command, against at most 121.054 s, the two-minute fuzz.
 
-Each `bun test` step of `ci.yaml` that runs no package script passes the row-deadline preload and a `--timeout` of at least twice the slowest row or hook its command ran under 8 busy loops on 2 CPUs in a builds Job at 61b66deb, and the step's comment there gives that reading (R5):
+- `text-checks` and `plugin-pack`, jobs since #2945, read over their own green merge-group runs from it to 2026-11-16T17:33Z (19 and 16 runs whose logs GitHub served): 2 minutes for each module's text checks, against `packages/envoy/infra`'s 31.588 s; 1 minute for the API's source guards (10.660 s) and for the supervise table's two pins (5.547 s); and 15 minutes for the plugin pack, against `internal/daemon`'s 63.227 s.
+
+Each `bun test` step of a job of `ci.yaml` that runs no package script passes the row-deadline preload and a `--timeout` of at least twice the slowest row or hook its command ran under 8 busy loops on 2 CPUs in a builds Job at 61b66deb, and the step's comment there gives that reading (R5):
 
 - `test`: claude-envoy's `tests/build-inputs.test.ts` 10,000 ms, against 2,992.78 ms; `scripts/third-party-notices.test.ts` 5,000 ms, against 396.72 ms; `scripts/semantic-line-breaks.test.ts` 5,000 ms, against 806.66 ms; `scripts/priorities-seed.test.ts` 5,000 ms, against 797.60 ms.
-  `scripts/dispatch` 15,000 ms, against 5,190.57 ms; `scripts/sessions` 5,000 ms, against its `beforeAll`'s 2,197.48 ms; `scripts/approval-eval` 5,000 ms, against 196.24 ms.
+  `scripts/dispatch` 15,000 ms, against 5,190.57 ms; `scripts/approval-eval` 5,000 ms, against 196.24 ms.
+  `scripts/semantic-line-breaks.guides.test.ts` 15,000 ms, against 7,111.27 ms, read in a builds Job at `c8a44f97`.
 
 - `test`, `bun test scripts/e2e/lib`: 60,000 ms, against `held-port.test.ts`'s `beforeAll`, which builds the real envoy-listener, 21,991.12 ms on a warm Go cache, and the slowest row's 13,106.99 ms.
   Before dispatch://INFRA-3149 the step passed no `--timeout` and ran on Bun's default of 5,000 ms, which killed `scripts/e2e/lib/smoke-cleanup.test.ts`'s `smoke-main-clean` teardown row at 8.3 s in merge-group run 43708116445 (#4046's queue run, at `e21be234`).
@@ -464,6 +467,8 @@ Each `bun test` step of `ci.yaml` that runs no package script passes the row-dea
   The guard stays 60,000 ms, which the hook's 21,991.12 ms sets.
 
 - `conflicts-script`: `scripts/conflicts` 5,000 ms, against 1,986.02 ms.
+
+- `sessions-script`: `scripts/sessions` 5,000 ms, against its `beforeAll`'s 2,197.48 ms.
 
 - `envoy-session-stall`: envoy-client's `nats-stall.test.ts` 120,000 ms, against a row's 50,109.26 ms and its `beforeAll`'s 25,685.20 ms; `test/session-stall.ts` 180,000 ms, against 60,810.22 ms; pi-envoy's NATS path freeze 90,000 ms, against 30,499.69 ms; claude-envoy's channel stall 120,000 ms, against 53,001.47 ms.
   The two suites of the real CLI against a real Dispatch take 120,000 ms each, against their `beforeAll`s, which build and start that server: 52,389.38 ms for the design-gate advice and 45,890.03 ms for the moved-approval advice.
@@ -478,15 +483,16 @@ go test -timeout 50m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI runs the whole package only under `-race`, alone, in `envoy-go-race-api`; `envoy-go` runs by name only the few tests the race build cannot run.
+CI runs the whole package only under `-race`, alone, in `envoy-go-race-api` (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps);
+`envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard tests by name.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own.
 Run it alone rather than beside the module's other Postgres-backed packages:
 together they share one database service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package.
-The test job runs it only under the race detector, in its race step, once per job;
+CI's `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race detector, in its race step, once per job;
 the plain step ("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector.
-Under `-race` it took up to 833.358 s over the race step's 15 green merge-group runs from 2026-11-15T20:47Z to 2026-11-16T05:39Z, and 908 s on a shared devbox, so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 35m`:
+Under `-race` it took up to 833.358 s over the race step's 15 green merge-group runs from 2026-11-15T20:47Z to 2026-11-16T05:39Z, while that step was the `test` job's, and 908 s on a shared devbox, so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 35m`:
 
 ```sh
 cd packages/daemon
@@ -522,7 +528,7 @@ the room load `keepInstance` passed reached a document of its own, which is the 
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one:
 with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects, with `-timeout 45m` against the job's slowest green run of 1261.698 s.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects, with `-timeout 45m` against the job's slowest green run of 1261.698 s.
 The command above gives 60 minutes because an issue pod's run of the package took 1690 s (recorded on dispatch://INFRA-3149).
 It is one of the nine slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
@@ -537,11 +543,16 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 
 ## A database a Go test creates
 
-A Go test that creates a Postgres database writes `create database … strategy file_copy`, as `packages/envoy/internal/dispatch/store/storetest` and both modules' `internal/testpg` do.
+A Go test that creates a Postgres database writes `create database … strategy file_copy`, as the daemon's `internal/testpg` and Envoy's `internal/testpg/testdb` do, the latter for every clone Dispatch's and the broker's `storetest` give out.
 Without it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
 4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log.
 A file copy writes a few hundred bytes.
-`storetest`'s own test fails when a clone writes more than a hundredth of its template's size, and each module's `internal/testpg` test `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a database's creation in a string without `strategy file_copy` on the same line.
+`internal/testpg/testdb`'s own test fails when a clone writes more than a hundredth of its template's size, and each module's `internal/textcheck` test `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a database's creation in a string without `strategy file_copy` on the same line.
+
+In Envoy, everything that makes a database on a server a variable or a URL names is in `internal/testpg/testdb` (`Server` and its `Database`, `DatabaseOn`, and `Template`, which both `storetest` packages clone), never in `internal/testpg`:
+`testpg` links testcontainers, whose package init walks every process on the machine before any test runs, and on a box running some 26,000 processes that cost a test binary about 9.8 seconds of start (`GODEBUG=inittrace=1`).
+`testpg.URL`, which may start a container, keeps that cost for the tests that need it.
+The broker's `storetest` holds itself to it: `TestStoretestLinksNoContainerRuntime` fails when its dependencies reach testcontainers.
 
 A test that needs the schema takes a clone of a template its package migrated once, rather than running the migrations itself:
 `packages/daemon/internal/testpg`'s `Clone` answers the clone's URL, `ClonePool` an open `pgxpool` on it and `CloneStore` the opened store, each dropped when the test ends, and the package's `TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and composes with the `TestMain` a package already has (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
@@ -593,7 +604,7 @@ It waits at most `referencesSinceWait`, one second on the server's clock, for a 
 Past that wait it answers at the horizon it has and leaves the rest to a later read: the route defers, and it never loses an edge.
 The horizon is instance-wide, so any transaction that holds a transaction id on the Postgres instance holds it back.
 In `packages/envoy/internal/dispatch/api` the holder can be the test process itself:
-`storetest.Open`'s `create database … template … strategy file_copy` and `storetest`'s `drop database … with (force)` (`packages/envoy/internal/dispatch/store/storetest/storetest.go`).
+`storetest.Open`'s clone, a `create database … template … strategy file_copy`, and its `drop database … with (force)` (`Template` in `packages/envoy/internal/testpg/testdb/template.go`, which `packages/envoy/internal/dispatch/store/storetest/storetest.go` clones from).
 
 So the test's server runs on a `clocktest.Held` fake that the test never moves, and the route's wait never ends on its own (R4).
 The read then waits until the horizon passes every event committed before it, so what it lists is every edge it owes.

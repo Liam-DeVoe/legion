@@ -1126,11 +1126,11 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// The child's waits give up 30 s before its own -test.timeout (testwait's margin), so the
 	// parked trial's wait for its commit fails there by name, and the margin is what the child's
 	// cleanups and storetest's drop of its clone (which ends the parked commit's connection,
-	// `with (force)`, internal/testpg's Template) have to run in before the binary exits. The
-	// child spends its storetest template migration and database clone before the parked trial:
-	// about 25 s at worst in this package's issue pod under -race and six busy loops on two CPUs.
-	// The deadline leaves the parked trial's wait 90 s from the child's start, over three times
-	// that, so a slow runner cannot turn a reporting child into this row's red.
+	// `with (force)`, internal/testpg/testdb's Template) have to run in before the binary exits.
+	// The child spends its storetest template migration and database clone before the parked
+	// trial: about 25 s at worst in this package's issue pod under -race and six busy loops on two
+	// CPUs. The deadline leaves the parked trial's wait 90 s from the child's start, over three
+	// times that, so a slow runner cannot turn a reporting child into this row's red.
 	const childDeadline = 120 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
 	// the child's own deadline watches none of what it does after them: storetest.Main's wait for

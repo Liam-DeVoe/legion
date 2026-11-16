@@ -4,8 +4,8 @@
 // import it; Go cannot share test-only code across packages.
 //
 // Open clones each database from a template this test process migrates once
-// (internal/testpg's Template, which says why a clone copies files and why its drop runs in the
-// background), on the server DISPATCH_TEST_DATABASE_URL names. A test never gets the database
+// (internal/testpg/testdb's Template, which says why a clone copies files and why its drop runs in
+// the background), on the server DISPATCH_TEST_DATABASE_URL names. A test never gets the database
 // that URL names, and no function here returns that URL.
 package storetest
 
@@ -15,12 +15,12 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // template is the database every Open clones: an empty one carrying every Dispatch migration,
 // with autovacuum off for the embeddings table (embeddingsStatistics says why).
-var template = testpg.NewTemplate(testpg.DispatchServer, "dispatch",
+var template = testdb.NewTemplate(testdb.DispatchServer, "dispatch",
 	"func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }",
 	func(ctx context.Context, databaseURL string) error {
 		database, err := store.Open(ctx, databaseURL)
@@ -89,5 +89,5 @@ func OtherDatabase(t testing.TB) string {
 // rather than skip. It is for a test that takes its databases another way, such as in a child
 // process of its own binary, and skips where Open would.
 func Available() bool {
-	return testpg.DispatchServer.Available()
+	return testdb.DispatchServer.Available()
 }

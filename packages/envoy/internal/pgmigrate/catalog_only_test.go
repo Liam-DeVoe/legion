@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // catalogOnlyFixtureSQL is the database the census tests of this file judge their rows against,
@@ -98,13 +98,13 @@ func catalogOnlyFixture(rows int) string {
 }
 
 // catalogOnlyDatabase connects to a database of the test's own, loaded with
-// catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names (testpg's
+// catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names (testdb's
 // DispatchServer.Database), which skips the test when that variable is unset, as the store's tests
 // do. It does not call testpg.URL, which starts a container when the variable is unset. The
 // database is dropped when the test ends.
 func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn {
 	t.Helper()
-	conn := connect(t, ctx, testpg.DispatchServer.Database(t, "pgmigrate_catalog"))
+	conn := connect(t, ctx, testdb.DispatchServer.Database(t, "pgmigrate_catalog"))
 	if _, err := conn.Exec(ctx, catalogOnlyFixture(rows)); err != nil {
 		t.Fatalf("load the fixture: %v", err)
 	}

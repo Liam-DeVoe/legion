@@ -24,12 +24,12 @@ import (
 )
 
 // newBrokerRig is brokertest.NewRig, failing rather than skipping on GitHub Actions when the
-// broker's test database server is not named (brokertest.Available): ci.yaml's test job names its
-// Postgres service there, and a silent skip would let the contract tests stop running unnoticed.
+// broker's test database server is not named (brokertest.Available): ci.yaml's daemon-go job names
+// its Postgres service there, and a silent skip would let the contract tests stop running unnoticed.
 func newBrokerRig(t *testing.T) *brokertest.Rig {
 	t.Helper()
 	if !brokertest.Available() && os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's test job names its Postgres service")
+		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
 	}
 	return brokertest.NewRig(t)
 }

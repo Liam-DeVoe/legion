@@ -19,18 +19,18 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
 // openEmptyTestStore opens an empty database of the test's own on the server
-// DISPATCH_TEST_DATABASE_URL names (testpg), dropped after the test ends, and skips the test when
+// DISPATCH_TEST_DATABASE_URL names (testdb), dropped after the test ends, and skips the test when
 // that variable is unset. A test that needs the tables migrates it itself. This package's own
 // tests cannot clone storetest's migrated template, since storetest imports this package.
 func openEmptyTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), testpg.DispatchServer.Database(t, "dispatch_test"))
+	store, err := Open(context.Background(), testdb.DispatchServer.Database(t, "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -54,8 +54,8 @@ func randomDatabaseSuffix(t *testing.T) string {
 // first wrong in the dangerous direction - the pool is silently pinned and the refusal never
 // fires - and the last two wrong in the worse one, refusing to boot on a valid password.
 func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
-	base := testpg.DispatchServer.Database(t, "dispatch_test")
-	withPoolSize := testpg.WithParameter(t, base, poolSizeParam, "4")
+	base := testdb.DispatchServer.Database(t, "dispatch_test")
+	withPoolSize := testdb.WithParameter(t, base, poolSizeParam, "4")
 
 	// The rows that must not be refused point at a closed port: the observable is whether the
 	// refusal fired, not whether the credentials are real.
@@ -659,7 +659,7 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	t.Helper()
 	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(testpg.DispatchServer.Database(t, "dispatch_test"))
+	config, err := pgxpool.ParseConfig(testdb.DispatchServer.Database(t, "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}

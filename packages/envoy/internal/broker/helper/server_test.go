@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -225,6 +226,49 @@ func TestUndrainTakesSessionsAgain(t *testing.T) {
 	}
 	if resp := r.call(t, Request{Op: "register"}); resp.Code == CodeDraining {
 		t.Fatalf("register after undrain: %+v", resp)
+	}
+}
+
+// TestADrainNoRestartFollowsEndsAtItsBound: a drain no restart follows — the install that sent it
+// died, or its restart reached another process — ends by itself once its bound passes, and the
+// helper logs that it did and takes registrations again. Before, such a helper refused every
+// registration on the machine until something restarted it (36 minutes on 2026-11-16,
+// dispatch://INFRA-3950). The bound runs on the server's clock, a fake the row moves: the drain
+// arms it for exactly the bound, still holds a moment short of it, and ends when the fake reaches
+// it.
+func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
+	logs := &logtest.Buffer{}
+	fake := clocktest.New(time.Now())
+	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(logs, nil)), func(s *Server) { s.Clock = fake })
+	r.clock = fake
+	r.login(t)
+	const bound = time.Second
+	r.srv.SetDrainBound(bound)
+	drained := r.clock.Now()
+	if d := r.call(t, Request{Op: "drain"}); !d.OK || len(d.Sessions) != 0 || !r.srv.Registry.Draining() {
+		t.Fatalf("drain: %+v", d)
+	}
+	// The drain arms its bound before it answers.
+	if armed := r.clock.Armed(); !slices.ContainsFunc(armed, drained.Add(bound).Equal) {
+		t.Fatalf("the server's clock holds %v after the drain; want its bound armed for %s, %s after it", armed, drained.Add(bound), bound)
+	}
+	// Nothing but the bound ends a drain no undrain follows, and a move of the fake returns once
+	// every timer it fired has run (clocktest), so each read below is the drain's state then.
+	const short = time.Millisecond
+	r.clock.Advance(bound - short)
+	if !r.srv.Registry.Draining() {
+		t.Fatalf("the drain ended %s after it began, before its bound of %s", bound-short, bound)
+	}
+	r.clock.Advance(short)
+	if r.srv.Registry.Draining() {
+		t.Fatalf("the drain still holds at its bound of %s", bound)
+	}
+	if resp := r.call(t, Request{Op: "register"}); resp.Code == CodeDraining {
+		t.Fatalf("register after the drain's bound: %+v", resp)
+	}
+	line := logs.Lines(DrainEndedMessage)
+	if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "bound=1s") {
+		t.Fatalf("log line %q; want one WARN line %q naming the bound 1s in:\n%s", line, DrainEndedMessage, logs.String())
 	}
 }
 
