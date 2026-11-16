@@ -181,9 +181,14 @@ func TestCommentBodyPersonDoesNotCountTowardTheCap(t *testing.T) {
 	}
 }
 
-// Each refusal keyed on the party set, with the code and the reason it has always answered.
+// Each refusal keyed on the party set, with the code and the reason it has always answered, and
+// with nothing written and nothing sent. The first of them is the one the dashboard never asks
+// for: the composer's send carries `delivery` only while the draft's own words name a party
+// (`draftParties(body).named`, web/src/features/conversation/send-request.ts:255-266), so a typed
+// `/btw` with no mention reaches the server as the reader's own first word, and the server's side
+// of that - `delivery requires mentions`, comment_create.go:164-167 - stands here.
 func TestCommentPartySetRefusals(t *testing.T) {
-	listener, _ := partyListener(t)
+	listener, sends := partyListener(t)
 	defer listener.Close()
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Party refusals", "before")
@@ -236,6 +241,15 @@ func TestCommentPartySetRefusals(t *testing.T) {
 				!strings.Contains(response.Body.String(), `"code":"MENTION_INPUT"`) ||
 				!strings.Contains(response.Body.String(), tc.reason) {
 				t.Fatalf("%s: status=%d body=%s", tc.name, response.Code, response.Body.String())
+			}
+			// A refusal writes nothing and sends nothing: the whole write is the one
+			// transaction the refusal stops, so no comment of the issue is left behind and no
+			// party hears of it.
+			if rows := countCommentRows(t, handler, issue.Key); rows != 0 {
+				t.Fatalf("%s: the issue holds %d comments, want none", tc.name, rows)
+			}
+			if len(sends()) != 0 {
+				t.Fatalf("%s: sends = %#v, want none", tc.name, sends())
 			}
 		})
 	}
