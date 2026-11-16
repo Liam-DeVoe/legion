@@ -88,22 +88,37 @@ YAML
 
   # Exceptions (a) again and (b), and a browser download, which is a site like any other and
   # retries like one: exception (c)'s script held the apt phase beside it and went with that
-  # script (cybermonklabs/legion#2938).
-  cat > "$root/.github/workflows/ci.yaml" <<YAML
-name: CI
-on: [push]
+  # script (cybermonklabs/legion#2938). The jobs the exceptions name sit in the files main's
+  # #2945 moved them to, .github/workflows/ci-job-<id>.yaml, which is where the exceptions
+  # name them.
+  cat > "$root/.github/workflows/ci-job-envoy-client.yaml" <<YAML
+name: CI job envoy-client
+on:
+  workflow_call:
 jobs:
   envoy-client:
     runs-on: ubuntu-24.04
     steps:
       - name: Pre-pull the NATS image the credential tests run
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
+YAML
+  cat > "$root/.github/workflows/ci-job-download-retry-images.yaml" <<YAML
+name: CI job download-retry-images
+on:
+  workflow_call:
+jobs:
   download-retry-images:
     runs-on: ubuntu-24.04
     steps:
       - name: Pull every base image the three builds read
         run: |
           for image in \$images; do docker pull "\$image"; done
+YAML
+  cat > "$root/.github/workflows/ci-job-airlock-lean.yaml" <<YAML
+name: CI job airlock-lean
+on:
+  workflow_call:
+jobs:
   airlock-lean:
     runs-on: ubuntu-24.04
     steps:
@@ -113,6 +128,11 @@ jobs:
       # standard library alone; a fixture needs only the verb.
       - name: Compare the Go airlock with the model
         run: go test ./internal/broker/airlock/
+YAML
+  cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: CI
+on: [push]
+jobs:
   dispatch:
     runs-on: ubuntu-24.04
     steps:
@@ -237,6 +257,21 @@ while read -r id status was marker; do
   retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
     gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"
 done <<<"$runs"
+SH
+  # The annotations loop of runner-shutdown.sh, which one deadline bounds rather than a count of
+  # passes (main's #2945 wrote the loop): its DECLARED_LOOPS entry matches nothing in a tree
+  # without the file, so every fixture carries it, sourced as the repository sources it.
+  cat > "$root/.github/scripts/runner-shutdown.sh" <<'SH'
+#!/usr/bin/env bash
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-retry.sh"
+runner_shutdown_kills() {
+  local job url
+  for job in "$@"; do
+    while read -r url; do
+      retry_fetch "the annotations of $job" 30 -- gh api --paginate "$url/annotations?per_page=100"
+    done <<<"$urls"
+  done
+}
 SH
   # The last of them is read through two functions: the call sits in image_go(), which
   # check_go() calls, and the loop runs check_go. A declaration covers it for the loop that
@@ -3806,7 +3841,7 @@ check "reads a go test too" \
 
 echo "case: rule 11's exemption holds a job that compiles Go and stops holding a renamed one"
 # The exemption path and its staleness guard, which the rule's own fixture above does not reach:
-# the fixture ci.yaml carries `airlock-lean`, so a tree whose GO_BUILD_EXEMPT names it passes
+# the fixture's ci-job-airlock-lean.yaml carries `airlock-lean`, so a tree whose GO_BUILD_EXEMPT names it passes
 # with that job compiling Go and no download, and the same tree with the job renamed is refused
 # twice - once for the renamed job, which no entry covers, and once for the entry, which now
 # matches no job compiling Go. That second refusal is what a guard that asked only whether the job
@@ -3817,7 +3852,7 @@ check "the exempted job passes" "$(is "$status" 0)"
 check "and no refusal names it" "$(is "$(contains "$out" 'airlock-lean')" false)"
 
 root=$(fixture go-exempt-stale)
-python3 - "$root/.github/workflows/ci.yaml" <<'PY_EDIT'
+python3 - "$root/.github/workflows/ci-job-airlock-lean.yaml" <<'PY_EDIT'
 import sys
 p = sys.argv[1]
 t = open(p).read()

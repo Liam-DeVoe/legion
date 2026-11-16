@@ -1,0 +1,174 @@
+name: CI job download-retry-images
+
+# The steps of ci.yaml's `download-retry-images` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  # The same recovering fault, inside the three Dockerfiles whose network RUN lines carry the
+  # inline retry. The rig: .github/ci-budgets.md, "The download-retry-images job's rig".
+  #
+  # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
+  # when nothing outside its own injected faults goes wrong — 300 s for the base image pulls,
+  # 900 s for the unfaulted smoke build, the three faulted builds at the budgets their report
+  # steps enforce, 2720 + 920 + 500 s, and about 200 s of checkout, bypass clearing and rig
+  # steps, which is 5540 s — and the rule adds its single slowest retried step. That step is the
+  # ci-ok report, the one download of this job that is not a faulted build: its `gh api` read
+  # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's
+  # check-run read and annotations loop, 300 + 480 = 780 s, 1380 s together (ci-budgets.md's
+  # Budgets note, "The ci-ok report"). So 5540 + 1380 = 6920 s -> 116 min. Each build's budget
+  # carries 20 s more than it did before the probe, for the two 10 s bounded requests the probe
+  # makes between the proxy's start and the build, which `report` measures from the former.
+  download-retry-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 116
+    env:
+      SMOKE_IMAGE: legion-envoy-smoke:download-retry
+    steps:
+      # As the download-retry job's first step, and for the reason its comment gives: a
+      # `no_proxy` or `NO_PROXY` of `*` reads every host past the proxy, and the probes below
+      # are made from this job's own steps.
+      - name: Clear the proxy bypass this runner image may carry
+        run: |
+          printf 'the runner carried no_proxy=%s and NO_PROXY=%s; both are emptied for every step below\n' \
+            "${no_proxy:-<unset>}" "${NO_PROXY:-<unset>}"
+          printf '%s\n' 'no_proxy=' 'NO_PROXY=' >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every FROM of the three files that names an image rather than a build argument or a
+      # stage of the file it is in. Pulled before any proxy exists, for the reason the job's
+      # comment gives. A FROM naming an earlier stage (`FROM runtime-base AS debian-packages`)
+      # is no registry reference, and `docker pull` of one is refused as a repository that does
+      # not exist, which is how this step first failed: run 42372090039's job 128402159563 ended
+      # at `pull access denied for runtime-base`.
+      - name: Pull every base image the three builds read
+        run: |
+          for file in packages/daemon/docker/worker.Dockerfile \
+                      packages/envoy/docker/Dockerfile \
+                      packages/envoy/infra/host/heldportwrapper/Dockerfile; do
+            awk '
+              $1 == "FROM" && $2 !~ /^[$]/ && !($2 in stage) { print $2 }
+              $1 == "FROM" && toupper($3) == "AS" { stage[$4] = 1 }
+            ' "$file"
+          done | sort -u > "$RUNNER_TEMP/base-images"
+          [ -s "$RUNNER_TEMP/base-images" ] || { echo "::error::no base image to pull"; exit 1; }
+          cat "$RUNNER_TEMP/base-images"
+          while read -r image; do docker pull "$image"; done < "$RUNNER_TEMP/base-images"
+      - name: Build the smoke image the held-port wrapper takes as its base, with no proxy
+        run: >-
+          .github/scripts/download-retry-proof.sh build none
+          --tag ${{ env.SMOKE_IMAGE }}
+          --file packages/envoy/docker/Dockerfile
+
+      # The worker image: apt, the npm registry, the Go module proxy and the release hosts of
+      # mise, uv, Node, the AWS CLI, Go, kubectl, yq and Chromium, each behind one of the
+      # Dockerfile's inline retries.
+      - name: Start the recovering fault for the worker image build
+        id: worker-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start worker --mode recover --recover-after 60 \
+            --bind docker-bridge \
+            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org
+          .github/scripts/download-retry-proof.sh probe worker
+      - name: Build the worker image under the recovering fault
+        id: worker-build
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          .github/scripts/download-retry-proof.sh build worker
+          --build-arg LEGION_REVISION=${{ github.sha }}
+          --secret id=github_token,env=GITHUB_TOKEN
+          --tag legion-worker:download-retry
+          --file packages/daemon/docker/worker.Dockerfile
+      - name: What the worker image build did under the recovering fault
+        run: >-
+          .github/scripts/download-retry-proof.sh report worker
+          --what "the worker image (packages/daemon/docker/worker.Dockerfile)"
+          --outcome ${{ steps.worker-build.outcome }} --attempts 5 --floor 0 --budget 2720
+
+      # The Envoy image: apt, the npm registry and the Go module proxy.
+      - name: Start the recovering fault for the Envoy image build
+        id: envoy-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start envoy --mode recover --recover-after 60 \
+            --bind docker-bridge \
+            --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com
+          .github/scripts/download-retry-proof.sh probe envoy
+      - name: Build the Envoy image under the recovering fault
+        id: envoy-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build envoy
+          --tag legion-envoy:download-retry
+          --file packages/envoy/docker/Dockerfile
+      - name: What the Envoy image build did under the recovering fault
+        run: >-
+          .github/scripts/download-retry-proof.sh report envoy
+          --what "the Envoy image (packages/envoy/docker/Dockerfile)"
+          --outcome ${{ steps.envoy-build.outcome }} --attempts 5 --floor 0 --budget 920
+
+      # The held-port image: one `go mod download` in its wrapper stage, on the smoke image
+      # built above as its BASE.
+      - name: Start the recovering fault for the held-port image build
+        id: heldport-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start heldport --mode recover --recover-after 60 \
+            --bind docker-bridge \
+            --hosts golang.org,googlesource.com,github.com,githubusercontent.com
+          .github/scripts/download-retry-proof.sh probe heldport
+      - name: Build the held-port image under the recovering fault
+        id: heldport-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build heldport
+          --build-arg BASE=${{ env.SMOKE_IMAGE }}
+          --tag legion-envoy-heldport:download-retry
+          --file packages/envoy/infra/host/heldportwrapper/Dockerfile
+      - name: What the held-port image build did under the recovering fault
+        run: >-
+          .github/scripts/download-retry-proof.sh report heldport
+          --what "the held-port image (packages/envoy/infra/host/heldportwrapper/Dockerfile)"
+          --outcome ${{ steps.heldport-build.outcome }} --attempts 5 --floor 0 --budget 500
+
+      # As the download-retry job: the proxy was never this job's environment, and this is where
+      # that is checked rather than assumed.
+      - name: Leave no proxy behind the ci-ok report
+        if: always()
+        run: .github/scripts/download-retry-proof.sh clear
+
+      - name: Report ci-ok when this is the run's last job
+        if: always()
+        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 25
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: download-retry-images
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

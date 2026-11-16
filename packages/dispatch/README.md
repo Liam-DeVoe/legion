@@ -106,7 +106,10 @@ states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
-live sessions with `setLiveSessions` from `e2e/agents.ts`. It starts
+live sessions with `setLiveSessions` from `e2e/agents.ts`, stop one of them with
+`setSessionStopped` (the listener still knows it, so a send to it is stored and
+Dispatch records the attempt `queued`), and say what a send answers it was with
+`setSessionSendState`. It starts
 `e2e/fake-broker.ts` as the secrets broker, so the
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
@@ -681,7 +684,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,238 rows in 160 files, and the other 54 are a wall-clock run of its own, under the
+run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -696,6 +699,10 @@ well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour t
 the project in `e2e/playwright.config.ts` names, and a comment beside the tag names which.
 `webkit` covers where a caret lands beside a collaborator's cursor, and `firefox` covers text
 typed over what follows a block's last line break, which that engine's own editing mishandles.
+Both run `e2e/download-names.e2e.ts`, which reads how the engine names a download from the
+`filename*` and `filename` of its `Content-Disposition`, and whether it asks the server again
+for a download address it holds. WebKit writes each space of the name it reads from `filename*`
+as `_`, which that file's row of a name with spaces expects.
 `firefox-download-navigation` runs the one row of
 `e2e/shell.e2e.ts` that follows a Download link before a chunk fails. `webkit-iphone` runs the
 phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts` and
@@ -721,7 +728,7 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 54 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
 caps its own workers at one.
 What holds a reading to a quiet machine is the run being one worker wide, and the three files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of

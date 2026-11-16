@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `check-ci-images.sh`: one red case per rule it enforces, under the mode that owns
-# that refusal, one per ground of its exception list, and the repository's own tree in each mode.
+# that refusal, one per ground of its exception list, and the repository's own tree in the
+# package mode, which is the one mode a case of it is left for.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script, the path model its sweep walks the tree with (workflow_paths.py) and the reference
@@ -136,12 +137,30 @@ jobs:
     steps:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
-      # The two shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries
-      # to a command each, as the check demands.
+YAML
+  # The second shape IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
+  # command each, as the check demands. It is outside ci.yaml: it lives in a called file of a
+  # job, where ci.yaml's job of that id holds the gate and the file the steps.
+  cat > "$root/.github/workflows/ci-job-envoy-smoke.yaml" <<YAML
+name: CI job envoy-smoke
+on: [workflow_call]
+jobs:
+  envoy-smoke:
+    runs-on: ubuntu-24.04
+    steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
-      # The fourth shape: the download-retry-images job pulls every base image of the three
-      # Dockerfiles by reading the file it wrote from their FROM lines, which is the ci.yaml
-      # `image` entry of IMAGE_FROM (dispatch://INFRA-1545).
+YAML
+  # The fourth shape: the download-retry-images job pulls every base image of the three
+  # Dockerfiles by reading the file it wrote from their FROM lines, which is the `image` entry of
+  # IMAGE_FROM for that job's own file, .github/workflows/ci-job-download-retry-images.yaml
+  # (dispatch://INFRA-1545; main's #2945 moved every job's steps into a file of its own).
+  cat > "$root/.github/workflows/ci-job-download-retry-images.yaml" <<YAML
+name: CI job download-retry-images
+on: [workflow_call]
+jobs:
+  download-retry-images:
+    runs-on: ubuntu-24.04
+    steps:
       - run: |
           while read -r image; do docker pull "\$image"; done < "\$RUNNER_TEMP/base-images"
 YAML
@@ -877,13 +896,17 @@ set -e
 check "both modes in one call fails" "$(is "$status" 1)"
 check "naming them" "$(contains "$out" 'this check takes one mode')"
 
-echo "case: the repository's own tree, in each mode"
-set +e
-out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" "$check_script" tree 2>&1)
-status=$?
-set -e
-check "the real tree passes the tree mode" "$(is "$status" 0)"
-check "says what it read" "$(contains "$out" "reference(s) in .* file(s) of CI's reach")"
+# The package mode alone. ci.yaml's lint job runs `check-ci-images.sh tree` over this
+# repository on every change (.github/workflows/ci-job-lint.yaml, "Check every image a CI job
+# fetches is a row of .github/ci-images.yaml"), so a tree-mode case here would run that same
+# check a second time in the same CI run. The package mode runs in a CI run too: ci.yaml's
+# ci-images job runs `check-ci-images.sh package` (.github/workflows/ci-job-ci-images.yaml,
+# "Check the package holds every row of .github/ci-images.yaml") on every event ci.yaml runs
+# on - a pull request, a merge group and a dispatch - whenever the ci_images filter selects
+# it, and there it reads ghcr.io itself. This case runs that mode over this tree's rows against
+# a stand-in for the registry instead (CI_IMAGES_MANIFEST_HEAD and LABELS below), so the mode's
+# own reading of the rows is held in every run of this suite, which reaches no registry.
+echo "case: the repository's own tree, in the package mode"
 
 # This tree's own `built` row carries the digest of an image this repository published, and
 # rule 10 holds that image's label to the recipe this tree holds. The row is read out of

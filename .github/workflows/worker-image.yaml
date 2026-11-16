@@ -105,9 +105,11 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job carried, plus its slowest retried step alone — the ci-ok report's `gh api` read
-    # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, carried at the 720 s budget
-    # that step's own comment derives. 1800 + 720 = 2520 s -> 43 min, the whole minute above a sum that is itself a whole number of minutes.
-    timeout-minutes: 43
+    # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's
+    # check-run read and annotations loop, 300 + 480 = 780 s, 1380 s together (ci-budgets.md's
+    # Budgets note, "The ci-ok report"). 1800 + 1380 = 3180 s, a whole number of minutes, so
+    # the budget is the next one strictly above it -> 54 min.
+    timeout-minutes: 54
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of the
@@ -163,6 +165,10 @@ jobs:
       # `image` output, or from the caller's `image` input when this job skipped. $GITHUB_ENV
       # gives the steps after this one the same `${IMAGE}` they always read.
       - name: Derive the image repository
+        # The id is BUILD_PLUMBING_STEPS's key in
+        # .github/scripts/check-image-trigger-paths.sh, which pins this step as the image
+        # build's own plumbing.
+        id: image
         run: |
           # Assigned first, never `echo "IMAGE=$(…)"`: a command substitution inside echo's
           # arguments cannot fail the step, since echo exits 0 whatever the substitution did, so
@@ -311,10 +317,11 @@ jobs:
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && github.event_name == 'pull_request'
         # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
-        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's check-run read,
+        # 300 s, and annotations loop, 480 s: 1380 s. 1500 s and not rule 8's minimum of 1440 s:
         # this step posts the required ci-ok check, and a budget that cuts it between those two
         # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
-        timeout-minutes: 12
+        timeout-minutes: 25
         uses: ./.github/actions/ci-ok-report
         with:
           job: worker-image

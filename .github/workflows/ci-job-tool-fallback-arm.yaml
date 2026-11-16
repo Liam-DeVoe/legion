@@ -1,0 +1,128 @@
+name: CI job tool-fallback-arm
+
+# The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own. The
+# comment above that job says what the arm64 half proves and why it needs the `changes` job alone.
+#
+# The split is for the filters. The tool_fallback filter names this file beside ci.yaml and the
+# tool-fallback job's own file, so a change to these steps selects this job alone, where a change
+# to ci.yaml selects every job.
+#
+# The job id here is the one ci.yaml calls this file under, and it has to stay: a composite
+# action reads `github.job` as the id of the job that called it, and .github/actions/setup-bun
+# passes no-cache for every job whose id starts with `tool-fallback`, so no call of it here can be
+# served by the Actions cache.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  tool-fallback-arm:
+    runs-on: ubuntu-24.04-arm
+    # The budget (.github/ci-budgets.md, "The tool-fallback-arm job", adds up its first term
+    # part by part and says what this job measures against it): 1140 s, the slowest run this
+    # job can have, plus its slowest retried step alone - either setup-bun step's two
+    # `ci_tools_fetch` calls, 2562 s, above the rig steps' one of 1281 s each.
+    # 1140 + 2562 = 3702 s -> 62 min.
+    timeout-minutes: 62
+    # Why this job's install bounds are loud and its own limit does not reach them first:
+    # .github/ci-budgets.md, "The tool-fallback-arm job".
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same reading as the tool-fallback job's, over both halves of this one, and for the
+      # same reason: this is the only job of this repository that installs a tool on arm64, so
+      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
+      # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
+      # shows and what it cannot.
+      - name: Start the machine watch over both halves
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
+
+      # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
+      # setup-bun step holds what it installed to the row its bun-pin step read out of `uname -m`.
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 43
+
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
+      - name: Read the Bun the release asset served
+        timeout-minutes: 22
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
+
+      # The fault and the routing of every later step through it, as in the tool-fallback job:
+      # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
+      # four spellings of the two proxy variables and the two emptied bypass lists to
+      # $GITHUB_ENV, so neither the hosts nor the variables are written in this file.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
+      - name: Start the fault in front of GitHub's release assets
+        timeout-minutes: 22
+        run: .github/scripts/ci-tools-proof.sh start-fault
+
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
+      - name: Read the fault before any install meets it
+        timeout-minutes: 22
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # Both names, because the action's refusal takes both: what must be read again is an
+      # install, and not the bun the healthy half left behind.
+      - name: Take the installed Bun away, so the second source must serve it
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+      # The npm path on arm64: the release asset answers nothing behind the fault, so the
+      # action's bun-second-source step reads the @oven/bun-linux-aarch64 package the row names.
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 43
+
+      # --expect-refused is this half's own reading of the source: the proxy's 504 for
+      # github.com after the probe is the refusal that sent this install to npm, and the
+      # version and the digest cannot say it, since both sources serve one binary.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
+      - name: Read the Bun npm served
+        timeout-minutes: 22
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
+
+      # The proxy stops with this job, and the steps after this one must not be routed through
+      # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
+      - name: Stop routing this job through the fault
+        if: always()
+        timeout-minutes: 22
+        run: .github/scripts/ci-tools-proof.sh stop-fault
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 25
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tool-fallback-arm
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -1,0 +1,151 @@
+name: CI job pi-legion
+
+# The steps of ci.yaml's `pi-legion` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  pi-legion:
+    runs-on: ubuntu-24.04
+    # The budget added up part by part, and where its ceiling came from: .github/ci-budgets.md,
+    # "The pi-legion job's ceiling". Its two terms, in the shape ci-budgets.md's Budgets note
+    # asks for: 804 s, the slowest run that section adds up, which is above both the 600 s this
+    # job carried and its 374 s measured maximum, plus its slowest retried step alone -
+    # install-jj's two `ci_tools_fetch` calls and its `mise install` of the jj release,
+    # 2562 + 450 = 3012 s, above setup-bun's 2562 s and the workspace install's 1050 s.
+    # 804 + 3012 = 3816 s -> 64 min. It carried 61 from 600 + 3012 until round 35 read the
+    # section's own sum against it.
+    timeout-minutes: 64
+    # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
+    # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
+    services:
+      nats:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        ports: ["4222:4222"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 43
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      - uses: ./.github/actions/install-jj
+        timeout-minutes: 51
+      # extensions/legion-phase-stall-omp.test.ts and controller-start-omp.test.ts run the pinned
+      # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
+      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it,
+      # installed through the mise install-jj leaves at ~/.local/bin/mise
+      # (.github/actions/install-omp).
+      # install-omp's own retry arithmetic: its `mise install`, 5 x 60 + 150 = 450 s -> 8 min.
+      - uses: ./.github/actions/install-omp
+        timeout-minutes: 8
+      # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
+      # Docker. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
+      # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.
+      # scripts/skill-scenarios/daemon-pane.test.ts runs daemon-pane.go with `go run` inside packages/daemon.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+      # go-daemon, shared with typecheck and daemon-go.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+      # The module daemon-pane.test.ts runs `go run -overlay` in, downloaded once and retried
+      # before the test step that starts it (ci-budgets.md's Retries note; the retried unit is the
+      # download, never the run). 180 s per attempt, as that note derives. The restore above
+      # makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+      - name: Build contracts for pi-legion
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Typecheck pi-legion
+        run: bun run typecheck
+        working-directory: packages/pi-legion
+      - name: Test pi-legion
+        run: bun run test
+        working-directory: packages/pi-legion
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
+      # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
+      # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
+      # license cannot be determined) and stages this plugin's six skills. The listing shows the
+      # tarball ships those, its agents/, and nothing of the Envoy plugin's: no envoy.js, none of
+      # its skills.
+      - name: Pack pi-legion
+        run: |
+          jq '.omp.extensions = ["dist/legion.js"]' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --destination ../../out/pr-artifacts
+          listing=$RUNNER_TEMP/pi-legion-listing
+          tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
+          for shipped in package/dist/legion.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/legion-worker/SKILL.md package/agents/deep-worker.md; do
+            grep -qxF "$shipped" "$listing" || { echo "::error::the pi-legion tarball does not ship $shipped"; exit 1; }
+          done
+          for envoy in package/dist/envoy.js package/dist/skills/dispatch/; do
+            if grep -qF "$envoy" "$listing"; then
+              echo "::error::the pi-legion tarball ships $envoy, which is the Envoy plugin's"
+              exit 1
+            fi
+          done
+        working-directory: packages/pi-legion
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pi-legion-pr
+          path: out/pr-artifacts/*.tgz
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 25
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-legion
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

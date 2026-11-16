@@ -2731,9 +2731,9 @@ GHCR_WHY = ("a ghcr.io pull of a package this repository publishes: a failed pul
 EXEMPTIONS = [
     Exemption(".github/actions/pull-test-images/action.yml", None, None,
               ("docker pull",), GHCR_WHY),
-    Exemption(".github/workflows/ci.yaml", "envoy-client",
+    Exemption(".github/workflows/ci-job-envoy-client.yaml", "envoy-client",
               "Pre-pull the NATS image the credential tests run", ("docker pull",), GHCR_WHY),
-    Exemption(".github/workflows/ci.yaml", "download-retry-images",
+    Exemption(".github/workflows/ci-job-download-retry-images.yaml", "download-retry-images",
               "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
@@ -2855,6 +2855,17 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "high on purpose: the script's refusals only warn, and a step the "
                        "runner cuts fails the ci-ok job, which turns a passing required check "
                        "red"),
+    # Not a count of passes: one time bound around the whole loop. runner_shutdown_kills reads
+    # the annotations of every check run of every failed job it is asked about, which is as many
+    # as the run failed, and stops starting reads once its deadline, _runner_shutdown_read_seconds,
+    # has passed (main's #2945 wrote the loop; the deadline is this merge's).
+    DeclaredArithmetic(".github/scripts/runner-shutdown.sh", None, "gh api", 480,
+                       "the annotations loop's own deadline, 180 s, which that file derives "
+                       "from its measurements (one read 3.1 s to 4.3 s; at most 17 reads in "
+                       "the 97 failed ci.yaml runs read, 73 s), plus one read's whole ladder, "
+                       "since the last read may start just before the deadline and run every "
+                       "attempt: 180 + (5 x 30 + 150) = 480 s. The check-runs read before the "
+                       "loop is counted where it is written and is no part of this figure"),
     DeclaredArithmetic(".github/scripts/mirror-ci-images.sh", None, "crane copy", 1650,
                        "one copy per row of .github/ci-images.yaml the package does not hold, "
                        "and the ci-images step's budget is written for the rows a run copies, "
@@ -3456,7 +3467,7 @@ for site in sites:
 GO_BUILD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+(?:build|test|vet|run)\b")
 GO_MOD_DOWNLOAD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+mod\s+download\b")
 GO_BUILD_EXEMPT = {
-    (".github/workflows/ci.yaml", "airlock-lean"):
+    (".github/workflows/ci-job-airlock-lean.yaml", "airlock-lean"):
         "the airlock package imports the standard library alone, so this job downloads no module "
         "and compiles no third-party code, as its own comment says",
 }
