@@ -429,10 +429,16 @@ replicas, zone spread, claim template, images, reloader arguments, session annot
 class, `auth.conf`, `nats.conf` blocks and selector labels the values give. A chart version bump
 vendors the new archive with its published SHA-256. `TestClusteredNatsHubCluster` runs three
 nats-server processes on the `nats.conf` and `auth.conf` that render gave, with command-line
-overrides only for what a pod fixes (each process's ports, routes, PID file and server name, and
-the store directory in its copy of `nats.conf`), plus `-D` (debug logging), so a failed run prints
-each server's Raft election and vote lines, and with no NetworkPolicy, which nothing enforces on
-loopback: the three form one cluster and serve the users; a three-copy stream keeps every
+overrides only for what a pod fixes (each process's ports, routes, route advertise address, PID
+file and server name, and the store directory and route port in its copy of `nats.conf`), plus
+`-D` (debug logging), so a failed run prints each server's Raft election and vote lines, and with
+no NetworkPolicy, which nothing enforces on loopback. Each server binds client, monitoring and
+route ports the kernel chooses at every start (`-1`) and logs them; every client, peer and
+exporter is given instead the address of a `testnats.Front` the test holds for its whole run,
+which relays to the port the running server bound, so a restart keeps each server's addresses and
+no port is chosen before the process that binds it. The exporter binds `-port=0`, and the test
+reads its port from the kernel (`/proc`), since it logs only the address it was given. The three
+form one cluster and serve the users; a three-copy stream keeps every
 acknowledged message exactly once across a SIGKILL of its leader; the exporter, run with the
 chart's arguments, serves one `nats_stream_last_seq` series per server holding a copy; the real
 reloader, run with the chart's arguments, applies a users change with no server restart and no

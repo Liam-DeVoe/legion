@@ -410,39 +410,61 @@ func TestClusteredNatsHubChart(t *testing.T) {
 }
 
 // hubServer is one nats-server of the local cluster, on the rendered nats.conf and auth.conf in a
-// directory of its own. Its command line is built at each start from its ports and its peers'
-// route ports as they are then (commandArgs), so a start that draws new ports runs on them, its
-// own route port among them.
+// directory of its own. nats-server takes no socket from the test, so at each start it binds a
+// client, a monitoring and a route port the kernel chooses, and logs each one (start). The test
+// holds a front for each of the three (testnats.Front) from newHubServer until it ends, and gives
+// every client, peer and exporter a front's address, which relays to the port the running server
+// bound: a restarted server keeps its three addresses, as a restarted pod keeps its own, and no
+// address the test hands out is a port that was chosen before the server bound it.
 type hubServer struct {
-	name                   string
-	dir                    string
-	client, monitor, route int
-	binary                 string
-	podArgs, env           []string
-	// peers are the servers whose route ports it solicits, itself included, as the chart's
+	name         string
+	dir          string
+	binary       string
+	podArgs, env []string
+	// client, monitor and route are the server's fronts, each relaying to its port in bound.
+	client, monitor, route *testnats.Front
+	// peers are the servers whose route fronts it solicits, itself included, as the chart's
 	// cluster.routes names all three pods; nats-server ignores a route to itself.
 	peers []*hubServer
-	// routeURLs, when set, are routes it solicits in place of its peers' route ports, as a route
+	// routeURLs, when set, are routes it solicits in place of its peers' route fronts, as a route
 	// through a proxy.
 	routeURLs []string
-	ports     *loopbackPorts
 	proc      *cmdtest.Process
+
+	mu sync.Mutex
+	// bound is the ports the running server bound and logged at its start, all zero from the
+	// moment the test stops it (stop).
+	bound hubPorts
 }
+
+// hubPorts are a nats-server's client, monitoring and route ports.
+type hubPorts struct{ client, monitor, route int }
 
 // newHubServer is a server named name of the pods r renders, on natsConf and r's auth.conf, as the
 // pod runs nats-server: the container's arguments with the ConfigMap's mount replaced by the
-// server's directory, and SERVER_NAME set to its pod's name. drawn are its client, monitoring and
-// route ports, from ports, which a first start that cannot bind them draws again from.
-func (r *clusteredHubRender) newHubServer(t *testing.T, name, binary, natsConf string, ports *loopbackPorts, drawn []int) *hubServer {
+// server's directory, and SERVER_NAME set to its pod's name. Its three fronts are held from here
+// until the test ends, so the servers' routes can name each other's before any of them starts.
+func (r *clusteredHubRender) newHubServer(t *testing.T, name, binary, natsConf string) *hubServer {
 	t.Helper()
-	s := &hubServer{name: name, dir: t.TempDir(), binary: binary, ports: ports, client: drawn[0], monitor: drawn[1], route: drawn[2]}
-	// jetstream.store_dir: /data, the pod's claim, is the one value replaced in the server's copy
-	// of nats.conf: nats-server v2.15.1 reads the file onto the options its flags set and refuses
-	// -sd beside a store_dir in the file ("Duplicate 'store_dir' configuration"), so no
-	// command-line override exists for it.
+	s := &hubServer{name: name, dir: t.TempDir(), binary: binary}
+	s.client, s.monitor, s.route = s.front(t, &s.bound.client), s.front(t, &s.bound.monitor), s.front(t, &s.bound.route)
+	// Two values are replaced in the server's copy of nats.conf, since no command-line override
+	// serves for either. jetstream.store_dir: /data, the pod's claim: nats-server v2.15.1 reads the
+	// file onto the options its flags set and refuses -sd beside a store_dir in the file ("Duplicate
+	// 'store_dir' configuration").
 	storeDir := `"store_dir": "/data"`
 	require.Equal(t, 1, strings.Count(natsConf, storeDir), "the rendered nats.conf sets %s once", storeDir)
 	natsConf = strings.Replace(natsConf, storeDir, fmt.Sprintf(`"store_dir": %q`, filepath.Join(s.dir, "data")), 1)
+	// cluster.port: 6222, the route port, which becomes -1, one the kernel chooses as the server
+	// binds it. --cluster nats://127.0.0.1:-1 binds such a port too, but nats-server v2.15.1 keeps
+	// that flag as nats://127.0.0.1:0 (server/opts.go overrideCluster), so every reload reads route
+	// port 0 and refuses the whole configuration ("config reload not supported for cluster port:
+	// old=<port>, new=0"); a -1 in the file is put back to the bound port on a reload
+	// (server/reload.go ReloadOptions). The pod's route port listens on every interface, and so
+	// does this one.
+	clusterPort := `"port": 6222`
+	require.Equal(t, 1, strings.Count(natsConf, clusterPort), "the rendered nats.conf sets %s once, in its cluster block", clusterPort)
+	natsConf = strings.Replace(natsConf, clusterPort, `"port": -1`, 1)
 	require.NoError(t, os.WriteFile(filepath.Join(s.dir, "nats.conf"), []byte(natsConf), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(s.dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
 	s.podArgs = podArgs(t, stringList(t, r.container(t, "nats")["args"]), map[string]string{"/etc/nats-config/": s.dir + "/"})
@@ -453,15 +475,31 @@ func (r *clusteredHubRender) newHubServer(t *testing.T, name, binary, natsConf s
 	return s
 }
 
+// front holds a front for one of the server's ports, which relays to *port, a field of s.bound,
+// while the server runs, and closes each connection while it does not.
+func (s *hubServer) front(t *testing.T, port *int) *testnats.Front {
+	t.Helper()
+	return testnats.StartFront(t, func() (string, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if *port == 0 {
+			return "", fmt.Errorf("%s is not running", s.name)
+		}
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)), nil
+	})
+}
+
 // commandArgs is the container's own arguments (--config /etc/nats-config/nats.conf, with the
 // ConfigMap's mount replaced by the server's directory, podArgs), then -D, the one argument the
 // test adds for itself, then a command-line override for each other value of nats.conf that a pod
-// fixes, since three servers here share one host and filesystem.
+// fixes, since three servers here share one host and filesystem. Each of its three ports is -1, one
+// the kernel chooses as the server binds it (the route port's in the server's nats.conf,
+// newHubServer), behind the server's front for it.
 func (s *hubServer) commandArgs() []string {
 	routes := s.routeURLs
 	if routes == nil {
 		for _, peer := range s.peers {
-			routes = append(routes, fmt.Sprintf("nats://127.0.0.1:%d", peer.route))
+			routes = append(routes, peer.routeURL())
 		}
 	}
 	return append(slices.Clone(s.podArgs),
@@ -471,13 +509,17 @@ func (s *hubServer) commandArgs() []string {
 		// prints a server's output only when the test failed, so a failed election shows its votes.
 		"-D",
 		// port: 4222, the client port each pod has to itself.
-		"-p", strconv.Itoa(s.client),
+		"-p", "-1",
 		// http_port: 8222, the monitoring port.
-		"-m", strconv.Itoa(s.monitor),
-		// cluster.port: 6222, the route port.
-		"--cluster", fmt.Sprintf("nats://127.0.0.1:%d", s.route),
+		"-m", "-1",
+		// cluster.advertise, which the chart leaves unset because a pod's route port keeps its pod's
+		// address: here the route front, which keeps the server's, so a peer that learns of this
+		// server from another's gossip routes to it through the front as well (server/route.go,
+		// processImplicitRoute dials the INFO's IP, which advertise sets), never to a port the server
+		// bound at an earlier start.
+		"--cluster_advertise", s.route.Addr(),
 		// cluster.routes, the three pods' DNS names in the headless Service, each pod's own
-		// included: here every peer's route port, its own included, or routeURLs.
+		// included: here every peer's route front, its own included, or routeURLs.
 		"--routes", strings.Join(routes, ","),
 		// pid_file: /var/run/nats/nats.pid, the emptyDir the pod shares with the reloader.
 		"-P", filepath.Join(s.dir, "nats.pid"),
@@ -501,32 +543,47 @@ func (s *hubServer) routeRemotes() (map[string]bool, error) {
 	return remotes, nil
 }
 
-// start starts the server and waits until it listens on all three of its ports (its last bind is
-// the route port's); the test kills it by its PID when it ends if it is still running. A first
-// start that another program's hold on one of its ports refused is retried on three new ports. A
-// peer started earlier still names the old route port, which costs nothing: a route is one
-// connection both servers use, so this server's own routes to its peers complete the mesh. A
-// restart keeps the ports the server has, and its retries outlast a short-lived holder on them,
-// since the test holds those ports after the first start, in the clients' urls and in each
-// exporter's scrape target, as a restarted pod keeps its address.
+// The lines nats-server v2.15.1 logs once it has bound each of its ports, with the port the kernel
+// chose (server/server.go:2836-2837 and 3171-3172, server/route.go:2760-2761).
+var (
+	clientBound  = regexp.MustCompile(`Listening for client connections on \S+:(\d+)`)
+	monitorBound = regexp.MustCompile(`Starting http monitor on \S+:(\d+)`)
+	routeBound   = regexp.MustCompile(`Listening for route connections on \S+:(\d+)`)
+)
+
+// start starts the server and waits until it has logged the client, monitoring and route ports it
+// bound, then points its fronts at them; the test kills it by its PID when it ends if it is still
+// running. Each start binds three ports the kernel chooses, so a restart takes no port the server
+// gave up, which another program can hold by then, and the fronts keep the addresses every client,
+// peer and exporter was given, as a restarted pod keeps its address.
 func (s *hubServer) start(t *testing.T) {
 	t.Helper()
-	first := s.proc == nil
-	attempt := 0
-	s.proc = startBound(t, s.name, func() *exec.Cmd {
-		if attempt++; first && attempt > 1 {
-			drawn := s.ports.draw(t, 3)
-			s.client, s.monitor, s.route = drawn[0], drawn[1], drawn[2]
-		}
-		cmd := exec.Command(s.binary, s.commandArgs()...)
-		cmd.Env = append(os.Environ(), s.env...)
-		return cmd
-	}, func(p *cmdtest.Process) error {
-		if !strings.Contains(p.Output.String(), fmt.Sprintf("Listening for route connections on 127.0.0.1:%d", s.route)) {
-			return errors.New("not listening yet")
+	cmd := exec.Command(s.binary, s.commandArgs()...)
+	cmd.Env = append(os.Environ(), s.env...)
+	var bound hubPorts
+	s.proc = startServing(t, s.name, cmd, func(p *cmdtest.Process) error {
+		out := p.Output.String()
+		for _, port := range []struct {
+			line *regexp.Regexp
+			into *int
+		}{{clientBound, &bound.client}, {monitorBound, &bound.monitor}, {routeBound, &bound.route}} {
+			m := port.line.FindStringSubmatch(out)
+			if m == nil {
+				return fmt.Errorf("no line matching %q yet", port.line)
+			}
+			n, err := strconv.Atoi(m[1])
+			if err != nil {
+				return err
+			}
+			*port.into = n
 		}
 		return nil
 	})
+	s.mu.Lock()
+	s.bound = bound
+	s.mu.Unlock()
+	t.Logf("%s (pid %d) bound client port %d, monitoring port %d and route port %d, behind its fronts %s, %s and %s",
+		s.name, s.proc.Cmd.Process.Pid, bound.client, bound.monitor, bound.route, s.client.Addr(), s.monitor.Addr(), s.route.Addr())
 }
 
 // startLogged starts cmd as cmdtest.Start does, and logs its output when the test fails.
@@ -541,61 +598,17 @@ func startLogged(t *testing.T, name string, cmd *exec.Cmd) *cmdtest.Process {
 	return p
 }
 
-// loopbackPorts hands out loopback TCP ports the kernel chose, each one distinct from every port
-// it handed out before in the test. nats-server and the exporter take a port number and bind it
-// themselves, so cmdtest.HoldPort, which hands a held socket to a process that serves on it,
-// cannot give them one. A draw holds every socket it opens until it has all the ports it was asked
-// for, so the kernel cannot give one port twice within a draw, and it passes over a port an
-// earlier draw handed out, whose socket is closed. Another program can still take a port before
-// the process binds it, which startBound answers with a retry, on a new draw where build makes one.
-type loopbackPorts struct {
-	used map[int]bool
-}
-
-func newLoopbackPorts() *loopbackPorts { return &loopbackPorts{used: map[int]bool{}} }
-
-// draw returns n ports no earlier draw returned, distinct from one another.
-func (p *loopbackPorts) draw(t *testing.T, n int) []int {
+// startServing starts cmd as startLogged does and waits up to 30 s for ready to return nil, failing
+// the test with the process's output when it does not. Every port a process here serves on is one
+// the test holds or one the process bound as the kernel chose it, so no other program can hold a
+// port it binds, and a start is never retried.
+func startServing(t *testing.T, name string, cmd *exec.Cmd, ready func(*cmdtest.Process) error) *cmdtest.Process {
 	t.Helper()
-	var held []net.Listener
-	defer func() {
-		for _, l := range held {
-			_ = l.Close()
-		}
-	}()
-	ports := make([]int, 0, n)
-	for len(ports) < n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		held = append(held, listener)
-		port := listener.Addr().(*net.TCPAddr).Port
-		if p.used[port] {
-			continue
-		}
-		p.used[port] = true
-		ports = append(ports, port)
+	p := startLogged(t, name, cmd)
+	if err := awaitReady(p, ready); err != nil {
+		t.Fatalf("%s did not start: %v\n%s", name, err, p.Output.String())
 	}
-	return ports
-}
-
-// startBound starts the process build makes and waits up to 30 s for ready to return nil. A
-// process that exits because a port it binds is taken is started again, from a new build, up to
-// 10 times, since another program, or an outgoing connection's ephemeral port, can hold a drawn
-// port when the process binds it: a build that may move its ports draws new ones (an exporter, a
-// server's first start), and one that may not (a server's restart) waits out the holder.
-func startBound(t *testing.T, name string, build func() *exec.Cmd, ready func(*cmdtest.Process) error) *cmdtest.Process {
-	t.Helper()
-	for attempt := 1; ; attempt++ {
-		p := startLogged(t, name, build())
-		err := awaitReady(p, ready)
-		if err == nil {
-			return p
-		}
-		if attempt == 10 || !strings.Contains(p.Output.String(), "address already in use") {
-			t.Fatalf("%s did not start (attempt %d): %v\n%s", name, attempt, err, p.Output.String())
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+	return p
 }
 
 // awaitReady waits up to 30 s for ready to return nil while p runs, and returns ready's last error
@@ -616,18 +629,42 @@ func awaitReady(p *cmdtest.Process, ready func(*cmdtest.Process) error) error {
 	}
 }
 
-// kill sends the server SIGKILL and waits for it to exit.
+// kill sends the server SIGKILL and waits for it to exit, its fronts refusing new connections from
+// before the signal (stop).
 func (s *hubServer) kill(t *testing.T) {
 	t.Helper()
+	s.stop()
 	require.NoError(t, s.proc.Cmd.Process.Signal(syscall.SIGKILL))
 	s.proc.WaitExit(t, "SIGKILL")
 }
 
-func (s *hubServer) url() string { return fmt.Sprintf("nats://127.0.0.1:%d", s.client) }
+// terminate sends the server SIGTERM, as a deploy stops a pod, and waits for it to exit, its
+// fronts refusing new connections from before the signal (stop).
+func (s *hubServer) terminate(t *testing.T) {
+	t.Helper()
+	s.stop()
+	s.proc.Terminate(t)
+	s.proc.WaitExit(t, "SIGTERM")
+}
+
+// stop points the server's fronts at nothing, before the signal that stops the server: from then on
+// each closes a new connection at once, as a stopped pod's address refuses it, so none is relayed
+// to a port the server is giving up, which another program can bind once it has. A connection the
+// fronts relay already ends when the server does.
+func (s *hubServer) stop() {
+	s.mu.Lock()
+	s.bound = hubPorts{}
+	s.mu.Unlock()
+}
+
+func (s *hubServer) url() string { return "nats://" + s.client.Addr() }
+
+// routeURL is the server's route front as a route URL.
+func (s *hubServer) routeURL() string { return "nats://" + s.route.Addr() }
 
 // monitorJSON decodes the answer of the server's monitoring endpoint path into into.
 func (s *hubServer) monitorJSON(path string, into any) error {
-	return getJSON(fmt.Sprintf("http://127.0.0.1:%d%s", s.monitor, path), into)
+	return getJSON("http://"+s.monitor.Addr()+path, into)
 }
 
 var monitorClient = &http.Client{Timeout: 2 * time.Second}
@@ -866,6 +903,57 @@ func scrape(port int) ([]promSeries, error) {
 	return series, nil
 }
 
+// listeningPort is the one TCP port the process pid listens on, as the kernel reports it: the
+// sockets among the process's descriptors (/proc/<pid>/fd, each a socket:[<inode>] link) and the
+// LISTEN rows (state 0A) of /proc/net/tcp and /proc/net/tcp6 whose inode is one of them. It names
+// the port the process itself bound, so no port another program holds can be read for it, and it
+// fails while the process listens on no port and when it listens on more than one.
+func listeningPort(pid int) (int, error) {
+	dir := fmt.Sprintf("/proc/%d/fd", pid)
+	fds, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	sockets := map[string]bool{}
+	for _, fd := range fds {
+		// A descriptor closed since the directory was read has no link, and is no socket of the
+		// process any more.
+		link, err := os.Readlink(filepath.Join(dir, fd.Name()))
+		if inode, ok := strings.CutPrefix(link, "socket:["); err == nil && ok {
+			sockets[strings.TrimSuffix(inode, "]")] = true
+		}
+	}
+	var ports []int
+	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		text, err := os.ReadFile(table)
+		if errors.Is(err, os.ErrNotExist) {
+			// A kernel without IPv6 has no tcp6 table, and nothing listens there.
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		for _, line := range strings.Split(string(text), "\n")[1:] {
+			// sl, local_address (the address and the port in hexadecimal), rem_address, st, and the
+			// inode tenth.
+			fields := strings.Fields(line)
+			if len(fields) < 10 || fields[3] != "0A" || !sockets[fields[9]] {
+				continue
+			}
+			_, hexPort, _ := strings.Cut(fields[1], ":")
+			port, err := strconv.ParseUint(hexPort, 16, 16)
+			if err != nil {
+				return 0, fmt.Errorf("%s row %q: %w", table, line, err)
+			}
+			ports = append(ports, int(port))
+		}
+	}
+	if len(ports) != 1 {
+		return 0, fmt.Errorf("pid %d listens on %d TCP ports %v, from %d sockets among %d descriptors, want one", pid, len(ports), ports, len(sockets), len(fds))
+	}
+	return ports[0], nil
+}
+
 // lastSeqMetric is the exporter's metric of a stream copy's last sequence, under the chart's
 // -prefix=nats.
 const lastSeqMetric = "nats_stream_last_seq"
@@ -940,13 +1028,11 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		liveTool{exporterTool, "prometheus-nats-exporter"})
 	natsServer, reloader, exporter := tools[0], tools[1], tools[2]
 
-	// One draw of the nine server ports, all held until the last is chosen, so no two servers share
-	// one; the exporters' ports come from the same pool, distinct from these.
-	ports := newLoopbackPorts()
-	serverPorts := ports.draw(t, 9)
+	// Each server's fronts are held from newHubServer on, so every server's routes name all three
+	// route fronts before the first of them starts.
 	servers := make([]*hubServer, 3)
 	for i := range servers {
-		servers[i] = r.newHubServer(t, fmt.Sprintf("%s-%d", r.release, i), natsServer, r.natsConf, ports, serverPorts[3*i:3*i+3])
+		servers[i] = r.newHubServer(t, fmt.Sprintf("%s-%d", r.release, i), natsServer, r.natsConf)
 		servers[i].peers = servers
 	}
 	for _, s := range servers {
@@ -1315,21 +1401,29 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	exporterArgs := stringList(t, r.container(t, "prom-exporter")["args"])
 	exporterPorts := make([]int, len(servers))
 	for i, s := range servers {
-		var args []string
-		startBound(t, s.name+" exporter", func() *exec.Cmd {
-			exporterPorts[i] = ports.draw(t, 1)[0]
-			// The chart's arguments with the exporter's port, -port=7777, and the monitoring port
-			// of http://localhost:8222/, both fixed by the pod, replaced by this server's.
-			args = podArgs(t, exporterArgs, map[string]string{
-				"-port=7777":     fmt.Sprintf("-port=%d", exporterPorts[i]),
-				"localhost:8222": fmt.Sprintf("localhost:%d", s.monitor),
-			})
-			return exec.Command(exporter, args...)
-		}, func(*cmdtest.Process) error {
-			_, err := scrape(exporterPorts[i])
-			return err
+		// The chart's arguments with the exporter's port, -port=7777, and the monitoring port of
+		// http://localhost:8222/, both fixed by the pod, replaced: -port=0, a port the kernel
+		// chooses as the exporter binds it, and the server's monitoring front, on 127.0.0.1 since
+		// the front holds IPv4 loopback alone and localhost may name ::1 first. The exporter logs the
+		// address it was given (prometheus-nats-exporter v0.20.2, exporter/exporter.go:445, "0.0.0.0:0"
+		// here) and not the one it bound, so its port is read from the kernel instead
+		// (listeningPort). It is never restarted, so it holds that port until the test ends.
+		args := podArgs(t, exporterArgs, map[string]string{
+			"-port=7777":     "-port=0",
+			"localhost:8222": s.monitor.Addr(),
 		})
-		t.Logf("%s: prometheus-nats-exporter %s", s.name, strings.Join(args, " "))
+		p := startServing(t, s.name+" exporter", exec.Command(exporter, args...), func(p *cmdtest.Process) error {
+			port, err := listeningPort(p.Cmd.Process.Pid)
+			if err != nil {
+				return err
+			}
+			if _, err := scrape(port); err != nil {
+				return err
+			}
+			exporterPorts[i] = port
+			return nil
+		})
+		t.Logf("%s: prometheus-nats-exporter %s (pid %d), serving on port %d", s.name, strings.Join(args, " "), p.Cmd.Process.Pid, exporterPorts[i])
 	}
 	atRest := awaitLastSeqs(t, exporterPorts, r3, 3, float64(messages))
 	series, err := streamSeries(exporterPorts, r3)
@@ -1502,8 +1596,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		t.Logf("(e) %s still makes a client with no credential the previous session user %s and admits live-host", s.name, r.keys.sessionKey)
 	}
 	restarted := servers[0]
-	restarted.proc.Terminate(t)
-	restarted.proc.WaitExit(t, "SIGTERM")
+	restarted.terminate(t)
 	restarted.start(t)
 	var user string
 	within(t, 30*time.Second, restarted.name+" admits a client with no credential after its restart", func() error {
@@ -1550,8 +1643,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}
 	require.ErrorIs(t, err, natsgo.ErrAuthorization, "the users change written beside the lower store is not applied")
 	t.Logf("(f) %s refused the reload of a lower max_file_store (%q) and with it the users change beside it: live-added is refused", restarted.name, storeRefusal)
-	restarted.proc.Terminate(t)
-	restarted.proc.WaitExit(t, "SIGTERM")
+	restarted.terminate(t)
 	restarted.start(t)
 	within(t, 30*time.Second, restarted.name+" admits live-added after its restart", func() error {
 		conn, err := testnats.ConnectSeed(t, restarted.url(), addedSeed)
