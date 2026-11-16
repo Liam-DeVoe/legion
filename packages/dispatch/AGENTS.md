@@ -2146,10 +2146,12 @@ thirteen green merge-queue runs of the default branch that day up to 15:03Z, at 
 with a median of 3,126 s: the lane's cost tracks the
 runner, so a ceiling set near the measurement is one the fleet decides.
 A jobs file it cannot read, or one holding no job with a duration, fails too rather than passing.
-The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
-tests and build, beside the proof editor's, and runs no browser row; `bun run check:asset-sizes`
-is its last dashboard step, and that is where the entry chunk's 500,000-byte budget is read
-(the Layout section above, `web/src/asset-sizes-in-build.ts`).
+The `dispatch-ui` job of `.github/workflows/ci.yaml` (its steps are in
+`.github/workflows/ci-job-dispatch-ui.yaml`) keeps the dashboard's typecheck, unit tests and
+build, beside the proof editor's typecheck and unit tests, and runs no browser row and no lint:
+Biome checks the whole tree once, in the `lint` job.
+`bun run check:asset-sizes` is its last dashboard step, and that is where the entry chunk's
+500,000-byte budget is read (the Layout section above, `web/src/asset-sizes-in-build.ts`).
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
