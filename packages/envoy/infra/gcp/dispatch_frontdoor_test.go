@@ -514,9 +514,12 @@ func TestDispatchCertPublishExitsWhenTheClaimGateDies(t *testing.T) {
 		// Each pass of the publishing loop checks the gate before it publishes
 		// (dispatchCertPublishLoop), and the first pass's own line is written by the publish that
 		// follows that check: once the line is there, the loop has read a living gate and gone on.
-		testwait.Eventually(t, "the publishing loop's first pass, which follows its first reading of the gate", func() bool {
+		// The gate runs beside the loop in a process of its own and writes its own pass's line
+		// when it gets there, which can come after the loop's, so both lines are waited for.
+		testwait.Eventually(t, "the publishing loop's first pass, which follows its first reading of the gate, and the gate's own first pass", func() bool {
 			stdout, _ := run.output(t)
-			return strings.Contains(stdout, "waiting for tailscaled to cache a certificate")
+			return strings.Contains(stdout, "waiting for tailscaled to cache a certificate") &&
+				strings.Contains(stdout, "node id is not read yet")
 		})
 		select {
 		case <-run.exited:
