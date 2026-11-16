@@ -38,9 +38,13 @@
 // answer lost, which the command prints as {"landed_without_answer":"<code>"} with exit 0, is a
 // stored result whose id is unknown: its result_id is empty and why says so. why says why a check
 // got no call, and holds what the command printed on both streams when a call failed: the command
-// prints a refusal on standard output. A refused call stored nothing. A call that failed in
-// transport may have stored its result, and a second run of the step is safe, since Dispatch keeps
-// each result. The line holds no raw line break, as encoding/json escapes each control character,
+// prints a refusal on standard output. A refused call stored nothing. A write whose outcome is
+// unknown, which the command prints as {"write_outcome_unknown":"<code>"} with exit 1 when the
+// write went out and no answer came, is a failed call whose why names the code, and it is never
+// read as a stored result: it may be stored, and a second run of the step is safe, since Dispatch
+// keeps each result. The command itself waits at most 60 s for a broker that answers 429 or 5xx
+// and for Dispatch's check of its token, so the step adds no retry of its own. The line holds no
+// raw line break, as encoding/json escapes each control character,
 // and the "[" of each "##[" in it is written as \u005b, which a JSON reader reads back as "[", so
 // the line starts no workflow command of a runner's log. Every other line goes to standard error
 // through runnerlog.Say with the prefix
@@ -49,9 +53,10 @@
 //
 // It exits as help names: 0 when each call stored its result, 1 when a call failed, and 2, with
 // no call, for arguments it does not take, a commit it cannot read, a spec directory or a report
-// it cannot read, and a tree that Judge refuses or that holds a file over notes.MaxFileSize, which
-// never reaches Judge. For a refused tree it writes each problem with its file and line, the first
-// first, as Dispatch names that first one when it refuses a result of the tree.
+// it cannot read, and a tree that Judge refuses or that is over notes.CheckSet's or
+// notes.MaxFileSize's bound, which never reaches Judge. For a refused tree it writes each problem
+// with its file and line, the first one first, as Dispatch names that first one when it refuses a
+// result of the tree.
 package main
 
 import (
@@ -286,9 +291,10 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 // id of the stored result, what its line says of the call, and whether the call stored the
 // result. A refused call stored nothing, and its words are what it wrote on both streams: the
 // command prints a refusal of Dispatch or of the broker on standard output (`print` in
-// packages/envoy-client/src/dispatch-cli.ts), and its warnings on standard error. A call that
-// failed in transport may have stored its result: it counts as failed, and a second run of the
-// step is safe, since Dispatch keeps each result. Of a call that
+// packages/envoy-client/src/dispatch-cli.ts), and its warnings on standard error. A write whose
+// outcome is unknown, {"write_outcome_unknown":"<code>"}, is a failed call that names the code,
+// whatever the exit status: it may be stored, and a second run of the step is safe, since
+// Dispatch keeps each result. Of a call that
 // stored its result it reads only the stored row's id, and it never prints the rest. A write that
 // landed with its answer lost, {"landed_without_answer":"<code>"} with exit 0, stored the result,
 // and its id is unknown.
@@ -301,25 +307,32 @@ func record(cli []string, project, commit string, p Planned) (code int, id, why 
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	var exitError *exec.ExitError
-	switch {
-	case err != nil && !errors.As(err, &exitError):
+	if err != nil && !errors.As(err, &exitError) {
 		return -1, "", err.Error(), false
-	case cmd.ProcessState.ExitCode() != 0:
+	}
+	code = cmd.ProcessState.ExitCode()
+	// The command's first line on standard output: a stored row, a landed write, or a write whose
+	// outcome is unknown; a refusal is "<CODE>: <message>", which is no JSON.
+	var line struct {
+		ID      string `json:"id"`
+		Landed  string `json:"landed_without_answer"`
+		Unknown string `json:"write_outcome_unknown"`
+	}
+	decoded := json.NewDecoder(bytes.NewReader(stdout.Bytes())).Decode(&line) == nil
+	switch {
+	case decoded && line.Unknown != "":
+		// The write went out and no answer came: it may be stored, and it is never read as stored.
+		return code, "", fmt.Sprintf("the write went out and no answer said whether Dispatch stored it (%s): a second run of the step is safe, since Dispatch keeps each result", line.Unknown), false
+	case code != 0:
 		words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
 		if words == "" {
 			words = fmt.Sprintf("the dispatch command ended with %s and printed nothing", cmd.ProcessState)
 		}
-		return cmd.ProcessState.ExitCode(), "", words, false
-	}
-	var row struct {
-		ID     string `json:"id"`
-		Landed string `json:"landed_without_answer"`
-	}
-	switch err := json.NewDecoder(&stdout).Decode(&row); {
-	case err == nil && row.ID != "":
-		return 0, row.ID, "", true
-	case err == nil && row.Landed != "":
-		return 0, "", fmt.Sprintf("the result was stored, and its answer was lost on the way back (%s), so its id is unknown", row.Landed), true
+		return code, "", words, false
+	case decoded && line.ID != "":
+		return 0, line.ID, "", true
+	case decoded && line.Landed != "":
+		return 0, "", fmt.Sprintf("the result was stored, and its answer was lost on the way back (%s), so its id is unknown", line.Landed), true
 	}
 	return 0, "", "the dispatch command exited 0 and printed no stored result with an id", false
 }

@@ -26,9 +26,12 @@ import (
 // broker (packages/envoy-client/src/dispatch-cli.ts, `print`, which writes to standard output).
 // With CI_REPORT_STUB_MODE=landed it prints what the real command prints for a write that landed
 // with its answer lost, {"landed_without_answer":"KEY_COMMITTED"}, and exits 0; with
-// CI_REPORT_STUB_MODE=no-id it prints that JSON with no code, and exits 0. Otherwise it prints a
-// stored row as the real command prints it, whole and over many lines, with the id row-<check>
-// and the run that recorded it, its session and principal, and exits 0.
+// CI_REPORT_STUB_MODE=no-id it prints that JSON with no code, and exits 0. With
+// CI_REPORT_STUB_MODE=unknown it prints what the real command prints for a write that went out
+// and got no answer, {"write_outcome_unknown":"ECONNRESET"}, and exits 1; with unknown-exit-0 it
+// prints the same line and exits 0. Otherwise it prints a stored row as the real command prints
+// it, whole and over many lines, with the id row-<check> and the run that recorded it, its session
+// and principal, and exits 0.
 const stubDispatch = `#!/bin/sh
 calls="$CI_REPORT_STUB_DIR"
 n=0
@@ -51,6 +54,14 @@ if [ "$CI_REPORT_STUB_MODE" = landed ]; then
 fi
 if [ "$CI_REPORT_STUB_MODE" = no-id ]; then
   echo '{"landed_without_answer":""}'
+  exit 0
+fi
+if [ "$CI_REPORT_STUB_MODE" = unknown ]; then
+  echo '{"write_outcome_unknown":"ECONNRESET"}'
+  exit 1
+fi
+if [ "$CI_REPORT_STUB_MODE" = unknown-exit-0 ]; then
+  echo '{"write_outcome_unknown":"ECONNRESET"}'
   exit 0
 fi
 cat <<EOF
@@ -387,6 +398,33 @@ Failing example: A read that waits for a lock that nobody holds.
 		}
 	})
 
+	// The command prints {"write_outcome_unknown":"<code>"} and exits 1 when the write went out and
+	// no answer said whether it stored the result: a failure that names the code, and never a
+	// stored result, whatever the command's exit status.
+	for _, mode := range []string{"unknown", "unknown-exit-0"} {
+		t.Run("a write whose outcome is unknown is a failure that names its code, and never a stored result ("+mode+")", func(t *testing.T) {
+			t.Parallel()
+			dir, _ := checkout(t, filepath.Join("testdata", "spec"))
+			stub := newStub(t)
+			got := runReporter(t, binary, dir, stub.env(mode), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+			if got.code != 1 {
+				t.Errorf("exit %d, want 1; stderr:\n%s", got.code, got.stderr)
+			}
+			code := 1
+			if mode == "unknown-exit-0" {
+				code = 0
+			}
+			exits, whys := map[string]*int{}, map[string]string{}
+			for _, check := range recordedChecks {
+				exits[check], whys[check] = new(code), "the write went out and no answer said whether Dispatch stored it (ECONNRESET): a second run of the step is safe, since Dispatch keeps each result"
+			}
+			expectLines(t, got.stdout, lines(exits, nil, whys))
+			if want := "; 0 results written, 3 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
+				t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+			}
+		})
+	}
+
 	t.Run("a call that exits 0 and prints neither an id nor a landed write fails its check and exits 1", func(t *testing.T) {
 		t.Parallel()
 		dir, _ := checkout(t, filepath.Join("testdata", "spec"))
@@ -529,6 +567,65 @@ Failing example: A read that waits for a lock that nobody holds.
 			t.Errorf("the stub got %d calls, want none", len(calls))
 		}
 	})
+
+	// The set's bounds are notes.CheckSet's, which every reader of spec files applies from its
+	// listing before it reads a file: more than notes.MaxFiles files, or more than
+	// notes.MaxSetSize bytes in sum, refuses the tree with the shared reader's words, and no file is
+	// read. A git of the test's own, first on PATH, logs each git command the reporter runs.
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		name, want string
+		files      int
+		size       int
+	}{
+		{"more files than the set holds", fmt.Sprintf("holds %d files (limit %d)", notes.MaxFiles+1, notes.MaxFiles), notes.MaxFiles + 1, 1},
+		{"more bytes in sum than the set holds", fmt.Sprintf("holds %d bytes in its files (limit %d)", (notes.MaxSetSize/notes.MaxFileSize+1)*notes.MaxFileSize, notes.MaxSetSize), notes.MaxSetSize/notes.MaxFileSize + 1, notes.MaxFileSize},
+	} {
+		t.Run("a spec directory with "+row.name+" is refused by notes.CheckSet, and no result is written", func(t *testing.T) {
+			t.Parallel()
+			dir, _ := checkout(t, "")
+			// One blob, listed once for each file: the listing holds every size, and git stores one.
+			blob := filepath.Join(t.TempDir(), "blob")
+			writeFile(t, blob, strings.Repeat("x", row.size))
+			sha := strings.TrimSpace(git(t, dir, "hash-object", "-w", blob))
+			var index strings.Builder
+			for i := range row.files {
+				fmt.Fprintf(&index, "100644 %s\t.dispatch/spec/f%04d.md\n", sha, i)
+			}
+			cmd := exec.Command("git", "update-index", "--index-info")
+			cmd.Dir, cmd.Stdin = dir, strings.NewReader(index.String())
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git update-index: %v: %s", err, out)
+			}
+			git(t, dir, "commit", "-q", "-m", "a large set")
+			stub := newStub(t)
+			bin, gitLog := t.TempDir(), filepath.Join(t.TempDir(), "git.log")
+			writeFile(t, filepath.Join(bin, "git"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '"+gitLog+"'\nexec '"+realGit+"' \"$@\"\n")
+			if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			env := append(stub.env("store"), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			got := runReporter(t, binary, dir, env, append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+			specDir := filepath.Join(dir, ".dispatch", "spec")
+			want := "ci-report: " + notes.ErrSetTooLarge.Error() + ": " + specDir + " " + row.want + "\nci-report: " + specDir + ": the tree is refused, so no result is written\n"
+			if got.code != 2 || got.stdout != "" || !strings.HasSuffix(got.stderr, want) {
+				t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and stderr ending %q", got.code, got.stdout, got.stderr, want)
+			}
+			if calls := stub.calls(t); len(calls) != 0 {
+				t.Errorf("the stub got %d calls, want none", len(calls))
+			}
+			commands, err := os.ReadFile(gitLog)
+			if err != nil || !strings.Contains(string(commands), "ls-tree") {
+				t.Fatalf("the git of the test logged no ls-tree, so it saw none of the reporter's commands: %v\n%s", err, commands)
+			}
+			if strings.Contains(string(commands), "cat-file --batch") {
+				t.Errorf("the reporter read the files of a set over a bound: its git commands are\n%s", commands)
+			}
+		})
+	}
 
 	t.Run("a spec file over the size bound refuses the tree before specgraph.Judge reads it, and no result is written", func(t *testing.T) {
 		t.Parallel()
