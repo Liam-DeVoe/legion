@@ -185,15 +185,22 @@ func (c *computation) phasesOf(issue *Issue) []PhaseSpan {
 	return c.timelineOf(issue).spans
 }
 
+// rootOf is the issue's tree root, and the issue itself where that root is no issue of the
+// population: the root a view reads (viewOf) and the inputs of the root an issue's facts are
+// closed at read (newestInput).
+func (c *computation) rootOf(issue *Issue) *Issue {
+	if root := c.population.Issues[c.treeRoot(issue.Key)]; root != nil {
+		return root
+	}
+	return issue
+}
+
 // viewOf is the issue with its tree and the timelines its segments read, computed once.
 func (c *computation) viewOf(issue *Issue) *issueView {
 	if view, held := c.views[issue.Key]; held {
 		return view
 	}
-	root := c.population.Issues[c.treeRoot(issue.Key)]
-	if root == nil {
-		root = issue
-	}
+	root := c.rootOf(issue)
 	view := &issueView{
 		population:  c.population,
 		issue:       issue,
@@ -385,8 +392,7 @@ func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
 // (claimWorking), and every other stretch, the one before the first mark included, is not.
 //
 // It is not phase time's idle segment, which is the hours of a bar no other segment claimed: an
-// hour of R's bar with R out of a turn is idle here whether or not CI, a person or a child held
-// it.
+// hour of R's bar with R out of a turn is idle here whether or not a person or a child held it.
 func (c *computation) idleByRole(issue *Issue, sampled []PhaseSpan) map[string]float64 {
 	end := c.population.issueEnd(issue)
 	holding := intersect(c.workedSpansOf(issue), c.population.slotSpans(issue, end))

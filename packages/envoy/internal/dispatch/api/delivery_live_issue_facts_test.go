@@ -38,10 +38,12 @@ func viewShowingIssues(spec deliveryLiveSpec, issues []string) *deliveryView {
 	return view
 }
 
-// TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue: a write of one issue's stored
-// Legion facts moves the Legion boards that show that issue and no other view at all. A board
-// names its own issues by the rule dirtyIssueLocked marks an issue's write by, so a board that
-// shows the issue is woken and a board that does not is left.
+// TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject: a write of one issue's stored Legion
+// facts moves the Legion board of that issue's project and no other view at all. The board's read
+// takes every row of its project (legionfacts.Read), so a row of an issue the board names nowhere
+// yet - the first row of an issue, a row a build's whole read writes - moves its answer as much as
+// a row of an issue it already shows does, and a board that marked only the issues it names would
+// stand behind its GET until some other write woke it.
 //
 // No delivery view is woken, whichever issue it names: the stored facts have one reader
 // (legionfacts.Read, which the board calls), so no timeline, measures or pipeline answer can
@@ -49,7 +51,7 @@ func viewShowingIssues(spec deliveryLiveSpec, issues []string) *deliveryView {
 // every row whose values or writer moved, and the build a project's record names computes again
 // every row the other build of a roll wrote, and each rewrite logs a change, so one such pass
 // would otherwise force a whole Delivery recompute on every subscribed page.
-func TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue(t *testing.T) {
+func TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	change := issueFactsChange("INFRA", "INFRA-7", now.Add(-26*time.Hour), now.Add(-2*time.Hour))
 
@@ -58,9 +60,10 @@ func TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue(t *testing.T) 
 		view *deliveryView
 		want bool
 	}{
-		{"a Legion board that shows the issue", boardViewShowing("INFRA", "INFRA-7", "INFRA-8"), true},
-		{"a Legion board that shows other issues", boardViewShowing("INFRA", "INFRA-8"), false},
-		{"a Legion board that shows none", boardViewShowing("INFRA"), false},
+		{"a Legion board of the project that shows the issue", boardViewShowing("INFRA", "INFRA-7", "INFRA-8"), true},
+		{"a Legion board of the project that shows other issues", boardViewShowing("INFRA", "INFRA-8"), true},
+		{"a Legion board of the project that shows none", boardViewShowing("INFRA"), true},
+		{"a Legion board of another project", boardViewShowing("OPS", "OPS-7"), false},
 		{"a timeline that shows the issue", deliveryViewShowing(deliveryLiveTimeline, "INFRA-7"), false},
 		{"a timeline that shows other issues", deliveryViewShowing(deliveryLiveTimeline, "INFRA-8"), false},
 		{"a measures view that shows the issue", deliveryViewShowing(deliveryLiveMeasures, "INFRA-7"), false},
@@ -121,12 +124,13 @@ func recomputeOfView(t *testing.T, frame DeliveryLiveView) func(deliveryHubNote)
 // Legion facts reaches an open board through the change log, as a delivery row's write reaches an
 // open Delivery page. The board carries that issue's stored row in its issues map, so the write
 // is recomputed and sent as a delta of the one entry, and the recompute sends no freshness frame,
-// because the board reads no delivery row and judges no verdict. The timeline shows neither issue
-// and is sent nothing at all.
+// because the board reads no delivery row and judges no verdict. The first row of an issue the
+// board names nowhere reaches it the same way, as the entry its GET would answer. The timeline
+// shows none of them and is sent nothing at all.
 //
-// It holds the hub to one recompute of the one view the facts name and to none of any other
-// view: the hub recomputes every view when its event feed is taken again, which no write of
-// this test caused, so a second recompute here is a mark this row did not ask for.
+// It holds the hub to one recompute of the board for each write of its project and to none of
+// any other view: the hub recomputes every view when its event feed is taken again, which no
+// write of this test caused, so another recompute here is a mark this row did not ask for.
 func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -146,39 +150,37 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	board.freshness(t, 5*time.Second, "the verdict after the board's first snapshot")
 	rig.settle(t)
 
-	shown := rig.mark()
+	// INFRA-4 is on the board's cards, and INFRA-99 on none and with no row before its write.
 	workedAt := rig.clock.Now().Add(-5 * time.Hour)
-	writeIssueFacts(t, rig.database, "INFRA", "INFRA-4", workedAt, workedAt.Add(time.Hour))
-	rig.hub.catchUpNow()
-	rig.waitFor(t, shown, 5*time.Second, "a recompute of the board the issue is on", recomputeOfView(t, boardFrame))
-	delta := board.delta(t, 5*time.Second, "b")
-	entry, sent := delta.Maps["issues"]["INFRA-4"]
-	if !sent {
-		t.Fatalf("the delta carries the issues entries %v, want INFRA-4's", delta.Maps["issues"])
+	for _, issue := range []string{"INFRA-4", "INFRA-99"} {
+		shown := rig.mark()
+		writeIssueFacts(t, rig.database, "INFRA", issue, workedAt, workedAt.Add(time.Hour))
+		rig.hub.catchUpNow()
+		rig.waitFor(t, shown, 5*time.Second, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
+		delta := board.delta(t, 5*time.Second, "b")
+		if _, sent := delta.Maps["issues"][issue]; !sent {
+			t.Fatalf("the delta after the facts write of %s carries the issues entries %v, want %s's", issue, delta.Maps["issues"], issue)
+		}
+		board.none(t, viewMaxWait, "the delta of the facts write of "+issue+", which carries no freshness verdict")
+		boardRecomputes := rig.count(shown, recomputeOfView(t, boardFrame))
+		if allRecomputes := rig.count(shown, recomputeBegin(deliveryCauseChange)); boardRecomputes != 1 || allRecomputes != 1 {
+			t.Errorf("the facts write of %s recomputed the board %d times and %d views in all, want the board once and no other view",
+				issue, boardRecomputes, allRecomputes)
+		}
 	}
-	board.none(t, viewMaxWait, "the delta of the facts write, which carries no freshness verdict")
-	timeline.none(t, viewMaxWait, "the facts write of an issue the timeline does not show")
+	timeline.none(t, viewMaxWait, "the facts writes of issues the timeline does not show")
 
-	// An issue no open view shows leaves the hub idle and tells no page anything.
-	writeIssueFacts(t, rig.database, "INFRA", "INFRA-99", workedAt, workedAt.Add(time.Hour))
+	// A row of a project no open view shows leaves the hub idle and tells no page anything.
+	idle := rig.mark()
+	writeIssueFacts(t, rig.database, "OPS", "OPS-1", workedAt, workedAt.Add(time.Hour))
 	rig.hub.catchUpNow()
 	rig.waitNoRecompute(t, viewMaxWait)
-	board.none(t, time.Second, "the facts write of an issue no view shows")
-	timeline.none(t, time.Second, "the facts write of an issue no view shows")
-
-	// The count this row's head says it takes: the one view the facts name was recomputed once,
-	// and no other view at all.
-	boardRecomputes := rig.count(shown, recomputeOfView(t, boardFrame))
-	allRecomputes := rig.count(shown, recomputeBegin(deliveryCauseChange))
-	if boardRecomputes != 1 {
-		t.Errorf("the two facts writes recomputed the board %d times, want the one the first write caused", boardRecomputes)
+	board.none(t, time.Second, "the facts write of a project no view shows")
+	timeline.none(t, time.Second, "the facts write of a project no view shows")
+	if n := rig.count(idle, recomputeBegin(deliveryCauseChange)); n != 0 {
+		t.Errorf("the facts write of another project recomputed %d views, want none", n)
 	}
-	if allRecomputes != boardRecomputes {
-		t.Errorf("the two facts writes recomputed %d views, of which %d were the board: want the board alone",
-			allRecomputes, boardRecomputes)
-	}
-	t.Logf("INFRA-4's facts: %d board recompute(s) and %d recompute(s) of every view, 1 delta carrying its entry (%s) and no freshness frame, 0 frames to the timeline; INFRA-99's facts: the hub went quiet and sent 0 frames",
-		boardRecomputes, allRecomputes, entry)
+	t.Log("the facts writes of INFRA-4, on a card, and INFRA-99, on none, each recomputed the board once and sent it one delta carrying its entry and no freshness frame, and sent the timeline nothing; a write of OPS-1 recomputed nothing and sent nothing")
 }
 
 // batchRows is how many stored facts rows one whole read of a project of INFRA's size rewrites:
@@ -224,8 +226,8 @@ func writeFactsBatch(t *testing.T, database *store.Store, project string, count 
 // until the test moves the clock, and what the hub does then is the measurement.
 //
 // The rows are written once before the subscription, so the board's first answer names every one
-// of them: a facts write of an issue the view's last answer does not name marks nothing
-// (showsIssue), and a batch of such writes would measure the empty case.
+// of them and the batch rewrites rows the board already shows, which is what a build's whole
+// read of a project that already holds rows writes, and the delta carries every entry it moved.
 func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)

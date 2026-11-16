@@ -95,6 +95,51 @@ func TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex(t *testing.T) {
 	t.Logf("of 20,000 rows of five projects recorded under the running build, the read answered %v through %v", other, scans)
 }
 
+// TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex: the read of the filings another build
+// wrote (otherBuildsFilingsQuery), which the same pages make, reaches issue_filings through
+// issue_filings_written_build (migration 20261116151147) and never scans the table, on an analyzed
+// store of five projects of 4,000 filings each, every project recorded under the running build and
+// three filings of one written by another.
+func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
+	ctx := t.Context()
+	pool := factsDatabase(t)
+	const running = "legion-envoy-running"
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee)
+		select project, project, 'alice' from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project;
+		insert into issue_facts_computed (project_key, computed_at, computed_rows, computed_build)
+		select project, now(), 4000, 'legion-envoy-running' from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project;
+		insert into issue_filings (issue_key, project_key, filed_at, filer_role, class, written_build)
+		select project || '-' || n, project, now() - make_interval(hours => n), 'architect', 'out_of_tree',
+		       case when project = 'FC' and n <= 3 then 'legion-envoy-older' else 'legion-envoy-running' end
+		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 4000) as n;
+		analyze issue_filings;
+		analyze issue_facts_computed;
+	`); err != nil {
+		t.Fatalf("seed the filings: %v", err)
+	}
+	other, err := otherBuildsFilings(ctx, pool, running)
+	if err != nil {
+		t.Fatalf("otherBuildsFilings: %v", err)
+	}
+	if want := []string{"FC-1", "FC-2", "FC-3"}; len(other) != 1 || !slices.Equal(other["FC"], want) {
+		t.Errorf("the filings another build wrote are %v, want %v of FC alone", other, want)
+	}
+	var raw []byte
+	if err := pool.QueryRow(ctx, "explain (format json) "+otherBuildsFilingsQuery, running).Scan(&raw); err != nil {
+		t.Fatalf("explain otherBuildsFilings: %v", err)
+	}
+	plan := explaintest.OnePlan(t, raw)
+	if explaintest.SeqScansRelation(t, plan, "issue_filings") {
+		t.Fatalf("the read of the filings another build wrote scans issue_filings sequentially; want ranges of issue_filings_written_build:\n%s", plan)
+	}
+	scans := explaintest.IndexScans(t, plan)
+	if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_filings_written_build" }) {
+		t.Fatalf("the read of the filings another build wrote reads %v; want issue_filings_written_build:\n%s", scans, plan)
+	}
+	t.Logf("of 20,000 filings of five projects recorded under the running build, the read answered %v through %v", other, scans)
+}
+
 // TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan: the read of a project's stored filings
 // whose filed issue or filer's issue a pass recomputes (storedFilingsOfQuery) reaches issue_filings
 // through its primary key and through issue_filings_filer (migration 20261113082155) under the

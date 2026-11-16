@@ -23,19 +23,28 @@ import (
 // stamps to find the rows another build wrote during a roll (otherBuildsRows). A caller outside
 // the consumer's loop, a test or a fixture, may leave it empty: the consumer then reads such a
 // row as another build's and computes it again.
+//
+// Yielded says the project's record names a newer build than Build, rolling in while this one
+// still serves (legionProjects). Such a write deletes no row: a row Build's rule computes none for
+// may be one the newer build's rule keeps, and once deleted it would leave no row of Build's for
+// the newer build to find and compute again (otherBuildsRows), so it would stay missing until an
+// input named its issue. The write stamps each row it would have deleted with Build instead, and
+// the newer build's next pass computes it again and keeps or deletes it by its own rule.
 type ProjectWrite struct {
 	Project string
 	Rows    []Row
 	Stated  []string
 	Whole   bool
 	Build   string
+	Yielded bool
 }
 
 // WriteProject writes one project's computed facts: it upserts the rows the computation answered
 // (upsert) and deletes the stored rows inside the stated set the computation answered none for
-// (deleteStaleRows, or deleteStaleProjectRows for a pass that read the project whole). It answers
-// every key whose stored row moved, the keys it deleted after the keys it wrote, because a row
-// that went is a change of the stored facts as much as a row that moved.
+// (deleteStaleRows, or deleteStaleProjectRows for a pass that read the project whole), or stamps
+// them where the write is Yielded. It answers every key whose stored row moved, the keys it
+// deleted or stamped after the keys it wrote, because a row that went is a change of the stored
+// facts as much as a row that moved.
 //
 // A stored row means Legion worked the issue (dispatch://INFRA-2915), and an issue loses its
 // phase work as well as gains it: a session's newest title decides which issue that session's
@@ -55,9 +64,9 @@ func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string,
 	kept := computedKeys(write.Rows)
 	deleted := []string{}
 	if write.Whole {
-		deleted, err = deleteStaleProjectRows(ctx, q, write.Project, kept)
+		deleted, err = deleteStaleProjectRows(ctx, q, write, kept)
 	} else {
-		deleted, err = deleteStaleRows(ctx, q, write.Project, write.Stated, kept)
+		deleted, err = deleteStaleRows(ctx, q, write, kept)
 	}
 	if err != nil {
 		return nil, err
@@ -70,21 +79,30 @@ func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string,
 // the filed issues the pass computed filings over, inside which it may delete a stale filing,
 // and Whole says the pass read every filing a Legion session of the project made (a whole read
 // of the project, ComputeProject), whose Stated is therefore empty.
+//
+// Build and Yielded are ProjectWrite's, for the filings: each filing written records Build as the
+// build that wrote it (written_build), which the build a project's record names reads to compute
+// again the filings another build wrote (otherBuildsFilings), and a Yielded write deletes no
+// filing but stamps each it would have deleted with Build, since the rule that decides whose
+// filing an issue is lives in the build as the phase-work rule does.
 type FilingsWrite struct {
 	Project string
 	Filings []Filing
 	Stated  []string
 	Whole   bool
+	Build   string
+	Yielded bool
 }
 
 // WriteFilings writes one project's computed filings, as WriteProject writes its rows: it upserts
 // the filings the computation answered (upsertFilings) and deletes the project's stored filings
-// inside the stated set the computation answered none for (deleteStaleFilings). A stored filing
-// goes when the session that filed it is no Legion session of the project any more, as its
-// newest title reads, and its row moves when its class, its filer's phase or the filed issue's
-// tree does. The consumer's pass makes it in the transaction that writes the same pass's rows.
+// inside the stated set the computation answered none for (deleteStaleFilings), or stamps them
+// where the write is Yielded. A stored filing goes when the session that filed it is no Legion
+// session of the project any more, as its newest title reads, and its row moves when its class,
+// its filer's phase or the filed issue's tree does. The consumer's pass makes it in the
+// transaction that writes the same pass's rows.
 func WriteFilings(ctx context.Context, q Querier, write FilingsWrite) error {
-	if err := upsertFilings(ctx, q, write.Project, write.Filings); err != nil {
+	if err := upsertFilings(ctx, q, write.Project, write.Build, write.Filings); err != nil {
 		return err
 	}
 	return deleteStaleFilings(ctx, q, write)
@@ -130,10 +148,9 @@ func computedKeys(rows []Row) []string {
 // updated_at is the row's own UpdatedAt, the moment it was written; a row that carries none takes
 // the moment this write started. A row that carries no AsOf stores none, which a reader closes at
 // the row's updated_at, so writing such a row again with another UpdatedAt moves nothing a
-// comparison reads. A waiting reason of "" is
-// stored as null, the column's "waits on nothing": the rule never answers an empty reason, so the
-// two cannot be confused. A repository of "" is stored as null the same way, the column's "none
-// resolves".
+// comparison reads. A waiting reason of "" is stored as null, the column's "waits on nothing":
+// the rule never answers an empty reason, so the two cannot be confused. A repository of "" is
+// stored as null the same way, the column's "none resolves".
 func upsert(ctx context.Context, q Querier, project, build string, rows []Row) ([]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -331,18 +348,22 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 // stands.
 
 // deleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
-// answers the keys it deleted. It is the deletion of a pass that computed a set of keys: stated
-// is the set the pass considered, computed is the keys its computation answered rows for, and no
-// row outside stated is read at all.
-func deleteStaleRows(ctx context.Context, q Querier, project string, stated, computed []string) ([]string, error) {
-	if len(stated) == 0 {
+// answers the keys it deleted. It is the deletion of a pass that computed a set of keys: the
+// write's Stated is the set the pass considered, computed is the keys its computation answered
+// rows for, and no row outside Stated is read at all. A Yielded write stamps those rows with its
+// build instead, and answers the keys it stamped (ProjectWrite.Yielded).
+func deleteStaleRows(ctx context.Context, q Querier, write ProjectWrite, computed []string) ([]string, error) {
+	if len(write.Stated) == 0 {
 		return nil, nil
 	}
-	return deleteRows(ctx, q, project, `
-		delete from issue_facts
-		where project_key = $1 and issue_key = any($2) and not (issue_key = any($3))
-		returning issue_key
-	`, project, stated, computed)
+	const where = `where project_key = $1 and issue_key = any($2) and not (issue_key = any($3))`
+	if write.Yielded {
+		return deleteRows(ctx, q, write.Project,
+			`update issue_facts set written_build = $4 `+where+` and written_build <> $4 returning issue_key`,
+			write.Project, write.Stated, computed, write.Build)
+	}
+	return deleteRows(ctx, q, write.Project, `delete from issue_facts `+where+` returning issue_key`,
+		write.Project, write.Stated, computed)
 }
 
 // deleteStaleProjectRows deletes the stored rows of the project that computed holds no row for,
@@ -350,37 +371,43 @@ func deleteStaleRows(ctx context.Context, q Querier, project string, stated, com
 // (ComputeProject), whose stated set is every issue the project has, because that is the
 // population such a computation reads (metrics.ReadProject). A stored row whose key names no
 // issue of the project was therefore computed by nothing, and this deletion leaves it where it
-// stands.
-func deleteStaleProjectRows(ctx context.Context, q Querier, project string, computed []string) ([]string, error) {
-	return deleteRows(ctx, q, project, `
-		delete from issue_facts
-		where project_key = $1 and not (issue_key = any($2))
+// stands. A Yielded write stamps those rows with its build instead, and answers the keys it
+// stamped (ProjectWrite.Yielded).
+func deleteStaleProjectRows(ctx context.Context, q Querier, write ProjectWrite, computed []string) ([]string, error) {
+	const where = `where project_key = $1 and not (issue_key = any($2))
 		  and exists (select 1 from issues
-		              where issues.project_key = $1 and issues.key = issue_facts.issue_key)
-		returning issue_key
-	`, project, computed)
+		              where issues.project_key = $1 and issues.key = issue_facts.issue_key)`
+	if write.Yielded {
+		return deleteRows(ctx, q, write.Project,
+			`update issue_facts set written_build = $3 `+where+` and written_build <> $3 returning issue_key`,
+			write.Project, computed, write.Build)
+	}
+	return deleteRows(ctx, q, write.Project, `delete from issue_facts `+where+` returning issue_key`,
+		write.Project, computed)
 }
 
-// deleteRows runs one of the two deletions and answers the keys it deleted, in the order
-// Postgres deleted them. Each row it deletes logs a delivery change of kind issue_facts carrying
-// that row's day span, which the table's own trigger writes on a delete as it does on a write
-// (migration 20261111093100), so every reader of the facts is told the row went.
+// deleteRows runs one of the two deletions, or the stamp a Yielded write makes in its place, and
+// answers the keys it deleted or stamped, in the order Postgres took them. Each row it deletes or
+// stamps logs a delivery change of kind issue_facts carrying that row's day span, which the
+// table's own trigger writes on a delete as it does on a write (migration 20261111093100), so
+// every reader of the facts is told the row went, and the build a stamp hands the row to is woken
+// to compute it again.
 func deleteRows(ctx context.Context, q Querier, project, statement string, args ...any) ([]string, error) {
 	result, err := q.Query(ctx, statement, args...)
 	if err != nil {
-		return nil, fmt.Errorf("delete the stale Legion facts of %s: %w", project, err)
+		return nil, fmt.Errorf("delete or stamp the stale Legion facts of %s: %w", project, err)
 	}
 	defer result.Close()
 	deleted := []string{}
 	for result.Next() {
 		var key string
 		if err := result.Scan(&key); err != nil {
-			return nil, fmt.Errorf("delete the stale Legion facts of %s: %w", project, err)
+			return nil, fmt.Errorf("delete or stamp the stale Legion facts of %s: %w", project, err)
 		}
 		deleted = append(deleted, key)
 	}
 	if err := result.Err(); err != nil {
-		return nil, fmt.Errorf("delete the stale Legion facts of %s: %w", project, err)
+		return nil, fmt.Errorf("delete or stamp the stale Legion facts of %s: %w", project, err)
 	}
 	return deleted, nil
 }
@@ -398,8 +425,8 @@ func storedMap[V any](values map[string]V) map[string]V {
 // Read answers the stored rows of a project, by issue key, each as of at (Row.At). It is the
 // board's read of the facts: rows, and no computation but the close of each open part at the
 // read's own clock, and of each row the columns the board shows (boardColumns), every other field
-// of the Row it answers left at its zero value. The evals read every column of the rows of a
-// window's closed issues instead (ReadClosedIn).
+// of the Row it answers left at its zero value (narrow). The evals read every column of the rows
+// of a window's closed issues instead (ReadClosedIn).
 func Read(ctx context.Context, q Querier, project string, at time.Time) (map[string]Row, error) {
 	read, err := readRows(ctx, q, project, false, `where project_key = $1`, project)
 	if err != nil {
@@ -407,7 +434,7 @@ func Read(ctx context.Context, q Querier, project string, at time.Time) (map[str
 	}
 	rows := make(map[string]Row, len(read))
 	for _, row := range read {
-		rows[row.Issue] = row.At(at)
+		rows[row.Issue] = row.At(at).narrow()
 	}
 	return rows, nil
 }
@@ -514,11 +541,27 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	return row, nil
 }
 
-// upsertFilings writes the filings of the project, in one statement as upsert writes the rows. A
-// filing whose stored values already match is left alone, and a filing a session of another
-// project made of the same issue before is moved to this one, since issue_key is the table's
-// identity and the newest title of the filing session is what says whose filing it is.
-func upsertFilings(ctx context.Context, q Querier, project string, filings []Filing) error {
+// narrow is row with every field of wideColumns at its zero value, which is the row the board's
+// read answers (Read) once At has closed it at the read's clock. At grows every fact the row's
+// growth names, and the board's read loaded none of these, so one of them that grows - the
+// parked, queued or slot-wait hours of an open issue, its hours after the first review - would
+// otherwise hold its rate times the hours elapsed, grown from a zero the read never loaded.
+func (row Row) narrow() Row {
+	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = 0, 0, nil, nil
+	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = nil, nil, 0, false
+	row.ImplementingAfterFirstReview, row.TestingAfterFirstReview = 0, 0
+	row.Children, row.Repo = 0, ""
+	return row
+}
+
+// upsertFilings writes the filings of the project under build, in one statement as upsert writes
+// the rows. A filing whose stored values already match is left alone, and a filing a session of
+// another project made of the same issue before is moved to this one, since issue_key is the
+// table's identity and the newest title of the filing session is what says whose filing it is.
+// The build is compared with the rest, as upsert compares a row's: a filing another build wrote
+// is rewritten by the build that computes it, so its stamp says which rule it was last computed
+// by (otherBuildsFilings).
+func upsertFilings(ctx context.Context, q Querier, project, build string, filings []Filing) error {
 	if len(filings) == 0 {
 		return nil
 	}
@@ -543,9 +586,9 @@ func upsertFilings(ctx context.Context, q Querier, project string, filings []Fil
 	}
 	if err := exec(ctx, q, `
 		insert into issue_filings (issue_key, project_key, filed_at, filer_role, filer_issue,
-			filer_phase, class, root_key)
+			filer_phase, class, root_key, written_build)
 		select given.issue_key, $1, given.filed_at, given.filer_role, given.filer_issue,
-		       given.filer_phase, given.class, given.root_key
+		       given.filer_phase, given.class, given.root_key, $9
 		from unnest($2::text[], $3::timestamptz[], $4::text[], $5::text[], $6::text[],
 		            $7::text[], $8::text[])
 			as given(issue_key, filed_at, filer_role, filer_issue, filer_phase, class, root_key)
@@ -556,14 +599,16 @@ func upsertFilings(ctx context.Context, q Querier, project string, filings []Fil
 			filer_issue = excluded.filer_issue,
 			filer_phase = excluded.filer_phase,
 			class = excluded.class,
-			root_key = excluded.root_key
+			root_key = excluded.root_key,
+			written_build = excluded.written_build
 		where (issue_filings.project_key, issue_filings.filed_at, issue_filings.filer_role,
 		       issue_filings.filer_issue, issue_filings.filer_phase, issue_filings.class,
-		       issue_filings.root_key)
+		       issue_filings.root_key, issue_filings.written_build)
 		  is distinct from
 		      (excluded.project_key, excluded.filed_at, excluded.filer_role,
-		       excluded.filer_issue, excluded.filer_phase, excluded.class, excluded.root_key)
-	`, project, keys, filedAt, roles, filers, phases, classes, roots); err != nil {
+		       excluded.filer_issue, excluded.filer_phase, excluded.class, excluded.root_key,
+		       excluded.written_build)
+	`, project, keys, filedAt, roles, filers, phases, classes, roots, build); err != nil {
 		return fmt.Errorf("write the Legion filings of %s: %w", project, err)
 	}
 	return nil
@@ -585,26 +630,32 @@ func exec(ctx context.Context, q Querier, statement string, args ...any) error {
 // its computation answered none for, by the rule the two deletions of the rows keep: a pass
 // deletes only inside what it computed over. A pass that read every filing of the project
 // stated all of them; any other stated the filed issues it was given (filingsToCompute). A
-// filing another project's session made is that project's row, which this never reads.
+// filing another project's session made is that project's row, which this never reads. A
+// Yielded write stamps those filings with its build instead (FilingsWrite.Yielded).
 func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) error {
 	kept := make([]string, len(write.Filings))
 	for index, filing := range write.Filings {
 		kept[index] = filing.Issue
 	}
-	var err error
+	var where string
+	args := []any{write.Project, kept}
 	switch {
 	case write.Whole:
-		err = exec(ctx, q, `
-			delete from issue_filings where project_key = $1 and not (issue_key = any($2))
-		`, write.Project, kept)
+		where = `where project_key = $1 and not (issue_key = any($2))`
 	case len(write.Stated) > 0:
-		err = exec(ctx, q, `
-			delete from issue_filings
-			where project_key = $1 and issue_key = any($2) and not (issue_key = any($3))
-		`, write.Project, write.Stated, kept)
+		where = `where project_key = $1 and not (issue_key = any($2)) and issue_key = any($3)`
+		args = append(args, write.Stated)
+	default:
+		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("delete the stale Legion filings of %s: %w", write.Project, err)
+	statement := `delete from issue_filings ` + where
+	if write.Yielded {
+		build := fmt.Sprintf("$%d", len(args)+1)
+		statement = `update issue_filings set written_build = ` + build + ` ` + where + ` and written_build <> ` + build
+		args = append(args, write.Build)
+	}
+	if err := exec(ctx, q, statement, args...); err != nil {
+		return fmt.Errorf("delete or stamp the stale Legion filings of %s: %w", write.Project, err)
 	}
 	return nil
 }

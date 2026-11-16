@@ -30,8 +30,8 @@
 --   updated_at      when the consumer last wrote the row, which is how fresh the served facts
 --                   are. The row holds the facts as of that moment, never as of the read.
 --
--- issue_facts_open serves the sweep's read of the open rows, which ran every half minute over a
--- table that grows with every issue Legion ever worked (20261116151147 ended it): `select
+-- issue_facts_open serves the sweep's read of the open rows, which runs every
+-- legionfacts.SweepEvery over a table that grows with every issue Legion ever worked: `select
 -- project_key, issue_key from issue_facts where closed_at is null`. It holds the two columns
 -- that read answers, over the open rows alone, so the read takes it index-only and never grows
 -- with the closed rows. The primary key serves the read of one project's rows.

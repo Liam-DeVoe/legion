@@ -448,11 +448,14 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
 		// One issue's stored Legion facts, which the Legion board is the one reader of
-		// (legionfacts.Read). No other kind of view reads a facts row, so a board that shows the
-		// issue is woken and every delivery view is left: a build's whole read rewrites every row
-		// of a project whose values or writer moved, and a timeline, measures or pipeline answer
-		// cannot move when one does.
-		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
+		// (legionfacts.Read). The board's read takes every row of its project, so a row of an
+		// issue the board names nowhere yet - the first row of an issue, a row a build's whole
+		// read writes - moves its answer as a row of an issue it does name does: the change marks
+		// the board of its project, which the trigger carries in the change's repo (migration
+		// 20261115155340). No other kind of view reads a facts row, so every delivery view is
+		// left: a build's whole read rewrites every row of a project whose values or writer
+		// moved, and a timeline, measures or pipeline answer cannot move when one does.
+		return view.spec.kind == legionBoardView && view.spec.project == change.Repo
 	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
 		// One eval's readings, a new version of its definition, or its day rows: what the evals
 		// view of the eval's project reads (readEvalList). The change's repo holds that project

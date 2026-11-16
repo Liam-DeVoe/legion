@@ -181,42 +181,23 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 	rows := make([]Row, 0, len(keys))
 	for _, key := range keys {
 		fact := facts[key]
-		rows = append(rows, Row{
-			Project:                      project,
-			Issue:                        key,
-			OpenedAt:                     fact.OpenedAt,
-			ClosedAt:                     fact.ClosedAt,
-			HoursByPhase:                 fact.PhaseHours,
-			WorkHours:                    fact.WorkHours,
-			ReviewRounds:                 fact.ReviewRounds,
-			RootKey:                      fact.Tree,
-			TreeDepth:                    fact.TreeDepth,
-			SlotHours:                    fact.SlotHours,
-			WaitingReason:                reasonOf(line, population.Issues[key]),
-			WorkFirstAt:                  fact.WorkFirstAt,
-			WorkLastAt:                   fact.WorkLastAt,
-			ParkedHours:                  fact.ParkedHours,
-			QueuedHours:                  fact.QueuedHours,
-			StartedAt:                    fact.StartedAt,
-			MergedAt:                     fact.MergedAt,
-			Bars:                         fact.Bars,
-			IdleByRole:                   fact.IdleByRole,
-			SlotWaitHours:                fact.SlotWaitHours,
-			SentBack:                     fact.SentBack,
-			ImplementingAfterFirstReview: fact.ImplementingHoursAfterFirstReview,
-			TestingAfterFirstReview:      fact.TestingHoursAfterFirstReview,
-			Children:                     fact.Children,
-			Repo:                         repos[key],
-			AsOf:                         fact.AsOf,
-			Growth:                       fact.Growth,
-			UpdatedAt:                    now,
-		})
+		row := Row{
+			Project:       project,
+			Issue:         key,
+			WaitingReason: reasonOf(line, population.Issues[key]),
+			Repo:          repos[key],
+			AsOf:          fact.AsOf,
+			Growth:        fact.Growth,
+			UpdatedAt:     now,
+		}
+		row.SetFacts(fact.IssueFacts)
+		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
 // Facts is row as the Legion day builders read it: the facts metrics.ProjectFactsClosed computed
-// of the issue, which the row holds column for column (rowsOf writes them the other way), as of
+// of the issue, which the row holds column for column (SetFacts writes them the other way), as of
 // the moment the row is of (AsOf, which a reader moves to its own clock with At).
 func (row Row) Facts() metrics.IssueFacts {
 	return metrics.IssueFacts{
@@ -228,6 +209,21 @@ func (row Row) Facts() metrics.IssueFacts {
 		TestingHoursAfterFirstReview: row.TestingAfterFirstReview, Children: row.Children,
 		SlotWaitHours: row.SlotWaitHours, IdleByRole: row.IdleByRole,
 	}
+}
+
+// SetFacts writes an issue's facts into row, column for column: the reverse of Facts, and the one
+// list of the fact columns a row takes its facts by, whether a pass writes them (rowsOf) or a
+// reader closes them at its own clock (At). Root is no column: Facts reads it from RootKey, which
+// Tree sets. Every other field of row is left as it was.
+func (row *Row) SetFacts(facts metrics.IssueFacts) {
+	row.OpenedAt, row.ClosedAt, row.HoursByPhase, row.WorkHours = facts.OpenedAt, facts.ClosedAt, facts.PhaseHours, facts.WorkHours
+	row.ReviewRounds, row.RootKey, row.TreeDepth, row.SlotHours = facts.ReviewRounds, facts.Tree, facts.TreeDepth, facts.SlotHours
+	row.WorkFirstAt, row.WorkLastAt = facts.WorkFirstAt, facts.WorkLastAt
+	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = facts.ParkedHours, facts.QueuedHours, facts.StartedAt, facts.MergedAt
+	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = facts.Bars, facts.IdleByRole, facts.SlotWaitHours, facts.SentBack
+	row.ImplementingAfterFirstReview = facts.ImplementingHoursAfterFirstReview
+	row.TestingAfterFirstReview = facts.TestingHoursAfterFirstReview
+	row.Children = facts.Children
 }
 
 // filingsOf turns the population's filings into rows, classified by metric 4's own rule

@@ -419,21 +419,21 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
 // reopened issues' asks (api.RunIssueAskRepair), the Legion sampler's read of each project's
 // daemon (legion.RunSampler, one pass a minute, one process at a time), the per-issue Legion facts
-// (legionfacts.Lease, a pass on each of its three feeds' wakes and every 30 s for the open
-// issues), the eval day rows (evals.RefresherLease, eval-days, a pass on each of its two feeds'
-// wakes, at each new UTC day and at once while a walk of the days has days left, whose first pass
-// in a process also seeds every project's evals), one per delivery durable for the intake's
-// take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
-// server process registry's prune (processes.RunPrune), the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.fillLease) - one caller
-// each, since each intake takes its own durable's name from its own goroutine, so each of them can
-// be inside Exclusive at once. The fill is the one that is no loop of a cadence: it labels in a
-// single pass of one to two hours, holds its connection for the whole of it, tries for its lease
-// again every five minutes while another process makes that pass, and gives the connection back
-// for good once the rows stored before migration 20261109120000 are labelled, so it is counted
-// here like any other caller. The suggestion outcome sweep is not among them: it takes no lease,
-// since the cursor row each of its pages holds for update serialises two processes by itself
-// (api/suggestion_outcomes.go).
+// (legionfacts.Lease, a pass on each of its three feeds' wakes, and one PassGap after a pass that
+// failed or whose safe horizon held an event back), the eval day rows (evals.RefresherLease,
+// eval-days, a pass on each of its two feeds' wakes, at each new UTC day and at once while a walk
+// of the days has days left, whose first pass in a process also seeds every project's evals), one
+// per delivery durable for the intake's take-over (delivery.consumerLease, a name each for
+// delivery-events and delivery-jobs) and the server process registry's prune
+// (processes.RunPrune), the embeddings project_key fill (api.RunEmbeddingProjectKeyFill) and the
+// display tree fill (texttreefill.fillLease) - one caller each, since each intake takes its own
+// durable's name from its own goroutine, so each of them can be inside Exclusive at once. The
+// fill is the one that is no loop of a cadence: it labels in a single pass of one to two hours,
+// holds its connection for the whole of it, tries for its lease again every five minutes while
+// another process makes that pass, and gives the connection back for good once the rows stored
+// before migration 20261109120000 are labelled, so it is counted here like any other caller. The
+// suggestion outcome sweep is not among them: it takes no lease, since the cursor row each of its
+// pages holds for update serialises two processes by itself (api/suggestion_outcomes.go).
 //
 // Each of the two intakes also holds its durable's hold, whose every statement is one statement
 // on a connection of this pool for that statement alone. Two can be in flight per intake at once:

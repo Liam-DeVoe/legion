@@ -12,7 +12,8 @@ import "time"
 // grown by its rate over the time between (metrics.IssueFacts.Grown), a bar still open ending at
 // now, and AsOf moved to now. That is what the computation answers run at now over the same
 // inputs (metrics.ProjectFacts), since no input of the issue is newer than AsOf. Every other
-// field is the row's own, and a row with no growth, a closed issue's, reads as stored.
+// field is the row's own, and a row with no growth reads as stored: a closed issue's, but for a
+// slot it never gave up, whose hours run to the computation's end (metrics.Growth).
 //
 // A now at or before AsOf answers the row as stored: a reader whose clock stands behind the
 // writer's reads the facts as of the newest input rather than shrinking them. A day builder that
@@ -23,14 +24,7 @@ func (row Row) At(now time.Time) Row {
 	if len(row.Growth) == 0 || !now.After(row.AsOf) {
 		return row
 	}
-	elapsed := now.Sub(row.AsOf)
+	row.SetFacts(row.Facts().Grown(row.Growth, now.Sub(row.AsOf)))
 	row.AsOf = now
-	grown := row.Facts().Grown(row.Growth, elapsed)
-	row.HoursByPhase, row.WorkHours, row.SlotHours = grown.PhaseHours, grown.WorkHours, grown.SlotHours
-	row.WorkFirstAt, row.WorkLastAt = grown.WorkFirstAt, grown.WorkLastAt
-	row.ParkedHours, row.QueuedHours, row.SlotWaitHours = grown.ParkedHours, grown.QueuedHours, grown.SlotWaitHours
-	row.Bars, row.IdleByRole = grown.Bars, grown.IdleByRole
-	row.ImplementingAfterFirstReview = grown.ImplementingHoursAfterFirstReview
-	row.TestingAfterFirstReview = grown.TestingHoursAfterFirstReview
 	return row
 }

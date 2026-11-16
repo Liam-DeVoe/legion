@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"iter"
 	"slices"
 	"time"
 
@@ -164,17 +165,30 @@ type IssueFacts struct {
 func ProjectFacts(population *Population, wanted map[string]bool) map[string]IssueFacts {
 	c := newComputation(population)
 	out := map[string]IssueFacts{}
-	for _, key := range population.Keys {
-		if wanted != nil && !wanted[key] {
-			continue
-		}
-		issue := population.Issues[key]
-		if issue == nil || !population.hasPhaseWork(issue) {
-			continue
-		}
-		out[key] = c.factsOf(issue)
+	for issue := range population.factsIssues(wanted) {
+		out[issue.Key] = c.factsOf(issue)
 	}
 	return out
+}
+
+// factsIssues is the issues ProjectFacts answers facts for, in key order: every issue of the
+// population with Legion phase work that wanted names, every one where wanted is nil. It is the
+// one selection of them, which ProjectFactsClosed makes too, so the two answer the same issues.
+func (p *Population) factsIssues(wanted map[string]bool) iter.Seq[*Issue] {
+	return func(yield func(*Issue) bool) {
+		for _, key := range p.Keys {
+			if wanted != nil && !wanted[key] {
+				continue
+			}
+			issue := p.Issues[key]
+			if issue == nil || !p.hasPhaseWork(issue) {
+				continue
+			}
+			if !yield(issue) {
+				return
+			}
+		}
+	}
 }
 
 // factsOf is one issue's facts: ProjectFacts answers them for every issue with Legion phase work,

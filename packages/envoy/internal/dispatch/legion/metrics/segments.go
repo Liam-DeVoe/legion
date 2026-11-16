@@ -57,7 +57,7 @@ type Segments struct {
 	Idle              float64 `json:"idle"`
 }
 
-// segmentsInOrder is the five segments in the precedence's order, idle last.
+// segmentsInOrder is the five segments in the spec's order, idle last.
 var segmentsInOrder = [...]Segment{SegmentWaitingOnPerson, SegmentInATurn, SegmentCIWait, SegmentWaitingOnChildren, SegmentIdle}
 
 // hoursOf is the field of s that holds segment's hours, nil for a name that is no segment: the one
@@ -78,8 +78,8 @@ func (s *Segments) hoursOf(segment Segment) *float64 {
 	return nil
 }
 
-// ByName is each of the bar's five segments and its hours, in the precedence's order with idle
-// last: the names a bar's day part counts its segments under (barCounts), and an items row's
+// ByName is each of the bar's five segments and its hours, in the spec's order with idle last:
+// the names a bar's day part counts its segments under (barCounts), and an items row's
 // columns and a phase-time eval's statistics name them by.
 func (s Segments) ByName() iter.Seq2[Segment, float64] {
 	return func(yield func(Segment, float64) bool) {

@@ -91,8 +91,9 @@ type legionBoardResponse struct {
 // legionfacts.Row holds, less the project the board names and the issue the map is keyed by,
 // closed at the moment of the read (legionfacts.Row.At). Every value is the one the facts
 // consumer computed and stored, and the one thing the board adds to any of them is the growth
-// of an open issue's facts from the newest input they read to the moment of the read, which is
-// what the computation itself answers at that moment.
+// of the facts that still grow, from the newest input they read to the moment of the read, which
+// is what the computation itself answers at that moment: an open issue's, and the slot hours of a
+// closed issue for a slot it never gave up.
 //
 //   - OpenedAt is when the issue was opened.
 //   - ClosedAt is when it closed, null while it is open.
@@ -342,29 +343,36 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	if err := s.legionPhaseWork.ensure(ctx, pool); err != nil {
 		return nil, err
 	}
-	if err := population.readDaemonRead(ctx, pool); err != nil {
+	// The daemon's read, its observations and the project's issues are one chain, since the
+	// issues name the cards the observations made. The stored facts, one read of this project's
+	// rows each closed at now, and the age of the consumer's oldest cursor, which says how
+	// recently it read its feeds, depend on nothing before them, so the three run side by side
+	// (store.ReadSideBySide), as the delivery population's independent reads do (delivery.go).
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) error {
+			if err := population.readDaemonRead(ctx, pool); err != nil {
+				return err
+			}
+			if err := population.readObservations(ctx, pool); err != nil {
+				return err
+			}
+			return population.readIssues(ctx, pool)
+		},
+		func(ctx context.Context) (err error) {
+			population.facts, err = legionfacts.Read(ctx, pool, project, now)
+			return err
+		},
+		func(ctx context.Context) error {
+			age, held, err := legionfacts.CursorAge(ctx, pool, now)
+			if err != nil || !held {
+				return err
+			}
+			seconds := int(age.Seconds())
+			population.cursorAge = &seconds
+			return nil
+		},
+	); err != nil {
 		return nil, err
-	}
-	if err := population.readObservations(ctx, pool); err != nil {
-		return nil, err
-	}
-	if err := population.readIssues(ctx, pool); err != nil {
-		return nil, err
-	}
-	// The stored facts: one read of this project's rows, each closed at now, and the age of the
-	// consumer's oldest cursor, which says how recently it read its feeds.
-	facts, err := legionfacts.Read(ctx, pool, project, now)
-	if err != nil {
-		return nil, err
-	}
-	population.facts = facts
-	age, held, err := legionfacts.CursorAge(ctx, pool, now)
-	if err != nil {
-		return nil, err
-	}
-	if held {
-		seconds := int(age.Seconds())
-		population.cursorAge = &seconds
 	}
 	return population, nil
 }

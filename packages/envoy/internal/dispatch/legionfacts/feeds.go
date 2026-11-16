@@ -26,15 +26,15 @@ import (
 // pages is what one page of a pass read of the three feeds: a page of each, whether this page
 // acts on a change cursor that had fallen below the oldest change the log still holds (lost),
 // whether a feed holds more rows, which makes the pass read another page at once (more), and
-// whether that page must carry a first page's work, because this one met a lost change cursor it
-// may not answer and held it (first, readPages).
+// whether that page must carry the work no feed names, because this one met a lost change cursor
+// it may not answer and held it (unfed, readPages).
 type pages struct {
 	events       feed
 	observations feed
 	changes      feed
 	lost         bool
 	more         bool
-	first        bool
+	unfed        bool
 }
 
 // readPages is one page of each of the three feeds, read from where each cursor stands.
@@ -48,24 +48,24 @@ type pages struct {
 // - about 813 pages of a log the size of INFRA's - while the rows they named waited behind it.
 //
 // A change cursor whose own row the log no longer holds is answered by computing every project
-// whole, which covers every change the log ever held. The first page of a pass is the page that
-// carries that whole read (passPage), so a first page is the only page that may move this
-// cursor.
+// whole, which covers every change the log ever held. The page that carries the work no feed
+// names (unfed, passPage) is the page that carries that whole read, so it is the only page that
+// may move this cursor.
 //
-// On a first page the cursor moves to the head of the change log rather than to the end of the
+// On such a page the cursor moves to the head of the change log rather than to the end of the
 // page it read. The whole read leaves nothing below the head to read, and a cursor left where it
 // stood would read lost again on the next pass and compute every project whole on every pass for
 // as long as no change commits.
 //
 // Any other page leaves the cursor where it stood and answers that the page after it must carry
-// a first page's work (pages.first), which the pass reads at once. readChangePage has already
+// the work no feed names (pages.unfed), which the pass reads at once. readChangePage has already
 // moved the position it answers past the pruned gap, to the first change the log still holds, so
 // a page that wrote that position back would take the loss away from every later page: the next
 // would read a change that exists and answer lost false. The pruned gap's rows would then stay
 // stale for ever, since a pull request merged inside the gap is read by no page and no pass
 // computes a row its feeds did not name. The issues that page's own changes named are kept and
 // computed, which is work the next page makes again from the held cursor.
-func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe int64, limit int, first bool) (pages, error) {
+func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe int64, limit int, unfed bool) (pages, error) {
 	if len(cursors) == 0 {
 		return readFeedHeads(ctx, q, safe)
 	}
@@ -85,9 +85,9 @@ func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe in
 		read.more = read.more || read.changes.full
 		return read, nil
 	}
-	if !first {
+	if !unfed {
 		read.changes.position, read.lost = cursors[changesCursor], false
-		read.more, read.first = true, true
+		read.more, read.unfed = true, true
 		return read, nil
 	}
 	head, err := delivery.LatestChangeSeq(ctx, q)

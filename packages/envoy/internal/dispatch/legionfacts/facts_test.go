@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -254,6 +255,62 @@ func boardColumnsOf(row Row) Row {
 		WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt, AsOf: row.AsOf, Growth: row.Growth,
 		UpdatedAt: row.UpdatedAt,
 	}
+}
+
+// TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero: the board's Read loads the columns the
+// board shows and leaves every other field of the row it answers at zero, for an open issue too,
+// whose stored growth names facts the read never loaded. The row here grows each hours fact an
+// hour an hour, its parked, queued and slot-wait hours and its hours after the first review
+// among them, and a read two hours after the row's moment answers the facts the board shows
+// grown by two hours and each of the others at zero, not grown from a zero it never read.
+func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
+	seeded := seed(t, 1)
+	project, issue := seeded.fixture.Project, seeded.fixture.Keys[0]
+	asOf := seeded.now
+	firstWork := asOf.Add(-3 * time.Hour)
+	row := Row{
+		Project: project, Issue: issue, OpenedAt: asOf.Add(-48 * time.Hour), RootKey: issue,
+		HoursByPhase: map[string]float64{"implementing": 2}, WorkHours: 2, SlotHours: 1,
+		WorkFirstAt: &firstWork, WorkLastAt: &asOf,
+		ParkedHours: 1, QueuedHours: 1, SlotWaitHours: 1, ImplementingAfterFirstReview: 1, TestingAfterFirstReview: 1,
+		AsOf: asOf, UpdatedAt: asOf,
+		Growth: metrics.Growth{
+			"work_hours": 1, "phase_hours.implementing": 1, "slot_hours": 1, "work_last_at": 1,
+			"parked_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
+			"implementing_hours_after_first_review": 1, "testing_hours_after_first_review": 1,
+		},
+	}
+	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: []Row{row}, Stated: []string{issue}}); err != nil {
+		t.Fatalf("write the row of %s: %v", issue, err)
+	}
+
+	readAt := asOf.Add(2 * time.Hour)
+	board, err := Read(t.Context(), seeded.database.Pool, project, readAt)
+	if err != nil {
+		t.Fatalf("read the facts as the board does: %v", err)
+	}
+	got, want := board[issue], boardColumnsOf(row.At(readAt))
+	if !sameRow(got, want) {
+		t.Errorf("%s reads back to the board two hours on as\n%s\nwant\n%s", issue, show(got), show(want))
+	}
+	for _, unread := range []struct {
+		name  string
+		hours float64
+	}{
+		{"parked_hours", got.ParkedHours}, {"queued_hours", got.QueuedHours}, {"slot_wait_hours", got.SlotWaitHours},
+		{"implementing_after_first_review", got.ImplementingAfterFirstReview},
+		{"testing_after_first_review", got.TestingAfterFirstReview},
+	} {
+		if unread.hours != 0 {
+			t.Errorf("the board's read of %s answers %s %g two hours on, which it never read: want 0", issue, unread.name, unread.hours)
+		}
+	}
+	if got.WorkHours != 4 {
+		t.Errorf("the board's read of %s answers %g work hours two hours on, want the stored 2 grown to 4", issue, got.WorkHours)
+	}
+	t.Logf("%s read two hours on: work hours %g, slot hours %g, implementing %g; parked %g, queued %g, slot wait %g, after first review %g and %g",
+		issue, got.WorkHours, got.SlotHours, got.HoursByPhase["implementing"], got.ParkedHours, got.QueuedHours,
+		got.SlotWaitHours, got.ImplementingAfterFirstReview, got.TestingAfterFirstReview)
 }
 
 // readWhole is every column of the project's stored rows, by issue key, as ReadClosedIn reads a

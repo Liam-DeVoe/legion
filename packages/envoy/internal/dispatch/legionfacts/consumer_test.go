@@ -1,7 +1,7 @@
 package legionfacts
 
 import (
-	"fmt"
+	"context"
 	"math"
 	"slices"
 	"strings"
@@ -37,9 +37,16 @@ type consumer struct {
 func newConsumer(t *testing.T, trees int) *consumer {
 	t.Helper()
 	seeded := seed(t, trees)
-	run := &consumer{history: seeded, at: seeded.now}
-	run.deps = Deps{Pool: seeded.database.Pool, Build: testBuild, Horizon: events.NewHorizon(seeded.database.Pool)}
-	run.sched = schedule{page: feedPage, now: func() time.Time { return run.at }, started: run.at}
+	return startConsumer(seeded, testBuild, seeded.now)
+}
+
+// startConsumer is a loop of build over the history, with a horizon of its own, whose process
+// started at the moment given, the moment its first pass runs at: the process newConsumer starts,
+// and the second process of a roll, which shares the first one's database (roll_test.go).
+func startConsumer(seeded history, build string, at time.Time) *consumer {
+	run := &consumer{history: seeded, at: at}
+	run.deps = Deps{Pool: seeded.database.Pool, Build: build, Horizon: events.NewHorizon(seeded.database.Pool)}
+	run.sched = schedule{page: feedPage, now: func() time.Time { return run.at }, started: at}
 	return run
 }
 
@@ -52,8 +59,14 @@ func (c *consumer) restart() {
 }
 
 // pass makes one pass as of the consumer's clock and answers the keys whose stored rows it
-// changed, sorted. The pass awaits the event log's safe horizon itself (pass), so it reads every
-// event written before it, as the server's pass reads the event whose commit woke it.
+// changed, sorted.
+//
+// It awaits the event log's safe horizon first, so the pass reads every event written before it,
+// as the server's pass reads the event whose commit woke it. A pass reads the horizon once and
+// waits on nothing (pass), so a pass straight after a write can read a horizon that stands below
+// it, and asks for another a gap on to read it (events.Horizon.HeldBack), which the server's loop
+// runs and a rig would have to run itself. With the horizon awaited no event stands above what the
+// pass reads, and attempt holds the pass to asking for none.
 func (c *consumer) pass(t *testing.T) []string {
 	t.Helper()
 	changed, err := c.attempt(t)
@@ -66,9 +79,15 @@ func (c *consumer) pass(t *testing.T) []string {
 // attempt is pass, with the failure left to the caller: what a check of a pass that fails reads.
 func (c *consumer) attempt(t *testing.T) ([]string, error) {
 	t.Helper()
-	changed, err := pass(t.Context(), c.deps, c.sched)
+	if _, err := c.deps.Horizon.Await(t.Context()); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	changed, next, err := pass(t.Context(), c.deps, c.sched)
 	if err != nil {
 		return nil, err
+	}
+	if !next.IsZero() {
+		t.Errorf("a pass that read every event written before it asks for another at %s, want none", next.UTC())
 	}
 	slices.Sort(changed)
 	return changed, nil
@@ -83,12 +102,11 @@ func (c *consumer) exec(t *testing.T, what, statement string, args ...any) {
 }
 
 // writeEvent writes one event of the issue at the moment given, as a Legion role's session
-// wrote it: the actor carries the session title the phase-work rule reads (legiontest's own
-// session actor), so the event is work of that issue.
+// wrote it: the actor carries the session title the phase-work rule reads
+// (legiontest.SessionActor), so the event is work of that issue.
 func (c *consumer) writeEvent(t *testing.T, issue, role, kind, payload string, at time.Time) {
 	t.Helper()
-	actor := fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
-		role, issue, "Legion "+role+" · "+issue)
+	actor := legiontest.SessionActor(role, issue)
 	c.exec(t, "write an event of "+issue, `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
@@ -521,12 +539,7 @@ func TestAPassThatFailsPartWayLeavesItsCursorsWhereTheyWere(t *testing.T) {
 
 	// A trigger that refuses every write of a row: the pass computes its rows, the write of the
 	// first of them fails, and the cursors it would have moved are in that transaction.
-	run.exec(t, "refuse every write of a row", `
-		create function refuse_issue_facts() returns trigger language plpgsql as $$
-		begin raise exception 'this write is refused'; end $$;
-		create trigger refuse_issue_facts before insert on issue_facts
-		for each row execute function refuse_issue_facts()
-	`)
+	run.refuseRowWrites(t)
 	run.writeEvent(t, run.fixture.Open[0], "implementer", "comment.created", `{}`, run.at.Add(-time.Hour))
 	run.at = run.at.Add(10 * time.Minute)
 
@@ -551,6 +564,128 @@ func TestAPassThatFailsPartWayLeavesItsCursorsWhereTheyWere(t *testing.T) {
 	t.Logf("a pass that failed part way: %d cursors held at events=%d observations=%d delivery_changes=%d, stamped %s; the error was: %v",
 		len(after), after[eventsCursor].position, after[observationsCursor].position,
 		after[changesCursor].position, after[eventsCursor].updatedAt.UTC(), err)
+}
+
+// refuseRowWrites installs a trigger that refuses every write of a row, so a pass computes its
+// rows and the write of the first of them fails, and answers the statement that drops it again.
+func (c *consumer) refuseRowWrites(t *testing.T) string {
+	t.Helper()
+	c.exec(t, "refuse every write of a row", `
+		create function refuse_issue_facts() returns trigger language plpgsql as $$
+		begin raise exception 'this write is refused'; end $$;
+		create trigger refuse_issue_facts before insert on issue_facts
+		for each row execute function refuse_issue_facts()
+	`)
+	return `drop trigger refuse_issue_facts on issue_facts`
+}
+
+// TestAFailedPassAsksForAnotherAGapOn: a pass that fails leaves its cursors where they were, so
+// the event whose wake started it is still unread, and the pass as the loop runs it (runPass)
+// asks for the next one PassGap on rather than leave that event to an unrelated wake. Once the
+// write is accepted again, that pass reads the event and writes its row.
+func TestAFailedPassAsksForAnotherAGapOn(t *testing.T) {
+	run := newConsumer(t, 2)
+	run.pass(t)
+	open := run.fixture.Open[0]
+	accept := run.refuseRowWrites(t)
+	run.at = run.at.Add(10 * time.Minute)
+	run.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-time.Minute))
+	if _, err := run.deps.Horizon.Await(t.Context()); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+
+	due := runPass(t.Context(), run.deps, run.sched)
+	if want := run.at.Add(PassGap); !due.Equal(want) {
+		t.Errorf("the loop's pass over a table that refuses every write asks for its next at %s, want %s, PassGap on",
+			due.UTC(), want.UTC())
+	}
+
+	run.exec(t, "accept every write of a row again", accept)
+	run.at = due
+	retried := run.pass(t)
+	if !slices.Contains(retried, open) {
+		t.Errorf("the pass the failed one asked for changed %v, which does not hold %s, whose event the failed pass left unread", retried, open)
+	}
+	t.Logf("a failed pass asked for its next at %s, PassGap on, and that pass changed %d rows, %s among them",
+		due.UTC(), len(retried), open)
+}
+
+// TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherAGapOn: a pass reads the event log up
+// to the safe horizon it reads once (pass), and an event that committed while a write holding a
+// lower event id is still open stands above it. The pass returns at once rather than wait for the
+// lower write, so the lease it runs under is not held for as long as that write stays open: here
+// a deadline stands in for the lease's other process, and a pass that waited would fail on it.
+// The pass leaves the event unread and its issue's row as it was, and asks for its next pass
+// PassGap on, since the end of the lower write wakes nothing. Once that write commits, the pass it
+// asked for reads the event.
+func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherAGapOn(t *testing.T) {
+	run := newConsumer(t, 2)
+	ctx := t.Context()
+	run.pass(t)
+	// A pass whose horizon has proven nothing yet awaits it (SafeOrAwait), which the open write
+	// below would hold; the first pass proved the seeded events.
+	if run.deps.Horizon.Proven() == 0 {
+		t.Fatal("the first pass proved no event, so the pass below would await the open write rather than read below it")
+	}
+	open := run.fixture.Open[0]
+	before := run.rows(t)[open]
+
+	lower, err := run.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the lower write: %v", err)
+	}
+	t.Cleanup(func() { _ = lower.Rollback(context.Background()) })
+	// The write takes its transaction id before it draws its event id, as Broker.Append does: the
+	// writer invariant events.Horizon's proof rests on.
+	if _, err := lower.Exec(ctx, `select pg_current_xact_id()`); err != nil {
+		t.Fatalf("take the lower write's transaction id: %v", err)
+	}
+	var held int64
+	if err := lower.QueryRow(ctx, `
+		insert into events (seq, type, actor, payload, notify)
+		values (0, 'legionfacts.test', '{"kind":"user","id":"alice"}', '{}', false)
+		returning id`).Scan(&held); err != nil {
+		t.Fatalf("draw the lower event id: %v", err)
+	}
+	run.at = run.at.Add(10 * time.Minute)
+	run.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-time.Minute))
+	var event int64
+	if err := run.database.Pool.QueryRow(ctx, `select max(id) from events where issue_key = $1`, open).Scan(&event); err != nil {
+		t.Fatalf("read the event of %s: %v", open, err)
+	}
+	if event <= held {
+		t.Fatalf("the event of %s drew id %d, not above the open write's %d", open, event, held)
+	}
+
+	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	changed, next, err := pass(bounded, run.deps, run.sched)
+	took := time.Since(started)
+	if err != nil {
+		t.Fatalf("the pass below the open write failed after %s, so it waited for the write: %v", took.Round(time.Millisecond), err)
+	}
+	if proven := run.deps.Horizon.Proven(); proven >= held {
+		t.Fatalf("the horizon stands at %d while the write holding %d is open", proven, held)
+	}
+	if slices.Contains(changed, open) || !sameRow(run.rows(t)[open], before) {
+		t.Errorf("the pass below the open write changed %v and %s's row, so it read past its safe horizon", changed, open)
+	}
+	if want := run.at.Add(PassGap); !next.Equal(want) {
+		t.Errorf("the pass that left event %d above its safe horizon asks for its next at %s, want %s, PassGap on",
+			event, next.UTC(), want.UTC())
+	}
+
+	if err := lower.Commit(ctx); err != nil {
+		t.Fatalf("commit the lower write: %v", err)
+	}
+	run.at = next
+	after := run.pass(t)
+	if !slices.Contains(after, open) {
+		t.Errorf("the pass after the lower write committed changed %v, which does not hold %s", after, open)
+	}
+	t.Logf("the pass below the open write (id %d) returned in %s, left event %d unread and asked for its next at %s; the next pass changed %d rows, %s among them",
+		held, took.Round(time.Millisecond), event, next.UTC(), len(after), open)
 }
 
 // TestTheSetOfRowsOneChangeTouches: the set a change touches is the issues named, the issues

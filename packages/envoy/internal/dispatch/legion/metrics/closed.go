@@ -45,7 +45,8 @@ type ClosedFacts struct {
 // ProjectFactsClosed is ProjectFacts as a stored row holds it: every issue of the population with
 // Legion phase work that wanted names (every one where wanted is nil), its facts closed at the
 // newest input they read and their growth after it. It answers the same set of issues as
-// ProjectFacts, by the same rule (factsOf), so no second rule computes a fact (R20).
+// ProjectFacts, by the same selection (factsIssues), and their facts by the same rule (factsOf),
+// so no second rule computes a fact (R20).
 //
 // Each issue is computed at two moments past its newest input, an hour apart, and its facts are
 // closed back at that input from the first of them with the rate the two measured (Grown with a
@@ -60,16 +61,9 @@ func ProjectFactsClosed(population *Population, wanted map[string]bool) map[stri
 	base := newComputation(population)
 	asOf := map[string]time.Time{}
 	byMoment := map[time.Time][]*Issue{}
-	for _, key := range population.Keys {
-		if wanted != nil && !wanted[key] {
-			continue
-		}
-		issue := population.Issues[key]
-		if issue == nil || !population.hasPhaseWork(issue) {
-			continue
-		}
+	for issue := range population.factsIssues(wanted) {
 		newest := base.newestInput(issue)
-		asOf[key] = newest
+		asOf[issue.Key] = newest
 		at := closingMoment(newest)
 		byMoment[at] = append(byMoment[at], issue)
 	}
@@ -136,7 +130,7 @@ func growthBetween(first, later IssueFacts) Growth {
 //   - A child's time waiting on a person is the stretches its root was recorded in
 //     `awaiting_person` (waitingOnPersonSpans), so a child reads the root's phase marks that open
 //     or close such a stretch, the root's close where the last of them leaves one open, and the
-//     root's recorded answers that fall inside one of the child's own ask turns.
+//     root's recorded answer that cuts one of the child's own ask turns short (answeredWithin).
 //   - A root's time waiting on its children is its children's working phases over their work
 //     time (waitingOnChildrenSpans), so a root reads each child's role events, handoffs, statuses,
 //     `phase` and `slot` observations and close, which are the whole of what those spans are made
@@ -175,12 +169,16 @@ func (c *computation) newestInput(issue *Issue) time.Time {
 		take(turn.From)
 		take(turn.To)
 	}
-	root := population.Issues[c.treeRoot(issue.Key)]
-	if root == nil {
-		root = issue
-	}
-	for _, at := range answeredAts(root) {
-		if withinATurn(issue.AskTurns, at, end) {
+	root := c.rootOf(issue)
+	// The answer that cuts one of the issue's own ask turns short, the first strictly inside it,
+	// which is the answer the waiting-on-a-person rule reads (waitingOnPersonSpans); a later
+	// answer inside the same turn ends nothing and moves no fact.
+	answered := answeredAts(root)
+	for _, turn := range issue.AskTurns {
+		if turn.To.IsZero() {
+			turn.To = end
+		}
+		if at, found := answeredWithin(answered, turn); found {
 			read(at)
 		}
 	}
@@ -231,19 +229,4 @@ func takeWork(issue *Issue, take func(time.Time)) {
 	for _, mark := range issue.StatusMarks {
 		take(mark.At)
 	}
-}
-
-// withinATurn is whether at falls strictly inside one of turns, an open one running to end: the
-// answers that cut a turn short (answeredWithin).
-func withinATurn(turns []Span, at, end time.Time) bool {
-	for _, turn := range turns {
-		to := turn.To
-		if to.IsZero() {
-			to = end
-		}
-		if at.After(turn.From) && at.Before(to) {
-			return true
-		}
-	}
-	return false
 }

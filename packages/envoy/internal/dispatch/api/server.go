@@ -175,10 +175,12 @@ type Deps struct {
 	DashboardEntry string
 	// Build is the build this process runs as, which the eval day rows a readings write keeps
 	// record as the build that wrote them (eval_days.built_by): the string the eval day-row
-	// refresher records against every row it writes (cmd/dispatch's processBuild, from
-	// main.buildCommit), so the refresher never reads a row this process wrote as another
-	// build's. Empty in a process that names none, whose readings write then fails rather than
-	// write a row no build owns.
+	// refresher records against every row it writes (cmd/dispatch's processBuild), so the
+	// refresher never reads a row this process wrote as another build's. It differs from
+	// BuildCommit where nothing stamped the binary: BuildCommit is then empty, and Build is a
+	// string of this one process (buildversion's answer and a suffix drawn at its start). Empty in
+	// a process that names none, whose readings write then fails rather than write a row no build
+	// owns.
 	Build string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
 	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It

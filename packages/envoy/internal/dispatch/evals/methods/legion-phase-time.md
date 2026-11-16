@@ -14,7 +14,7 @@ The hours of each bar split into five segments. Each hour goes to the first segm
 
 1. Waiting on a person: the daemon recorded the root in `awaiting_person`, or an ask that a session of the tree opened on the issue was on the person's turn.
 2. In a turn: a role of the issue had the claim state `working`.
-3. CI wait: the pull request was open, its base branch requires a check, and the daemon had no CI verdict for its head.
+3. CI wait: not measured. No source says when a pull request waits on CI since the daemon stopped carrying its CI verdict, so an hour it would have held goes to the next segment that holds, and the segment stays at zero in its place.
 4. Waiting on children: the issue is a root with a child in a phase from planning to awaiting merge, during that child's own work time.
 5. Idle: every hour that no segment above claimed.
 

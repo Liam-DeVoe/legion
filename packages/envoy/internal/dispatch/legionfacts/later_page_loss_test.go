@@ -54,7 +54,7 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A later page of a pass: first is false.
+	// A later page of a pass, which carries no work the feeds do not name: unfed is false.
 	if _, _, err := passPage(t.Context(), run.deps, run.sched, safe, run.at, false); err != nil {
 		t.Fatal(err)
 	}

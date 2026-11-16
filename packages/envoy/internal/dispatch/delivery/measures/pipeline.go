@@ -42,7 +42,8 @@ const SlowestJobs = 5
 // holds no pr-ci eval to read one from (evals.PipelineMinN).
 const SlowestMinResults = 50
 
-// FailingWindow is how far back the failing-jobs table looks from now (pipeline.py:30).
+// FailingWindow is how far back the failing-jobs table looks from the moment it is read at, its
+// end (FailingJobs; pipeline.py:30).
 const FailingWindow = 24 * time.Hour
 
 // Outcome is a run or job conclusion as the Pipeline counts it.
@@ -381,12 +382,12 @@ func prChecksParts(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.D
 // PRChecksDay builds of each shown day's runs: run, every run's wall time from its start to its
 // completion and its outcome, each day folded alone and the shown days together by FoldTiming;
 // slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with slowestMinResults
-// timed results; and failing, FailingJobs up to now. A run on no shown day adds to no cell. The
+// timed results; and failing, FailingJobs up to end. A run on no shown day adds to no cell. The
 // caller passes the shown days' runs, each with its event and branch already selected.
-func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, now time.Time, rollupJob string, slowestMinResults int) (run Timing, slowest []JobTiming, failing []FailingJob) {
+func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string, slowestMinResults int) (run Timing, slowest []JobTiming, failing []FailingJob) {
 	parts := prChecksParts(runs, jobsByRun, days)
 	ranked := FoldSlowestJobs(parts, days, slowestMinResults)
-	return timingByDay(parts, days, FoldTiming), ranked[:min(len(ranked), SlowestJobs)], FailingJobs(runs, jobsByRun, now, rollupJob)
+	return timingByDay(parts, days, FoldTiming), ranked[:min(len(ranked), SlowestJobs)], FailingJobs(runs, jobsByRun, end, rollupJob)
 }
 
 // FailingJobs is PRChecks' failing tally (pipeline.py:144-157): every job that failed in a run

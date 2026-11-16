@@ -398,20 +398,12 @@ func runSuggestionRules(ctx context.Context, tx pgx.Tx, rules [3]string, args ..
 // the call, rather than start a null cursor at the highest id at or below 0 (startSuggestionCursor)
 // and leave every later pass paging the log from its start.
 //
-// A pass that leaves an id standing above the horizon it read has read less than the log holds:
-// an event that committed while a lower id was still open, which this pass could not judge by. It
-// asks for a pass schedule.minGap away rather than for the soonest thing it held back, because
-// nothing announces the moment those open writes end and the horizon moves, so a horizon held
-// back costs one pass per gap instead of a loop re-reading as fast as it can. The wait loses
-// nothing: each pass works out afresh what it held back for being younger than settle, and the
-// late commit's own notification on dispatch_events wakes the loop as any other commit does.
-//
-// Two answers say an id stands above what this pass read, and a pass needs both: Pending, this
-// pass's own observation having seen an id above H, and a horizon now proven past the safe this
-// pass read, which is what Pending reads as settled once another reader of the one Horizon - the
-// relay, the delivery hub - proves that observation while this pass's pages run. Neither alone
-// covers the other: without the second, a pass whose gap closed under it would ask for nothing
-// and leave those events to the next commit's wake.
+// A pass that leaves an id standing above the horizon it read (events.Horizon.HeldBack) has read
+// less than the log holds: an event that committed while a lower id was still open, which this
+// pass could not judge by. It asks for a pass schedule.minGap away rather than for the soonest
+// thing it held back. The wait loses nothing: each pass works out afresh what it held back for
+// being younger than settle, and the late commit's own notification on dispatch_events wakes the
+// loop as any other commit does.
 func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *events.Horizon, schedule suggestionSchedule) (time.Time, error) {
 	safe, err := horizon.SafeOrAwait(ctx)
 	if err != nil {
@@ -421,7 +413,7 @@ func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *event
 	if err != nil {
 		return time.Time{}, err
 	}
-	if horizon.Pending() || horizon.Proven() > safe {
+	if horizon.HeldBack(safe) {
 		return time.Now().Add(schedule.minGap), nil
 	}
 	return next, nil

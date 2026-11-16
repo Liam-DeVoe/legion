@@ -11,14 +11,14 @@ import (
 
 // TestTheDeliveryFixtureAndAMappingWriteOfOneRepositoryNeverDeadlock: every writer of
 // repo_projects takes the change log's lock (6900) in one position against that table's row locks
-// (R19). The mapping routes take it first (lockRepoProjectWrite, api/repo_projects.go), and the
-// table's trigger takes it after a writer's row lock, so a writer that inserts its mapping row in a
-// statement of its own holds the row while it waits for 6900. The delivery fixture a running
-// server's database is loaded with (deliverytest.Write, which evalfixture -delivery runs) wrote its
-// mappings that way: while a mapping write of the same repository held 6900 and then wrote the
-// row, the two waited on each other, and Postgres ended one with 40P01 (a mapping PUT answering
-// 500). The fixture is paused at its projects insert, after its delivery settings, while the
-// mapping transaction takes 6900 as the route does first; then it is let on, and the mapping
+// (R19). The mapping routes take it first (delivery.LockRepoProjectWrite, api/repo_projects.go),
+// and the table's trigger takes it after a writer's row lock, so a writer that inserts its mapping
+// row in a statement of its own holds the row while it waits for 6900. The delivery fixture a
+// running server's database is loaded with (deliverytest.Write, which evalfixture -delivery runs)
+// wrote its mappings that way: while a mapping write of the same repository held 6900 and then
+// wrote the row, the two waited on each other, and Postgres ended one with 40P01 (a mapping PUT
+// answering 500). The fixture is paused at its projects insert, after its delivery settings, while
+// the mapping transaction takes 6900 as the route does first; then it is let on, and the mapping
 // transaction writes the same repository's row and rolls back, as a refused mapping write does.
 func TestTheDeliveryFixtureAndAMappingWriteOfOneRepositoryNeverDeadlock(t *testing.T) {
 	r := newRig(t)

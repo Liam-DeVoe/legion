@@ -152,8 +152,9 @@ type LegionDay struct {
 // (legionfacts.ReadFilingsIn) and the repository each of those issues resolves to now
 // (legionfacts.ReadRepos, one read of them all). Each row is as of the day's end, the moment the
 // day's rows are of: every one is an issue that closed that day, whose facts stopped growing at
-// its close, and a builder that came to count an open issue would read it closed at the day's end
-// the same way.
+// its close but for the slot hours of a slot it never gave up, which grow to the day's end as the
+// computation's would, and a builder that came to count an open issue would read it closed at the
+// day's end the same way.
 func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time) (LegionDay, error) {
 	start := measures.Midnight(day)
 	end := start.AddDate(0, 0, 1)

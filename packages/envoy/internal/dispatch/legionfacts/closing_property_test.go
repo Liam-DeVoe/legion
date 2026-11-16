@@ -67,9 +67,6 @@ func seedClosingHistory(t *testing.T) closingHistory {
 			        $2, $3::jsonb, $4::jsonb, false, $5)
 		`, issue, kind, actor, payload, at)
 	}
-	session := func(role, issue string) string {
-		return fmt.Sprintf(`{"kind":"session","id":"s-closing-%s-%s","origin":{"session_title":%q}}`, role, issue, "Legion "+role+" · "+issue)
-	}
 
 	// The first tree's root, reopened: its own inputs end with its close four hours before the
 	// history's end, and its open child starts implementing an hour before the end.
@@ -81,7 +78,7 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	seeded.cases["that child, at work"] = child
 
 	asked := fixture.Open[1]
-	event(asked, "ask.opened", session("implementer", asked), `{"id":"closing-open-ask"}`, now.Add(-2*time.Hour))
+	event(asked, "ask.opened", legiontest.SessionActor("implementer", asked), `{"id":"closing-open-ask"}`, now.Add(-2*time.Hour))
 	seeded.cases["an ask nobody answered"] = asked
 
 	waiting := fixture.Open[2]

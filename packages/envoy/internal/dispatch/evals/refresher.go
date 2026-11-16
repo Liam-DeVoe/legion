@@ -250,20 +250,12 @@ func (r refreshed) sorted() []string {
 // log, and answers what it wrote and when the loop should run again.
 //
 // A pass that leaves an event id standing above the safe horizon it read has read less than the
-// log holds: an event that committed while a lower id was still open, which its pages stopped
-// below. It asks for a pass sched.gap away, not for nextPass's day's end, because nothing
-// announces the moment the horizon moves past that event: any transaction holding a transaction
-// id on the instance holds the horizon back (events.Horizon), most write no event, and the end of
-// one wakes no pass, so the event, a P0 issue's opening say, would wait for an unrelated wake or
-// the next UTC midnight. A gap rather than at once: the loop's MinGap would hold an at-once pass to
-// the same moment, and at once is what says a walk has days left (RefreshThrough).
-//
-// Two answers say an id stands above what the pass read, and it needs both: Pending, the pass's own
-// observation having seen an id above the horizon, and a horizon now proven past the safe the pass
-// read, which is what Pending reads as settled once another reader of the one Horizon (the event
-// relay, the delivery hub) proves that observation while this pass's pages run. Without the second,
-// a pass whose held-back ids another reader proved meanwhile would ask for nothing, and leave
-// those events to the next wake.
+// log holds (events.Horizon.HeldBack): an event that committed while a lower id was still open,
+// which its pages stopped below. It asks for a pass sched.gap away, not for nextPass's day's end,
+// because nothing announces the moment the horizon moves past that event, and the event, a P0
+// issue's opening say, would otherwise wait for an unrelated wake or the next UTC midnight. A gap
+// rather than at once: the loop's MinGap would hold an at-once pass to the same moment, and at
+// once is what says a walk has days left (RefreshThrough).
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
 	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
@@ -298,7 +290,7 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
-	if deps.Horizon.Pending() || deps.Horizon.Proven() > safe {
+	if deps.Horizon.HeldBack(safe) {
 		if again := r.now.Add(sched.gap); again.Before(next) {
 			next = again
 		}

@@ -22,12 +22,14 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// What check k2 of dispatch://INFRA-2915 holds the board's read path to, measured here: the facts
-// are read as rows, each plan is an index read of issue_facts, no plan reads the event log or
-// legion_observations, nothing on the request path computes a fact, adds elapsed time to a stored
-// value or holds a cached population, two reads 30 s apart with the consumer stopped answer the
-// same work time for every open issue, and a fresh process's first read is as fast as a warm one
-// to the same order.
+// What checks k2 of dispatch://INFRA-2915 and k23 of dispatch://INFRA-2916 hold the board's read
+// path to, measured here: the facts are read as rows, each plan is an index read of issue_facts,
+// no plan reads the event log or legion_observations, nothing on the request path computes a fact
+// or holds a cached population, and the one computation it makes is the close of each open part
+// of a row at the read's own clock (legionfacts.Row.At), the one place a length of time meets a
+// stored value; two reads 30 s apart with the consumer stopped answer each open issue's work time
+// grown by the clock time between them and each closed issue's unchanged, and a fresh process's
+// first read is as fast as a warm one to the same order.
 //
 // Each of the four tests below is one of those readings. They share the rig
 // legion_board_payload_test.go builds (boardAtInfraSize): one project of INFRA's size, the facts

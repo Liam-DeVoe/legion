@@ -50,7 +50,7 @@ type namedHours struct {
 }
 
 // scalarHours is every hours fact of f that is no entry of a map: the one list of them that
-// measuring a growth (hoursFacts) and applying one (updateHours) both read.
+// measuring a growth (hoursFacts) and applying one (addHours) both read.
 func (f *IssueFacts) scalarHours() [7]namedHours {
 	return [7]namedHours{
 		{growthWorkHours, &f.WorkHours},
@@ -125,7 +125,7 @@ func (f IssueFacts) Grown(growth Growth, elapsed time.Duration) IssueFacts {
 			}
 			continue
 		}
-		grown.updateHours(name, func(value float64) float64 { return grownValue(value + rate*hours) })
+		grown.addHours(name, rate*hours)
 	}
 	return grown
 }
@@ -140,13 +140,13 @@ func grownValue(value float64) float64 {
 	return value
 }
 
-// updateHours replaces the hours fact name names (Growth) with change of its value, in the maps
-// Grown copied, and changes nothing for a name that is no fact or names an entry of a map f does
-// not hold. A phase whose hours fall to nothing leaves PhaseHours.
-func (f *IssueFacts) updateHours(name string, change func(float64) float64) {
+// addHours adds delta to the hours fact name names (Growth), rounded as the computation rounds
+// (grownValue), in the maps Grown copied, and changes nothing for a name that is no fact or names
+// an entry of a map f does not hold. A phase whose hours fall to nothing leaves PhaseHours.
+func (f *IssueFacts) addHours(name string, delta float64) {
 	for _, scalar := range f.scalarHours() {
 		if scalar.name == name {
-			*scalar.field = change(*scalar.field)
+			*scalar.field = grownValue(*scalar.field + delta)
 			return
 		}
 	}
@@ -154,7 +154,7 @@ func (f *IssueFacts) updateHours(name string, change func(float64) float64) {
 		if f.PhaseHours == nil {
 			return
 		}
-		if value := change(f.PhaseHours[id]); value > 0 {
+		if value := grownValue(f.PhaseHours[id] + delta); value > 0 {
 			f.PhaseHours[id] = value
 		} else {
 			delete(f.PhaseHours, id)
@@ -163,7 +163,7 @@ func (f *IssueFacts) updateHours(name string, change func(float64) float64) {
 	}
 	if role, idle := strings.CutPrefix(name, growthIdlePrefix); idle {
 		if f.IdleByRole != nil {
-			f.IdleByRole[role] = change(f.IdleByRole[role])
+			f.IdleByRole[role] = grownValue(f.IdleByRole[role] + delta)
 		}
 		return
 	}
@@ -182,6 +182,6 @@ func (f *IssueFacts) updateHours(name string, change func(float64) float64) {
 	if field == nil {
 		return
 	}
-	*field = change(*field)
+	*field = grownValue(*field + delta)
 	f.Bars[role] = held
 }

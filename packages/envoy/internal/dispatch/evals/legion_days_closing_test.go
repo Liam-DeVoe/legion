@@ -104,16 +104,9 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 }
 
 // factsRow is the computation's facts of one issue as the stored row holds them, column for column
-// (legionfacts.Row.Facts reads them the other way).
+// (legionfacts.Row.SetFacts, which Row.Facts reads the other way).
 func factsRow(project, key string, fact metrics.IssueFacts) legionfacts.Row {
-	return legionfacts.Row{
-		Project: project, Issue: key, OpenedAt: fact.OpenedAt, ClosedAt: fact.ClosedAt,
-		HoursByPhase: fact.PhaseHours, WorkHours: fact.WorkHours, ReviewRounds: fact.ReviewRounds,
-		RootKey: fact.Tree, TreeDepth: fact.TreeDepth, SlotHours: fact.SlotHours,
-		WorkFirstAt: fact.WorkFirstAt, WorkLastAt: fact.WorkLastAt, ParkedHours: fact.ParkedHours,
-		QueuedHours: fact.QueuedHours, StartedAt: fact.StartedAt, MergedAt: fact.MergedAt, Bars: fact.Bars,
-		IdleByRole: fact.IdleByRole, SlotWaitHours: fact.SlotWaitHours, SentBack: fact.SentBack,
-		ImplementingAfterFirstReview: fact.ImplementingHoursAfterFirstReview,
-		TestingAfterFirstReview:      fact.TestingHoursAfterFirstReview, Children: fact.Children,
-	}
+	row := legionfacts.Row{Project: project, Issue: key}
+	row.SetFacts(fact)
+	return row
 }

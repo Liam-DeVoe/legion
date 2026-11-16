@@ -8,7 +8,7 @@
 -- Before it, "this project has never been computed" was read from "this project holds no
 -- issue_facts row", which a project whose issues carry no Legion phase work can never clear: the
 -- computation of such a project answers no row, so the pass writes none, and the next pass reads
--- the whole project again, on every pass of the half-minute sweep for as long as the project holds no
+-- the whole project again, every legionfacts.SweepEvery for as long as the project holds no
 -- worked issue. A whole-project read is the cost this consumer exists to remove, so the mark is
 -- written rather than inferred from an absence.
 --

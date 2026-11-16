@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 )
 
 // scope.go holds the scope of one page: the projects this loop computes and which of them are
@@ -18,12 +17,14 @@ import (
 // rows and from the record of each project's whole read rather than from the feeds.
 
 // projectStanding is what one pass owes one project beyond what its feeds name: whether to read
-// it whole (whole), and whether the project's record names the build this process is (ours),
-// which makes this process the one that computes again the rows another build wrote
-// (otherBuildsRows).
+// it whole (whole), and whether the project's record names a newer build this process yields to
+// (yielded): another build, which recorded itself after this process started and is rolling in
+// while this one still serves. A write of a yielded project deletes no row or filing, and stamps
+// each it would have deleted for the newer build to compute again (ProjectWrite.Yielded,
+// FilingsWrite.Yielded).
 type projectStanding struct {
-	whole bool
-	ours  bool
+	whole   bool
+	yielded bool
 }
 
 // legionProjects is every project this loop computes, by key, each with its standing on this
@@ -70,13 +71,16 @@ type projectStanding struct {
 // roll stand side by side. A record that names another build and was written before this process
 // started is a build this one replaces, and this process reads the project whole once and takes
 // the record. A record that names another build and was written after this process started is a
-// newer build rolling in while this one still serves: this process reads nothing whole for it,
-// takes nothing from it (markComputedWhole) and computes nothing of the newer build's rows; the
-// newer build computes again whatever this one writes (otherBuildsRows). A record someone rewrote
-// to another build string keeps its old time, so the next process reads that project whole once.
-// The lost change cursor is the one exception: it is the deployment's one cursor, so the process
-// that meets the loss reads every project whole, and the newer build then computes again the rows
-// that read wrote under the older rule.
+// newer build rolling in while this one still serves: this process yields to it. It reads nothing
+// whole for it, takes nothing from it (markComputedWhole), computes nothing of the newer build's
+// rows and deletes none: a row the older rule computes none for may be one the newer rule keeps,
+// and a row the older build deleted would leave no row of its own for the newer build to find
+// (otherBuildsRows), so it stamps the row with its own build instead and the newer build computes
+// it again and keeps or deletes it by its own rule. A record someone rewrote to another build
+// string keeps its old time, so the next process reads that project whole once. The lost change
+// cursor is the one exception: it is the deployment's one cursor, so the process that meets the
+// loss reads every project whole, and the newer build then computes again the rows that read
+// wrote, or stamped, under the older rule.
 //
 // The build the pass compares is the one the process runs under. The server gives it to the
 // loop (Deps.Build), and the pass carries it both to this read and to the record it writes
@@ -114,20 +118,20 @@ type projectStanding struct {
 // no narrow pass can name rows that are not there. It costs one whole read, because that read
 // writes the count it answered: a project that truly holds no row any more is marked with none
 // and is left alone from then on.
-func legionProjects(ctx context.Context, q Querier, build string, started time.Time, lost bool) (map[string]projectStanding, error) {
+func legionProjects(ctx context.Context, q Querier, self process, lost bool) (map[string]projectStanding, error) {
 	rows, err := q.Query(ctx, `
 		select project.key,
 		       mark.project_key is null,
 		       mark.computed_build is not distinct from $1,
-		       mark.computed_at < $2,
-		       mark.computed_rows > 0
+		       coalesce(mark.computed_at < $2, false),
+		       coalesce(mark.computed_rows > 0, false)
 		           and not exists (select 1 from issue_facts where project_key = project.key)
 		from projects project
 		left join issue_facts_computed mark on mark.project_key = project.key
 		where exists (select 1 from legion_settings where project = project.key)
 		   or exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
-	`, build, started)
+	`, self.build, self.started)
 	if err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
 	}
@@ -135,15 +139,15 @@ func legionProjects(ctx context.Context, q Querier, build string, started time.T
 	projects := map[string]projectStanding{}
 	for rows.Next() {
 		var key string
-		var unrecorded, ours bool
-		var before, emptied *bool
+		var unrecorded, ours, before, emptied bool
 		if err := rows.Scan(&key, &unrecorded, &ours, &before, &emptied); err != nil {
 			return nil, fmt.Errorf("read the projects Legion works: %w", err)
 		}
-		replaced := !unrecorded && !ours && before != nil && *before
-		yielded := !unrecorded && !ours && !replaced
-		gone := emptied != nil && *emptied && !yielded
-		projects[key] = projectStanding{whole: lost || unrecorded || replaced || gone, ours: ours}
+		recordedOther := !unrecorded && !ours
+		projects[key] = projectStanding{
+			whole:   lost || unrecorded || (recordedOther && before) || (ours && emptied),
+			yielded: recordedOther && !before,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
@@ -157,38 +161,24 @@ func legionProjects(ctx context.Context, q Querier, build string, started time.T
 //
 // It is how the running build learns that a roll has ended, with no timer. While two builds run,
 // the older one can still write rows by its own rule, and every row carries the build that wrote
-// it (written_build, migration 20261116151147). Each of the older build's writes logs an
-// issue_facts change, whose drain notifies the delivery change channel and so wakes the newer
-// process (Deps.Deliveries), and that pass computes the row again under the newer rule. Once the
-// older process has stopped, the last row it wrote has been computed again by the pass it woke,
-// and nothing is left that another build wrote. A pass of a build the record does not name reads
-// none of this, so two builds never write each other's rows back and forth. The cursors are the
-// two processes' shared cursors (one lease, one cursor table), which is why this reads the rows'
-// writer rather than the change feed: a change row the older process's pass read is one the
-// newer process never reads.
+// it (written_build, migration 20261116151147). A row the older build's rule computes none for is
+// not deleted but stamped with the older build (ProjectWrite.Yielded), so it is found here too.
+// Each of the older build's writes and stamps logs an issue_facts change, whose drain notifies
+// the delivery change channel and so wakes the newer process (Deps.Deliveries), and that pass
+// computes the row again under the newer rule. Once the older process has stopped, the last row
+// it wrote or stamped has been computed again by the pass it woke, and nothing is left that
+// another build wrote. A pass of a build the record does not name reads none of this, so two
+// builds never write each other's rows back and forth. The cursors are the two processes' shared
+// cursors (one lease, one cursor table), which is why this reads the rows' writer rather than
+// the change feed: a change row the older process's pass read is one the newer process never
+// reads.
 //
 // It reads issue_facts_written_build, (project_key, written_build), as two ranges of each named
 // project's rows: those whose writer sorts before build and those that sort after it. A settled
 // deployment holds neither, so the read is two index probes a project; the rows of a roll are
 // the rows the ranges hold.
 func otherBuildsRows(ctx context.Context, q Querier, build string) (map[string][]string, error) {
-	rows, err := q.Query(ctx, otherBuildsRowsQuery, build)
-	if err != nil {
-		return nil, fmt.Errorf("read the stored rows another build wrote: %w", err)
-	}
-	defer rows.Close()
-	other := map[string][]string{}
-	for rows.Next() {
-		var project, issue string
-		if err := rows.Scan(&project, &issue); err != nil {
-			return nil, fmt.Errorf("read the stored rows another build wrote: %w", err)
-		}
-		other[project] = append(other[project], issue)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the stored rows another build wrote: %w", err)
-	}
-	return other, nil
+	return readOtherBuilds(ctx, q, "stored rows", otherBuildsRowsQuery, build)
 }
 
 // otherBuildsRowsQuery is otherBuildsRows' read: the projects whose record names $1, and of each
@@ -201,6 +191,49 @@ const otherBuildsRowsQuery = `
 	where mark.computed_build = $1
 	  and (fact.written_build < $1 or fact.written_build > $1)
 	order by fact.project_key, fact.issue_key`
+
+// otherBuildsFilings is otherBuildsRows for the filings: every stored filing whose writer was
+// another build than build, of a project whose record names build, by project and filed issue,
+// which the build a project's record names computes again on the same page as the rows
+// (passPage), as it computes any filing a feed names. The rule that decides whose filing an
+// issue is lives in the build as the phase-work rule does, so a filing the older build of a roll
+// wrote or stamped (FilingsWrite.Yielded) is one the newer build decides again, and once the
+// older process has stopped no filing is left that it wrote. It reads issue_filings_written_build
+// (migration 20261116151147) as otherBuildsRows reads the rows' index.
+func otherBuildsFilings(ctx context.Context, q Querier, build string) (map[string][]string, error) {
+	return readOtherBuilds(ctx, q, "stored filings", otherBuildsFilingsQuery, build)
+}
+
+// otherBuildsFilingsQuery is otherBuildsFilings' read, as otherBuildsRowsQuery is the rows'.
+const otherBuildsFilingsQuery = `
+	select filing.project_key, filing.issue_key
+	from issue_facts_computed mark
+	join issue_filings filing on filing.project_key = mark.project_key
+	where mark.computed_build = $1
+	  and (filing.written_build < $1 or filing.written_build > $1)
+	order by filing.project_key, filing.issue_key`
+
+// readOtherBuilds runs one of the two reads of what another build wrote, query under build, and
+// answers its keys by project, in the order the read gave them. what names the read in an error.
+func readOtherBuilds(ctx context.Context, q Querier, what, query, build string) (map[string][]string, error) {
+	rows, err := q.Query(ctx, query, build)
+	if err != nil {
+		return nil, fmt.Errorf("read the %s another build wrote: %w", what, err)
+	}
+	defer rows.Close()
+	other := map[string][]string{}
+	for rows.Next() {
+		var project, issue string
+		if err := rows.Scan(&project, &issue); err != nil {
+			return nil, fmt.Errorf("read the %s another build wrote: %w", what, err)
+		}
+		other[project] = append(other[project], issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the %s another build wrote: %w", what, err)
+	}
+	return other, nil
+}
 
 // rowsToCompute is the whole set one pass computes for a project, sorted: the rows the changes
 // touch through the issues' links now (rowsTouchedBy) and the rows of the tree a moved issue

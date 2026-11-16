@@ -5,29 +5,41 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 )
 
 // writers is the build each stored row of the history's project records as its writer, by key.
 func (c *consumer) writers(t *testing.T) map[string]string {
 	t.Helper()
+	return c.writtenIn(t, "issue_facts")
+}
+
+// filingWriters is the build each stored filing of the history's project records as its writer,
+// by filed issue.
+func (c *consumer) filingWriters(t *testing.T) map[string]string {
+	t.Helper()
+	return c.writtenIn(t, "issue_filings")
+}
+
+// writtenIn is the writer of each row of table, issue_facts or issue_filings, of the history's
+// project, by issue key.
+func (c *consumer) writtenIn(t *testing.T, table string) map[string]string {
+	t.Helper()
 	rows, err := c.database.Pool.Query(t.Context(),
-		`select issue_key, written_build from issue_facts where project_key = $1`, c.fixture.Project)
+		`select issue_key, written_build from `+table+` where project_key = $1`, c.fixture.Project)
 	if err != nil {
-		t.Fatalf("read the stored rows' writers: %v", err)
+		t.Fatalf("read the writers of %s: %v", table, err)
 	}
 	defer rows.Close()
 	writers := map[string]string{}
 	for rows.Next() {
 		var key, build string
 		if err := rows.Scan(&key, &build); err != nil {
-			t.Fatalf("read the stored rows' writers: %v", err)
+			t.Fatalf("read the writers of %s: %v", table, err)
 		}
 		writers[key] = build
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the stored rows' writers: %v", err)
+		t.Fatalf("read the writers of %s: %v", table, err)
 	}
 	return writers
 }
@@ -45,8 +57,9 @@ func writtenBy(writers map[string]string, build string) []string {
 }
 
 // TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput is how a roll ends with no
-// timer (R27, otherBuildsRows): two loops of two builds on one database, sharing its cursors as
-// two processes of a roll do, the newer started after the older read the project whole.
+// timer (R27, otherBuildsRows, otherBuildsFilings): two loops of two builds on one database,
+// sharing its cursors as two processes of a roll do, the newer started after the older read the
+// project whole.
 //
 //  1. The newer process's first pass reads the project whole, since the record names a build
 //     recorded before it started, and records its own build.
@@ -54,8 +67,13 @@ func writtenBy(writers map[string]string, build string) []string {
 //     and neither reads the project whole nor takes the record back, since the record names a
 //     build recorded after it started.
 //  3. The newer process's next pass, which the older write's change notifies, computes every row
-//     the older wrote again, so no row is left that another build wrote.
-//  4. The older process's next pass rewrites nothing of the newer's, and with no input moving
+//     and filing the older wrote again, so none is left that another build wrote.
+//  4. The older process meets a row and a filing its rule computes none for and the newer
+//     build's keeps. It deletes neither, since one it deleted would leave the newer build
+//     nothing to compute again, and stamps both with its own build; the newer process's next
+//     pass computes them again and decides them by its own rule, as it does a filing the older
+//     build wrote that no row another build wrote names.
+//  5. The older process's next pass rewrites nothing of the newer's, and with no input moving
 //     neither process writes a row, however far the clock moves.
 func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testing.T) {
 	older := newConsumer(t, 3)
@@ -65,9 +83,7 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		t.Fatalf("the older process's first pass recorded %q, want %q", build, testBuild)
 	}
 
-	newer := &consumer{history: older.history, at: older.at.Add(time.Minute)}
-	newer.deps = Deps{Pool: older.database.Pool, Build: otherBuild, Horizon: events.NewHorizon(older.database.Pool)}
-	newer.sched = schedule{page: feedPage, now: func() time.Time { return newer.at }, started: newer.at}
+	newer := startConsumer(older.history, otherBuild, older.at.Add(time.Minute))
 
 	// 1. The newer build reads the project whole and records itself.
 	first := newer.pass(t)
@@ -76,6 +92,9 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 	}
 	if left := writtenBy(newer.writers(t), testBuild); len(left) != 0 {
 		t.Errorf("after the newer build's whole read %d rows still name the older build as their writer: %v", len(left), left)
+	}
+	if left := writtenBy(newer.filingWriters(t), testBuild); len(left) != 0 {
+		t.Errorf("after the newer build's whole read %d filings still name the older build as their writer: %v", len(left), left)
 	}
 	recordedAt := computedWholeAt(t, newer)[project]
 
@@ -104,6 +123,9 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 	if left := writtenBy(newer.writers(t), testBuild); len(left) != 0 {
 		t.Errorf("after the newer build's next pass %d rows still name the older build as their writer: %v", len(left), left)
 	}
+	if left := writtenBy(newer.filingWriters(t), testBuild); len(left) != 0 {
+		t.Errorf("after the newer build's next pass %d filings still name the older build as their writer: %v", len(left), left)
+	}
 	for _, key := range stamped {
 		if !slices.Contains(corrected, key) {
 			t.Errorf("%s was written by the older build and the newer build's next pass left it alone; it changed %v", key, corrected)
@@ -113,8 +135,83 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		t.Errorf("the newer build's correcting pass changed %d rows the older build had not written: %v", len(outsideIt), outsideIt)
 	}
 
-	// 4. The older build rewrites nothing of the newer's, and with no input neither writes.
-	writers := newer.writers(t)
+	// 4. A row and a filing the newer build's rule keeps and the older's computes none for. The
+	// two builds of this test share one rule, so the newer build's row and filing are written by
+	// hand, as that build would write them, of an issue no Legion role worked and no Legion
+	// session filed, and a person's comment on that issue names it to the older build's feed.
+	kept := older.fixture.NoPhaseWork[0]
+	if _, filed := older.filingWriters(t)[kept]; filed {
+		t.Fatalf("%s holds a filing a Legion session made, so the older build computes one for it and this case examines nothing", kept)
+	}
+	if _, err := WriteProject(t.Context(), older.database.Pool, ProjectWrite{Project: project, Build: otherBuild, Rows: []Row{{
+		Project: project, Issue: kept, OpenedAt: newer.at.Add(-48 * time.Hour), RootKey: kept, AsOf: newer.at, UpdatedAt: newer.at,
+	}}}); err != nil {
+		t.Fatalf("write the newer build's row of %s: %v", kept, err)
+	}
+	if err := WriteFilings(t.Context(), older.database.Pool, FilingsWrite{Project: project, Build: otherBuild, Filings: []Filing{{
+		Project: project, Issue: kept, FiledAt: newer.at.Add(-time.Hour), FilerRole: "implementer",
+		FilerIssue: older.fixture.Open[0], Class: "out_of_tree", RootKey: kept,
+	}}}); err != nil {
+		t.Fatalf("write the newer build's filing of %s: %v", kept, err)
+	}
+	// A filing the older build wrote by its own rule, a controller's of an issue of the last tree,
+	// which no row another build wrote names: neither its filed issue nor its filer's issue (the
+	// controller works none) is a key the newer build computes for a row, so only the read of the
+	// filings another build wrote brings it to the newer build (otherBuildsFilings).
+	lastTree := older.fixture.Keys[slices.Index(older.fixture.Keys, older.fixture.Roots[len(older.fixture.Roots)-1]):]
+	lone := ""
+	for _, key := range older.fixture.NoPhaseWork {
+		if slices.Contains(lastTree, key) {
+			lone = key
+		}
+	}
+	if _, filed := older.filingWriters(t)[lone]; lone == "" || filed || slices.Contains(lastTree, kept) || slices.Contains(lastTree, issue) {
+		t.Fatalf("the last tree %v holds no issue no Legion role worked or filed apart from %s and %s, so the lone filing case examines nothing", lastTree, kept, issue)
+	}
+	if err := WriteFilings(t.Context(), older.database.Pool, FilingsWrite{Project: project, Build: testBuild, Filings: []Filing{{
+		Project: project, Issue: lone, FiledAt: newer.at.Add(-time.Hour), FilerRole: "controller", Class: "by_the_controller", RootKey: lone,
+	}}}); err != nil {
+		t.Fatalf("write the older build's filing of %s: %v", lone, err)
+	}
+	older.at = newer.at.Add(time.Minute)
+	older.exec(t, "comment on "+kept+" as a person", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
+		        'comment.created', '{"kind":"user","id":"alice"}', '{}', false, $2)
+	`, kept, older.at.Add(-time.Minute))
+	handed := older.pass(t)
+	switch writer, stands := older.writers(t)[kept]; {
+	case !stands:
+		t.Errorf("the older build deleted %s's row, which the newer build wrote: no row of the older build is left for the newer build to compute again", kept)
+	case writer != testBuild || !slices.Contains(handed, kept):
+		t.Errorf("after the older build's pass, which computed no row for %s and changed %v, its row names %q as its writer, want the older build %q",
+			kept, handed, writer, testBuild)
+	}
+	switch writer, stands := older.filingWriters(t)[kept]; {
+	case !stands:
+		t.Errorf("the older build deleted %s's filing, which the newer build wrote: no filing of the older build is left for the newer build to compute again", kept)
+	case writer != testBuild:
+		t.Errorf("after the older build's pass, which computed no filing of %s, its filing names %q as its writer, want the older build %q", kept, writer, testBuild)
+	}
+	newer.at = older.at.Add(time.Second)
+	decided := newer.pass(t)
+	if _, stands := newer.writers(t)[kept]; stands || !slices.Contains(decided, kept) {
+		t.Errorf("the newer build's next pass changed %v and left %s's row standing (%t): its rule, the older's here, computes none for it", decided, kept, stands)
+	}
+	for _, filed := range []string{kept, lone} {
+		if _, stands := newer.filingWriters(t)[filed]; stands {
+			t.Errorf("the newer build's next pass left %s's filing standing: its rule, the older's here, computes none for it", filed)
+		}
+	}
+	if left := writtenBy(newer.writers(t), testBuild); len(left) != 0 {
+		t.Errorf("after the newer build decided the stamped row, %d rows still name the older build as their writer: %v", len(left), left)
+	}
+	if left := writtenBy(newer.filingWriters(t), testBuild); len(left) != 0 {
+		t.Errorf("after the newer build decided the stamped filing, %d filings still name the older build as their writer: %v", len(left), left)
+	}
+
+	// 5. The older build rewrites nothing of the newer's, and with no input neither writes.
+	writers, filingWriters := newer.writers(t), newer.filingWriters(t)
 	for _, later := range []time.Duration{time.Minute, time.Hour, 72 * time.Hour} {
 		older.at, newer.at = newer.at.Add(later), newer.at.Add(later)
 		if changed := older.pass(t); len(changed) != 0 {
@@ -127,6 +224,10 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 	if after := newer.writers(t); !maps.Equal(after, writers) {
 		t.Errorf("the rows' writers moved over passes with no input moving: %v, from %v", after, writers)
 	}
-	t.Logf("the newer build's whole read changed %d rows; the older build then wrote %d rows by its own rule (%v); the newer build's next pass computed %d again (%v), and %d rows name the newer build; three passes of each with no input wrote nothing",
-		len(first), len(olderWrote), olderWrote, len(corrected), corrected, len(writtenBy(writers, otherBuild)))
+	if after := newer.filingWriters(t); !maps.Equal(after, filingWriters) {
+		t.Errorf("the filings' writers moved over passes with no input moving: %v, from %v", after, filingWriters)
+	}
+	t.Logf("the newer build's whole read changed %d rows; the older build then wrote %d rows by its own rule (%v); the newer build's next pass computed %d again (%v); the older build stamped %s's row and filing rather than delete them (its pass changed %v) and the newer build's next pass decided them (%v); %d rows and %d filings name the newer build; three passes of each with no input wrote nothing",
+		len(first), len(olderWrote), olderWrote, len(corrected), corrected, kept, handed, decided,
+		len(writtenBy(writers, otherBuild)), len(writtenBy(filingWriters, otherBuild)))
 }

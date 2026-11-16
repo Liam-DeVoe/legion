@@ -87,8 +87,8 @@ var buildCommit string
 // row of each family is rebuilt under this one (evals/refresher.go).
 //
 // It is buildCommit where the image build stamped one. Every process of one release then
-// answers that one commit, so the fleet reads each project whole once per release and sweeps
-// it after that.
+// answers that one commit, so the fleet reads each project whole once per release and after that
+// computes only the issues its feeds name.
 //
 // Every other build leaves buildCommit empty, and the string is then what buildversion answers
 // with a suffix this process drew at its start. buildversion answers the release tag where a
@@ -97,10 +97,10 @@ var buildCommit string
 // rather than a run of it, so two runs of one unstamped binary would be one build without the
 // suffix. The suffix makes them two builds: a developer who edits the phase-work rule
 // (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
-// under the edited rule, rather than swept against the record the run before it left. What that
-// read costs is in legionfacts/scope.go's legionProjects. The same suffix has the eval day-row
-// refresher rebuild every day row of every family at each start of an unstamped binary, since
-// every walk it finds was recorded under another build.
+// under the edited rule, where the record the run before it left would say each was read whole
+// already. What that read costs is in legionfacts/scope.go's legionProjects. The same suffix has
+// the eval day-row refresher rebuild every day row of every family at each start of an unstamped
+// binary, since every walk it finds was recorded under another build.
 //
 // It answers one string for as long as the process runs: the loop compares the string it
 // recorded, and a process that answered two would read every project whole on every pass.
@@ -616,13 +616,16 @@ func main() {
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
 	//     suggestion outcomes (api.EventsChannel), the delivery settings both intakes route by
-	//     (delivery.SettingsChannel), the Legion facts (legionfacts.Run) and the eval day rows
-	//     (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel, whose
-	//     due time is the next UTC midnight). The four leased ones, reference-excerpts,
-	//     edit-notices, legion-facts and eval-days, take their lease with no period
-	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
-	//     since the other process's pass may have read before the change that woke this one. The
-	//     suggestion-outcome loop takes none: each of its pages
+	//     (delivery.SettingsChannel), the Legion facts (legionfacts.Run, whose one due time is a
+	//     pass legionfacts.PassGap after one that failed or whose safe horizon held an event
+	//     back) and the eval day rows (evals.Store.RunRefresher, woken by api.EventsChannel and
+	//     delivery.ChangesChannel, whose due time is at once while a walk has days left, else the
+	//     earlier of the next UTC midnight and the next prune of the change log, and
+	//     evals.RefresherGap after a pass that failed or whose safe horizon held an event back).
+	//     The four leased ones, reference-excerpts, edit-notices, legion-facts and eval-days, take
+	//     their lease with no period (duty.RunWoken): a process that finds it held retries until a
+	//     pass of its own runs, since the other process's pass may have read before the change
+	//     that woke this one. The suggestion-outcome loop takes none: each of its pages
 	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past

@@ -98,7 +98,8 @@ type AppContextOptions struct {
 	// api.DepsInput.
 	DashboardEntry string
 	// Build is the build this process runs as, which the eval day rows a readings write keeps
-	// record (api.Deps.Build).
+	// record of (api.Deps.Build): BuildCommit where the image build stamped one, and a string of
+	// this one process where nothing did, so it is never empty where BuildCommit is.
 	Build string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
