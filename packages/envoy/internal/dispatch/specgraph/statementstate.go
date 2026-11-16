@@ -129,7 +129,7 @@ func (j *statementJudge) state(id string) StatementState {
 	if i := slices.IndexFunc(under, j.notBuilt); i >= 0 {
 		st.State, st.Reason, st.Detail = statementNotBuilt, reasonNotBuilt, under[i]
 	} else {
-		st.State, st.Reason, st.Detail = j.byChecks(id, under)
+		st.State, st.Reason, st.Detail = j.byChecks(id)
 	}
 	st.PartlyChecked = st.State == statementMet && j.approved.Nodes[id].PartlyChecked
 	j.states[id] = st
@@ -137,39 +137,62 @@ func (j *statementJudge) state(id string) StatementState {
 }
 
 // byChecks is the state, reason and detail of the statement id, whose files hold its current text
-// and the current text of each statement under it, in under: its own checks and the checks of each
-// statement under it that read the subject, in the search order, then its supporters by id. A
-// statement of under that lacks a check that the tree rules ask for (lacksCheck) is unknown,
-// no_check, in its place of the search order (R7: "silence is not a pass"); one that the tree
-// rules refuse otherwise (refusals) is unknown there too: refused with the rule for id itself, and
-// statement_refused with that statement for a statement above it. A supporter that id supports in
-// its turn, directly or through other supporters, is in a loop of supporters, which Validate
-// refuses: it reads unknown, so that no state depends on the order of the derivation.
-func (j *statementJudge) byChecks(id string, under []string) (state, reason, detail string) {
+// and the current text of each statement under it. It follows its own checks that read the
+// subject, the state of each statement under it, and the state of each statement that supports it
+// (R1: "A statement is true when the statements under it, the statements that support it, and its
+// own checks are true"; R10: "Only the checks that read the subject count"), at each level: one of
+// them not met, not met; else one of them unknown, unknown; else met. The search order is id
+// itself, its own checks by id, the statements under it by id, then its supporters by id, and the
+// first of them that decides gives the reason and the detail:
+//   - id lacks a check that the tree rules ask for (lacksCheck): no_check, detail id (R7: "silence
+//     is not a pass"); the tree rules refuse it otherwise (refusals): refused, detail the rule;
+//   - an own check: check_false or check_unknown, detail the check;
+//   - a statement under id gives its own reason and detail, so the detail names the check, the
+//     supporter or the statement deep under id that decided; one that the tree rules refuse gives
+//     statement_refused, detail that statement;
+//   - a supporter: supporter_not_met, supporter_unknown or supporter_not_built, detail it.
+//
+// A statement under id or a supporter of id that reaches id in its turn is in a loop of parent and
+// support relations, which Validate refuses: it reads unknown, statement_refused or
+// supporter_unknown, so that no state depends on the order of the derivation.
+func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 	var notMet, unknown finding
-	for _, s := range under {
-		rule, refused := j.refused[s]
-		switch {
-		case j.lacksCheck(s):
-			unknown.keep(reasonNoCheck, s)
-		case refused && s == id:
-			unknown.keep(reasonRefused, rule)
-		case refused:
-			unknown.keep(reasonStatementRefused, s)
+	rule, refused := j.refused[id]
+	switch {
+	case j.lacksCheck(id):
+		unknown.keep(reasonNoCheck, id)
+	case refused:
+		unknown.keep(reasonRefused, rule)
+	}
+	for _, c := range j.own[id] {
+		switch cs, reads := j.checks[c]; {
+		case !reads:
+		case cs.State == checkFalse:
+			notMet.keep(reasonCheckFalse, c)
+		case cs.State == checkUnknown:
+			unknown.keep(reasonCheckUnknown, c)
 		}
-		for _, c := range j.own[s] {
-			switch cs, reads := j.checks[c]; {
-			case !reads:
-			case cs.State == checkFalse:
-				notMet.keep(reasonCheckFalse, c)
-			case cs.State == checkUnknown:
-				unknown.keep(reasonCheckUnknown, c)
-			}
+	}
+	for _, s := range j.children[id] {
+		if j.reaches(s, id) {
+			unknown.keep(reasonStatementRefused, s)
+			continue
+		}
+		under := j.state(s)
+		reason, detail := under.Reason, under.Detail
+		if reason == reasonRefused {
+			reason, detail = reasonStatementRefused, s
+		}
+		switch under.State {
+		case statementNotMet:
+			notMet.keep(reason, detail)
+		case statementUnknown:
+			unknown.keep(reason, detail)
 		}
 	}
 	for _, p := range j.supporters[id] {
 		supporter := statementUnknown
-		if !j.supportedBy(p, id) {
+		if !j.reaches(p, id) {
 			supporter = j.state(p).State
 		}
 		switch supporter {
@@ -202,19 +225,22 @@ func (f *finding) keep(reason, detail string) {
 	}
 }
 
-// supportedBy is whether target supports statement, directly or through other supporters.
-func (j *statementJudge) supportedBy(statement, target string) bool {
+// reaches is whether the state of statement follows the state of target: target is under it or
+// supports it, directly or through other statements that are under or support those in their turn.
+func (j *statementJudge) reaches(statement, target string) bool {
 	seen := map[string]bool{statement: true}
 	for next := []string{statement}; len(next) > 0; {
 		s := next[len(next)-1]
 		next = next[:len(next)-1]
-		for _, p := range j.supporters[s] {
-			if p == target {
-				return true
-			}
-			if !seen[p] {
-				seen[p] = true
-				next = append(next, p)
+		for _, deps := range [2][]string{j.children[s], j.supporters[s]} {
+			for _, d := range deps {
+				if d == target {
+					return true
+				}
+				if !seen[d] {
+					seen[d] = true
+					next = append(next, d)
+				}
 			}
 		}
 	}

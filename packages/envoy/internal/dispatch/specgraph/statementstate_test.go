@@ -47,6 +47,23 @@ var (
 		Claim:          "Each delivery of the last hour took less than one second.",
 		ProcedureText:  "The query reads the time of each delivery of the last hour.\nIt returns each delivery that took one second or more.",
 		FailingExample: "A copy of the delivery records with one delivery that took two seconds."}
+	// S supports L1, and S2 supports S: supporters under T, for R1.
+	statementLeafSupporter = Statement{ID: "the-log-keeps-each-stored-message", Kind: KindBehavior, Serves: []string{checkStateLeaf.ID},
+		Text: "The log keeps each stored message until the listener starts again."}
+	statementLeafSupporterCheck = Check{ID: "the-log-returns-each-stored-message", Serves: statementLeafSupporter.ID,
+		Subject: SubjectCode, Procedure: ProcedureProgram,
+		Test:           &Test{Runner: "go", Selector: "github.com/sjawhar/envoy/cmd/listener TestTheLogReturnsEachStoredMessage", Job: "go-checks"},
+		Claim:          "The log returns each stored message after the listener starts again.",
+		ProcedureText:  "The program stores one message, starts the listener again and reads the log.\nIt must find the message.",
+		FailingExample: "A log that drops its messages when the listener starts."}
+	statementSupporterOfSupporter = Statement{ID: "the-disk-keeps-each-write", Kind: KindBehavior, Serves: []string{statementLeafSupporter.ID},
+		Text: "The disk keeps each write of the log until the log deletes it."}
+	statementSupporterOfSupporterCheck = Check{ID: "the-disk-returns-each-write", Serves: statementSupporterOfSupporter.ID,
+		Subject: SubjectCode, Procedure: ProcedureProgram,
+		Test:           &Test{Runner: "go", Selector: "github.com/sjawhar/envoy/cmd/listener TestTheDiskReturnsEachWrite", Job: "go-checks"},
+		Claim:          "The disk returns each write of the log after the listener starts again.",
+		ProcedureText:  "The program writes one record of the log, starts the listener again and reads the disk.\nIt must find the record.",
+		FailingExample: "A disk that loses its last write when the listener starts."}
 )
 
 // The state of each statement at one subject (R10), and the end of a wait on a statement (R29).
@@ -170,6 +187,47 @@ func TestStatementState(t *testing.T) {
 			want: []StatementState{held(P, "unknown", "check_unknown", CP, "unknown"), held(T, "unknown", "supporter_unknown", P, "met")}},
 		{name: "P is not built", change: func(s *checkCase) { s.drop(P, CP) },
 			want: []StatementState{missing(P), held(T, "unknown", "supporter_not_built", P, "met")}},
+		// R1: "A statement is true when the statements under it, the statements that support it, and
+		// its own checks are true." v-state: "a failing check of a statement that supports this one
+		// (not met)", and a failing result reads not met for "its statement and each statement above
+		// it". So T follows the state of L1, which follows the state of its supporter S, at each
+		// level. S supports L1 and S2 supports S.
+		{name: "R1 (the acceptance run's S2): S's check is false, so L1, which S supports, is not met, and so is T above it", change: func(s *checkCase) {
+			s.addCheck(statementLeafSupporterCheck, statementLeafSupporter)
+			s.runOutcome(statementLeafSupporterCheck.ID, OutcomeFail)
+		}, want: []StatementState{
+			held(statementLeafSupporter.ID, "not_met", "check_false", statementLeafSupporterCheck.ID, "not_met"),
+			held(L1, "not_met", "supporter_not_met", statementLeafSupporter.ID, "met"),
+			held(T, "not_met", "supporter_not_met", statementLeafSupporter.ID, "met"), met(L2), met(P),
+		}},
+		{name: "R1: S2's check is false, so S, which S2 supports, is not met, and so are L1, which S supports, and T above it", change: func(s *checkCase) {
+			s.addCheck(statementLeafSupporterCheck, statementLeafSupporter)
+			s.addCheck(statementSupporterOfSupporterCheck, statementSupporterOfSupporter)
+			s.runOutcome(statementSupporterOfSupporterCheck.ID, OutcomeFail)
+		}, want: []StatementState{
+			held(statementSupporterOfSupporter.ID, "not_met", "check_false", statementSupporterOfSupporterCheck.ID, "not_met"),
+			held(statementLeafSupporter.ID, "not_met", "supporter_not_met", statementSupporterOfSupporter.ID, "met"),
+			held(L1, "not_met", "supporter_not_met", statementLeafSupporter.ID, "met"),
+			held(T, "not_met", "supporter_not_met", statementLeafSupporter.ID, "met"),
+		}},
+		{name: "R1: S's check is unknown, so L1 is unknown through S, and so is T above it", change: func(s *checkCase) {
+			s.addCheck(statementLeafSupporterCheck, statementLeafSupporter)
+			s.runOutcome(statementLeafSupporterCheck.ID, OutcomeCouldNotRun)
+		}, want: []StatementState{
+			held(L1, "unknown", "supporter_unknown", statementLeafSupporter.ID, "met"),
+			held(T, "unknown", "supporter_unknown", statementLeafSupporter.ID, "met"), met(L2),
+		}},
+		// R10: "Not built: the files at that commit do not hold the approved text of the statement, or
+		// of a statement under it." A supporter is neither, so a supporter that is not built makes L1
+		// unknown, as it makes T unknown in the row above, and T above L1 unknown too.
+		{name: "R1 with R10: S is not built, so L1 is unknown through S, and so is T above it", change: func(s *checkCase) {
+			s.addCheck(statementLeafSupporterCheck, statementLeafSupporter)
+			s.drop(statementLeafSupporter.ID, statementLeafSupporterCheck.ID)
+		}, want: []StatementState{
+			missing(statementLeafSupporter.ID),
+			held(L1, "unknown", "supporter_not_built", statementLeafSupporter.ID, "met"),
+			held(T, "unknown", "supporter_not_built", statementLeafSupporter.ID, "met"),
+		}},
 		// Validate refuses the loop at Q, so Q reads refused (the derivation gives no clean state for
 		// a tree that the rules refuse); the derivation of T still reads Q through the loop as unknown,
 		// and ends.
