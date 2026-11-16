@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -36,12 +36,14 @@ type Admission struct {
 	project string
 	log     *slog.Logger
 	now     func() time.Time
-	// memory is the project's `memory` block (UseMemory), whose mode each tree this admission
-	// opens is drawn under; the zero block is a project that names none, which draws every tree
-	// `none`. coin is the fair coin the `random` mode is drawn with, memorygroup.CryptoCoin in
-	// production and a pinned one in a test, injected as now is.
-	memory config.Memory
-	coin   func() (bool, error)
+	// experiments are the project's declared experiments (UseExperiments,
+	// config.Project.ExperimentsDeclared), drawn for each unit this admission records: every
+	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
+	// experiment when it first records an issue (drawExperiments). source is the random source a
+	// `random` mode is drawn with, experiment.CryptoSource in production and a pinned one in a
+	// test, injected as now is.
+	experiments []config.Experiment
+	source      func(uint64) (uint64, error)
 	// stalledTreeNotice is `stalled_tree_notice_hours` (UseStalledTreeNotice), how long a tree
 	// of this project may be quiet before the pass tells the project's controller once that it
 	// has stopped (tellStalledTrees). Zero is no bound and tells nobody, which is the
@@ -117,20 +119,23 @@ func (a *Admission) ReportCapabilities(open func() []string) {
 	a.openCapabilities = open
 }
 
-// UseMemory registers the project's `memory` block, under whose mode every tree this admission
-// opens for the first time is drawn (memorygroup.DrawAndRecord, promoteHolds). A project whose
-// file names no block leaves the zero value, which draws every tree `none`. It is a setter rather
-// than a parameter of New for the reason ReportCapabilities is: every test that admits anything
-// builds an admission, and none of them configures memory.
-func (a *Admission) UseMemory(memory config.Memory) {
-	a.memory = memory
+// UseExperiments registers the project's declared experiments
+// (config.Project.ExperimentsDeclared), each of which is drawn for the units this admission
+// records (drawExperiments). Every project the loader reads declares the memory experiment, at
+// mode off where the file writes no `memory` block, and a draw of an experiment at mode off
+// records its unit at no variant, so such a project has one answer recorded for each tree it
+// opens. The empty list, which draws nothing at all, is a caller that declared no experiment at
+// all: a test that builds one by hand. It is a setter rather than a parameter of New because
+// every test that admits anything builds an admission, and most of them declare no experiment.
+func (a *Admission) UseExperiments(experiments []config.Experiment) {
+	a.experiments = experiments
 }
 
 // UseStalledTreeNotice registers how long a tree of this project may be quiet before the
 // admission pass tells the project's controller that it has stopped (`stalled_tree_notice_hours`,
 // config.Config.StalledTreeNotice, tellStalledTrees). It is a setter rather than a parameter of
-// New for the reason UseMemory is: every test that admits anything builds an admission, and the
-// stall rule is no part of what most of them are about. A bound of zero or less is no bound and
+// New because every test that admits anything builds an admission, and the stall rule is no part
+// of what most of them are about. A bound of zero or less is no bound and
 // tells nobody, which is what such a test leaves.
 func (a *Admission) UseStalledTreeNotice(bound time.Duration) {
 	a.stalledTreeNotice = bound
@@ -139,7 +144,7 @@ func (a *Admission) UseStalledTreeNotice(bound time.Duration) {
 // UseWorkerSilence registers the two bounds a phase worker's quiet is read against, which every
 // tick controller notice derives its silent list from (silentWorkers): silence for a worker
 // whose last step is old, background for a worker whose own report of background work is. It
-// is a setter rather than a parameter of New for the reason UseMemory and ReportCapabilities
+// is a setter rather than a parameter of New for the reason UseExperiments and ReportCapabilities
 // are: every test that admits anything builds an admission, and none of them configures a bound.
 func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 	a.workerSilence = silence
@@ -156,7 +161,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue),
+		source: experiment.CryptoSource, pending: make(map[string]intake.DispatchIssue),
 		unclassifiedLogged: make(map[string]uint64)}
 }
 
@@ -368,11 +373,11 @@ func (a *Admission) applyReread(ctx context.Context, tx pgx.Tx, reread map[strin
 }
 
 // wakeForFreeSlot wakes the controller when this transaction released a slot that promotion left
-// free: an issue reached its done or its wait for a merge, or left the workflow, and nothing
-// waiting in the line took its place. The controller names the free slot in its summary and takes
-// no issue for it (skill://legion-controller, "Free slots"). It is one `slot-free` notice on the
-// first issue whose slot was released, under the same rules as every slot wake: a slot free by
-// slotFree, a registered controller, none already unsent (wakeController).
+// free: an issue reached its done or left the workflow, or gave its slot back to wait on another
+// issue (releaseSlotsForWaits), and nothing waiting in the line took its place. The controller
+// names the free slot in its summary and takes no issue for it (skill://legion-controller,
+// "Free slots"). It is one `slot-free` notice on the first issue whose slot was released, under
+// the same rules as every slot wake: a slot free by slotFree, a registered controller, none already unsent (wakeController).
 func (a *Admission) wakeForFreeSlot(ctx context.Context, tx pgx.Tx, released []string) error {
 	if len(released) == 0 {
 		return nil
@@ -442,11 +447,12 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
 // (ReportCapabilities), which this adds, and the three lists the tick's own fact built from one
 // read of the project and put on the notice before it reached here (applyFact, tickRows): every
-// issue Legion is waiting to start behind an unfinished Dispatch issue, every issue nothing
-// starts at all, and every issue whose phase worker nothing will prompt (silentWorkers). So a
-// tick that wakes nobody has judged them all the same, and nothing here judges anything a second
-// time. Every other kind is queued as the caller built it, so a kind that says something of its
-// own — the role and the reason of TellController's — carries it here.
+// issue Legion waits on another issue for, one it has still to start or one it started that gave
+// its slot back, every issue nothing starts at all, and every issue whose phase worker nothing
+// will prompt (silentWorkers). So a tick that wakes nobody has judged them all the same, and
+// nothing here judges anything a second time. Every other kind is queued as the caller built it,
+// so a kind that says something of its own — the role and the reason of TellController's —
+// carries it here.
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
@@ -528,10 +534,11 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 }
 
 // tickRows is what the tick controller notice carries beside the open capabilities: every issue
-// Legion is waiting to start that waits on something else (`blocked`), every issue the daemon's
-// own record holds in the workflow that stands in neither the active set nor the waiting line,
-// with the one word for why (`held`, C3 of dispatch://INFRA-3107), and every issue whose phase
-// worker nothing will prompt (`silent`, silentWorkers).
+// Legion waits on another issue for, one it has still to start or one it started that gave its
+// slot back (`blocked`, blockers.Blocked), every issue the daemon's own record holds in the
+// workflow that stands in neither the active set nor the waiting line, with the one word for why
+// (`held`, C3 of dispatch://INFRA-3107), and every issue whose phase worker nothing will prompt
+// (`silent`, silentWorkers).
 //
 // The two are two assemblies of one judgement of the line, so they are built together here:
 // `blocked` is blockers.Blocked over the mirror rows and the line, `held` is record.HeldList
@@ -707,18 +714,25 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // (record.SilentIssue.BackgroundSince). workflow.PhaseWorkerOwedTurn answers the half of both
 // only the store can answer.
 //
-// The silence handlers read the same rules over the same record, so the list and the
-// `worker-silent` and `worker-background-stalled` notices the architects were sent name the
-// same workers, with one difference: a handler also refuses a fact whose generation is not the
-// issue's current one (workflow's phaseWorkerRecord), a term the tick never meets, because it
-// reads each issue at its current generation.
+// The silence handlers read the same rules over the same record, so the list names the workers
+// the `worker-silent` and `worker-background-stalled` notices to the architects name, with two
+// differences. A handler also refuses a fact whose run is not the issue's current generation
+// (workflow's phaseWorkerRecord), and the sweep gives each fact the claim's serving run
+// (supervise.Claim.ServingRun). The tick weighs no such term: it reads each worker's claim by its
+// token alone (record.Postgres.RoleRuns, whose key's generation picks only the queued starts read
+// beside the claim), and the claim it reads carries no serving run (record.RoleClaim), so the list
+// can name a worker whose claim still serves an earlier run of the issue, whose fact the handler
+// refuses. And the sweep that applies those facts runs once a minute (internal/daemon's
+// reconcileOrphans, at orphanSweepInterval), so a tick can name a worker that passed its bound
+// since the last sweep up to a minute before the next one writes its architect's notice.
 //
-// Why the controller is told at all, when the issue's own architect already was: that architect
-// may be failed or gone, so its notice reaches nobody, and the controller is the role that holds
-// `fresh_session` and reads the whole project (this root's architect ruled it on 2026-11-12,
-// dispatch://INFRA-3163). The tick carries the list. The state route gains no field for it; the
-// state's settings gain the two bounds, `worker_silence_minutes` and `worker_background_hours`,
-// as two keys of a loose object, so no daemon API contract number is taken for either.
+// Why the controller is told at all, when the issue's own architect already was or is within the
+// minute: that architect may be failed or gone, so its notice reaches nobody, and the controller
+// is the role that holds `fresh_session` and reads the whole project (this root's architect ruled
+// it on 2026-11-12, dispatch://INFRA-3163). The tick carries the list. The state route gains no
+// field for it; the state's settings gain the two bounds, `worker_silence_minutes` and
+// `worker_background_hours`, as two keys of a loose object, so no daemon API contract number is
+// taken for either.
 //
 // What that costs, plainly: record.DecodeOutboxPayload refuses a field and a notice kind it
 // does not know, so a daemon of an older release that met a queued row carrying this list, or a
@@ -877,6 +891,11 @@ func parentsFirst(summaries []intake.DispatchIssue) []intake.DispatchIssue {
 // One whose repository resolves to none, or to one Legion does not serve, is not recorded: the
 // daemon says why on the issue, once for that resolution, and the issue's next observation in
 // todo is admission's next look at it.
+//
+// This is where a root is first recorded, so it is where the issue-unit experiments the project
+// declares are drawn for it (drawExperiments): every issue the daemon records is drawn for at the
+// moment it records it, and a root is an issue like any other. Its tree's own experiments are
+// another draw, made when its tree is opened (promoteHolds).
 func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intake.DispatchIssue, logOrphan bool) error {
 	resolution, err := a.engine.ResolveRepository(observation.ResolvedRepo)
 	if err != nil {
@@ -918,10 +937,33 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
+	if err := a.drawExperiments(ctx, tx, issue.Key, config.ExperimentIssue); err != nil {
+		return err
+	}
 	if logOrphan && observation.Parent != "" {
 		a.log.Info("admission orphan", "issue", observation.Key, "parent", observation.Parent)
 	}
 	return nil
+}
+
+// drawExperiments draws every experiment the project declares over unit (UseExperiments) and
+// records the answers against key, in the caller's transaction (experiment.DrawAndRecord): the
+// tree-unit experiments of a tree against its root's key when the tree's lifecycle row is
+// created (promoteHolds), and the issue-unit experiments of an issue against its own key when
+// the daemon first records it (putNewRoot).
+func (a *Admission) drawExperiments(ctx context.Context, tx pgx.Tx, key string, unit config.ExperimentUnit) error {
+	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.source, a.now())
+}
+
+// declaredAssignments is one entry per experiment the project declares now, carrying its name and
+// its unit: what a hand-over settles a child at for an experiment the tree it left holds no
+// answer for (record.Store.CarryAssignments, readmit).
+func (a *Admission) declaredAssignments() []record.DeclaredExperiment {
+	settled := make([]record.DeclaredExperiment, 0, len(a.experiments))
+	for _, declared := range a.experiments {
+		settled = append(settled, record.DeclaredExperiment{Experiment: declared.Name, Unit: string(declared.Unit)})
+	}
+	return settled
 }
 
 // applySummary applies one Dispatch boot-listing summary to admission's own record of the issue
@@ -1046,8 +1088,10 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
 	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
 	// is not live: a running tree's member keeps what the record says, because the tree is the
-	// thing that says the work is under way, and the row the member holds says nothing about it —
-	// it keeps that row through every phase short of done, worked or not (record.KeepsSlot).
+	// thing that says the work is under way, and the row the member holds, or does not hold, says
+	// nothing about it: it keeps that row through every phase up to its review, worked or not
+	// (record.KeepsSlot), holds none past it, and gives it back while it waits on another issue
+	// before then (releaseSlotsForWaits).
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
 			return nil
@@ -1304,22 +1348,24 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	// A child leaving its old tree, carried or fresh, takes its hand-over fence with it: left behind,
 	// it would read a later daemon todo of this root (a controller's reopen) as the stale hand-over.
-	// The hand-over settles its memory too, here and not at its own first open: it takes the answer
-	// of the tree it leaves, that tree's draw verbatim with the time it was drawn where it had one,
-	// so the work goes on running under the group it has been running under, and no draw at all
-	// where that tree had been opened with none — a tree first opened before this release, which
-	// nothing draws for. A child out of a tree nothing ever opened has run under nothing, so the
-	// carry writes it nothing and its own first promotion draws it. tree_lifecycles is keyed by
-	// the normalized project token, so the carry is handed that token, as promoteHolds reads it.
+	// The hand-over settles its experiments too, here and not at its own first open: it takes the
+	// answers of the tree it leaves, each verbatim with the time it was drawn, so the work goes on
+	// running under the arms it has been running under. Every experiment declared at this moment
+	// is passed as settled, so one the old tree holds no answer for is settled here at no variant
+	// and is never drawn for later — a tree first opened before that experiment was declared,
+	// which nothing draws for. A child out of a tree nothing ever opened has run under nothing, so
+	// the carry writes it nothing and its own first promotion draws it, which the carry decides
+	// from the old tree's lifecycle row. tree_lifecycles is keyed by the normalized project token,
+	// so the carry is handed that token, as promoteHolds reads it.
 	if oldTree != stored.Key {
 		if err := a.store.DeleteHandover(ctx, tx, stored.Key); err != nil {
 			return err
 		}
 		project, err := claim.ProjectToken(a.project)
 		if err != nil {
-			return fmt.Errorf("carry the memory of re-admitted %s: %w", stored.Key, err)
+			return fmt.Errorf("carry the experiments of re-admitted %s: %w", stored.Key, err)
 		}
-		if _, err := a.store.CarryMemory(ctx, tx, project, stored.Key, oldTree); err != nil {
+		if _, err := a.store.CarryAssignments(ctx, tx, project, stored.Key, oldTree, a.declaredAssignments()); err != nil {
 			return err
 		}
 	}
@@ -1425,11 +1471,17 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 }
 
 // releaseSlots releases the slot of every issue of this project that no longer needs one
-// (record.NeedsSlot, the one statement of the release, whose phase half the grant reads too —
-// record.KeepsSlot) and reports those issues in slot order. Each release is logged once the
-// fact commits. It is the one release the daemon makes: a tree leaving the workflow, a root
-// finishing, an issue whose work passes its review, and a linger all read the same
-// predicate, so there is one rule and one place a slot can go.
+// (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
+// whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
+// order. Each release is logged once the fact commits. A tree leaving the workflow, a root
+// finishing, an issue whose work passes its review, an issue reaching its done, and a linger all
+// read the same predicate, so one rule says when an issue stops needing a slot where it stands.
+// The daemon makes one other release, releaseSlotsForWaits, judged by blockers.waitsOf rather
+// than by record.NeedsSlot, which frees the row of an issue that goes on working and waits on
+// another issue; the two are apart because they free rows for opposite reasons — this one
+// because the issue's phase holds no row, that one because the work is held — and only that one
+// leaves a mark, since only its issue stands in the line for the row again. An issue past its
+// review is never one it frees (blockers.waitsOf says why).
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -1439,6 +1491,14 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // another project's slot, whose own daemon releases it. The further facts the predicate needs of
 // each slotted issue — its tree root, and whether that root's tree is live — come from issues
 // and facts, which the pass read once for all of them, so this still makes exactly one query.
+//
+// It also clears the mark of a release for a wait from every issue that needs no slot at all
+// (record.Issue.ReleasedForWaitAt, over issues rather than over the slotted rows): an issue
+// released for a wait holds no row, so the loop below never sees it, and it goes on working, so
+// it can reach its done, or be parked, with nothing else to clear the mark. Left standing, the
+// mark would say the issue stands in the line waiting for its slot
+// back when nothing of it is waiting, and its work coming back later would take its place in
+// the line from the moment before the park (record.Waiting).
 func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
@@ -1465,6 +1525,55 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		released = append(released, issue.Key)
 		a.logSlot(ctx, "released", issue.Key, inUse)
 	}
+	for _, issue := range issues {
+		if issue.ReleasedForWaitAt == nil {
+			continue
+		}
+		_, running := live[issue.Tree]
+		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
+			continue
+		}
+		if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+			return nil, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+		}
+	}
+	return released, nil
+}
+
+// releaseSlotsForWaits takes back the row of every issue of this project that holds one and
+// waits on another issue (record.LineFacts.Waits, the pass's own judgement by blockers.waitsOf),
+// and reports the issues it took one from. It is the release for a wait, beside releaseSlots,
+// which frees the row of an issue that needs none at all (record.NeedsSlot): an issue this one
+// frees goes on working and keeps its place in the line, so it takes a row again by itself in
+// that place once the promotion sees its wait end and a row is free (promoteHolds), which is why
+// the two are written apart and why this one marks the issue.
+// The cap counts the issues Legion is working on, and an issue waiting for another issue to
+// finish is not one of them, so its row goes to the line and it stands there for a row of its
+// own again. Nothing else of it moves —
+// no claim is suspended, no phase changes, no Dispatch status is written.
+//
+// The release is one statement an issue (record.Store.ReleaseSlotForWait): the delete of the row
+// and the mark that says why are written together, so no pass can read one without the other.
+// The rows it frees are reported to the caller with the rows the ordinary release frees, because
+// the controller's free-slot wake is about the capacity of the project and not about the reason
+// a row came free.
+func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
+	slots []record.Slot, facts record.LineFacts,
+) ([]string, error) {
+	own := ownSlots(issues, slots)
+	inUse := len(own)
+	var released []string
+	for _, slot := range own {
+		if _, waits := facts.Waits[slot.Issue]; !waits {
+			continue
+		}
+		if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, a.now()); err != nil {
+			return released, fmt.Errorf("release the slot of %s for what it waits on: %w", slot.Issue, err)
+		}
+		inUse--
+		released = append(released, slot.Issue)
+		a.logSlot(ctx, "released", slot.Issue, inUse)
+	}
 	return released, nil
 }
 
@@ -1485,7 +1594,8 @@ func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int
 // holds: one a.pending still names, since the Dispatch consumer has not yet reached the stream
 // position Reconcile captured when it deferred that key, or one the boot's catch-up still holds
 // (catchingUpFor). It stops rather than passing over it because the cap counts issues, so every
-// candidate behind the held one competes for the same slots, and a slot is never taken back: a
+// candidate behind the held one competes for the same slots, and a slot is taken back only from
+// an issue that waits on another issue (releaseSlotsForWaits), never to restore rank order: a
 // skip would invert Dispatch's rank order for good. A pass after the hold's release fills the
 // free slots in line order. release, not promote, is what clears pending — it empties the whole
 // set at once, so this need only check membership. An admitted root's architect start is queued
@@ -1568,11 +1678,22 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil {
 		return 0, released, err
 	}
+	// The issues this judgement finds waiting give their rows back before the line is promoted,
+	// so this pass's own line and its ownSlots read the state after the release: an issue that
+	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
+	// this very pass rather than the next one.
+	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
+	if err != nil {
+		return 0, append(released, waiting...), err
+	}
+	released = append(released, waiting...)
 	unslotted, err := a.releaseUnslotted(ctx, tx, issues, record.LiveRoots(issues, facts), facts.ChildWaits, respectHolds)
 	if err != nil {
 		return 0, released, err
 	}
-	if unslotted {
+	// One re-read and one second judgement answer for both releases: each took rows away, and
+	// what the promotion loop and ownSlots must read is the state after the last of them.
+	if len(waiting) > 0 || unslotted {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
@@ -1593,13 +1714,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// blockers.JudgeLine), so the measure and the line are one reading of one project, they
 	// cannot disagree about what holds an issue, and no pass walks the project's issues a second
 	// time to say it. The slots are what the rule's liveness clause is read from: a project is
-	// stopped for good when no slot holder of it can finish and no agent of it is at work, and a
-	// holder in a phase of its own stands in no line (lineCanMove). They are this pass's own
+	// stopped for good when no slot holder of it can finish, no agent of it is at work and no
+	// free slot is left for an entry of the line that the promotion below would start, and a
+	// holder in a phase of its own stands in no line (lineCanMove, which reads the mirror rows
+	// for that last term as the promotion reads them). They are this pass's own
 	// rows, read again after every release it made, so the rule judges the slots the project
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -1608,14 +1731,16 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	admitted := 0
 	for {
 		own := ownSlots(issues, slots)
-		stopped, opened := false, false
+		stopped, opened, resumed := false, false, false
 		for _, candidate := range line {
 			issue := candidate.Issue
 			// A hold stops the whole pass, the candidates behind this one included. Every
 			// candidate competes for the same slots now that the cap counts the project's
 			// issues rather than its trees, so passing one over would invert Dispatch's rank
 			// order for all of them and not only inside the held candidate's own tree — and a
-			// slot is never taken back, so that inversion would be permanent. The design is
+			// slot is taken back only from an issue that waits on another issue
+			// (releaseSlotsForWaits), never to restore rank order, so that inversion would
+			// be permanent. The design is
 			// that the daemon gives the first issue of the line its slot; skipping the first
 			// issue is not that. The cost is bounded: a hold ends when the Dispatch consumer
 			// reaches the position Reconcile captured for it, and every fact, tick, hold
@@ -1644,7 +1769,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// brought, and an answered root resumes its architect on the row it kept through
 			// the wait.
 			takes := slotFor(candidate)
-			if takes && len(own) >= a.cap {
+			if !capLets(candidate, len(own), a.cap) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
@@ -1665,8 +1790,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			if candidate.Kind == record.LineAnswered {
 				// The root's tree already runs: only a reason it may not resume in its own
 				// session holds it here (its label gone, a foreign Dispatch claim), which
-				// releaseUnslotted takes out of the workflow on this same pass. Its links are
-				// not re-read, as no running tree's are.
+				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
+				// nothing here: a root waiting on a person keeps its row through a wait
+				// (blockers.waitsOf).
 				reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
@@ -1697,13 +1823,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					}
 					return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
 				}
-				// The tree's row was created by this call, so this is the one moment its memory
-				// group is drawn, in the fact's own transaction: a crash before the commit leaves
-				// neither the lifecycle nor the draw. Every later open of the tree — its next
-				// epoch after a cleanup, and every re-admission — creates nothing and draws
-				// nothing, and the draw itself is written once (record.Store.DrawMemory).
+				// The tree's row was created by this call, so this is the one moment the tree-unit
+				// experiments the project declares are drawn for it, in the fact's own
+				// transaction: a crash before the commit leaves neither the lifecycle nor the
+				// draws. Every later open of the tree — its next epoch after a cleanup, and every
+				// re-admission — creates nothing and draws nothing, and each answer is itself
+				// written once (record.Store.PutAssignments). The answers are recorded against
+				// the tree's root issue key, which is what a tree's unit is read by.
 				if lifecycle.Created {
-					if err := memorygroup.DrawAndRecord(ctx, tx, a.store, issue.Tree, a.memory, a.coin, a.now()); err != nil {
+					if err := a.drawExperiments(ctx, tx, issue.Tree, config.ExperimentTree); err != nil {
 						return admitted, released, err
 					}
 				}
@@ -1723,6 +1851,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
 				}
+				// The mark of a release for a wait goes with the row's return: an issue holding
+				// a row has its place against the cap back, and a mark left standing would say
+				// it gave that place up (record.Issue.ReleasedForWaitAt). Only an issue that
+				// carries the mark is written, so an ordinary grant costs no statement.
+				if issue.ReleasedForWaitAt != nil {
+					if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+						return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+					}
+				}
 				slots, own = append(slots, slot), append(own, slot)
 				a.logSlot(ctx, "taken", issue.Key, len(own))
 			}
@@ -1735,6 +1872,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// lifecycle lane (the daemon's projectRecords.PutSlot), so the task is delivered
 				// in the same second rather than at the next sweep.
 				a.log.Info("admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
+			case record.LineWaitingOnIssue:
+				// The wait is over — a candidate still waiting never reaches here, the skip
+				// above passes over it — and the row granted above is the whole of this
+				// promotion: nothing of the issue's work ever stopped, so there is nothing to
+				// start again. What its phase needs next, a first phase at admitted among it,
+				// the line offers from the record this grant leaves, the mark cleared, which is
+				// why this round is read again below (record.Waiting).
+				a.log.Info("admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
+				resumed = true
 			case record.LineAnswered:
 				awaiting := issue.Awaiting
 				// An answered root keeps the status it ran with, so its resume writes none,
@@ -1839,10 +1985,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		}
 		// A resume, or a tree opened above whose design gate already stands open, releases
 		// members of its own tree that stood at admitted on the snapshot this round read and
-		// would otherwise wait a whole fact for their first phase. The records are read again
-		// and the line rebuilt so they are promoted in this pass; a pass a hold stopped goes no
-		// further, since the hold is the answer for everything behind it too.
-		if stopped || !opened {
+		// would otherwise wait a whole fact for their first phase. An issue whose wait ended
+		// and took its row back is read again for the same reason and with the same reach: the
+		// row is all its own promotion gave it, and what its record needs next — the first
+		// phase of an issue standing at admitted — is the line's to offer, from the record the
+		// grant leaves. The records are read again and the line rebuilt so they are promoted in
+		// this pass; a pass a hold stopped goes no further, since the hold is the answer for
+		// everything behind it too.
+		if stopped || (!opened && !resumed) {
 			break
 		}
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
@@ -1906,6 +2056,24 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // holding it back would bound nothing and would leave its tree closed for no reason.
 func slotFor(entry record.LineEntry) bool {
 	return !entry.Holds && record.KeepsSlot(entry.Issue)
+}
+
+// capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
+// the project holds, and cap: an entry that takes no slot (slotFor) starts whatever the cap
+// says, and one that takes a slot starts only while a row stands free. A cap that admits nothing
+// lets nothing start, since the promotion does not run under it. It answers the cap's half
+// alone: what an entry waits on is the other half (blockers.LineWaitsOn), which each reader asks
+// beside this.
+//
+// It is the one statement of the cap's half, and two readers ask it: the promotion itself
+// (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
+// said the cap held a queued root past its review that the promotion of the same pass started,
+// and told the controller of a stall that was not one.
+func capLets(entry record.LineEntry, held, cap int) bool {
+	if cap <= 0 {
+		return false
+	}
+	return !slotFor(entry) || held < cap
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
@@ -2027,21 +2195,25 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // Holding no slot is the normal state of a root waiting to start: the cap counts the issues the
 // daemon has started whose change is still to write, so a root waiting in the line, one whose
 // tree has left the workflow and one standing past its review — in accepting, retro or
-// merging — hold none, while a root waiting on a person, on a blocker or for its children
-// keeps the row it was started with. Every one of those is a tree whose lifecycle stands open
-// under the workflow, or whose root waits in the line or on a person, which is exactly
-// record.LiveRoots: so liveness is the term that replaces the old slot test, and it covers the
-// slots, the line and the awaiting_person wait together. The children-first wait is asked of
-// the issue as well, so that a later rule which holds an issue somewhere liveness does not
-// reach cannot silently have its work taken out of the workflow.
+// merging — hold none, and a started root before its review that waits on another issue — a
+// blocker of it that is not done, or an open child its own first phase waits for — gives its row
+// back for that wait as well. Three started roots keep the row they were started with through
+// such a wait (blockers.waitsOf): one waiting on a person (awaiting_person, answered or not), one
+// at admitted whose design gate has never opened (record.AtWork), and a queued root that arrived
+// from another tree carrying its row (record.QueuedRoot). Every one of those is a tree whose
+// lifecycle stands open under the workflow, or whose root waits in the line or on a person,
+// which is exactly record.LiveRoots: so liveness is the term that replaces the old slot test,
+// and it covers the slots, the line and the awaiting_person wait together. The children-first
+// wait is asked of the issue as well, so that a later rule which holds an issue somewhere
+// liveness does not reach cannot silently have its work taken out of the workflow.
 //
 // What a root's own Dispatch links say is not asked, though it reads as a wait of the same
 // kind. A root the line holds behind an unfinished link is in todo, which this rule has already
-// passed over, and the links of a root at a running status are read by nothing: its tree was
-// opened under whatever they said then, and a link added since re-checks nothing (the line's
-// own blockers.LineWaitsOn). Asking blockers.WaitsOn here answered from the mirror rows this pass
-// happened to read for other issues, so whether the safety net spared a root turned on whether
-// something else had named it.
+// passed over, and a root at a running status whose links hold it is a started root the pass
+// has released for that wait (record.LineFacts.Waits): its tree stands open, so liveness has
+// already spared it above and the links add nothing here. Asking blockers.WaitsOn here answered
+// from the mirror rows this pass happened to read for other issues, so whether the safety net
+// spared a root turned on whether something else had named it.
 //
 // What is left is a root whose tree nothing will ever open again, recorded at a running status.
 // The workflow takes a root out on a status out of the workflow (its leave) but does nothing on a
@@ -2517,8 +2689,9 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // phase rows of each candidate the three skips that read the claim alone leave standing.
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
-// no worker of it works (record.KeepsSlot), so a candidate record.AtWork answers false for is
-// passed over, at the skip the shared selection states (phaseWorkers). The caller hands that
+// no worker of it works (record.KeepsSlot), unless it waits on another issue
+// (releaseSlotsForWaits), so a candidate record.AtWork answers false for is passed over, at the
+// skip the shared selection states (phaseWorkers). The caller hands that
 // selection the facts of its own pass, so the gate AtWork is asked with is the issue's real one
 // and the call stays honest against its contract, at one map lookup a candidate.
 //

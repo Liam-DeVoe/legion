@@ -28,15 +28,23 @@ const (
 
 // boundRefusal fails t unless answer is a 403 whose words name the entry and field and carry
 // neither the real federated token, nor the document's value of that field, nor sent, the one
-// the request carried instead, and unless the one line the proxy logged for the call gives the
-// same reason. The ids are no secrets, but a refusal is written to the command and to the
-// broker's log, and neither is a place an id - or whatever a command put in that field - is to
-// be copied to. A failure names what leaked and never prints it, and prints words only when
-// they carry none of the three.
-func boundRefusal(t *testing.T, r *rig, answer *http.Response, body, field, stored, sent string) {
+// the request carried instead, and unless the one refusal record the proxy wrote for the call
+// carries code and gives the same reason. The ids are no secrets, but a refusal is written to
+// the command and to the broker's log, and neither is a place an id - or whatever a command put
+// in that field - is to be copied to. A failure names what leaked and never prints it, and
+// prints words only when they carry none of the three.
+func boundRefusal(t *testing.T, r *rig, answer *http.Response, body, code, field, stored, sent string) {
 	t.Helper()
-	lines := r.logs.callsAtLeast(t, 1)
-	reason, _ := lines[len(lines)-1].fields["reason"].(string)
+	// refuse writes its record before the answer, so a row that has its answer reads it at once.
+	var reason string
+	if records := r.logs.refusals(); len(records) != 1 {
+		t.Errorf("the proxy wrote %d refusal records; want one", len(records))
+	} else {
+		reason, _ = records[0].fields["reason"].(string)
+		if got := records[0].fields["code"]; got != code {
+			t.Errorf("the refusal record's code is %v; want %s", got, code)
+		}
+	}
 	never := []struct{ what, value string }{
 		{"the real federated token", azureRealFederated},
 		{"the document's " + field, stored},
@@ -150,7 +158,7 @@ func TestAzureExchangeIsBoundToItsDocument(t *testing.T) {
 			answer, body := tokenRequestAt(t, r, r.client(azureFederatedPlaceholder), row.path, form)
 
 			if row.field != "" {
-				boundRefusal(t, r, answer, body, row.field, row.stored, row.sent)
+				boundRefusal(t, r, answer, body, codeTokenApplication, row.field, row.stored, row.sent)
 				noExchange(t, r, stand)
 				return
 			}
@@ -216,7 +224,7 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 			answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+access)
 
 			if row.field != "" {
-				boundRefusal(t, r, answer, body, row.field, row.stored, row.sent)
+				boundRefusal(t, r, answer, body, codeAccessToken, row.field, row.stored, row.sent)
 				noExchange(t, r, stand)
 				return
 			}

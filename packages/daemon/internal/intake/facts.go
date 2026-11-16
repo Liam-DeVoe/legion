@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -430,17 +431,21 @@ func (p DispatchConsumerPosition) Reached(target int64) bool {
 	return p.AckFloorStream >= target || p.Idle
 }
 
-// IssueStatus is one issue of the daemon's project as Dispatch shows it now: its key, its status,
-// the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that view
-// stands at. The periodic turn's re-read carries them on its ControllerTick, and blockers.Mirror
-// writes each through the same sequence-fenced write an event's own row takes, so a view older
-// than an event already applied changes nothing — except the parent, which record.PutDispatchIssue
-// also writes for a view at the row's own sequence, the listing that is the only thing to carry
-// the parent of an issue the daemon has never recorded. ClaimedBy and
+// IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
+// status, the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that
+// view stands at. The periodic turn's re-read carries them on its ControllerTick, and
+// blockers.Mirror writes each through the same sequence-fenced write an event's own row takes, so
+// a view older than an event already applied changes nothing — except the parent, which
+// record.PutDispatchIssue also writes for a view at the row's own sequence, the listing that is
+// the only thing to carry the parent of an issue the daemon has never recorded. ClaimedBy and
 // ClaimKnown are DispatchIssue's: the issue read behind this view shows the claim unless it names
 // no actor.
 type IssueStatus struct {
-	Key        string
+	Key string
+	// Project is the Dispatch project of Key, as the read that saw the issue reports it, since a
+	// turn re-reads blockers of other projects too (workflowRuntime.readObserved) and the mirror
+	// row of such a key is that project's rather than the daemon's (blockers.Mirror.put).
+	Project    string
 	Status     string
 	Blockers   []string
 	Seq        int64
@@ -731,6 +736,16 @@ func (PullRequestChecks) isFact() {}
 // read fills it, and the engine records the answer only while the record still stands at that
 // head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
 // and a verdict about another head's tree says nothing about this one.
+//
+// ReadAt is the moment the reader had GitHub's answer in hand, taken from the reader's own clock
+// rather than from the clock of whoever applies the fact: the engine takes no clock of its own, so
+// what it records is the time of the read rather than the time of the apply, and its tests stay
+// deterministic because every time they record is one their own fact named. It is what
+// record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
+// that changes something does, since it is the age of the knowledge and not the age of the last
+// change to it. A fact minted by anything that did not read GitHub - every test that states a
+// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
+// none.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -738,6 +753,7 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
+	ReadAt     time.Time
 }
 
 func (PullRequestMergeability) isFact() {}
@@ -1032,6 +1048,26 @@ type SessionStoreFault struct {
 
 func (SessionStoreFault) isFact() {}
 
+// MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
+// was near its memory limit, as the pod's launcher reported it on the connection of the role
+// whose process it was (shimwire.LauncherMemoryKill). It is never decoded from an event: the
+// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
+// report under the id `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a
+// report the launcher sent twice is applied once (INFRA-3557).
+//
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
+// the role the connection authenticated for, and that pod), never anything the report says.
+// The workflow tells that role, on its own role topic, which of its processes was ended and why
+// (workflow's memoryGuardKill).
+type MemoryGuardKill struct {
+	Issue  string
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (MemoryGuardKill) isFact() {}
+
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
 // prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds a tree's root
@@ -1048,6 +1084,16 @@ type ClaimReady struct {
 	// the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the turn
 	// is taken once per start row however often the row runs.
 	Paced bool
+	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
+	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold
+	// (supervise.EndedWork.Tells); "" otherwise. A record that still tells is one of the claim's
+	// current session's processes, since abandoning a session ends the record of its process
+	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
+	// (the daemon's applyTerminal): a root architect's catch-up opens with it (workflow's
+	// QueueCatchUp), because the first turn of a relaunched root architect can be that catch-up's
+	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
+	// prompt the claim's machine sends, at that prompt's confirmation.
+	Relaunch string
 }
 
 func (ClaimReady) isFact() {}
