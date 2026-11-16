@@ -4,6 +4,7 @@
 package cmdtest
 
 import (
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -38,6 +39,12 @@ func BuildStamped(t testing.TB, name, commit string) string {
 // directory, Dir the directory go build runs in (the test's own when empty), Target what it
 // builds ("." when empty), Flags the flags before the target, and Env the whole environment of
 // the go command (the process's when nil).
+//
+// The go that builds it is the go that runs the test: go test puts its own GOROOT/bin first on
+// the test binary's PATH, so go build selects the toolchain go.work or go.mod asks for exactly as
+// that go test did, and finds it already there. So Env sets no GOTOOLCHAIN: a version written
+// there disagrees with those files as soon as they move, and makes go build fetch another
+// toolchain or refuse.
 type Command struct {
 	Name   string
 	Dir    string
@@ -107,8 +114,14 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 	args = append(args, target)
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = c.Dir, c.Env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("build %s: %v\n%s", c.Name, err, out)
+	// go's standard error also goes to the test binary's as go writes it, so a build that stalls,
+	// as a module download that never ends does, is named in the test's output when the test
+	// times out: a buffer is read only once go returns, and the timeout's panic loses it. The
+	// buffer keeps both streams for the failure below.
+	out := &LockedBuffer{}
+	cmd.Stdout, cmd.Stderr = out, io.MultiWriter(os.Stderr, out)
+	if err := cmd.Run(); err != nil {
+		t.Errorf("build %s: %v\n%s", c.Name, err, out.String())
 		return ""
 	}
 	return binary
