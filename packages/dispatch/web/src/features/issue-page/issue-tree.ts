@@ -17,7 +17,7 @@ import type {
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
+import { type Draft, plainWords, type TreeContext, treeContext, treeDrafts } from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else
@@ -103,8 +103,10 @@ export interface NodeChip {
    *  read answered with no reading or one that holds no words, the page's word for the block's
    *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
    *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
-   *  and anything else's name as that read answers it. `""` for a block and for anything else
-   *  until the read answers, and for a target that is gone. */
+   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); and
+   *  anything else's name as that read answers it. `""` for a block and for anything else
+   *  until the read answers, and for a target that is gone. The page publishes this same name
+   *  for every link beside the tree to draw (`targetNames`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -366,6 +368,12 @@ export function nodeWords(node: TreeNode): string {
  * and the paragraph after it with one space, so a line cut from the whole reading ran the heading
  * into its body: "Keep it Keep the model pure.".
  *
+ * A stored block is markdown, and its marks are no word of it, so it is read to plain words
+ * (`plainWords`) as the server's reading holds them: a plan task stored as
+ * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`, whose label
+ * `firstLineOf` reads as no sentence end (decision 51), and whose sentence end is no longer
+ * hidden behind the `**` that followed it.
+ *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
  * line, a folded branch, a Contents entry and a breadcrumb once they draw (R2). `nodeWords`
@@ -376,17 +384,15 @@ export function lineWords(node: TreeNode): string {
   if (node.tree !== undefined) return firstBlockWords(node.tree);
   for (const stored of node.text.split(/\n\s*\n/u)) {
     const block = stored.trimStart();
-    const words = /^#{1,6} +(.*)/u.exec(block)?.[1] ?? block;
-    if (!NO_WORDS.test(words.replace(MARKDOWN_IMAGE, ""))) return words;
+    const words = plainWords(/^#{1,6} +(.*)/u.exec(block)?.[1] ?? block);
+    if (!NO_WORDS.test(words)) return words;
   }
   return "";
 }
 
-/** A markdown image, `![alt](src)`, which draws no word of a line. */
-const MARKDOWN_IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
-
-/** A stored block that holds no words once its images are left out: nothing but white space
- *  and the marks of a horizontal rule (`---`, `***`, `___`). */
+/** A stored block that holds no words once read to plain words (`plainWords`, which leaves an
+ *  image out): nothing but white space and the marks of a horizontal rule (`---`, `***`,
+ *  `___`). */
 const NO_WORDS = /^[\s*_-]*$/u;
 
 /** The words of the first top-level block of a reading that holds any (`lineWords`); `""` for a
@@ -400,13 +406,44 @@ function firstBlockWords(reading: DisplayTree): string {
   return "";
 }
 
-/** The issue's whole tree, from the reads it was given. A chip names a block by the line a row
+/** The line a chip names a block by, and the page publishes as the block's name: the line a row
  *  draws for it (`drawnLine`), cut from the first block of the block's reading as `lineWords`
  *  cuts a node's, which `tree-drafts.ts` is handed rather than imports, since this module
  *  imports it. */
+function chipLine(reading: DisplayTree): string {
+  return drawnLine(firstLineOf(firstBlockWords(reading)));
+}
+
+/** The reads as the tree and the page's published names both read them (`treeContext`), with a
+ *  block named by `chipLine`: the one call both make, so a chip and a link name one target by
+ *  one rule and cannot drift apart. */
+function namingContext(reads: IssueTreeReads): TreeContext {
+  return treeContext(reads, chipLine);
+}
+
+/** The issue's whole tree, from the reads it was given. */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = treeContext(reads, (reading) => drawnLine(firstLineOf(firstBlockWords(reading))));
+  const context = namingContext(reads);
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
+}
+
+/**
+ * The name of each target of the batched reference read (`reads.targets`) that something answers
+ * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
+ * (`namingContext`), which the page publishes for every link beside the tree to draw
+ * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
+ * name is `""` - another issue's block the read sent no reading for - is left out, so a link
+ * that finds no name reads its own (`useKnownReferenceName`).
+ */
+export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
+  const context = namingContext(reads);
+  const names = new Map<string, string>();
+  for (const target of reads.targets ?? []) {
+    if (target.gone) continue;
+    const name = context.chipOf(target.ref).name;
+    if (name !== "") names.set(target.ref, name);
+  }
+  return names;
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

@@ -12,17 +12,16 @@ import {
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { wordsOf } from "../refs/tree-fragment";
 import {
   buildIssueTree,
   type DocumentBlocks,
   type IssueTreeReads,
   nodeWords,
   type TreeNode,
+  targetNames,
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
-import { blockWords } from "./tree-drafts";
 
 /** The issue's tree, and how far the reads it is built from have got. */
 export interface IssueTreeView {
@@ -242,28 +241,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     if (first === undefined || added.length === 0) return first;
     return [...new Map([...first, ...added].map((target) => [target.ref, target])).values()];
   }, [extra, first, more.data]);
-  // The same answer every link of this page would otherwise read one pointer at a time: a
-  // block's own words, which a link in a document, in a decision's card or in a comment's
-  // preview shows (`reference-names.tsx`, R20). Every one of those draws the name it is given
-  // as it is, so what is published is a name's words and no markup: the server's reading of a
-  // block where the read sends one (`ReferenceTarget.text_tree`), since the read's `name` for a
-  // block is its stored excerpt, which opens on a typed block's directive line
-  // (`:::plan_task{#t1 …}`), and that name with its directive left out where it sends none
-  // (`blockWords`), which is every other target's name as it stands.
-  const names = useMemo(
-    () =>
-      new Map(
-        (named ?? [])
-          .filter((target) => !target.gone && target.name !== null)
-          .map((target) => [
-            target.ref,
-            target.text_tree === undefined
-              ? blockWords(target.name ?? "")
-              : wordsOf(target.text_tree),
-          ])
-      ),
-    [named]
-  );
+  // The same answer every link of this page would otherwise read one pointer at a time, which a
+  // link in a document, in a decision's card or in a comment's preview shows, and a row's
+  // in-place chip too (`reference-names.tsx`, R20). Every one of those draws the name it is
+  // given as it is, so the name published for a target is the name a chip of the tree draws
+  // for it, by the one rule both read (`targetNames`): a block's drawn first line, a whole
+  // document's word on the page, a question's or a comment's words with no markup.
+  const names = useMemo(() => targetNames({ ...reads, targets: named ?? [] }), [named, reads]);
   usePublishReferenceNames(names);
   const root = useMemo(
     () =>

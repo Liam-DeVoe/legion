@@ -13,7 +13,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
-import { PRESET_NAMES } from "./page-words";
+import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { ReferenceNamesProvider, useKnownReferenceName } from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
@@ -335,7 +335,9 @@ test("The names are read in one batched request, after every other read has answ
         out.resolve();
         await out.promise;
       });
-      await waitFor(() => expect(view.result.current.name).toBe(TASK_WORDS));
+      // The read sends no reading of the task, so the name the page publishes for it is the
+      // page's word for its kind, as a chip naming it draws (`targetNames`).
+      await waitFor(() => expect(view.result.current.name).toBe(NODE_TYPE_NAMES.plan_task));
       expect(asked, `one names read after the ${read} read answers`).toHaveLength(1);
       expect(asked[0]).toContain(TASK_REF);
       expect(asked[0]).toContain(cited);
@@ -383,6 +385,46 @@ test("a short address a comment cites is read as written and named from that ans
     );
     await waitFor(() => expect(view.result.current).toBe("The comment its short id names"));
     expect(asked[0]).toContain(cited);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// R21: the batched read names an ask by its question as stored, which is markdown, and every
+// link that reads the page's published names draws the name as it is, so the page publishes the
+// question's plain words, the name a chip naming the ask draws (`targetNames`).
+test("a published name of an ask is its question's plain words, never its markdown", async () => {
+  const cited = `dispatch://${KEY}/ask/ask-9`;
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map((target) =>
+        target.ref === cited
+          ? {
+              ...target,
+              kind: "ask",
+              name: "**Hold** the `deploy` until [the plan](https://example.com/plan) lands",
+            }
+          : target
+      ),
+    }),
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("Hold the deploy until the plan lands"));
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -578,9 +620,10 @@ test("A plan with no role that the issue names by its id has its blocks read and
 
 // The batched read names a typed block by its stored excerpt, which opens on the block's
 // directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the block's words: the server's reading of them where the read sends one,
-// and the excerpt with its directive left out where it sends none.
-test("A published name is a typed block's words, never its directive line", async () => {
+// the page publishes the name a chip naming the block draws (`targetNames`): the first line of
+// the server's reading where the read sends one, and the page's word for the block's kind where
+// it sends none - never the directive line.
+test("A published name of a typed block is never its directive line", async () => {
   const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
   const reading: DisplayTree = {
     content: [
@@ -591,9 +634,9 @@ test("A published name is a typed block's words, never its directive line", asyn
     ],
     type: "doc",
   };
-  for (const [sent, answer] of [
-    ["a reading", { name: `${opener}\n**${TASK_WORDS}**\n:::`, text_tree: reading }],
-    ["no reading", { name: `${opener}\n${TASK_WORDS}\n:::` }],
+  for (const [sent, answer, published] of [
+    ["a reading", { name: `${opener}\n**${TASK_WORDS}**\n:::`, text_tree: reading }, TASK_WORDS],
+    ["no reading", { name: `${opener}\n${TASK_WORDS}\n:::` }, NODE_TYPE_NAMES.plan_task],
   ] as const) {
     const stubs = stubTreeReads(async (refs) => ({
       targets: namedTargets(refs).targets.map((target) =>
@@ -614,7 +657,7 @@ test("A published name is a typed block's words, never its directive line", asyn
         },
         { wrapper }
       );
-      await waitFor(() => expect(view.result.current, `the read sent ${sent}`).toBe(TASK_WORDS));
+      await waitFor(() => expect(view.result.current, `the read sent ${sent}`).toBe(published));
       view.unmount();
     } finally {
       for (const stub of stubs) stub.mockRestore();
