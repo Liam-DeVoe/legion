@@ -666,10 +666,18 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 // except where noProject allows an empty one: an account entry may name a person and no project,
 // which is the shared public-session account's entry, minting named tokens that name no project
 // (a pod account many people launch must never act as one person's own token). A project that is
-// blank without being empty is refused everywhere.
+// blank without being empty is refused everywhere, and so is one that is no project key: every
+// token the entry mints names it, the exchange stores and reads that list through
+// oauthwire.ParseProjects, which takes only project keys, so an entry naming anything else would
+// boot and then fail every trade.
 func checkGrant(where, project, person, session string, noProject bool) error {
 	if !(noProject && project == "") && strings.TrimSpace(project) == "" {
 		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
+	}
+	if project != "" {
+		if err := oauthwire.ValidProjects([]string{project}); err != nil {
+			return fmt.Errorf("exchange: %s: the entry's project %v", where, err)
+		}
 	}
 	if strings.TrimSpace(person) == "" {
 		return fmt.Errorf("exchange: %s: the person is required, since every token acts for someone", where)

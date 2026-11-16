@@ -18,7 +18,10 @@ body: |-
   **Upgrade order:** a Dispatch or listener of this release refuses any answer of an older broker
   that names `project` (`401 BROKER_TOKEN_NOT_A_SESSION`), and a broker of this release answers a
   `named` token it stored before the list not live; either way the holder trades again for a token
-  of this release. No such token is minted where no exchange entry is configured.
+  of this release. No such token is minted where no exchange entry is configured. An entry of
+  `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or `BROKER_VM_EXCHANGE_ACCOUNTS` whose
+  project is not a project key (such as `priv`) now refuses the broker's start, naming the entry;
+  before, it started and minted tokens naming that string.
 time: 2026-11-16T02:16:07Z
 custom:
     Issue: pr4119
