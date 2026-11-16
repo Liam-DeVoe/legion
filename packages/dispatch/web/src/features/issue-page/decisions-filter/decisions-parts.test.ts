@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 
-import type { Decision, DecisionLink } from "../../../api/types";
+import type { ArtifactBlock, Decision, DecisionLink } from "../../../api/types";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
-import type { TreeNode } from "../issue-tree";
+import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
@@ -44,6 +44,26 @@ import {
 /** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
 const nodeIdOf = treeContext({ issue: issueDetails() }).nodeIdOf;
 
+/** The decisions document's blocks as the blocks read answers them: each decision's own block,
+ *  its heading, in the order the decisions were made. */
+function decisionsBlocks(made: readonly Decision[]): DocumentBlocks[] {
+  const heading = (id: string, at: number): ArtifactBlock => ({
+    attributes: [],
+    from: at * 2,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: at * 2 + 1,
+    token: id,
+    type: "heading",
+  });
+  return [
+    {
+      artifactId: DECISIONS_DOCUMENT.id,
+      blocks: made.map((one, at) => heading(one.block_id, at)),
+    },
+  ];
+}
+
 function partsOf(
   children: readonly TreeNode[],
   made: readonly Decision[] = [],
@@ -54,7 +74,7 @@ function partsOf(
   const decisions = decisionsRead(made);
   return decisionsParts({
     asks,
-    changes: decisionChanges(decisions, comments, issueDetails().artifacts),
+    changes: decisionChanges(decisions, comments, issueDetails().artifacts, decisionsBlocks(made)),
     decisions,
     issueKey: KEY,
     nodeIdOf,
