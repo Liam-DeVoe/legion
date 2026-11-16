@@ -330,12 +330,14 @@ export function nodeWords(node: TreeNode): string {
 
 /**
  * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
- * the first top-level block of its reading, a heading or a paragraph, and where the node has no
- * reading the first block of its stored text, to its first blank line, with a leading heading
- * marker (`#` to `######` and a space) left out and a heading ending at its own line, as
- * markdown ends one. A decision's reading opens with its own `##` heading, and `wordsOf` joins a
- * heading and the paragraph after it with one space, so a line cut from the whole reading ran
- * the heading into its body: "Keep it Keep the model pure.".
+ * the first top-level block of its reading that holds any, a heading or a paragraph, and where
+ * the node has no reading the first block of its stored text that holds any, to its blank line,
+ * with a leading heading marker (`#` to `######` and a space) left out and a heading ending at
+ * its own line, as markdown ends one. A block that holds no words - a horizontal rule, a
+ * paragraph that is only an image - is passed over, or the line would be empty while the node
+ * has words. A decision's reading opens with its own `##` heading, and `wordsOf` joins a heading
+ * and the paragraph after it with one space, so a line cut from the whole reading ran the heading
+ * into its body: "Keep it Keep the model pure.".
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
@@ -345,16 +347,30 @@ export function nodeWords(node: TreeNode): string {
  */
 export function lineWords(node: TreeNode): string {
   if (node.tree !== undefined) return firstBlockWords(node.tree);
-  const block = node.text.trimStart().split(/\n\s*\n/u, 1)[0] ?? "";
-  return /^#{1,6} +(.*)/u.exec(block)?.[1] ?? block;
+  for (const stored of node.text.split(/\n\s*\n/u)) {
+    const block = stored.trimStart();
+    const words = /^#{1,6} +(.*)/u.exec(block)?.[1] ?? block;
+    if (!NO_WORDS.test(words.replace(MARKDOWN_IMAGE, ""))) return words;
+  }
+  return "";
 }
 
-/** The words of the first top-level block of a reading (`lineWords`); `""` for a reading that
- *  holds no block. */
+/** A markdown image, `![alt](src)`, which draws no word of a line. */
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
+
+/** A stored block that holds no words once its images are left out: nothing but white space
+ *  and the marks of a horizontal rule (`---`, `***`, `___`). */
+const NO_WORDS = /^[\s*_-]*$/u;
+
+/** The words of the first top-level block of a reading that holds any (`lineWords`); `""` for a
+ *  reading none of whose blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
   const content = reading.content;
-  const first: DisplayTree | undefined = Array.isArray(content) ? content[0] : undefined;
-  return first === undefined ? "" : wordsOf(first);
+  for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
+    const words = wordsOf(block);
+    if (words.trim() !== "") return words;
+  }
+  return "";
 }
 
 /** The issue's whole tree, from the reads it was given. A chip names a block by the line a row

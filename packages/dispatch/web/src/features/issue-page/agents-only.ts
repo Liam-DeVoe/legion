@@ -17,7 +17,9 @@ type CommentTurn = Pick<Comment, "ask_id" | "author" | "id" | "reply_to">;
  * question is in that node's thread, so it is none of these, and neither is a reply whose thread
  * opens under one; the comments under an approval request are a thread of their own, and these
  * where no person wrote in it. `asks` - the asks read - is what tells the two apart; a caller
- * that has not read them gives none, and every ask is then taken for a question.
+ * that has not read them passes `undefined`, and every ask is then taken for a question. It is
+ * required, so a caller cannot leave it out unseen and draw an agent's reply under an approval
+ * request in the outline.
  *
  * Pure, and the one place the rule is written: the outline, the history and the address of one
  * of these items read it alike.
@@ -25,7 +27,7 @@ type CommentTurn = Pick<Comment, "ask_id" | "author" | "id" | "reply_to">;
 export function agentsOnlyIds(
   comments: readonly CommentTurn[] | undefined,
   messages: readonly MessageRead[] | undefined,
-  asks?: readonly Pick<Ask, "id" | "kind">[]
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): ReadonlySet<string> {
   const questions =
     asks === undefined

@@ -335,8 +335,19 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
   const asks = addAsks(drafts, reads, context);
-  const placed = decisionChangeComments(reads.decisions, reads.comments, reads.issue.artifacts);
-  const changes = decisionChanges(reads.decisions, reads.comments, reads.issue.artifacts, placed);
+  const placed = decisionChangeComments(
+    reads.decisions,
+    reads.comments,
+    reads.issue.artifacts,
+    reads.documents
+  );
+  const changes = decisionChanges(
+    reads.decisions,
+    reads.comments,
+    reads.issue.artifacts,
+    reads.documents,
+    placed
+  );
   addTurns(drafts, reads, context, asks, placed);
   orderConversation(drafts);
   addDecisions(drafts, reads, context, asks, changes);

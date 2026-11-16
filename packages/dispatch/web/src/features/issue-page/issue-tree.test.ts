@@ -229,7 +229,11 @@ function checkedResults(
 
 /** One decision of `decisions.md` whose blocks link `shaped`, which is the `shaped` edge as
  *  today's read carries it: a link from the decision's block to a block of the spec. */
-function decision(blockId: string, text: string, shaped: readonly string[]): Decision {
+function decision(
+  blockId: string,
+  text: string,
+  shaped: readonly string[]
+): Decision & { readonly links: NonNullable<Decision["links"]> } {
   return {
     asks: [],
     block_id: blockId,
@@ -835,6 +839,67 @@ test("a node's one line is cut from its first block, so a heading is never run i
   // A chip naming a block is cut from the first block of the block's reading the same way.
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
     "Keep it",
+  ]);
+});
+
+// The reviewer's Minor at a5714d85: a reading may open with a block that holds no words - a
+// horizontal rule, a paragraph that is only an image - and a line cut from that block is empty,
+// so a parent with words drew an empty line and a chip an empty name. A node's one line is cut
+// from its first block that holds words, and so is the line of a stored text with no reading.
+test("a node's one line is cut from its first block that holds words, past a rule or an image", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const paragraph = (words: string): DisplayTree => ({
+    content: [{ text: words, type: "text" }],
+    type: "paragraph",
+  });
+  const ruled: DisplayTree = {
+    content: [{ type: "horizontal_rule" }, paragraph("Keep the model pure.")],
+    type: "doc",
+  };
+  const pictured: DisplayTree = {
+    content: [
+      {
+        content: [{ attrs: { alt: "diagram", src: "shot.png" }, type: "image" }],
+        type: "paragraph",
+      },
+      paragraph("Draw it once."),
+    ],
+    type: "doc",
+  };
+  const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const root = buildIssueTree({
+    decisions: decisions([
+      { ...decision("d1", "---\n\nKeep the model pure.", []), text_tree: ruled },
+      { ...decision("d2", "![diagram](shot.png)\n\nDraw it once.", []), text_tree: pictured },
+      decision("d3", "---\n\nKeep the model pure.", []),
+      decision("d4", "![diagram](shot.png)\n\nDraw it once.", []),
+    ]),
+    documents: [{ artifactId: plan.id, blocks: [block("t1", "plan_task", { needs })] }],
+    issue: issueDetails([spec, made, plan]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#t0}\n---\n\nKeep the model pure.\n:::",
+        ref: needs,
+        text_tree: ruled,
+      },
+    ],
+  });
+  const line = (id: string): string => {
+    const node = nodeOf(root, blockNodeId("decisions-md", id));
+    return node === undefined ? "" : lineWords(node);
+  };
+
+  expect(line("d1")).toBe("Keep the model pure.");
+  expect(line("d2")).toBe("Draw it once.");
+  // Where the read sent no reading, a stored rule or image is passed over the same way.
+  expect(line("d3")).toBe("Keep the model pure.");
+  expect(line("d4")).toBe("Draw it once.");
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
+    "Keep the model pure.",
   ]);
 });
 
