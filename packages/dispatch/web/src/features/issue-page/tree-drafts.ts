@@ -28,6 +28,7 @@ import {
   decisionsDocumentId,
   inReviewList,
 } from "./decision-review";
+import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
   NodeAnswer,
@@ -204,7 +205,7 @@ export function treeContext(
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const documents = new Map(artifacts.map((artifact) => [artifact.slug, artifact]));
+  const documents = artifactsBySlug(reads.issue);
   const spec = specOf(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
@@ -398,12 +399,11 @@ function addDocumentChips(
   reads: IssueTreeReads,
   context: TreeContext
 ): void {
-  const artifacts = reads.issue.artifacts ?? [];
-  if (artifacts.length === 0) return;
-  const bySlug = new Map(artifacts.map((artifact) => [artifact.slug, artifact]));
+  const bySlug = artifactsBySlug(reads.issue);
+  if (bySlug.size === 0) return;
   for (const draft of drafts.values()) {
     // The words a node is drawn by can leave a citation out - the coverage read drops every
-    // `://` word of a requirement (`blockWords`, `api/results.go`) - so the node's own source,
+    // `://` word of a requirement (`api/results.go`'s `blockWords`) - so the node's own source,
     // the excerpt the reference read names it by, is read as well.
     const source = draft.reference === undefined ? "" : context.excerptOf(draft.reference);
     for (const span of [
@@ -829,12 +829,12 @@ function addRequirements(
   reads: IssueTreeReads,
   context: TreeContext
 ): void {
-  const shapedBy = new Map<string, number>();
+  const shapedBy = new Set<string>();
   for (const decision of reads.decisions?.decisions ?? []) {
     for (const link of decision.links ?? []) {
       const shaped = link.to.ref === undefined ? undefined : context.nodeIdOf(link.to.ref);
       if (shaped === undefined) continue;
-      shapedBy.set(shaped, (shapedBy.get(shaped) ?? 0) + 1);
+      shapedBy.add(shaped);
     }
   }
   // The spec, which a statement's words are a block of and its references resolve against.
@@ -848,7 +848,7 @@ function addRequirements(
     const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
-    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.get(id) ?? 0);
+    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.has(id));
     draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
@@ -868,13 +868,13 @@ function addRequirements(
 function requirementGaps(
   coverage: readonly string[],
   origin: string | undefined,
-  shaped: number
+  shaped: boolean
 ): GapKind[] {
   const gaps = coverage.flatMap((line): GapKind[] => {
     const kind = coverageGapKind(line);
     return kind === undefined ? [] : [kind];
   });
-  if (origin !== undefined && shaped > 0) gaps.push("shaped_disagreement");
+  if (origin !== undefined && shaped) gaps.push("shaped_disagreement");
   return gaps;
 }
 

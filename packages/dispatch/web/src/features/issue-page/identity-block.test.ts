@@ -51,10 +51,9 @@ test("the header's shadow appears only after 40 px of scroll", () => {
   }
 });
 
-// The reviewer's finding on `identity-block.ts:126`, ruling 5: at 760 px and below the header
-// scrolls away with the page and the filter row is the band that stays, so the header is never
-// stuck there and draws no shadow, however far the page has scrolled; once the width passes
-// 760 px, the same place draws it.
+// Ruling 5: at 760 px and below the header scrolls away with the page and the filter row is the
+// band that stays, so the header is never stuck there and draws no shadow, however far the page
+// has scrolled; once the width passes 760 px, the same place draws it.
 test("the header draws no shadow where it scrolls away", () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const original = globalThis.ResizeObserver;

@@ -288,10 +288,10 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
   expect(short).toBe("Which layout does the page take?");
 });
 
-// The reviewer's finding on `issue-tree.ts:313`: a parent's line is cut from the parent's first
-// block (`lineWords`), so a parent whose reading opens with a heading draws that heading alone,
-// and never the heading run into the paragraph after it. A parent with no reading is read the
-// same way from its stored text, whose heading marker is markup.
+// A parent's line is cut from the parent's first block (`lineWords`), so a parent whose reading
+// opens with a heading draws that heading alone, and never the heading run into the paragraph
+// after it. A parent with no reading is read the same way from its stored text, whose heading
+// marker is markup.
 test("a parent whose reading opens with a heading draws that heading alone as its line", () => {
   const heading = "Which layout the page takes";
   const reading: DisplayTree = {
@@ -316,9 +316,9 @@ test("a parent whose reading opens with a heading draws that heading alone as it
   });
 });
 
-// The reviewer's finding on `presets.ts:95`: the words filter read a node's stored source, so a
-// comment drawn as "bold text" and stored as `**bold** text` was missed by `?q=bold text` and
-// found by `?q=**`, which no word it draws holds. It reads the node's words (`nodeWords`, R4).
+// The words filter read a node's stored source, so a comment drawn as "bold text" and stored as
+// `**bold** text` was missed by `?q=bold text` and found by `?q=**`, which no word it draws holds.
+// It reads the node's words (`nodeWords`, R4).
 test("the words filter matches the words a node draws, never its stored source", () => {
   const reading: DisplayTree = {
     content: [

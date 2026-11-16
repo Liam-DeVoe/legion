@@ -366,6 +366,16 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
 }
 
+/** How many nodes a branch holds below `children`, at any depth. */
+export function heldBy(children: readonly TreeNode[]): number {
+  return children.reduce((held, child) => held + child.held + 1, 0);
+}
+
+/** The order the tree draws siblings in: a draft's own order, then its id. */
+function drawOrder(one: Draft, other: Draft): number {
+  return one.order - other.order || one.id.localeCompare(other.id);
+}
+
 /**
  * The drafts as one tree under the issue: one node per placement, each naming the parents it is
  * also drawn under and counting the nodes it holds. A placement that would sit under itself, or
@@ -401,20 +411,22 @@ function assemble(
   bringHome(key, drafts, placements);
   for (const draft of drafts) {
     for (const parent of placements.get(draft.id) ?? []) {
-      byParent.set(parent, [...(byParent.get(parent) ?? []), draft]);
+      const siblings = byParent.get(parent);
+      if (siblings === undefined) byParent.set(parent, [draft]);
+      else siblings.push(draft);
     }
   }
   const childrenOf = (id: string, above: readonly string[]): readonly TreeNode[] =>
     (byParent.get(id) ?? [])
       .filter((child) => child.id !== id && !above.includes(child.id))
-      .sort((one, other) => one.order - other.order || one.id.localeCompare(other.id))
+      .sort(drawOrder)
       .map((child) => build(child, id, [...above, id]));
   const build = (draft: Draft, parent: string, above: readonly string[]): TreeNode => {
     const children = childrenOf(draft.id, above);
     const parents = placements.get(draft.id) ?? [];
     const others = parents.filter((one) => one !== parent);
     return {
-      alsoUnder: parents.length > 1 ? others.map((one) => chipOf(references.get(one) ?? one)) : [],
+      alsoUnder: others.map((one) => chipOf(references.get(one) ?? one)),
       ...(draft.answer === undefined ? {} : { answer: draft.answer }),
       ...(draft.at === undefined ? {} : { at: draft.at }),
       ...(draft.author === undefined ? {} : { author: draft.author }),
@@ -423,7 +435,7 @@ function assemble(
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
       facts: draft.facts,
       gaps: draft.gaps,
-      held: children.reduce((total, child) => total + child.held + 1, 0),
+      held: heldBy(children),
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
@@ -451,7 +463,7 @@ function assemble(
     chips: [],
     facts: [],
     gaps: [],
-    held: children.reduce((total, child) => total + child.held + 1, 0),
+    held: heldBy(children),
     id: key,
     question: false,
     replaced: false,
@@ -491,7 +503,9 @@ function bringHome(
   const below = new Map<string, string[]>();
   for (const draft of drafts) {
     for (const parent of placements.get(draft.id) ?? []) {
-      below.set(parent, [...(below.get(parent) ?? []), draft.id]);
+      const siblings = below.get(parent);
+      if (siblings === undefined) below.set(parent, [draft.id]);
+      else siblings.push(draft.id);
     }
   }
   const reached = new Set<string>([key]);
@@ -508,9 +522,7 @@ function bringHome(
     }
   };
   walk(key);
-  const ordered = [...drafts].sort(
-    (one, other) => one.order - other.order || one.id.localeCompare(other.id)
-  );
+  const ordered = [...drafts].sort(drawOrder);
   /** Whether `id` is a member of a ring: a draft its own placements lead back to. */
   const inRing = (id: string): boolean => {
     const seen = new Set<string>();

@@ -462,13 +462,12 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
   });
 }
 
-// The reviewer's finding on `presets.ts:273`: the tree read a check's state from `checkState`
-// alone while this body turned it over at the commit the page names, so one check read two
-// states. The regressed check above read Passed on its row and was off the fold's frontier, so
-// its statement arrived folded with the regression inside it, and the filter row counted
-// nothing failing, while this body read it Failed; a fail that stands at another commit read
-// Failed on the row and in the count, and Out of date here. The tree's node holds the one
-// reading this body draws (`checkStanding`).
+// The tree read a check's state from `checkState` alone while this body turned it over at the
+// commit the page names, so one check read two states. The regressed check above read Passed on
+// its row and was off the fold's frontier, so its statement arrived folded with the regression
+// inside it, and the filter row counted nothing failing, while this body read it Failed; a fail
+// that stands at another commit read Failed on the row and in the count, and Out of date here.
+// The tree's node holds the one reading this body draws (`checkStanding`).
 test("a check reads one state on its row, in the fold, in the filter row and in the body", () => {
   const statement = blockNodeId(SPEC_SLUG, "r1");
   const checkId = (blockId: string) => blockNodeId(VERIFICATION_SLUG, blockId);
@@ -520,11 +519,11 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
   expect(filterSignals(reverse, "").verification).toEqual({ count: 2 });
 });
 
-// The reviewer's finding on `statement-state.ts:256`: a check fails, its author fixes the check's
-// words, and nobody has run it again. A fail recorded against words the check no longer has
-// stands for nothing, as `checkState` and the server's `standingCommit` read it, so it is no
-// fail at the commit the page names either: the check is Out of date and its statement Unknown,
-// not Not met on evidence about words the check no longer has.
+// A check fails, its author fixes the check's words, and nobody has run it again. A fail
+// recorded against words the check no longer has stands for nothing, as `checkState` and the
+// server's `standingCommit` read it, so it is no fail at the commit the page names either: the
+// check is Out of date and its statement Unknown, not Not met on evidence about words the check
+// no longer has.
 test("a fail at the commit the page names whose check's words moved reads Out of date", () => {
   const moved = check({
     block_id: "c-one",

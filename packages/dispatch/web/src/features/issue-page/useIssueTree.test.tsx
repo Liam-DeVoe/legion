@@ -347,9 +347,9 @@ test("The names are read in one batched request, after every other read has answ
   }
 });
 
-// The reviewer's finding on `useIssueTree.ts:164`: a plan task has no words until the names read
-// answers, so what its words cite is in no address that read was given. One more read names
-// those addresses alone, once the first has answered, and the page publishes its answer too.
+// A plan task has no words until the names read answers, so what its words cite is in no address
+// that read was given. One more read names those addresses alone, once the first has answered,
+// and the page publishes its answer too.
 test("what a plan task's words cite is named by one more read", async () => {
   const cited = "dispatch://CORE-7";
   const words = `Draw the tree as ${cited} asks.`;
@@ -503,10 +503,10 @@ test("Only the spec and the plan, Verification and decisions documents have thei
   }
 });
 
-// The reviewer's finding on `useIssueTree.ts:119`: the server gives a document its part by its
-// role, or, for a row a rolling deploy left with no role, by the slug that part is made under,
-// and it omits `role` on such a row. The issue read names the document all the same
-// (`plan_artifact_id`), and the tree reads its blocks, and names it, by that id.
+// The server gives a document its part by its role, or, for a row a rolling deploy left with no
+// role, by the slug that part is made under, and it omits `role` on such a row. The issue read
+// names the document all the same (`plan_artifact_id`), and the tree reads its blocks, and names
+// it, by that id.
 test("A plan with no role that the issue names by its id has its blocks read and is named the plan", async () => {
   const roleless = issueDocument(plan.id, PLAN);
   const named: IssueDetails = { ...issue, artifacts: [roleless], plan_artifact_id: roleless.id };
@@ -534,11 +534,10 @@ test("A plan with no role that the issue names by its id has its blocks read and
   }
 });
 
-// The reviewer's finding on `useIssueTree.ts:197`: the batched read names a typed block by its
-// stored excerpt, which opens on the block's directive line. Every link that reads the page's
-// published names draws the name as it is, so the page publishes the block's words: the server's
-// reading of them where the read sends one, and the excerpt with its directive left out where
-// it sends none.
+// The batched read names a typed block by its stored excerpt, which opens on the block's
+// directive line. Every link that reads the page's published names draws the name as it is, so
+// the page publishes the block's words: the server's reading of them where the read sends one,
+// and the excerpt with its directive left out where it sends none.
 test("A published name is a typed block's words, never its directive line", async () => {
   const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
   const reading: DisplayTree = {

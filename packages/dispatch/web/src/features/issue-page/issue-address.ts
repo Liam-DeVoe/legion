@@ -1,4 +1,4 @@
-import { decodeBlockId, itemFromSearch } from "@legion/contracts";
+import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
@@ -118,6 +118,20 @@ function routeTarget(route: IssueRoute, specSlug: string | undefined): AddressTa
   return undefined;
 }
 
+/** The item the document an address opens lands on (`IssueAddress.documentItem`): none where
+ *  the address opens no document (`addressed`), the ask or comment `?ask=` or `?comment=` names
+ *  (`item`) where it also pins a `version`, and otherwise the one `?mark=` names (`marked`). */
+function documentItemOf(
+  addressed: string | undefined,
+  item: DispatchHrefItem | null | undefined,
+  version: number | undefined,
+  marked: string
+): IssueAddress["documentItem"] {
+  if (addressed === undefined) return undefined;
+  if (item !== null && item !== undefined && version !== undefined) return item;
+  return marked === "" ? undefined : { id: marked, kind: "mark" };
+}
+
 /**
  * What the address `route` + `search` + `hash` opens. `specSlug` is the slug of the issue's
  * spec, which a block a `/spec` address names is looked up in; undefined until the issue's
@@ -161,14 +175,7 @@ export function issueAddress(
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
   const marked = query.get("mark") ?? "";
-  const documentItem =
-    addressed === undefined
-      ? undefined
-      : item !== null && item !== undefined && version !== undefined
-        ? item
-        : marked === ""
-          ? undefined
-          : { id: marked, kind: "mark" as const };
+  const documentItem = documentItemOf(addressed, item, version, marked);
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;
   const namesSpecBlock = route.kind === "spec" && named?.kind === "block";
   return {

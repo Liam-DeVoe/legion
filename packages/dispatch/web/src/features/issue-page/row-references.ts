@@ -115,7 +115,9 @@ const ROW_REFERENCE = "data-row-reference";
 export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]";
 
 /** Writes `anchor`'s words: an issue's key set apart from its title, as a link to an issue reads
- *  everywhere (`RefLink.tsx`). */
+ *  everywhere (`RefLink.tsx`). An anchor that already reads them is left as it is: only this
+ *  writes a row's link, so its words tell what it holds, and a pass whose names changed nothing
+ *  writes nothing. */
 function nameAnchor(
   anchor: HTMLAnchorElement,
   one: Pick<RowReference, "reference" | "route">,
@@ -123,13 +125,15 @@ function nameAnchor(
 ): void {
   const { key, words } = rowReferenceWords(one, names);
   if (key === undefined) {
-    anchor.textContent = words;
+    if (anchor.textContent !== words) anchor.textContent = words;
     return;
   }
+  const title = words === "" ? "" : ` ${words}`;
+  if (anchor.textContent === `${key}${title}`) return;
   const strong = document.createElement("span");
   strong.className = "font-semibold whitespace-nowrap";
   strong.textContent = key;
-  anchor.replaceChildren(strong, words === "" ? "" : ` ${words}`);
+  anchor.replaceChildren(strong, title);
 }
 
 /**

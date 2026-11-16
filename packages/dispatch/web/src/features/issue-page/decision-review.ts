@@ -94,7 +94,7 @@ export function decisionChangeComments(
   const words = new Map(
     rows.map((row) => [
       row.ref,
-      flat(row.text_tree === undefined ? row.text : wordsOf(row.text_tree as DisplayTree)),
+      flat(row.text_tree === undefined ? row.text : wordsOf(row.text_tree)),
     ])
   );
   for (const comment of comments ?? []) {

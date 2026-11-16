@@ -123,12 +123,7 @@ export function verificationReading({
   readonly checks: readonly CheckBlock[];
   readonly view: TreeNode;
 }): VerificationReading {
-  const blocks = new Map(
-    checks.filter((check) => check.ref !== "").map((check) => [check.ref, check])
-  );
-  const commit = namedCommit(checks);
-  const read = (node: TreeNode): CheckReading =>
-    checkReading(node, blocks.get(node.reference ?? ""), commit);
+  const { commit, read } = checkReader(checks);
   const statements = view.children
     .filter((node) => node.type === "requirement")
     .map((node): StatementReading => {
@@ -172,16 +167,11 @@ export function statementStandings(
   root: TreeNode,
   checks: readonly CheckBlock[]
 ): ReadonlyMap<string, StatementStanding> {
-  const blocks = new Map(
-    checks.filter((check) => check.ref !== "").map((check) => [check.ref, check])
-  );
-  const commit = namedCommit(checks);
+  const { read } = checkReader(checks);
   const standings = new Map<string, StatementStanding>();
   const walk = (node: TreeNode): void => {
     if (node.type === "requirement" && !standings.has(node.id)) {
-      const readings = node.children
-        .filter((child) => child.type === "check")
-        .map((child) => checkReading(child, blocks.get(child.reference ?? ""), commit));
+      const readings = node.children.filter((child) => child.type === "check").map(read);
       standings.set(node.id, {
         covered: carriesCheck(node, readings),
         state: statementState(readings),
@@ -213,6 +203,23 @@ export function statementCounts(
   const counts: Record<StatementState, number> = { met: 0, not_met: 0, unknown: 0 };
   for (const statement of statements) counts[statement.state] += 1;
   return counts;
+}
+
+/** The commit the page names for `checks`' results, and how one check node of the tree reads at
+ *  it (`checkReading`): the node is tied to its block by its own address, which the tree carries
+ *  (`tree-drafts.ts` writes `check.ref` into the node's `reference`). */
+function checkReader(checks: readonly CheckBlock[]): {
+  readonly commit: string | undefined;
+  readonly read: (node: TreeNode) => CheckReading;
+} {
+  const blocks = new Map(
+    checks.filter((check) => check.ref !== "").map((check) => [check.ref, check])
+  );
+  const commit = namedCommit(checks);
+  return {
+    commit,
+    read: (node) => checkReading(node, blocks.get(node.reference ?? ""), commit),
+  };
 }
 
 /**

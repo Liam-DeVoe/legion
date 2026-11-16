@@ -781,11 +781,11 @@ test("a first line draws its ellipsis only where the cut ended inside a sentence
   expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
 });
 
-// The reviewer's finding on `issue-tree.ts:313`: a decision's reading opens with its own `##`
-// heading, and the words of the whole reading join that heading to the paragraph after it, so a
-// line cut from them read "Keep it Keep the model pure.", and where a pod sent no reading,
-// "## Keep it Keep the model pure.". A node's one line is cut from its first block alone; its
-// words stay whole, since they are what its body draws and what its citations are read from.
+// A decision's reading opens with its own `##` heading, and the words of the whole reading join
+// that heading to the paragraph after it, so a line cut from them read "Keep it Keep the model
+// pure.", and where a pod sent no reading, "## Keep it Keep the model pure.". A node's one line is
+// cut from its first block alone; its words stay whole, since they are what its body draws and
+// what its citations are read from.
 test("a node's one line is cut from its first block, so a heading is never run into its body", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -950,7 +950,7 @@ test("the spec is the document the issue names by its id, not the one flagged pr
 });
 
 // The coverage read names a requirement by its words with every `://` word left out
-// (`blockWords`, `api/results.go`), so the document a requirement cites is read from the
+// (`api/results.go`'s `blockWords`), so the document a requirement cites is read from the
 // block's own source, which the reference read names it by. A document of no role is named by
 // the page's word for a document, never by its file name.
 test("a requirement whose source cites a document carries its chip, whatever words name it", () => {
@@ -1055,11 +1055,10 @@ test("a decision sits under the ask it answers, and one that answers none under 
   ]);
 });
 
-// The reviewer's finding on `issue-tree.ts:348`: the server builds a decision's asks and links
-// paragraph by paragraph and keeps every repeat (`api/decisions.go`), so a decision whose two
-// paragraphs cite one question and link one statement names each twice. It is one placement
-// under that question, counted once in what the question holds, and one chip for the
-// statement, stale where either of its links is.
+// The server builds a decision's asks and links paragraph by paragraph and keeps every repeat
+// (`api/decisions.go`), so a decision whose two paragraphs cite one question and link one
+// statement names each twice. It is one placement under that question, counted once in what the
+// question holds, and one chip for the statement, stale where either of its links is.
 test("a decision naming one question and one statement twice is drawn once, with one chip", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -1705,12 +1704,11 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
   expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
 });
 
-// The reviewer's finding on `agents-only.ts:31`: the tree draws no approval request, so the
-// replies under one are in no node's thread. Those only agents wrote, under a request no person
-// answered, are no node of the outline, and the address of one lands in the history, as any
-// thread only agents wrote in does. Once a person writes under the request the thread is the
-// conversation's, the agents' turns in it included, drawn under the issue, since the request
-// itself is no node.
+// The tree draws no approval request, so the replies under one are in no node's thread. Those
+// only agents wrote, under a request no person answered, are no node of the outline, and the
+// address of one lands in the history, as any thread only agents wrote in does. Once a person
+// writes under the request the thread is the conversation's, the agents' turns in it included,
+// drawn under the issue, since the request itself is no node.
 test("an agent's reply under an approval request is no node until a person replies there", () => {
   const agent = { id: "planner", kind: "session" as const };
   const asks = [

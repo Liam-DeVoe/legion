@@ -1,4 +1,4 @@
-import { drawnLine, firstLineOf, lineWords, nodeWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, heldBy, lineWords, nodeWords, type TreeNode } from "./issue-tree";
 import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
 
 /**
@@ -95,11 +95,6 @@ export interface PresetView {
  *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
 function holds(node: TreeNode, wanted: string): boolean {
   return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
-}
-
-/** How many nodes a branch holds below `children`, at any depth. */
-function heldBy(children: readonly TreeNode[]): number {
-  return children.reduce((held, child) => held + child.held + 1, 0);
 }
 
 /**
