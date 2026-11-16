@@ -41,75 +41,63 @@ type AccessSave = Mutation<ProjectAccess | null, Error, AccessChange>;
 /** Which part of the panel a change belongs to, and so where its refusal is shown. */
 type AccessPart = "owner" | "people" | "groups" | "slack";
 
-function partOf(change: AccessChange): AccessPart {
-  switch (change.kind) {
-    case "owner":
-      return "owner";
-    case "add-person":
-    case "remove-person":
-      return "people";
-    case "add-group":
-    case "remove-group":
-      return "groups";
-    case "slack-channels":
-      return "slack";
-  }
+/** What one change of a project's access is: the request that makes it, what the shell's
+ *  pending-writes indicator names it, the part of the panel its refusal shows in, and what that
+ *  refusal says when Dispatch gave no reason of its own (the request never reached it). */
+interface AccessOperation {
+  readonly write: (bounds: WriteBounds) => Promise<ProjectAccess>;
+  readonly label: string;
+  readonly part: AccessPart;
+  readonly refusal: string;
 }
 
-function writeChange(
-  project: string,
-  change: AccessChange,
-  bounds: WriteBounds
-): Promise<ProjectAccess> {
+/** The operation of one change. Every kind returns all four, so a kind added to `AccessChange`
+ *  does not compile until it says each of them. */
+function accessOperation(project: string, change: AccessChange): AccessOperation {
   switch (change.kind) {
     case "owner":
-      return api.patchProjectAccess(project, { owner: change.owner }, bounds);
+      return {
+        write: (bounds) => api.patchProjectAccess(project, { owner: change.owner }, bounds),
+        label: `Give ${project} to ${change.owner}`,
+        part: "owner",
+        refusal: `Couldn't give ${project} to ${change.owner}.`,
+      };
     case "add-person":
-      return api.putProjectAccessPerson(project, change.email, bounds);
+      return {
+        write: (bounds) => api.putProjectAccessPerson(project, change.email, bounds),
+        label: `Add ${change.email} to ${project}`,
+        part: "people",
+        refusal: `Couldn't add ${change.email}.`,
+      };
     case "remove-person":
-      return api.deleteProjectAccessPerson(project, change.email, bounds);
+      return {
+        write: (bounds) => api.deleteProjectAccessPerson(project, change.email, bounds),
+        label: `Remove ${change.email} from ${project}`,
+        part: "people",
+        refusal: `Couldn't remove ${change.email}.`,
+      };
     case "add-group":
-      return api.putProjectAccessGroup(project, change.name, bounds);
+      return {
+        write: (bounds) => api.putProjectAccessGroup(project, change.name, bounds),
+        label: `Add group ${change.name} to ${project}`,
+        part: "groups",
+        refusal: `Couldn't add group ${change.name}.`,
+      };
     case "remove-group":
-      return api.deleteProjectAccessGroup(project, change.name, bounds);
+      return {
+        write: (bounds) => api.deleteProjectAccessGroup(project, change.name, bounds),
+        label: `Remove group ${change.name} from ${project}`,
+        part: "groups",
+        refusal: `Couldn't remove group ${change.name}.`,
+      };
     case "slack-channels":
-      return api.patchProjectAccess(project, { slack_channels: [...change.channels] }, bounds);
-  }
-}
-
-/** What the shell's pending-writes indicator names a change, in the reader's words. */
-function changeLabel(project: string, change: AccessChange): string {
-  switch (change.kind) {
-    case "owner":
-      return `Give ${project} to ${change.owner}`;
-    case "add-person":
-      return `Add ${change.email} to ${project}`;
-    case "remove-person":
-      return `Remove ${change.email} from ${project}`;
-    case "add-group":
-      return `Add group ${change.name} to ${project}`;
-    case "remove-group":
-      return `Remove group ${change.name} from ${project}`;
-    case "slack-channels":
-      return `Name ${project}'s Slack channels`;
-  }
-}
-
-/** What a refusal says when Dispatch gave no reason of its own (the request never reached it). */
-function refusalFallback(project: string, change: AccessChange): string {
-  switch (change.kind) {
-    case "owner":
-      return `Couldn't give ${project} to ${change.owner}.`;
-    case "add-person":
-      return `Couldn't add ${change.email}.`;
-    case "remove-person":
-      return `Couldn't remove ${change.email}.`;
-    case "add-group":
-      return `Couldn't add group ${change.name}.`;
-    case "remove-group":
-      return `Couldn't remove group ${change.name}.`;
-    case "slack-channels":
-      return `Couldn't name ${project}'s Slack channels.`;
+      return {
+        write: (bounds) =>
+          api.patchProjectAccess(project, { slack_channels: [...change.channels] }, bounds),
+        label: `Name ${project}'s Slack channels`,
+        part: "slack",
+        refusal: `Couldn't name ${project}'s Slack channels.`,
+      };
   }
 }
 
@@ -157,8 +145,8 @@ function useAccessWrite(
     gcTime: Number.POSITIVE_INFINITY,
     // The panel shows a refusal itself, beside the control it was refused over.
     inline: true,
-    label: (change) => changeLabel(project, change),
-    write: (change, bounds) => writeChange(project, change, bounds),
+    label: (change) => accessOperation(project, change).label,
+    write: (change, bounds) => accessOperation(project, change).write(bounds),
     // A read already out was asked before this save and could land over its answer.
     onMutate: () => queryClient.cancelQueries({ queryKey: accessKey }),
     onSuccess: (answer, change) => {
@@ -290,15 +278,19 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const pendingOf = (match: (change: AccessChange) => boolean) => write.pending.some(match);
   const refusalIn = (part: AccessPart): ReactNode => {
     const refused = write.refused;
-    if (refused === undefined || partOf(refused.change) !== part) {
+    if (refused === undefined) {
+      return null;
+    }
+    const operation = accessOperation(project, refused.change);
+    if (operation.part !== part) {
       return null;
     }
     return (
       <div className="mt-3">
         <QueryError
-          message={apiErrorMessage(refused.error, refusalFallback(project, refused.change))}
+          message={apiErrorMessage(refused.error, operation.refusal)}
           onRetry={() => write.save(refused.change)}
-          retrying={pendingOf((change) => partOf(change) === part)}
+          retrying={pendingOf((change) => accessOperation(project, change).part === part)}
         />
       </div>
     );
