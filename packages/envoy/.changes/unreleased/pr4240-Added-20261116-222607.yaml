@@ -1,0 +1,5 @@
+kind: Added
+body: '`spec-check citations` names each program check of The Spec that CI must refuse at a commit (R48): its test is not in the code, its selector picks two tests, its job is not in the workflow or not awaited, or a file that its test reads changed and its job did not run the test. `spec-check changed` lists the files that changed between two commits, both paths of a move. `spec-check tree` reads a runner, a selector or a job with no letter and no digit as missing, and refuses a procedure that names its own go test.'
+time: 2026-11-16T22:26:07.213015055Z
+custom:
+    Issue: pr4240
