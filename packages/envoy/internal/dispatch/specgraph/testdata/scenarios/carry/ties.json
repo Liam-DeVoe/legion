@@ -1,0 +1,10 @@
+{
+  "a-restart-loses-no-message": [
+    "go.work",
+    "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+    "packages/envoy/cmd/listener/*",
+    "packages/envoy/cmd/listener/testdata/**",
+    "packages/envoy/go.mod",
+    "packages/envoy/go.sum"
+  ]
+}

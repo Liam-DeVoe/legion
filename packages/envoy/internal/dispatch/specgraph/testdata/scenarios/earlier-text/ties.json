@@ -1,0 +1,6 @@
+{
+  "messages-come-in-the-order-of-their-writes": [
+    "packages/envoy/cmd/listener/*",
+    "packages/envoy/go.mod"
+  ]
+}
