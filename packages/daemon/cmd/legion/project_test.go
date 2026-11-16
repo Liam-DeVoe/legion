@@ -32,8 +32,10 @@ type scriptedRelease struct {
 	dry    api.ProjectReleaseResponse
 	reads  int
 	starts []api.ProjectReleaseRequest
-	// dryTakes is how long a dry run's start takes before it answers.
-	dryTakes time.Duration
+	// dryTakes is how long a dry run's start takes before it answers, and readTakes how long a
+	// read of the release takes.
+	dryTakes  time.Duration
+	readTakes time.Duration
 }
 
 func (r *scriptedRelease) Start(ctx context.Context, bound time.Duration, dryRun bool) (api.ProjectReleaseResponse, bool, error) {
@@ -61,7 +63,13 @@ func (r *scriptedRelease) Start(ctx context.Context, bound time.Duration, dryRun
 	return r.views[0], true, nil
 }
 
-func (r *scriptedRelease) Read(context.Context) (api.ProjectReleaseResponse, bool, error) {
+func (r *scriptedRelease) Read(ctx context.Context) (api.ProjectReleaseResponse, bool, error) {
+	if r.readTakes > 0 {
+		select {
+		case <-ctx.Done():
+		case <-time.After(r.readTakes):
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reads++
@@ -387,6 +395,20 @@ func TestProjectReleaseDryRunAnsweredWithAReleaseReadsThatRelease(t *testing.T) 
 	}
 	if !strings.Contains(errb, "answered the dry run with that release") || !strings.Contains(errb, "left 1 Sandbox(es) of the project: legion-legion-legion-209") {
 		t.Fatalf("stderr %q does not say the dry run was answered with the release, or does not name the left pod", errb)
+	}
+}
+
+// Once the daemon has answered --dry-run with the release it already ran, the command follows
+// that release, so a read of it the command's wait cuts says the release goes on in the daemon
+// and to run the command again — not that a dry run records and starts nothing, which is true of
+// no run that reads a release.
+func TestProjectReleaseDryRunAnsweredWithAReleaseSaysThatReleaseGoesOn(t *testing.T) {
+	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
+		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
+	d := releaseDaemon(t, &scriptedRelease{ran: true, views: []api.ProjectReleaseResponse{running}, readTakes: 3 * time.Second})
+	code, _, errb := d.projectRelease(append(d.reach(), "--dry-run", "--wait", "300ms")...)
+	if code != 1 || !strings.Contains(errb, releaseGoesOn) || strings.Contains(errb, "a dry run records and starts nothing") {
+		t.Fatalf("legion project release --dry-run --wait 300ms answered with a release = %d, stderr %q; want 1 saying %q", code, errb, releaseGoesOn)
 	}
 }
 

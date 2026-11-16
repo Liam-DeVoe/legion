@@ -170,6 +170,15 @@ type ReleasedClaimEnd string
 // it at the release's end: the next boot starts no claim it holds no record of.
 const ReleasedClaimUnrecorded ReleasedClaimEnd = "unrecorded"
 
+// ReleasedClaimEndOf is how c ended, by the rule above: the source of its suspension when it is
+// suspended, its state otherwise.
+func ReleasedClaimEndOf(c supervise.Claim) ReleasedClaimEnd {
+	if c.State == supervise.StateSuspended {
+		return ReleasedClaimEnd(c.SuspendedBy)
+	}
+	return ReleasedClaimEnd(c.State)
+}
+
 // ReleasedClaimEnds is every ReleasedClaimEnd, in order: each claim state but suspended, as
 // supervise declares them, each suspension source, as supervise declares them, and
 // ReleasedClaimUnrecorded. TestProjectReleaseWordsGolden writes it to

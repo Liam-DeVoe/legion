@@ -492,12 +492,11 @@ func (m *projectMove) awaitLine(t *testing.T, name string, outcome api.ReleaseOu
 		if json.Unmarshal(body, &running) != nil {
 			return false
 		}
-		for _, line := range running.Result.Sandboxes {
-			if line.Name == name {
-				return line.Outcome == outcome || outcome == api.ReleaseDeleted && strings.HasPrefix(string(line.Outcome), "deleted")
-			}
+		line, ok := releaseLineNow(running, name)
+		if !ok {
+			return false
 		}
-		return false
+		return line.Outcome == outcome || outcome == api.ReleaseDeleted && line.Deleted()
 	})
 }
 

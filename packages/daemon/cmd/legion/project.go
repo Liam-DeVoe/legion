@@ -31,6 +31,11 @@ var projectReleasePoll = 5 * time.Second
 // left pod's claims come after it.
 const projectReleaseWaitBeyondBound = 30 * time.Minute
 
+// releaseGoesOn ends every sentence this command's wait makes about a release the daemon runs:
+// the release is the daemon's, which no bound of this command cancels, and the command run again
+// reads it.
+const releaseGoesOn = "the release goes on in the daemon. Run this command again to read it"
+
 // runProjectRelease releases every pod of the project (R6): it asks the daemon to start the
 // release, which a daemon that already ran one in this process answers with that release, reads
 // the release every projectReleasePoll until it finished or --wait ends, and prints it — one line
@@ -68,13 +73,17 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	// daemon goes on with the release, which this bound never cancels, and the same command
 	// answers that release when it is run again.
 	c.until = waitUntil(began, *wait, *bound)
+	// Which end the sentence takes follows the answer and not the flag: a dry run the daemon
+	// answers with a release it already ran is followed as that release, and from then on a
+	// request the wait cuts says that release goes on.
+	following := false
 	c.waitEnded = func(method, url string) string {
-		if *dryRun {
-			return fmt.Sprintf("%s %s was not answered before the command's wait of %s ended; a dry run records and starts nothing",
-				method, url, time.Since(began).Round(time.Second))
+		ended := releaseGoesOn
+		if *dryRun && !following {
+			ended = "a dry run records and starts nothing"
 		}
-		return fmt.Sprintf("%s %s was not answered before the command's wait of %s ended; the release goes on in the daemon. Run this command again to read it",
-			method, url, time.Since(began).Round(time.Second))
+		return fmt.Sprintf("%s %s was not answered before the command's wait of %s ended; %s",
+			method, url, time.Since(began).Round(time.Second), ended)
 	}
 	request := api.ProjectReleaseRequest{DryRun: *dryRun}
 	if *bound > 0 {
@@ -90,6 +99,7 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	if release.DryRun {
 		return printProjectRelease(c, release, answer, *asJSON)
 	}
+	following = true
 	if *dryRun {
 		fmt.Fprintf(stderr, "%s: the daemon already ran release %d in this process, so it answered the dry run with that release; it is read as the release it is\n",
 			c.name, release.ID)
@@ -101,8 +111,8 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 		left := time.Until(c.until)
 		if left <= 0 {
 			printProjectRelease(c, release, answer, *asJSON)
-			fmt.Fprintf(stderr, "%s: the command's wait of %s ended before release %d finished; the release goes on in the daemon. Run this command again to read it\n",
-				c.name, time.Since(began).Round(time.Second), release.ID)
+			fmt.Fprintf(stderr, "%s: the command's wait of %s ended before release %d finished; %s\n",
+				c.name, time.Since(began).Round(time.Second), release.ID, releaseGoesOn)
 			return 1
 		}
 		select {

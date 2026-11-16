@@ -1280,7 +1280,7 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 // release (releaseStoppedClaims): ready and working are a session that holds its role again, and
 // a failed claim holds it no more.
 func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.ClaimState) {
-	w.releaseStopped.back(c.Token)
+	w.releaseStopped.settled(c.Token)
 	w.podResume(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
 		w.terminal(c, state)

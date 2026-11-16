@@ -19,8 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -407,17 +405,12 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 	})
 }
 
-// outboxRowState is a row's attempts and last error, and whether it is still in the outbox.
+// outboxRowState is a row's attempts and last error, and whether it is still in the outbox, of
+// the one reading of the row (readHeldRow).
 func outboxRowState(t *testing.T, pool *store.Pool, issue string) (attempts int, lastError string, present bool) {
 	t.Helper()
-	err := pool.QueryRow(context.Background(), `select attempts, last_error from outbox where issue = $1`, issue).Scan(&attempts, &lastError)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, "", false
-	}
-	if err != nil {
-		t.Fatalf("read the outbox row of %s: %v", issue, err)
-	}
-	return attempts, lastError, true
+	row, present := readHeldRow(t, pool, issue)
+	return row.attempts, row.lastError, present
 }
 
 // runDue runs every row of the project due at now through runner, as a lane runs each.

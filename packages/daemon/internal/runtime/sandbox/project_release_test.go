@@ -110,12 +110,7 @@ func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 		g.clearActions()
 		_, err := g.r.Spawn(g.ctx, spec)
 		wantReleased(t, g, "the launch into the kept pod", err)
-		started := func() bool {
-			return slices.ContainsFunc(g.sent(spec.Claim), func(frame shimwire.Frame) bool {
-				_, ok := frame.(shimwire.LauncherStart)
-				return ok
-			})
-		}
+		started := func() bool { return countOf(g.sent(spec.Claim), shimwire.TypeLauncherStart) > 0 }
 		if started() {
 			t.Fatal("the launch into the kept pod started its role while the project release holds")
 		}

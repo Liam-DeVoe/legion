@@ -40,10 +40,10 @@ type projectRelease struct {
 	// id is the release's record id once its record has committed (recorded), 0 before: what the
 	// release's own ask round is named by (ownRound).
 	id atomic.Int64
-	// finished is set once the release finished its acts (finish): its round is then no round the
-	// outbox publishes an ask under without the claim-round read (askRound), while the mark itself
-	// stays held.
-	finished atomic.Bool
+	// finishedActs is set once the release finished its acts (finish, finished): its round is then
+	// no round the outbox publishes an ask under without the claim-round read (askRound), while
+	// the mark itself stays held.
+	finishedActs atomic.Bool
 	// unmarked runs once unmark has cleared the mark: the machines' send of every task the mark
 	// held back (supervisor.sendHeldTasks). openSupervision sets it once, at boot, before anything
 	// can set the mark; nil runs nothing.
@@ -67,7 +67,14 @@ func (r *projectRelease) recorded(id int64) {
 // published only where the claim records that round, which no claim does (askRound), so none is
 // published. The mark stays held until the process ends.
 func (r *projectRelease) finish() {
-	r.finished.Store(true)
+	r.finishedActs.Store(true)
+}
+
+// finished is whether the release of this process has finished its acts: the one flag that says
+// so, which the release itself reads for the acts it no longer does (projectReleaser.current,
+// record, the authorize of a pod's delete). A nil mark has finished nothing.
+func (r *projectRelease) finished() bool {
+	return r != nil && r.finishedActs.Load()
 }
 
 // unmark clears the mark of a release whose record did not commit, the one way the mark is
@@ -109,7 +116,7 @@ func (r *projectRelease) ownRound() string {
 // that runs after its finish meets the claim-round read, and since no claim records that round it
 // finishes without a publish.
 func (r *projectRelease) askRound() string {
-	if r == nil || r.finished.Load() {
+	if r.finished() {
 		return ""
 	}
 	return r.ownRound()
@@ -175,9 +182,9 @@ func (s *releaseStoppedClaims) comingBack(held supervise.ClaimView) bool {
 	return stopped
 }
 
-// back takes token's claim out of the set: its session holds its role again, or the claim
+// settled takes token's claim out of the set: its session holds its role again, or the claim
 // failed, and either way no delivery waits for the boot's start of it any longer.
-func (s *releaseStoppedClaims) back(token claim.Token) {
+func (s *releaseStoppedClaims) settled(token claim.Token) {
 	if s == nil {
 		return
 	}

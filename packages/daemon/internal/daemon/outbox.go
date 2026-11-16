@@ -268,8 +268,7 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 			case row.Attempts >= waitWarnAttempts && !routineWait(err):
 				level = slog.LevelWarn
 			}
-			r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
-				"attempts", row.Attempts, "error", err)
+			r.logWait(ctx, level, row, err)
 		} else if !permanent {
 			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", err)
 		}
@@ -287,6 +286,13 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err := r.finish(ctx, row); err != nil {
 		r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 	}
+}
+
+// logWait says at level that row waits, with err as the wait: a run that ended in one (settle),
+// and a row the project release holds back (holdForRelease), which each choose their own level.
+func (r *outbox) logWait(ctx context.Context, level slog.Level, row record.OutboxRow, err error) {
+	r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
+		"attempts", row.Attempts, "error", err)
 }
 
 // deferral is the GitHub rate limit a row of kind would meet at now, if one stands (standingLimit),

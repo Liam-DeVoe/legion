@@ -1052,14 +1052,15 @@ func (p *idleRigRoleProcess) watchActivity() {
 	defer ticker.Stop()
 	for range ticker.C {
 		p.reportMu.Lock()
-		plan, err := p.plan()
+		plan, planErr := p.plan()
 		ended := false
-		if err == nil && !plan.StayInTurn {
-			if ended, err = p.endTurn(); err != nil {
-				fmt.Fprintf(os.Stderr, "idle rig role process: end the turn of %s: %v\n", p.session, err)
+		var endErr error
+		if planErr == nil && !plan.StayInTurn {
+			if ended, endErr = p.endTurn(); endErr != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: end the turn of %s: %v\n", p.session, endErr)
 			}
 		}
-		if err == nil && (ended || !p.taken || !slices.Equal(plan.Background, p.reported)) {
+		if planErr == nil && endErr == nil && (ended || !p.taken || !slices.Equal(plan.Background, p.reported)) {
 			if err := p.report(plan.Background); err != nil {
 				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s: %v\n", p.session, err)
 			}
@@ -1203,8 +1204,8 @@ func (p *idleRigRoleProcess) adopted(adopt shimwire.AdoptWorkingCopy) error {
 
 // prompted records the task and, when the rig's plan says so, takes a turn on it. A plan that
 // takes no turn acknowledges the prompt and nothing else, which is a resume whose woken role
-// never reaches its first turn; a plan that stays in its turn begins one and never ends it, so
-// the claim works until it is stopped.
+// never reaches its first turn; a plan that stays in its turn begins one, which lasts until the
+// plan no longer says so (watchActivity, endTurn) or the claim is stopped.
 func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 	if err := p.post(p.rig+"/agent/record", map[string]any{
 		"pod": p.pod, "role": p.role, "kind": "prompt", "id": prompt.ID, "delivery": prompt.DeliveryID, "text": prompt.Message,

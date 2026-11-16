@@ -86,16 +86,15 @@ func (r *idleWakeRig) stateRelease() any {
 	return state["projectRelease"]
 }
 
-// releaseLine is the release's line of the Sandbox name.
+// releaseLine is the release's line of the Sandbox name, which the test needs the release to
+// hold (releaseLineNow).
 func releaseLine(t *testing.T, release api.ProjectReleaseResponse, name string) api.ReleasedSandbox {
 	t.Helper()
-	for _, line := range release.Result.Sandboxes {
-		if line.Name == name {
-			return line
-		}
+	line, ok := releaseLineNow(release, name)
+	if !ok {
+		t.Fatalf("the release names no Sandbox %s; it names %+v", name, release.Result.Sandboxes)
 	}
-	t.Fatalf("the release names no Sandbox %s; it names %+v", name, release.Result.Sandboxes)
-	return api.ReleasedSandbox{}
+	return line
 }
 
 // releaseAsks is every message one role of an issue, or the controller (key idleRigControllerPod),
@@ -377,23 +376,37 @@ func TestProjectReleaseWaitsForTheControllersTurnToTheBound(t *testing.T) {
 	}
 }
 
+// refuseWrites has the store refuse, for the rest of the test, every write the trigger name
+// catches: on is the trigger's timing, event and table (`before insert on outbox`), when its
+// `when` clause, message what it raises, and errcode the SQLSTATE it raises it with, none when
+// it is empty.
+func (r *idleWakeRig) refuseWrites(name, on, when, message, errcode string) {
+	r.t.Helper()
+	using := ""
+	if errcode != "" {
+		using = ` using errcode = '` + errcode + `'`
+	}
+	for _, statement := range []string{
+		`create function ` + name + `() returns trigger language plpgsql as $$
+			begin raise exception '` + message + `'` + using + `; end $$`,
+		`create trigger ` + name + ` ` + on + ` for each row
+			when (` + when + `) execute function ` + name + `()`,
+	} {
+		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
+			r.t.Fatalf("make the store refuse writes with the trigger %s: %v", name, err)
+		}
+	}
+}
+
 // refuseReleaseStops has the store refuse every write of token's claim as the project release's
 // suspension, as a database that does not take that write refuses it, for the rest of the test:
 // with a serialization failure (SQLSTATE 40001), which the claim's machine owes as it owes any
 // write the database did not take (supervise's writeOwed), its claim suspended in memory.
 func (r *idleWakeRig) refuseReleaseStops(token claim.Token) {
 	r.t.Helper()
-	for _, statement := range []string{
-		`create function idle_rig_refuse_release_stop() returns trigger language plpgsql as $$
-			begin raise exception 'the store refused the write' using errcode = 'serialization_failure'; end $$`,
-		`create trigger idle_rig_refuse_release_stop before insert or update on claims for each row
-			when (new.token = '` + string(token) + `' and new.suspended_by = '` + string(supervise.SuspendedByProjectRelease) + `')
-			execute function idle_rig_refuse_release_stop()`,
-	} {
-		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
-			r.t.Fatalf("make the store refuse the release's stop of %s: %v", token, err)
-		}
-	}
+	r.refuseWrites("idle_rig_refuse_release_stop", "before insert or update on claims",
+		`new.token = '`+string(token)+`' and new.suspended_by = '`+string(supervise.SuspendedByProjectRelease)+`'`,
+		"the store refused the write", "serialization_failure")
 }
 
 // dispatch://INFRA-3583 R8 and its plan's decision 8: the release deletes a pod only once each of
@@ -425,18 +438,17 @@ func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-3583 R6, "the release leaves no round open on any claim": a pod the release
-// leaves keeps none of its claims in an update round, the claim an operator suspended before the
-// release included, which is no claim the release stops. That pod is the one a pod update round
-// waits on past its bound, since the operator's suspension holds it (podupdate.go's
-// heldByOperator), and a round left on its claims would replace it once the operator resumes them.
-// Each claim of the pod stays held by an operator, so no boot starts it.
-func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
-	rig := newIdleRigWith(t, idleRigOptions{orphanSweep: 2 * time.Second},
+// heldPodInUpdateRound is the rig the two tests below share: one pod of two roles, built by an
+// older daemon so that a pod update sweep opens a round over both its claims, with the planner
+// suspended by an operator while that round stands. The release leaves such a pod, since an
+// operator holds a claim of it, and takes both claims out of their round.
+func heldPodInUpdateRound(t *testing.T) (rig *idleWakeRig, held idleRigIssue, implementer, planner claim.Token) {
+	t.Helper()
+	rig = newIdleRigWith(t, idleRigOptions{orphanSweep: 2 * time.Second},
 		idleRigSeed{name: "held", roles: []claim.Role{claim.RoleImplementer, claim.RolePlanner}})
-	held := rig.issue("held")
+	held = rig.issue("held")
 	rig.launchAll()
-	implementer, planner := rig.roleToken(held, claim.RoleImplementer), rig.roleToken(held, claim.RolePlanner)
+	implementer, planner = rig.roleToken(held, claim.RoleImplementer), rig.roleToken(held, claim.RolePlanner)
 	if !rig.kube.madeByAnOlderDaemon(held.pod, moveOlderImage) {
 		t.Fatalf("the pod of %s is not in the cluster to stand for an older daemon's", held.key)
 	}
@@ -451,6 +463,17 @@ func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
 		c := rig.claimsByToken()[planner]
 		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator) && c.UpdateRound != ""
 	})
+	return rig, held, implementer, planner
+}
+
+// dispatch://INFRA-3583 R6, "the release leaves no round open on any claim": a pod the release
+// leaves keeps none of its claims in an update round, the claim an operator suspended before the
+// release included, which is no claim the release stops. That pod is the one a pod update round
+// waits on past its bound, since the operator's suspension holds it (podupdate.go's
+// heldByOperator), and a round left on its claims would replace it once the operator resumes them.
+// Each claim of the pod stays held by an operator, so no boot starts it.
+func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
+	rig, held, implementer, planner := heldPodInUpdateRound(t)
 
 	rig.startRelease("10s")
 	release, _ := rig.awaitReleaseFinished()
@@ -476,36 +499,10 @@ func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
 // the operator who recovers the pod knows that a round still stands on it before resuming its
 // claims; the store here refuses the write that would end the planner's round.
 func TestProjectReleaseNamesARoundItCouldNotEnd(t *testing.T) {
-	rig := newIdleRigWith(t, idleRigOptions{orphanSweep: 2 * time.Second},
-		idleRigSeed{name: "held", roles: []claim.Role{claim.RoleImplementer, claim.RolePlanner}})
-	held := rig.issue("held")
-	rig.launchAll()
-	implementer, planner := rig.roleToken(held, claim.RoleImplementer), rig.roleToken(held, claim.RolePlanner)
-	if !rig.kube.madeByAnOlderDaemon(held.pod, moveOlderImage) {
-		t.Fatalf("the pod of %s is not in the cluster to stand for an older daemon's", held.key)
-	}
-	idleRigEventually(t, idleRigPodWait, "the update round open over both claims of the older daemon's pod", func() bool {
-		claims := rig.claimsByToken()
-		return claims[implementer].UpdateRound != "" && claims[planner].UpdateRound != ""
-	})
-	if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(planner)+"/suspend", nil, true); status/100 != 2 {
-		t.Fatalf("suspend %s = %d; body %s", planner, status, body)
-	}
-	idleRigEventually(t, idleRigPodWait, "the operator's suspension of the planner stored, in its round", func() bool {
-		c := rig.claimsByToken()[planner]
-		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator) && c.UpdateRound != ""
-	})
-	for _, statement := range []string{
-		`create function idle_rig_refuse_round_end() returns trigger language plpgsql as $$
-			begin raise exception 'the store refused the write' using errcode = 'serialization_failure'; end $$`,
-		`create trigger idle_rig_refuse_round_end before update on claims for each row
-			when (new.token = '` + string(planner) + `' and old.update_round <> '' and new.update_round = '')
-			execute function idle_rig_refuse_round_end()`,
-	} {
-		if _, err := rig.pool.Exec(context.Background(), statement); err != nil {
-			t.Fatalf("make the store refuse the end of the planner's round: %v", err)
-		}
-	}
+	rig, held, implementer, planner := heldPodInUpdateRound(t)
+	rig.refuseWrites("idle_rig_refuse_round_end", "before update on claims",
+		`new.token = '`+string(planner)+`' and old.update_round <> '' and new.update_round = ''`,
+		"the store refused the write", "serialization_failure")
 
 	rig.startRelease("10s")
 	release, _ := rig.awaitReleaseFinished()
@@ -550,10 +547,7 @@ func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 	rig.launchAll()
 	project := rig.kube.label(waiting.pod, "legion.dev/project")
 	lateIssue := rig.cfg.Project + "-99"
-	lateToken, err := claim.NewToken(rig.project, lateIssue, claim.RoleImplementer)
-	if err != nil {
-		t.Fatal(err)
-	}
+	lateToken := rig.roleToken(idleRigIssue{key: lateIssue}, claim.RoleImplementer)
 	late, cache, stray := sandbox.SandboxName(lateToken), "legion-"+project+"-cache-late", "legion-"+project+"-stray"
 
 	rig.startRelease("20s")
@@ -624,16 +618,8 @@ func TestProjectReleaseKeepsTheCountOfAPodWhoseRoleEndedBeforeItsLastRead(t *tes
 // (record.UpdateAsk), the project release's among them, for the rest of the test.
 func (r *idleWakeRig) refuseAsks() {
 	r.t.Helper()
-	for _, statement := range []string{
-		`create function idle_rig_refuse_ask() returns trigger language plpgsql as $$
-			begin raise exception 'the store refused the ask'; end $$`,
-		`create trigger idle_rig_refuse_ask before insert on outbox for each row
-			when (new.kind = '` + string(record.OutboxKindUpdateAsk) + `') execute function idle_rig_refuse_ask()`,
-	} {
-		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
-			r.t.Fatalf("make the store refuse the outbox's asks: %v", err)
-		}
-	}
+	r.refuseWrites("idle_rig_refuse_ask", "before insert on outbox",
+		`new.kind = '`+string(record.OutboxKindUpdateAsk)+`'`, "the store refused the ask", "")
 }
 
 // dispatch://INFRA-3583 R6: an ask the release could not write reached no role, so the release
