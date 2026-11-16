@@ -1,4 +1,4 @@
-import { agentSubject } from "@legion/contracts";
+import { legacyAgentSubject } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -368,7 +368,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
-  const ownSubject = agentSubject(sessionID);
+  const ownSubject = legacyAgentSubject(sessionID);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.

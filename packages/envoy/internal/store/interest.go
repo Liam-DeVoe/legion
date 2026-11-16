@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 type Interest struct {
@@ -35,6 +36,10 @@ func Merge(item Interest, topics []string) Interest {
 	return item
 }
 
+// Remove takes topics out of item, each in every form a reader takes it in
+// (contracts.TopicForms): the old and new forms of an issue's or an agent's name are one
+// interest, and a form left behind would keep the session's consumer filtered on it. No topics at
+// all removes every topic.
 func Remove(item Interest, topics []string) Interest {
 	if len(topics) == 0 {
 		item.Topics = nil
@@ -42,7 +47,9 @@ func Remove(item Interest, topics []string) Interest {
 	}
 	cut := map[string]bool{}
 	for _, topic := range topics {
-		cut[topic] = true
+		for _, form := range contracts.TopicForms(topic) {
+			cut[form] = true
+		}
 	}
 	out := make([]string, 0, len(item.Topics))
 	for _, topic := range item.Topics {

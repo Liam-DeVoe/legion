@@ -352,7 +352,7 @@ func (rig *listRig) register(t *testing.T, ids ...string) {
 		if err := rig.sessions.Put(id, session.SessionEntry{MachineID: "test-machine", Dir: "/test/" + id, SelfSubscribed: true}); err != nil {
 			t.Fatalf("register %s's session: %v", id, err)
 		}
-		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id}, []string{contracts.AgentSubject(id)}); err != nil {
+		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id}, []string{contracts.LegacyAgentSubject(id)}); err != nil {
 			t.Fatalf("register %s's interest: %v", id, err)
 		}
 	}
@@ -506,7 +506,7 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	for _, row := range rows {
 		topics[row.SessionID] = row.Topics
 	}
-	want := map[string][]string{"ses_stall_joined": {contracts.AgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": nil}
+	want := map[string][]string{"ses_stall_joined": {contracts.LegacyAgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": nil}
 	if !reflect.DeepEqual(topics, want) {
 		t.Fatalf("GET /v1/sessions while NATS stalls listed topics %v, want %v", topics, want)
 	}

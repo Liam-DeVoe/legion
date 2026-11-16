@@ -192,7 +192,7 @@ const query = `
 // ask's answer, and the word that nobody will answer it, reach its asker and its followers, and
 // the session route reaches the session an issue is routed to.
 func List(ctx context.Context, pool *store.Pool, session string, since time.Time) ([]model.SessionAnswer, error) {
-	rows, err := pool.Query(ctx, query, session, since, contracts.AgentSubject(session))
+	rows, err := pool.Query(ctx, query, session, since, contracts.LegacyAgentSubject(session))
 	if err != nil {
 		return nil, fmt.Errorf("read session %q answers: %w", session, err)
 	}

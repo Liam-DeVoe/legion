@@ -5,7 +5,6 @@ import {
   AskEditedEventPayloadSchema as AskEditedPayloadSchema,
   AskFollowerEventPayloadSchema as AskFollowerPayloadSchema,
   AskEventPayloadSchema as AskPayloadSchema,
-  agentSubject,
   ChildStatusEventPayloadSchema as ChildStatusPayloadSchema,
   CommentEventPayloadSchema as CommentPayloadSchema,
   DELIVERY_DUPLICATE_WINDOW_MS,
@@ -24,6 +23,7 @@ import {
   EXPECTS_REPLY_VALUES,
   type ExpectsReply,
   IssueEventPayloadSchema as IssuePayloadSchema,
+  legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
@@ -1294,7 +1294,7 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    ...(envelope.topic === agentSubject(sessionID) ? { to: `you (${sessionID})` } : {}),
+    ...(envelope.topic === legacyAgentSubject(sessionID) ? { to: `you (${sessionID})` } : {}),
     from: senderLabel(envelope),
     at: inboundTimestamp(envelope.issued_at),
     id: envelope.event_id ?? "unknown",

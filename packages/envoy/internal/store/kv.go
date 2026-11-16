@@ -54,16 +54,20 @@ type Registry struct {
 	// renewalFailures is this registry's record of the role claim renewals that failed, by role
 	// and holder session (RenewalFailedWithin), under a mutex of its own (role_renewal.go).
 	renewalFailures renewalFailures
+	// legacySubjects counts the old-form names callers give the registry (LegacySubjectCounter);
+	// nil counts nothing.
+	legacySubjects LegacySubjectCounter
 }
 
 // OpenOption configures the registry.
 type OpenOption func(*openOpts)
 
 type openOpts struct {
-	replicas  int
-	now       func() time.Time
-	log       *slog.Logger
-	roleWatch []kvwatch.Option
+	replicas       int
+	now            func() time.Time
+	log            *slog.Logger
+	roleWatch      []kvwatch.Option
+	legacySubjects LegacySubjectCounter
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -102,6 +106,21 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 	return func(o *openOpts) { o.roleWatch = append(o.roleWatch, options...) }
 }
 
+// LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
+// interest a registration names (LegacyTopicWarnings) or a role a claim names (ClaimedRole). The
+// listener passes its envoy_listener_legacy_subjects_total counter, whose movement is what tells
+// an operator a reader of the old form is still about.
+type LegacySubjectCounter interface {
+	Inc(labels ...[2]string)
+}
+
+// WithLegacySubjectCounter sets the counter of the old-form names callers give the registry
+// (LegacySubjectCounter). A registry opened without one counts nothing and names the old forms
+// all the same.
+func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
+	return func(o *openOpts) { o.legacySubjects = counter }
+}
+
 func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
@@ -130,6 +149,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		now:                   opts.now,
 		openedAt:              opts.now(),
 		restoredRoleRevisions: restoredRoleRevisions,
+		legacySubjects:        opts.legacySubjects,
 	}
 	r.cache = newInterestCopy(r)
 	r.roleHolders = newRoleHolderCopy(r)

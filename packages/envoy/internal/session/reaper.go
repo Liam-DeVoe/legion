@@ -335,7 +335,7 @@ func (reaper SessionReaper) storedAfterLastSeen(ctx context.Context, sessionID s
 	}
 	walk := &storedWalk{
 		reaper:   reaper,
-		subject:  contracts.AgentSubject(sessionID),
+		subject:  contracts.LegacyAgentSubject(sessionID),
 		after:    time.UnixMilli(lastSeen),
 		stream:   stream,
 		deadline: deadline,

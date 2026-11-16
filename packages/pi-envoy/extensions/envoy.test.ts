@@ -29,7 +29,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  dispatchIssueSubject,
+  legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
@@ -19219,7 +19219,7 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("subscription tool was not registered");
 
-    const topic = dispatchIssueSubject("LEGION-1", ">");
+    const topic = legacyDispatchIssueSubject("LEGION-1", ">");
     await subscribeTool.execute("", { topics: [topic] });
     expect(await followedTopics(fixture.tools, context)).toContain(topic);
 
@@ -19265,7 +19265,7 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("subscription tool was not registered");
 
-    const topic = dispatchIssueSubject("LEGION-1", ">");
+    const topic = legacyDispatchIssueSubject("LEGION-1", ">");
     await subscribeTool.execute("", { topics: [topic] });
     expect(await followedTopics(fixture.tools, context)).toContain(topic);
 
@@ -20641,7 +20641,7 @@ describe("consumer delivery", () => {
   });
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
-    const issueTopic = dispatchIssueSubject("INFRA-7", ">");
+    const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");
 
     const first = await bootConsumer("consumer-follows-a");
     await first.follow(issueTopic);
@@ -20690,7 +20690,7 @@ describe("consumer delivery", () => {
   // is the control: it shows the ledger does write its state here when the host is on this
   // session (dispatch://INFRA-812).
   test("appends no ledger state of this session to the conversation the host moved to", async () => {
-    const kept = dispatchIssueSubject("INFRA-812", ">");
+    const kept = legacyDispatchIssueSubject("INFRA-812", ">");
     let live = SESSION;
     const session = await bootConsumer("consumer-state-not-carried", {
       hostSessionID: () => live,
@@ -20723,7 +20723,7 @@ describe("consumer delivery", () => {
   // subscription added back on any followed topic fails here.
   test("holds exactly its relay subject and its agent-stream control subject, and no other", async () => {
     const session = await bootConsumer("consumer-subscription-set");
-    await session.follow(dispatchIssueSubject("INFRA-771", ">"));
+    await session.follow(legacyDispatchIssueSubject("INFRA-771", ">"));
     await session.follow("notifications.team.alpha");
     await settle();
     await session.tick();
@@ -21081,8 +21081,8 @@ describe("consumer delivery", () => {
   });
 
   test("a relayed subscription removal registers the session again without the topic, and stops taking its frames", async () => {
-    const issueTopic = dispatchIssueSubject("INFRA-9", ">");
-    const issueSubject = dispatchIssueSubject("INFRA-9", "issue.updated");
+    const issueTopic = legacyDispatchIssueSubject("INFRA-9", ">");
+    const issueSubject = legacyDispatchIssueSubject("INFRA-9", "issue.updated");
     const session = await bootConsumer("consumer-removal");
     await session.follow(issueTopic);
     await settle();
@@ -21283,8 +21283,8 @@ describe("consumer delivery", () => {
     const WHOLE = `${CARRIED}\n\nThe second paragraph, past where the event stopped.`;
     /** The topic the session follows, and the subject the comment event is published on: the
      *  frame reaches the session as its own consumer's relay of that subject. */
-    const CUT_TOPIC = dispatchIssueSubject("INFRA-370", ">");
-    const CUT_SUBJECT = dispatchIssueSubject("INFRA-370", "comment.created");
+    const CUT_TOPIC = legacyDispatchIssueSubject("INFRA-370", ">");
+    const CUT_SUBJECT = legacyDispatchIssueSubject("INFRA-370", "comment.created");
 
     /** The payload the event carries: the comment row with its body cut (`body_truncated`), or,
      *  for `omitted`, the stand-in a bus refusal leaves behind - the row's short top-level fields

@@ -286,7 +286,7 @@ func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *test
 		"topics":["notifications.legion.ACME.controller"],"delivery":{"consumer":true,"epoch":"e"}}`
 	rig.subscribe(t, registration)
 
-	want := []string{contracts.AgentSubject(sessionID), lane}
+	want := []string{contracts.LegacyAgentSubject(sessionID), lane}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the lane the controller registered must be in them", got, want)
 	}
@@ -514,9 +514,9 @@ func TestSessionConsumerResumePointOfTheCurrentStreamSeedsTheNewConsumer(t *test
 	rig := newSessionConsumerRig(t)
 	// A message of another session's takes the first stream sequence, so the resume point below
 	// names a positive sequence (a resume point at 0 has a test of its own).
-	rig.store(t, contracts.AgentSubject("ses_bystander"))
-	resumed := rig.store(t, contracts.AgentSubject("ses_resumed"))
-	foreign := rig.store(t, contracts.AgentSubject("ses_foreign"))
+	rig.store(t, contracts.LegacyAgentSubject("ses_bystander"))
+	resumed := rig.store(t, contracts.LegacyAgentSubject("ses_resumed"))
+	foreign := rig.store(t, contracts.LegacyAgentSubject("ses_foreign"))
 
 	current := rig.subscribe(t, `{"session_id":"ses_resumed","self_subscribed":true,"topics":[],
 		"delivery":{"consumer":true,"epoch":"e","resume":{"stream_id":"`+rig.streamID(t)+`","seq":`+jsonUint(resumed-1)+`}}}`)
@@ -546,7 +546,7 @@ func TestSessionConsumerResumePointOfTheCurrentStreamSeedsTheNewConsumer(t *test
 func TestSessionConsumerResumePointAtZeroOfTheCurrentStreamDeliversFromTheFirstSequence(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_resumed_at_zero"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	var stored []contracts.Envelope
 	for want := uint64(1); want <= 3; want++ {
 		item, seq := rig.storeEvent(t, agent)
@@ -592,7 +592,7 @@ func TestSessionConsumerRegistrationWithoutAUsableResumePointStartsAtWhatIsStore
 	}
 	stored := map[string]uint64{}
 	for _, registration := range sessions {
-		stored[registration.sessionID] = rig.store(t, contracts.AgentSubject(registration.sessionID))
+		stored[registration.sessionID] = rig.store(t, contracts.LegacyAgentSubject(registration.sessionID))
 	}
 
 	for _, registration := range sessions {
@@ -635,7 +635,7 @@ func TestSessionConsumerRegistrationWithNothingStoredForTheSessionStartsAtTheStr
 func TestSessionConsumerABrandNewSessionReceivesAMessageStoredForItBeforeItRegistered(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_brand_new_sweep"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// Stored for the session before it ever registered, so no resume point names it.
 	stored, _ := rig.storeEvent(t, agent)
@@ -939,7 +939,7 @@ func followWhileLocked(t *testing.T, rig *sessionConsumerRig, sessionID, topic s
 // topics, and nothing else: the stored topics as they stood when that filter was last written.
 func requireFilters(t *testing.T, rig *sessionConsumerRig, sessionID string, topics ...string) {
 	t.Helper()
-	want := append([]string{contracts.AgentSubject(sessionID)}, topics...)
+	want := append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
 	slices.Sort(want)
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v: the stored topics as they stood when its filter was last written", sessionID, got, want)
@@ -1101,13 +1101,13 @@ func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	if err := rig.harness.sessions.Put("ses_core_only", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("write the entry of a session the previous build left on the core path: %v", err)
 	}
-	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.AgentSubject("ses_core_only"), "core-only"))})
+	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.LegacyAgentSubject("ses_core_only"), "core-only"))})
 	if _, err := exceptions.NextMsg(2 * time.Second); err != nil {
 		t.Fatalf("the unreachable session's message raised no exception: %v", err)
 	}
 
 	rig.subscribe(t, `{"session_id":"ses_relayed","topics":["notifications.dispatch.issue.R.>"],"delivery":{"consumer":true,"epoch":"e"}}`)
-	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.AgentSubject("ses_relayed"), "relayed-agent"))})
+	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.LegacyAgentSubject("ses_relayed"), "relayed-agent"))})
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope("notifications.dispatch.issue.R.comment", "relayed-topic"))})
 
 	requireNoException(t, exceptions, "a consumer-delivery session's message")
@@ -1282,7 +1282,7 @@ func TestSessionConsumerAtTheStreamsConsumerLimitIsRefusedAndWritesNothing(t *te
 func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) {
 	rig := newRelayRig(t)
 	sessionID := "ses_portless_" + id.New()
-	agentSubject := contracts.AgentSubject(sessionID)
+	agentSubject := contracts.LegacyAgentSubject(sessionID)
 	topic := "notifications.dispatch.issue.PORTLESS-" + id.New() + ".comment"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
