@@ -1,22 +1,17 @@
 package poolsetting_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sjawhar/envoy/poolsetting"
+	"github.com/sjawhar/envoy/poolsetting/poolsettingtest"
 )
 
 // Named reads pool_max_conns as pgx reads the settings: in a URL's query, in a keyword/value
 // string, and in the service file a `service=` entry names. Text inside a quoted value names
 // nothing, and neither does a connection string pgx cannot parse.
 func TestNamedReadsTheSettingsAsPgxDoes(t *testing.T) {
-	service := filepath.Join(t.TempDir(), "pg_service.conf")
-	if err := os.WriteFile(service, []byte("[poolsize]\npool_max_conns=7\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PGSERVICEFILE", service)
+	poolsettingtest.ServiceFile(t)
 	for _, tc := range []struct {
 		name, connString string
 		named            bool
@@ -29,7 +24,7 @@ func TestNamedReadsTheSettingsAsPgxDoes(t *testing.T) {
 		{"a keyword/value string with spaces around the =", "host=h pool_max_conns = 7", true},
 		{"a keyword/value string that does not", "host=h dbname=db", false},
 		{"the key inside a quoted value", "host=localhost application_name='worker pool_max_conns=7'", false},
-		{"a service whose file names it", "host=h service=poolsize", true},
+		{"a service whose file names it", "host=h service=" + poolsettingtest.ServiceName, true},
 		{"a string pgx cannot parse", "postgres://u@h:port/db?pool_max_conns=7", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

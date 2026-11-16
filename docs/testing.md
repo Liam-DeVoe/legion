@@ -360,6 +360,12 @@ or a process it starts on a test's DSN, gets that store's size: the daemon's `st
 `packages/envoy/poolsetting`'s `Named` as pgx reads the settings, and Dispatch's `store.Open`
 holds its `sharedPoolSize` and refuses a DSN that names one.
 
+A store with such a default tests it through `packages/envoy/poolsetting/poolsettingtest`, which
+the daemon's store and the broker's both call: `SameOnEveryMachine` starts the test binary again on
+one CPU and on all of them and holds both pools to the default, and `OutranksTheDefault` opens the
+store on each form of a named size, a quoted decoy and a service file. Each store's own test opens
+its store and names its default.
+
 ## A Go test that opens a NATS client
 
 The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`

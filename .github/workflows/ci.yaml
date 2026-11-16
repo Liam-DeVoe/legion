@@ -630,6 +630,8 @@ jobs:
               - 'packages/envoy/migrationid/*'
               # The pool_max_conns reader the daemon's store and the broker's both call.
               - 'packages/envoy/poolsetting/*'
+              # The pool-size tests internal/store's own test runs against its Open.
+              - 'packages/envoy/poolsetting/poolsettingtest/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
