@@ -324,7 +324,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const tone = waitingOn === "" ? badgeLow : badgePrimary;
   // Inside `NoTooltips` each colour is one of the new issue page's (R6, decision 56): the line is
   // its quiet words, and the badge its label chip, or the quiet words on the same ground while
-  // the ask is asked of nobody, as the assignee's badge is drawn there.
+  // `waitingOn` is empty (the ask names no login), as the assignee's badge is drawn there.
   const badgeTone =
     page === null
       ? `${tone.bg} ${tone.text}`

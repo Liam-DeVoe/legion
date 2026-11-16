@@ -636,6 +636,190 @@ test("the compact size draws the chip and both actions at the header's size, wit
   }
 });
 
+/** A gate's three steps as the layout cases draw them: the spec awaiting its review, the
+ *  decisions with no request, and the verification sent back with a reason. */
+function layoutEntries(): StepEntry[] {
+  return [
+    specEntry({ latest_version: 1, state: "awaiting", waiting_on: "human" }),
+    decisionsEntry(),
+    verificationEntry({
+      by: { id: "bob", kind: "user" },
+      latest_version: 4,
+      reason: "The checks name no command.",
+      state: "changes_requested",
+      version: 4,
+    }),
+  ];
+}
+
+// dispatch://INFRA-3935 R1 and R10: `layout` defaults to `block`, which is `main`'s list. The
+// list and each entry are boxes of their own that wrap within themselves, and the primary
+// document's chip and its two actions are each its entry's own item, with no box around the
+// actions. Given or not, `block` draws the same markup, with `main`'s options and with the
+// header's, on both surfaces.
+test("ApprovalSteps at its default layout draws main's list", async () => {
+  const pairs: readonly (readonly [string, () => ReactNode, () => ReactNode])[] = [
+    [
+      "main's options",
+      () => <ApprovalSteps entries={layoutEntries()} primaryArtifactId={SPEC_ID} />,
+      () => <ApprovalSteps entries={layoutEntries()} layout="block" primaryArtifactId={SPEC_ID} />,
+    ],
+    [
+      "the header's options",
+      () => (
+        <ApprovalSteps
+          actionsOn={[SPEC_ID, VERIFICATION_ID]}
+          entries={layoutEntries()}
+          primaryArtifactId={SPEC_ID}
+          reasons={false}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      ),
+      () => (
+        <ApprovalSteps
+          actionsOn={[SPEC_ID, VERIFICATION_ID]}
+          entries={layoutEntries()}
+          layout="block"
+          primaryArtifactId={SPEC_ID}
+          reasons={false}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      ),
+    ],
+  ];
+  const changed: string[] = [];
+  for (const surface of ["outside", "inside"] as const) {
+    for (const [name, plain, given] of pairs) {
+      if ((await markupOf(given(), surface)) !== (await markupOf(plain(), surface))) {
+        changed.push(`${name}, ${surface}`);
+      }
+    }
+  }
+  expect(changed).toEqual([]);
+
+  const view = draw(
+    <ApprovalSteps entries={layoutEntries()} primaryArtifactId={SPEC_ID} />,
+    "outside"
+  );
+  try {
+    const list = within(view.container).getByRole("list", { name: "Approvals" });
+    expect(list.dataset.testid).toBe("issue-approval-steps");
+    expect(list.getAttribute("class")).toBe(
+      "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2"
+    );
+    expect(parentOf(list).getAttribute("class")).toBe("flex w-full min-w-0 flex-col gap-2");
+    const entries = within(list).getAllByRole("listitem");
+    expect(entries.map((entry) => entry.getAttribute("class"))).toEqual([
+      "flex min-w-0 flex-wrap items-center gap-2",
+      "flex min-w-0 flex-wrap items-center gap-2",
+      "flex min-w-0 flex-wrap items-center gap-2",
+    ]);
+    const [spec] = entries;
+    if (spec === undefined) throw new Error("no entry for the spec");
+    const chipBox = parentOf(within(spec).getByRole("button", { name: "Awaiting approval" }));
+    expect(chipBox.getAttribute("class")).toBe("contents");
+    expect(parentOf(chipBox)).toBe(spec);
+    expect(parentOf(within(spec).getByRole("button", { name: "Approve" }))).toBe(chipBox);
+    expect(parentOf(within(spec).getByRole("button", { name: "Request changes" }))).toBe(chipBox);
+    expect(view.container.querySelector("[class~='flex-nowrap']")).toBeNull();
+    expect(
+      view.container.querySelector('[data-approval-step-reason="criteria"]')?.parentElement
+    ).toBe(parentOf(list));
+  } finally {
+    undraw(view);
+  }
+});
+
+// dispatch://INFRA-3935 R10, decision 86 of dispatch://INFRA-1196/artifact/part-decisions-md: at
+// `layout="contents"` neither the list nor an entry draws a box, so in part P's header line each
+// entry's name, its chip and its actions are that line's items; the actions are one box that
+// does not wrap, so Approve and Request changes never land on two lines. The list keeps its name
+// and test id, and a reason is still drawn. `layout` acts on every surface.
+test("ApprovalSteps with layout contents adds no box of its own and keeps each entry's actions together", () => {
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <div className="flex flex-wrap" data-case="line">
+        <ApprovalSteps
+          actionsOn={[SPEC_ID, VERIFICATION_ID]}
+          entries={layoutEntries()}
+          layout="contents"
+          primaryArtifactId={SPEC_ID}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      </div>,
+      surface
+    );
+    try {
+      const line = caseOf(view, "line");
+      /** The class of each element between `element` and the caller's line. */
+      const boxesAbove = (element: Element) => {
+        const boxes: string[] = [];
+        for (let at = parentOf(element); at !== line; at = parentOf(at)) {
+          boxes.push(at.getAttribute("class") ?? "");
+        }
+        return boxes;
+      };
+      const list = within(line).getByRole("list", { name: "Approvals" });
+      expect(list.dataset.testid).toBe("issue-header-approval-steps");
+      const entries = within(list).getAllByRole("listitem");
+      expect(entries.map((entry) => entry.dataset.approvalStep)).toEqual([
+        "spec",
+        "decisions",
+        "criteria",
+      ]);
+      const [spec, decisions, verification] = entries;
+      if (spec === undefined || decisions === undefined || verification === undefined) {
+        throw new Error("an entry is missing");
+      }
+
+      const groups = [spec, verification].map((entry) => {
+        const approve = within(entry).getByRole("button", { name: "Approve" });
+        const group = parentOf(approve);
+        expect(parentOf(within(entry).getByRole("button", { name: "Request changes" }))).toBe(
+          group
+        );
+        expect(group.children).toHaveLength(2);
+        expect(classOf(group)).toEqual(
+          expect.arrayContaining(["flex-nowrap", "whitespace-nowrap"])
+        );
+        expect(classOf(group)).not.toContain("contents");
+        return group;
+      });
+      const reason = line.querySelector('[data-approval-step-reason="criteria"]');
+      if (reason === null) throw new Error("the verification's reason is not drawn");
+      expect(reason.textContent).toContain("The checks name no command.");
+      const names = entries.map((entry) => {
+        const name = entry.firstElementChild;
+        if (name === null) throw new Error(`the ${entry.dataset.approvalStep} entry draws nothing`);
+        return name;
+      });
+      expect(names.map((name) => name.textContent)).toEqual(["Spec", "Decisions", "Verification"]);
+      const items: Element[] = [
+        ...names,
+        within(spec).getByRole("button", { name: "Awaiting approval" }),
+        within(decisions).getByText(
+          surface === "inside" ? CONTROL_LABELS.not_requested : "Not requested"
+        ),
+        within(verification).getByRole("button", { name: "Changes requested" }),
+        ...groups,
+        reason,
+      ];
+      // Each item's every box up to the line draws none, so the item is the line's own.
+      const boxed = items.flatMap((item) =>
+        boxesAbove(item)
+          .filter((box) => box !== "contents")
+          .map((box) => `${item.textContent}: ${box}`)
+      );
+      expect(boxed).toEqual([]);
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 // dispatch://INFRA-3935 R4: inside `NoTooltips` a control drawn as the value of a row of Details
 // draws no label of its own, since the row draws it, and says Details' words.
 test("inRow draws no label and the words of Details", async () => {
