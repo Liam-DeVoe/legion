@@ -1331,3 +1331,147 @@ test("the band stays when the page scrolls, and on a phone the header goes @phon
     }
   });
 });
+
+/** The words `control` draws, read as a reader reads them off the screen: each glyph it draws,
+ *  left to right, with a space wherever the glyphs stand more than 2 px apart and none wherever
+ *  they touch. Its text content says nothing of that: a space the layout collapses is still in
+ *  it, and a gap the layout opens is not. The control is one line. */
+function drawnWords(control: Locator): Promise<string> {
+  return control.evaluate((element) => {
+    const glyphs: { char: string; left: number; right: number }[] = [];
+    const range = document.createRange();
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = node.textContent ?? "";
+      for (let at = 0; at < text.length; at += 1) {
+        range.setStart(node, at);
+        range.setEnd(node, at + 1);
+        const box = range.getBoundingClientRect();
+        if (box.width > 0) glyphs.push({ char: text[at] ?? "", left: box.left, right: box.right });
+      }
+    }
+    glyphs.sort((a, b) => a.left - b.left);
+    let words = "";
+    let right = Number.NaN;
+    for (const glyph of glyphs) {
+      if (words !== "" && glyph.left - right > 2 && !words.endsWith(" ") && glyph.char !== " ") {
+        words += " ";
+      }
+      words += glyph.char;
+      right = glyph.right;
+    }
+    return words.replace(/\s+/g, " ").trim();
+  });
+}
+
+// The tester's finding on the first round's head (dispatch://INFRA-3943, c-use): R2's count reads
+// "+1 label" or "+N labels" and R7's reads "Waiting on you (N)", and a reader reads the words the
+// screen draws, not the text the element holds. At 6164ec0f the labels' count drew "+1label"
+// (its space is a flex container's collapsed item) and the count of what waits drew
+// "Waiting on you ( 2 )" (its flex gap opens between the brackets and the number), while every
+// row's `toHaveText` read the right words in the text content. On the phone it reads the same at
+// 390 px.
+test("the header draws the words of its two counts as a reader reads them @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    const widths =
+      test.info().project.name !== "iphone" ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width];
+    for (const width of widths) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(waitingCount(page)).toHaveText(/^Waiting on you \(\d+\)$/);
+      const count = ((await waitingCount(page).textContent()) ?? "").replace(/\s+/g, " ").trim();
+      expect
+        .soft(
+          await drawnWords(waitingCount(page)),
+          `the count of what waits draws other words at ${width} px`
+        )
+        .toBe(count);
+      await expect(labelsLeft(page)).toHaveText(/^\+\d+ labels?$/);
+      const left = ((await labelsLeft(page).textContent()) ?? "").replace(/\s+/g, " ").trim();
+      expect
+        .soft(
+          await drawnWords(labelsLeft(page)),
+          `the labels' count draws other words at ${width} px`
+        )
+        .toBe(left);
+    }
+  });
+});
+
+/** A reader whose login is as long as INFRA-1196's assignee's: 16 characters. */
+const LONG_LOGIN = "dana@example.dev";
+
+// The tester's finding on the first round's head (dispatch://INFRA-3943, c-use): R3 holds the
+// header to its limits with 20 labels and the measured title, and the measured title is
+// INFRA-1196's own. On a preview of 6164ec0f holding INFRA-1196 as copied from production -
+// a root of a project that gates its spec, 24 children with 3 done, assigned to a 16-character
+// login - with 20 labels and the spec's approval request waiting on the reader, the header took
+// 4 lines and 127 px at 1440 px and 11 lines and 327 px at 390 px. Row (1)'s seed is a child
+// with one chip and 3 children, so no row read this issue's shape. This row seeds that shape and
+// reads R3's limits with no request waiting and with one; on the phone it reads 390 px.
+test("the header holds its limits on a gated root shaped like INFRA-1196 @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "LIKE", name: "Like INFRA" });
+      await setGatedSteps("LIKE", ["spec"]);
+      const root = await createIssue({
+        force: true,
+        project: "LIKE",
+        spec: "The plan.",
+        title: MEASURED_TITLE,
+      });
+      for (let at = 0; at < 24; at += 1) {
+        const child = await createIssue({
+          force: true,
+          parent: root.key,
+          project: "LIKE",
+          title: `Part ${at + 1} of the root`,
+        });
+        if (at < 3) await patchIssue(child.key, { status: "done" });
+      }
+      return root;
+    },
+    async (_alice, root) => {
+      const context = await asUser(browser, LONG_LOGIN);
+      try {
+        await withIssuePage(context, LONG_LOGIN);
+        const page = await context.newPage();
+        await patchIssue(root.key, {
+          assignee: LONG_LOGIN,
+          labels: [...TWENTY_LABELS],
+          priority: 1,
+          status: "in_progress",
+        });
+        const widths =
+          test.info().project.name !== "iphone"
+            ? [DESKTOP.width, IPHONE_13.width]
+            : [IPHONE_13.width];
+        for (const waiting of [false, true]) {
+          if (waiting) {
+            await requestApproval(root.primary_artifact_id ?? "", { summary: "Read it." });
+          }
+          for (const width of widths) {
+            await page.setViewportSize(viewportAt(width));
+            await gotoIssue(page, `/issues/${root.key}`);
+            await expectHeaderDrawn(page);
+            await expect(issueHeader(page).getByTestId("issue-approval-steps")).toBeVisible();
+            await expect(issueHeader(page).getByTestId("issue-progress-subtree")).toBeVisible();
+            if (waiting) await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+            await expectHeaderWithinItsLimit(page, width, waiting, TYPEFACE);
+          }
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  );
+});
