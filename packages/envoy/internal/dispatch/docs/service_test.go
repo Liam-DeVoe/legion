@@ -2224,6 +2224,12 @@ func followAskRefusal(t *testing.T, service *Service, artifactID, blockID string
 			}
 		}
 		kept = remaining
+		// The step the refusal names where its deletes drop a decision: "a decision among them
+		// whose ask is still open cannot be deleted by a document edit, so answer or resolve
+		// that ask, or repair the decision in the document editor, before this delete"
+		// (askRepairStep). The server refuses such an edit too (refuseBatchDroppedAskBlocks), so
+		// the follow resolves each of those asks, as the ask route resolves one.
+		resolveOpenAsksUnder(t, service, artifactID, ask, deletes)
 		if _, applyErr := joinedApplyOps(service, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, nil); applyErr != nil {
 			t.Fatalf("one document edit deleting %q, as the refusal names: %v\nrefusal: %v", deletes, applyErr, err)
 		}
@@ -3590,6 +3596,34 @@ func blockAskRow(t *testing.T, service *Service, artifactID, blockID string) (st
 		t.Fatalf("decode ask row options: %v", err)
 	}
 	return state, question, options
+}
+
+// resolveOpenAsksUnder resolves the open ask of every decision the named blocks of ask hold,
+// themselves included: the step the refusal names before a delete of theirs, which the server
+// refuses while such an ask is open (refuseDroppedAskBlocks). It writes the row as the ask
+// route's resolve writes it, a resolution beside the state the table holds them to.
+func resolveOpenAsksUnder(t *testing.T, service *Service, artifactID string, ask *pmdoc.Node, blocks []string) {
+	t.Helper()
+	for _, id := range blocks {
+		pmdoc.WalkAskBlocks(blockByID(ask, id), func(decision string) {
+			if decision == "" {
+				return
+			}
+			if _, err := service.store.Pool.Exec(context.Background(), `
+				update asks
+				set state = 'resolved', answer = null,
+				    resolution = jsonb_build_object(
+				      'kind', 'resolved',
+				      'reason', 'repaired by the delete the refusal names',
+				      'actor', jsonb_build_object('kind', 'user', 'id', 'alice'),
+				      'at', now()
+				    )
+				where block_artifact_id = $1 and block_id = $2 and state = 'open'
+			`, artifactID, decision); err != nil {
+				t.Fatalf("resolve the open ask of the decision %q the delete drops: %v", decision, err)
+			}
+		})
+	}
 }
 
 // firstAsk is the document's first top-level ask.
@@ -6098,8 +6132,9 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 
 // A room evicted after settleRoom's generation check but before it reads the live document
 // (an Evict whose timer Stop misses the timer that already fired) must not make the settle
-// dereference a nil document and crash the server. The settle ends quietly and the next
-// write to the room settles on its own.
+// dereference a nil document and crash the server. The settle stops short, and since the
+// eviction moved the room's generation its retry arms nothing: the next write to the room settles
+// on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -6141,6 +6176,51 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	}
 	if markdown != "later\n" {
 		t.Fatalf("version %d markdown = %q, want %q", version.Number, markdown, "later\n")
+	}
+}
+
+// A settlement whose room a close retires between its warm-up and its read of the room, a close
+// that moves no room generation - ygo's idle sweep, the close of the room at its issue's reopen, a
+// repeated close of a record that already reads closed; the test closes the room through ygo
+// (CloseRoom), which moves none - has no room to settle from, and no load of the document follows
+// to arm its settlement again: the timer that ran it was its only arming. It stops short
+// (errRoomReplaced), and its retry warms the room again and settles the document. An eviction
+// moves the generation, so its settlement is not retried and the document is left to the reload
+// (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
+func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	versions := latestVersionNumber(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	waitForLandedAppends(t, service, artifactID)
+	var closed atomic.Bool
+	service.afterSettleWarm = func(room string) {
+		if room != artifactID || !closed.CompareAndSwap(false, true) {
+			return
+		}
+		if err := service.srv.CloseRoom(room, true); err != nil {
+			t.Errorf("close the room between the settlement's warm-up and its read: %v", err)
+		}
+	}
+	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
+	// reads it. The delay is written once, before the settlement it arms.
+	service.settle = 20 * time.Millisecond
+	service.scheduleSettle(artifactID)
+	waitFor(t, roomWait(t), "the document whose room closed under its settlement to settle", func() bool {
+		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if !closed.Load() {
+		t.Fatal("no settlement reached the window between its warm-up and its read of the room")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions+1 {
+		t.Fatalf("latest version = %d, want %d: the retried settlement wrote no version", latest, versions+1)
+	}
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+	if err := service.roomFailure(artifactID); err != nil {
+		t.Fatalf("the document's room failed: %v", err)
 	}
 }
 
