@@ -31,9 +31,11 @@
 #       `go build`, so a caller that runs several checks against one baseline builds it once, not
 #       once a run. No tree is read then, so BASELINE_SHA is not read either, and a checkout whose
 #       commit cannot be resolved is no refusal. The harness cannot tell which commit a binary
-#       came from, so it names the binary and never a commit. A path that is not an executable
-#       file is refused by name before anything is made; a relative one is taken from the
-#       directory baseline_start is called in.
+#       came from, so it names the binary and never a commit, and it stamps none on it: the binary
+#       is booted exactly as its caller built it and carries whatever stamp that build gave it,
+#       which may be none. The build paragraph below says what a missing stamp costs. A path that
+#       is not an executable file is refused by name before anything is made; a relative one is
+#       taken from the directory baseline_start is called in.
 #
 #       BASELINE_EXTRA_ENV, NAME=value pairs each server gets on top of what the harness gives it.
 #       baseline_boot clears every exported variable before it starts a server, so a setting the
@@ -72,17 +74,24 @@
 #
 #       Without BASELINE_BINARY, it takes the commit's tree with `git archive` into a directory of
 #       its own under TMPDIR — a read of the repository: no worktree, no checkout, no write of any
-#       kind — and builds `./cmd/dispatch` from that tree's packages/envoy. It boots that binary,
-#       or BASELINE_BINARY's, on the database. It returns once the server has reported that it is
-#       listening, and leaves the caller
+#       kind — and builds `./cmd/dispatch` from that tree's packages/envoy, stamped with that
+#       commit through the flag the image build uses (`-ldflags "-X main.buildCommit=<commit>"`,
+#       packages/envoy/docker/Dockerfile). The stamp is the commit the server registers in
+#       server_processes as the one it serves, and a plain `go build` leaves it empty. Dispatch
+#       takes a fleet as agreeing on a commit only when every live process serves the same
+#       non-empty one (servedByEvery, packages/envoy/internal/dispatch/startup/started.go), so
+#       while an unstamped build is live no build announcement is written, and a reader that
+#       groups live processes by commit cannot tell two unstamped builds apart. It boots that
+#       binary, or BASELINE_BINARY's, on the database. It returns once the server has reported
+#       that it is listening, and leaves the caller
 #           baseline_database_url   the database the servers serve, which this branch's server then
 #                                   takes as its own DATABASE_URL
 #           baseline_url            the baseline server's address, http://127.0.0.1:<port>
 #           baseline_token          the agent bearer both servers accept, for a driver that writes
 #                                   the old release's rows through its API. It is printed nowhere.
-#           baseline_commit         the commit the baseline was built from, in full, whether
-#                                   BASELINE_SHA named it or its default found it; empty when
-#                                   BASELINE_BINARY was booted
+#           baseline_commit         the commit the baseline was built from and stamped with, in
+#                                   full, whether BASELINE_SHA named it or its default found it;
+#                                   empty when BASELINE_BINARY was booted
 #           baseline_binary         the absolute path of the binary booted as the baseline
 #       It prints, one per line on stdout, `baseline commit <commit>` (or `baseline binary <path>`)
 #       and then the first two, so that a run's log names its baseline even when no input named it.
@@ -120,10 +129,14 @@
 #   run says which of the two it is, so that a reader sees the upgrade once a child's migration
 #   lands. A baseline mark above the branch mark fails: this branch would be missing a migration
 #   the previous release already has. The baseline's line names the commit it was built from, or
-#   the binary BASELINE_BINARY gave. This branch's server is built whatever the baseline was, so
-#   the run needs go even with BASELINE_BINARY set, and it gets BASELINE_EXTRA_ENV's pairs as the
-#   baseline did. It prints one `PASS:` or `FAIL:` line per assertion, exits 2 on a missing or bad
-#   input, and exits 1 on the first failure, as the drivers in this directory do.
+#   the binary BASELINE_BINARY gave. This branch's server is built whatever the baseline was, from
+#   the checkout's working copy, and stamped as the baseline build is, with the commit
+#   `git rev-parse HEAD` names there, so that each server registers the commit it came from; a
+#   HEAD that names no commit fails the run, and the stamp names that commit even when the working
+#   copy holds edits it does not. Building and stamping this server needs go and git even with
+#   BASELINE_BINARY set, and it gets BASELINE_EXTRA_ENV's pairs as the baseline did. It prints one
+#   `PASS:` or `FAIL:` line per assertion, exits 2 on a missing or bad input, and exits 1 on the
+#   first failure, as the drivers in this directory do.
 
 set -euo pipefail
 
@@ -417,7 +430,8 @@ baseline_start() {
   local given_database_url="${DATABASE_URL:-}" given_token="${DISPATCH_TOKEN:-}"
   local given_binary="${BASELINE_BINARY:-}" sha="${BASELINE_SHA:-}"
   [[ -n "$given_database_url" ]] || require_env LEGION_TEST_PG_DSN
-  # A binary given is booted as it is: nothing reads the repository and nothing is built.
+  # A binary given is booted as it is, with whatever stamp its caller's build gave it: nothing
+  # reads the repository and nothing is built.
   if [[ -n "$given_binary" ]]; then
     require_commands env openssl psql python3 sleep
   else
@@ -473,7 +487,10 @@ baseline_start() {
     # copy is never touched and no worktree is added.
     git -C "$baseline_workspace" archive "$baseline_commit" | tar -x -C "$baseline_work/tree" ||
       baseline_fail "could not take the tree of $baseline_commit out of $baseline_workspace"
-    go -C "$baseline_work/tree/packages/envoy" build -o "$baseline_work/bin/dispatch-baseline" ./cmd/dispatch ||
+    # Stamped with its own commit, as the image build stamps it: unstamped, the server registers an
+    # empty commit, which no fleet agrees on and no reader can tell from another unstamped build's.
+    go -C "$baseline_work/tree/packages/envoy" build -ldflags "-X main.buildCommit=$baseline_commit" \
+      -o "$baseline_work/bin/dispatch-baseline" ./cmd/dispatch ||
       baseline_fail "the ./cmd/dispatch of $baseline_commit did not build"
     baseline_binary="$baseline_work/bin/dispatch-baseline"
   fi
@@ -514,9 +531,9 @@ fi
   exit 2
 }
 # Every input is baseline_start's own, which refuses a missing or bad one by name. This run builds
-# this branch's server itself whatever baseline_start boots, so it needs go even when
-# BASELINE_BINARY spares baseline_start its own build.
-require_commands go
+# this branch's server itself whatever baseline_start boots, and stamps it with the commit HEAD
+# names, so it needs git and go even when BASELINE_BINARY spares baseline_start its own build.
+require_commands git go
 
 pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
 fail() {
@@ -560,7 +577,14 @@ pass baseline "$baseline_booted migrated its own database to $baseline_mark"
 # old release wrote.
 baseline_stop_server
 
-go -C "$baseline_workspace/packages/envoy" build -o "$baseline_work/bin/dispatch-branch" ./cmd/dispatch ||
+# Stamped with the commit HEAD names, as the baseline build is with its own: unstamped, this server
+# would register an empty commit, which no fleet agrees on and no reader can tell from another
+# unstamped build's (the head comment says why).
+branch_commit="$(git -C "$baseline_workspace" rev-parse HEAD)" ||
+  fail upgrade "read the commit this branch's server is stamped with" \
+    "git rev-parse HEAD failed in $baseline_workspace"
+go -C "$baseline_workspace/packages/envoy" build -ldflags "-X main.buildCommit=$branch_commit" \
+  -o "$baseline_work/bin/dispatch-branch" ./cmd/dispatch ||
   fail upgrade "build this branch's ./cmd/dispatch" "go build exited non-zero"
 baseline_boot branch-server "$baseline_work/bin/dispatch-branch" "$baseline_database_url"
 branch_pid="$baseline_boot_pid"
