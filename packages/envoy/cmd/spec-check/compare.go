@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
@@ -87,12 +88,49 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	if held == 1 {
 		verb, pronoun = "is", "its"
 	}
-	say(stdout, "%s: every text the files hold is approved; %d of %d approved %s %s in the files at %s current text",
+	// The files may hold an earlier approved text or a text of a removed node, so the line says
+	// that the approved spec held each text, not that each text is approved now.
+	say(stdout, "%s: the approved spec held every text that the files hold; %d of %d approved %s %s in the files at %s current text",
 		dir, held, all, plural(all, "statement"), verb, pronoun)
 	for _, line := range others {
 		say(stdout, "%s", line)
 	}
+	for _, line := range removedLines(j.tree, c.Removed) {
+		say(stdout, "%s", line)
+	}
 	return 0
+}
+
+// removedLines is one line for each node of tree whose id is in removed, the nodes that the
+// approved spec removed and the files still hold (R28: "the files hold one that is no longer
+// approved"): "<kind> <id>: the files hold it, and the approved spec removed it", statements,
+// then checks, components and interfaces, then terms, each by id, and an id once.
+func removedLines(tree specgraph.Tree, removed []string) []string {
+	var lines []string
+	named := map[string]bool{} // an id the files hold two times is one line
+	add := func(kind, id string) {
+		if slices.Contains(removed, id) && !named[id] {
+			named[id] = true
+			lines = append(lines, kind+" "+id+": the files hold it, and the approved spec removed it")
+		}
+	}
+	for _, s := range tree.Statements {
+		add("statement", s.ID)
+	}
+	for _, c := range tree.Checks {
+		add("check", c.ID)
+	}
+	for _, c := range tree.Components {
+		if c.Interface {
+			add("interface", c.ID)
+		} else {
+			add("component", c.ID)
+		}
+	}
+	for _, t := range tree.Terms {
+		add("term", t.ID)
+	}
+	return lines
 }
 
 // readApproved reads the approved spec at path with specgraph.ReadApproved, and answers the path

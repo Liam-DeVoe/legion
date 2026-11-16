@@ -401,7 +401,12 @@ func testCompare(t *testing.T, binary string) {
 	}{
 		{"approved-text", "3 of 3", nil},
 		{"two-checks", "3 of 3", nil},
-		{"removed-kept", "3 of 3", nil},
+		// R28: the files hold a statement and its check that the approved spec removed, in a text
+		// that it held. The comparison passes (R2) and names each of them.
+		{"removed-kept", "3 of 3", []string{
+			"statement an-order-is-paid-once: the files hold it, and the approved spec removed it",
+			"check a-second-payment-is-refused: the files hold it, and the approved spec removed it",
+		}},
 		{"earlier-text", "2 of 3", []string{"statement an-order-survives-a-restart: the files hold approved version 1, and version 2 is current"}},
 		{"not-in-files", "2 of 3", []string{"statement orders-reach-billing-only-through-the-interface: not in the files"}},
 	} {
@@ -409,7 +414,7 @@ func testCompare(t *testing.T, binary string) {
 		t.Run(row.fixture+" passes", func(t *testing.T) {
 			t.Parallel()
 			dir, approved := fixture(t, "compare", row.fixture, "spec"), fixture(t, "compare", row.fixture, "approved.json")
-			want := "spec-check: " + dir + ": every text the files hold is approved; " + row.held + " approved statements are in the files at their current text\n"
+			want := passLine(dir, row.held)
 			for _, line := range row.others {
 				want += "spec-check: " + line + "\n"
 			}
@@ -425,6 +430,41 @@ func testCompare(t *testing.T, binary string) {
 			t.Errorf("testdata/compare/%s is in no row", entry.Name())
 		}
 	}
+
+	t.Run("compare names a removed component, interface and term that the files hold", func(t *testing.T) {
+		t.Parallel()
+		content, err := os.ReadFile(fixture(t, "compare", "approved-text", "approved.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var file struct {
+			Nodes []map[string]any `json:"nodes"`
+		}
+		if err := json.Unmarshal(content, &file); err != nil {
+			t.Fatal(err)
+		}
+		removed := 0
+		for _, n := range file.Nodes {
+			if id := n["id"]; id == "shipping" || id == "orders-to-billing" || id == "order" {
+				n["removed"] = true
+				removed++
+			}
+		}
+		if removed != 3 {
+			t.Fatalf("the fixture holds %d of the three nodes, want 3", removed)
+		}
+		changed, err := json.Marshal(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved := filepath.Join(t.TempDir(), "approved.json")
+		writeFile(t, approved, changed)
+		dir := fixture(t, "compare", "approved-text", "spec")
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3") +
+			"spec-check: interface orders-to-billing: the files hold it, and the approved spec removed it\n" +
+			"spec-check: component shipping: the files hold it, and the approved spec removed it\n" +
+			"spec-check: term order: the files hold it, and the approved spec removed it\n"})
+	})
 
 	t.Run("two nodes in texts never approved are two lines, in file and line order", func(t *testing.T) {
 		t.Parallel()
@@ -487,7 +527,7 @@ func testCompare(t *testing.T, binary string) {
 		}
 		// Only "true" names a CI job: the comparison runs where the variable holds another value.
 		expect(t, runBinaryIn(t, binary, "", []string{"CI=false"}, "compare", "--dir", dir, "--approved", approved), result{
-			stdout: "spec-check: " + dir + ": every text the files hold is approved; 3 of 3 approved statements are in the files at their current text\n",
+			stdout: passLine(dir, "3 of 3"),
 		})
 	})
 	// The second acceptance run's D3, held as the code is: the refusal reads the command's own
@@ -496,7 +536,8 @@ func testCompare(t *testing.T, binary string) {
 	// starts without -e both give the command neither variable. This row holds that fact with env
 	// -i, the same boundary, since a test cannot count on docker, an image or sudo: the step's own
 	// environment holds both variables, and env -i starts the command with none. A change that
-	// makes the command refuse here is a choice of the boundary, and it changes this row.
+	// makes the command refuse behind env -i changes this row; a refusal keyed to sudo or to a
+	// container alone would not, so the row pins env -i and not those two.
 	t.Run("compare compares behind a boundary that drops the environment", func(t *testing.T) {
 		t.Parallel()
 		envPath, err := exec.LookPath("env")
@@ -505,7 +546,7 @@ func testCompare(t *testing.T, binary string) {
 		}
 		dir, approved := fixture(t, "compare", "approved-text", "spec"), fixture(t, "compare", "approved-text", "approved.json")
 		expect(t, runBinaryIn(t, envPath, "", []string{"GITHUB_ACTIONS=true", "CI=true"}, "-i", binary, "compare", "--dir", dir, "--approved", approved), result{
-			stdout: "spec-check: " + dir + ": every text the files hold is approved; 3 of 3 approved statements are in the files at their current text\n",
+			stdout: passLine(dir, "3 of 3"),
 		})
 		// The same step without the boundary is refused, so the pass above is the boundary's.
 		got := runBinaryIn(t, envPath, "", []string{"GITHUB_ACTIONS=true", "CI=true"}, binary, "compare", "--dir", dir, "--approved", approved)
@@ -615,7 +656,7 @@ Failing example: An order service that keeps its orders in memory only.
 			writeFile(t, filepath.Join(dir, "spec.md"), []byte(printed.stdout))
 			n := strconv.Itoa(len(current.Statements))
 			expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
-				stdout: "spec-check: " + dir + ": every text the files hold is approved; " + n + " of " + n + " approved statements are in the files at their current text\n",
+				stdout: passLine(dir, n+" of "+n),
 			})
 
 			lines := strings.Split(printed.stdout, "\n")
@@ -799,6 +840,13 @@ func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...strin
 		t.Fatal(err)
 	}
 	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// passLine is the first line of a comparison that passes over dir, with held "<m> of <n>": the
+// approved spec held every text that the files hold, which may be an earlier text or a text of a
+// removed node, so the line does not say that each text is approved now.
+func passLine(dir, held string) string {
+	return "spec-check: " + dir + ": the approved spec held every text that the files hold; " + held + " approved statements are in the files at their current text\n"
 }
 
 // childEnv is this process's environment without GITHUB_ACTIONS and CI, then extra. These tests

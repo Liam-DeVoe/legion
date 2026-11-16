@@ -3185,7 +3185,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `cmd/spec-check compare --dir <dir> --approved <approved.json>` compares the spec files of one directory with an approved spec in the form `specgraph.ReadApproved` reads (`cmd/spec-check/compare.go`), by `specgraph.Compare`'s rules: unapproved-id, unapproved-text and removed-id.
   A node in a text the approved spec never held is exit 1, one line on stderr for each, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, and `spec-check: <dir>: the comparison fails on <n> nodes` on stdout.
-  Otherwise it is exit 0, with `spec-check: <dir>: every text the files hold is approved; <m> of <n> approved statements are in the files at their current text`, then one line for each other approved statement: `spec-check: statement <id>: not in the files`, or `spec-check: statement <id>: the files hold approved version 1, and version 2 is current`.
+  Otherwise it is exit 0, with `spec-check: <dir>: the approved spec held every text that the files hold; <m> of <n> approved statements are in the files at their current text`, then one line for each other approved statement: `spec-check: statement <id>: not in the files`, or `spec-check: statement <id>: the files hold approved version 1, and version 2 is current`.
+  Then one line for each node that the files hold and the approved spec removed, `spec-check: <kind> <id>: the files hold it, and the approved spec removed it`, the kind being statement, check, component, interface or term (`specgraph.Comparison.Removed`):
+  R28 counts it as a difference, and the person approves a removal before the change that takes the node out of the files, so it does not fail the comparison.
   Files that do not parse are exit 2 and no comparison, since a block that does not parse is missing from the tree and its text would pass;
   so is a directory that holds no spec file, since every text of no file is approved.
   It does not judge the tree, which is `tree`'s work.
@@ -3195,7 +3197,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   An id the approved spec does not hold, or removed, is exit 2 with nothing on stdout.
 
 - No CI job compares the spec files with the approved spec: Dispatch makes that comparison at each push (R2).
-  Two parts keep that true.
+  Two parts hold it for the routes below.
   `spec-check compare` refuses to run in a CI job (`cmd/spec-check/compare.go`): when `GITHUB_ACTIONS` or `CI` is `true`, it exits 2 before it reads an argument, with one line on stderr, `spec-check: compare does not run in a CI job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)`.
   GitHub sets both variables in every step of every job, and the refusal reads the environment of its own process, so it covers each route that passes the runner's environment on to the command: a step, a package script, a make target, a script in any directory, or a link to one.
   It does not cover a route that drops that environment, such as `sudo` with its default `env_reset` or a container that `docker run` starts without `-e` for the two variables: there the command compares (the built-binary row "compare compares behind a boundary that drops the environment" holds that with `env -i`).
