@@ -603,7 +603,8 @@ test("an agent's decision draws its words with each reference named, in its cell
     issueTree([
       statement("r4", { text: `**R4.** ${name}.` }),
       // The tree names the statement a decision shaped by a chip on the decision, from the
-      // batched read (`tree-drafts.ts`), which is the name the page gives it (`namedLine`).
+      // batched read (`tree-drafts.ts`), which is the name the page gives it
+      // (`referenceStandIns`).
       decisionNode("d1", {
         chips: [{ answered: true, gone: false, name, ref: cited }],
         text: words,

@@ -190,34 +190,84 @@ export function oneLineCut({
  *  `:::`. The pattern of `RowText.tsx`'s `DIRECTIVE_LINE`, which that module keeps to itself. */
 const SOURCE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
+/** A text's words with each reference it cites unnamed while a line is cut from them, and the
+ *  names put in after the cut (`referenceStandIns`). */
+export interface ReferenceStandIns {
+  /** A line cut from words `standIn` gave, with each reference in it named. */
+  readonly named: (line: string) => string;
+  /** `text` as the words a line is cut from: its typed blocks' source lines left out, and each
+   *  reference it cites stood in for by its token. */
+  readonly standIn: (text: string) => string;
+}
+
+/** The first character a reference's token is made of: the Basic Multilingual Plane's
+ *  private-use characters, U+E000 to U+F8FF, which are no space, letter, digit or mark. */
+const STAND_IN = 0xe000;
+
+/** How many references one holder stands in for, one private-use character each. */
+const STAND_INS = 0xf8ff - STAND_IN + 1;
+
+/** One reference's token: a run of one private-use character. */
+const TOKEN = /([\ue000-\uf8ff])\1*/gu;
+
 /**
- * `text` as a plain line of the page draws it, with every reference in it named in plain words
- * (reading (b) of dispatch://INFRA-3939's plan, the tester's F20). A plain line is no link, so
- * an address, a block id or a fence drawn in it is one a reader can neither follow nor read: a
- * typed block's source lines are markup and no word of the text, so they are left out, and each
- * `dispatch://` reference the row's reader finds (`rowReferences`) is replaced by the words for
- * what it names - an issue's key; else the page's name for it (`nameOf`, `useReferenceNames`);
- * else, for a whole document, the page's word for it (`documentWord`); else the word for a
- * document.
+ * How the page draws a plain line that cites references (reading (b) of dispatch://INFRA-3939's
+ * plan, the tester's F20): with every reference named in plain words, and named only after the
+ * line is cut. A plain line is no link, so an address, a block id or a fence drawn in it is one
+ * a reader can neither follow nor read: a typed block's source lines are markup and no word of
+ * the text, so they are left out, and each `dispatch://` reference the row's reader finds
+ * (`rowReferences`) is named by the words for what it names - an issue's key; else the page's
+ * name for it (`nameOf`, `useReferenceNames`); else, for a whole document, the page's word for
+ * it (`documentWord`); else the word for a document. A statement's name on an INFRA spec opens
+ * with its label ("R2. Every address…"), so a cut made after the naming ended its author's
+ * sentence at that label, inside the name.
+ *
+ * `standIn` stands in for each reference by a token as long as its name: one private-use
+ * character of its own, repeated, so a token holds no space, letter, digit or sentence mark.
+ * Every cut is made on those words - a sentence end, a leading label, `firstLineOf`'s limit, a
+ * row's width - and `named` puts each name in the place of its token. So no cut falls inside a
+ * name, and a name counts against `firstLineOf`'s 100 characters as the characters the line
+ * draws of it, so the drawn line keeps to R1's limit. A limit that falls inside a token, which
+ * only a token run into the words before it with no space can make, draws the whole name. One
+ * holder may stand in for the references of several texts whose lines are read together, as a
+ * summary's runs are; past the 6,400 references the private-use characters hold, a reference
+ * is named in its place. A private-use character of the text itself is no word a reader reads.
+ * A line no cut is made in is `named(standIn(text))`.
  */
-export function namedLine(text: string, nameOf: (reference: string) => string | undefined): string {
-  const words = text.includes(":::") ? text.replace(SOURCE_LINE, "") : text;
-  let line = "";
-  let at = 0;
-  for (const one of rowReferences(words, [])) {
-    const name =
-      one.route.kind === "issue"
-        ? one.route.key
-        : (nameOf(one.reference) ?? documentWord(one.route) ?? NODE_TYPE_NAMES.document);
-    line += `${words.slice(at, one.start)}${name}`;
-    at = one.end;
-  }
-  return `${line}${words.slice(at)}`;
+export function referenceStandIns(
+  nameOf: (reference: string) => string | undefined
+): ReferenceStandIns {
+  const names: string[] = [];
+  return {
+    named: (line) =>
+      names.length === 0
+        ? line
+        : line.replace(TOKEN, (token) => names[token.charCodeAt(0) - STAND_IN] ?? token),
+    standIn: (text) => {
+      const words = text.includes(":::") ? text.replace(SOURCE_LINE, "") : text;
+      let held = "";
+      let at = 0;
+      for (const one of rowReferences(words, [])) {
+        const name =
+          one.route.kind === "issue"
+            ? one.route.key
+            : (nameOf(one.reference) ?? documentWord(one.route) ?? NODE_TYPE_NAMES.document);
+        const stood = names.length < STAND_INS;
+        const token = stood
+          ? String.fromCharCode(STAND_IN + names.length).repeat(name.length)
+          : name;
+        if (stood) names.push(name);
+        held += `${words.slice(at, one.start)}${token}`;
+        at = one.end;
+      }
+      return `${held}${words.slice(at)}`;
+    },
+  };
 }
 
 /**
- * How the page names a reference that a plain line cites (`namedLine`), read once over the
- * whole tree: by the words of the first chip of the tree that names the same node, as a chip
+ * How the page names a reference that a plain line cites (`referenceStandIns`), read once over
+ * the whole tree: by the words of the first chip of the tree that names the same node, as a chip
  * draws them (`chipWords`); else, for a node the tree holds, by its kind's word; else not at
  * all. These are F's `chipOf` names, the page's one naming rule (decisions 49 and 66 of
  * dispatch://INFRA-1196), so no markdown is read here. `nodeIdOf` is how the issue addresses a

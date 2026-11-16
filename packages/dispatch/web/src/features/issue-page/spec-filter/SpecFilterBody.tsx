@@ -186,7 +186,7 @@ export function SpecFilterBody({
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
-  // a group's heading - read once over the whole tree (`namedLine`).
+  // a group's heading - read once over the whole tree (`referenceStandIns`).
   const nameOf = useReferenceNames(root, nodeIdOf);
   const { groups, others } = useMemo(
     () =>

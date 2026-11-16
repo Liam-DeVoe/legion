@@ -429,6 +429,30 @@ test("a summary sentence that cites a labelled statement stays one sentence unde
   }
 });
 
+// R1 and decision 51: whether a summary holds a sentence end is read before the names go in, so
+// a summary whose author wrote none is one sentence, its first line, though the statement it
+// cites is named by words that open with a label ("R1.").
+test("a summary with no sentence end that cites a labelled statement draws it as one sentence", () => {
+  const cited = `dispatch://${KEY}/spec#b-r1`;
+  const summary = summaryNode(`The page draws ${cited} first on every phone`);
+  const root = treeNode(KEY, "issue", {
+    children: [
+      summary,
+      treeNode(blockNodeId("spec", "r1"), "requirement"),
+      treeNode(blockNodeId("decisions", "d1"), "decision", {
+        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+      }),
+    ],
+  });
+  const { labels, lines, unmount } = bullets(summary, false, "contents", root);
+  try {
+    expect(lines).toEqual(["The page draws R1. Every node is whole first on every phone"]);
+    expect(labels).toEqual(["What it is:"]);
+  } finally {
+    unmount();
+  }
+});
+
 const decisionsDocument: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },

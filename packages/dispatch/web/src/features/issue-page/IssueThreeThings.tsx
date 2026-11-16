@@ -10,7 +10,7 @@ import {
 } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { namedLine } from "./one-line";
+import { referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
 import { LEADING_LABEL } from "./spec-filter/spec-decided-by";
@@ -45,10 +45,10 @@ const LABELS = [
  * document and costs no request of its own (R20). It draws at most the three sentences the
  * requirement names, and an author who wrote two gets two, with nothing drawn in the place of a
  * third (`summarySentences`). A reference the sentences cite is named in plain words, by the
- * one name the page gives it everywhere (`namedLine`, with the `nameOf` its slot makes once over
- * the whole tree). Who wrote the sentences and when ("from your comment of 5 Nov" in the
- * pictures) is dispatch://INFRA-1278, and the model holds neither for any issue, so the head
- * draws no author.
+ * one name the page gives it everywhere (`referenceStandIns`, with the `nameOf` its slot makes
+ * once over the whole tree), once the sentences are split. Who wrote the sentences and when
+ * ("from your comment of 5 Nov" in the pictures) is dispatch://INFRA-1278, and the model holds
+ * neither for any issue, so the head draws no author.
  *
  * Until the reads that carry the summary answer, the head says nothing about it: the tree is
  * drawn before the spec's blocks arrive, and its summary node before the batched reference read
@@ -168,7 +168,8 @@ function sentencesOf(words: string): string[] {
  * a mark before a word in lower case are none. A list item is a sentence of its own whether or
  * not its author ended it with a mark, because the item ends where the next one starts, so a
  * list's last item is drawn too. A run's words are the reading's own (`wordsOf`), with each
- * reference in them named in plain words (`namedLine`); nothing else is added, reordered or
+ * reference in them named in plain words once the sentences are split (`referenceStandIns`), so
+ * a name that opens with a label ("R1.") ends no sentence; nothing else is added, reordered or
  * reflowed.
  *
  * A summary whose runs hold no sentence end and no list item has no sentence to split out, so
@@ -179,11 +180,12 @@ function summarySentences(
   tree: DisplayTree,
   nameOf: (reference: string) => string | undefined
 ): readonly string[] {
+  const references = referenceStandIns(nameOf);
   const runs: { readonly item: boolean; readonly words: string }[] = [];
   const walk = (node: DisplayTree, inList: boolean): void => {
     const item = inList && node.type === "list_item";
     if (item || node.type === "paragraph" || node.type === "heading") {
-      const words = namedLine(wordsOf(node), nameOf).replace(/\s+/gu, " ").trim();
+      const words = references.standIn(wordsOf(node)).replace(/\s+/gu, " ").trim();
       if (words !== "") runs.push({ item, words });
       return;
     }
@@ -197,7 +199,10 @@ function summarySentences(
     const label = whole.slice(0, labelLength(whole));
     const first = firstLineOf(whole.slice(label.length));
     const line = drawnLine({ ...first, line: `${label} ${first.line}`.trim() });
-    return line === "" ? [] : [line];
+    return line === "" ? [] : [references.named(line)];
   }
-  return runs.flatMap(({ item, words }) => (item ? [words] : sentencesOf(words))).slice(0, BULLETS);
+  return runs
+    .flatMap(({ item, words }) => (item ? [words] : sentencesOf(words)))
+    .slice(0, BULLETS)
+    .map((sentence) => references.named(sentence));
 }

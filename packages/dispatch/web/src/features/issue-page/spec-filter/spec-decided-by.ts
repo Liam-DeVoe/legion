@@ -2,8 +2,8 @@ import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from ".
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { wordsOf } from "../../refs/tree-fragment";
-import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
-import { namedLine } from "../one-line";
+import { drawnLine, firstLineOf, lineWords, type TreeNode } from "../issue-tree";
+import { referenceStandIns } from "../one-line";
 import {
   isReader,
   NODE_TYPE_NAMES,
@@ -39,15 +39,17 @@ import { statementStandings } from "../verification-filter/statement-state";
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it
  * (dispatch://INFRA-1150 R4): the first sentence of the answer's plain words (`plainWords`,
- * `firstSentenceOf`), with each reference in it named in plain words (`namedLine`), or, where
- * they wrote none, the options they chose; the whole answer is carried beside it as stored, for
- * the focus on the line to draw character for character (R5). A section of `decisions.md` the
- * server marks a person's whose answered question this tree does not hold is the agent's record
- * of that decision, so it is drawn as an agent's words and never quoted as the person's (R9).
+ * `firstSentenceOf`), with each reference in it named in plain words once the sentence is cut
+ * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
+ * carried beside it as stored, for the focus on the line to draw character for character (R5).
+ * A section of `decisions.md` the server marks a person's whose answered question this tree
+ * does not hold is the agent's record of that decision, so it is drawn as an agent's words and
+ * never quoted as the person's (R9).
  *
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
- * words (`RowText`), and is quoted by its first line with each reference named: the line under a
- * statement quotes it as one link, and a text drawn with its own links cannot stand inside one
+ * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWords`,
+ * `firstLineOf`), with each reference named once the line is cut: the line under a statement
+ * quotes it as one link, and a text drawn with its own links cannot stand inside one
  * (departure 2 of dispatch://INFRA-3939's plan). With it goes the one word the model holds for
  * how sure it was (`Decision.unsure`).
  *
@@ -83,12 +85,12 @@ export interface SpecDecision {
    *  their answer (`id`), and this is the section of `decisions.md` that names it. */
   readonly node?: string;
   /** The question the words answer, its first line as R1 cuts a row's with each reference
-   *  named; absent where the words answer no question. */
+   *  named after the cut; absent where the words answer no question. */
   readonly question?: string;
   /** The one line the decision is quoted by under a statement, in plain words with each
-   *  reference named (`namedLine`): the first sentence of a person's answer read to its plain
-   *  words, or the options they chose where they wrote nothing, or the first line of an agent's
-   *  decision's own words. */
+   *  reference named after its cut (`referenceStandIns`): the first sentence of a person's
+   *  answer read to its plain words, or the options they chose where they wrote nothing, or the
+   *  first line of an agent's decision's own words. */
   readonly quote: string;
   /** The node's own `dispatch://` address, which the link to the whole of it follows. */
   readonly reference?: string;
@@ -136,8 +138,8 @@ export interface SpecParent {
   readonly at?: string;
   readonly by?: Actor;
   readonly id: string;
-  /** Its own words' first line, as R1 draws one (`drawnLine`), with each reference named; its
-   *  kind's word where it has no words. */
+  /** Its own words' first line, as R1 draws one (`lineWords`, `drawnLine`), with each reference
+   *  named after the cut; its kind's word where it has no words. */
   readonly line: string;
   readonly type: NodeType;
 }
@@ -287,6 +289,11 @@ const HEADING_MARKER = /^ {0,3}#{1,6}[ \t]+/gmu;
 /** An image, `![alt](src)`, whose words the server's reading of it holds none of. */
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
 
+/** A stored block that holds no words once its images are left out: nothing but white space
+ *  and the marks of a horizontal rule. `issue-tree.ts`'s `NO_WORDS`, which that module keeps to
+ *  itself (`decisionLineWords`). */
+const NO_WORDS = /^[\s*_-]*$/u;
+
 /** A link, `[words](target)`, which reads as its words; its target is no word of the text. */
 const LINK = /\[([^\]]*)\]\([^)]*\)/gu;
 
@@ -314,8 +321,8 @@ const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
  * The words of a stored markdown text as a reader reads them, on one line. It is part F's
  * `plainWords` (`tree-drafts.ts`, decision 88 of dispatch://INFRA-1196), less F's last step,
  * which writes a bare `dispatch://` address as its short form: this view names each reference
- * by `namedLine` instead. J imports F's and deletes this copy once F's tip is under J's base
- * (decision 94).
+ * in plain words instead (`referenceStandIns`). J imports F's and deletes this copy once
+ * F's tip is under J's base (decision 94).
  *
  * A place that draws a stored text as plain words draws this, since its marks are markup and no
  * word of it (R21), and a mark after a sentence's end (`today.**`) would hide that end from
@@ -454,21 +461,17 @@ function decisionOf(
   // mouth (R9: "no agent's words are drawn under a person's name").
   const at = node?.at ?? decision.changed_at ?? undefined;
   const tree = decision.text_tree ?? node?.tree;
-  // The one line is read from the words as a reader reads them, with none of the symbols the
-  // cell draws as formatting: the node's (`nodeWords`), else the decision's own reading.
-  const words =
-    node !== undefined
-      ? nodeWords(node)
-      : decision.text_tree === undefined
-        ? decision.text
-        : wordsOf(decision.text_tree);
+  // The one line is cut from the words of the first block that holds any, as every one-line
+  // place cuts a node's (`lineWords`), so the decision's own `##` heading never runs into the
+  // paragraph under it, and with none of the symbols the cell draws as formatting.
+  const words = node !== undefined ? lineWords(node) : decisionLineWords(decision);
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
     chose: [],
     id: node?.id ?? decision.ref,
     ...(node === undefined ? {} : { node: node.id }),
-    quote: drawnLine(firstLineOf(namedLine(words, nameOf))),
+    quote: namedFirstLine(words, nameOf),
     reference: decision.ref,
     said: "agent",
     ...(node?.state === undefined ? {} : { state: node.state }),
@@ -493,16 +496,18 @@ function answerDecision(
   const answer = ask.answer;
   if (answer === undefined) throw new Error("an answered ask with no answer");
   // A link the person wrote reads as its words and a mark as nothing (`plainWords`), so the
-  // quote is their words and none of the markdown they were stored in.
-  const written = firstSentenceOf(plainWords(answer.text));
-  const quote = written === "" ? answer.selected.join(", ") : namedLine(written, nameOf);
+  // quote is their words and none of the markdown they were stored in. Each reference is named
+  // after the sentence is cut, so a name that opens with a label ("R2.") ends none of it.
+  const references = referenceStandIns(nameOf);
+  const written = firstSentenceOf(references.standIn(plainWords(answer.text)));
+  const quote = written === "" ? answer.selected.join(", ") : references.named(written);
   const stored = answer.text.trim();
   return {
     at: answer.at,
     by: answer.by,
     chose: answer.selected,
     id: ask.id,
-    question: drawnLine(firstLineOf(namedLine(nodeWords(ask), nameOf))),
+    question: namedFirstLine(lineWords(ask), nameOf),
     quote,
     ...(ask.reference === undefined ? {} : { reference: ask.reference }),
     said: isReader(answer.by, reader) ? "you" : "person",
@@ -538,10 +543,10 @@ function parentOf(
   const line = node.parentLine;
   if (line === undefined) return undefined;
   const parent = nodes.get(line.id);
-  // Read from the node and not from `line.line`, which `presets.ts` keeps without its cut: a
-  // first line cut inside a sentence draws its ellipsis (`drawnLine`).
-  const words =
-    parent === undefined ? "" : drawnLine(firstLineOf(namedLine(nodeWords(parent), nameOf)));
+  // Read from the node and not from `line.line`, which `presets.ts` cuts by the same rule
+  // (`parentLineOf`) with each reference in it still its address: the heading names each one in
+  // plain words, and counts it against the line's limit as the name it draws.
+  const words = parent === undefined ? "" : namedFirstLine(lineWords(parent), nameOf);
   return {
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
@@ -550,4 +555,32 @@ function parentOf(
     line: words === "" ? NODE_TYPE_NAMES[line.type] : words,
     type: line.type,
   };
+}
+
+/** `words`' first line as a one-line place draws it (R1: `firstLineOf`, `drawnLine`), cut with
+ *  each reference it cites unnamed and each named after the cut (`referenceStandIns`). */
+function namedFirstLine(words: string, nameOf: (reference: string) => string | undefined): string {
+  const references = referenceStandIns(nameOf);
+  return references.named(drawnLine(firstLineOf(references.standIn(words))));
+}
+
+/**
+ * The words an agent's decision the tree holds no node for is quoted by, as `lineWords` reads a
+ * node's: the first top-level block of its reading that holds any, else the first block of its
+ * stored text that holds any, to its blank line, with a leading heading marker left out and a
+ * heading ending at its own line. F's `lineWords` reads a node, and keeps its reading of a bare
+ * reading (`firstBlockWords`) to itself, so this is the same reading of a decision's own two
+ * fields.
+ */
+function decisionLineWords({ text, text_tree }: Decision): string {
+  if (text_tree !== undefined) {
+    const blocks = Array.isArray(text_tree.content) ? (text_tree.content as DisplayTree[]) : [];
+    return blocks.map((block) => wordsOf(block)).find((words) => words.trim() !== "") ?? "";
+  }
+  for (const stored of text.split(BLANK_LINE)) {
+    const block = stored.trimStart();
+    const words = /^#{1,6} +(.*)/u.exec(block)?.[1] ?? block;
+    if (!NO_WORDS.test(words.replace(IMAGE, ""))) return words;
+  }
+  return "";
 }

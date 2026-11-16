@@ -39,7 +39,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
     [address.filter, memo, root]
   );
   // How a reference the sentences and the entries cite is named, read once over the whole tree
-  // (`namedLine`).
+  // (`referenceStandIns`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const nameOf = useReferenceNames(root, nodeIdOf);
   const ask = useAskOutline();

@@ -22,9 +22,9 @@ import {
 } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { useFocusedNode } from "./focused-node";
-import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { namedLine, oneLineCut, useOneLineBox } from "./one-line";
+import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -141,14 +141,15 @@ const MARK_TEXT_REM = 0.75;
 
 /**
  * The Contents list (dispatch://INFRA-1196 R14, the prototype's `#left`): its heading with the
- * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut at a
- * word to the row's width, with each reference in it named in plain words (`namedLine`); a node
- * with no words is named by its kind's word. `slots/contents.tsx` draws it under the issue's
- * three sentences, in part D's pane from 1024 px up and in its Outline sheet below that
- * (`contents-frame.tsx`). It is one tab stop, as the outline is: the arrow keys move inside it,
- * the right and left arrows unfold and fold an entry, and Enter or a press goes to that node in
- * the outline. The entry the reader is in - the one holding the node the focus is on, or last
- * was on - is marked by a rule and a ground of its own.
+ * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut from
+ * its first block's words (`lineWords`) at a word to the row's width, with each reference in it
+ * named in plain words once the line is cut (`referenceStandIns`); a node with no words is
+ * named by its kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in
+ * part D's pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It
+ * is one tab stop, as the outline is: the arrow keys move inside it, the right and left arrows
+ * unfold and fold an entry, and Enter or a press goes to that node in the outline. The entry the
+ * reader is in - the one holding the node the focus is on, or last was on - is marked by a rule
+ * and a ground of its own.
  */
 export function ContentsList({
   focusBranch,
@@ -227,9 +228,12 @@ export function ContentsList({
       rows.map(({ depth, entry }) => {
         const { node } = entry;
         const isCurrent = node.id === current;
-        const named = namedLine(nodeWords(node), nameOf);
-        const unnamed = named.trim() === "";
-        const words = unnamed ? NODE_TYPE_NAMES[node.type] : named;
+        // The line is cut with each reference it cites unnamed and measured with each named, so
+        // no cut falls inside a name (`referenceStandIns`).
+        const references = referenceStandIns(nameOf);
+        const held = references.standIn(lineWords(node));
+        const unnamed = held.trim() === "";
+        const words = unnamed ? NODE_TYPE_NAMES[node.type] : held;
         const indent = ROW.inset + depth * ROW.indent;
         const marks = MARKS.filter(({ mark }) => entry.marks[mark] > 0);
         // What stands after the words: the waiting dot, then each mark, its shape, its count
@@ -259,12 +263,14 @@ export function ContentsList({
                 before: ROW.twisty + ROW.gap + ROW.dot + ROW.gap + after,
                 room: box.width - ROW.margins - ROW.paddingRight - indent,
                 text: words,
-                widthOf: (text) => box.widthOf(text, ROW_TEXT_REM, isCurrent ? 600 : undefined),
+                widthOf: (text) =>
+                  box.widthOf(references.named(text), ROW_TEXT_REM, isCurrent ? 600 : undefined),
               });
         // Until the list's box is read, the entry draws its first line by R1's rule uncut by
         // width, never its whole words (`useOneLineBox`).
         const line = cut ?? { ...firstLineOf(words), under: false, wraps: false };
-        return { indent, isCurrent, line, marks, unnamed };
+        const drawnWords = references.named(drawnLine(line));
+        return { drawnWords, indent, isCurrent, line, marks, unnamed };
       }),
     [box, current, nameOf, rows]
   );
@@ -351,7 +357,7 @@ export function ContentsList({
         {rows.map(({ depth, entry }, at) => {
           const { node } = entry;
           const holds = entry.children.length > 0;
-          const { indent, isCurrent, line, marks, unnamed } = drawn[at];
+          const { drawnWords, indent, isCurrent, line, marks, unnamed } = drawn[at];
           // A line that has less room beside the row's other parts than its first word stands
           // under all of them, on a line of its own at the entry's indent, and the row grows to
           // hold it (R3).
@@ -420,7 +426,7 @@ export function ContentsList({
                 data-contents-line=""
                 {...(unnamed ? pageChrome : authorText)}
               >
-                {drawnLine(line)}
+                {drawnWords}
               </span>
               {/* An entry whose question waits on the reader carries the waiting dot, and says so
                   in words to a reader who cannot see it (the prototype's `.mrow .dot`). */}

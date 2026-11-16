@@ -306,3 +306,85 @@ test("an entry draws its node's first block as its line, never its first two blo
     view.unmount();
   }
 });
+
+/** `drawList`'s list over `root` in a box `width` px wide, its entries' references named by
+ *  `nameOf`, as the slot names them (`useReferenceNames`). */
+function drawNamedList(
+  root: TreeNode,
+  width: number,
+  nameOf: (reference: string) => string | undefined
+): { container: HTMLElement; unmount: () => void } {
+  const canvas = spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({
+    font: "",
+    measureText: (text: string) => ({ width: text.length * CHARACTER }),
+  })) as unknown as HTMLCanvasElement["getContext"]);
+  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return new DOMRect(0, 0, this.getAttribute("role") === "tree" ? width : 0, 0);
+  });
+  const restore = () => {
+    canvas.mockRestore();
+    box.mockRestore();
+  };
+  try {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+    const view = render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(ContentsList, {
+          focusBranch: false,
+          nameOf,
+          onFocusBranch: () => {},
+          onGo: () => {},
+          root,
+        })
+      )
+    );
+    return {
+      container: view.container,
+      unmount: () => {
+        view.unmount();
+        restore();
+      },
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// R1, R14 and the tester's F20: an entry's line is cut with each reference it cites still
+// unnamed and measured with each named. A statement's name opens with its label ("R1."), which
+// ends no sentence of the line, and the row's width never cuts the line inside the name.
+test("an entry that cites a labelled statement is cut before the name goes in, never inside it", () => {
+  const cited = "dispatch://CORE-1/spec#b-r1";
+  const nameOf = (reference: string) =>
+    reference === cited ? "R1. Every node is whole" : undefined;
+  const opened = node("CORE-1", "issue", [
+    node("ask-1", "ask", [], { text: `Should ${cited} stay as it is? Then more.` }),
+  ]);
+  // 600 px leaves the whole first sentence room: 45 characters, 360 px. 258 px leaves the line
+  // 200 px beside the row's other parts (24 px of margins, padding and inset, 33 of twisty,
+  // bullet and gaps, the pixel for rounding): "Should R1. Every node is…" would fit, but its cut
+  // is inside the name, and "Should R1. Every node is whole…" (248 px) does not, so the line is
+  // the word before the name.
+  for (const [width, drawn] of [
+    [600, "Should R1. Every node is whole stay as it is?"],
+    [258, "Should…"],
+  ] as const) {
+    const view = drawNamedList(opened, width, nameOf);
+    try {
+      const line = view.container.querySelector<HTMLElement>(
+        '[data-contents-entry="ask-1"] [data-contents-line]'
+      );
+      expect(line?.textContent, `${width} px`).toBe(drawn);
+    } finally {
+      view.unmount();
+    }
+  }
+});

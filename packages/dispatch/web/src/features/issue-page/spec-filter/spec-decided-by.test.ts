@@ -43,9 +43,9 @@ import {
 /** How this issue addresses a node, which is how a tie finds the statement it names. */
 const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
-/** A page that names no reference, so `namedLine` names one by its issue's key where it is an
- *  issue, else by the page's word for a whole document (`documentWord`), else by the word for a
- *  document (`NODE_TYPE_NAMES.document`). */
+/** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
+ *  is an issue, else by the page's word for a whole document (`documentWord`), else by the word
+ *  for a document (`NODE_TYPE_NAMES.document`). */
 const NO_NAMES = (): undefined => undefined;
 
 /** The Spec filter's body over `tree`, as the page reads it; `nameOf` is how the page names a
@@ -587,4 +587,93 @@ test("a first sentence that opens with a numbered label holds the sentence after
   // A first word with no digit, or longer than five characters, is a sentence of its own.
   expect(firstSentenceOf("Done. Then more.")).toBe("Done.");
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
+});
+
+/** The page's name for the statement r2, which opens with its label as an INFRA spec's does. */
+const LABELLED = (reference: string) =>
+  reference === statementRef("r2") ? "R2. Every address…" : undefined;
+
+// R5 with the tester's F20: a person's quote is the first sentence they wrote, cut with each
+// reference in it still unnamed, so a name that opens with its label ends no sentence of theirs.
+test("a person's quote that cites a labelled statement ends where their sentence ends", () => {
+  const stored = `Keep it as ${statementRef("r2")} says. Then more.`;
+  const groups = bodyOf(
+    issueTree([answeredAsk("ask-1", { text: stored }, [statement("r1")])]),
+    [],
+    READER,
+    [],
+    LABELLED
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe("Keep it as R2. Every address… says.");
+});
+
+// R1 and R5: the question line is the question's one line, cut from its first block's words
+// (`lineWords`) with each reference unnamed: a second block never runs into it, and a name's
+// label ends none of it.
+test("a question line is its first block's line, cut before the reference in it is named", () => {
+  const ask = {
+    ...answeredAsk("ask-1", { text: "Keep it." }, [statement("r1")]),
+    text: `Does ${statementRef("r2")} keep its address\n\nThe old page kept it. Then more.`,
+  };
+  const groups = bodyOf(issueTree([ask]), [], READER, [], LABELLED);
+  expect(groups[0]?.runs[0]?.decision?.question).toBe("Does R2. Every address… keep its address");
+});
+
+// Review thread 4592007145: `presets.ts` cuts a parent's line by R1's rule with each reference
+// still its address, so the heading is read from the parent node, where each reference is named
+// after the cut and counted as the name it draws. 68 characters, the name's 18 and " says." are
+// 92: the first sentence is the heading. With the address's 27 it is 101, which `presets.ts`'s
+// line cuts inside the sentence; named first, the label ends the sentence at "R2.".
+test("a group's heading counts a reference in its parent's line as its name, which ends no sentence", () => {
+  const before = "The heading keeps every word its author wrote whole on one line, as ";
+  const groups = bodyOf(
+    issueTree([
+      node({
+        children: [statement("r1")],
+        id: "comment-1",
+        text: `${before}${statementRef("r2")} says. Then more.`,
+        type: "comment",
+      }),
+    ]),
+    [],
+    READER,
+    [],
+    LABELLED
+  );
+  expect(groups[0]?.parent?.line).toBe(`${before}R2. Every address… says.`);
+});
+
+// R5 and R1: an agent's decision the tree holds no node for is quoted from its own reading, else
+// its stored text, by the first block that holds any words, as `lineWords` reads a node's: its
+// `##` heading never runs into the paragraph under it, and an image or a rule is passed over.
+test("an agent's decision with no node is quoted by the first block of its own words", () => {
+  const text = "## Keep it\n\nKeep the model pure.";
+  const tree = {
+    content: [
+      { attrs: { level: 2 }, content: [{ text: "Read once", type: "text" }], type: "heading" },
+      { content: [{ text: "Keep the model pure.", type: "text" }], type: "paragraph" },
+    ],
+    type: "doc",
+  };
+  const groups = bodyOf(issueTree([statement("r1"), statement("r2"), statement("r3")]), [
+    decision({ block_id: "d7", kind: "agent", links: [shaped(statementRef("r1"))], text }),
+    decision({
+      block_id: "d8",
+      kind: "agent",
+      links: [shaped(statementRef("r2"))],
+      text,
+      text_tree: tree,
+    }),
+    decision({
+      block_id: "d9",
+      kind: "agent",
+      links: [shaped(statementRef("r3"))],
+      text: "![The tree](tree.png)\n\n---\n\nKeep the model pure. The page reads it.",
+    }),
+  ]);
+  expect(groups[0]?.runs.map((run) => [run.decision?.node, run.decision?.quote])).toEqual([
+    [undefined, "Keep it"],
+    [undefined, "Read once"],
+    [undefined, "Keep the model pure."],
+  ]);
 });

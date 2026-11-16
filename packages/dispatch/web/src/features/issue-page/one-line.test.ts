@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
-import { namedLine, oneLineCut } from "./one-line";
+import { drawnLine, firstLineOf } from "./issue-tree";
+import { oneLineCut, referenceStandIns } from "./one-line";
 import { NODE_TYPE_NAMES } from "./page-words";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can
@@ -119,17 +120,53 @@ test("a first word no line of the row holds is drawn whole, wrapping inside itse
  * issue by its key, a whole document by the page's word for one - and drops a typed block's
  * source line, which is markup and no word of the text. No address, block id or fence is left.
  */
-test("namedLine names each reference and drops a typed block's source line", () => {
+test("a plain line names each reference and drops a typed block's source line", () => {
   const block = "dispatch://KEY-1/spec#b-r1";
   const text = [
     ":::requirement{#r1}",
     `The page cites ${block}, dispatch://KEY-1 and dispatch://KEY-1/artifact/notes.`,
   ].join("\n");
-  const line = namedLine(text, (reference) =>
+  const references = referenceStandIns((reference) =>
     reference === block ? "the whole issue" : undefined
   );
+  const line = references.named(references.standIn(text));
   expect(line).toBe(`The page cites the whole issue, KEY-1 and ${NODE_TYPE_NAMES.document}.`);
   for (const mark of [":::", "#b-", "dispatch://"]) {
     expect(line).not.toContain(mark);
   }
+});
+
+/**
+ * The tester's F20 on a line the page cuts: a reference is named only after the cut, so its
+ * name takes no part in it. A statement's name opens with its label ("R2."), which read as a
+ * sentence end would end the line inside the name; the limit never falls at one of the name's
+ * own spaces; and a reference counts against `firstLineOf`'s 100 characters as its name's
+ * characters, which are what the line draws, not its address's.
+ */
+test("a line is cut with each reference still unnamed, and each is named after the cut", () => {
+  const block = "dispatch://KEY-1/spec#b-r2";
+  const nameOf = (reference: string) => (reference === block ? "R2. Every address" : undefined);
+  const lineOf = (text: string) => {
+    const references = referenceStandIns(nameOf);
+    return references.named(drawnLine(firstLineOf(references.standIn(text))));
+  };
+
+  // The name's label ends no sentence: the line ends where its author's sentence does.
+  expect(lineOf(`Keep ${block} and dispatch://KEY-2 whole. Then more.`)).toBe(
+    "Keep R2. Every address and KEY-2 whole."
+  );
+  // 73 characters, the name's 17 and " says." are 96, so the sentence is the line; its address's
+  // 26 characters would make it 105, and cut it inside the sentence.
+  const before = `${"word ".repeat(14)}as `;
+  expect(lineOf(`${before}${block} says. Then more.`)).toBe(`${before}R2. Every address says.`);
+  // 88 characters and the name pass the limit inside the name: the line ends before it, at the
+  // author's own space, and is drawn with its ellipsis.
+  const long = `${"word ".repeat(17)}as`;
+  expect(lineOf(`${long} ${block} says, and more words follow.`)).toBe(`${long}…`);
+
+  // One holder stands in for the references of several texts, each by a token of its own.
+  const references = referenceStandIns(nameOf);
+  const first = references.standIn(`See ${block}.`);
+  const second = references.standIn("Ask dispatch://KEY-3 first.");
+  expect(references.named(`${first} ${second}`)).toBe("See R2. Every address. Ask KEY-3 first.");
 });
