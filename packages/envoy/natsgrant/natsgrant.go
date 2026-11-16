@@ -19,10 +19,14 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// Permissions are one NATS user's publish and subscribe allow lists. A subscribe entry may carry a
-// queue group after a space, as nats-server's configuration writes one.
+// Permissions are one NATS user's publish and subscribe allow lists, and the deny lists nats-server
+// applies after them: a subject an allow entry admits and a deny entry names is refused. A deny
+// list narrows a direction and never opens one: a direction whose allow list is empty is every
+// subject however many deny entries stand beside it, which OpenDirection refuses. A subscribe entry
+// may carry a queue group after a space, as nats-server's configuration writes one.
 type Permissions struct {
-	Publish, Subscribe []string
+	Publish, Subscribe         []string
+	PublishDeny, SubscribeDeny []string
 }
 
 // The subject spaces of NATS itself that nats.go sends JetStream and KV calls in. nats.go exports
@@ -387,6 +391,27 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 		if first == systemAccountPrefix || first == "*" || first == ">" {
 			return entry, true
 		}
+	}
+	return "", false
+}
+
+// OpenDirection returns the first direction of p, "publish" then "subscribe", whose allow list is
+// empty, and true. An empty allow list is not "nothing": nats-io/jwt/v2 drops it when it encodes a
+// user (types.go, omitempty), and nats-server applies no restriction to a direction whose allow and
+// deny lists are both empty (server/accounts.go, client.go), so a user answered with one may
+// publish, or subscribe, to every subject. Permissions carries no deny list, so no grant of this
+// package can close a direction any other way, and the auth service refuses every grant this
+// names (internal/broker/natscallout).
+// A blank entry counts as the same fault: jwt drops it when it adds it to a user
+// (StringList.Add), so a list of blank entries encodes as an empty one, and no grant of this
+// package means a blank subject.
+func OpenDirection(p Permissions) (string, bool) {
+	blank := func(entry string) bool { return strings.TrimSpace(entry) == "" }
+	switch {
+	case len(p.Publish) == 0 || slices.ContainsFunc(p.Publish, blank):
+		return "publish", true
+	case len(p.Subscribe) == 0 || slices.ContainsFunc(p.Subscribe, blank):
+		return "subscribe", true
 	}
 	return "", false
 }

@@ -20,7 +20,10 @@ func ConnectionProof(key *ecdsa.PrivateKey, accessToken, nonce string) (string, 
 	case accessToken == "":
 		return "", errors.New("brokerclient: no access token to prove a NATS connection for")
 	case nonce == "":
-		return "", errors.New("brokerclient: the NATS server sent no nonce to sign")
+		// A server sends a nonce whenever it has an nkey user, which a hub behind the auth service
+		// always has (the service's own), so no nonce means a hub with no auth service: the client
+		// was configured for one it is not talking to. The text is the TypeScript client's own.
+		return "", errors.New("NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub")
 	}
 	return signProof(key, oauthwire.ConnectionProofMethod, oauthwire.ConnectionProofTarget, nonce, tokenHash(accessToken))
 }

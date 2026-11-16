@@ -35,3 +35,12 @@ func TestConnectionProofIsTheOneTheServiceChecks(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, signed, again, "each proof names a 'jti' of its own")
 }
+
+// A server with no auth service sends no nonce, so a client configured for one is told what to
+// change, in the words the TypeScript client uses for the same case.
+func TestConnectionProofNamesAHubWithNoAuthService(t *testing.T) {
+	key, err := proof.NewKey()
+	require.NoError(t, err)
+	_, err = brokerclient.ConnectionProof(key, "the-access-token", "")
+	require.EqualError(t, err, "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub")
+}

@@ -14,18 +14,19 @@ export const NATS_PING_INTERVAL_MS = 10_000;
 export const NATS_MAX_PINGS_OUT = 2;
 
 /** The `connect` options every session plugin dials NATS with: its credential (`natsAuthOptions`:
- * a seed's nkey user, the session's broker token, or none), reconnecting forever
- * 2 s apart (so the connection never closes on its own and only the plugin's shutdown ends it),
- * the ping check above, and never giving up over a refused credential.
+ * a seed's nkey user, the session's broker token, or none), reconnecting forever 2 s apart (so the
+ * connection never closes on its own and only the plugin's shutdown ends it), the ping check above,
+ * and, for the broker token alone, never giving up over a refused credential.
  *
  * That last one matters on a hub whose connections an auth service admits
  * (packages/envoy/internal/broker/natscallout): while that service is away, which a restart of the
- * hub itself causes, the server refuses every client it would have asked about. nats.js 2.29.3
- * closes a connection for good on a repeated authorization error unless `ignoreAuthErrorAbort` is
- * set (`protocol.js:657-661`; the default is false, `options.js:50`), and it clears `lastError`
- * after a successful reconnect only for an expired authentication (`protocol.js:397-399`), so a
- * client refused once in any earlier outage would abort on its first refusal in the next one. The
- * Go clients take the same option for the same reason (packages/envoy/internal/bus). */
+ * hub itself causes, or while the session's token lapses with the broker away, the server refuses
+ * the session. nats.js 2.29.3 closes a connection for good on a repeated authorization error unless
+ * `ignoreAuthErrorAbort` is set (`protocol.js:657-661`; the default is false, `options.js:50`), and
+ * it clears `lastError` after a successful reconnect only for an expired authentication
+ * (`protocol.js:397-399`), so a session refused once in any earlier outage would abort on its first
+ * refusal in the next one. A seed or no credential keeps nats.js's default, as before the auth
+ * service (R12, `__tests__/nats-connection-r12.test.ts`): no auth service decides those. */
 export function natsConnectionOptions(input: {
   readonly servers: readonly string[];
   readonly name: string;
@@ -40,6 +41,6 @@ export function natsConnectionOptions(input: {
     reconnectTimeWait: 2_000,
     pingInterval: NATS_PING_INTERVAL_MS,
     maxPingOut: NATS_MAX_PINGS_OUT,
-    ignoreAuthErrorAbort: true,
+    ...(input.credential.kind === "broker" ? { ignoreAuthErrorAbort: true } : {}),
   };
 }

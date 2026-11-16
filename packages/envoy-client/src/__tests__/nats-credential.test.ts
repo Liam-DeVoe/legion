@@ -9,6 +9,7 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -481,6 +482,39 @@ function fakeConnection(onConnect: () => void) {
     },
   };
 }
+
+describe("natsConnectionOptions with the broker token", () => {
+  test("never gives up over a refused credential", async () => {
+    // The auth service refuses a session while it is away or while the session's token lapses
+    // with the broker away; nats.js closes for good on a repeated refusal unless this is set. A
+    // seed or no credential keeps nats.js's default (nats-connection-r12.test.ts).
+    const broker = stubBroker(600);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    const options = natsConnectionOptions({
+      servers: ["nats://127.0.0.1:4222"],
+      name: "test",
+      credential: { kind: "broker", broker: credential },
+    });
+    expect(options.ignoreAuthErrorAbort).toBe(true);
+  });
+
+  test("the option it sets is the one nats.js reads", () => {
+    // The control for the row above: nats.js takes an option it does not know without a word, so
+    // this reads the installed nats.js for the default it carries and the line that acts on it.
+    const nats = createRequire(import.meta.url).resolve("nats");
+    const base = path.join(
+      path.dirname(nats),
+      nats.includes("/lib/") ? "" : "lib",
+      "nats-base-client"
+    );
+    expect(readFileSync(path.join(base, "options.js"), "utf8")).toContain(
+      "ignoreAuthErrorAbort: false"
+    );
+    expect(readFileSync(path.join(base, "protocol.js"), "utf8")).toContain(
+      "this.options.ignoreAuthErrorAbort === false"
+    );
+  });
+});
 
 // These run on the wall clock, with two-second tokens: the keeper's timer and the token client's
 // expiry both read real time, and each renewal is a real HTTP trade at the stub broker, so a fake
