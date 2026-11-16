@@ -299,6 +299,8 @@ func TestTheBuiltBinary(t *testing.T) {
 			{[]string{"print", "--id", "order"}, "print: --approved is required"},
 			{[]string{"guard"}, "guard: --root is required"},
 			{[]string{"guard", "--root", valid, "extra"}, `guard: takes no argument but its flags, got "extra"`},
+			{[]string{"state"}, "state: --scenario is required"},
+			{[]string{"state", "--scenario", valid, "extra"}, `state: takes no argument but its flags, got "extra"`},
 		} {
 			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "spec-check: " + row.line + "\n" + usage + "\n"})
 		}
@@ -625,6 +627,213 @@ func TestUsage(t *testing.T) {
 	expect(t, runBinary(t, binary, ""), result{code: 2, stderr: usage + "\n"})
 	expect(t, runBinary(t, binary, "", "nope"), result{code: 2, stderr: "spec-check: unknown subcommand \"nope\"\n" + usage + "\n"})
 	expect(t, runBinary(t, binary, "", "tree", "-h"), result{stderr: usage + "\n"})
+}
+
+// The four scenarios of The Spec (specgraph's testdata/scenarios), each with the answers that the
+// spec gives it in want.txt: state prints want.txt byte for byte, exit 0 and nothing on stderr. No
+// flag of the test writes want.txt, and a scenario with no want.txt fails the test, which would read
+// nothing. The control runs carry with no tie, so that no result carries: the comparison can fail.
+func TestScenarios(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	for _, name := range []string{"carry", "one-commit-two-answers", "earlier-text", "wait-cycle"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixture(t, "scenarios", name)
+			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{stdout: wantOf(t, dir)})
+		})
+	}
+	t.Run("control: carry with no tie carries no result to c2 and m2", func(t *testing.T) {
+		t.Parallel()
+		dir := copyScenario(t, "carry")
+		writeFile(t, filepath.Join(dir, "ties.json"), []byte("{}\n"))
+		got := runBinary(t, binary, "", "state", "--scenario", dir)
+		if got.code != 0 || got.stderr != "" {
+			t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+		}
+		if got.stdout == wantOf(t, fixture(t, "scenarios", "carry")) {
+			t.Errorf("with no tie, the state is carry's want.txt")
+		}
+		moved := "  check a-restart-loses-no-message: unknown (subject_moved)"
+		for _, subject := range []string{"c2, the head of listener-restart", "m2, the head of main"} {
+			if lines := subjectLines(got.stdout, subject); !slices.Contains(lines, moved) {
+				t.Errorf("at subject %s: %q, want the line %q", subject, lines, moved)
+			}
+		}
+	})
+	t.Run("--json prints the state at each subject", func(t *testing.T) {
+		t.Parallel()
+		var states []specgraph.State
+		decodeStrict(t, runBinary(t, binary, "", "state", "--scenario", fixture(t, "scenarios", "carry"), "--json"), &states)
+		var subjects []specgraph.Point
+		for _, s := range states {
+			subjects = append(subjects, s.Subject)
+		}
+		want := []specgraph.Point{{Commit: "c2", Branch: "listener-restart"}, {Commit: "m2", Branch: "main"}, {Commit: "c3", Branch: "contract-fixture"}, {Commit: "c4", Branch: "listener-change"}}
+		if !slices.Equal(subjects, want) {
+			t.Fatalf("the subjects of the states: %+v, want %+v", subjects, want)
+		}
+		if want := []specgraph.CheckState{{ID: "a-restart-loses-no-message", State: "true", Reason: "passed", From: "c1"}}; !slices.Equal(states[1].Checks, want) {
+			t.Errorf("the checks at m2: %+v, want %+v", states[1].Checks, want)
+		}
+		want3 := []specgraph.StatementState{
+			{ID: "delivery-is-fast", State: "met", Reason: "checks_true", Own: "unknown", HeldVersion: 1},
+			{ID: "messages-reach-sessions", State: "unknown", Reason: "check_unknown", Detail: "a-restart-loses-no-message", Own: "met", HeldVersion: 1},
+			{ID: "a-stored-message-survives-a-restart", State: "unknown", Reason: "check_unknown", Detail: "a-restart-loses-no-message", Own: "unknown", HeldVersion: 1},
+		}
+		if !slices.Equal(states[2].Statements, want3) {
+			t.Errorf("the statements at c3:\n got %+v\nwant %+v", states[2].Statements, want3)
+		}
+	})
+	t.Run("--json with units.json prints the states and the cycle", func(t *testing.T) {
+		t.Parallel()
+		var out struct {
+			States []specgraph.State `json:"states"`
+			Cycle  []string          `json:"cycle"`
+		}
+		decodeStrict(t, runBinary(t, binary, "", "state", "--scenario", fixture(t, "scenarios", "wait-cycle"), "--json"), &out)
+		if want := []string{"u-a", "a-message-reaches-a-late-session", "u-b", "a-message-survives-a-restart", "u-a"}; !slices.Equal(out.Cycle, want) {
+			t.Errorf("cycle %q, want %q", out.Cycle, want)
+		}
+		if len(out.States) != 1 || !out.States[0].WaitEnds("a-message-reaches-a-late-session") || out.States[0].WaitEnds("a-message-survives-a-restart") {
+			t.Errorf("states %+v: want one state at m1, where the wait on a-message-reaches-a-late-session ends and the wait on a-message-survives-a-restart holds", out.States)
+		}
+
+		dir := copyScenario(t, "wait-cycle")
+		writeFile(t, filepath.Join(dir, "units.json"), []byte(`[{"id":"u-a","serves":["a-message-survives-a-restart"],"needs":[],"waits_on":[]}]`))
+		got := runBinary(t, binary, "", "state", "--scenario", dir, "--json")
+		if got.code != 0 || !strings.HasSuffix(got.stdout, `,"cycle":[]}`+"\n") {
+			t.Errorf("with no cycle: exit %d, stdout %q, want exit 0 and \"cycle\":[]", got.code, got.stdout)
+		}
+	})
+}
+
+// A scenario that the format does not take exits 2, with one line on stderr that names the file
+// and the fault, and nothing on stdout.
+func TestScenarioRefusals(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	write := func(file, content string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) { writeFile(t, filepath.Join(dir, file), []byte(content)) }
+	}
+	result1 := func(version, kind, outcome string) func(t *testing.T, dir string) {
+		return write("results.json", `[{"check":"a-restart-loses-no-message","check_version":`+version+`,"kind":"`+kind+`","outcome":"`+outcome+`","commit":"c1"}]`)
+	}
+	for _, row := range []struct {
+		name, scenario string
+		change         func(t *testing.T, dir string)
+		file, fault    string // the line is "spec-check: <dir>/<file>: <fault>"
+	}{
+		{"an unknown field in results.json", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","bogus":true}]`),
+			"results.json", `result 1: json: unknown field "bogus"`},
+		{"a tie glob", "carry", write("ties.json", `{"a-restart-loses-no-message":["p/*.go"]}`),
+			"ties.json", `check "a-restart-loses-no-message": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`},
+		{"a subject with a branch and a deploy", "carry",
+			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","deploy":"d1","now":"2026-11-14T00:00:00Z"}]`),
+			"subjects.json", "subject 1: it sets both branch and deploy; a subject sets exactly one of them"},
+		{"a subject with no branch and no deploy", "carry", write("subjects.json", `[{"commit":"c2","now":"2026-11-14T00:00:00Z"}]`),
+			"subjects.json", "subject 1: it sets neither branch nor deploy; a subject sets exactly one of them"},
+		{"a subject with no time", "carry", write("subjects.json", `[{"commit":"c2","branch":"listener-restart"}]`),
+			"subjects.json", "subject 1: it sets no now"},
+		{"no subject", "carry", write("subjects.json", `[]`), "subjects.json", "it holds no subject"},
+		{"a file that the format does not hold", "carry", write("notes.txt", "A note.\n"),
+			"notes.txt", "the format of a scenario holds no such file"},
+		{"no subjects.json", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "subjects.json")) },
+			"subjects.json", "does not exist"},
+		{"a spec file that does not parse", "carry", write(filepath.Join("files", "c2", "spec.md"), "A line outside a block.\n"),
+			filepath.Join("files", "c2", "spec.md") + ":1", "-: text-outside-block: a spec file holds only blocks, headings and blank lines"},
+		{"a subject whose commit has no spec files", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "files", "c4")) },
+			filepath.Join("files", "c4"), "does not exist, and subject 4 reads the spec files of its commit there"},
+		{"spec files that no subject reads", "carry", func(t *testing.T, dir string) {
+			if err := os.CopyFS(filepath.Join(dir, "files", "c9"), os.DirFS(filepath.Join(dir, "files", "c2"))); err != nil {
+				t.Fatal(err)
+			}
+		}, filepath.Join("files", "c9"), "no subject reads the spec files of this commit"},
+		{"a result of a version that the approved spec does not hold", "carry", result1("2", "run", "pass"),
+			"results.json", `result 1: the approved spec holds no version 2 of check "a-restart-loses-no-message"`},
+		{"a result of another kind", "carry", result1("1", "rerun", "pass"),
+			"results.json", `result 1: kind "rerun" is not run or failing_example`},
+		{"a result of another outcome", "carry", result1("1", "run", "skip"),
+			"results.json", `result 1: outcome "skip" is not pass, fail or could_not_run`},
+		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
+			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
+		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),
+			"units.json", `unit "u-a": needs names "u-x", which is no unit of the file`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, row.scenario)
+			row.change(t, dir)
+			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, row.file) + ": " + row.fault + "\n"})
+		})
+	}
+	t.Run("a scenario directory that does not exist", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "state", "--scenario", missing), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
+	})
+}
+
+// wantOf is the want.txt of the scenario at dir; the test fails, naming dir, when it has none or
+// an empty one, since a comparison with nothing reads nothing.
+func wantOf(t *testing.T, dir string) string {
+	t.Helper()
+	want, err := os.ReadFile(filepath.Join(dir, "want.txt"))
+	if err != nil || len(want) == 0 {
+		t.Fatalf("%s: no want.txt to compare with (%v), so the test reads nothing", dir, err)
+	}
+	return string(want)
+}
+
+// subjectLines is the lines that state printed after the line "spec-check: subject <subject>" and
+// before the next line that starts with "spec-check: ".
+func subjectLines(stdout, subject string) []string {
+	var lines []string
+	in := false
+	for _, line := range strings.Split(stdout, "\n") {
+		switch {
+		case line == "spec-check: subject "+subject:
+			in = true
+		case strings.HasPrefix(line, "spec-check: "):
+			in = false
+		case in:
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// decodeStrict decodes the one line of JSON that a run of state --json printed into v, refusing a
+// field that v does not hold, and fails the test unless the run exited 0 with nothing on stderr.
+func decodeStrict(t *testing.T, got result, v any) {
+	t.Helper()
+	if got.code != 0 || got.stderr != "" || strings.Count(got.stdout, "\n") != 1 {
+		t.Fatalf("exit %d, stdout %q, stderr %q: want exit 0, one line of JSON and nothing on stderr", got.code, got.stdout, got.stderr)
+	}
+	dec := json.NewDecoder(strings.NewReader(got.stdout))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		t.Fatalf("%s: %v", got.stdout, err)
+	}
+}
+
+// copyScenario is a copy of the scenario name in a directory of the test's own.
+func copyScenario(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.CopyFS(dir, os.DirFS(fixture(t, "scenarios", name))); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// removeAll removes path and everything under it.
+func removeAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // result is what one run of the binary did.
