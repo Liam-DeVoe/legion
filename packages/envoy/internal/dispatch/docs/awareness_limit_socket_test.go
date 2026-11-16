@@ -16,10 +16,6 @@ import (
 	"github.com/reearth/ygo/encoding"
 )
 
-// socketCloseWait is how long the tests here give the service to close a socket it refuses. The
-// filter decides on the frame itself, so the close follows the frame by a round trip.
-const socketCloseWait = 5 * time.Second
-
 // A document socket whose first message names neither a document nor a message type within the
 // bytes the filter reads for them (maxDocumentMessageHeader) is sending nothing this service
 // reads, and its connection ends rather than carry a frame past the filter unread. The message's
@@ -59,7 +55,8 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			if err := socket.WriteMessage(gws.BinaryMessage, message.first); err != nil {
 				t.Fatalf("send a first message that names no document: %v", err)
 			}
-			if err := socket.SetReadDeadline(time.Now().Add(socketCloseWait)); err != nil {
+			wait := roomWait(t)
+			if err := socket.SetReadDeadline(time.Now().Add(wait)); err != nil {
 				t.Fatalf("set the socket's read deadline: %v", err)
 			}
 			for {
@@ -69,7 +66,7 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 				}
 				if errors.Is(err, os.ErrDeadlineExceeded) {
 					t.Fatalf("the socket is still open %v after a %d-byte first message that names neither a document nor a type: want it closed",
-						socketCloseWait, len(message.first))
+						wait, len(message.first))
 				}
 				return
 			}

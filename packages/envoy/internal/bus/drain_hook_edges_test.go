@@ -86,7 +86,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 				return func() {
 					proxy.refuse.Store(true)
 					proxy.drop()
-					waitFor(t, 5*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+					waitFor(t, busWait, "the client to start reconnecting", client.Conn.IsReconnecting)
 				}
 			},
 		},
@@ -98,7 +98,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 					go func() {
 						select {
 						case <-proxy.swallowed:
-						case <-time.After(5 * time.Second):
+						case <-time.After(busWait):
 							return
 						}
 						proxy.refuse.Store(true)
@@ -136,7 +136,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 			if got, want := strings.Join(records, ", "), "WARN drain-test watcher's consumer was left to the server: the connection was lost before its delete"; got != want {
 				t.Fatalf("the drain logged %q, want %q", got, want)
 			}
-			waitFor(t, 15*time.Second, "the server to delete the consumer it lost interest in", func() bool { return len(consumers()) == 0 })
+			waitFor(t, busWait, "the server to delete the consumer it lost interest in", func() bool { return len(consumers()) == 0 })
 		})
 	}
 }

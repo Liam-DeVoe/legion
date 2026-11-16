@@ -830,10 +830,10 @@ func TestASessionGroupEditReachesEveryView(t *testing.T) {
 	if got := liveUpsertIDs(t, delta, "session_groups"); len(got) != 1 {
 		t.Fatalf("the timeline's delta upserts session groups %v, want the new group", got)
 	}
-	rig.waitFor(t, start, 3*time.Second, "the measures view's recompute", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, eventFeedWait, "the measures view's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && strings.HasPrefix(note.view, deliveryLiveMeasures)
 	})
-	rig.waitFor(t, start, 3*time.Second, "the pipeline view's recompute", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, eventFeedWait, "the pipeline view's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && strings.HasPrefix(note.view, deliveryLivePipeline)
 	})
 }
@@ -864,7 +864,7 @@ func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 		t.Fatalf("after the reset the delta upserts %v, want acme/widgets#41", got)
 	}
 	timeline = requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, timeline, delta, "")
-	rig.waitFor(t, start, 3*time.Second, "the measures view's recompute", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, eventFeedWait, "the measures view's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute begin" && strings.HasPrefix(note.view, deliveryLiveMeasures)
 	})
 	if seq := rig.changeCursor(); seq != 1 {
@@ -894,7 +894,7 @@ func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 		t.Fatalf("after the second reset the delta upserts %v, want the three merges", got)
 	}
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, timeline, delta, "")
-	rig.waitFor(t, start, 3*time.Second, "the measures view's recompute after the second reset", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, eventFeedWait, "the measures view's recompute after the second reset", func(note deliveryHubNote) bool {
 		return note.what == "recompute begin" && strings.HasPrefix(note.view, deliveryLiveMeasures)
 	})
 	if seq := rig.changeCursor(); seq != 3 {
@@ -1216,7 +1216,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	select {
 	case <-reading:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventFeedWait):
 		t.Fatal("the view's first recompute never finished its read")
 	}
 
@@ -1226,12 +1226,12 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(t.Context(), `select max(id) from events`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest event: %v", err)
 	}
-	rig.waitFor(t, start, 3*time.Second, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, eventFeedWait, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
 	releaseOnce()
 
-	snapshot := conn.snapshot(t, 5*time.Second, "t")
+	snapshot := conn.snapshot(t, eventFeedWait, "t")
 	var read struct {
 		IssueTitles map[string]string `json:"issue_titles"`
 	}
@@ -1241,7 +1241,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	if got := read.IssueTitles[key]; got != "Ship widgets" {
 		t.Fatalf("the snapshot, read before the retitle, titles %s %q, want %q", key, got, "Ship widgets")
 	}
-	delta := conn.delta(t, 3*time.Second, "t")
+	delta := conn.delta(t, eventFeedWait, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled", got, key)
 	}
@@ -1285,26 +1285,26 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 	// recompute belongs to none of what this measures.
 	warm := newFakeLiveConn()
 	rig.hub.Subscribe(warm, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
-	warm.snapshot(t, 5*time.Second, "m")
+	warm.snapshot(t, eventFeedWait, "m")
 	rig.settle(t)
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	select {
 	case <-reading:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventFeedWait):
 		t.Fatal("the view's first recompute never finished its read")
 	}
 
 	start := rig.mark()
 	written := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: "session-not-shown"}, map[string]any{}))
-	rig.waitFor(t, start, 3*time.Second, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, eventFeedWait, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == written.ID
 	})
 	releaseOnce()
 
-	snapshot := conn.snapshot(t, 5*time.Second, "t")
+	snapshot := conn.snapshot(t, eventFeedWait, "t")
 	var read struct {
 		SessionTitles map[string]string `json:"session_titles"`
 	}
@@ -1316,7 +1316,7 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 	}
 	// The hub tells a sub the verdict it knows right after its first answer (Subscribe), which
 	// the measures view's read set before this view subscribed.
-	conn.freshness(t, time.Second, "the verdict after the timeline's first snapshot")
+	conn.freshness(t, eventFeedWait, "the verdict after the timeline's first snapshot")
 	conn.none(t, time.Second, "a session write the view's answer does not show")
 	if n := rig.count(start, recomputeBegin("")); n != 0 {
 		t.Fatalf("the session write during the read recomputed the view %d times more, want none", n)
@@ -1420,7 +1420,7 @@ func TestAnArchitectureSyncReachesEveryView(t *testing.T) {
 	start := rig.mark()
 	appendHubEvent(t, rig, projectOwner("HUB").event("architecture.synced", model.Actor{Kind: "system", ID: "architecture-importer"}, map[string]any{"commit": "c2"}))
 	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures, deliveryLivePipeline} {
-		rig.waitFor(t, start, 3*time.Second, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
+		rig.waitFor(t, start, eventFeedWait, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
 			return note.what == "recompute begin" && strings.HasPrefix(note.view, kind)
 		})
 	}
@@ -1491,7 +1491,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("reset and refill the event log: %v", err)
 	}
-	delta = conn.delta(t, 3*time.Second, "t")
+	delta = conn.delta(t, eventFeedWait, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship every widget" {
 		t.Fatalf("after the second reset the delta's issue_titles = %v, want %s retitled", got, key)
 	}
@@ -2406,7 +2406,7 @@ func TestIdenticalViewsShareOneRecompute(t *testing.T) {
 	// none of what this measures.
 	warm := newFakeLiveConn()
 	rig.hub.Subscribe(warm, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
-	warm.snapshot(t, 5*time.Second, "m")
+	warm.snapshot(t, eventFeedWait, "m")
 	rig.settle(t)
 	first, second := newFakeLiveConn(), newFakeLiveConn()
 	start := rig.mark()

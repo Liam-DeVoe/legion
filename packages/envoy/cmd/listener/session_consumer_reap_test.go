@@ -107,7 +107,7 @@ func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) subs
 // and the pass that deleted nothing fails the test on its own count.
 func (rig *sessionConsumerReapRig) waitForRecordDeleted(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	for {
 		_, err := rig.sessions.Refresh(ctx, sessionID)
@@ -126,7 +126,7 @@ func (rig *sessionConsumerReapRig) waitForRecordDeleted(t *testing.T, sessionID 
 // was read.
 func (rig *sessionConsumerReapRig) requireConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if _, err := rig.consumers.Info(ctx, sessionID); err != nil {
 		t.Fatalf("the consumer of %s %s: %v; want the stream holding it", sessionID, when, err)
@@ -173,7 +173,7 @@ func TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers(t *testing
 		t.Fatalf("the pass reaped %d records, want the one past the gone horizon", reaped)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if info, err := rig.consumers.Info(ctx, "ses_reaped"); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
 		t.Fatalf("the consumer of ses_reaped after the pass: %+v, %v; want it deleted with the session's record", info, err)

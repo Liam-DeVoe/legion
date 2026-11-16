@@ -267,7 +267,7 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, busWait, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	began := time.Now()
 	_ = client.Drain(5 * time.Second)
@@ -314,7 +314,7 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 		t.Fatal("the bind's consumer lookup never reached the link")
 	}
 	proxy.drop()
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, busWait, "the connection to reconnect in place", func() bool {
 		return client.Connected() && client.Conn.Stats().Reconnects > 0
 	})
 	select {
@@ -395,7 +395,7 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 	if err := conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, busWait, "the connection to reconnect in place", func() bool {
 		return conn.Status() == natsgo.CONNECTED && conn.Stats().Reconnects == 1
 	})
 	began := time.Now()

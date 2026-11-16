@@ -61,10 +61,11 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 	stop = func() {
 		once.Do(func() {
 			cancel()
+			wait := roomWait(t)
 			select {
 			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Error("the room sync and its listener hub did not return within 10s of their context ending")
+			case <-time.After(wait):
+				t.Errorf("the room sync and its listener hub did not return within %s of their context ending", wait)
 			}
 		})
 	}

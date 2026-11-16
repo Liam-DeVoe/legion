@@ -42,7 +42,7 @@ func windowAnswer(t *testing.T, topic string, outcome <-chan error) error {
 	select {
 	case err := <-outcome:
 		return err
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatalf("the send to %s was never answered", topic)
 		return nil
 	}

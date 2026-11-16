@@ -76,8 +76,8 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		select {
 		case err := <-outcome:
 			return err
-		case <-time.After(30 * time.Second):
-			t.Fatal("no answer within 30 s")
+		case <-time.After(busWait):
+			t.Fatalf("no answer within %s", busWait)
 			return nil
 		}
 	}

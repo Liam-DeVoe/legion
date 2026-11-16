@@ -41,7 +41,7 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	cleanupAndRelease(t, httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := editor.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
 	typeOver(t, editor, "before", "after")
@@ -121,7 +121,7 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	cleanupAndRelease(t, httpServer.Close)
 	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := browser.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := browser.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
 	// A block with no id arms the room's settlement, which has to stamp one.
@@ -266,7 +266,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	cleanupAndRelease(t, httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := editor.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,7 +277,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	case <-time.After(roomWait(t)):
 		t.Fatal("the first append never reached the store")
 	}
-	if err := editor.WaitForText(peerMarkdown, "first\n", 10*time.Second); err != nil {
+	if err := editor.WaitForText(peerMarkdown, "first\n", roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,7 +500,7 @@ func typeOver(t *testing.T, peer *docstest.Peer, old, replacement string) {
 // waitForSettlementOwed waits for the document's pending-settlement row.
 func waitForSettlementOwed(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the document to owe a settlement", func() bool {
+	waitFor(t, roomWait(t), "the document to owe a settlement", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && owed
 	})

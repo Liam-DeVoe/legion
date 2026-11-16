@@ -344,7 +344,7 @@ func consumerState(publisher *bus.Client) string {
 // subscriber: delivered to it, and not yet acknowledged.
 func awaitAckPending(t *testing.T, publisher *bus.Client, want int) {
 	t.Helper()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == want
 	}, func() string {
@@ -359,7 +359,7 @@ func awaitAckPending(t *testing.T, publisher *bus.Client, want int) {
 // each process has handled no longer changes.
 func awaitEverythingAcknowledged(t *testing.T, publisher *bus.Client) {
 	t.Helper()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == 0 && info.NumPending == 0 && info.AckFloor.Consumer == info.Delivered.Consumer
 	}, func() string {
@@ -394,7 +394,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	for range queued {
@@ -409,7 +409,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	// while the runner still ran, and the runner would hand it the next queued message of the
 	// same key rather than leaving it to the standby. The wait for the handler cannot return
 	// while that fetch is held, so waiting for the runner here cannot deadlock.
-	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, eventWait, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The message in the holder's handler finishes as the stop waits for it.
@@ -517,7 +517,7 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	for range queued {
@@ -786,7 +786,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 
 	relay.Restore()
 	holder.leases.cut.Store(false)
-	waitFor(t, 20*time.Second, holder.client.Connected, func() string {
+	waitFor(t, eventWait, holder.client.Connected, func() string {
 		return "the holder's NATS connection did not come back"
 	})
 	// Time for the holder's client to send its subscriptions again.
@@ -956,7 +956,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 		t.Fatalf("release the newer build's hold: %v", err)
 	}
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		taken, err = publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && taken.PushBound && taken.Config.DeliverSubject != newer.DeliverSubject
 	}, func() string {
@@ -967,7 +967,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 			taken.Config.AckWait, taken.Config.MaxAckPending, taken.Config.Metadata[generationKey], newer.AckWait, newer.MaxAckPending, "2")
 	}
 	publishMergedPullRequest(t, publisher, 5)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(5) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return standby.fetches(5) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 }
@@ -1017,7 +1017,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	time.Sleep(3 * durableBindInterval)
 	publishMergedPullRequest(t, publisher, 1)
-	waitFor(t, 20*time.Second, func() bool { return received.Load() == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return received.Load() == 1 }, func() string {
 		return "the previous build's process stopped receiving while the standby stood by: " + consumerState(publisher)
 	})
 	after, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -1035,14 +1035,14 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err := held.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the previous build's process: %v", err)
 	}
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous.DeliverSubject
 	}, func() string {
 		return "the standby never took the durable over on a deliver subject of its own once the previous build let go: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, 2)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(2) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return standby.fetches(2) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if got := received.Load(); got != 1 {
@@ -1102,7 +1102,7 @@ func durablePartWayThrough(t *testing.T, ctx context.Context, publisher *bus.Cli
 	if err != nil {
 		t.Fatalf("look up the durable: %v", err)
 	}
-	batch, err := consumer.Fetch(acknowledged, jetstream.FetchMaxWait(10*time.Second))
+	batch, err := consumer.Fetch(acknowledged, jetstream.FetchMaxWait(eventWait))
 	if err != nil {
 		t.Fatalf("fetch from the durable: %v", err)
 	}
@@ -1216,7 +1216,7 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	failing.Store(true)
 	attempts := failCreatesWhile(t, failing.Load)
 	first := startIntakeProcess(t, pool, natsURL, nil)
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		_, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return attempts.Load() > 0 && errors.Is(err, natsgo.ErrConsumerNotFound)
 	}, func() string {
@@ -1329,7 +1329,7 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 			natsgo.DeliverByStartSequencePolicy, start, consumerConfigGeneration)
 	}
 	before := present.Load()
-	waitFor(t, 10*time.Second, func() bool { return present.Load() > before }, func() string {
+	waitFor(t, eventWait, func() bool { return present.Load() > before }, func() string {
 		return "the previous build's process did not find the durable present after the take-over: " + consumerState(publisher)
 	})
 }

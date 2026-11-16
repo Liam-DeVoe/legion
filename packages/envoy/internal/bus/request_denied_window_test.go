@@ -65,7 +65,7 @@ func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatalf("only %d of %d denied Requests were answered", len(answers), deniedRequests)
 	}
 	close(answers)

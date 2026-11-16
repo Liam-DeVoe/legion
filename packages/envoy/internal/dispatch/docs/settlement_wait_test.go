@@ -66,7 +66,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	case <-time.After(roomWait(t)):
 		t.Fatal("the room's append never reached the store")
 	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), roomWait(t))
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()

@@ -451,7 +451,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 	handBackHandler, handBackPID := oneConnectionHandler(t, deps)
 	handedBack := make(chan *httptest.ResponseRecorder, 1)
 	go func() { handedBack <- approvalRequest(handBackHandler) }()
-	if response, early := storetest.WaitForQueuedBehind(t, hold, handBackPID, handedBack, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, hold, handBackPID, handedBack, concurrentWait); early {
 		t.Fatalf("the hand-back answered %d before it queued behind the ask row: %s", response.Code, response.Body.String())
 	}
 	commentHandler, commentPID := oneConnectionHandler(t, deps)
@@ -460,7 +460,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 		commented <- dispatchRequest(t, commentHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
 			map[string]any{"ask_id": askID, "body": "And the backoff?"}, "alice")
 	}()
-	if response, early := storetest.WaitForQueuedBehind(t, hold, commentPID, commented, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, hold, commentPID, commented, concurrentWait); early {
 		t.Fatalf("the comment answered %d before it queued behind the owner row: %s", response.Code, response.Body.String())
 	}
 	if err := hold.Rollback(ctx); err != nil {

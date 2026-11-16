@@ -176,7 +176,7 @@ func TestASettlementFromARoomBehindTheHeadCatchesItUpAndTheNextSettlesBoth(t *te
 
 	pair.taskA.settle = 20 * time.Millisecond
 	pair.taskA.scheduleSettle(pair.artifactID)
-	waitFor(t, 30*time.Second, "the settlement the catch-up armed to settle the document", func() bool {
+	waitFor(t, roomWait(t), "the settlement the catch-up armed to settle the document", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})
@@ -269,7 +269,7 @@ func TestASettlementFromARoomBehindTheHeadKeepsItsRoomWithWorkInFlightOnIt(t *te
 				}
 				end()
 			}
-			waitFor(t, 30*time.Second, "the document to settle", func() bool {
+			waitFor(t, roomWait(t), "the document to settle", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -432,7 +432,7 @@ func TestACloseOfAReplacedRoomLeavesTheRoomThatReplacedIt(t *testing.T) {
 			if _, err := joinedApplyOps(pair.taskA, pair.artifactID, insert, agent, nil); err != nil {
 				t.Fatalf("a write on the room that replaced the closed one: %v", err)
 			}
-			waitFor(t, 30*time.Second, "the document to settle on the room that replaced the closed one", func() bool {
+			waitFor(t, roomWait(t), "the document to settle on the room that replaced the closed one", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -819,19 +819,21 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 		defer state.mu.Unlock()
 		return len(state.connected)
 	}
-	waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
+	waitFor(t, roomWait(t), "the browser to join the document's room", func() bool {
 		return connected() == 1 && service.srv.GetDoc(artifactID) != nil
 	})
 	live := service.srv.GetDoc(artifactID)
 
-	const sweepBudget = 30 * time.Second
+	// wait bounds the hook's waits on the room's own work, taken here because the hook runs inside
+	// the close: the browser's teardown and the idle sweep retiring the sentinel room.
+	wait := roomWait(t)
 	var holdErr error
 	var heldThrough bool
 	service.afterRoomClosePinned = func(room string) {
 		browser.Close()
 		// The service forgets the browser once ygo's teardown of it has returned, which is after
 		// that teardown stamped the room idle.
-		for deadline := time.Now().Add(10 * time.Second); connected() != 0; time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(wait); connected() != 0; time.Sleep(10 * time.Millisecond) {
 			if time.Now().After(deadline) {
 				holdErr = errors.New("the browser's leaving was never torn down")
 				return
@@ -841,9 +843,9 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 			holdErr = fmt.Errorf("load the sentinel document's room: %w", err)
 			return
 		}
-		for deadline := time.Now().Add(sweepBudget); service.srv.GetDoc(sentinel) != nil; time.Sleep(50 * time.Millisecond) {
+		for deadline := time.Now().Add(wait); service.srv.GetDoc(sentinel) != nil; time.Sleep(50 * time.Millisecond) {
 			if time.Now().After(deadline) {
-				holdErr = fmt.Errorf("the idle sweep did not retire the sentinel room within %v", sweepBudget)
+				holdErr = fmt.Errorf("the idle sweep did not retire the sentinel room within %v", wait)
 				return
 			}
 		}
@@ -922,7 +924,7 @@ func TestAWriteOpenedWhileASettlementRunsArmsItWhenItEnds(t *testing.T) {
 				}
 				end()
 			}
-			waitFor(t, 30*time.Second, "the settlement the write took over to settle the document", func() bool {
+			waitFor(t, roomWait(t), "the settlement the write took over to settle the document", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -964,7 +966,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 			cleanupAndRelease(t, server.Close)
 			browser := connectPeer(t, server.URL, artifactID, "alice")
-			waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
+			waitFor(t, roomWait(t), "the browser to join the document's room", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
 			})
 			editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -1004,7 +1006,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			}
 
 			start.fire(t, service, artifactID, browser)
-			waitFor(t, 10*time.Second, "the settlement the write took over to settle the document", func() bool {
+			waitFor(t, roomWait(t), "the settlement the write took over to settle the document", func() bool {
 				owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 				return err == nil && !owed
 			})

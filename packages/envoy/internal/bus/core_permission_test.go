@@ -81,7 +81,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
-	if _, err := received.NextMsg(5 * time.Second); err != nil {
+	if _, err := received.NextMsg(busWait); err != nil {
 		t.Fatalf("granted publish was not delivered: %v", err)
 	}
 }
@@ -223,7 +223,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"))
-	waitFor(t, 30*time.Second, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
+	waitFor(t, busWait, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
 		return client.Connected() && !client.CoreSubOK()
 	})
 	if !held.IsValid() {
@@ -234,7 +234,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a server that grants the subscription has it again", func() bool {
+	waitFor(t, busWait, "CoreSubOK once a server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 	// The flush returns once the server has handled every protocol line the client sent before it,
@@ -300,7 +300,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
 		t.Fatalf("reload without the grant: %v", err)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
+	waitFor(t, busWait, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
 		return !client.CoreSubOK()
 	})
 	if !client.Connected() {
@@ -318,7 +318,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
+	waitFor(t, busWait, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 }

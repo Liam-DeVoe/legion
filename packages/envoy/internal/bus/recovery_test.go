@@ -277,7 +277,7 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 			// logged, both retries have had their chance to run the hook again. The retries after it,
 			// which go on while the durable is held, find what the third found: the reconnect covered
 			// and no connection event since, so rewatch finds the hooks not due and runs nothing.
-			waitFor(t, 30*time.Second, "the recovery's third attempt at the refused restore", func() bool {
+			waitFor(t, busWait, "the recovery's third attempt at the refused restore", func() bool {
 				return slices.Contains(logs.attempts("ERROR", "envoy nats recovery resubscribe failed"), 3)
 			})
 			if runs := len(hooked); runs != 0 {
@@ -328,7 +328,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	client.Conn.Close()
 	select {
 	case <-ended:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the hooks never ran on the connection the recovery dialed")
 	}
 	if err := client.Conn.ForceReconnect(); err != nil {
@@ -336,7 +336,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	}
 	select {
 	case <-ended:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the hooks never ran for the in-place reconnect")
 	}
 	// The recovery keeps retrying the refused restore, one attempt at a time, and each attempt asks
@@ -345,7 +345,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	// attempt that came during the run has logged before it began. So once an attempt begun from here
 	// has logged, every chance to run the hooks again has passed.
 	afterRun := captureBusLogs(t)
-	waitFor(t, 30*time.Second, "a recovery attempt begun after the reconnect's run to log its refused restore", func() bool {
+	waitFor(t, busWait, "a recovery attempt begun after the reconnect's run to log its refused restore", func() bool {
 		begun := afterRun.attempts("INFO", "envoy nats recovery attempt")
 		return len(begun) > 0 && slices.Contains(afterRun.attempts("ERROR", "envoy nats recovery resubscribe failed"), begun[0])
 	})
@@ -517,13 +517,13 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 	var hookedAt time.Time
 	select {
 	case hookedAt = <-hooked:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the reconnect hooks never ran")
 	}
 	var bind bindResult
 	select {
 	case bind = <-bound:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the bind whose lookup was lost never returned")
 	}
 	if bind.err == nil {
@@ -534,12 +534,12 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 			hookedAt.Sub(dropped).Round(time.Millisecond), hookedAt.Sub(bind.at).Round(time.Millisecond), bind.err)
 	}
 
-	waitFor(t, 30*time.Second, "the recovery to bind the registration the lost bind left", client.SubOK)
+	waitFor(t, busWait, "the recovery to bind the registration the lost bind left", client.SubOK)
 	data, _ := json.Marshal(map[string]string{"test": "bind-in-flight"})
 	if _, err := client.JS().Publish("notifications.github.test.bind-in-flight", data); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the message to reach the bound registration", func() bool { return delivered.Load() >= 1 })
+	waitFor(t, busWait, "the message to reach the bound registration", func() bool { return delivered.Load() >= 1 })
 	time.Sleep(2 * time.Second)
 	if count := delivered.Load(); count != 1 {
 		t.Fatalf("the message reached the handler %d times; want once, from one binding", count)
@@ -1022,11 +1022,11 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		t.Helper()
 		return len(byName()[name])
 	}
-	// settle waits up to within for the server to hold want of the client's connections, and fails
-	// with the count it last read.
-	settle := func(want int, within time.Duration, when string) {
+	// settle waits up to busWait for the server to hold want of the client's connections, and
+	// fails with the count it last read.
+	settle := func(want int, when string) {
 		t.Helper()
-		deadline := time.Now().Add(within)
+		deadline := time.Now().Add(busWait)
 		for open := connections(); open != want; open = connections() {
 			if time.Now().After(deadline) {
 				t.Fatalf("%d connection(s) open %s, want %d", open, when, want)
@@ -1082,7 +1082,7 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		key := fmt.Sprintf("after-close-%d", rounds)
 		client.Conn.Close()
 		publishOnce(t, client, key)
-		waitFor(t, 5*time.Second, "the publish after the close to reach the observer", func() bool { return arrivals(key) > 0 })
+		waitFor(t, busWait, "the publish after the close to reach the observer", func() bool { return arrivals(key) > 0 })
 		// A second copy would come on the same server's next deliveries: a round trip and a pause
 		// leave it time to, and the discarded connection's callbacks, which run on its own
 		// goroutine, time to log.
@@ -1093,7 +1093,7 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		if got := arrivals(key); got != 1 {
 			t.Fatalf("the publish after close %d arrived %d times, want 1", rounds, got)
 		}
-		settle(1, 15*time.Second, "once the publish and the recovery have replaced the closed one")
+		settle(1, "once the publish and the recovery have replaced the closed one")
 	}
 	t.Logf("close %d raced: the publish and the recovery each replaced the closed connection", rounds)
 	for _, msg := range []string{"envoy nats connection closed", "envoy nats disconnected", "envoy nats recovery attempt"} {
@@ -1107,7 +1107,7 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 
 	observer.Close()
 	client.Close()
-	settle(0, 5*time.Second, "after Close")
+	settle(0, "after Close")
 }
 
 // A start the server refuses returns no client, so no caller can Close what it dialled: the
@@ -1133,13 +1133,13 @@ func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
 	}
 	// The recovery ends at once either way: cancelled, or successful once it has installed the
 	// replacement it dialled.
-	waitFor(t, 5*time.Second, "the recovery the refused start's close began to end", func() bool {
+	waitFor(t, busWait, "the recovery the refused start's close began to end", func() bool {
 		return logs.count(name, "envoy nats recovery cancelled") > 0 || logs.count(name, "envoy nats recovery successful") > 0
 	})
 	if got := logs.count(name, "envoy nats recovery attempt"); got != 0 {
 		t.Errorf("the recovery the refused start's close began made %d attempt(s), want none", got)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for {
 		open := connections()[name]
 		if len(open) == 0 {

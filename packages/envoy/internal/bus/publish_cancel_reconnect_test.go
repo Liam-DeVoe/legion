@@ -71,7 +71,7 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 	t.Helper()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
-	waitFor(t, 5*time.Second, "the client to start reconnecting", f.client.Conn.IsReconnecting)
+	waitFor(t, busWait, "the client to start reconnecting", f.client.Conn.IsReconnecting)
 	f.onTick.Store(&onTick)
 	answer := make(chan error, 1)
 	go func() { answer <- f.client.PublishWithin(ctx, f.envelope) }()
@@ -79,15 +79,15 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 }
 
 // awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish has
-// not answered within 15 s.
+// not answered within busWait.
 func (f *reconnectWaitFixture) awaitAnswer(t *testing.T, answer <-chan error) error {
 	t.Helper()
 	defer f.onTick.Store(nil)
 	select {
 	case err := <-answer:
 		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish had not returned within 15s")
+	case <-time.After(busWait):
+		t.Fatalf("the publish had not returned within %s", busWait)
 		return nil
 	}
 }
@@ -142,7 +142,7 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		release()
 		f.proxy.refuse.Store(false)
 		err := f.awaitAnswer(t, answer)
-		waitFor(t, 10*time.Second, "the client to reconnect", f.client.Conn.IsConnected)
+		waitFor(t, busWait, "the client to reconnect", f.client.Conn.IsConnected)
 		return err
 	}
 
@@ -162,7 +162,7 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 	if err := publishDuringReconnect(live, func() {}); err != nil {
 		t.Fatalf("publish under a live context released by the reconnect: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	if _, err := f.received.NextMsg(busWait); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish released by the reconnect: %v", err)
 	}
 }
@@ -196,7 +196,7 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 			once.Do(func() {
 				defer close(ticked)
 				f.proxy.refuse.Store(false)
-				for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+				for deadline := time.Now().Add(busWait); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 					if f.client.Conn.IsConnected() {
 						reconnected.Store(true)
 						break
@@ -232,7 +232,7 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 	if err := publishAsTheReconnectCompletes(live, func() {}); err != nil {
 		t.Fatalf("publish under a live context as the reconnect completed: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	if _, err := f.received.NextMsg(busWait); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish as the reconnect completed: %v", err)
 	}
 }

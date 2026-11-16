@@ -142,6 +142,9 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 		defer refusalsMu.Unlock()
 		refusals = append(refusals, fmt.Sprintf(format, args...))
 	}
+	// firstFrame bounds each socket's wait for the room's first frame, taken here because the
+	// readers that wait run on goroutines of their own.
+	firstFrame := roomWait(t)
 	// Three seconds, forty rounds and twenty writes, whichever comes later, within thirty seconds: a
 	// loaded machine takes longer over each round and each write, and a fixed window gave a pod as
 	// few as twelve writes.
@@ -171,7 +174,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
 				}
-				connection.SetReadDeadline(time.Now().Add(time.Second))
+				connection.SetReadDeadline(time.Now().Add(firstFrame))
 				if _, _, err := connection.ReadMessage(); err != nil {
 					refuse("socket %d: first frame %v", round, err)
 				}
@@ -552,7 +555,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	// (consumeUpdateClass), so a peer write applied before this one could still be assigned a
 	// later version if it is still draining. Waiting for every earlier write to settle first
 	// guarantees this one's version, once assigned, is the newest.
-	drained, cancelDrain := context.WithTimeout(ctx, 30*time.Second)
+	drained, cancelDrain := context.WithTimeout(ctx, roomWait(t))
 	defer cancelDrain()
 	if err := service.waitForPendingUpdates(drained, artifactID); err != nil {
 		t.Fatal(err)
@@ -567,7 +570,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	}, bob); err != nil {
 		t.Fatal(err)
 	}
-	stored, cancel := context.WithTimeout(ctx, 30*time.Second)
+	stored, cancel := context.WithTimeout(ctx, roomWait(t))
 	defer cancel()
 	if err := service.waitForPendingUpdates(stored, artifactID); err != nil {
 		t.Fatal(err)
@@ -613,14 +616,14 @@ func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 30*time.Second, "the evicted room's document to be collected", func() bool {
+	waitFor(t, roomWait(t), "the evicted room's document to be collected", func() bool {
 		runtime.GC()
 		return key.Value() == nil
 	})
 	if replica.Value() != nil {
 		t.Fatal("the collection that took the evicted room's document kept its replica")
 	}
-	waitFor(t, 30*time.Second, "the evicted room's listing to go", func() bool {
+	waitFor(t, roomWait(t), "the evicted room's listing to go", func() bool {
 		_, listed := service.replicas.Load(key)
 		return !listed
 	})
@@ -641,7 +644,7 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 	if resident == nil {
 		t.Fatal("the written room's replica went while the room is resident")
 	}
-	waitFor(t, 10*time.Second, "the written room's replica to hold a copy", func() bool {
+	waitFor(t, roomWait(t), "the written room's replica to hold a copy", func() bool {
 		if resident.hold() == nil {
 			return false
 		}
@@ -681,11 +684,11 @@ func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 30*time.Second, "the evicted room's document to be collected", func() bool {
+	waitFor(t, roomWait(t), "the evicted room's document to be collected", func() bool {
 		runtime.GC()
 		return key.Value() == nil
 	})
-	waitFor(t, 30*time.Second, "the evicted room's load record to go: a running Dispatch process keeps one service for its whole life, so a record left behind is one more for every room the process ever loads", func() bool {
+	waitFor(t, roomWait(t), "the evicted room's load record to go: a running Dispatch process keeps one service for its whole life, so a record left behind is one more for every room the process ever loads", func() bool {
 		_, recorded := service.roomLoads.Load(artifactID)
 		return !recorded
 	})

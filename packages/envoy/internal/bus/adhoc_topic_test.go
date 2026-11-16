@@ -141,7 +141,7 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 	if duplicate {
 		t.Fatal("a core publish has no stream verdict and reports no duplicate")
 	}
-	msg, err := received.NextMsg(5 * time.Second)
+	msg, err := received.NextMsg(busWait)
 	if err != nil {
 		t.Fatalf("the subscriber received nothing: %v", err)
 	}

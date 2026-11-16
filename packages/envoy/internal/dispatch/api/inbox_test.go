@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -330,7 +329,7 @@ func TestAskThreadReadsTerminateOnACyclicReplyChain(t *testing.T) {
 		{"ask card", "/api/v1/asks/" + askID},
 		{"inbox", "/api/v1/inbox"},
 	} {
-		bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
+		bounded, cancel := context.WithTimeout(ctx, concurrentWait)
 		request := httptest.NewRequestWithContext(bounded, http.MethodGet, read.path, nil)
 		request.Header.Set("X-Dispatch-User", "alice")
 		response := httptest.NewRecorder()

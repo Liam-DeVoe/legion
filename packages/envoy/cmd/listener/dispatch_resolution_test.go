@@ -477,7 +477,7 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 			sessionID, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
 		if read.Code != http.StatusOK {

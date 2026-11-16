@@ -64,7 +64,7 @@ func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 100 * time.Millisecond, retryBase: time.Hour})
 	})
 
-	waitFor(t, 20*time.Second, fmt.Sprintf("the document after %d documents holding newer content to be reconciled", newer),
+	waitFor(t, roomWait(t), fmt.Sprintf("the document after %d documents holding newer content to be reconciled", newer),
 		func() bool { return !isOwed(t, database, readable) })
 	for _, document := range documents[:newer] {
 		if version := excerptVersionOf(t, database, document); version != nil {
@@ -94,7 +94,7 @@ func TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain(t *testing.T
 	leases := excerptLeases(t, database)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
-	waitFor(t, 20*time.Second, "the excerpt version 1 left behind to be marked owed and cut again at version 2", func() bool {
+	waitFor(t, roomWait(t), "the excerpt version 1 left behind to be marked owed and cut again at version 2", func() bool {
 		version := excerptVersionOf(t, database, document)
 		return version != nil && *version == 2
 	})
@@ -447,7 +447,7 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
 	waitFor(t, roomWait(t), "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
-	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, time.Second, roomWait(t))
 	storetest.RequireNoStatements(t, counter, 3*time.Second, "the reconciliation with nothing owed")
 	if next := service.reconcileExcerptPass(context.Background(), referenceExcerptSchedule); !next.IsZero() {
 		t.Fatalf("a pass with nothing owed asked to run again at %v; want no timer", next)
@@ -506,7 +506,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the
 	// boot pass began; after it the loop is idle.
 	time.Sleep(time.Until(started.Add(schedule.minGap + time.Second)))
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, roomWait(t))
 
 	ctx := context.Background()
 	for name, leaveOwed := range map[string]func() error{

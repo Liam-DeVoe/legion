@@ -64,7 +64,7 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 		// The leader-answered read builds its own request rather than letting nats.go build one,
 		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
 		"GetFromLeader": func(key string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), busWait)
 			defer cancel()
 			_, err := kv.GetFromLeader(ctx, key)
 			return err
@@ -346,8 +346,8 @@ func listedKeys(t *testing.T, kv KeyValue) []string {
 				return keys
 			}
 			keys = append(keys, entry.Key())
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the watch of every key delivered %d keys and no nil within 10 s, want the nil that ends its scan", len(keys))
+		case <-time.After(busWait):
+			t.Fatalf("the watch of every key delivered %d keys and no nil within %s, want the nil that ends its scan", len(keys), busWait)
 		}
 	}
 }
@@ -369,8 +369,8 @@ func watchKey(t *testing.T, kv KeyValue, key string) {
 			if (entry != nil) != want || (entry != nil && entry.Key() != key) {
 				t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
 			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("watch of %d-byte key delivered nothing within 10 s", len(key))
+		case <-time.After(busWait):
+			t.Fatalf("watch of %d-byte key delivered nothing within %s", len(key), busWait)
 		}
 	}
 }

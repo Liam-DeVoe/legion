@@ -435,7 +435,7 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 		if got := sreReach(roster); got != "live ses-sre" {
 			t.Fatalf("the read that waited read %s, want live ses-sre", got)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the read that waited never returned")
 	}
 	if got := sreReach(readRoster(t, served, context.Background())); got != "live ses-sre" {

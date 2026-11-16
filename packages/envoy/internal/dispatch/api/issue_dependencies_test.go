@@ -612,7 +612,7 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", response.Code, response.Body.String())
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(concurrentWait):
 		// The reparent is waiting for the move. Open the gate and report how the two writes end.
 		if err := gate.Commit(context.Background()); err != nil {
 			t.Fatal(err)

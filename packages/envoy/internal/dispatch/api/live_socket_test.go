@@ -343,7 +343,7 @@ func (c *socketClient) closeCode(t *testing.T, within time.Duration) (code, mess
 // server that never answers fails the test by name, and leaves the binary's timeout to the
 // package's later tests. A deadline that leaves no more than throughputWaitMargin to begin with
 // fails once, by name: that reads like a misconfigured run, not a server that stopped answering.
-// A wait that needs no bulk read keeps a fixed 10 s bound.
+// A wait that needs no bulk read names eventFeedWait.
 func throughputWait(t *testing.T) time.Duration {
 	t.Helper()
 	deadline, bounded := t.Deadline()
@@ -775,7 +775,7 @@ func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
 	client := rig.dial(t, asUser("alice"))
 
 	client.sendText(t, []byte(`{"type":"subscribe","sub":"p","since":1,"view":{"kind":"timeline","window":{"preset":7,"anchor":"end"},"query":"","density":"compact"}}`))
-	client.snapshot(t, 10*time.Second, "p")
+	client.snapshot(t, eventFeedWait, "p")
 
 	client.sendText(t, []byte(`{"type":"resubscribe","sub":"q"}`))
 	client.refusal(t, eventFeedWait, "q", "INVALID_FRAME")

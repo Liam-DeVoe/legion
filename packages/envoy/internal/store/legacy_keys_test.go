@@ -214,7 +214,7 @@ func openRegistryOver(t *testing.T, seed func(js natsgo.JetStreamContext, rawInt
 		t.Fatalf("open the registry over the stored keys: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := registry.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the cache: %v", err)

@@ -119,7 +119,7 @@ func reopenWithoutRestoring(t *testing.T, f repairFixture, issue, status string,
 // the issue's documents held, storing what each had taken first (setRoomIssueOpen, then
 // closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile.
 //
-// The ten seconds are a hang guard, not a race against an eviction: the close is asked for before
+// concurrentWait is a hang guard, not a race against an eviction: the close is asked for before
 // this poll starts, and a notified close closes the room whatever the room's record holds, so the
 // deadline is reached only by a close that never ran, or one that never finished, which is a
 // defect rather than a slow machine. The bound stays so that such a defect fails this test by
@@ -136,7 +136,7 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	if err != nil {
 		t.Fatalf("list the documents of %s: %v", issue, err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(10 * time.Millisecond) {
 		resident := f.documents.ResidentRooms()
 		if !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) }) {
 			return
@@ -826,7 +826,7 @@ func storedUpdateCount(t *testing.T, database *store.Store, document string) int
 // own, after the linger that gathers the room's next keystrokes into the same one.
 func awaitStoredUpdates(t *testing.T, database *store.Store, document string, want int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(10 * time.Millisecond) {
 		if stored := storedUpdateCount(t, database, document); stored >= want {
 			return
 		} else if time.Now().After(deadline) {

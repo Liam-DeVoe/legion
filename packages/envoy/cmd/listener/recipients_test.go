@@ -65,7 +65,7 @@ func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []st
 // same, and that state is what the count reads.
 func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
@@ -105,7 +105,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
 			break
@@ -194,7 +194,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, listenerWait, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false
@@ -460,7 +460,7 @@ func watchJetStreamAPI(t *testing.T, uri string, conn *natsgo.Conn, subjects ...
 // connection sent before it has arrived too.
 func (p *jetStreamAPIProbe) awaitCall(t *testing.T, subject string) []string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		p.mu.Lock()
 		index := slices.Index(p.observed, subject)
@@ -473,7 +473,7 @@ func (p *jetStreamAPIProbe) awaitCall(t *testing.T, subject string) []string {
 			return before
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the probe did not see the control call on %s within 5s, so it is watching nothing", subject)
+			t.Fatalf("the probe did not see the control call on %s within %s, so it is watching nothing", subject, listenerWait)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

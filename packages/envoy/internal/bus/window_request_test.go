@@ -79,7 +79,7 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	window := client.WindowUntil(nil)
 
 	stored := contracts.AgentSubject("ses_request_stored")
-	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored), Timeout: 10 * time.Second}), busWait); err != nil {
+	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored), Timeout: busWait}), busWait); err != nil {
 		t.Fatalf("a Request the stream acknowledged, with nobody subscribed to its subject, returned %v, want nil", err)
 	}
 
@@ -104,7 +104,7 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 	_, _, client := requestClient(t)
 
 	started := time.Now()
-	err := answerOf(t, client.WindowUntil(nil).Request("notifications.role.request-nobody", forwardEnvelope("nobody"), bus.RequestOptions{MsgID: bus.ForwardMsgID("nobody", "notifications.role.request-nobody"), Timeout: timeout}), 5*time.Second)
+	err := answerOf(t, client.WindowUntil(nil).Request("notifications.role.request-nobody", forwardEnvelope("nobody"), bus.RequestOptions{MsgID: bus.ForwardMsgID("nobody", "notifications.role.request-nobody"), Timeout: timeout}), busWait)
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrUnavailable) {
 		t.Fatalf("an unanswered Request returned %v, want ErrNotAcknowledged, not ErrUnavailable", err)
@@ -166,12 +166,12 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 	other := contracts.AgentSubject("ses_request_other")
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: 10 * time.Second}
+		opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: busWait}
 		if err := answerOf(t, window.Request(holder, item, opts), busWait); err != nil {
 			t.Fatalf("attempt %d returned %v, want nil", attempt, err)
 		}
 	}
-	opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, other), Timeout: 10 * time.Second}
+	opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, other), Timeout: busWait}
 	if err := answerOf(t, window.Request(other, item, opts), busWait); err != nil {
 		t.Fatalf("the Request to the second subject returned %v, want nil", err)
 	}
@@ -201,7 +201,7 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	t.Parallel()
 	var client *bus.Client
 	server, _, client := requestClient(t, bus.WithBeforeRequestFlush(func() {
-		waitUntil := time.Now().Add(5 * time.Second)
+		waitUntil := time.Now().Add(busWait)
 		for client.Connected() && time.Now().Before(waitUntil) {
 			time.Sleep(time.Millisecond)
 		}
@@ -261,7 +261,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 	item := forwardEnvelope("full")
 	started := time.Now()
 	err := answerOf(t, client.WindowUntil(nil).Request(holder, item,
-		bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: timeout}), 30*time.Second)
+		bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: timeout}), busWait)
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrStreamFull) || errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrRefused) {
 		t.Fatalf("a Request the full stream refused = %v after %s, want bus.ErrStreamFull and neither bus.ErrNotAcknowledged nor bus.ErrRefused", err, elapsed)
@@ -313,7 +313,7 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	server, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 
-	if err := window.Probe(10 * time.Second); err != nil {
+	if err := window.Probe(busWait); err != nil {
 		t.Fatalf("a Probe of a live connection returned %v, want nil", err)
 	}
 
@@ -326,12 +326,12 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	if !client.Connected() {
 		t.Fatal("the client lost its connection while frozen; the Probe proves nothing about a silent server")
 	}
-	if err := window.Probe(10 * time.Second); err != nil {
+	if err := window.Probe(busWait); err != nil {
 		t.Fatalf("a Probe once the server answers again returned %v, want nil", err)
 	}
 
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for client.Connected() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -350,10 +350,10 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	server, _, client := requestClient(t)
 	subject := contracts.AgentSubject("ses_window_deadline")
 	server.Stop(t)
-	waitUntil := time.Now().Add(5 * time.Second)
+	waitUntil := time.Now().Add(busWait)
 	for client.Connected() {
 		if time.Now().After(waitUntil) {
-			t.Fatal("the client still reads connected 5s after its server stopped")
+			t.Fatalf("the client still reads connected %s after its server stopped", busWait)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -369,7 +369,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	}()
 	item := forwardEnvelope("deadline")
 	item.Topic = subject
-	err := answerOf(t, window.PublishAsync(item), 10*time.Second)
+	err := answerOf(t, window.PublishAsync(item), busWait)
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrWindowDeadline) || errors.Is(err, bus.ErrUnavailable) {
 		t.Fatalf("a send whose wait for a connection met the window's deadline answered %v, want ErrWindowDeadline and not ErrUnavailable", err)
@@ -383,10 +383,10 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	}
 
 	<-restarted
-	waitUntil = time.Now().Add(10 * time.Second)
+	waitUntil = time.Now().Add(busWait)
 	for !client.Connected() {
 		if time.Now().After(waitUntil) {
-			t.Fatal("the client did not reconnect within 10s of its server starting again")
+			t.Fatalf("the client did not reconnect within %s of its server starting again", busWait)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -402,7 +402,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 
 	pinned := time.Now().Add(time.Hour)
 	live := client.WindowUntil(func() time.Time { return pinned })
-	if err := answerOf(t, live.PublishAsync(item), 5*time.Second); err != nil {
+	if err := answerOf(t, live.PublishAsync(item), busWait); err != nil {
 		t.Fatalf("a send before the window's deadline answered %v, want nil", err)
 	}
 	pinned = time.Now()

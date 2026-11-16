@@ -514,7 +514,7 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	}
 
 	// Cache is populated asynchronously by watch(); poll until ready
-	got := pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	got := pollMatch(t, reg, "m1", "notifications.test", 1, heldWait)
 	if got[0].SessionID != "ses_preload" {
 		t.Fatalf("expected ses_preload, got %s", got[0].SessionID)
 	}
@@ -542,7 +542,7 @@ func TestWatch_PropagatesUpsert(t *testing.T) {
 	}
 
 	// Poll with bounded timeout
-	got = pollMatch(t, reg, "m1", "notifications.test.x", 1, 5*time.Second)
+	got = pollMatch(t, reg, "m1", "notifications.test.x", 1, heldWait)
 	if got[0].SessionID != "ses_new" {
 		t.Fatalf("expected ses_new, got %s", got[0].SessionID)
 	}
@@ -570,7 +570,7 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	}
 
 	// Verify pre-loaded (async via watch)
-	pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	pollMatch(t, reg, "m1", "notifications.test", 1, heldWait)
 
 	// Delete via KV Delete operation (empty topics = delete all)
 	if _, err := reg.Remove(context.Background(), "ses_del", nil, releasedByItsProcess); err != nil {
@@ -578,7 +578,7 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	}
 
 	// Poll until cache reflects the delete
-	pollMatch(t, reg, "m1", "notifications.test", 0, 5*time.Second)
+	pollMatch(t, reg, "m1", "notifications.test", 0, heldWait)
 }
 
 func TestWatch_PropagatesPurge(t *testing.T) {
@@ -603,7 +603,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	}
 
 	// Verify pre-loaded (async via watch)
-	pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	pollMatch(t, reg, "m1", "notifications.test", 1, heldWait)
 
 	// Purge via NATS KV API (different from Delete — removes all revisions)
 	if err := kv.Purge("ses_purge"); err != nil {
@@ -611,7 +611,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	}
 
 	// Poll until cache reflects the purge
-	pollMatch(t, reg, "m1", "notifications.test", 0, 5*time.Second)
+	pollMatch(t, reg, "m1", "notifications.test", 0, heldWait)
 }
 
 func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
@@ -638,7 +638,7 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	}
 
 	// Verify cache is populated via watch() before NATS shutdown
-	pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	pollMatch(t, reg, "m1", "notifications.test", 1, heldWait)
 
 	// Kill NATS — KV is now unreachable
 	conn.Close()
@@ -2107,9 +2107,8 @@ func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 }
 
 // upsertWithin upserts item on another goroutine and reports whether it finished, failing the test
-// when it failed or never finished: it gives up after the ten seconds waitClosed waits. A reaper
-// pass calls it from isAlive, so a pass that held the interest lock there would make it give up
-// rather than deadlock.
+// when it failed or never finished: it gives up after heldWait. A reaper pass calls it from
+// isAlive, so a pass that held the interest lock there would make it give up rather than deadlock.
 func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) bool {
 	t.Helper()
 	done := make(chan error, 1)
@@ -2124,7 +2123,7 @@ func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) b
 			return false
 		}
 		return true
-	case <-time.After(10 * time.Second):
+	case <-time.After(heldWait):
 		t.Errorf("Upsert(%s) did not finish while Reap was calling isAlive: the pass holds the interest lock", item.SessionID)
 		return false
 	}
@@ -2307,7 +2306,7 @@ func TestWaitForCacheReady_ReturnsAfterInitialScan(t *testing.T) {
 		t.Fatalf("Open failed: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady timed out on a healthy registry: %v", err)
@@ -2328,7 +2327,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open failed: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := reg1.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("first WaitForCacheReady: %v", err)
@@ -2343,7 +2342,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Open failed: %v", err)
 	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), heldWait)
 	defer cancel2()
 	if err := reg2.WaitForCacheReady(ctx2); err != nil {
 		t.Fatalf("second WaitForCacheReady: %v", err)
@@ -2598,7 +2597,7 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 	assertInterestTopicsForSession(t, reg, newSession, roleTopic)
 	assertInterestTopicsForSession(t, reg, oldSession, roleTopic, "notifications.slack.>")
 	for _, want := range []string{"level=WARN", "role=legion-controller", "old_session_id=ses_old", "new_session_id=ses_new"} {
-		waitFor(t, 5*time.Second, func() bool {
+		waitFor(t, heldWait, func() bool {
 			return strings.Contains(logs.String(), want)
 		})
 	}
@@ -2614,7 +2613,7 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -2628,13 +2627,13 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 	if _, err := reg.Upsert(Interest{SessionID: sessionID, MachineID: machineID}, []string{topic}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	pollMatch(t, reg, machineID, topic, 1, 5*time.Second)
+	pollMatch(t, reg, machineID, topic, 1, heldWait)
 
 	revision, err := reg.watcher.KV().Put(sessionID, []byte("{"))
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}
-	pollMatch(t, reg, machineID, topic, 0, 5*time.Second)
+	pollMatch(t, reg, machineID, topic, 0, heldWait)
 	if _, err := reg.Get(context.Background(), sessionID); err == nil {
 		t.Fatal("Get must not return a route after its watched value is malformed")
 	}
@@ -2644,7 +2643,7 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 		"key=" + sessionID,
 		"revision=" + strconv.FormatUint(revision, 10),
 	} {
-		waitFor(t, 5*time.Second, func() bool {
+		waitFor(t, heldWait, func() bool {
 			return strings.Contains(logs.String(), want)
 		})
 	}
@@ -2660,7 +2659,7 @@ func useKV(t *testing.T, r *Registry, kv natsgo.KeyValue) {
 	r.watcher.Stop()
 	r.watcher = kvwatch.New("interest registry", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), interestCache{r})
 	r.watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := r.watcher.WaitReady(ctx); err != nil {
 		t.Fatalf("wait for the rebuilt watcher: %v", err)
@@ -2994,7 +2993,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -3010,7 +3009,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	); err != nil {
 		t.Fatalf("initial Upsert: %v", err)
 	}
-	pollMatch(t, reg, machineID, "notifications.a", 1, 5*time.Second)
+	pollMatch(t, reg, machineID, "notifications.a", 1, heldWait)
 
 	interestKV := reg.watcher.KV()
 	useKV(t, reg, &interleavingPutKeyValue{
@@ -3021,7 +3020,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 				MachineID: machineID,
 				Topics:    []string{"notifications.remote"},
 			})
-			pollMatch(t, reg, machineID, "notifications.remote", 1, 5*time.Second)
+			pollMatch(t, reg, machineID, "notifications.remote", 1, heldWait)
 		},
 	})
 	if _, err := reg.Remove(context.Background(), sessionID, []string{"notifications.b"}, releasedByItsProcess); err != nil {
@@ -3204,7 +3203,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	defer cleanup()
 	reg, held, _ := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, heldWait, reg.watcher.Following)
 	for i := range 20 {
 		if _, err := reg.Upsert(Interest{SessionID: "ses_a", MachineID: "m1"}, []string{fmt.Sprintf("notifications.old.%d", i)}); err != nil {
 			t.Fatalf("upsert ses_a: %v", err)
@@ -3213,7 +3212,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if _, err := reg.Upsert(Interest{SessionID: "ses_ghost", MachineID: "m1"}, []string{"notifications.ghost"}); err != nil {
 		t.Fatalf("upsert ses_ghost: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return len(reg.Match("m1", "notifications.ghost")) == 1 })
+	waitFor(t, heldWait, func() bool { return len(reg.Match("m1", "notifications.ghost")) == 1 })
 
 	js, err := conn.JetStream()
 	if err != nil {
@@ -3254,7 +3253,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if want := []string{"ses_a", "ses_b"}; !slices.Equal(swept, want) {
 		t.Fatalf("cached right after the sweep = %v, want the new bucket's %v", swept, want)
 	}
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, heldWait, reg.watcher.Following)
 	if got := reg.Match("m1", "notifications.ghost"); len(got) != 0 {
 		t.Fatalf("the cache kept a session the recreated bucket does not hold: %v", got)
 	}
@@ -3521,8 +3520,8 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 // so the scan finds them, and the end, the moment it starts: its idle bound then times only the
 // stall that follows them. Handed over as the real watcher delivered them, the entries raced that
 // bound, and a scan whose first entry, or whose close, came later than the bound on a loaded
-// machine ended as a stall after fewer entries instead. The read gives up after the ten seconds
-// waitClosed waits, with an error the scan returns.
+// machine ended as a stall after fewer entries instead. The read gives up after heldWait, as
+// waitClosed does, with an error the scan returns.
 type earlyEndKV struct {
 	jetstream.KeyValue
 
@@ -3543,7 +3542,7 @@ func (k earlyEndKV) Watch(ctx context.Context, keys string, opts ...jetstream.Wa
 		}
 	}
 	updates := make(chan jetstream.KeyValueEntry, k.after)
-	given := time.After(10 * time.Second)
+	given := time.After(heldWait)
 	for range k.after {
 		select {
 		case entry, open := <-watcher.Updates():
@@ -3559,7 +3558,7 @@ func (k earlyEndKV) Watch(ctx context.Context, keys string, opts ...jetstream.Wa
 		case <-given:
 			_ = watcher.Stop()
 			go drained()
-			return nil, fmt.Errorf("the bucket's watch delivered %d of the %d entries the early end forwards within 10s", len(updates), k.after)
+			return nil, fmt.Errorf("the bucket's watch delivered %d of the %d entries the early end forwards within %s", len(updates), k.after, heldWait)
 		}
 	}
 	if k.ended {

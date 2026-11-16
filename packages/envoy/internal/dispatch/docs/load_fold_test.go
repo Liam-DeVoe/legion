@@ -166,7 +166,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	}()
 	select {
 	case <-held:
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the first load never reached its fold")
 	}
 	type coldRead struct {
@@ -187,7 +187,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	}()
 	// The holder committed its read before its fold, so the two transactions left open are the
 	// waiters', each past its read of the stored log and waiting for the slot.
-	waitFor(t, 30*time.Second, "both later loads to wait for the slot inside their read transactions", func() bool {
+	waitFor(t, roomWait(t), "both later loads to wait for the slot inside their read transactions", func() bool {
 		return idleInTransaction(t, database) == 2
 	})
 	select {
@@ -204,7 +204,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("the waiter whose context ended returned %v, want %v", err, context.Canceled)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the waiter whose context ended is still waiting for the slot")
 	}
 	select {
@@ -222,7 +222,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the first load: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the first load did not return once released")
 	}
 	select {
@@ -233,7 +233,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if got := docMarkdown(read.loaded.Doc); got != "First.\n\nSecond.\n" {
 			t.Fatalf("the second load reads %q, want the stored document", got)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the second load did not proceed once the slot was given back")
 	}
 	if folds := waitedFolds.Load(); folds != 1 {

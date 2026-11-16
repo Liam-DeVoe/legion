@@ -171,7 +171,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	waitUntil(t, concurrentWait, "the pass the hub's signal after its LISTEN earned", func() bool {
 		return countStatements(recorder.Statements(), cursorHeld) >= 2
 	})
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, concurrentWait)
 	return idleSweep{handler: handler, server: srv, counter: counter, target: target, source: source}
 }
 
@@ -206,7 +206,7 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	waitUntil(t, 5*time.Second, "the suggestion to be marked acted_on", func() bool {
+	waitUntil(t, concurrentWait, "the suggestion to be marked acted_on", func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Detail != "the suggested issue was updated directly" {

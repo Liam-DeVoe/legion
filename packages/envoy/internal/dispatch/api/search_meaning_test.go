@@ -1592,7 +1592,7 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 // on a connection that does.
 func cacheTheProgressRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), concurrentWait)
 	defer cancel()
 	var done bool
 	if err := database.Pool.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {

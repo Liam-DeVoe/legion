@@ -87,7 +87,7 @@ func requireDrift(t *testing.T, registry *store.Registry, role, copyNames, store
 	guard.RLock()
 	inCopy, _ := roleCopy.Get(role)
 	guard.RUnlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claim, err := registry.RoleClaim(ctx, role)
 	if err != nil {
@@ -154,7 +154,7 @@ func keptLaneHeadReads(t *testing.T, client *bus.Client, role string) func() int
 // happens next.
 func unreadableLaneHead(t *testing.T, client *bus.Client, role string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if _, err := client.PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), []byte("{"), 0); err != nil {
 		t.Fatalf("write role %s's cursor no read can decode: %v", role, err)
@@ -399,7 +399,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			// The same counter the surplus case reads none on counts this handover's read, so
 			// that none is a handover that never started rather than a counter that counts
 			// nothing.
-			waitFor(t, 5*time.Second, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
+			waitFor(t, listenerWait, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
 		})
 	})
 

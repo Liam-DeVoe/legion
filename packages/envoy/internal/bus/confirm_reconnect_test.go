@@ -100,7 +100,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	if err := conn.FlushTimeout(busWait); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
@@ -138,7 +138,7 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	if err := conn.FlushTimeout(busWait); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
@@ -276,7 +276,7 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 	conn := answeringServer(t, "notifications.other", true)
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
+	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), busWait)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}

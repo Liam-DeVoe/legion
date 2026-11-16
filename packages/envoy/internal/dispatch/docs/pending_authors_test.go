@@ -414,7 +414,7 @@ func arrangeNoVersionSettlement(t *testing.T, service *Service, artifactID strin
 	waitForLandedAppends(t, service, artifactID)
 	service.settle = 20 * time.Millisecond
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 30*time.Second, "the no-version settlement to commit", func() bool {
+	waitFor(t, roomWait(t), "the no-version settlement to commit", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -447,10 +447,10 @@ func TestARoomWhoseSettlementWroteNoVersionIsReleasedWhenIdle(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	arrangeNoVersionSettlement(t, service, artifactID, model.Actor{Kind: "user", ID: "alice"})
 
-	waitFor(t, 30*time.Second, "the idle room to be evicted", func() bool {
+	waitFor(t, roomWait(t), "the idle room to be evicted", func() bool {
 		return service.srv.GetDoc(artifactID) == nil && !slices.Contains(service.srv.Rooms(), artifactID)
 	})
-	waitFor(t, 10*time.Second, "the evicted room's state to be released", func() bool {
+	waitFor(t, roomWait(t), "the evicted room's state to be released", func() bool {
 		_, held := service.rooms.Load(artifactID)
 		return !held
 	})
@@ -511,7 +511,7 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
 	}
-	const limit = 10 * time.Second
+	limit := roomWait(t)
 	select {
 	case <-browser.Answers:
 	case <-browser.Ended:
@@ -1131,7 +1131,7 @@ func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
 	case <-time.After(roomWait(t)):
 		t.Fatal("the eviction did not finish")
 	}
-	waitFor(t, 30*time.Second, "alice's append to land", func() bool {
+	waitFor(t, roomWait(t), "alice's append to land", func() bool {
 		return !service.hasDurableAppend(artifactID) && !service.hasPendingUpdates(artifactID)
 	})
 	if owed := pendingAuthorRows(t, service.store, artifactID); len(owed) != 0 {

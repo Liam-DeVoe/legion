@@ -109,7 +109,7 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 		stop()
 	})
 	awaitBoundDurable(t, publisher)
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })

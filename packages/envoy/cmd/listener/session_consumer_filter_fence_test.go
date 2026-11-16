@@ -37,7 +37,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -46,8 +45,9 @@ import (
 )
 
 // consumerFilterFenceWait bounds the calls the cases below make themselves: the delete whose
-// restore is held open over a registration, and the relay restart one of them drives.
-const consumerFilterFenceWait = 10 * time.Second
+// restore is held open over a registration, and the relay restart one of them drives. It is a
+// give-up on those calls, so it is listenerWait.
+const consumerFilterFenceWait = listenerWait
 
 // A registration's confirm keeps the topic a registration on another listener added while the
 // confirm was between its read of the bucket and its consumer call (confirmRegistered,

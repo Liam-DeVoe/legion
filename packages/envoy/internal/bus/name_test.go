@@ -44,7 +44,7 @@ func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
 
 	// Closed underneath it, the client dials a replacement (recover).
 	named.Conn.Close()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for {
 		listed = connections()
 		if replaced := listed["dispatch-intake"]; len(replaced) == 1 && replaced[0] != first[0] {

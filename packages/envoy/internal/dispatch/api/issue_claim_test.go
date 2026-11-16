@@ -1105,7 +1105,7 @@ func whileTheRowIsHeld(
 	callHandler, callPID := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- request(callHandler) }()
-	if response, early := storetest.WaitForQueuedBehind(t, tx, callPID, answered, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, tx, callPID, answered, concurrentWait); early {
 		t.Fatalf("the request answered %d before it queued behind the issue row: %s", response.Code, response.Body.String())
 	}
 	holderActor := model.Actor{
@@ -1172,7 +1172,7 @@ func TestAClaimWriteThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
 			go func() {
 				answered <- dispatchRequest(t, callHandler, write.method, "/api/v1/issues/"+key+"/claim", write.body, "alice")
 			}()
-			if response, early := storetest.WaitForQueuedBehind(t, holder, callPID, answered, 10*time.Second); early {
+			if response, early := storetest.WaitForQueuedBehind(t, holder, callPID, answered, concurrentWait); early {
 				t.Fatalf("%s answered %d before it queued behind the issue row: %s", write.name, response.Code, response.Body.String())
 			}
 			var stamped time.Time

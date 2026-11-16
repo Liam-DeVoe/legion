@@ -124,7 +124,7 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
 
-	message, err := received.NextMsg(5 * time.Second)
+	message, err := received.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("nothing reached %s: %v", contracts.AgentSubject(target), err)
 	}

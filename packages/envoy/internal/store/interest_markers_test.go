@@ -782,16 +782,13 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 // sentinel's line rather than for one an earlier call on the same server put in the log.
 var traceSentinels atomic.Uint64
 
-// traceWait bounds how long traceThrough waits for the sentinel's line to reach the server's log.
-const traceWait = 5 * time.Second
-
 // traceThrough publishes a sentinel on the server's connection and returns every line of the
 // server's log once the sentinel's own trace line is in it. The server traces a connection's
 // operations in the order it reads them, and traces what it sends back while handling one (a
 // permissions violation) before it reads the next. It writes each of those lines from the
 // goroutine reading that connection, a moment after the publish that caused it returns, so a read
 // taken as soon as a pass returns can miss the pass's last lines. Once the sentinel's line is in
-// the log, every line for what the connection sent before it is there too. Past traceWait it fails
+// the log, every line for what the connection sent before it is there too. Past heldWait it fails
 // the test, naming the sentinel's line and every publish the server traced.
 func (g grantedServer) traceThrough(t *testing.T) []string {
 	t.Helper()
@@ -803,7 +800,7 @@ func (g grantedServer) traceThrough(t *testing.T) []string {
 		t.Fatalf("flush the trace sentinel: %v", err)
 	}
 	want := "[PUB " + sentinel + " "
-	deadline := time.Now().Add(traceWait)
+	deadline := time.Now().Add(heldWait)
 	for {
 		// The sentinel holds no newline, so the whole log answers what a line of it would; the
 		// split is left to the way out.
@@ -813,7 +810,7 @@ func (g grantedServer) traceThrough(t *testing.T) []string {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the server's log holds no line with %q after %s. Every publish it traced:\n%s",
-				want, traceWait, strings.Join(tracedPublishLines(strings.Split(log, "\n")), "\n"))
+				want, heldWait, strings.Join(tracedPublishLines(strings.Split(log, "\n")), "\n"))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

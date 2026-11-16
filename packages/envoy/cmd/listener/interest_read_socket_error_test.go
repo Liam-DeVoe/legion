@@ -11,7 +11,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/nats-io/nats.go"
@@ -49,7 +48,7 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 	watcher.Set(reflect.ValueOf(replacement))
 	t.Cleanup(replacement.Stop)
 	replacement.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := replacement.WaitComplete(ctx); err != nil {
 		t.Fatalf("the watcher reading through the broken handle never completed a read of the bucket: %v", err)

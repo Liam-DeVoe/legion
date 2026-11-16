@@ -121,7 +121,7 @@ func TestCloseAfterSettlementDoesNotRecreatePendingSettlementFromConsumedLastAct
 
 	writeAskBeforeClose(t, service, artifactID, actor)
 	waitForAskAuthor(t, service, artifactID, actor)
-	waitFor(t, 30*time.Second, "the ask settlement to clear its pending row", func() bool {
+	waitFor(t, roomWait(t), "the ask settlement to clear its pending row", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -159,7 +159,7 @@ func TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor(t *testing.T)
 		t.Fatalf("load the document: %v", err)
 	}
 	var author model.Actor
-	waitFor(t, 30*time.Second, "the loaded document's settlement to index its ask", func() bool {
+	waitFor(t, roomWait(t), "the loaded document's settlement to index its ask", func() bool {
 		return service.store.Pool.QueryRow(ctx, `
 			select author from asks where block_artifact_id = $1 and block_id = 'null-pending-ask'
 		`, artifactID).Scan(&author) == nil
@@ -191,7 +191,7 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the document's settlement: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the resumed settlement to commit", func() bool {
+	waitFor(t, roomWait(t), "the resumed settlement to commit", func() bool {
 		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -322,7 +322,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	service.ScheduleSettlement(artifactID)
 
 	waitForAskAuthor(t, service, artifactID, asking)
-	waitFor(t, 30*time.Second, "the reopened document's settlement to commit", func() bool {
+	waitFor(t, roomWait(t), "the reopened document's settlement to commit", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -923,7 +923,7 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 		}()
 		wg.Wait()
 		browser.Close()
-		waitFor(t, 10*time.Second, "the round's browser to disconnect", func() bool {
+		waitFor(t, roomWait(t), "the round's browser to disconnect", func() bool {
 			return connectedBrowsers(service, artifactID) == 0
 		})
 		waitForLandedAppends(t, service, artifactID)
@@ -1311,7 +1311,7 @@ func closeTestIssue(t *testing.T, service *Service) {
 		t.Fatalf("close the issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's room to close", func() bool {
+	waitFor(t, roomWait(t), "the closed issue's room to close", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 }
@@ -1329,7 +1329,7 @@ func waitForAskAuthor(t *testing.T, service *Service, artifactID string, want mo
 	t.Helper()
 	ctx := context.Background()
 	var author model.Actor
-	waitFor(t, 30*time.Second, "the reopened document's settlement to index the ask", func() bool {
+	waitFor(t, roomWait(t), "the reopened document's settlement to index the ask", func() bool {
 		return service.store.Pool.QueryRow(ctx, `select author from asks where block_artifact_id = $1 and block_id = 'closing-ask'`, artifactID).Scan(&author) == nil
 	})
 	if author != want {

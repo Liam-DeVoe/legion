@@ -1027,8 +1027,7 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 // before it removes anything, keeps the interest of a session the bucket holds, and removes the
 // interest of one the bucket has lost.
 func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest(t *testing.T) {
-	// Serial: it gives up on the observer's interest cache holding both interests after 5 s, a
-	// wait below listenerWait.
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	interests, err := claimant.client.JS().KeyValue(bus.InterestBucket)
 	if err != nil {
@@ -1050,7 +1049,7 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 	if err := claimant.sessions.Delete(context.Background(), "ses_gone"); err != nil {
 		t.Fatalf("end ses_gone's session: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		_, fresh := observer.registry.Cached("ses_fresh")
 		_, gone := observer.registry.Cached("ses_gone")
@@ -2273,7 +2272,7 @@ func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) 
 		sessionID = "ses_unsubscribe_role"
 		role      = "legion-controller"
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claimRequest := store.RoleClaimRequest{SessionID: sessionID, MachineID: "test-machine", ClientInstanceID: holdingProcess, Role: role}
 	if _, err := registry.SetRoleWithPrevious(ctx, claimRequest); err != nil {
@@ -2604,8 +2603,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 // miss, and still gives a message with no title, as a sender with no registration at all does
 // (TestSendHandler_StampsInterestSenderWithoutSessionEntry).
 func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T) {
-	// Serial: each row gives up on ending its session cache's watch after 5 s, a wait below
-	// listenerWait.
+	t.Parallel()
 	const (
 		target   = "ses_title_stamp_target"
 		sender   = "ses_title_stamp_sender_the_cache_missed"
@@ -2636,11 +2634,10 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			// Serial: it gives up on ending the session cache's watch after 5 s, a wait below
-			// listenerWait.
+			t.Parallel()
 			client := setupPublishTestClient(t)
 			registry, sessions := setupSessionsTest(t, nil, []string{target})
-			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			endCtx, cancel := context.WithTimeout(context.Background(), listenerWait)
 			sessions.EndWatch(endCtx)
 			cancel()
 			writer, err := session.OpenSessionRegistry(setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
@@ -2760,8 +2757,7 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 // reached the bus. Reading the bus is what proves the route still carries the sender's intent:
 // the answer alone is only the request read back.
 func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
-	// Serial: each row gives up on reading its envelope off the bus after 5 s, a wait below
-	// listenerWait.
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -2843,8 +2839,8 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Serial: it gives up on reading the envelope off the bus after 5 s, a wait below
-			// listenerWait.
+			// Serial within the parent: the rows share its client and the two subjects their
+			// probes read, so a row beside another would read that row's envelope.
 			probe, err := client.Conn.SubscribeSync(tc.subject)
 			if err != nil {
 				t.Fatalf("subscribe %s: %v", tc.subject, err)
@@ -2866,7 +2862,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			if answered := rawJSONField(t, recorder.Body.Bytes(), "expects_reply"); answered != tc.wantAnswer {
 				t.Fatalf("answered expects_reply = %s, want %s; body = %s", quotedOrAbsent(answered), quotedOrAbsent(tc.wantAnswer), recorder.Body.String())
 			}
-			message, err := probe.NextMsg(5 * time.Second)
+			message, err := probe.NextMsg(listenerWait)
 			if err != nil {
 				t.Fatalf("read the envelope on %s: %v", tc.subject, err)
 			}
@@ -3237,7 +3233,7 @@ func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 		if recorder := publish(body); recorder.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d, want 200; body = %s", body, recorder.Code, recorder.Body.String())
 		}
-		if _, err := probe.NextMsg(5 * time.Second); err != nil {
+		if _, err := probe.NextMsg(listenerWait); err != nil {
 			t.Fatalf("%s: read published envelope: %v", body, err)
 		}
 	}

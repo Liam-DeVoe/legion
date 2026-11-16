@@ -396,7 +396,7 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 		t.Fatalf("dial the server URL: %v", err)
 	}
 	_ = conn.Close()
-	waitFor(t, 5*time.Second, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
+	waitFor(t, busWait, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
 }
 
 // A host:port whose host is an IP address without a zone, or a DNS name as Go's resolver reads one

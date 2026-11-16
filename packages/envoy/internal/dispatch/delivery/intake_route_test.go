@@ -100,7 +100,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	// (intake.go deliver), so the row can be read before the freshness is: wait for it on a
 	// deadline of its own rather than reading it once.
 	got, err := GetSettings(ctx, pool)
-	freshnessDeadline := time.Now().Add(10 * time.Second)
+	freshnessDeadline := time.Now().Add(eventWait)
 	for err == nil && got.LastEventAt == nil && time.Now().Before(freshnessDeadline) {
 		time.Sleep(50 * time.Millisecond)
 		got, err = GetSettings(ctx, pool)

@@ -34,7 +34,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("the other caller never took the delivery-reconcile lease")
 	}
 

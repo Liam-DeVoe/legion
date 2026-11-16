@@ -64,7 +64,7 @@ func waitForKeptRoleMessage(t *testing.T, client *bus.Client, role, eventID stri
 			return item
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("role %s's kept lane does not hold event %s after 5s (last read: %+v, held: %t)", role, eventID, item, ok)
+			t.Fatalf("role %s's kept lane does not hold event %s after %s (last read: %+v, held: %t)", role, eventID, listenerWait, item, ok)
 		}
 	}
 }

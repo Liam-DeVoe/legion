@@ -45,7 +45,7 @@ func publishedSender(t *testing.T, state *listenerDeps, source, target string) *
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answered); err != nil {
 		t.Fatalf("decode the send answer %s: %v", recorder.Body.String(), err)
 	}
-	msg, err := probe.NextMsg(5 * time.Second)
+	msg, err := probe.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("read the envelope %s sent: %v", source, err)
 	}

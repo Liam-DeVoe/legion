@@ -473,7 +473,7 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 	// The eviction goes as far as the held commit lets it: it retires the room's persistence worker,
 	// whose exit compaction then waits for the document's lock, or it waits for the commit to reach
 	// the room's persistence first.
-	waitFor(t, 10*time.Second, "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
+	waitFor(t, roomWait(t), "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
 		return closeWaitsForRepair() || lockWaits(t, context.Background(), service.store, "select pg_advisory_lock(%") > 0
 	})
 	pause.let()
@@ -559,7 +559,7 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 			}()
 			// The room's persistence worker takes the second commit and waits there for the
 			// repair's slot, which the repair's commit, still held, has yet to reach.
-			waitFor(t, 10*time.Second, "the second writer's commit to reach the room's persistence", func() bool {
+			waitFor(t, roomWait(t), "the second writer's commit to reach the room's persistence", func() bool {
 				return goroutinesIn("consumeSuppressedPersistence") > 0
 			})
 			pause.let()

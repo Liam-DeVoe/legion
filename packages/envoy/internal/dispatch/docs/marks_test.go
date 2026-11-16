@@ -1220,7 +1220,7 @@ func loadAnchor(t *testing.T, service *Service, table, id string) storedAnchor {
 // context deadline rather than on how busy the box was.
 func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, want int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 	defer cancel()
 	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 		t.Fatalf("waiting for queued document updates to persist: %v", err)

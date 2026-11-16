@@ -13,15 +13,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-const requestDeadline = 20 * time.Second
-
 // withDeadline bounds every request the handler serves. A wedged pool would otherwise hold its
 // connections until the package timeout kills the process, which reports no failing test and
 // leaves the pool cleanup unrun; with a deadline the request aborts, the connections go back,
 // and the test says which scenario wedged.
 func withDeadline(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), requestDeadline)
+		ctx, cancel := context.WithTimeout(r.Context(), concurrentWait)
 		defer cancel()
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})

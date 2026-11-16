@@ -15,7 +15,7 @@ import (
 const roleLaneMachine = "example machine"
 
 // requireRoleMessage publishes a role message as another connection of the same user and requires
-// the lane's handler to receive it within 5 s.
+// the lane's handler to receive it within busWait.
 func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	t.Helper()
 	publisher, err := bus.Dial("role-publisher", []string{uri}, os.LookupEnv)
@@ -35,8 +35,8 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 		if got != topic {
 			t.Fatalf("the role lane received %s, want %s", got, topic)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the role lane received nothing within 5s")
+	case <-time.After(busWait):
+		t.Fatalf("the role lane received nothing within %s", busWait)
 	}
 }
 

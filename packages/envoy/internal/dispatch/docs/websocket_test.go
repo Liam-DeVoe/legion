@@ -95,7 +95,7 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			}
 			setIssueClosed(true)
 			reader := connectPeer(t, httpServer.URL, artifactID, "alice")
-			if err := reader.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+			if err := reader.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
 				t.Fatal(err)
 			}
 
@@ -138,7 +138,7 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			// The room a connection now loads takes edits. It loads from the store, so its copy
 			// also shows the read-only reader's keystroke never reached the store.
 			editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-			if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+			if err := editor.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
 				t.Fatal(err)
 			}
 			typeOver(t, editor, "before", "after")
@@ -765,7 +765,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	// (room.connected), and the eviction compacts the rows it can (compactRoom), so a row count is
 	// not what says the append landed. The durable-append signal alone proves the locked write
 	// reached the store; the content check below proves what it reached the store as.
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Minute)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), roomWait(t))
 	defer waitCancel()
 	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
 		t.Fatalf("wait for the locked append to be stored: %v", err)

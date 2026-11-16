@@ -112,7 +112,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 // cache answers while the read it waits for runs.
 func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		while()
 		var lines []map[string]any
@@ -126,7 +126,7 @@ func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[s
 			return lines[n-1]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no interest registry warm-up line %d within 10s:\n%s", n, p.Output.String())
+			t.Fatalf("no interest registry warm-up line %d within %s:\n%s", n, listenerWait, p.Output.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

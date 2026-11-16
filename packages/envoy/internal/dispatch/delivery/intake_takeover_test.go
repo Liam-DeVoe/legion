@@ -180,7 +180,7 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	t.Logf("the standby took the durable over %s after the holder began to stop", time.Since(stopping).Round(time.Millisecond))
 
 	publishMergedPullRequest(t, publisher, 11)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(11) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return standby.fetches(11) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if taken.Config.DeliverSubject == held.Config.DeliverSubject {

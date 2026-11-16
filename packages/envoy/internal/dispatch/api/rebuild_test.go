@@ -311,7 +311,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	for deadline := time.Now().Add(10 * time.Second); slices.Contains(documentService.ResidentRooms(), artifact.ID); time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); slices.Contains(documentService.ResidentRooms(), artifact.ID); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the closed issue's document room stayed resident after the close")
 		}

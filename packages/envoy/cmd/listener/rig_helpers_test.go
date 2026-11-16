@@ -83,7 +83,7 @@ func awaitDurableState(t *testing.T, client *bus.Client, durable string, pending
 // registered through machineID, so a delivery through this listener reads that session entry.
 func (p *listenerProcess) awaitSessionMachine(t *testing.T, sessionID, machineID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		status, body := callListener(t, p.port, http.MethodGet, "/v1/sessions", "")
 		var listed []struct {
@@ -98,7 +98,7 @@ func (p *listenerProcess) awaitSessionMachine(t *testing.T, sessionID, machineID
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the listener on port %d does not list %s as registered through %s within 10s: %d %s", p.port, sessionID, machineID, status, body)
+			t.Fatalf("the listener on port %d does not list %s as registered through %s within %s: %d %s", p.port, sessionID, machineID, listenerWait, status, body)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

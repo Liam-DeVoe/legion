@@ -30,7 +30,7 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 		}
 		return confirmFlushed(w.conn, subject, before, deadline)
 	}
-	if err := flushWithin(time.Now().Add(5 * time.Second)); err != nil {
+	if err := flushWithin(time.Now().Add(busWait)); err != nil {
 		t.Fatalf("control: a flush with its window to spend answered %v", err)
 	}
 

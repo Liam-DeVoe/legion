@@ -280,12 +280,12 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	}
 	jobsDone := make(chan error, 1)
 	go func() { jobsDone <- UpsertRunJobs(ctx, pool, "acme/widgets", 803, jobs, true) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, eventWait); waiting < 1 {
 		t.Fatalf("the jobs write never waited for the change log's lock: %d waiting", waiting)
 	}
 	runDone := make(chan error, 1)
 	go func() { runDone <- UpsertRun(ctx, pool, run) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 2, eventWait); waiting < 2 {
 		t.Fatalf("the run write never waited behind the jobs write: %d waiting", waiting)
 	}
 	if err := gate.Commit(ctx); err != nil {

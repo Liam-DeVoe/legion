@@ -142,7 +142,7 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	ctx := context.Background()
 	unlock := holdDocumentLock(t, service.store, artifactID)
 	service.failRoom(artifactID, errors.New("test: fail the room"))
-	waitFor(t, 10*time.Second, "the failed room's compaction to wait for the document's lock", func() bool {
+	waitFor(t, roomWait(t), "the failed room's compaction to wait for the document's lock", func() bool {
 		return lockWaits(t, ctx, service.store, "select pg_advisory_lock(%") > 0
 	})
 	requireRowsAsStored(t, service.store, artifactID, before)
@@ -446,7 +446,7 @@ func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
 	var cursor int64
 	duringCompactionFold(persist, artifactID, func() {
 		editLiveTree(t, service, artifactID, appendBlocks(t, "Third.\n"))
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 			t.Fatalf("the browser's append did not land while the compaction was inside its fold: %v", err)
@@ -491,7 +491,7 @@ func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the joined write: %v", err)
 			}
-		case <-time.After(30 * time.Second):
+		case <-time.After(roomWait(t)):
 			t.Fatal("the joined write did not commit while the compaction was inside its fold")
 		}
 		written, cursor = storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)

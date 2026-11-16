@@ -51,7 +51,7 @@ func admitSocket(t *testing.T, serverURL, id, what string) *gws.Conn {
 		t.Fatalf("%s: the socket was refused (%s: %v), want it admitted", what, status, err)
 	}
 	cleanupAndRelease(t, func() { _ = connection.Close() })
-	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := connection.ReadMessage(); err != nil {
 		t.Fatalf("%s: the socket's first frame = %q (%v), want the room's sync", what, message, err)
 	}
@@ -227,7 +227,7 @@ func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
 		t.Fatalf("open the room an update took outside the schema: response=%v err=%v, want an upgrade the server closes", response, err)
 	}
 	cleanupAndRelease(t, func() { _ = connection.Close() })
-	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	_, message, err := connection.ReadMessage()
 	var closed *gws.CloseError
 	if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {

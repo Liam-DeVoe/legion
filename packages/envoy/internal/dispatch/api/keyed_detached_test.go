@@ -562,8 +562,8 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 			t.Fatalf("a close held past its run's bound: status=%d body=%s, want a 5xx that releases its key",
 				response.Code, response.Body.String())
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close still waited on the held issue row 15 s after its run's 1 s bound")
+	case <-time.After(concurrentWait):
+		t.Fatalf("a keyed close still waited on the held issue row %s after its run's 1 s bound", concurrentWait)
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's row: %v", err)
@@ -636,9 +636,9 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 	}()
 	select {
 	case <-hold.committed:
-	case <-time.After(15 * time.Second):
+	case <-time.After(concurrentWait):
 		close(hold.release)
-		t.Fatal("the close did not commit within 15 s")
+		t.Fatalf("the close did not commit within %s", concurrentWait)
 	}
 	// Another writer takes the issue's row between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
@@ -658,8 +658,8 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 			t.Fatalf("a close whose sweep ended at its run's bound: status=%d body=%s, want the committed close's 200",
 				response.Code, response.Body.String())
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close's sweep still waited on the held issue row 15 s after its run's 1 s bound")
+	case <-time.After(concurrentWait):
+		t.Fatalf("a keyed close's sweep still waited on the held issue row %s after its run's 1 s bound", concurrentWait)
 	}
 	var closed bool
 	if err := database.Pool.QueryRow(ctx,

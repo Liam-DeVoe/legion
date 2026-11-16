@@ -117,7 +117,7 @@ func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {
 	t.Helper()
-	deadline := time.Now().Add(listenerTakeoverWindow + 10*time.Second)
+	deadline := time.Now().Add(listenerTakeoverWindow + concurrentWait)
 	for {
 		rows, err := database.Pool.Query(context.Background(), `
 			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt

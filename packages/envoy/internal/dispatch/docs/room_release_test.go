@@ -61,7 +61,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	}
 	for batch := range slices.Chunk(openedIDs, 200) {
 		openInEditor(t, service, httpServer.URL, batch)
-		waitFor(t, 30*time.Second, "the rooms the editor opened to go idle", func() bool {
+		waitFor(t, roomWait(t), "the rooms the editor opened to go idle", func() bool {
 			return len(service.srv.Rooms()) <= written
 		})
 	}
@@ -70,7 +70,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	} else {
 		leaveDocument(connection)
 	}
-	waitFor(t, 30*time.Second, "the untouched document's room to go idle", func() bool {
+	waitFor(t, roomWait(t), "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) <= written
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -98,7 +98,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 			t.Fatalf("warm read of document %s: %v", id, err)
 		}
 	}
-	waitFor(t, 30*time.Second, "the rooms the API opened to go idle", func() bool {
+	waitFor(t, roomWait(t), "the rooms the API opened to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	connection, err := dialDocument(httpServer.URL, untouched)
@@ -106,7 +106,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 		t.Fatalf("open a document nobody touched after %d were: %v, want it admitted", len(touched), err)
 	}
 	leaveDocument(connection)
-	waitFor(t, 30*time.Second, "the untouched document's room to go idle", func() bool {
+	waitFor(t, roomWait(t), "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -146,7 +146,7 @@ func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 		t.Fatalf("close the documents' issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+	waitFor(t, roomWait(t), "the closed issue's rooms to close", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -388,7 +388,7 @@ func leaveDocument(connection *gws.Conn) {
 // releases the state, so this holds a few milliseconds after the room count does.
 func waitForStateToFollowLiveRooms(t *testing.T, service *Service) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(roomWait(t))
 	for {
 		problems := perDocumentStateProblems(service)
 		if len(problems) == 0 {

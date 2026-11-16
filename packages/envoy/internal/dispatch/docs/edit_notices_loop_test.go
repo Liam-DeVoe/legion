@@ -97,7 +97,7 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	leases := excerptLeases(t, counted)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, nil) })
 
-	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, time.Second, roomWait(t))
 	if counter.Count() == 0 {
 		t.Fatal("the sweep made no statement at all, so it never ran its boot pass")
 	}
@@ -135,7 +135,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	schedule := editNoticeSchedule{minGap: 200 * time.Millisecond}
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.runEditNotices(ctx, leases, wake, schedule) })
 	// The boot pass and the one the hub's signal after its LISTEN earns, then nothing.
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, roomWait(t))
 
 	woken := counter.Count()
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -159,7 +159,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 		t.Fatalf("the sweep sent %d notices before the quiet window ended; want none", len(edits))
 	}
 
-	waitFor(t, quiet+5*time.Second, "the notice to go once its quiet window ended", func() bool {
+	waitFor(t, roomWait(t), "the notice to go once its quiet window ended", func() bool {
 		return len(humanEdits(t, service.store, artifactID)) == 1
 	})
 	var sentAt time.Time
@@ -205,7 +205,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	runEditNoticeLoop(t, func(ctx context.Context) {
 		sweeper.runEditNotices(ctx, leases, nil, editNoticeSchedule{minGap: 100 * time.Millisecond})
 	})
-	waitFor(t, 20*time.Second, "the sweep to find the lease held twice", func() bool {
+	waitFor(t, roomWait(t), "the sweep to find the lease held twice", func() bool {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", editNoticeLease) >= 2
 	})
 	if edits := humanEdits(t, database, document); len(edits) != 0 {
@@ -215,7 +215,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	if !<-held {
 		t.Fatal("the other caller never held the lease, so the sweep was free to run")
 	}
-	waitFor(t, 10*time.Second, "the sweep to send the due notice once the lease was free", func() bool {
+	waitFor(t, roomWait(t), "the sweep to send the due notice once the lease was free", func() bool {
 		return len(humanEdits(t, database, document)) == 1
 	})
 }

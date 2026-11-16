@@ -126,8 +126,8 @@ func receiveRelayed(t *testing.T, subscription <-chan relayedEvent) relayedEvent
 			t.Fatal("the relay's subscription ended")
 		}
 		return event
-	case <-time.After(5 * time.Second):
-		t.Fatal("the relay published nothing in 5s")
+	case <-time.After(eventFeedWait):
+		t.Fatalf("the relay published nothing in %s", eventFeedWait)
 	}
 	return relayedEvent{}
 }
@@ -209,7 +209,7 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 	// publishes its commit only once the safe horizon covers it, a horizon proven from
 	// pg_snapshot_xmin, the oldest transaction id running anywhere on the instance
 	// (internal/dispatch/events, horizon.go), so a transaction held open anywhere on the
-	// instance stalls the 5 s receive it waits on (receiveRelayed).
+	// instance stalls the receive it waits on (receiveRelayed).
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, reads := newCountedRelay(t, deps)
@@ -253,7 +253,7 @@ func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
 	// publishes the commit only once the safe horizon covers it, a horizon proven from
 	// pg_snapshot_xmin, the oldest transaction id running anywhere on the instance
 	// (internal/dispatch/events, horizon.go), so a transaction held open anywhere on the
-	// instance stalls the 5 s receives it waits on (receiveRelayed).
+	// instance stalls the receives it waits on (receiveRelayed).
 	const subscribers = 3
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
@@ -436,7 +436,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	`).Scan(&terminated); err != nil || terminated != 1 {
 		t.Fatalf("terminate the relay's LISTEN backend: terminated %d (%v), want 1", terminated, err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for dials.Load() < 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("the relay did not redial after its connection was terminated")
@@ -492,7 +492,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 			} else {
 				t.Fatalf("the relay published event %d into a subscription whose log was reset under it", event.Event.ID)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(eventFeedWait):
 			t.Fatal("the subscription open across the reset was never ended: its reader waits on a stream whose next frame can only lie")
 		}
 	}

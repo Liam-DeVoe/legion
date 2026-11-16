@@ -295,7 +295,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	}
 	last := stream.State.LastSeq
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
 	}, func() string {
@@ -438,7 +438,7 @@ func intakeTestClient(t *testing.T) *bus.Client {
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var err error
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		var info *natsgo.ConsumerInfo
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending

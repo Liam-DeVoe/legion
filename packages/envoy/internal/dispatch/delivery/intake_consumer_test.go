@@ -70,7 +70,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	// replacement, so a read can land between the two and find no durable at all; that is "not
 	// yet", not a failure.
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		read, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if errors.Is(err, natsgo.ErrConsumerNotFound) {
 			return false
@@ -82,10 +82,10 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 		return info.Config.MaxAckPending == intakeMaxAckPending && info.Config.AckWait == intakeAckWait()
 	}, func() string {
 		if info == nil {
-			return fmt.Sprintf("no durable named %s after %s", bus.DispatchDeliveryDurable, 20*time.Second)
+			return fmt.Sprintf("no durable named %s after %s", bus.DispatchDeliveryDurable, eventWait)
 		}
 		return fmt.Sprintf("durable ack_wait/max_ack_pending = %s/%d after %s, want %s/%d (bind must correct an earlier release's flow control)",
-			info.Config.AckWait, info.Config.MaxAckPending, 20*time.Second, intakeAckWait(), intakeMaxAckPending)
+			info.Config.AckWait, info.Config.MaxAckPending, eventWait, intakeAckWait(), intakeMaxAckPending)
 	})
 	if info.Config.FilterSubject != githubIntakeSubject || len(info.Config.FilterSubjects) > 0 {
 		t.Fatalf("durable filter = %q / %v, want %q", info.Config.FilterSubject, info.Config.FilterSubjects, githubIntakeSubject)
@@ -183,7 +183,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 			return 0, 0
 		}
 		deleteOnCleanup(config.Durable)
-		batch, err := consumer.Fetch(want, jetstream.FetchMaxWait(3*time.Second))
+		batch, err := consumer.Fetch(want, jetstream.FetchMaxWait(eventWait))
 		if err != nil {
 			t.Logf("fetch %s: %v", name, err)
 			return 0, 0
@@ -381,7 +381,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("look up the plural-filter durable: %v", err)
 	}
-	batch, err := legacy.Fetch(acknowledged, jetstream.FetchMaxWait(10*time.Second))
+	batch, err := legacy.Fetch(acknowledged, jetstream.FetchMaxWait(eventWait))
 	if err != nil {
 		t.Fatalf("fetch from the plural-filter durable: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	held := awaitPushBound(t, publisher, "the first process did not bind the durable")
 	startIntakeProcess(t, pool, natsURL, nil)
 	standingBy := "dispatch delivery: NATS consumer held by another process; standing by"
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		for _, record := range logs() {
 			if record["msg"] == standingBy && record["name"] == bus.DispatchDeliveryDurable {
 				return true
@@ -587,7 +587,7 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 
 	// The holder stops, and the standby takes the durable over on a deliver subject of its own.
 	holder.stop()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != held.Config.DeliverSubject
 	}, func() string {
@@ -639,7 +639,7 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 
 	startIntakeProcess(t, pool, natsURL, nil)
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		for _, record := range logs() {
 			if record["msg"] == standingBy && record["name"] == bus.DispatchDeliveryDurable {
 				return true
@@ -713,7 +713,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	t.Cleanup(releaseLease)
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatalf("the other caller never took the %s lease", consumerLease(bus.DispatchDeliveryDurable))
 	}
 
@@ -726,7 +726,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 		}
 		return false
 	}
-	waitFor(t, 20*time.Second, skipped, func() string {
+	waitFor(t, eventWait, skipped, func() string {
 		return fmt.Sprintf("the intake never reported skipping the %s lease: %v", consumerLease(bus.DispatchDeliveryDurable), logs())
 	})
 	time.Sleep(2 * durableBindInterval)
@@ -759,7 +759,7 @@ func awaitPushBound(t *testing.T, client *bus.Client, failure string) *natsgo.Co
 	t.Helper()
 	var info *natsgo.ConsumerInfo
 	var err error
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err = client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound
 	}, func() string {

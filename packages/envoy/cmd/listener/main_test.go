@@ -662,7 +662,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	}
 
 	item := publishRole(roleTopic, "agent")
-	forwardedMessage, err := probeB.NextMsg(5 * time.Second)
+	forwardedMessage, err := probeB.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("read forwarded role event for B: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	}
 
 	externalHuman := publishRole(roleTopic, "human")
-	externalMessage, err := probeB.NextMsg(5 * time.Second)
+	externalMessage, err := probeB.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("read human-sourced role event for B: %v", err)
 	}
@@ -1741,7 +1741,7 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 	registry, sessions := setupInterestLastSeenTest(t, []string{expired},
 		session.WithSessionTTL(sessionTTL), session.WithLastSeenRetention(time.Minute))
 	beat := heartbeat(t, sessions, expired)
-	waitFor(t, 5*time.Second, "the session to expire from the cache", func() bool {
+	waitFor(t, listenerWait, "the session to expire from the cache", func() bool {
 		_, err := sessions.Get(expired)
 		return err != nil
 	})
@@ -1844,7 +1844,7 @@ func waitForRegistry(t *testing.T, registry *store.Registry) {
 // the copy where it cannot answer after this wait, never before it.
 func waitForSessions(t *testing.T, sessions *session.SessionRegistry) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the session registry's cache: %v", err)
@@ -3993,7 +3993,7 @@ func wireTestRoleForwarder(t *testing.T, cfg listenerDeliveryHandlerConfig) list
 	return wireRoleForwarder(cfg)
 }
 
-// settled waits until every forward the forwarder holds has been reported, within 20 s: a test
+// settled waits until every forward the forwarder holds has been reported, within listenerWait: a test
 // reads what a forward did after it, since the forwarder publishes and reports off the handler.
 func (f *roleForwarder) settled(t *testing.T) {
 	t.Helper()
@@ -4081,7 +4081,7 @@ func marshalListenerEnvelope(t *testing.T, item contracts.Envelope) []byte {
 
 func assertDeliveryException(t *testing.T, probe *natsgo.Subscription, original contracts.Envelope, reason string) contracts.Envelope {
 	t.Helper()
-	message, err := probe.NextMsg(5 * time.Second)
+	message, err := probe.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("read delivery exception: %v", err)
 	}

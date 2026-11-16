@@ -482,7 +482,7 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 		done.Wait()
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
+		waitFor(t, roomWait(t), "the room to apply the peer's last update", func() bool {
 			room := service.srv.GetDoc(artifactID)
 			return room == nil || room.StateVector().Clock(client) >= sent
 		})
@@ -493,7 +493,7 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 			return
 		}
 		typists.Delete(artifactID)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 			t.Errorf("wait for the peer's updates to reach persistence: %v", err)

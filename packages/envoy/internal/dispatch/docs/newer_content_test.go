@@ -177,16 +177,14 @@ func TestAReplacementOverNewerContentIsRefusedAndKeepsTheElement(t *testing.T) {
 // with documentNewerContentCloseCode, which the Hocuspocus provider answers by reconnecting, not
 // with documentSchemaCloseCode, which the dashboard reads as the repair state.
 func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T) {
-	// Serial: each row gives up on the socket's close frame after 1 s, a wait below
-	// socketCloseWait.
+	t.Parallel()
 	for _, resident := range []bool{true, false} {
 		name := "stored"
 		if resident {
 			name = "resident"
 		}
 		t.Run(name, func(t *testing.T) {
-			// Serial: it gives up on the socket's close frame after 1 s, a wait below
-			// socketCloseWait.
+			t.Parallel()
 			service, artifactID := newerContentDocument(t)
 			if !resident {
 				if err := service.Evict(context.Background(), artifactID); err != nil {
@@ -202,7 +200,7 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 				t.Fatalf("connect a document holding newer content: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			t.Cleanup(func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentNewerContentCloseCode {

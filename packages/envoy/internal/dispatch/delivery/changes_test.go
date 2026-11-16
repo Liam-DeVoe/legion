@@ -475,7 +475,7 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		bErr <- b.Commit(ctx)
 	}()
 
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		var waiting int
 		err := pool.QueryRow(ctx, `
 			select count(*) from pg_locks

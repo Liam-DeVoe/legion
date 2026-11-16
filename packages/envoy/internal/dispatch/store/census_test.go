@@ -1638,7 +1638,7 @@ func awaitTransactionOlderThan(t *testing.T, store *Store, pid uint32, age time.
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the holder's transaction did not read %s old within 10 s", age)
+			t.Fatalf("the holder's transaction did not read %s old within %s", age, eventWait)
 		}
 	}
 }

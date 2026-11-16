@@ -160,28 +160,21 @@ func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *S
 // next returns the next message pull holds within sessionDeliveryWait.
 func next(t *testing.T, pull *SessionPull) SessionMessage {
 	t.Helper()
-	return nextWithin(t, pull, sessionDeliveryWait)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionDeliveryWait)
+	defer cancel()
+	msg, err := pull.Next(ctx)
+	if err != nil {
+		t.Fatalf("next message within %s: %v", sessionDeliveryWait, err)
+	}
+	return msg
 }
 
 // sessionDeliveryWait is how long next waits for a delivery that must come. It is a give-up
 // bound, never a measurement, and it stands below SessionConsumerAckWait, the ack wait a
 // consumer here carries unless its row shortens it: a message the server would deliver again
 // only once that wait has passed never arrives inside it, so such a redelivery cannot stand in
-// for the delivery a row waits for. A row whose subject is how soon a delivery comes names its
-// own bound (nextWithin).
+// for the delivery a row waits for.
 const sessionDeliveryWait = SessionConsumerAckWait / 2
-
-// nextWithin returns the next message pull holds within within.
-func nextWithin(t *testing.T, pull *SessionPull, within time.Duration) SessionMessage {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), within)
-	defer cancel()
-	msg, err := pull.Next(ctx)
-	if err != nil {
-		t.Fatalf("next message within %s: %v", within, err)
-	}
-	return msg
-}
 
 // requireNoMessage requires pull to hold no message for window.
 func requireNoMessage(t *testing.T, pull *SessionPull, window time.Duration) {
@@ -884,7 +877,7 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 		}
 		requireNoMessage(t, pull, 500*time.Millisecond)
 	}
-	again := nextWithin(t, pull, 5*time.Second)
+	again := next(t, pull)
 	if again.StreamSeq != seq || again.Delivered != 2 {
 		t.Fatalf("after InProgress stopped got seq %d delivery %d, want %d delivery 2", again.StreamSeq, again.Delivered, seq)
 	}

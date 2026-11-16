@@ -22,7 +22,7 @@ import (
 func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	deadline := time.Now().Add(eventWait)
 	for {
 		var oid uint32
 		var valid bool
@@ -226,7 +226,7 @@ func TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError(t *testing.T)
 	}
 	// The key goes with the session, and the session goes when the server reads the end of the
 	// socket pgx closed, which is not the same instant. Everything else here is already settled.
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	deadline := time.Now().Add(eventWait)
 	for {
 		held := migrationKeyLocks(t, store)
 		if held == 0 {
@@ -287,7 +287,7 @@ func migrationKeyErrorMessages(records []slog.Record) []string {
 func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	deadline := time.Now().Add(eventWait)
 	for {
 		var alive int
 		if err := store.Pool.QueryRow(ctx, "select count(*) from pg_stat_activity where pid = $1", pid).Scan(&alive); err != nil {
@@ -314,7 +314,7 @@ func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
 func waitForPollingBackend(t *testing.T, store *Store) int32 {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	deadline := time.Now().Add(eventWait)
 	for {
 		var pids []int32
 		rows, err := store.Pool.Query(ctx, `select pid from pg_stat_activity
@@ -464,7 +464,7 @@ func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testin
 func waitForRunningStatement(t *testing.T, store *Store, substring string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	deadline := time.Now().Add(eventWait)
 	for {
 		var running int
 		if err := store.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
@@ -720,17 +720,6 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 	}
 }
 
-// migrationKeyQueueBound is how long the test below gives its two runners to say they are
-// waiting for the key before it releases it and asserts that both of them did
-// (waitForWaitingRunners).
-//
-// A runner says so on its first refused try, which takes no sleep at all and so follows its
-// goroutine's start by milliseconds. The bound is therefore a ceiling on a runner that never
-// arrives rather than a wait the test sits out, and it is derived from migrationLockMaxPause -
-// the longest sleep lockMigrations takes between two tries - rather than written as a number, so
-// that a machine slow enough for that pause to be raised gets the same room here.
-const migrationKeyQueueBound = 2 * migrationLockMaxPause
-
 // A boot already blocked on the migration key when the concurrent build starts. That order is
 // the one a runner waiting for the key inside Postgres deadlocks on, and it is the one
 // TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock does not reach at this site: in a plain
@@ -754,15 +743,14 @@ const migrationKeyQueueBound = 2 * migrationLockMaxPause
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
 	ctx := context.Background()
-	// The wait is refused rather than taken once the backoff has outgrown the span the rest of
-	// this test runs in: every other wait here is bounded by pgmigrate.LockTimeout, which is
-	// also the bound each runner's own lock waits and retries are measured against. A pause
-	// between two tries that long means a runner queued for the key can sit out a whole
-	// migration's lock timeout without asking for it again, and the order this test sets up -
+	// The test is refused rather than run once lockMigrations' backoff has outgrown
+	// pgmigrate.LockTimeout, the bound each runner's own lock waits and retries are measured
+	// against. Two pauses between tries that long mean a runner queued for the key can sit out a
+	// whole migration's lock timeout without asking for it again, and the order this test sets up -
 	// both runners waiting when the key comes free - is no longer what it measures.
-	if migrationKeyQueueBound > pgmigrate.LockTimeout {
-		t.Fatalf("the wait for both runners to queue is %s, past the %s every other wait here is bounded by: migrationLockMaxPause (%s) has outgrown this test",
-			migrationKeyQueueBound, pgmigrate.LockTimeout, migrationLockMaxPause)
+	if 2*migrationLockMaxPause > pgmigrate.LockTimeout {
+		t.Fatalf("two of lockMigrations' longest pauses come to %s, past the %s lock timeout each runner's lock waits are measured against: migrationLockMaxPause (%s) has outgrown this test",
+			2*migrationLockMaxPause, pgmigrate.LockTimeout, migrationLockMaxPause)
 	}
 	first, databaseURL := migratedToOne(t)
 	// Both runners apply 0002 under production's discipline (a zero Locking), as two booting
@@ -808,7 +796,9 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	for _, booting := range []*Store{first, second} {
 		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
 	}
-	waiting := waitForWaitingRunners(t, records, 2, migrationKeyQueueBound)
+	// A runner says it is waiting on its first refused try, which takes no sleep at all, so
+	// eventWait is a ceiling on a runner that never arrives rather than a wait the test sits out.
+	waiting := waitForWaitingRunners(t, records, 2, eventWait)
 	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {
 		t.Fatalf("release the key the test's own session holds: %v", err)
 	}
@@ -819,7 +809,7 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	// held would hang this test in its own cleanup.
 	if waiting != 2 {
 		t.Fatalf("%d of the 2 runners said they were waiting for the key within %s, so the key was released on fewer runners than the order this test is about: it is the loser still waiting while the winner builds the index concurrently that deadlocks, and a release that reaches one runner never sets that up",
-			waiting, migrationKeyQueueBound)
+			waiting, eventWait)
 	}
 	for range 2 {
 		if err := <-applied; err != nil {
