@@ -84,8 +84,12 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	Docs            docs.API
+	// SpecRoots are the issue keys of the roots of The Spec (cmd/dispatch: DISPATCH_SPEC_ROOTS):
+	// the form gate (spec_form.go) judges the spec and the Verification document of each issue
+	// under one of them, and each one's terms.md. Empty names no root and covers no document.
+	SpecRoots []string
+	ServerURL string
+	Docs      docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -195,8 +199,11 @@ type DepsInput struct {
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	EnvoyURL        string
+	// SpecRoots is DISPATCH_SPEC_ROOTS as boot read it: issue keys separated by commas, parsed by
+	// parseSpecRoots into Deps.SpecRoots. A value that is no list of issue keys refuses startup.
+	SpecRoots string
+	ServerURL string
+	EnvoyURL  string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -268,6 +275,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	specRoots, err := parseSpecRoots(input.SpecRoots)
+	if err != nil {
+		return Deps{}, err
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
@@ -312,6 +323,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
+		SpecRoots:              specRoots,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,

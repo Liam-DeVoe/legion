@@ -3930,7 +3930,10 @@ Each item below names a path with its method and identity, then its purpose.
   Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
   its block is written `state="resolved"` in the live document, and no version is written.
   An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
-  A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+  A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+  The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
+  it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
+  The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
 
 - `/api/v1/issues/{key}/summary` (GET; cookie, trusted header, or bearer)
 
@@ -3989,6 +3992,8 @@ Each item below names a path with its method and identity, then its purpose.
   A stale value, or one sent for an open ask, is `409 ASK_ANSWER_CHANGED`; a different person is `403 NOT_ANSWERER`; an approval is `409 ASK_APPROVAL_REVIEW`.
   A change appends another `ask.answered` with `previous_answer`.
   An approval ask is moved to each document version before the human sees it, and an `ASK_EDITED` response means the question changed after the human reviewed it, so they reload and answer the moved request.
+  `Approve` of a request a text of whose covered document breaks the form of The Spec is `409 SPEC_FORM` with nothing written (`POST /api/v1/artifacts/{id}/approval-requests`, below), and its `changes_reason` is the text that `Request changes` sends to the author.
+  `Request changes` is never refused.
   On a block ask the answer is written into its block, and a changed answer without text removes the block's old `answer`.
   Its words and the options it chooses, whose labels are the asker's text, are weighed:
   where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when.
@@ -4336,6 +4341,28 @@ Each item below names a path with its method and identity, then its purpose.
   Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec; it is empty for a document that is not a spec.
 
   It never names a missing plan task, since the plan comes after the approval; a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+
+  The form of The Spec: `DISPATCH_SPEC_ROOTS` names the roots of The Spec, issue keys separated by commas.
+  A document is covered when it is the spec or the Verification document of an issue whose nearest named ancestor is a root, or the `terms.md` (slug `terms-md`) of a root itself.
+  No other document of a root is covered, and an issue that is a root inside another root covers its own subtree.
+  Dispatch judges each covered document at the version the request hands the person: the documents the request names, or, with a request open, every document the open request names.
+  A statement of more than two sentences, a sentence of more than 25 words, a hard finding of ASD-STE100, a link to a record of Dispatch, and the name of an incident, a pull request or a person each break the form.
+  A request that holds one is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+  `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+  A person's approval of a covered document is refused the same way through `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`, with `changes_reason`, the text that a request for changes sends to the author.
+  A request for changes is never refused.
+  The answer of a request whose named document is covered carries `spec_form`, `{root, texts, terms}`: the root, and the count of each kind of text Dispatch read in the documents it judged.
+  A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+
+- `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
+
+  Read the form of The Spec in one version of a document, with no side effect: `?version=N`, or the latest settled version, which an approval request would name.
+  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, refuses_approval}`.
+  `scope` is `covered` or `list` (in scope), `no_root` (the setting names no root), `root` (a document of a root other than its `terms.md`), `outside` (no named root holds the issue, or the document has no issue) or `not_spec` (under a root, but not the spec or the Verification document).
+  `plays` is `spec`, `verification` or empty, and `root` is the nearest named root above the document, or `null`.
+  The findings of a document out of scope are listed too, and `refuses_approval` is true only for a document in scope with a finding.
+  `terms` is empty: Dispatch does not read the list of terms yet.
+  A version the document does not have is `404 VERSION_NOT_FOUND`, a `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`, and a document with no settled version read without `version` is `409 NO_VERSION`.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 

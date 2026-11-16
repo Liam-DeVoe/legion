@@ -46,6 +46,13 @@ func newRepairFixture(t *testing.T) repairFixture {
 // settle.
 func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFixture {
 	t.Helper()
+	return newRepairFixtureFrom(t, settle, "")
+}
+
+// newRepairFixtureFrom is newRepairFixtureSettlingAfter on a server whose setting names specRoots
+// as the roots of The Spec (DISPATCH_SPEC_ROOTS), "" for none.
+func newRepairFixtureFrom(t *testing.T, settle time.Duration, specRoots string) repairFixture {
+	t.Helper()
 	database := storetest.Open(t)
 	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
@@ -59,6 +66,7 @@ func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFix
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        documents,
 		ServerURL:   "https://dispatch.example",
+		SpecRoots:   specRoots,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

@@ -2524,16 +2524,18 @@ A document of the issue whose stored history does not load (`docs.ErrDocumentUnl
 nothing can read or open it, so the close, the reopen and the repair go on without it rather than answer `409 DOCUMENT_UNLOADABLE` for good;
 a failed room's `503` and a database error still fail them.
 Asks already answered or resolved are left as they were, and the close records no answer, review or approval.
-A reopen opens again exactly the asks whose resolution kind is `withdrawn`, with `state: open`, no answer and no resolution and everything else kept, each with one `ask.opened` (actor the reopener) before `issue.updated`, and their blocks read `state="open"` again.
+A reopen opens again the asks whose resolution kind is `withdrawn`, with `state: open`, no answer and no resolution and everything else kept, each with one `ask.opened` (actor the reopener) before `issue.updated`, and their blocks read `state="open"` again.
+The exception is an approval request a text of whose covered document breaks the form of The Spec (`api/spec_form.go`, judged at the versions the request names):
+it is recorded `resolved` with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events, so no restore finds it again.
 The close's and the reopen's block writes (`docs.Service.WriteIssueAskStates`) are no edit:
 they credit no pending author and leave each document's latest edit source as it was, so the settlement a reopen leaves owed names the person who last edited the document, never the closer or the reopener.
 Only the server writes `withdrawn`: the resolve route accepts `retracted` and `resolved` alone, and an answer, resolution or retraction on a closed issue is still `409 ISSUE_CLOSED`.
 What a release older than this one closed or reopened is converged by `api.RepairIssueAsks`, at boot (bounded at 30 s) and then every `api.IssueAskRepairInterval` (10 minutes) under the lease `issue-ask-repair`, each interval pass bounded at 5 minutes.
-Per issue, under its row, a closed issue's open asks are withdrawn in the name of its latest `issue.closed` actor, an open issue's `withdrawn` asks are restored in the name of the event that reopened it, and a closed issue that has open asks, or whose documents owe a settlement marked since the last pass, gets the close's final sweep in the same write of each document, which writes block `state` attributes only.
+Per issue, under its row, a closed issue's open asks are withdrawn in the name of its latest `issue.closed` actor, an open issue's `withdrawn` asks are restored in the name of the event that reopened it, a broken approval request among them left resolved as a reopen leaves it, and a closed issue that has open asks, or whose documents owe a settlement marked since the last pass, gets the close's final sweep in the same write of each document, which writes block `state` attributes only.
 Each interval pass moves that bound to one interval before its own start whenever it listed its candidates, and carries every issue it did not repair - one that failed or one it ran out of time before - into the next pass, so one issue failing every pass does not make every pass sweep every closed issue.
 The bound and the carried issues live in the memory of the process that ran the pass:
 a pass on another process, once the lease moves, starts from that process's own and never sees them.
-A pass logs its `withdrawn`, `restored` and `swept` counts, `swept` counting every unindexed block it marked.
+A pass logs its `withdrawn`, `restored`, `swept` and `left_resolved` counts, `swept` counting every unindexed block it marked and `left_resolved` every approval request it left resolved for the form of The Spec.
 Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy census").
 
 ## Critical conventions

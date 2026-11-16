@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
 // withdrawnResolution is the resolution kind an issue's close records on each ask it withdraws.
@@ -134,10 +135,17 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // gets one ask.opened event whose actor is actor, the reopener, as settlement's own restoration
 // of an ask appends.
 //
+// An approval request is judged first, at the versions it names, by the form of The Spec
+// (specFormOf, spec_form.go): one a text of whose covered documents breaks the form is not opened
+// again. It is recorded resolved, with kind resolved and the findings as its reason
+// (specform.ActRestore), naming actor, and gets one ask.resolved event after the ask.opened
+// events. It has no block, so no document write changes, and the resolution takes it out of
+// withdrawnAsk, so no later restore or repair finds it again. Its author reads the findings.
+//
 // ctx is joined to tx (Docs.Join); the caller holds the issue's row and has locked every event
 // owner it appends to before calling, and commits through the ledger and publishes the returned
-// events. It answers the restored asks, oldest id first.
-func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) ([]model.Ask, []model.Event, error) {
+// events. It answers the restored asks and the requests it left resolved, each oldest id first.
+func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) (restored, leftResolved []model.Ask, appended []model.Event, err error) {
 	withdrawn, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
@@ -146,28 +154,47 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		for no key update of a
 	`, issueKey)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	ids := make([]string, len(withdrawn))
-	for index, ask := range withdrawn {
+	type brokenRequest struct {
+		ask    model.Ask
+		reason string
+	}
+	var broken []brokenRequest
+	reopening := make([]model.Ask, 0, len(withdrawn))
+	for _, ask := range withdrawn {
+		if ask.Kind == "approval" && ask.Approval != nil {
+			form, err := s.specFormOf(ctx, tx, ask.Approval.Documents, specform.ActRestore)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if refusal := form.refusal(specform.ActRestore); refusal != nil {
+				broken = append(broken, brokenRequest{ask: ask, reason: refusal.Error()})
+				continue
+			}
+		}
+		reopening = append(reopening, ask)
+	}
+	ids := make([]string, len(reopening))
+	for index, ask := range reopening {
 		ids[index] = ask.ID
 	}
 	if len(ids) > 0 {
 		if _, err := tx.Exec(ctx, `update asks set state = 'open', answer = null, resolution = null where id = any($1::uuid[])`, ids); err != nil {
-			return nil, nil, fmt.Errorf("restore withdrawn ask: %w", err)
+			return nil, nil, nil, fmt.Errorf("restore withdrawn ask: %w", err)
 		}
 	}
-	restored := make([]model.Ask, 0, len(withdrawn))
-	for _, ask := range withdrawn {
+	restored = make([]model.Ask, 0, len(reopening))
+	for _, ask := range reopening {
 		ask.State = "open"
 		ask.Answer = nil
 		ask.Resolution = nil
 		restored = append(restored, ask)
 	}
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	appended := make([]model.Event, 0, len(restored))
+	appended = make([]model.Event, 0, len(withdrawn))
 	restoredAt := time.Now().UTC()
 	for _, ask := range restored {
 		// The restore took each ask's answer off, which removes its answer part: index the
@@ -175,25 +202,47 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		// moved.
 		changes, err := s.indexAskParts(ctx, tx, ask, restoredAt, model.ReferenceChanges{})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		payload, err := events.AskEventPayload(ctx, tx, ask, changes)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		event, err := s.appendEvent(ctx, tx, issueOwner(issueKey).event("ask.opened", actor, payload))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		// The part rows the restore moved are new rows of this transaction, so they take the
 		// event's id and a ?since= read lists them.
 		if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		appended = append(appended, event)
 	}
-	return restored, appended, nil
+	leftResolved = make([]model.Ask, 0, len(broken))
+	for _, request := range broken {
+		ask, err := docs.WriteAskResolution(ctx, tx, request.ask, specFormRestoreResolution, request.reason, actor)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		// Read once the resolution is in, as every ask event's thread_logins is.
+		payload, err := events.AskEventPayload(ctx, tx, ask, model.ReferenceChanges{})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		event, err := s.appendEvent(ctx, tx, issueOwner(issueKey).event("ask.resolved", actor, payload))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		leftResolved = append(leftResolved, ask)
+		appended = append(appended, event)
+	}
+	return restored, leftResolved, appended, nil
 }
+
+// specFormRestoreResolution is the resolution kind of an approval request a restore leaves
+// resolved for the form of The Spec: resolved, not withdrawn, so withdrawnAsk no longer holds for it.
+const specFormRestoreResolution = "resolved"
 
 // sweepClosedIssueAsks is the close's last pass over its issue's documents, run once the close
 // has committed. The commit's notification (migration 20261101181500's trigger) closes the issue's

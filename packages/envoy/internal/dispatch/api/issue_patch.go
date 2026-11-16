@@ -475,7 +475,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	case closing:
 		withdrawn, events, err = s.withdrawIssueAsksTx(documentCtx, tx, key, actor)
 	case reopening:
-		_, events, err = s.restoreIssueAsksTx(documentCtx, tx, key, actor)
+		// A withdrawn approval request whose text breaks the form of The Spec stays resolved,
+		// with the findings as its reason (restoreIssueAsksTx), and the reopen still answers 200.
+		_, _, events, err = s.restoreIssueAsksTx(documentCtx, tx, key, actor)
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)

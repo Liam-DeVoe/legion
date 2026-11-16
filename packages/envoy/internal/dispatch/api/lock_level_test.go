@@ -224,13 +224,20 @@ func stringConstants(sources []moduleSource) (map[string]string, error) {
 // concatenation of literals and known constants - lowercased with its whitespace collapsed, so
 // a clause split across lines or constants reads as one statement.
 func sqlStatements(file *ast.File, constants map[string]string) []string {
+	return sqlStatementsIn(file, file.Name.Name, constants)
+}
+
+// sqlStatementsIn is sqlStatements over one node of a file of package pkg: a declaration, a
+// function body or one expression, which the census of the writers that open an ask names by the
+// declaration that holds it (askOpeningWriters).
+func sqlStatementsIn(node ast.Node, pkg string, constants map[string]string) []string {
 	var statements []string
-	ast.Inspect(file, func(node ast.Node) bool {
-		expression, ok := node.(ast.Expr)
+	ast.Inspect(node, func(visited ast.Node) bool {
+		expression, ok := visited.(ast.Expr)
 		if !ok {
 			return true
 		}
-		text, ok := literalText(expression, file.Name.Name, constants)
+		text, ok := literalText(expression, pkg, constants)
 		if !ok {
 			return true
 		}

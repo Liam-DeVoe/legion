@@ -113,9 +113,12 @@ type AppContextOptions struct {
 	// where the deployment configured neither. See api.DepsInput.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	InsecureCookie  bool
-	EnvoyURL        string
+	// SpecRoots names the roots of The Spec (cmd/dispatch: DISPATCH_SPEC_ROOTS), issue keys
+	// separated by commas; empty names none. See api.DepsInput.
+	SpecRoots      string
+	ServerURL      string
+	InsecureCookie bool
+	EnvoyURL       string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -200,6 +203,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		DefaultProject:         opts.DefaultProject,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
+		SpecRoots:              opts.SpecRoots,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
