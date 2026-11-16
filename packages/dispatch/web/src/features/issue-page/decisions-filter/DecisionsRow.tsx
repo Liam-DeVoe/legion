@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -97,6 +97,7 @@ export function DecisionsRow({
   level,
   onFocus,
   onPin,
+  onRefused,
   onReviewed,
   pinned,
   reader,
@@ -119,6 +120,9 @@ export function DecisionsRow({
   level: number;
   onFocus: () => void;
   onPin: () => void;
+  /** Says the server refused a Keep or a Change the reader made on this row, which is then no
+   *  review of theirs. */
+  onRefused: () => void;
   /** Says the reader reviewed this decision on its row: they pressed Keep, or sent a Change
    *  with words in it. Either takes it off the review list, and only the reader's own review
    *  moves the focus on to the next decision there. */
@@ -177,6 +181,29 @@ export function DecisionsRow({
     const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
+  // `DecisionActions.tsx` says that the server refused a Keep or a Change by drawing an alert
+  // among the row's actions, and tells its row nothing else, so the row watches its actions for
+  // one while it draws the two controls, and says so to the list. The latest `onRefused` is the
+  // one called, so a render does not start the watch again.
+  const actions = useRef<HTMLDivElement | null>(null);
+  const refused = useRef(onRefused);
+  refused.current = onRefused;
+  useEffect(() => {
+    const element = actions.current;
+    if (!review || element === null) return;
+    const watch = new MutationObserver((records) => {
+      const alerted = records.some((record) =>
+        [...record.addedNodes].some(
+          (added) =>
+            added instanceof Element &&
+            (added.matches(REFUSAL) || added.querySelector(REFUSAL) !== null)
+        )
+      );
+      if (alerted) refused.current();
+    });
+    watch.observe(element, { childList: true, subtree: true });
+    return () => watch.disconnect();
+  }, [review]);
   return (
     <div
       aria-level={level}
@@ -256,7 +283,7 @@ export function DecisionsRow({
           )}
           {/* The node's parent in the conversation, as one line: its kind's word and its first
               line (R2, R1's first-line rule). A parent with no words of its own is named by its
-              kind alone, never by its id (R7). */}
+              kind's word once, which is the line G gives it, and never by its id (R7). */}
           {entry.parent === undefined ? null : (
             <p
               className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
@@ -267,7 +294,8 @@ export function DecisionsRow({
               <span className="shrink-0" {...pageChrome}>
                 {NODE_TYPE_NAMES[entry.parent.type]}
               </span>
-              {entry.parent.line === entry.parent.id ? null : (
+              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ||
+              entry.parent.line === entry.parent.id ? null : (
                 <span className="min-w-0 break-words" {...authorText}>
                   {entry.parent.line}
                 </span>
@@ -310,37 +338,26 @@ export function DecisionsRow({
             </p>
           )}
           {/* Keep and Change on one line with the entry's link (the prototype's `.dbtns`); the
-              form Change opens, and what a refused write says, take a line of their own.
-              A press of Keep or Change moves no focus, as `NodeRow.tsx` guards its option
-              presses (`data-pick-option`): a focus moved on mousedown closes the open body of
-              the row that held it, the rows under it move up before the release, and the click
-              is lost. The pressed row takes the focus as the click lands instead, before the
-              control acts, as `Shift+K` and `Shift+C` find it focused. The form Change opens
-              keeps its own default. A Keep, by a press or by `Shift+K`, which presses it, and a
-              Change sent with words are the reader's own review of the decision, which the row
-              says to the list: a Change sent empty writes nothing (`DecisionActions.tsx`). */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only steer where the focus goes for the controls inside, which carry the role, and say which of them the reader used. */}
+              form Change opens, and what a refused write says, take a line of their own. A
+              press of either, as a press anywhere on a row, gives the row the focus once the
+              press is over (`DecisionsFilterBody.tsx`'s `focusRow`), so nothing moves under
+              the pointer before the click lands. A Keep, by a press or by `Shift+K`, which
+              presses it, and a Change sent with words are the reader's own review of the
+              decision, which the row says to the list: a Change sent empty writes nothing
+              (`DecisionActions.tsx`). */}
           <div
             className="mt-1 mb-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 [&>[role=alert]]:order-last [&>[role=alert]]:basis-full [&>form]:order-last [&>form]:basis-full"
             data-entry-actions=""
             onClickCapture={(event) => {
-              if (!(event.target instanceof Element) || event.target.closest(ROW_ACTIONS) === null)
-                return;
-              if (event.target.closest(KEEP) !== null) onReviewed();
-              // The row's own page: this component's `document` is the decisions document.
-              const element = row.current;
-              if (element === null || element.contains(element.ownerDocument.activeElement)) return;
-              element.focus({ preventScroll: true });
-            }}
-            onMouseDown={(event) => {
-              if (event.target instanceof Element && event.target.closest(ROW_ACTIONS) !== null)
-                event.preventDefault();
+              if (event.target instanceof Element && event.target.closest(KEEP) !== null)
+                onReviewed();
             }}
             onSubmitCapture={(event) => {
               const field =
                 event.target instanceof Element ? event.target.querySelector("textarea") : null;
               if (field !== null && field.value.trim() !== "") onReviewed();
             }}
+            ref={actions}
           >
             {review ? (
               <DecisionActions
@@ -428,10 +445,12 @@ export function DecisionsRow({
   );
 }
 
-/** Keep and Change, by the mark `DecisionActions.tsx` writes and reads through its own
+/** Keep, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
 const KEEP = rowActionSelector("keep");
-const ROW_ACTIONS = `${KEEP}, ${rowActionSelector("change")}`;
+
+/** What `DecisionActions.tsx` draws where the server refused a Keep or a Change. */
+const REFUSAL = '[role="alert"]';
 
 /** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
 type Tone = "context" | "decision" | "question";
