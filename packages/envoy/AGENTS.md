@@ -3784,7 +3784,8 @@ On every row the list does not name, and on `/ws/live`, a read-only token is `40
 That answer comes before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler, so the refused request claims no key and writes nothing.
 The gate reads the decision `decideBrokerToken` carried and resolves nothing of its own, so every other credential passes it as before.
 For such a caller, a listed route writes nothing but the row of its spent DPoP proof and caches Dispatch rebuilds from what it holds (`TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches`).
-The mounts outside the table read no broker token, so they give that token no data and no write: `/ws/doc/{room}` answers it `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+The mounts outside the table read no broker token: `/ws/doc/{room}` answers that token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries that token as they answer any other caller, and none of the five makes a write for it.
 
 An act an agent makes for its person is recorded with the person as the actor and `model.ActorAct` beside it (`Actor.Act`), which names the agent:
 the session a broker token proved, else the session the caller named (`?session=`, or a body `actor` on a route whose handler already declares one, `actSessionFromBody`), else the personal token's id and name, and the scopes that credential held.

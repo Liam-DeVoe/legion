@@ -24,18 +24,18 @@ With Docker the command is the script alone; this run used a Postgres server of 
 
 ```console
 $ DEV_BROKER_POSTGRES_URL='postgres://<user>@<host>:<port>/<database>' bash packages/envoy/scripts/dev-broker.sh
-dev-broker: workdir /legion/scratch/tmp/agent-secrets-dev.l0U7xZ
+dev-broker: workdir /tmp/agent-secrets-dev.l0U7xZ
 dev-broker: created isolated database dev_broker_l0u7xz
 dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay...
 dev-broker: starting dev-airlock-stands (its GitHub stand mints the github-app secrets)...
 dev-airlock-stands: stands listening records=http://127.0.0.1:29184
 dev-broker: starting dev-oidc-issuer...
-dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.l0U7xZ/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod dc38c663-5541-4ec8-8481-eaf1bc34a864)
-dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.l0U7xZ/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod 21c7893f-91c1-4b67-8eed-fad373559344)
-dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.l0U7xZ/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod 02226e28-83ed-4f29-b193-53f84a30cce6)
-dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.l0U7xZ/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod fefb9c67-ff0e-429e-86c7-05625193ca8b)
-dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.l0U7xZ/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod 02226e28-83ed-4f29-b193-53f84a30cce6)
-dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.l0U7xZ/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod aa3b1e31-e874-4524-8a6f-9c5aa5a25b7f)
+dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod dc38c663-5541-4ec8-8481-eaf1bc34a864)
+dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod 21c7893f-91c1-4b67-8eed-fad373559344)
+dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod 02226e28-83ed-4f29-b193-53f84a30cce6)
+dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod fefb9c67-ff0e-429e-86c7-05625193ca8b)
+dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod 02226e28-83ed-4f29-b193-53f84a30cce6)
+dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod aa3b1e31-e874-4524-8a6f-9c5aa5a25b7f)
 dev-oidc-issuer: code flow serves client dev-broker; an authorization with none queued at /_dev/sign-in-as signs in ada@example.com
 dev-oidc-issuer: issuer listening url=http://127.0.0.1:35472
 dev-broker: starting broker...
@@ -56,13 +56,13 @@ dev-broker: registered the exchange pod to write under example-worker-session
 dev-broker: ready.
 
   export AGENT_SECRETS_URL=http://127.0.0.1:59313
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ/account-token
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.l0U7xZ/account-token
   export AGENT_SECRETS_APPROVER=ada@example.com
-  export AGENT_SECRETS_HELPER_SOCK=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ/operator
-  export AGENT_SECRETS_MACHINE_FILE=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ/machine.json
-  export AGENT_SECRETS_STATE_FILE=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ/sessions.json
-  export DEV_BROKER_DIR=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ
+  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.l0U7xZ/helper.sock
+  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.l0U7xZ/operator
+  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.l0U7xZ/machine.json
+  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.l0U7xZ/sessions.json
+  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.l0U7xZ
   export DEV_BROKER_METRICS_URL=http://127.0.0.1:42840/metrics
   export DEV_BROKER_POD_UID=02226e28-83ed-4f29-b193-53f84a30cce6
   export DEV_BROKER_SERVICE=legion-daemon
@@ -73,7 +73,7 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_OWNER=acme-org
   export DEV_BROKER_GITHUB_CASE_SECRET=DEMO_GITHUB_APP_CASE_PAIR
   export DEV_BROKER_GITHUB_CASE_OWNER=ada
-  export PATH=/legion/scratch/tmp/agent-secrets-dev.l0U7xZ/bin:$PATH
+  export PATH=/tmp/agent-secrets-dev.l0U7xZ/bin:$PATH
 ...
 ```
 
@@ -403,17 +403,22 @@ and the registration route refuses one with `409 SESSION_FIXED`.
 
 Dispatch serves that token on the routes its read list names, today
 `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every
-other route. `packages/dispatch/e2e/read-token-live.ts` shows both against this stack. Leave the
-stack running, and in another shell start a local Dispatch that reads this broker, from
-`packages/dispatch` (where there is no Docker, also set `DATABASE_URL` to a Postgres database of
-its own):
+other route of its route table and on `GET /ws/live`. `packages/dispatch/e2e/read-token-live.ts`
+shows both against this stack. Leave the stack running. `bun run dispatch:local` runs until
+Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's exports into it
+too, as you pasted them into the second shell. A shell without them expands `$AGENT_SECRETS_URL`
+and `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In
+that new shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where
+there is no Docker, also set `DATABASE_URL` to a Postgres database of its own):
 
 ```console
 $ DISPATCH_E2E_AGENT_SECRETS_URL=$AGENT_SECRETS_URL DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$AGENT_SECRETS_ACCOUNT_TOKEN_FILE bun run dispatch:local
 ```
 
-Its `Run a spec against it` line prints the variables a command reaches it by. Run the script from
-`packages/dispatch` with those variables and the broker's `AGENT_SECRETS_URL` and `DEV_BROKER_DIR`:
+Its `Run a spec against it` line prints the variables a command reaches it by. Leave it running
+there, and run the script in the second shell, which already holds the exports, from
+`packages/dispatch`, with those variables and the broker's `AGENT_SECRETS_URL` and
+`DEV_BROKER_DIR`:
 
 ```console
 $ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/read-token-live.ts
