@@ -22,9 +22,10 @@
 // ending "; the tree is refused". A file above the size bound gives the line "spec-check: file
 // too large: <dir>/<file> is <n> bytes (limit 1048576)" in place of the problems, and the counts
 // are 0: no file is parsed. With --allow-empty, a directory that does not exist or holds no
-// spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2. --retired
-// names a file of the ids the approved spec removed, one id a line, "#" lines and blank lines
-// passed over; without it, a line on standard error says that no id was checked against them.
+// spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2, with a
+// line that names --allow-empty. --retired names a file of the ids the approved spec removed, one
+// id a line, "#" lines and blank lines passed over; without it, a line on standard error says that
+// no id was checked against them.
 //
 // changes prints one line for each statement that only one of the two directories holds, or whose
 // text, parent, relations or checks differ between them, "spec-check: <id>: text, checks", or
@@ -161,15 +162,10 @@ func counts(statements, checks, components, interfaces, terms int) string {
 
 // count is "<n> <noun>s", with the noun alone for one.
 func count(n int, noun string) string {
-	return fmt.Sprintf("%d %s", n, plural(n, noun))
-}
-
-// plural is "<noun>s", or the noun alone for one.
-func plural(n int, noun string) string {
 	if n == 1 {
-		return noun
+		return "1 " + noun
 	}
-	return noun + "s"
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // parse reads args into flags, the flags of one subcommand, and answers whether the subcommand
@@ -278,4 +274,18 @@ func cannotJudge(stderr io.Writer, dir string, err error) int {
 	}
 	say(stderr, "%s: %s", dir, err)
 	return 2
+}
+
+// noSpecFile reports whether read, which answered j and err, found no spec file in its directory,
+// and the words that name the case: "does not exist" for notes.ErrNoDirectory, and "holds no spec
+// file" for a directory with none. tree and compare refuse such a directory without --allow-empty,
+// and read it as the empty tree with it.
+func noSpecFile(j judged, err error) (string, bool) {
+	switch {
+	case errors.Is(err, notes.ErrNoDirectory):
+		return "does not exist", true
+	case err == nil && j.files == 0:
+		return "holds no spec file", true
+	}
+	return "", false
 }

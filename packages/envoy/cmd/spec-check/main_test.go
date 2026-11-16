@@ -157,10 +157,13 @@ func TestTheBuiltBinary(t *testing.T) {
 		want := "spec-check: " + missing + ": cannot be read: open " + missing + ": no such file or directory\n"
 		expect(t, got, result{code: 2, stderr: want})
 	})
-	t.Run("tree over an empty directory exits 2 without --allow-empty", func(t *testing.T) {
+	t.Run("tree over an empty directory exits 2 without --allow-empty, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{code: 2, stderr: "spec-check: " + dir + ": holds no spec file\n"})
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
+			code:   2,
+			stderr: "spec-check: " + dir + ": holds no spec file, and tree reads it as the empty tree only with --allow-empty\n",
+		})
 	})
 	t.Run("tree over an empty directory with --allow-empty is the empty tree", func(t *testing.T) {
 		t.Parallel()
@@ -170,10 +173,13 @@ func TestTheBuiltBinary(t *testing.T) {
 			stderr: "spec-check: " + dir + noList,
 		})
 	})
-	t.Run("tree over a missing directory exits 2 without --allow-empty", func(t *testing.T) {
+	t.Run("tree over a missing directory exits 2 without --allow-empty, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "missing")
-		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{code: 2, stderr: "spec-check: " + dir + ": does not exist\n"})
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
+			code:   2,
+			stderr: "spec-check: " + dir + ": does not exist, and tree reads it as the empty tree only with --allow-empty\n",
+		})
 	})
 	t.Run("tree over a missing directory with --allow-empty is the empty tree", func(t *testing.T) {
 		t.Parallel()
@@ -913,13 +919,20 @@ func testGuard(t *testing.T, binary string) {
 }
 
 // TestUsage runs the command with no subcommand and with one it does not know, each of which exits
-// 2 with the usage, and with -h after a subcommand, which exits 0 with the usage.
+// 2 with the usage, and with -h after a subcommand, which exits 0 with the usage. The usage names
+// compare's --allow-empty, the flag a caller needs after a revert of the last spec file.
 func TestUsage(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	expect(t, runBinary(t, binary, ""), result{code: 2, stderr: usage + "\n"})
 	expect(t, runBinary(t, binary, "", "nope"), result{code: 2, stderr: "spec-check: unknown subcommand \"nope\"\n" + usage + "\n"})
 	expect(t, runBinary(t, binary, "", "tree", "-h"), result{stderr: usage + "\n"})
+	help := runBinary(t, binary, "", "compare", "-h")
+	expect(t, help, result{stderr: usage + "\n"})
+	line := "spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]"
+	if !slices.ContainsFunc(strings.Split(help.stderr, "\n"), func(l string) bool { return strings.TrimSpace(l) == line }) {
+		t.Errorf("the usage %q holds no line %q", help.stderr, line)
+	}
 }
 
 // result is what one run of the binary did.
