@@ -110,7 +110,9 @@ this head; none may stay unmet, since a requirement is in the approved spec or i
 write the request into the spec and have a person approve that version. Work moved to another
 root, or fixed as a defect, removes no requirement: a person's later request goes into this
 spec, even when the new version closes the gate and holds the merge, and stays unmet until it
-lands here. Checks you write close the `criteria` step where it is gated.
+lands here.
+Checks you write close
+the `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory after your acceptance and runs before the merger's
 merge: the daemon starts the implementer on it once you sign off. Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still

@@ -113,14 +113,14 @@ as the fingerprint decides (*The reviewer*, below, and
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head; which head proves which check is *An issue is proved by its own checks* in `skill://legion-worker/references/pr-body.md`.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
-  Submit **one review per round** — `REQUEST_CHANGES` when any correctness finding stands,
-  otherwise `APPROVE` of the head you reviewed — always named by SHA — carrying every inline
-  comment in that single call:
-  `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
-  with `commit_id`, `event`, `body` (with the Legion footer, which names the head the review
-  read: `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
-  and a `comments[]` array of `{path, line, side, body}`, one entry per finding — never one
-  `pr review` call per finding (each submission fires a `pr-review` wake).
+  Submit **one review per round** —
+  `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
+  reviewed — always named by SHA — carrying every inline comment in that single
+  call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
+  with `commit_id`, `event`, `body` (with the Legion footer, which names the head the review read:
+  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
+  and a `comments[]` array of `{path, line, side, body}`, one entry per
+  finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
   That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
   the `commit_id` you submit with, and never the head GitHub shows at the moment you submit:
   read `gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid` before you
@@ -183,13 +183,13 @@ as the fingerprint decides (*The reviewer*, below, and
   is told (`ApprovalStands` in `packages/daemon/internal/classify/decisions.go`,
   `stuckApprovedOtherCode` in `packages/daemon/internal/workflow/review.go`, and the cases "the
   approval, then a push" and "a push, then the approval of the head before it" in
-  `packages/daemon/internal/workflow/review_test.go`). GitHub runs the branch's workflows on
-  that push, as on every push, so approve only once that head's required checks are green:
-  nothing but your own read catches a check your prose broke, since the daemon moves the issue
-  for no check at all. A red you approve over reaches nobody who will act on it: the tree runs
-  on to the merge, where GitHub holds the pull request under the base branch's required checks
-  until someone reads them. A red there is a `REQUEST_CHANGES` when the code is at fault, and
-  your own commit to fix when your prose broke it.
+  `packages/daemon/internal/workflow/review_test.go`). GitHub runs the branch's workflows on that
+  push, as on every push, so approve only once that head's required checks are green:
+  nothing but your own read catches a check your prose broke, since the daemon moves the
+  issue for no check at all. A red you approve over reaches nobody who will act on it: the tree
+  runs on to the merge, where GitHub holds the pull request under the base branch's required
+  checks until someone reads them. A red there is a
+  `REQUEST_CHANGES` when the code is at fault, and your own commit to fix when your prose broke it.
 
 A reviewer's phase ends with its review, and the reviewer completes all the same. Every round records a handoff and
 takes this order: read CI as above; write the handoff and record it with `dispatch handoff-write`;
@@ -197,11 +197,11 @@ submit the review of the head, by its SHA; then complete. A red at the code is a
 naming the check, never an approval; so is an unmet goal or requirement, named: only an approved
 spec version takes one out. A requirement an open child carries is pending until the parent's last
 round. Neither decision waits on CI: a request for changes stands whatever CI says and the issue
-leaves reviewing with it, and the approval ends the round at the head it names, since the round
-reads no CI verdict, and a settlement the daemon reads later — at that head or any above it —
-moves the issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub
-gave it, in one message each to the tree's architect, the worker of the issue's current phase
-and the implementer, and judges none: a red is the implementer's to fix or re-run, the
+leaves reviewing with it, and the approval ends the round at the head it names, since the round reads
+no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
+issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
+in one message each to the tree's architect, the worker of the issue's current phase and the
+implementer, and judges none: a red is the implementer's to fix or re-run, the
 architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
 it approves is the only read that decides anything. A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue on the decision GitHub reports,
@@ -352,8 +352,8 @@ until that answer comes clean.
     check's line in the body stays at
     `- Check <block id> (after_merge): not yet run`.
   - `fail`, for a requirement observed as not met, one still unobserved at the last look where
-    production carries the merge, or a defect: record the failing result with
-    `dispatch result --verdict fail`, file no issue, and
+    production carries the merge, or a
+    defect: record the failing result with `dispatch result --verdict fail`, file no issue, and
     take the path `skill://legion-worker/references/findings.md` gives it — a clear fix to the
     controller topic, with its evidence comment on the controller's report issue; one needing a
     decision as a `dispatch ask` there, whose reference you publish to that topic. Either names

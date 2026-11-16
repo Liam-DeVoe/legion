@@ -41,15 +41,15 @@ EOF
   (`task(agent="oracle")`) with the root spec, the requests people have made on the root since its
   approval, the tree's open children with their repositories and pull requests, and the proposed
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
-  that each child should not exist. Name every child that is a to-do, a fix found in review, a proof
-  of the root's acceptance, or a part of the architect's own work, and say where it folds: the
-  root's pull request or an open child's. Then name every root requirement neither its pull request
-  nor a child carries, every request a person made on the root that the spec does not yet state,
-  every child spec that narrows one, and what of the root's goal the list leaves undelivered."*
+  that each child should not exist. Name every child that is a to-do, a fix found in review, a
+  proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
+  the root's pull request or an open child's. Then name every root requirement neither its pull
+  request nor a child carries, every request a person made on the root that the spec does not yet
+  state, every child spec that narrows one, and what of the root's goal the list leaves undelivered."*
   `wait` for its verdict, a job of its own, and answer each before you file any of it. A child
-  survives it only when it needs a repository or a deploy order of its
-  own: its code is in a repository no open pull request of this tree is in, or it must be applied
-  on its own before other work of the tree can build on it. A repeated change — the same edit per
+  survives it only when it needs a repository or a deploy order of its own: its
+  code is in a repository no open pull request of this tree is in, or it must be applied on its
+  own before other work of the tree can build on it. A repeated change — the same edit per
   program, directory or instance of this tree's own work — is one child, never one per instance.
   Work in a repository this tree already has a pull request in, which waits on a sibling's merge,
   is no child and is not parked in `backlog`: write it into the spec of the issue whose pull
