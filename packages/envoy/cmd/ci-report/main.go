@@ -8,27 +8,34 @@
 //	ci-report --dir <dir> --job <job> --report <file> --project <key> [--dispatch-cli <argv>]
 //
 // It reads the commit with `git rev-parse HEAD` in its working directory, the checkout, and never
-// from GITHUB_SHA, which it prints beside it. It reads the spec directory as spec-check does:
-// notes.ReadSet, a directory that does not exist being the empty tree, then specgraph.Judge with
-// no retired list, the one reading that Dispatch's results route makes of the files at the commit
-// too, so a tree has one answer in both places. It reads the report with specgraph.ReadGoTestJSON.
-// planReports decides the outcome of each check of the job. For each pass, fail and could_not_run
-// it runs
+// from GITHUB_SHA, which it prints beside it. It reads the check nodes of the spec files in the
+// directory at that commit, through git from the commit's tree (filesAt), and never the files of
+// the working tree, so a step before it that changes a spec file and commits nothing changes no
+// check (R12). It reads them as Dispatch's results route reads the files at the run's commit: an
+// entry is a spec file as notes.IsNote decides of the tree's entry, a directory that the commit
+// does not hold is the empty tree, and then specgraph.Judge with no retired list, so a tree has
+// one answer in both places. It reads the report with specgraph.ReadGoTestJSON. planReports
+// decides the outcome of each check of the job. For each pass, fail and could_not_run it runs
 //
 //	<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -
 //
-// with what the test wrote on the command's standard input, so no text of a test reaches the
-// argument list, where one that starts with "-" would read as a flag. The dispatch command cuts a
-// text longer than a result keeps, with a note that says so, and sends a NUL as U+FFFD.
-// <dispatch-cli> is split at white space, with no quoting, and is "dispatch" when the flag is left
-// out. A skip, a test the report does not hold and a test that ran twice get no call.
+// with what the test wrote, as specgraph.TestOutcome.Output holds it, whole on the command's
+// standard input, so no text of a test reaches the argument list, where one that starts with "-"
+// would read as a flag. The reporter cuts nothing: the dispatch command is the one cut, which
+// keeps the start and the end of a text longer than a result keeps, with a note between them, and
+// sends a NUL as U+FFFD. <dispatch-cli> is split at white space, with no quoting, and is
+// "dispatch" when the flag is left out. A skip, a test the report does not hold and a test that
+// ran twice get no call. Each run writes its results again: a second run of the step at one
+// commit stores a second result of each check, Dispatch keeps each, and the newest counts.
 //
 // It prints one JSON line on standard output for each check of the job, in the tree's order:
 // {"check","test","outcome","exit","result_id","why"}. exit is the command's exit status, -1 when
 // it could not start or a signal ended it, and null for a check with no call. result_id is the id
 // of the stored result, the one part of a stored call's output that it reads and prints, since
-// Dispatch answers the row itself (`dispatch results --project`). why says why a check got no
-// call, and holds what the command printed on both streams when a call failed, which stored
+// Dispatch answers the row itself (`dispatch results --project`). A write that landed with its
+// answer lost, which the command prints as {"landed_without_answer":"<code>"} with exit 0, is a
+// stored result whose id is unknown: its result_id is empty and why says so. why says why a check
+// got no call, and holds what the command printed on both streams when a call failed, which stored
 // nothing: the command prints a refusal on standard output. The line holds no raw line break, as
 // encoding/json escapes each control character, and the "[" of each "##[" in it is written as
 // \u005b, which a JSON reader reads back as "[", so the line starts no workflow command of a
@@ -36,10 +43,10 @@
 // "ci-report: ", ending with "<n> checks of <dir> at <sha> name job <job>; <n> results written,
 // <n> calls failed".
 //
-// It exits 0 when each call stored its result, 1 when a call failed, and 2, with no call, for
-// arguments it does not take, a commit it cannot read, a spec directory or a report it cannot
-// read, and a tree that Judge refuses or that holds a file over notes.MaxFileSize, which never
-// reaches Judge. For a refused tree it writes each problem with its file and line, the first
+// It exits as help names: 0 when each call stored its result, 1 when a call failed, and 2, with
+// no call, for arguments it does not take, a commit it cannot read, a spec directory or a report
+// it cannot read, and a tree that Judge refuses or that holds a file over notes.MaxFileSize, which
+// never reaches Judge. For a refused tree it writes each problem with its file and line, the first
 // first, as Dispatch names that first one when it refuses a result of the tree.
 package main
 
@@ -63,6 +70,21 @@ import (
 )
 
 const usage = `usage: ci-report --dir <dir> --job <job> --report <file> --project <key> [--dispatch-cli <argv>]`
+
+// help is what -h prints after the usage, from a blank line on.
+const help = `
+
+ci-report writes one result to Dispatch, with <argv> result --project, for each check of the
+spec files in <dir> whose job is <job> and whose test ran in the go test -json report <file>.
+It reads the spec files at the commit of the checkout (git rev-parse HEAD), through git, and
+never the files of the working tree. A second run writes each result again: Dispatch keeps
+each result, and the newest counts.
+
+Exit status:
+  0  each call stored its result, or no check of the job had a test that ran
+  1  a call of the dispatch command failed
+  2  no call was made: an argument it does not take, or a commit, a spec directory, a report
+     or a tree of spec files that it cannot read or that the graph logic refuses`
 
 // prefix is the fixed text that starts every line the command prints but the usage and the JSON
 // lines.
@@ -117,7 +139,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		githubSHA = "not set"
 	}
 	say(stderr, "the commit is %s, which git rev-parse HEAD names; GITHUB_SHA is %s", commit, githubSHA)
-	tree, ok := readTree(stderr, dir)
+	tree, ok := readTree(stderr, dir, commit)
 	if !ok {
 		return 2
 	}
@@ -132,13 +154,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	for _, p := range planned {
 		l := checkLine{Check: p.Check, Test: p.Test, Outcome: p.Outcome, Why: p.Why}
 		if recorded(p.Outcome) {
-			code, id, why := record(cli, *project, commit, p)
+			code, id, why, stored := record(cli, *project, commit, p)
 			l.Exit, l.ResultID = &code, id
 			if why != "" {
 				l.Why = why
-				failed++
-			} else {
+			}
+			if stored {
 				written++
+			} else {
+				failed++
 			}
 		}
 		if err := writeLine(stdout, l); err != nil {
@@ -168,7 +192,7 @@ func parse(flags *flag.FlagSet, args []string, stderr io.Writer, required ...str
 	err := flags.Parse(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
-		fmt.Fprintln(stderr, usage)
+		fmt.Fprintln(stderr, usage+help)
 		return 0, false
 	case err != nil:
 		say(stderr, "%s", err)
@@ -187,12 +211,9 @@ func parse(flags *flag.FlagSet, args []string, stderr io.Writer, required ...str
 
 // headCommit is the commit `git rev-parse HEAD` names in the working directory.
 func headCommit() (string, error) {
-	var stderr bytes.Buffer
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := runGit(nil, "rev-parse", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse HEAD: %v: %s", err, strings.TrimSpace(stderr.String()))
+		return "", err
 	}
 	commit := strings.TrimSpace(string(out))
 	if !commitSHA.MatchString(commit) {
@@ -201,22 +222,22 @@ func headCommit() (string, error) {
 	return commit, nil
 }
 
-// readTree reads dir as spec-check reads it, and answers its tree and whether it is one to report
-// on: a tree that specgraph.Judge takes, or the empty tree of a directory that does not exist. It
-// warns of each entry that is not a spec file, and writes each problem of a refused tree, in
-// Judge's order, and why it could not read one, on stderr. A file over the size bound refuses the
-// tree before Judge reads any file.
-func readTree(stderr io.Writer, dir string) (specgraph.Tree, bool) {
-	set, err := notes.ReadSet(os.DirFS(dir), dir)
+// readTree reads the spec files of dir at commit (filesAt), and answers their tree and whether it
+// is one to report on: a tree that specgraph.Judge takes, or the empty tree of a directory that
+// the commit does not hold. It warns of each entry that is not a spec file, and writes each
+// problem of a refused tree, in Judge's order, and why it could not read one, on stderr. A file
+// over the size bound refuses the tree before Judge reads any file.
+func readTree(stderr io.Writer, dir, commit string) (specgraph.Tree, bool) {
+	set, err := filesAt(dir, commit)
 	for _, entry := range set.Rejected {
 		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
 	}
 	var refused *notes.SizeRefusal
 	switch {
 	case errors.Is(err, notes.ErrNoDirectory):
-		// Git keeps no empty directory, so a checkout with no spec file has no directory, and
-		// the importer reads a missing directory as the empty set: it has no check.
-		say(stderr, "%s: does not exist, so it is read as the empty tree", dir)
+		// Git keeps no empty directory, so a commit with no spec file has no directory, and the
+		// importer reads a missing directory as the empty set: it has no check.
+		say(stderr, "%s: does not exist at %s, so it is read as the empty tree", dir, commit)
 		return specgraph.Tree{}, true
 	case errors.As(err, &refused):
 		for _, problem := range refused.Problems {
@@ -256,12 +277,14 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 }
 
 // record runs the dispatch command cli once for the check of p, and answers its exit status, the
-// id of the stored result, and why the call failed, "" when it stored the result. A call that
-// failed stored nothing, and its words are what it wrote on both streams: the command prints a
-// refusal of Dispatch or of the broker on standard output (`print` in
+// id of the stored result, what its line says of the call, and whether the call stored the
+// result. A call that failed stored nothing, and its words are what it wrote on both streams: the
+// command prints a refusal of Dispatch or of the broker on standard output (`print` in
 // packages/envoy-client/src/dispatch-cli.ts), and its warnings on standard error. Of a call that
-// stored its result it reads only the stored row's id, and it never prints the rest.
-func record(cli []string, project, commit string, p Planned) (code int, id, why string) {
+// stored its result it reads only the stored row's id, and it never prints the rest. A write that
+// landed with its answer lost, {"landed_without_answer":"<code>"} with exit 0, stored the result,
+// and its id is unknown.
+func record(cli []string, project, commit string, p Planned) (code int, id, why string, stored bool) {
 	args := append(slices.Clone(cli[1:]), "result", "--project", project, "--check", p.Check, "--verdict", p.Outcome,
 		"--commit", commit, "--observed-file", "-")
 	cmd := exec.Command(cli[0], args...)
@@ -272,21 +295,25 @@ func record(cli []string, project, commit string, p Planned) (code int, id, why 
 	var exitError *exec.ExitError
 	switch {
 	case err != nil && !errors.As(err, &exitError):
-		return -1, "", err.Error()
+		return -1, "", err.Error(), false
 	case cmd.ProcessState.ExitCode() != 0:
 		words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
 		if words == "" {
 			words = fmt.Sprintf("the dispatch command ended with %s and printed nothing", cmd.ProcessState)
 		}
-		return cmd.ProcessState.ExitCode(), "", words
+		return cmd.ProcessState.ExitCode(), "", words, false
 	}
 	var row struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Landed string `json:"landed_without_answer"`
 	}
-	if err := json.NewDecoder(&stdout).Decode(&row); err != nil || row.ID == "" {
-		return 0, "", "the dispatch command exited 0 and printed no stored result with an id"
+	switch err := json.NewDecoder(&stdout).Decode(&row); {
+	case err == nil && row.ID != "":
+		return 0, row.ID, "", true
+	case err == nil && row.Landed != "":
+		return 0, "", fmt.Sprintf("the result was stored, and its answer was lost on the way back (%s), so its id is unknown", row.Landed), true
 	}
-	return 0, row.ID, ""
+	return 0, "", "the dispatch command exited 0 and printed no stored result with an id", false
 }
 
 // writeLine writes l to w as one JSON line. encoding/json writes each control character of a

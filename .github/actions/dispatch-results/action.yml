@@ -1,11 +1,12 @@
 name: Report the results of a job's spec checks
 description: >-
   The last step of a CI job of this repository. It runs packages/envoy's ci-report command over
-  the spec files of the checkout, .dispatch/spec, and the job's go test report. The command writes
-  one result to Dispatch, through the dispatch command, for each check whose test part names the
-  job and whose test ran in the report. A check whose test did not run gets no result. The step
-  writes one JSON line for each check of the job to $RUNNER_TEMP/dispatch-results.jsonl and to the
-  log, and it fails when a call of the dispatch command failed.
+  the spec files of .dispatch/spec at the commit of the checkout, which it reads through git and
+  never from the working tree, and the job's go test report. The command writes one result to
+  Dispatch, through the dispatch command, for each check whose test part names the job and whose
+  test ran in the report. A check whose test did not run gets no result. The step writes one JSON
+  line for each check of the job to $RUNNER_TEMP/dispatch-results.jsonl and to the log, and it
+  fails when a call of the dispatch command failed.
 
   The calling job checks out this repository, installs the Go that packages/envoy/go.mod names and
   runs `bun install`, since the step runs `go run` and the dispatch command under Bun. The calling

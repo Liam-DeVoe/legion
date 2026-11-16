@@ -368,6 +368,33 @@ describe.skipIf(!dispatchStackEnabled)(
       ]);
     }, 120_000);
 
+    // R12: the step reads the check nodes of the files at its commit. A step before it that
+    // changes a spec file and commits nothing, here one that gives the second check to another
+    // job, changes no check: the step reads the commit's files through git.
+    test("a spec file that an earlier step changed and did not commit: the step reports the checks of the commit", async () => {
+      const checkout = checkoutOf("changed-after-commit", SPEC);
+      const file = join(checkout.dir, ".dispatch", "spec", "probe.md");
+      const committed = readFileSync(file, "utf8");
+      const changed = committed.replace(
+        'selector="example.com/acme/probe TestSecondProbe" job="go-checks"',
+        'selector="example.com/acme/probe TestSecondProbe" job="lint"'
+      );
+      expect(changed).not.toBe(committed);
+      writeFileSync(file, changed);
+      expect(git(checkout.dir, "status", "--porcelain")).toBe(" M .dispatch/spec/probe.md\n");
+
+      const reported = await lastStep(checkout, jobOf(checkout, 851), "go-test-second-fails.jsonl");
+
+      expect({ code: reported.code, lines: outcomes(reported) }).toEqual({
+        code: 0,
+        lines: [`${PROBE} pass exit 0`, `${SECOND} fail exit 0`],
+      });
+      expect(described(await rowsAt(checkout.sha))).toEqual([
+        `${PROBE} pass job ${JOB} leg - attempt 1 at ${checkout.sha}`,
+        `${SECOND} fail job ${JOB} leg - attempt 1 at ${checkout.sha}`,
+      ]);
+    }, 120_000);
+
     // The step reads the files at the commit as spec-check and Dispatch read them
     // (specgraph.Judge), so one tree has one answer in both places: the step makes no call for a
     // tree that the graph logic refuses, and Dispatch refuses a write of it, naming the same first

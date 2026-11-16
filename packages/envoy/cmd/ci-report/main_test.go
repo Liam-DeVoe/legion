@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
@@ -23,8 +24,11 @@ import (
 // counting from 0. With CI_REPORT_STUB_MODE=refuse it prints the broker's refusal of an exchange
 // on standard output and exits 1, as the real command prints every refusal of Dispatch or of the
 // broker (packages/envoy-client/src/dispatch-cli.ts, `print`, which writes to standard output).
-// Otherwise it prints a stored row as the real command prints it, whole and over many lines, with
-// the id row-<check> and the run that recorded it, its session and principal, and exits 0.
+// With CI_REPORT_STUB_MODE=landed it prints what the real command prints for a write that landed
+// with its answer lost, {"landed_without_answer":"KEY_COMMITTED"}, and exits 0; with
+// CI_REPORT_STUB_MODE=no-id it prints that JSON with no code, and exits 0. Otherwise it prints a
+// stored row as the real command prints it, whole and over many lines, with the id row-<check>
+// and the run that recorded it, its session and principal, and exits 0.
 const stubDispatch = `#!/bin/sh
 calls="$CI_REPORT_STUB_DIR"
 n=0
@@ -40,6 +44,14 @@ done
 if [ "$CI_REPORT_STUB_MODE" = refuse ]; then
   echo "` + brokerRefusal + `"
   exit 1
+fi
+if [ "$CI_REPORT_STUB_MODE" = landed ]; then
+  echo '{"landed_without_answer":"` + contracts.IdempotencyKeyCommitted + `"}'
+  exit 0
+fi
+if [ "$CI_REPORT_STUB_MODE" = no-id ]; then
+  echo '{"landed_without_answer":""}'
+  exit 0
 fi
 cat <<EOF
 {
@@ -148,6 +160,15 @@ func TestTheBuiltBinary(t *testing.T) {
 			{args: args("the-owner-stays-after-a-restart", "fail"), stdin: output("claims", "TestTheOwnerStaysAfterARestart"), identity: "unset"},
 		}
 	}
+	// stored is every line of a run where each call stored its result as the stub prints it.
+	stored := func() []line {
+		ids, exits := map[string]string{}, map[string]*int{}
+		for _, check := range recordedChecks {
+			ids[check], exits[check] = "row-"+check, new(0)
+		}
+		return lines(exits, ids, nil)
+	}
+	args := []string{"--dir", ".dispatch/spec", "--job", job, "--report", report, "--project", "ACME"}
 
 	t.Run("each test that ran writes one result, at the commit git names, and no other check is called", func(t *testing.T) {
 		t.Parallel()
@@ -157,11 +178,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		if got.code != 0 {
 			t.Fatalf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
 		}
-		ids, exits := map[string]string{}, map[string]*int{}
-		for _, check := range recordedChecks {
-			ids[check], exits[check] = "row-"+check, new(0)
-		}
-		expectLines(t, got.stdout, lines(exits, ids, nil))
+		expectLines(t, got.stdout, stored())
 		if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
 			t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
 		}
@@ -170,6 +187,221 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 		if want := fmt.Sprintf("ci-report: 8 checks of %s at %s name job %s; 3 results written, 0 calls failed\n", filepath.Join(dir, ".dispatch", "spec"), commit, job); !strings.HasSuffix(got.stderr, want) {
 			t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+		}
+	})
+
+	// The step reads the check nodes of the files at its commit, through git, and never the files
+	// of the working tree (R12). A step before it that changes the files and commits nothing
+	// changes no line and no call.
+	for _, row := range []struct {
+		name   string
+		change func(t *testing.T, spec string)
+	}{
+		{"a spec file that the working tree deleted after the commit is read as the commit holds it", func(t *testing.T, spec string) {
+			if err := os.Remove(filepath.Join(spec, "probe.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a check's test that the working tree changed after the commit is read as the commit names it", func(t *testing.T, spec string) {
+			file := filepath.Join(spec, "probe.md")
+			text, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The commit's check names the test that failed; the working tree's names one that passed.
+			const committed = `selector="example.com/acme/probe/claims TestTheOwnerStaysAfterARestart"`
+			if !strings.Contains(string(text), committed) {
+				t.Fatalf("the fixture holds no %s", committed)
+			}
+			writeFile(t, file, strings.Replace(string(text), committed, `selector="example.com/acme/probe/claims TestTheClaimStaysAfterARestart"`, 1))
+		}},
+		{"a spec file that the working tree added and the commit does not hold is not read", func(t *testing.T, spec string) {
+			// A check of the job whose test ran and passed: read, it would get a line and a call.
+			writeFile(t, filepath.Join(spec, "added.md"), `:::check{#a-read-of-one-claim-ends-in-time-here serves="a-read-of-the-claims-ends-in-time" subject="code" procedure="program" runner="go" selector="example.com/acme/probe/slow TestTheQuickReadEnds" job="go-checks"}
+Claim: A read of one claim ends in 1 second or less.
+Procedure: The program writes one claim and reads it.
+The read must end in 1 second or less.
+Failing example: A read that waits for a lock that nobody holds.
+:::
+`)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir, commit := checkout(t, filepath.Join("testdata", "spec"))
+			row.change(t, filepath.Join(dir, ".dispatch", "spec"))
+			stub := newStub(t)
+			got := runReporter(t, binary, dir, stub.env("store"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+			if got.code != 0 {
+				t.Fatalf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
+			}
+			expectLines(t, got.stdout, stored())
+			if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
+				t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
+			}
+		})
+	}
+
+	t.Run("each entry of the directory at the commit that is not a spec file is a warning, a submodule included", func(t *testing.T) {
+		t.Parallel()
+		spec := copyOf(t, filepath.Join("testdata", "spec"))
+		writeFile(t, filepath.Join(spec, "notes.txt"), "Not a spec file.\n")
+		if err := os.Mkdir(filepath.Join(spec, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(spec, "sub", "inner.md"), "# Inside a directory\n")
+		if err := os.Symlink("probe.md", filepath.Join(spec, "link.md")); err != nil {
+			t.Fatal(err)
+		}
+		dir, first := checkout(t, spec)
+		// A submodule exists only in the commit: git keeps it as a commit entry of the tree.
+		git(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+first+",.dispatch/spec/module")
+		git(t, dir, "commit", "-q", "-m", "a submodule")
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("store"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		if got.code != 0 {
+			t.Fatalf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
+		}
+		specDir := filepath.Join(dir, ".dispatch", "spec")
+		var warnings []string
+		for _, text := range strings.Split(got.stderr, "\n") {
+			if strings.HasPrefix(text, "ci-report: warning: ") {
+				warnings = append(warnings, text)
+			}
+		}
+		want := []string{
+			"ci-report: warning: " + filepath.Join(specDir, "link.md") + ": not a spec file (symbolic link); the importer passes over it",
+			"ci-report: warning: " + filepath.Join(specDir, "module") + ": not a spec file (submodule); the importer passes over it",
+			"ci-report: warning: " + filepath.Join(specDir, "notes.txt") + ": not a spec file (file); the importer passes over it",
+			"ci-report: warning: " + filepath.Join(specDir, "sub") + ": not a spec file (directory); the importer passes over it",
+		}
+		if !slices.Equal(warnings, want) {
+			t.Errorf("the warnings are\n%s\nwant\n%s", strings.Join(warnings, "\n"), strings.Join(want, "\n"))
+		}
+		expectLines(t, got.stdout, stored())
+	})
+
+	t.Run("the spec directory is read from the working directory, a directory of the checkout below its root", func(t *testing.T) {
+		t.Parallel()
+		dir, commit := checkout(t, filepath.Join("testdata", "spec"))
+		stub := newStub(t)
+		got := runReporter(t, binary, filepath.Join(dir, ".dispatch"), stub.env("store"), "--dir", "spec", "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
+		if got.code != 0 {
+			t.Fatalf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
+		}
+		expectLines(t, got.stdout, stored())
+		if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
+			t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
+		}
+	})
+
+	t.Run("outside a git checkout the step refuses with one line and makes no call", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.CopyFS(filepath.Join(dir, ".dispatch", "spec"), os.DirFS(filepath.Join("testdata", "spec"))); err != nil {
+			t.Fatal(err)
+		}
+		stub := newStub(t)
+		// GIT_CEILING_DIRECTORIES keeps git from finding a repository above the directory.
+		got := runReporter(t, binary, dir, append(stub.env("store"), "GIT_CEILING_DIRECTORIES="+filepath.Dir(dir)), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		if got.code != 2 || got.stdout != "" || strings.Count(got.stderr, "\n") != 1 || !strings.HasPrefix(got.stderr, "ci-report: git rev-parse HEAD: ") {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line on stdout and one line naming git rev-parse HEAD", got.code, got.stdout, got.stderr)
+		}
+		if calls := stub.calls(t); len(calls) != 0 {
+			t.Errorf("the stub got %d calls, want none", len(calls))
+		}
+	})
+
+	t.Run("a spec directory outside the checkout is refused, and no result is written", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := checkout(t, filepath.Join("testdata", "spec"))
+		outside := copyOf(t, filepath.Join("testdata", "spec"))
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("store"), "--dir", outside, "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
+		if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, "ci-report: "+outside+": cannot be read") || !strings.Contains(got.stderr, "outside repository") {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and a line that names %s outside the repository", got.code, got.stdout, got.stderr, outside)
+		}
+		if calls := stub.calls(t); len(calls) != 0 {
+			t.Errorf("the stub got %d calls, want none", len(calls))
+		}
+	})
+
+	t.Run("a spec directory that the commit holds as a file is refused, and no result is written", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := checkout(t, "")
+		if err := os.Mkdir(filepath.Join(dir, ".dispatch"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, ".dispatch", "spec"), "A file where the directory goes.\n")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "a file")
+		commit := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("store"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		want := "ci-report: " + filepath.Join(dir, ".dispatch", "spec") + ": is a blob at " + commit + ", not a directory\n"
+		if got.code != 2 || got.stdout != "" || !strings.HasSuffix(got.stderr, want) {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and stderr ending %q", got.code, got.stdout, got.stderr, want)
+		}
+		if calls := stub.calls(t); len(calls) != 0 {
+			t.Errorf("the stub got %d calls, want none", len(calls))
+		}
+	})
+
+	t.Run("a write that landed with its answer lost is a result: its line says so, with no id, and it is no failure", func(t *testing.T) {
+		t.Parallel()
+		dir, commit := checkout(t, filepath.Join("testdata", "spec"))
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("landed"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		if got.code != 0 {
+			t.Errorf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
+		}
+		landed := "the result was stored, and its answer was lost on the way back (" + contracts.IdempotencyKeyCommitted + "), so its id is unknown"
+		exits, whys := map[string]*int{}, map[string]string{}
+		for _, check := range recordedChecks {
+			exits[check], whys[check] = new(0), landed
+		}
+		expectLines(t, got.stdout, lines(exits, nil, whys))
+		if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
+			t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
+		}
+		if want := "; 3 results written, 0 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
+			t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+		}
+	})
+
+	t.Run("a call that exits 0 and prints neither an id nor a landed write fails its check and exits 1", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := checkout(t, filepath.Join("testdata", "spec"))
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("no-id"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		if got.code != 1 {
+			t.Errorf("exit %d, want 1; stderr:\n%s", got.code, got.stderr)
+		}
+		exits, whys := map[string]*int{}, map[string]string{}
+		for _, check := range recordedChecks {
+			exits[check], whys[check] = new(0), "the dispatch command exited 0 and printed no stored result with an id"
+		}
+		expectLines(t, got.stdout, lines(exits, nil, whys))
+		if want := "; 0 results written, 3 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
+			t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+		}
+	})
+
+	t.Run("-h names each exit status and exits 0", func(t *testing.T) {
+		t.Parallel()
+		got := runReporter(t, binary, t.TempDir(), nil, "-h")
+		if got.code != 0 || got.stdout != "" || !strings.HasPrefix(got.stderr, usage+"\n") {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want exit 0 and the usage first on stderr", got.code, got.stdout, got.stderr)
+		}
+		_, statuses, _ := strings.Cut(got.stderr, "\nExit status:\n")
+		for _, want := range []string{
+			"  0  each call stored its result",
+			"  1  a call of the dispatch command failed",
+			"  2  no call was made:",
+		} {
+			if !strings.Contains("\n"+statuses, "\n"+want) {
+				t.Errorf("the help names no exit status %q under \"Exit status:\":\n%s", want, got.stderr)
+			}
 		}
 	})
 
@@ -328,7 +560,7 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("exit %d, stdout %q; want exit 0 and no line", got.code, got.stdout)
 		}
 		for _, want := range []string{
-			"ci-report: " + spec + ": does not exist, so it is read as the empty tree\n",
+			"ci-report: " + spec + ": does not exist at " + commit + ", so it is read as the empty tree\n",
 			fmt.Sprintf("ci-report: 0 checks of %s at %s name job %s; 0 results written, 0 calls failed\n", spec, commit, job),
 		} {
 			if !strings.Contains(got.stderr, want) {
