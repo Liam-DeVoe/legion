@@ -78,7 +78,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if err != nil {
 		return bootReads{}, err
 	}
-	if r.nats, err = chooseNATSConnection(daemonSeed, paneSeed, r.paneNatsUser); err != nil {
+	if r.nats, err = chooseNATSConnection(cfg.NatsDaemonServiceTokenFile, daemonSeed, paneSeed, r.paneNatsUser); err != nil {
 		return bootReads{}, err
 	}
 	if cfg.InstructionsPath != "" {
@@ -148,29 +148,44 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	return r, nil
 }
 
-// natsConnection is the NATS user the daemon's own connection authenticates as: its own seed
+// natsConnection is the credential the daemon's own NATS connection presents: its platform identity
+// token (config's NatsDaemonServiceTokenFile) when it names one, else its own seed
 // (natsauth.DaemonSeed) when it has one, else the pane seed every pane receives (launchSecrets),
 // else no credential. No launch carries it.
 type natsConnection struct {
-	seed     string         // "" for no credential
-	user     string         // seed's user's public key, "" with no seed
-	source   natsSeedSource // where seed came from
-	paneUser bool           // whether user is the pane seed's user, as when the daemon seed is the pane seed
+	seed      string         // "" for no seed
+	tokenFile string         // the platform identity token's file, "" for none
+	user      string         // seed's user's public key, or the account the token names; "" with neither
+	source    natsSeedSource // where the credential came from
+	paneUser  bool           // whether user is the pane seed's user, as when the daemon seed is the pane seed
 }
 
-// natsSeedSource is where the daemon's own connection's seed came from, as its boot line names it.
+// natsSeedSource is where the daemon's own connection's credential came from, as its boot line
+// names it.
 type natsSeedSource string
 
 const (
-	natsSeedDaemon natsSeedSource = "daemon" // natsauth.DaemonSeed
-	natsSeedPane   natsSeedSource = "pane"   // the pane seed every pane receives
-	natsSeedNone   natsSeedSource = "none"   // no seed: no credential
+	natsServiceToken natsSeedSource = "service-token" // nats_daemon_service_token_file
+	natsSeedDaemon   natsSeedSource = "daemon"        // natsauth.DaemonSeed
+	natsSeedPane     natsSeedSource = "pane"          // the pane seed every pane receives
+	natsSeedNone     natsSeedSource = "none"          // no seed: no credential
 )
 
-// chooseNATSConnection is the connection over daemonSeed and paneSeed, each "" for none, where
-// paneUser is paneSeed's user's public key, already read.
-func chooseNATSConnection(daemonSeed, paneSeed, paneUser string) (natsConnection, error) {
+// chooseNATSConnection is the connection over tokenFile, daemonSeed and paneSeed, each "" for none,
+// where paneUser is paneSeed's user's public key, already read. A token file and a daemon seed
+// together are refused naming both, since one connection presents one credential; the token file
+// is read here (natsauth.ServiceIdentity), so a missing or unreadable token refuses boot.
+func chooseNATSConnection(tokenFile, daemonSeed, paneSeed, paneUser string) (natsConnection, error) {
 	switch {
+	case tokenFile != "" && daemonSeed != "":
+		return natsConnection{}, fmt.Errorf("%s and a daemon seed (%s, %s or %s) are both set: the daemon's own NATS connection presents one credential, so name one of them",
+			natsauth.ServiceTokenFileKey, natsauth.DaemonSeedFileKey, natsauth.DaemonSeedFileVariable, natsauth.DaemonSeedVariable)
+	case tokenFile != "":
+		account, err := natsauth.ServiceIdentity(tokenFile)
+		if err != nil {
+			return natsConnection{}, err
+		}
+		return natsConnection{tokenFile: tokenFile, user: account, source: natsServiceToken}, nil
 	case daemonSeed != "":
 		user, err := natsauth.PublicKey(daemonSeed)
 		if err != nil {

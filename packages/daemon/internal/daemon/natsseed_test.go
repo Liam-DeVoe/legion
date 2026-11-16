@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -132,26 +134,34 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 	})
 }
 
-// chooseNATSConnection picks the daemon seed, else the pane seed, else none, and its one line says
-// which user that is and whether it is the pane user, the daemon seed naming the pane user included.
+// chooseNATSConnection picks the daemon's platform identity token, else the daemon seed, else the
+// pane seed, else none, and its one line says which user that is and whether it is the pane user,
+// the daemon seed naming the pane user included: for the token, the account it names.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 	daemonSeed, daemonUser := testnats.User(t)
 	paneSeed, paneUser := testnats.User(t)
+	const account = "system:serviceaccount:legion-pub:legion-daemon"
+	tokenFile := filepath.Join(t.TempDir(), "nats-token")
+	if err := os.WriteFile(tokenFile, []byte(testnats.ServiceToken(account, time.Now().Add(time.Hour))), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		name, daemon, pane, paneUser, seed, line string
+		name, token, daemon, pane, paneUser, seed, line string
 	}{
-		{"both", daemonSeed, paneSeed, paneUser, daemonSeed, "user=" + daemonUser + " paneUser=false seed=daemon"},
-		{"the daemon seed alone", daemonSeed, "", "", daemonSeed, "user=" + daemonUser + " paneUser=false seed=daemon"},
-		{"a daemon seed that is the pane seed", paneSeed, paneSeed, paneUser, paneSeed, "user=" + paneUser + " paneUser=true seed=daemon"},
-		{"the pane seed alone", "", paneSeed, paneUser, paneSeed, "user=" + paneUser + " paneUser=true seed=pane"},
-		{"neither", "", "", "", "", `user="" paneUser=false seed=none`},
+		{"both", "", daemonSeed, paneSeed, paneUser, daemonSeed, "user=" + daemonUser + " paneUser=false seed=daemon"},
+		{"the daemon seed alone", "", daemonSeed, "", "", daemonSeed, "user=" + daemonUser + " paneUser=false seed=daemon"},
+		{"a daemon seed that is the pane seed", "", paneSeed, paneSeed, paneUser, paneSeed, "user=" + paneUser + " paneUser=true seed=daemon"},
+		{"the pane seed alone", "", "", paneSeed, paneUser, paneSeed, "user=" + paneUser + " paneUser=true seed=pane"},
+		{"neither", "", "", "", "", "", `user="" paneUser=false seed=none`},
+		{"the service token", tokenFile, "", "", "", "", "user=" + account + " paneUser=false seed=service-token"},
+		{"the service token beside the pane seed", tokenFile, "", paneSeed, paneUser, "", "user=" + account + " paneUser=false seed=service-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			nc, err := chooseNATSConnection(tc.daemon, tc.pane, tc.paneUser)
+			nc, err := chooseNATSConnection(tc.token, tc.daemon, tc.pane, tc.paneUser)
 			// Named, never printed: a failure message is no place for a seed.
 			name := map[string]string{daemonSeed: "the daemon seed", paneSeed: "the pane seed", "": "none"}
-			if err != nil || nc.seed != tc.seed {
-				t.Fatalf("chooseNATSConnection = %s, %v; want %s", name[nc.seed], err, name[tc.seed])
+			if err != nil || nc.seed != tc.seed || nc.tokenFile != tc.token {
+				t.Fatalf("chooseNATSConnection = %s and token %q, %v; want %s and token %q", name[nc.seed], nc.tokenFile, err, name[tc.seed], tc.token)
 			}
 			var out bytes.Buffer
 			nc.log(slog.New(slog.NewTextHandler(&out, nil)))
@@ -161,6 +171,79 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 			}
 		})
 	}
+	t.Run("the service token beside a daemon seed is refused naming both", func(t *testing.T) {
+		_, err := chooseNATSConnection(tokenFile, daemonSeed, paneSeed, paneUser)
+		if err == nil || !strings.Contains(err.Error(), "nats_daemon_service_token_file and a daemon seed (nats_daemon_nkey_seed_file") {
+			t.Fatalf("chooseNATSConnection = %v, want the refusal naming both", err)
+		}
+		if strings.Contains(err.Error(), daemonSeed) {
+			t.Fatal("the refusal carries the seed")
+		}
+	})
+	t.Run("an unreadable service token refuses boot naming the key", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "absent")
+		_, err := chooseNATSConnection(missing, "", "", "")
+		if err == nil || !strings.Contains(err.Error(), "nats_daemon_service_token_file names "+missing) {
+			t.Fatalf("chooseNATSConnection = %v, want the refusal naming the key and the path", err)
+		}
+	})
+}
+
+// The workflow's own NATS connection presents the daemon's platform identity token to a hub whose
+// connections the NATS auth service admits: the daemon boots against such a hub, presenting the
+// token its file holds, and logs the account it names. The control boots the same daemon with no
+// token: the stand-in refuses a connection with no credential, and the boot fails naming the
+// server's authorization violation.
+func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
+	quickAppMints(t)
+	const account = "system:serviceaccount:legion-pub:legion-daemon"
+	s := testnats.StartCallout(t, 0, ">")
+	if _, err := jetstreamOf(t, s.Connect(t)).CreateStream(t.Context(), jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}}); err != nil {
+		t.Fatalf("create notification stream: %v", err)
+	}
+	token := testnats.ServiceToken(account, time.Now().Add(time.Hour))
+	tokenFile := filepath.Join(t.TempDir(), "nats-token")
+	if err := os.WriteFile(tokenFile, []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("with the token", func(t *testing.T) {
+		cfg := workflowConfig(t, s.URL)
+		cfg.NatsDaemonServiceTokenFile = tokenFile
+		var out syncBuffer
+		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
+		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
+			t.Fatalf("boot with the service token = %v, want the daemon serving", err)
+		}
+		if presented := s.Presented(); len(presented) == 0 || presented[0] != token {
+			t.Fatalf("the daemon presented %d tokens, want the one its file holds first", len(presented))
+		}
+		want := `level=INFO msg="legion daemon connects to NATS" user=` + account + ` paneUser=false seed=service-token`
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("log =\n%s\nwant a line containing %s", out.String(), want)
+		}
+		if strings.Contains(out.String(), token) {
+			t.Error("the log carries the token")
+		}
+	})
+	t.Run("control: without it", func(t *testing.T) {
+		cfg := workflowConfig(t, s.URL)
+		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
+		err := bootsOrExits(t, cfg, tokens, 60*time.Second)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
+			t.Fatalf("boot without a credential = %v, want the server's authorization violation", err)
+		}
+	})
+}
+
+// jetstreamOf is JetStream over conn.
+func jetstreamOf(t *testing.T, conn *nats.Conn) jetstream.JetStream {
+	t.Helper()
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return js
 }
 
 // The daemon's own seed reaches no launch: with both seeds configured, a root's and a worker's

@@ -279,8 +279,8 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 // Through the auth service, Dispatch's grant may write the private-projects bucket and a
 // listener's may read it, and nothing more of it: a listener's holds no write to its keys and no
 // create of its stream. The static sets a hub renders hold neither, so a hub with no auth service
-// renders what it rendered before (c-hub-config-unchanged), and the daemon's and the measurement
-// job's grants are unchanged.
+// renders what it rendered before (c-hub-config-unchanged), and the measurement job's grant is
+// unchanged.
 func TestDispatchAndListenerGrantsCarryThePrivateProjectsBucket(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -308,7 +308,7 @@ func TestDispatchAndListenerGrantsCarryThePrivateProjectsBucket(t *testing.T) {
 	require.NotContains(t, listener.Publish, bucketKeys)
 	require.NotContains(t, listener.Publish, bucketCreate)
 
-	require.Equal(t, natsgrant.Daemon(), decide("daemon-token"))
+	require.Equal(t, daemonCalloutGrant(daemonAccount), decide("daemon-token"))
 	require.Equal(t, natsgrant.Measure(), decide("measure-token"))
 	for name, static := range map[string]natsgrant.Permissions{
 		"dispatch": natsgrant.Dispatch("example-dispatch"), "listener": natsgrant.Listener("example-hub"),
@@ -334,4 +334,33 @@ func listenerCalloutGrant(machineID string) natsgrant.Permissions {
 	grant := natsgrant.Listener(machineID)
 	grant.Publish = append(grant.Publish, natsgrant.KVRead(bus.PrivateProjectsBucket)...)
 	return grant
+}
+
+// daemonCalloutGrant is the grant the auth service answers a daemon whose entry takes the whole
+// grant (*) with: natsgrant.Daemon, then the subscribe of its account's own reply prefix.
+func daemonCalloutGrant(account string) natsgrant.Permissions {
+	grant := natsgrant.Daemon()
+	grant.Subscribe = append(grant.Subscribe, natsgrant.InboxPrefix(account)+".>")
+	return grant
+}
+
+// A Legion daemon presenting its token takes its account's own reply prefix whatever its entry's
+// scope (the daemon's natsauth.ConnectService), so a daemon whose entry takes the whole grant (*)
+// is granted that prefix too. Through the hub, its JetStream request is answered on that prefix:
+// the stream it asks about does not exist, and it reads that answer. The control drops the prefix
+// from the whole grant: the hub refuses the subscription to the prefix, and the request gets no
+// answer.
+func TestAWholeDaemonGrantTakesItsAccountsReplyPrefix(t *testing.T) {
+	now := time.Now()
+	tokens := map[string]platformToken{"daemon-token": {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	startServiceOf(t, url, keys, []ServiceEntry{{Kind: KindDaemon, Account: daemonAccount, AllProjects: true}}, Deps{ServiceToken: serviceTokens(tokens)})
+	nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "daemon-token"), nats.NoReconnect(),
+		nats.CustomInboxPrefix(natsgrant.InboxPrefix(daemonAccount)))
+	require.NoError(t, err, "the hub did not admit the daemon")
+	t.Cleanup(nc.Close)
+	reply, err := nc.Request("$JS.API.STREAM.INFO."+bus.Stream, nil, 5*time.Second)
+	require.NoError(t, err, "the daemon's JetStream request got no answer on its own reply prefix")
+	require.Contains(t, string(reply.Data), "stream not found")
 }
