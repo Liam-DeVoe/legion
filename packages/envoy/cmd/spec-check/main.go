@@ -14,7 +14,9 @@
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
 // It exits 1 for a refused tree, with one line for each problem on standard error, "spec-check:
 // <dir>/<file>:<line>: <node>: <detail>", where the detail begins with the rule, and the count line
-// ending "; the tree is refused". With --allow-empty, a directory that does not exist or holds no
+// ending "; the tree is refused". A file above the size bound gives the line "spec-check: file
+// too large: <dir>/<file> is <n> bytes (limit 1048576)" in place of the problems, and the counts
+// are 0: no file is parsed. With --allow-empty, a directory that does not exist or holds no
 // spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2. --retired
 // names a file of the ids the approved spec removed, one id a line, "#" lines and blank lines
 // passed over; without it, a line on standard error says that no id was checked against them.
