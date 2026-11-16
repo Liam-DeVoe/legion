@@ -1,0 +1,333 @@
+import { expect, type Locator, type Page } from "@playwright/test";
+
+import { presetPath } from "../web/src/features/issue-page/issue-address";
+import type { Preset } from "../web/src/features/issue-page/page-words";
+import { gotoIssue, issuePage, openMenu, presetChooser, presetRow } from "./issue-page";
+import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
+
+/**
+ * How part I's rows read the outline of the new issue page (dispatch://INFRA-1196 part I,
+ * `e2e/issue-page-i.e2e.ts`): the readers that D's `e2e/issue-page.ts` (the page's root and its
+ * frame) and G's `e2e/issue-page-g.ts` (one node's row, and the tree as rows) do not hold
+ * (decision 2 of the parts). No later part changes this file; a later part's rows import from it.
+ *
+ * What the outline draws, beyond what G's file names:
+ *
+ * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (G's `tree`), its rows `treeitem`s
+ *   carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop.
+ * - **A node's body** `[data-node-body]`, drawn for the focused row and each row pinned open
+ *   (`[data-node-body][data-pinned]`), and for no other row.
+ * - **A branch deeper than the drawn levels**, one row `[data-branch-more]` whose text says how
+ *   many nodes it holds and whose `button` opens them in place.
+ * - **A gap the page names** `[data-gap]` with `data-gap-kind`.
+ * - **What a key reports** where it has nowhere to go: `[data-row-report]`, a `role="status"`
+ *   drawn at the row the key was pressed on.
+ * - **The children**: rows of the outline, `[data-node-type="child_issue"]`, one group; and the
+ *   section the page drew above the outline before ruling 5, `[data-testid="issue-children"]`,
+ *   which no address draws now.
+ * - **What stays at the top of the screen**: the header's band `[data-identity-block]` from
+ *   761 px up, and the view row's band at 760 px and below.
+ */
+
+/** The selectors the readers pass into the browser. */
+const SELECTORS = {
+  branchMore: "[data-branch-more]",
+  /** The part of the header that stays at the top of the screen from 761 px up. */
+  identityBand: "[data-identity-block]",
+  gap: "[data-gap]",
+  issuePage: "[data-issue-page]",
+  nodeBody: "[data-node-body]",
+  nodeRow: "[data-node-row]",
+  presetRow: '[data-testid="issue-presets"]',
+  tree: '[role="tree"]',
+} as const;
+
+/** A `"` inside an attribute value would end the selector's string, and no id, slug or kind the
+ *  page draws holds one; a value that did would otherwise match nothing silently. */
+function cssValue(value: string): string {
+  expect(value, `${value} cannot be written into a selector`).not.toContain('"');
+  return value;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The outline's parts, as locators.
+// ---------------------------------------------------------------------------------------------
+
+export function treeItems(page: Page): Locator {
+  return tree(page).getByRole("treeitem");
+}
+
+export function rowsOfType(page: Page, type: string): Locator {
+  return nodeRows(page).filter({
+    has: page.locator(`:scope[data-node-type="${cssValue(type)}"]`),
+  });
+}
+
+export function nodeBodies(page: Page): Locator {
+  return issuePage(page).locator(SELECTORS.nodeBody);
+}
+
+export function pinnedBodies(page: Page): Locator {
+  return issuePage(page).locator(`${SELECTORS.nodeBody}[data-pinned]`);
+}
+
+export function branchMoreRows(page: Page): Locator {
+  return issuePage(page).locator(SELECTORS.branchMore);
+}
+
+/** The gaps drawn on one row. */
+export function rowGaps(row: Locator): Locator {
+  return row.locator(SELECTORS.gap);
+}
+
+/** The children's section the page drew above the outline before the architect's ruling 5: no
+ *  view draws one now, and a row reads this to say so. */
+export function childrenSection(page: Page): Locator {
+  return page.getByTestId("issue-children");
+}
+
+/** The children as the page draws them: rows of the outline, one group of them (ruling 5). */
+export function childRows(page: Page): Locator {
+  return tree(page).locator('[data-node-row][data-node-type="child_issue"]');
+}
+
+/** One child's row of the outline, by the child's key, which is its node's id. */
+export function childRow(page: Page, key: string): Locator {
+  return tree(page).locator(`[data-node-row][data-node-id="${cssValue(key)}"]`);
+}
+
+/** What the page says when a key has nowhere to go, such as the next-question key with no
+ *  further question: drawn at the row the key was pressed on, and gone with the reader's next
+ *  move. */
+export function pageStatus(page: Page): Locator {
+  return tree(page).locator("[data-row-report]");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The readers: one `page.evaluate` each, so a page that draws none of this answers an empty
+// list or null instead of timing out.
+// ---------------------------------------------------------------------------------------------
+
+/** The ids of `rows`, in order, a row with none named so in a failure. */
+export function idsOf(rows: readonly DrawnRow[]): string[] {
+  return rows.map((row) => row.id ?? "<no id>");
+}
+
+/** The chain of ancestors above `id`, outermost first, as the drawn levels give it. */
+export async function ancestorsOfRow(page: Page, id: string): Promise<string[]> {
+  const chain: string[] = [];
+  for (let at: string | null | undefined = id; at !== null && at !== undefined; ) {
+    const parent: string | null | undefined = await parentOfRow(page, at);
+    if (parent === null || parent === undefined) break;
+    chain.unshift(parent);
+    at = parent;
+  }
+  return chain;
+}
+
+/** The id of the row the keyboard focus is on: the row holding the focus, or the row the tree's
+ *  `aria-activedescendant` names, whichever the page uses. */
+export function focusedNodeId(page: Page): Promise<string | null> {
+  return page.evaluate((selectors) => {
+    const active = document.activeElement;
+    const own = active?.closest(selectors.nodeRow) ?? null;
+    if (own !== null) return own.getAttribute("data-node-id");
+    const named = active?.getAttribute("aria-activedescendant") ?? null;
+    if (named === null) return null;
+    const row = document.getElementById(named)?.closest(selectors.nodeRow) ?? null;
+    return row?.getAttribute("data-node-id") ?? null;
+  }, SELECTORS);
+}
+
+/** Whether the keyboard focus is inside `scope`: a chord that reaches a target has to put the
+ *  focus in it, not only draw it. A scope the page does not draw answers false. */
+export async function focusInside(scope: Locator): Promise<boolean> {
+  if ((await scope.count()) === 0) return false;
+  return await scope
+    .first()
+    .evaluate(
+      (element) => element.contains(document.activeElement) || element === document.activeElement
+    );
+}
+
+/**
+ * Whether every pixel of `scope` is inside the viewport and clear of what stays at the top of
+ * the screen, which is what "on screen" is read as, and what the page's own `bringOnScreen`
+ * (`web/src/features/issue-page/identity-block.ts`) places a target by. Details' drawer is a
+ * layer over the page, so a target inside it needs only the viewport.
+ *
+ * A scope taller than the screen can satisfy neither, by construction, so a caller reads the
+ * control the page leaves the reader on rather than the whole part around it.
+ */
+export async function onScreen(scope: Locator): Promise<boolean> {
+  if ((await scope.count()) === 0) return false;
+  return await scope.first().evaluate((element, selectors) => {
+    const rect = element.getBoundingClientRect();
+    // What stays at the top of the screen: the header's band from 761 px up, and the view
+    // row's band at 760 px and below - whichever is `position: sticky` and at the top now.
+    let sticky = 0;
+    if (element.closest('[data-testid="desktop-margin-shell"]') === null) {
+      for (const start of [selectors.identityBand, selectors.presetRow]) {
+        for (let at = document.querySelector(start); at !== null; at = at.parentElement) {
+          if (getComputedStyle(at).position !== "sticky") continue;
+          const band = at.getBoundingClientRect();
+          if (band.top <= 1) sticky = Math.max(sticky, band.bottom);
+          break;
+        }
+      }
+    }
+    return (
+      rect.height > 0 &&
+      rect.top >= sticky - 1 &&
+      rect.bottom <= window.innerHeight + 1 &&
+      rect.left >= -1 &&
+      rect.right <= window.innerWidth + 1
+    );
+  }, SELECTORS);
+}
+
+/** Whether the caret is in a node's own text: the focus is inside an editable inside a row,
+ *  which is what Enter does and what Escape leaves. */
+export function caretInNode(page: Page): Promise<boolean> {
+  return page.evaluate((selectors) => {
+    const editable = document.activeElement?.closest('[contenteditable="true"]') ?? null;
+    return editable !== null && editable.closest(selectors.nodeRow) !== null;
+  }, SELECTORS);
+}
+
+/** The node id the tree's `aria-activedescendant` names, for a tree that roves with it rather
+ *  than by moving the focus itself. Null when the tree names none. */
+export function treeActiveDescendant(page: Page): Promise<string | null> {
+  return page.evaluate((selectors) => {
+    const drawn = document.querySelector(`${selectors.issuePage} ${selectors.tree}`);
+    const named = drawn?.getAttribute("aria-activedescendant") ?? null;
+    if (named === null) return null;
+    return (
+      document.getElementById(named)?.closest(selectors.nodeRow)?.getAttribute("data-node-id") ??
+      null
+    );
+  }, SELECTORS);
+}
+
+/** Where the sticky header's band ends, which is the line the focused row must clear; 0 where
+ *  the band is not sticky, which is 760 px and below; null where the page draws none. */
+export function identityBlockBottom(page: Page): Promise<number | null> {
+  return page.evaluate((selectors) => {
+    const block = document.querySelector(selectors.identityBand);
+    if (block === null) return null;
+    const rect = block.getBoundingClientRect();
+    return getComputedStyle(block).position === "sticky" ? rect.bottom : 0;
+  }, SELECTORS);
+}
+
+/** The kind each gap the page names carries, in document order: a gap with no kind reads as the
+ *  empty string, so an unnamed gap is named in the failure rather than dropped. */
+export function gapKinds(page: Page): Promise<string[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.gap}`)].map(
+        (gap) => gap.getAttribute("data-gap-kind") ?? ""
+      ),
+    SELECTORS
+  );
+}
+
+/** Every `title` attribute the page carries, which is every tooltip a pointer can raise. */
+export function tooltipTexts(page: Page): Promise<string[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} [title]`)].map(
+        (element) => element.getAttribute("title") ?? ""
+      ),
+    SELECTORS
+  );
+}
+
+/** The whole visible text of the tree, for a reading taken before and after a pointer crosses
+ *  it. */
+export function treeText(page: Page): Promise<string> {
+  return page.evaluate((selectors) => {
+    const drawn = document.querySelector(`${selectors.issuePage} ${selectors.tree}`);
+    return (drawn?.textContent ?? "").replace(/\s+/g, " ").trim();
+  }, SELECTORS);
+}
+
+/** The name of the view the page is on: the pressed toggle's own name at a width that draws the
+ *  row, and the one control's name part below it. Null while the page draws neither. */
+export function activePreset(page: Page): Promise<string | null> {
+  return page.evaluate((selectors) => {
+    const row = document.querySelector(selectors.presetRow);
+    if (row === null) return null;
+    const pressed = row.querySelector('button[aria-pressed="true"] [data-preset-name]');
+    if (pressed !== null) return (pressed.textContent ?? "").trim();
+    const chooser = row.querySelector('button[aria-haspopup="menu"] [data-preset-name]');
+    return chooser === null ? null : (chooser.textContent ?? "").trim();
+  }, SELECTORS);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Moves.
+// ---------------------------------------------------------------------------------------------
+
+/** Opens the view `preset` on `key` at its own address. */
+export async function openPreset(page: Page, key: string, preset: Preset): Promise<void> {
+  await gotoIssue(page, presetPath(key, preset));
+}
+
+/** How many presses `openEveryDeeperBranch` makes before it gives up: well past the branches any
+ *  seeded issue holds, so a tree that draws the control whatever is pressed ends as the
+ *  caller's own failed reading rather than as this helper running until the row's deadline. */
+const BRANCHES_OPENED_AT_MOST = 200;
+
+/** Opens every branch the tree folded to one line because it sits below the drawn levels
+ *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a row reads the nodes such a branch holds as rows of
+ *  their own, as G's `unfoldEveryBranch` does with a fold control. */
+export async function openEveryDeeperBranch(page: Page): Promise<void> {
+  const controls = branchMoreRows(page).getByRole("button");
+  for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
+    const first = controls.first();
+    if ((await first.count()) === 0) return;
+    await first.click();
+  }
+  expect(
+    await controls.count(),
+    `the tree still draws a deeper branch after ${BRANCHES_OPENED_AT_MOST} openings`
+  ).toBe(0);
+}
+
+/**
+ * Moves to the view `name` by pressing the view row itself, however that row draws at the width
+ * a row runs at: five toggles from 1280 px, and one control opening a menu of five below it. A
+ * toggle already pressed is left as it is, since pressing it again turns it off. `openPreset`
+ * goes to the control's own address instead, which is a load.
+ */
+export async function pickPreset(page: Page, name: string): Promise<void> {
+  const row = presetRow(page);
+  // The row has to be on the page before its shape can be read: a count taken while the page
+  // is still loading answers zero for both shapes.
+  await row.waitFor();
+  const toggle = row.getByRole("button", { exact: true, name });
+  if ((await toggle.count()) > 0) {
+    if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+    return;
+  }
+  await presetChooser(page).click();
+  // Each item is named by its view's word and then its signal (`presetMenuItem`).
+  await openMenu(page)
+    .getByRole("menuitemradio", { name: new RegExp(`^${name}( |$)`) })
+    .click();
+}
+
+/** Fails unless the page is on the view `name`, whichever shape the row has at this width: the
+ *  row of toggles presses the one it is on (`aria-pressed`), and the one control below 1280 px
+ *  draws its name and its signal as its own name (`IssuePresets.tsx`). */
+export async function expectActivePreset(page: Page, name: string): Promise<void> {
+  const row = presetRow(page);
+  await row.waitFor();
+  const toggle = row.getByRole("button", { exact: true, name });
+  if ((await toggle.count()) > 0) {
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    return;
+  }
+  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+\\b`));
+}
