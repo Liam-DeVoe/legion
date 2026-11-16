@@ -131,11 +131,12 @@ var stepPrompts = map[string]string{
 	changeRewrite: promptAnswer, changeDefine: promptAnswer,
 }
 
-// writerMarks are the writer's prompts whose calls the plan marks for the provider's cache: each
-// prompt the plan can call two or more times for one case. Those calls send the same prefix: the
-// prompt, its schema, and the case's record and session part. Change 3 calls the writer once in
-// each round of review, up to rounds; each other step calls it at most once.
-func (p changePlan) writerMarks(rounds int) map[string]bool {
+// writerCalls are the most calls of each of the writer's prompts that the plan makes for one
+// case. Those calls send the same prefix: the prompt, its schema, and the case's record and
+// session part. Change 3 calls the writer once in each round of review, up to rounds; each other
+// step calls it at most once. The writer marks a prompt's calls where the case's calls of it,
+// over the lanes that make the change of the case, can be two or more (Writer.marked).
+func (p changePlan) writerCalls(rounds int) map[string]int {
 	calls := map[string]int{}
 	for _, s := range p.steps {
 		prompt, ok := stepPrompts[s]
@@ -147,13 +148,7 @@ func (p changePlan) writerMarks(rounds int) map[string]bool {
 			calls[prompt]++
 		}
 	}
-	marks := map[string]bool{}
-	for prompt, n := range calls {
-		if n >= 2 {
-			marks[prompt] = true
-		}
-	}
-	return marks
+	return calls
 }
 
 // changes are the changes the plan holds, for the exposure log.
@@ -208,6 +203,8 @@ type changeRun struct {
 	rounds   int
 	unedited string
 	sessions map[string]claude.SessionText
+	// answers are the writer's answers that the lanes of a lockstep run share, nil outside one.
+	answers *sharedAnswers
 	// tries and backoff bound the retries of a call that met a provider's failure; poll is how
 	// often a wait looks again.
 	tries   int
@@ -267,7 +264,8 @@ func checkFindings(findings []writingcheck.Finding) []TraceFinding {
 	return out
 }
 
-// textRun is one case's text as the steps make it.
+// textRun is one case's text as the steps make it. lanes is the number of the process's lanes
+// that make the change of the case (Change.Apply).
 type textRun struct {
 	c       *Case
 	kind    reviewer.Kind
@@ -277,6 +275,7 @@ type textRun struct {
 	writer string
 	record string
 	text   string
+	lanes  int
 	out    Applied
 }
 
@@ -294,7 +293,7 @@ func (t *textRun) add(calls ...Call) {
 
 // turn is a writer's turn about the text as it stands, with message.
 func (t *textRun) turn(message string) writerTurn {
-	return writerTurn{kind: string(t.kind), text: t.text, record: t.record, session: t.session, message: message}
+	return writerTurn{kind: string(t.kind), text: t.text, record: t.record, session: t.session, message: message, lanes: t.lanes}
 }
 
 // kinds are the reviewer's kinds of the dataset's text kinds.
@@ -305,13 +304,13 @@ var kinds = map[string]reviewer.Kind{
 
 // Apply makes the change of the case's text: each step in turn, each from the text the one before
 // made. The Applied it answers on an error holds the calls made so far.
-func (r *changeRun) Apply(ctx context.Context, c *Case) (Applied, error) {
+func (r *changeRun) Apply(ctx context.Context, c *Case, lanes int) (Applied, error) {
 	kind, ok := kinds[c.Kind]
 	if !ok {
 		return Applied{}, fmt.Errorf("a text of kind %q is none the reviewer reads", c.Kind)
 	}
 	t := &textRun{c: c, kind: kind, session: r.sessions[c.ID], text: c.Agent.Text, record: r.ds.RecordPart(c),
-		writer: cmp.Or(c.WriterSession, localWriter)}
+		writer: cmp.Or(c.WriterSession, localWriter), lanes: lanes}
 	if r.plan.local() {
 		loaded, ok := r.loaded[c.ID]
 		if !ok {
@@ -642,9 +641,67 @@ type sideAnswer struct {
 	err    error
 }
 
+// sharedAnswers are the writer's answers to side questions that the lanes of a lockstep run
+// (score --models) share. The side question of changes 5 and 6 does not depend on the candidate:
+// the local Dispatch writes it from the ask before the candidate is called
+// (reviewer.RewriteQuestion in api/ask_rewrite.go, reviewer.DefineQuestion in
+// api/definitions.go), and the component's path writes it from the case the same way. So the
+// first lane of a case that asks a question makes the answer, and each other lane takes it and
+// calls no model. The lanes of a case run one after another (scorer.scoreCase), so no two of them
+// ask one question at once.
+type sharedAnswers struct {
+	mu sync.Mutex
+	by map[string]sharedAnswer
+}
+
+// sharedAnswer is one answer of sharedAnswers: its text, the writer's call that made it, and the
+// candidate of the lane that made it.
+type sharedAnswer struct {
+	text  string
+	call  Call
+	model string
+}
+
+// writerAnswer is the writer's answer to the side question about the text as it stands. In a
+// lockstep run the answer is made once for the case, the text and the question, and shared
+// (sharedAnswers). A lane that takes another lane's answer records the call that made it, with
+// SharedFrom naming that lane's model, so the change's cost per text and its wait hold the call
+// as a run of one model holds it. The local Dispatch's question names the ask by its address, and
+// each lane opens an ask of its own, so the ask's id is the one part of the question that differs
+// from lane to lane: askID, which the key leaves out ("" where the question names no ask). One
+// call makes the answer for every lane, so it counts as one call of the case (Writer.marked).
+func (r *changeRun) writerAnswer(ctx context.Context, t *textRun, question, askID string) (string, Call, error) {
+	if r.answers == nil {
+		return r.writer.Answer(ctx, t.turn(question))
+	}
+	asked := question
+	if askID != "" {
+		asked = strings.ReplaceAll(question, askID, "")
+	}
+	key := sha256Hex([]byte(t.c.ID + "\x00" + t.text + "\x00" + asked))
+	r.answers.mu.Lock()
+	made, ok := r.answers.by[key]
+	r.answers.mu.Unlock()
+	if ok {
+		call := made.call
+		call.SharedFrom = made.model
+		return made.text, call, nil
+	}
+	turn := t.turn(question)
+	turn.lanes = 1
+	text, call, err := r.writer.Answer(ctx, turn)
+	if err == nil {
+		r.answers.mu.Lock()
+		r.answers.by[key] = sharedAnswer{text: text, call: call, model: r.candidate}
+		r.answers.mu.Unlock()
+	}
+	return text, call, err
+}
+
 // answerSideQuestion waits for the side question match accepts, which the local Dispatch sends the
-// writer through the fake Envoy, has the writer answer it, and replies as the writer session.
-func (r *changeRun) answerSideQuestion(ctx context.Context, t *textRun, match func(fakeSend) bool) sideAnswer {
+// writer through the fake Envoy about the ask askID, has the writer answer it, and replies as the
+// writer session.
+func (r *changeRun) answerSideQuestion(ctx context.Context, t *textRun, askID string, match func(fakeSend) bool) sideAnswer {
 	send, err := r.envoy.await(ctx, r.poll, func(s fakeSend) bool { return s.Target == t.writer && match(s) })
 	if err != nil {
 		if ctx.Err() != nil {
@@ -652,7 +709,7 @@ func (r *changeRun) answerSideQuestion(ctx context.Context, t *textRun, match fu
 		}
 		return sideAnswer{err: err}
 	}
-	answer, call, err := r.writer.Answer(ctx, t.turn(send.Body))
+	answer, call, err := r.writerAnswer(ctx, t, send.Body, askID)
 	if err != nil {
 		return sideAnswer{call: call, err: err}
 	}
@@ -685,7 +742,7 @@ func (r *changeRun) rewriteStep(ctx context.Context, t *textRun) error {
 		if err != nil {
 			return err
 		}
-		text, call, err := r.writer.Answer(ctx, t.turn(question))
+		text, call, err := r.writerAnswer(ctx, t, question, "")
 		t.add(call)
 		t.out.WaitSeconds += call.Seconds
 		if err != nil {
@@ -732,7 +789,9 @@ type askRead struct {
 }
 
 // rewriteAsk is a person's Rewrite of the ask id in the local Dispatch, the reader pressing it: the
-// wait runs from the press to the rewrite's end.
+// wait runs from the press to the rewrite's end. Where the writer's answer came from another lane
+// of a lockstep run, at once, the wait also holds the time of the call that made it, which a
+// person waits for as in that lane.
 func (r *changeRun) rewriteAsk(ctx context.Context, t *textRun, id string) error {
 	sideCtx, stop := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -741,7 +800,7 @@ func (r *changeRun) rewriteAsk(ctx context.Context, t *textRun, id string) error
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			side = r.answerSideQuestion(sideCtx, t, func(s fakeSend) bool { return strings.Contains(s.Body, id) })
+			side = r.answerSideQuestion(sideCtx, t, id, func(s fakeSend) bool { return strings.Contains(s.Body, id) })
 		}()
 	}
 	started := time.Now()
@@ -765,6 +824,9 @@ func (r *changeRun) rewriteAsk(ctx context.Context, t *textRun, id string) error
 	seconds := time.Since(started).Seconds()
 	stop()
 	wg.Wait()
+	if side.call.SharedFrom != "" {
+		seconds += side.call.Seconds
+	}
 	t.add(side.call)
 	if err != nil {
 		return err
@@ -848,6 +910,7 @@ func (r *changeRun) defineStep(ctx context.Context, t *textRun) error {
 		return nil
 	}
 	body := map[string]any{"words": words}
+	askID := ""
 	switch doc := t.localDocument(); {
 	case t.kind == reviewer.KindAsk && t.loaded.Issue != "":
 		id, refused, err := r.openAsk(ctx, t)
@@ -858,7 +921,7 @@ func (r *changeRun) defineStep(ctx context.Context, t *textRun) error {
 			t.trace(changeDefine, "ask_refused", refused)
 			return r.defineComponent(ctx, t, words)
 		}
-		body["ask_id"] = id
+		body["ask_id"], askID = id, id
 	case t.kind == reviewer.KindDocument && doc != "":
 		body["document"] = doc
 	default:
@@ -870,9 +933,15 @@ func (r *changeRun) defineStep(ctx context.Context, t *textRun) error {
 		return err
 	}
 	t.add(r.priced(read.Calls, time.Since(started).Seconds())...)
+	// shared is the time of the writer's call that another lane of a lockstep run made, whose
+	// answer this lane took at once: the person waits for it as in that lane.
+	shared := 0.0
 	if read.Agent.State == "waiting" && !t.session.Empty() {
-		side := r.answerSideQuestion(ctx, t, func(s fakeSend) bool { return s.ID == read.ID })
+		side := r.answerSideQuestion(ctx, t, askID, func(s fakeSend) bool { return s.ID == read.ID })
 		t.add(side.call)
+		if side.call.SharedFrom != "" {
+			shared = side.call.Seconds
+		}
 		if side.err != nil {
 			return fmt.Errorf("the writer's answer to the side question: %w", side.err)
 		}
@@ -888,7 +957,7 @@ func (r *changeRun) defineStep(ctx context.Context, t *textRun) error {
 			}
 		}
 	}
-	t.out.WaitSeconds += time.Since(started).Seconds()
+	t.out.WaitSeconds += time.Since(started).Seconds() + shared
 	t.out.Definition = definitionText(read.Definitions, read.Failure, read.Agent.Answer)
 	t.out.WriterAnswer = read.Agent.Answer
 	t.trace(changeDefine, "defined", fmt.Sprintf("the server's Define; the agent's answer: %s", cmp.Or(read.Agent.State, "none")))
@@ -915,7 +984,7 @@ func (r *changeRun) defineComponent(ctx context.Context, t *textRun, words []str
 		if err != nil {
 			return err
 		}
-		text, call, err := r.writer.Answer(ctx, t.turn(question))
+		text, call, err := r.writerAnswer(ctx, t, question, "")
 		t.add(call)
 		t.out.WaitSeconds += call.Seconds
 		if err != nil {

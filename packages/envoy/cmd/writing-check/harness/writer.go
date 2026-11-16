@@ -61,27 +61,37 @@ const (
 // Writer is the writer agent the harness plays (plan Decision 20): the Claude model of
 // candidates.yaml's writer role, given Dispatch's record of the case, its own text, the message
 // Dispatch sent it, and its session up to the text where the case has one. Only a claude.Client
-// takes the session (claude.SessionText). Marked are the prompts whose calls carry the cache
-// mark: those the change can call two or more times for one case (changePlan.writerMarks).
+// takes the session (claude.SessionText). Calls are the most calls of each prompt that one lane's
+// change makes for one case (changePlan.writerCalls), which decide the cache mark (marked).
 type Writer struct {
-	Model  *claude.Client
-	Marked map[string]bool
+	Model *claude.Client
+	Calls map[string]int
 }
 
-// writerTurn is one message Dispatch sends the writer about a case's text.
+// marked says the calls of prompt for a case carry the cache mark: where lanes lanes that make
+// the change of the case can call it two or more times in all. They send the same prefix, and
+// they go one after another (scorer.scoreCase), so each after the first reads the prefix from the
+// provider's cache. A call that one lane alone can make once goes unmarked.
+func (w *Writer) marked(prompt string, lanes int) bool {
+	return w.Calls[prompt]*max(lanes, 1) >= 2
+}
+
+// writerTurn is one message Dispatch sends the writer about a case's text. lanes is the number of
+// the process's lanes whose changes make this turn's calls for the case.
 type writerTurn struct {
 	kind    string
 	text    string
 	record  string
 	session claude.SessionText
 	message string
+	lanes   int
 }
 
 // call makes the writer's call for prompt with the turn's inputs and its session, if any. The
 // record and the session part, which every turn of a case sends the same, go first as Shared,
 // and the writer's text and Dispatch's message, which change from turn to turn, go after them.
-// A call of a Marked prompt marks the record and the session part, so a later call of the case
-// with the same prompt (change 3's next round) reads them from the provider's cache.
+// A marked call marks the record and the session part, so a later call of the case with the same
+// prompt (change 3's next round, or another model's lane) reads them from the provider's cache.
 func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTurn, schema json.RawMessage) (llm.Response, error) {
 	var b strings.Builder
 	if err := writerPrompts.ExecuteTemplate(&b, prompt, writerData{
@@ -91,7 +101,7 @@ func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTu
 	}
 	req := llm.Request{
 		Purpose: purpose, System: strings.TrimSpace(b.String()) + "\n",
-		Shared: []string{strings.TrimSpace(turn.record) + "\n"}, Mark: w.Marked[prompt],
+		Shared: []string{strings.TrimSpace(turn.record) + "\n"}, Mark: w.marked(prompt, turn.lanes),
 		User:   tag("your_text", turn.text) + tag("dispatch_message", turn.message),
 		Schema: schema, MaxTokens: writerMaxTokens,
 	}

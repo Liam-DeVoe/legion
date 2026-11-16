@@ -32,7 +32,7 @@ go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bund
 go run ./cmd/writing-check dataset named --doc <issue>/<document>@<version>[,<version>...] [--doc ...] --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...]] [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
 go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
@@ -1259,16 +1259,21 @@ the cache write at 1.25 times that price. The blocks a call sends, and their ord
 whether it is marked or not.
 
 - The grader counts its calls before it sends them (`Grader.Plan`). `score` counts the calls of a
-  case's judgements before the case's first grading call. `grader-test` and `phrases-labels`
-  count the calls of every input before their first call. A judgement counts one call, and
-  `phrases` one call for each 30 candidate sentences. A judgement whose grade the run takes from
-  `--grades-from` counts none. A judgement of the fresh reader's answer counts one call while
-  the reader has not answered yet.
-- The counts add up over the run. A grading call is marked where its prefix counts two or more
-  calls. Under the final input modes, an answer case's `answered` and `first_paragraph` read the
-  same parts, so both calls are marked. Under change 1, `undefined` is the only judgement that
-  reads the session part, so its call is unmarked. Where a change made the text new, `lost`,
-  `added` and `undefined` read the same parts, so the three calls are marked.
+  case's judgements before the case's first grading call. A lockstep run (see "Lockstep") counts
+  the calls of the case's texts of every model before the first of them. `grader-test` and
+  `phrases-labels` count the calls of every input before their first call. A judgement counts one
+  call, and `phrases` one call for each 30 candidate sentences. A judgement whose grade the run
+  takes from `--grades-from` counts none. A judgement of the fresh reader's answer counts one call
+  while the reader has not answered yet.
+- The counts add up over the run, and over every model of a lockstep run. A grading call is
+  marked where its prefix counts two or more calls. Under the final input modes, an answer case's
+  `answered` and `first_paragraph` read the same parts, so both calls are marked. Under change 1,
+  `undefined` is the only judgement that reads the session part, so its call is unmarked. Where a
+  change made the text new, `lost`, `added` and `undefined` read the same parts, so the three calls
+  are marked. In a lockstep run, the models' `undefined` calls of a case read the same parts
+  where the grader reads the same writer's answer for each (changes 5 and 6 share one answer, see
+  "Lockstep"; the other changes have none), so they are marked where the run has two models or
+  more.
 - Every text's `phrases` calls send the same prefix, so a `phrases` call is marked once the run
   has counted two or more of them. In `score`, a case counts its calls only when it starts. So
   the first texts' `phrases` calls can go unmarked when no other case has counted its calls yet.
@@ -1276,11 +1281,20 @@ whether it is marked or not.
   reply, since the provider serves a cached prefix only once a call that wrote it has begun to
   answer. An unmarked call waits for none.
 - A fallback grader's call is unmarked: no count knows that it will be made.
-- The writer marks the calls of a prompt where the change can call the writer with that prompt
-  two or more times for one case. Change 3 calls it once in each round of review, up to
-  `--rounds` (default 2). So change 3 marks its writer calls where `--rounds` is 2 or more.
-  Changes 2, 5, 6 and 7a call the writer once for a case, and change 4 does not call it. Their
-  calls are unmarked.
+- The writer marks the calls of a prompt where the case's calls of it can be two or more. Its
+  calls of a case send the same prefix: the prompt, its schema, the record and the session part.
+  Change 3 calls the writer once in each round of review, up to `--rounds` (default 2). So
+  change 3 marks its writer calls where `--rounds` is 2 or more. Changes 2, 5, 6 and 7a call the
+  writer once for a case, and change 4 does not call it. In a run of one model their calls are
+  unmarked.
+- A lockstep run counts the writer's calls of a case over its models, as the grader counts its
+  own: the calls of one model times the models that make the change of the case. So change 7a's
+  writer calls, and change 3's with `--rounds 1`, are marked where two models or more score the
+  case. The models make the change of a case one after another, so each writer call after the
+  first reads the prefix from the cache. The count is of the calls the models can make: where the
+  check of only one model finds something, its one writer call is marked all the same. The side
+  answer of changes 5 and 6, which one call makes for every model (see "Lockstep"), counts as one
+  call and stays unmarked.
 
 The mark is not one of a grade's inputs. `input_sha256` (see "Grades of another run") is the same
 for a marked call and an unmarked one, so `--grades-from` takes grades across the two.
@@ -1311,7 +1325,8 @@ Every model call of the process passes the pacer (`llm.Pacer`, which the run's `
 holds). These are the grader and its fallbacks, the writer and the fresh readers, with every
 retry and every reply asked again. They are also the calls to the candidate that the harness
 makes itself: change 7a's detector reader, and Rewrite and Define where the harness calls the
-component (see "The changes").
+component (see "The changes"). A lockstep run (see "Lockstep") is one process: one pacer holds
+the calls of all its models together to N.
 
 - Before each attempt, the pacer charges the attempt's estimate: the bytes of its system prompt,
   schema, shared blocks and user message, at four bytes a token. The pacer leaves the prefix out
@@ -1337,9 +1352,10 @@ Dispatch is a process of its own, and only its own settings bound those calls.
 `run.json` records the setting as `uncached_input_per_minute` (0 for none), so a run that
 continues in a directory must give the same value. `scores.md` gives the uncached input of this
 run's own calls and the most of it in any one minute; `scores.json` holds them as
-`uncached_input_this_run`. The busiest minute can pass N: an attempt larger than N goes alone, and
-a reply can report more than its estimate. `grader-test` records the setting and the same counts
-in `grader-test.json` and `grader-test.md`.
+`uncached_input_this_run`. In a lockstep run these are the whole process's, in each model's
+`scores.json`. The busiest minute can pass N: an attempt larger than N goes alone, and a reply
+can report more than its estimate. `grader-test` records the setting and the same counts in
+`grader-test.json` and `grader-test.md`.
 
 ### Session text
 
@@ -1373,16 +1389,17 @@ writes the rows as JSON.
 | --- | --- |
 | `--change` | The change to score: `1` to `6`, `7a`, or a combination of `combinations.yaml` (see "The changes"). |
 | `--model` | The candidate the change calls: the reviewer's, Rewrite's and Define's model and the detector's reader, for a change that holds 3, 4, 5, 6 or 7a. |
+| `--models` | In place of `--model`: candidates, comma-separated, that one process scores the change with, case by case (see "Lockstep"). Each model's run goes to `<out>/<model>`. |
 | `--local`, `--loaded` | The `local.json` of `harness local` and the `loaded.jsonl` of `harness load`, for a change that holds 2 to 6. |
 | `--rounds`, `--unedited` | Change 3: the reviews of one text (default 2), after which the writer's last edit posts; and what posts for a case with no session, as `DISPATCH_REVIEWER_UNEDITED` says (`rewrite`, the default, or `as_written`). |
 | `--cases`, `--sessions` | The build directory of `dataset build`, or the directory of `dataset named`, and the directory of `dataset sessions`. |
-| `--out` | The run's directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
+| `--out` | The run's directory, or under `--models` the directory that holds each model's run directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
 | `--groups` | The case groups to score (default all four; `question` alone for a change that holds 6). |
 | `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed. |
 | `--seed`, `--draws` | The bootstrap's seed (default 3231) and resamples (default 10,000). |
 | `--session-chars` | The bytes of a case's session that a grading call reads. |
-| `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run at one commit. |
+| `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run of a cell at one commit (see below). |
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
 | `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
 | `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. |
@@ -1469,10 +1486,91 @@ and a group is taken when it brings the strata nearer their targets. So a score'
 clustered over the same groups on a sample as on the whole part. `run.json` records the sample:
 its size, seed, cases, split groups, and each stratum's cases, target and draw.
 
-A run of the held-out part appends one line to the exposure log before it reads a case: the
-commit, the time, the changes, the models and the output directory. It refuses to start when the
-log holds a run at the same commit, unless `--new-run '<reason>'` gives the reason, which the
-line records.
+A run of the held-out part appends one line to the exposure log before it scores a case: the
+commit, the time, the changes, the models by role and the output directory, as an absolute path.
+The held-out part is scored once at a commit for each cell of the grid: a change with one
+candidate, or a change that calls none. A line's cells are its changes with each candidate that
+its `models.candidate` names. A lockstep run (see "Lockstep") names all its models there,
+comma-separated, so its one line holds a cell for each model.
+
+So a held-out run of several changes, run as several processes at one commit, is one line for
+each process, and no line has a reason. For example, change 1, change 2, and each of changes 3,
+4, 5, 6 and 7a as a lockstep of the candidates make seven lines at the named commit. Together
+they are the one run over the held-out part at that commit.
+
+A run is refused when the log holds a line at the same commit that scored one of its cells,
+except in two cases:
+
+- `--new-run '<reason>'` gives the reason for a second run of those cells. The line records the
+  reason.
+- The run continues that run. The latest line at the commit that scored one of its cells has
+  the same `--out` and the same cells. The run scores the cases that hold no result: those with
+  no line, and those whose line holds an error. Its line records the time of the line that began
+  the run as `continues`, and the results it scores again as `retried`, each model's counted. It
+  scores no case that holds a result, and at one commit nothing that decides a score has
+  changed, so it is no second exposure. So a run that stopped part way, for a lost pod or a 429
+  storm, goes on with the same command.
+
+A continuation is refused once every case of every model holds a result: nothing is left to
+continue. A run of those cells then needs `--new-run`.
+
+### Lockstep
+
+`score --change N --models m1,m2,...` scores change N with each of the models in one process.
+Each model's run is a lane, in a directory of its own, `<out>/<model>`. A lane's directory holds
+what a run of `--model` with that model writes: `cases.jsonl`, `run.json`, `scores.json` and
+`scores.md`. Its `run.json` is the same, byte for byte. So `score --model m --out <out>/m`
+continues a lane, and `--models` continues a run of `--model` that is in `<out>/<model>`. The
+session parts (`session-excerpts.jsonl.gz`) are in `<out>`, once for all the lanes.
+
+The run goes case by case, `--concurrency` cases at once:
+
+1. The change runs for each model that has no result for the case, one model after another,
+   through the local Dispatch as in a run of one model. Each request names its model.
+2. The grader plans the grading calls of the case's texts of all the models together, before it
+   sends the first (see "The prompt cache"). A prefix that the models' calls send alike, such as
+   the record and the session part, counts its calls over all of them and is marked.
+3. The readers' and the grader's calls of all the models go at once. So the calls of one prefix
+   go close together, inside the cache's life of five minutes: the first writes the prefix, and
+   the others read it.
+4. Each model's result goes to the end of its own `cases.jsonl`.
+
+Each lane's figures are the figures of a run of `--model`: the same function (`computeFigures`)
+of the lane's results. Only the facts of the process differ. `scores.json` names the models of
+the lockstep as `lockstep`, and the wall time and the uncached input are the whole process's. A
+lane's model calls can hold more marked calls than a run of one model, since the plan counts the
+calls of every model.
+
+A lockstep run that continues scores, for each model, the cases that model holds no result for.
+A case that one model lacks goes to that model alone.
+
+Change 5 and change 6 ask the writer one side question. The question does not depend on the
+candidate. The local Dispatch writes it from the ask before it calls the candidate
+(`reviewer.RewriteQuestion` in `api/ask_rewrite.go`, `reviewer.DefineQuestion` in
+`api/definitions.go`), and the harness writes the component's question from the case in the same
+way. Each lane opens an ask of its own, so the questions of two lanes differ only by the ask's id
+in the ask's address. So a lockstep run makes the writer's answer once for each case, text and
+question, with the ask's id left out, and gives the same answer to every model's run:
+
+- The first lane of the case that asks makes the answer. Each other lane calls no writer. It
+  replies the answer to its own ask's question, and records the writer's call with
+  `shared_from`: the model of the lane that made it.
+- The shared call counts in the lane's change cost per text and in its wait, as in a run of one
+  model. Where the local Dispatch waited for the answer, the wait holds the call's time. The call
+  is not in the lane's model calls, since the lane did not make it, so the lanes' model tables add
+  up to what the process spent. `scores.md` gives the number of shared answers
+  (`shared_writer_answers` in `scores.json`).
+- A lane whose writer's call failed shares nothing, and the next lane makes its own.
+- The process keeps the answers in memory only. A continued run makes the answer again for a case
+  that no lane of this process answered.
+
+Where the writer's call depends on the candidate, each model's run makes its own: change 3's
+action on the reviewer's findings, change 7a's text written again after the detector's findings,
+and, in a combination, a side question about a text that an earlier step made. Change 3's and
+change 7a's calls of a case send the same record and session part for every model, so they count
+together and are marked where two calls or more can send them (see "The prompt cache"). A side
+answer counts as one call in a lockstep run, so it stays unmarked. Change 2 calls no candidate, so
+it takes no `--models`.
 
 ### The changes
 
@@ -1604,7 +1702,8 @@ another layout, another vocabulary or another grader. It gives that judgement it
 
 An answer or a grade that the run takes is marked `reused` and keeps the call of the run that
 made it. The figures count no call and no cost for it: the model table and the cost in
-`scores.md` hold only the calls this run made. The change's own calls are always this run's.
+`scores.md` hold only the calls this run made. The change's own calls are always this run's, but
+for a writer's answer that another model's run of a lockstep made (see "Lockstep").
 `scores.md` gives the number of answers and grades the run took (`reused_answers` and
 `reused_grades` in `scores.json`).
 

@@ -142,9 +142,9 @@ func (m *modelFlags) candidateModel(cfg Config, id string, runner *llm.Runner) (
 	return nil, llm.NewFoundry(m.foundryConfig(), tokens, id, cfg.Prices.Prices[id].agentloop(), runner), nil
 }
 
-// connect gives the run what it calls: the writer, the candidate, the local Dispatch, its fake
-// Envoy and its database. For Rewrite and Define it makes the writer session of each case with a
-// session live in the fake Envoy, with a host that takes side questions.
+// connect gives the run what its lanes share: the writer, the local Dispatch, its fake Envoy and
+// its database. For Rewrite and Define it makes the writer session of each case with a session
+// live in the fake Envoy, with a host that takes side questions.
 func (r *changeRun) connect(ctx context.Context, m *modelFlags, inst LocalInstance, runner *llm.Runner, sessions map[string]claude.SessionText, ds *Dataset, cases []*Case) error {
 	r.ds, r.runner, r.sessions = ds, runner, sessions
 	if r.plan.writer() {
@@ -152,18 +152,7 @@ func (r *changeRun) connect(ctx context.Context, m *modelFlags, inst LocalInstan
 		if err != nil {
 			return err
 		}
-		r.writer = &Writer{Model: model, Marked: r.plan.writerMarks(r.rounds)}
-	}
-	if r.candidate != "" {
-		c, f, err := m.candidateModel(r.cfg, r.candidate, runner)
-		if err != nil {
-			return err
-		}
-		if c != nil {
-			r.candModel = c.Model()
-		} else {
-			r.candModel = f.Model()
-		}
+		r.writer = &Writer{Model: model, Calls: r.plan.writerCalls(r.rounds)}
 	}
 	if !r.plan.local() {
 		return nil
@@ -184,6 +173,35 @@ func (r *changeRun) connect(ctx context.Context, m *modelFlags, inst LocalInstan
 		}
 	}
 	return r.envoy.seed(ctx, writers)
+}
+
+// withCandidates are the connected run's change with each of candidates, one for each lane of a
+// score process: a copy of the run that calls that candidate ("" for a change that calls none).
+// The lanes of a lockstep run (lockstep) share the writer's answers to the side questions that do
+// not depend on the candidate (sharedAnswers).
+func (r *changeRun) withCandidates(m *modelFlags, candidates []string, lockstep bool) ([]Change, error) {
+	var answers *sharedAnswers
+	if lockstep {
+		answers = &sharedAnswers{by: map[string]sharedAnswer{}}
+	}
+	out := make([]Change, len(candidates))
+	for i, id := range candidates {
+		own := *r
+		own.candidate, own.answers = id, answers
+		if id != "" {
+			c, f, err := m.candidateModel(r.cfg, id, r.runner)
+			if err != nil {
+				return nil, err
+			}
+			if c != nil {
+				own.candModel = c.Model()
+			} else {
+				own.candModel = f.Model()
+			}
+		}
+		out[i] = &own
+	}
+	return out, nil
 }
 
 // databaseRewriteRead reads an ask's Rewrite in the local Dispatch's database, the one `harness

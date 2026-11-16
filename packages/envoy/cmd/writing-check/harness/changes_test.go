@@ -115,20 +115,23 @@ func TestAnAskSplitsAndJoinsBack(t *testing.T) {
 
 // fakeDispatch is the local Dispatch and its fake Envoy as the changes call them, scripted: the
 // draft route answers its scripted answers in turn, a Rewrite and a Define send the writer one
-// side question when the writer is live, and every request is kept.
+// side question when the writer is live, and every request is kept. The n-th ask opened is
+// "ask-n", its Rewrite's side question "question-n", and the n-th definition "definition-n".
 type fakeDispatch struct {
-	t        *testing.T
-	server   *httptest.Server
-	mu       sync.Mutex
-	drafts   []draftAnswer
-	draftIn  []map[string]any
-	headers  []string
-	live     []string
-	sends    []map[string]any
-	replies  map[string]string
-	rewrites map[string]string
-	defined  map[string]string
-	rules    []map[string]any
+	t           *testing.T
+	server      *httptest.Server
+	mu          sync.Mutex
+	drafts      []draftAnswer
+	draftIn     []map[string]any
+	headers     []string
+	live        []string
+	sends       []map[string]any
+	replies     map[string]string
+	rewrites    map[string]string
+	defined     map[string]string
+	rules       []map[string]any
+	asks        int
+	definitions int
 }
 
 func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
@@ -173,7 +176,10 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		write(w, http.StatusOK, answer)
 	})
 	mux.HandleFunc("POST /api/v1/issues/{key}/asks", func(w http.ResponseWriter, r *http.Request) {
-		write(w, http.StatusCreated, map[string]string{"id": "ask-1"})
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.asks++
+		write(w, http.StatusCreated, map[string]string{"id": "ask-" + strconv.Itoa(f.asks)})
 	})
 	mux.HandleFunc("POST /api/v1/asks/{id}/rewrite", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -181,7 +187,7 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		f.headers = append(f.headers, r.Header.Get("Dispatch-Test-Model"))
 		f.rewrites[r.PathValue("id")] = "rewriting"
 		if slices.Contains(f.live, changeWriter) {
-			send("question-1", "A person asked Dispatch to write your ask dispatch://TEST-1/ask/"+r.PathValue("id")+" again.")
+			send("question-"+strings.TrimPrefix(r.PathValue("id"), "ask-"), "A person asked Dispatch to write your ask dispatch://TEST-1/ask/"+r.PathValue("id")+" again.")
 		} else {
 			f.rewrites[r.PathValue("id")] = "rewritten"
 		}
@@ -196,16 +202,20 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		}, "rewrite": map[string]string{"state": f.rewrites[r.PathValue("id")]}}})
 	})
 	mux.HandleFunc("POST /api/v1/definitions", func(w http.ResponseWriter, r *http.Request) {
+		body := read(r)
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.headers = append(f.headers, r.Header.Get("Dispatch-Test-Model"))
+		f.definitions++
+		id := "definition-" + strconv.Itoa(f.definitions)
 		state := "none"
 		if slices.Contains(f.live, changeWriter) {
 			state = "waiting"
-			send("definition-1", "A person reads your ask. They selected these words in it and asked what they mean: zork train")
+			ask, _ := body["ask_id"].(string)
+			send(id, "A person reads your ask dispatch://TEST-1/ask/"+ask+". They selected these words in it and asked what they mean: zork train")
 		}
-		f.defined["definition-1"] = state
-		write(w, http.StatusCreated, f.definition("definition-1"))
+		f.defined[id] = state
+		write(w, http.StatusCreated, f.definition(id))
 	})
 	mux.HandleFunc("GET /api/v1/definitions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -218,11 +228,11 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		defer f.mu.Unlock()
 		answer, _ := body["body"].(string)
 		f.replies[r.PathValue("id")] = answer
-		switch r.PathValue("id") {
-		case "question-1":
-			f.rewrites["ask-1"] = "rewritten"
-		case "definition-1":
-			f.defined["definition-1"] = "answered"
+		switch id := r.PathValue("id"); {
+		case strings.HasPrefix(id, "question-"):
+			f.rewrites["ask-"+strings.TrimPrefix(id, "question-")] = "rewritten"
+		case strings.HasPrefix(id, "definition-"):
+			f.defined[id] = "answered"
 		}
 		write(w, http.StatusOK, map[string]string{"id": r.PathValue("id")})
 	})
@@ -363,7 +373,7 @@ func changeRig(t *testing.T, steps []string, fake *fakeDispatch) (*changeRun, *m
 	}
 	run := &changeRun{
 		plan: plan, ds: ds, cfg: cfg, candidate: candidateID, candModel: candidate.Model(), runner: runner,
-		writer: &Writer{Model: writer, Marked: plan.writerMarks(2)}, rules: []reviewer.RuleSet{reviewer.RuleNoslop}, rounds: 2, unedited: uneditedRewrite,
+		writer: &Writer{Model: writer, Calls: plan.writerCalls(2)}, rules: []reviewer.RuleSet{reviewer.RuleNoslop}, rounds: 2, unedited: uneditedRewrite,
 		sessions: changeSessions(t), tries: 2, backoff: time.Millisecond, poll: 10 * time.Millisecond, loaded: loaded,
 	}
 	if fake != nil {
@@ -379,10 +389,10 @@ func changeRig(t *testing.T, steps []string, fake *fakeDispatch) (*changeRun, *m
 	return run, stand
 }
 
-// apply is the change of the case id, which must end with no error.
+// apply is the change of the case id, which must end with no error, as a run of one model makes it.
 func apply(t *testing.T, run *changeRun, id string) Applied {
 	t.Helper()
-	applied, err := run.Apply(t.Context(), run.ds.Case(id))
+	applied, err := run.Apply(t.Context(), run.ds.Case(id), 1)
 	if err != nil {
 		t.Fatalf("%s: %v", id, err)
 	}
@@ -507,13 +517,16 @@ func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
 	)
 	run, _ := changeRig(t, []string{changeReviewRewrite}, fake)
 	// Both texts post as written, so lost and added are by construction and no grader is called.
-	s := &scorer{ds: run.ds, change: run, sessions: run.sessions, only: []Judgement{JLost, JAdded}}
-	path := filepath.Join(t.TempDir(), "cases.jsonl")
+	s := &scorer{ds: run.ds, sessions: run.sessions, only: []Judgement{JLost, JAdded}}
 	cases := []*Case{run.ds.Case("question/comment:c2@20"), run.ds.Case("question/ask:k1@11")}
-	if _, failed, err := scoreAll(t.Context(), s, cases, path, 1, io.Discard, time.Now()); err != nil || failed != 0 {
-		t.Fatalf("score: %d failed, %v", failed, err)
+	l := &lane{change: run, out: t.TempDir(), todo: map[string]bool{}}
+	for _, c := range cases {
+		l.todo[c.ID] = true
 	}
-	data, err := os.ReadFile(path)
+	if err := scoreAll(t.Context(), s, []*lane{l}, cases, 1, io.Discard, time.Now()); err != nil || l.failed != 0 {
+		t.Fatalf("score: %d failed, %v", l.failed, err)
+	}
+	data, err := os.ReadFile(filepath.Join(l.out, "cases.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,8 +27,10 @@ import (
 type Change interface {
 	// Name is the change's number, as --change names it.
 	Name() string
-	// Apply is the text a person sees after the change, with what it cost.
-	Apply(ctx context.Context, c *Case) (Applied, error)
+	// Apply is the text a person sees after the change, with what it cost. lanes is the number
+	// of the process's lanes that make the change of c one after another (scorer.scoreCase): the
+	// writer's calls of one prefix for the case count over them (Writer.marked).
+	Apply(ctx context.Context, c *Case, lanes int) (Applied, error)
 }
 
 // Applied is what a change made of one case's text.
@@ -53,7 +56,7 @@ type asSeen struct{}
 
 func (asSeen) Name() string { return "1" }
 
-func (asSeen) Apply(_ context.Context, c *Case) (Applied, error) {
+func (asSeen) Apply(_ context.Context, c *Case, _ int) (Applied, error) {
 	return Applied{Text: c.Agent.Text, Same: true}, nil
 }
 
@@ -95,9 +98,14 @@ type CaseResult struct {
 }
 
 // calls is every model call the result records as this run's: the change's, the readers' and the
-// grader's. An answer or a grade the run took from another run is that run's call, not this one's.
+// grader's. An answer or a grade the run took from another run is that run's call, not this one's;
+// so is a writer's answer that another model's run of a lockstep made (Call.SharedFrom).
 func (r *CaseResult) calls() (change, measure []Call) {
-	change = r.ChangeCalls
+	for _, c := range r.ChangeCalls {
+		if c.SharedFrom == "" {
+			change = append(change, c)
+		}
+	}
 	for _, a := range []*Answer{r.Reader, r.FirstParagraphReader} {
 		if a != nil && a.Call.Model != "" && !a.Reused {
 			measure = append(measure, a.Call)
@@ -116,10 +124,10 @@ func (r *CaseResult) calls() (change, measure []Call) {
 	return change, measure
 }
 
-// scorer scores the cases of one run.
+// scorer scores the cases of a score process, for each of its lanes: the one run of --model, or
+// each model's run of a lockstep (--models). The lanes share the fresh reader and the grader.
 type scorer struct {
 	ds       *Dataset
-	change   Change
 	reader   *Reader
 	grader   *Grader
 	sessions map[string]claude.SessionText
@@ -144,14 +152,70 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// scoreCase applies the change to one case and gives every judgement the case's group takes.
-func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
+// reading is one read of a case by a fresh reader: of its text (answered), or of the first
+// paragraph of an answer case's text (first_paragraph). to is the result's field the answer goes
+// to. taken is the answer the case takes in place of the reader's call, nil where the reader
+// answers in this run: the answer a run named by --readers-from gave to this case's same text, so
+// two runs that compare graders grade the same answers; else one of the answers of the runs
+// --grades-from names that read the same inputs.
+type reading struct {
+	j     Judgement
+	to    **Answer
+	call  readerCall
+	taken *Answer
+}
+
+// caseRun is one case as one change made its text, ready to grade: its result so far, the fresh
+// readers' readings, the judgements it plans (the readings' first, each with the reader's answer
+// where the case takes it), and what the runs --grades-from names hold for its same text.
+type caseRun struct {
+	res      CaseResult
+	readings []reading
+	planned  []GradeInput
+	earlier  map[Judgement][]*Grade
+}
+
+// scoreCase scores case c with each of changes: the change of each lane that scores the case. It
+// applies the changes one after another, so the writer's calls of one prefix go one after another
+// too and count over the lanes (Change.Apply). Then it plans the judgements of every one of them
+// with the grader before the first is sent, so a prefix that the lanes' calls send alike (the
+// case's record and session part) counts its calls over all of them (Grader.Plan) and is marked.
+// Then it grades them all at once, so the calls of one prefix go close together, inside the
+// cache's life.
+func (s *scorer) scoreCase(ctx context.Context, c *Case, changes []Change) []CaseResult {
+	runs := make([]*caseRun, len(changes))
+	for i, change := range changes {
+		runs[i] = s.prepare(ctx, c, change, len(changes))
+	}
+	for _, cr := range runs {
+		if len(cr.planned) > 0 {
+			s.grader.Plan(cr.planned, cr.earlier)
+		}
+	}
+	out := make([]CaseResult, len(runs))
+	var wg sync.WaitGroup
+	for i, cr := range runs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i] = s.grade(ctx, cr)
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// prepare applies change to case c, as one of lanes lanes that make it (Change.Apply), and plans
+// what the case gets: the fresh readers' readings and every judgement the case's group takes. A
+// change that fails leaves the result with its error, and no reading and no judgement.
+func (s *scorer) prepare(ctx context.Context, c *Case, change Change, lanes int) *caseRun {
 	session := s.sessions[c.ID]
-	res := CaseResult{
+	cr := &caseRun{res: CaseResult{
 		CaseID: c.ID, Group: c.Group, Kind: c.Kind, Part: c.Part, SplitGroup: c.SplitGroup,
 		Conversation: c.Conversation, SessionStatus: s.places[c.ID].Status, Session: !session.Empty(),
-		Change: s.change.Name(), Grades: map[Judgement]*Grade{},
-	}
+		Change: change.Name(), Grades: map[Judgement]*Grade{},
+	}}
+	res := &cr.res
 	if !session.Empty() {
 		d := session.Digest()
 		res.SessionSHA256 = hex.EncodeToString(d[:])
@@ -159,12 +223,12 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	if res.SessionStatus == "" {
 		res.SessionStatus = "no_place"
 	}
-	applied, err := s.change.Apply(ctx, c)
+	applied, err := change.Apply(ctx, c, lanes)
 	res.ChangeCalls, res.WaitSeconds, res.ChangeTrace = applied.Calls, applied.WaitSeconds, applied.Trace
 	if err != nil {
-		res.Error = "change " + s.change.Name() + ": " + err.Error()
+		res.Error = "change " + change.Name() + ": " + err.Error()
 		res.Time = time.Now().UTC().Format(time.RFC3339)
-		return res
+		return cr
 	}
 	text := applied.Text
 	res.Text, res.TextSHA256, res.Words, res.Definition = text, sha256Hex([]byte(text)), Words(text), applied.Definition
@@ -172,20 +236,6 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	question := c.PersonQuestion()
 	reply := c.Group == GroupAnswer
 
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	set := func(j Judgement, g Grade) {
-		mu.Lock()
-		res.Grades[j] = &g
-		mu.Unlock()
-	}
-	run := func(f func()) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			f()
-		}()
-	}
 	// Every judgement gets the case's whole context; the grader's input modes decide what each
 	// call reads of it.
 	base := GradeInput{Reply: reply, Question: question, Original: c.Agent.Text, Text: text, Definition: applied.Definition,
@@ -200,37 +250,23 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	// answers and each judgement's grades. The reader and the grader take one of them where its
 	// inputs were theirs, and call no model.
 	var earlierReaders, earlierFirstReaders []*Answer
-	var earlier map[Judgement][]*Grade
 	for _, results := range s.gradesFrom {
 		r, ok := results[c.ID]
 		if !ok || r.TextSHA256 != res.TextSHA256 {
 			continue
 		}
 		earlierReaders, earlierFirstReaders = append(earlierReaders, r.Reader), append(earlierFirstReaders, r.FirstParagraphReader)
-		if earlier == nil {
-			earlier = map[Judgement][]*Grade{}
+		if cr.earlier == nil {
+			cr.earlier = map[Judgement][]*Grade{}
 		}
 		for j, g := range r.Grades {
-			earlier[j] = append(earlier[j], g)
+			cr.earlier[j] = append(cr.earlier[j], g)
 		}
 	}
 	prior := s.readersFrom[c.ID]
 	if prior.TextSHA256 != res.TextSHA256 {
 		prior = CaseResult{}
 	}
-	// readings are the fresh readers' reads of the case: of its text (answered), and of the
-	// first paragraph of an answer case's text (first_paragraph). taken is the answer the case
-	// takes in place of the reader's call, nil where the reader answers in this run: the answer
-	// a run named by --readers-from gave to this case's same text, so two runs that compare
-	// graders grade the same answers; else one of the answers of the runs --grades-from names
-	// that read the same inputs.
-	type reading struct {
-		j     Judgement
-		to    **Answer
-		call  readerCall
-		taken *Answer
-	}
-	var readings []reading
 	read := func(j Judgement, to **Answer, done *Answer, same []*Answer, text string, firstParagraph bool) {
 		r := reading{j: j, to: to}
 		if done != nil && done.Error == "" {
@@ -241,7 +277,7 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph)
 			r.taken = r.call.reused(same)
 		}
-		readings = append(readings, r)
+		cr.readings = append(cr.readings, r)
 	}
 	if question != "" && s.wants(JAnswered) {
 		read(JAnswered, &res.Reader, prior.Reader, earlierReaders, text, false)
@@ -255,13 +291,12 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	}
 	// planned are the judgements the case gets, the readings' first, each with the reader's
 	// answer where the case takes it. The grader plans their calls before the first is sent.
-	var planned []GradeInput
 	give := func(j Judgement, answer string) {
 		in := base
 		in.Judgement, in.Answer = j, answer
-		planned = append(planned, in)
+		cr.planned = append(cr.planned, in)
 	}
-	for _, r := range readings {
+	for _, r := range cr.readings {
 		answer := ""
 		if r.taken != nil {
 			answer = r.taken.Text
@@ -283,7 +318,7 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 		switch {
 		case !s.wants(j):
 		case applied.Same:
-			set(j, Grade{ByConstruction: true})
+			res.Grades[j] = &Grade{ByConstruction: true}
 		default:
 			give(j, "")
 		}
@@ -291,11 +326,32 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	if applied.Definition != "" && s.wants(JDefine) {
 		give(JDefine, "")
 	}
-	if len(planned) > 0 {
-		s.grader.Plan(planned, earlier)
+	return cr
+}
+
+// grade makes the readings and the judgements the case plans, each at once, and ends its result.
+// The grader has planned them (scoreCase).
+func (s *scorer) grade(ctx context.Context, cr *caseRun) CaseResult {
+	res := &cr.res
+	if res.Error != "" {
+		return *res
 	}
-	grade := func(in GradeInput) { set(in.Judgement, s.grader.GradeOrReuse(ctx, in, earlier[in.Judgement])) }
-	for i, r := range readings {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	set := func(j Judgement, g Grade) {
+		mu.Lock()
+		res.Grades[j] = &g
+		mu.Unlock()
+	}
+	run := func(f func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f()
+		}()
+	}
+	grade := func(in GradeInput) { set(in.Judgement, s.grader.GradeOrReuse(ctx, in, cr.earlier[in.Judgement])) }
+	for i, r := range cr.readings {
 		run(func() {
 			a := r.taken
 			if a == nil {
@@ -306,13 +362,13 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 			*r.to = a
 			mu.Unlock()
 			if a.Error == "" {
-				in := planned[i]
+				in := cr.planned[i]
 				in.Answer = a.Text
 				grade(in)
 			}
 		})
 	}
-	for _, in := range planned[len(readings):] {
+	for _, in := range cr.planned[len(cr.readings):] {
 		run(func() { grade(in) })
 	}
 	wg.Wait()
@@ -330,7 +386,7 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	}
 	res.Error = strings.Join(errs, "; ")
 	res.Time = time.Now().UTC().Format(time.RFC3339)
-	return res
+	return *res
 }
 
 // RunParams are what a run's figures depend on, and the pace of its own model calls. A run that
@@ -476,13 +532,14 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.SetOutput(stderr)
 	changeFlag := fs.String("change", "1", "the change to score: 1 to 6, 7a, or a combination of combinations.yaml")
 	modelFlag := fs.String("model", "", "the candidate of candidates.yaml the change calls (changes 3 to 7a, and a combination that holds one)")
+	modelsFlag := fs.String("models", "", "in place of --model, candidates of candidates.yaml, comma-separated, that one process scores the change with in lockstep: case by case, the change with each, then the grading of all of them together; each model's run goes to <out>/<model>")
 	localPath := fs.String("local", "", "the local.json of `harness local`: the local Dispatch the change calls (changes 2 to 6)")
 	loadedPath := fs.String("loaded", "", "the loaded.jsonl of `harness load` into that local Dispatch")
 	rounds := fs.Int("rounds", 2, "change 3: the reviews of one text, the first and those of the writer's edits; the last edit posts")
 	unedited := fs.String("unedited", uneditedRewrite, "change 3 with no writer session: what posts, as DISPATCH_REVIEWER_UNEDITED says: rewrite or as_written")
 	casesDir := fs.String("cases", "", "the dataset build directory: cases.jsonl.gz and documents.jsonl.gz (required)")
 	sessionsDir := fs.String("sessions", "", "the directory `writing-check dataset sessions` wrote: session-rows.jsonl.gz, places.jsonl, sessions-counts.json (required)")
-	out := fs.String("out", "", "the run's output directory; a run continues the cases it holds no result for (required; keep it under $TMPDIR)")
+	out := fs.String("out", "", "the run's output directory, or under --models the directory of each model's run; a run continues the cases it holds no result for (required; keep it under $TMPDIR)")
 	part := fs.String("part", PartDevelopment, "the part to score: development, or held_out, which the exposure log records")
 	groupsFlag := fs.String("groups", strings.Join(Groups, ","), "the case groups to score, comma-separated")
 	sampleSize := fs.Int("sample", 0, "score a stratified sample of about this many cases, by case group and conversation flag, each split group whole (0: the whole part)")
@@ -492,7 +549,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	sessionChars := fs.Int("session-chars", 30000, "the bytes of a case's session, its newest, that a grading call reads")
 	exposureLog := fs.String("exposure-log", DefaultExposureLog(), "the exposure log a held-out run appends to")
 	commit := fs.String("commit", "", "the commit of a held-out run, for the exposure log (default: git rev-parse HEAD)")
-	newRun := fs.String("new-run", "", "the reason for a second held-out run at one commit")
+	newRun := fs.String("new-run", "", "the reason for a second held-out run of a cell at one commit: a change, with a candidate or with none, that a run at that commit scored")
 	figuresOnly := fs.Bool("figures-only", false, "compute the figures from the results the output directory holds, calling no model")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	graderFlag := fs.String("grader", "", "the grading model of this run in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that is no candidate and plays no other role (default: roles.grader)")
@@ -518,6 +575,13 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return usage(err.Error())
 	}
+	var lockstep []string
+	if *modelsFlag != "" {
+		for _, m := range strings.Split(*modelsFlag, ",") {
+			lockstep = append(lockstep, strings.TrimSpace(m))
+		}
+	}
+	candidateSet := *modelFlag != "" || len(lockstep) > 0
 	groups := strings.Split(*groupsFlag, ",")
 	groupsSet := false
 	fs.Visit(func(f *flag.Flag) { groupsSet = groupsSet || f.Name == "groups" })
@@ -539,10 +603,14 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage("--draws and --session-chars must be above 0, and --sample not below 0")
 	case *part != PartHeldOut && (*newRun != "" || *commit != ""):
 		return usage("--commit and --new-run are for a held-out run")
-	case plan == nil && (*modelFlag != "" || *localPath != "" || *loadedPath != ""):
-		return usage("change 1 calls no model and reads no local Dispatch: give no --model, --local or --loaded")
-	case plan != nil && plan.candidate() != (*modelFlag != ""):
-		return usage(fmt.Sprintf("change %s: --model names the candidate of the reviewer, Rewrite, Define and the detector's reader, which the change calls exactly when it holds 3, 4, 5, 6 or 7a", change.Name()))
+	case *modelFlag != "" && len(lockstep) > 0:
+		return usage("give --model or --models, not both")
+	case slices.Contains(lockstep, "") || len(slices.Compact(slices.Sorted(slices.Values(lockstep)))) != len(lockstep):
+		return usage("--models names an empty model, or one model twice")
+	case plan == nil && (candidateSet || *localPath != "" || *loadedPath != ""):
+		return usage("change 1 calls no model and reads no local Dispatch: give no --model, --models, --local or --loaded")
+	case plan != nil && plan.candidate() != candidateSet:
+		return usage(fmt.Sprintf("change %s: --model or --models names the candidate of the reviewer, Rewrite, Define and the detector's reader, which the change calls exactly when it holds 3, 4, 5, 6 or 7a", change.Name()))
 	case plan != nil && plan.local() && (*localPath == "" || *loadedPath == ""):
 		return usage(fmt.Sprintf("change %s calls the local Dispatch: give --local and --loaded", change.Name()))
 	case *rounds < 1 || (*unedited != uneditedRewrite && *unedited != uneditedAsWritten):
@@ -615,6 +683,12 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fallbacks = append(fallbacks, f.ID)
 	}
 	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleGraderFallback: strings.Join(fallbacks, ","), RoleReader: cfg.Models.Roles.Reader.ID}
+	// candidates are the candidate of each lane: the models of --models, in its order, or the one
+	// of --model, "" for a change that calls none.
+	candidates, candidateFlag := lockstep, "--models"
+	if len(lockstep) == 0 {
+		candidates, candidateFlag = []string{*modelFlag}, "--model"
+	}
 	var run *changeRun
 	var inst LocalInstance
 	if plan != nil {
@@ -623,11 +697,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if plan.writer() {
 			models[RoleWriter] = cfg.Models.Roles.Writer.ID
 		}
-		if *modelFlag != "" {
-			if !slices.ContainsFunc(cfg.Models.Candidates, func(m ModelEntry) bool { return m.ID == *modelFlag }) {
-				return usage(fmt.Sprintf("--model %q is no candidate of candidates.yaml", *modelFlag))
+		for _, m := range candidates {
+			if m != "" && !slices.ContainsFunc(cfg.Models.Candidates, func(e ModelEntry) bool { return e.ID == m }) {
+				return usage(fmt.Sprintf("%s %q is no candidate of candidates.yaml", candidateFlag, m))
 			}
-			run.candidate, models[RoleCandidate] = *modelFlag, *modelFlag
 		}
 		if plan.local() {
 			if inst, err = readLocalInstance(*localPath); err != nil {
@@ -641,38 +714,18 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			}
 		}
 	}
-	// A held-out run is in the exposure log before it reads a case of the part, so a run that
-	// stops after this line, for any reason, still counts as one that read it.
-	if *part == PartHeldOut && !*figuresOnly {
-		c := *commit
-		if c == "" {
-			if c, err = headCommit(); err != nil {
-				return fail(fmt.Errorf("the commit of a held-out run: %w; give --commit", err))
-			}
-		}
-		changed := []string{change.Name()}
-		if plan != nil {
-			changed = plan.changes()
-		}
-		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: changed, Models: models, Reason: *newRun, Out: *out}
-		if err := ClaimHeldOut(*exposureLog, e); err != nil {
-			return fail(err)
-		}
-		fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this held-out run at %s\n", *exposureLog, c)
-	}
 	ds, err := LoadDataset(*casesDir, *part, docLimit)
 	if err != nil {
 		return fail(err)
 	}
 	selected := selectCases(ds.Cases, groups, 0, 0)
 	params := RunParams{
-		Change: change.Name(), Part: *part, Groups: groups, Models: models, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
+		Change: change.Name(), Part: *part, Groups: groups, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
 		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
 		UncachedInputPerMinute: mf.uncachedPerMinute,
 	}
 	if plan != nil {
-		params.Model = run.candidate
 		if len(plan.changes()) > 1 || plan.name != plan.steps[0] {
 			params.Changes = plan.changes()
 		}
@@ -700,8 +753,93 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		selected, sample = drawSample(selected, *sampleSize, *sampleSeed)
 		params.Sample = &sample
 	}
-	if err := checkParams(*out, params); err != nil {
-		return fail(err)
+	// Each lane's run.json is the one a run of --model with its candidate writes, so either
+	// command continues the other's directory.
+	lanes := make([]*lane, len(candidates))
+	for i, m := range candidates {
+		l := &lane{change: change, model: m, out: *out, params: params}
+		if len(lockstep) > 0 {
+			l.out = filepath.Join(*out, m)
+			if err := os.MkdirAll(l.out, 0o755); err != nil {
+				return fail(err)
+			}
+		}
+		l.params.Models = maps.Clone(models)
+		if m != "" {
+			l.params.Model, l.params.Models[RoleCandidate] = m, m
+		}
+		if err := checkParams(l.out, l.params); err != nil {
+			return fail(err)
+		}
+		if l.done, err = readResults(filepath.Join(l.out, "cases.jsonl")); err != nil {
+			return fail(err)
+		}
+		lanes[i] = l
+	}
+	// open counts the lanes' cases with no line in cases.jsonl, and retry those whose line holds
+	// an error: this run scores both.
+	open, retry := 0, 0
+	for _, l := range lanes {
+		for _, c := range selected {
+			switch r, ok := l.done[c.ID]; {
+			case !ok:
+				open++
+			case r.Error != "":
+				retry++
+			}
+		}
+	}
+	// A held-out run is in the exposure log before it scores a case of the part: no model has
+	// read one before this line, so a run that stops after it, for any reason, still counts as
+	// one that read the part.
+	if *part == PartHeldOut && !*figuresOnly {
+		c := *commit
+		if c == "" {
+			if c, err = headCommit(); err != nil {
+				return fail(fmt.Errorf("the commit of a held-out run: %w; give --commit", err))
+			}
+		}
+		changed := []string{change.Name()}
+		if plan != nil {
+			changed = plan.changes()
+		}
+		logged := maps.Clone(models)
+		if candidateSet {
+			logged[RoleCandidate] = strings.Join(candidates, ",")
+		}
+		dir, err := filepath.Abs(*out)
+		if err != nil {
+			return fail(err)
+		}
+		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: changed, Models: logged, Reason: *newRun, Out: dir, Retried: retry}
+		if e, err = ClaimHeldOut(*exposureLog, e, open+retry == 0); err != nil {
+			return fail(err)
+		}
+		if e.Continues != "" {
+			fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this run as a continuation of the held-out run begun %s at %s\n", *exposureLog, e.Continues, c)
+		} else {
+			fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this held-out run at %s\n", *exposureLog, c)
+		}
+	}
+	var todo []*Case
+	for _, l := range lanes {
+		l.todo = map[string]bool{}
+		for _, c := range selected {
+			if r, ok := l.done[c.ID]; !ok || r.Error != "" {
+				l.todo[c.ID] = true
+			}
+		}
+		with := ""
+		if len(lockstep) > 0 {
+			with = " with " + l.model
+		}
+		fmt.Fprintf(stderr, "writing-check harness score: change %s%s, part %s: %d cases, %d with a result, %d to score\n",
+			change.Name(), with, *part, len(selected), len(selected)-len(l.todo), len(l.todo))
+	}
+	for _, c := range selected {
+		if slices.ContainsFunc(lanes, func(l *lane) bool { return l.todo[c.ID] }) {
+			todo = append(todo, c)
+		}
 	}
 	ids := make([]string, len(selected))
 	for i, c := range selected {
@@ -711,20 +849,6 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(err)
 	}
-	resultsPath := filepath.Join(*out, "cases.jsonl")
-	done, err := readResults(resultsPath)
-	if err != nil {
-		return fail(err)
-	}
-	var todo []*Case
-	for _, c := range selected {
-		if r, ok := done[c.ID]; !ok || r.Error != "" {
-			todo = append(todo, c)
-		}
-	}
-	fmt.Fprintf(stderr, "writing-check harness score: change %s, part %s: %d cases, %d with a result, %d to score\n",
-		change.Name(), *part, len(selected), len(selected)-len(todo), len(todo))
-	scored, failed := 0, 0
 	var uncached llm.PaceUse
 	if !*figuresOnly && len(todo) > 0 {
 		sessions, err := claude.CachedExcerpts(*sessionsDir, ids, *sessionChars, filepath.Join(*out, "session-excerpts.jsonl.gz"))
@@ -747,56 +871,97 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			if err := run.connect(ctx, mf, inst, runner, sessions, ds, selected); err != nil {
 				return fail(err)
 			}
+			runs, err := run.withCandidates(mf, candidates, len(lockstep) > 0)
+			if err != nil {
+				return fail(err)
+			}
+			for i, l := range lanes {
+				l.change = runs[i]
+			}
 		}
-		s := &scorer{ds: ds, change: change, reader: &Reader{Model: readerModel}, grader: grader,
+		s := &scorer{ds: ds, reader: &Reader{Model: readerModel}, grader: grader,
 			sessions: sessions, places: places, readersFrom: priorReaders, gradesFrom: priorGrades, vocabulary: ownWords, only: only}
-		scored, failed, err = scoreAll(ctx, s, todo, resultsPath, mf.concurrency, stderr, started)
-		if err != nil {
+		if err := scoreAll(ctx, s, lanes, todo, mf.concurrency, stderr, started); err != nil {
 			return fail(err)
 		}
 		uncached = runner.Pacer.Use()
-		if done, err = readResults(resultsPath); err != nil {
+		for _, l := range lanes {
+			if l.done, err = readResults(filepath.Join(l.out, "cases.jsonl")); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	// Each lane's figures are a run of --model's: the same function of its results. The wall time
+	// and the uncached input are the process's, which a lockstep's runs share.
+	var missing []string
+	for _, l := range lanes {
+		var results []CaseResult
+		for _, c := range selected {
+			if r, ok := l.done[c.ID]; ok && r.Error == "" {
+				results = append(results, r)
+			}
+		}
+		figures := computeFigures(l.params, results, len(selected), *seed, *draws, cfg)
+		figures.Run.WallSeconds = time.Since(started).Seconds()
+		figures.Run.ScoredThisRun, figures.Run.FailedThisRun = l.scored, l.failed
+		figures.Run.UncachedInput = uncached
+		figures.Run.Lockstep = lockstep
+		figures.Repeatability = agreement
+		if err := writeJSON(filepath.Join(l.out, "scores.json"), figures); err != nil {
 			return fail(err)
 		}
-	}
-	var results []CaseResult
-	for _, c := range selected {
-		if r, ok := done[c.ID]; ok && r.Error == "" {
-			results = append(results, r)
+		md := figures.markdown()
+		if err := os.WriteFile(filepath.Join(l.out, "scores.md"), []byte(md), 0o600); err != nil {
+			return fail(err)
+		}
+		fmt.Fprint(stdout, md)
+		if n := len(selected) - len(results); n > 0 {
+			of := ""
+			if len(lockstep) > 0 {
+				of = " of " + l.model
+			}
+			missing = append(missing, fmt.Sprintf("%d of %d cases%s", n, len(selected), of))
 		}
 	}
-	figures := computeFigures(params, results, len(selected), *seed, *draws, cfg)
-	figures.Run.WallSeconds = time.Since(started).Seconds()
-	figures.Run.ScoredThisRun, figures.Run.FailedThisRun = scored, failed
-	figures.Run.UncachedInput = uncached
-	figures.Repeatability = agreement
-	if err := writeJSON(filepath.Join(*out, "scores.json"), figures); err != nil {
-		return fail(err)
-	}
-	md := figures.markdown()
-	if err := os.WriteFile(filepath.Join(*out, "scores.md"), []byte(md), 0o600); err != nil {
-		return fail(err)
-	}
-	fmt.Fprint(stdout, md)
 	if ctx.Err() != nil {
 		return fail(fmt.Errorf("stopped: %w; run it again to continue", ctx.Err()))
 	}
-	if missing := len(selected) - len(results); missing > 0 {
-		return fail(fmt.Errorf("%d of %d cases have no result; run it again to score them", missing, len(selected)))
+	if len(missing) > 0 {
+		return fail(fmt.Errorf("%s have no result; run it again to score them", strings.Join(missing, ", ")))
 	}
 	return 0
 }
 
-// scoreAll scores cases, workers at once, appending each result to path as it comes. It answers
-// how many it scored and how many of those ended with an error.
-func scoreAll(ctx context.Context, s *scorer, cases []*Case, path string, workers int, progress io.Writer, started time.Time) (scored, failed int, err error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, 0, err
+// lane is one candidate's run in a score process: the change with that candidate, its output
+// directory with the parameters its run.json records, the results its cases.jsonl holds, the
+// cases this process scores of it (todo), and how many it scored and how many of those ended with
+// an error. A run of --model, or of a change with no candidate, has one lane, whose directory is
+// --out; a lockstep run (--models) has one for each model, in the flag's order, in <out>/<model>.
+type lane struct {
+	change         Change
+	model          string
+	out            string
+	params         RunParams
+	done           map[string]CaseResult
+	todo           map[string]bool
+	scored, failed int
+}
+
+// scoreAll scores each of cases for the lanes whose todo holds it, workers cases at once
+// (scorer.scoreCase), and appends each lane's result to the lane's cases.jsonl as the case ends.
+func scoreAll(ctx context.Context, s *scorer, lanes []*lane, cases []*Case, workers int, progress io.Writer, started time.Time) error {
+	files := make([]*os.File, len(lanes))
+	for i, l := range lanes {
+		f, err := os.OpenFile(filepath.Join(l.out, "cases.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		files[i] = f
 	}
-	defer f.Close()
 	var mu sync.Mutex
 	var writeErr error
+	ended, failed := 0, 0
 	feed := make(chan *Case)
 	var wg sync.WaitGroup
 	for range max(workers, 1) {
@@ -804,24 +969,40 @@ func scoreAll(ctx context.Context, s *scorer, cases []*Case, path string, worker
 		go func() {
 			defer wg.Done()
 			for c := range feed {
-				res := s.scoreCase(ctx, c)
+				var in []int
+				var changes []Change
+				for i, l := range lanes {
+					if l.todo[c.ID] {
+						in, changes = append(in, i), append(changes, l.change)
+					}
+				}
+				results := s.scoreCase(ctx, c, changes)
 				if ctx.Err() != nil {
 					return
 				}
-				line, err := json.Marshal(res)
 				mu.Lock()
-				if err == nil && writeErr == nil {
-					_, writeErr = f.Write(append(line, '\n'))
-				} else if writeErr == nil {
-					writeErr = err
+				for k, res := range results {
+					l := lanes[in[k]]
+					line, err := json.Marshal(res)
+					if err == nil && writeErr == nil {
+						_, writeErr = files[in[k]].Write(append(line, '\n'))
+					} else if writeErr == nil {
+						writeErr = err
+					}
+					l.scored++
+					if res.Error != "" {
+						l.failed++
+						failed++
+						model := ""
+						if len(lanes) > 1 {
+							model = "model " + l.model + ", "
+						}
+						fmt.Fprintf(progress, "writing-check harness score: %scase %s: %s\n", model, res.CaseID, res.Error)
+					}
 				}
-				scored++
-				if res.Error != "" {
-					failed++
-					fmt.Fprintf(progress, "writing-check harness score: case %s: %s\n", res.CaseID, res.Error)
-				}
-				if scored%50 == 0 || scored == len(cases) {
-					fmt.Fprintf(progress, "writing-check harness score: %d of %d cases (%d failed), %s\n", scored, len(cases), failed, time.Since(started).Round(time.Second))
+				ended++
+				if ended%50 == 0 || ended == len(cases) {
+					fmt.Fprintf(progress, "writing-check harness score: %d of %d cases (%d failed), %s\n", ended, len(cases), failed, time.Since(started).Round(time.Second))
 				}
 				mu.Unlock()
 			}
@@ -837,5 +1018,5 @@ feeding:
 	}
 	close(feed)
 	wg.Wait()
-	return scored, failed, writeErr
+	return writeErr
 }

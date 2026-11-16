@@ -399,26 +399,60 @@ func TestAHeldOutRunWritesTheExposureLogAndIsRefusedAtTheSameCommit(t *testing.T
 	}
 }
 
+// The log holds one run of each cell at a commit: a second run of a cell needs a reason, a cell
+// of its own at the same commit does not, and a run in the directory of the run of its very cells
+// continues that run while it has a case left.
 func TestClaimHeldOut(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "harness", "exposure.log")
-	if err := ClaimHeldOut(path, Exposure{}); err == nil {
+	claim := func(e Exposure, finished bool) (Exposure, error) { return ClaimHeldOut(path, e, finished) }
+	if _, err := claim(Exposure{}, false); err == nil {
 		t.Error("a held-out run with no commit was let through")
 	}
-	if err := ClaimHeldOut(path, Exposure{Commit: "a", Changes: []string{"1"}}); err != nil {
+	one := Exposure{Commit: "a", Time: "t1", Changes: []string{"1"}, Out: "/runs/1"}
+	if _, err := claim(one, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := ClaimHeldOut(path, Exposure{Commit: "a", Changes: []string{"3"}}); err == nil {
-		t.Error("a second run at commit a was let through")
+	three := Exposure{Commit: "a", Time: "t2", Changes: []string{"3"}, Models: map[string]string{RoleCandidate: "m1,m2"}, Out: "/runs/3"}
+	if _, err := claim(three, false); err != nil {
+		t.Errorf("change 3 at the commit of change 1's run, a cell of its own: %v", err)
 	}
-	if err := ClaimHeldOut(path, Exposure{Commit: "b"}); err != nil {
+	again := one
+	again.Out = "/runs/1b"
+	if _, err := claim(again, false); err == nil {
+		t.Error("a second run of change 1 at commit a was let through")
+	}
+	other := three
+	other.Models, other.Out = map[string]string{RoleCandidate: "m2"}, "/runs/3b"
+	if _, err := claim(other, false); err == nil {
+		t.Error("a second run of change 3 with m2 at commit a was let through")
+	}
+	if _, err := claim(Exposure{Commit: "b", Changes: []string{"1"}}, false); err != nil {
 		t.Errorf("a run at another commit: %v", err)
 	}
-	if err := ClaimHeldOut(path, Exposure{Commit: "a", Reason: "a new candidate answered"}); err != nil {
+	if _, err := claim(Exposure{Commit: "a", Changes: []string{"1"}, Reason: "a new candidate answered"}, false); err != nil {
 		t.Errorf("a second run at commit a with a reason: %v", err)
 	}
+	more := three
+	more.Time = "t3"
+	got, err := claim(more, false)
+	if err != nil || got.Continues != "t2" {
+		t.Errorf("a run in the directory of change 3's run, of its cells, with cases left = %+v, %v; want a continuation of the run begun t2", got, err)
+	}
+	more.Time = "t4"
+	if got, err := claim(more, false); err != nil || got.Continues != "t2" {
+		t.Errorf("a continuation of a continuation = %+v, %v; want the run begun t2", got, err)
+	}
+	if _, err := claim(more, true); err == nil || !strings.Contains(err.Error(), "nothing to continue") {
+		t.Errorf("a continuation of a run with no case left = %v, want a refusal", err)
+	}
+	fewer := three
+	fewer.Models = map[string]string{RoleCandidate: "m1"}
+	if _, err := claim(fewer, false); err == nil {
+		t.Error("a run in the directory of change 3's run, of other cells, was let through")
+	}
 	logged, err := ReadExposures(path)
-	if err != nil || len(logged) != 3 {
-		t.Errorf("the log holds %d lines (%v), want 3", len(logged), err)
+	if err != nil || len(logged) != 6 {
+		t.Errorf("the log holds %d lines (%v), want 6", len(logged), err)
 	}
 }
 

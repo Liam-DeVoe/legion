@@ -44,6 +44,12 @@ type FigureRun struct {
 	// among Models.
 	ReusedAnswers int `json:"reused_answers,omitempty"`
 	ReusedGrades  int `json:"reused_grades,omitempty"`
+	// Lockstep are the models of the lockstep process (score --models) that made this run beside
+	// the runs of its other models: WallSeconds and UncachedInput are the whole process's.
+	// SharedAnswers counts the writer's answers that the results took from another model's run of
+	// the lockstep (Call.SharedFrom): their calls are in ChangeCost and the wait, not in Models.
+	Lockstep      []string `json:"lockstep,omitempty"`
+	SharedAnswers int      `json:"shared_writer_answers,omitempty"`
 }
 
 // The populations every change is scored on (plan Decision 18): the whole part first.
@@ -153,6 +159,11 @@ func computeFigures(params RunParams, results []CaseResult, selected int, seed u
 		change, measure := r.calls()
 		for _, c := range append(change, measure...) {
 			f.Run.CallSeconds += c.Seconds
+		}
+		for _, c := range r.ChangeCalls {
+			if c.SharedFrom != "" {
+				f.Run.SharedAnswers++
+			}
 		}
 		for _, a := range []*Answer{r.Reader, r.FirstParagraphReader} {
 			if a != nil && a.Reused {
@@ -266,6 +277,8 @@ func groupFigures(results []CaseResult, group string, seed uint64, draws int) *G
 	}
 	if len(results) > 0 {
 		g.Wait = mean(func(r CaseResult) (float64, bool) { return r.WaitSeconds, true })
+		// The change's cost holds every call of its own, a writer's answer that another model's
+		// run of a lockstep made among them: the cost per text of one model's run.
 		g.ChangeCost = mean(func(r CaseResult) (float64, bool) {
 			var cost float64
 			for _, c := range r.ChangeCalls {
@@ -390,6 +403,9 @@ func (f Figures) markdown() string {
 	if f.Run.ReusedAnswers+f.Run.ReusedGrades > 0 {
 		fmt.Fprintf(&b, "Taken from other runs, with no call and no cost in this run: %d readers' answers and %d grades.\n", f.Run.ReusedAnswers, f.Run.ReusedGrades)
 	}
+	if n := f.Run.SharedAnswers; n > 0 {
+		fmt.Fprintf(&b, "Taken from another model's run of the lockstep: %d of the writer's answers to a side question (shared_from in cases.jsonl). Their calls count in the change's cost per text and its wait, and not in the model calls below.\n", n)
+	}
 	if r := f.Repeatability; r != nil {
 		fmt.Fprintf(&b, "Repeatability: the share of %d cases on which two runs of the grader (%s and %s) agree: the same verdict; for a count, both counts within %d (\"texts with any\": both find some, or neither); for the answer's start, both find it within %d words, or neither.\n",
 			r.Cases, r.A.Dir, r.B.Dir, listSlack, answerStartSlack)
@@ -474,6 +490,10 @@ func (f Figures) markdown() string {
 	}
 	fmt.Fprintf(&b, "\nTotal model cost: %.2f USD. Wall time of this run: %.0f s; the calls' own time, summed: %.0f s.\n", total, f.Run.WallSeconds, f.Run.CallSeconds)
 	b.WriteString(paceText(p.UncachedInputPerMinute, f.Run.UncachedInput))
+	if len(f.Run.Lockstep) > 0 {
+		fmt.Fprintf(&b, "This run is one of a lockstep of %d models in one process (score --models: %s), each run in a directory of its own: the wall time and the uncached input above are the whole process's.\n",
+			len(f.Run.Lockstep), strings.Join(f.Run.Lockstep, ", "))
+	}
 	if p.Local != nil {
 		b.WriteString("The candidate calls that the local Dispatch makes are not among them: that server is a process of its own, which the pace does not hold.\n")
 	}

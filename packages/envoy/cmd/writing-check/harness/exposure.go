@@ -2,28 +2,53 @@ package harness
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
-// Exposure is one line of the exposure log (INFRA-3189's, R3 here): one run that read the
-// held-out part.
+// Exposure is one line of the exposure log (INFRA-3189's, R3 here): one process that read the
+// held-out part. The held-out part is scored once at a commit for each cell of the grid: a change
+// with a candidate, or a change that calls none (cells). So the held-out run at a commit is every
+// line at that commit with no reason, one for each process, each of its own cells; a line with a
+// reason is a second run of its cells, and a continuation goes on with the run it names.
 type Exposure struct {
 	// Commit is the commit the run ran at, and Time when it started (RFC 3339, UTC).
 	Commit string `json:"commit"`
 	Time   string `json:"time"`
-	// Changes are the changes the run scored, and Models the models it called by role.
+	// Changes are the changes the run scored, and Models the models it called by role: under
+	// "candidate", each candidate the run scored the change with, comma-separated, as a lockstep
+	// run (score --models) names them.
 	Changes []string          `json:"changes"`
 	Models  map[string]string `json:"models"`
-	// Reason is the --new-run reason of a second run at one commit, empty for a first run.
+	// Reason is the --new-run reason of a second run of a cell at one commit, empty otherwise.
 	Reason string `json:"reason,omitempty"`
-	// Out is the run's output directory.
+	// Out is the run's output directory, an absolute path.
 	Out string `json:"out"`
+	// Continues is the Time of the line that began the run this one continues: the run at the
+	// same commit, in the same Out, of the same cells, which stopped before it scored every case.
+	// Retried counts the results whose line held an error that this process scores again, each
+	// model's counted.
+	Continues string `json:"continues,omitempty"`
+	Retried   int    `json:"retried,omitempty"`
+}
+
+// cells are the cells of the grid the line's run scored: its changes with each of its
+// candidates, or with none.
+func (e Exposure) cells() []string {
+	change := strings.Join(e.Changes, "+")
+	var out []string
+	for _, m := range strings.Split(e.Models[RoleCandidate], ",") {
+		out = append(out, change+" "+strings.TrimSpace(m))
+	}
+	slices.Sort(out)
+	return out
 }
 
 // DefaultExposureLog is the exposure log's path: $TMPDIR/infra-3231-impl/harness/exposure.log.
@@ -58,39 +83,57 @@ func ReadExposures(path string) ([]Exposure, error) {
 	return out, scanner.Err()
 }
 
-// ClaimHeldOut appends e to the exposure log at path before a run reads the held-out part. It
-// refuses when the log already holds a run at e's commit and e gives no reason for a new one,
-// and when e names no commit.
-func ClaimHeldOut(path string, e Exposure) error {
+// ClaimHeldOut appends e to the exposure log at path before a run scores a case of the held-out
+// part, and answers e as the log holds it. A run with no reason is refused where an earlier line
+// at e's commit scored one of e's cells, unless e continues that run: the latest such line is in
+// e's directory, of e's very cells, and the run has a case left to score (finished is false: a
+// case with no line, or one whose line holds an error). Then e's line names the run it continues.
+// A continuation scores no case that holds a result; the cases it retries hold no score, and at
+// one commit nothing that decides a score has changed. ClaimHeldOut also refuses e with no commit.
+func ClaimHeldOut(path string, e Exposure, finished bool) (Exposure, error) {
 	if strings.TrimSpace(e.Commit) == "" {
-		return errors.New("a run that reads the held-out part names its commit (--commit)")
+		return e, errors.New("a run that reads the held-out part names its commit (--commit)")
 	}
 	logged, err := ReadExposures(path)
 	if err != nil {
-		return err
+		return e, err
 	}
-	for _, prior := range logged {
-		if prior.Commit == e.Commit && strings.TrimSpace(e.Reason) == "" {
-			return fmt.Errorf("the exposure log %s already holds a run of the held-out part at commit %s (%s, changes %s): give --new-run '<reason>' to run it again",
-				path, prior.Commit, prior.Time, strings.Join(prior.Changes, ","))
+	if strings.TrimSpace(e.Reason) == "" {
+		cells := e.cells()
+		var last *Exposure
+		for i, prior := range logged {
+			if prior.Commit == e.Commit && slices.ContainsFunc(prior.cells(), func(c string) bool { return slices.Contains(cells, c) }) {
+				last = &logged[i]
+			}
+		}
+		switch {
+		case last == nil:
+		case last.Out != e.Out || !slices.Equal(last.cells(), cells):
+			return e, fmt.Errorf("the exposure log %s already holds a run of the held-out part at commit %s that scored change %s with %s (%s, in %s): give --new-run '<reason>' to run it again",
+				path, last.Commit, strings.Join(last.Changes, ","), cmp.Or(last.Models[RoleCandidate], "no candidate"), last.Time, last.Out)
+		case finished:
+			return e, fmt.Errorf("the run of the held-out part at commit %s in %s (begun %s) holds a result for every case: there is nothing to continue; give --new-run '<reason>' to run it again",
+				last.Commit, last.Out, cmp.Or(last.Continues, last.Time))
+		default:
+			e.Continues = cmp.Or(last.Continues, last.Time)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return e, err
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return e, err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return e, err
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		f.Close()
-		return err
+		return e, err
 	}
-	return f.Close()
+	return e, f.Close()
 }
 
 // headCommit is the commit git names HEAD in the working directory: in a jj workspace colocated

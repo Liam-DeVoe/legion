@@ -389,7 +389,9 @@ func (in GradeInput) subject() string {
 // that the call asked again (llm.Request's Shape). Marked and Unmarked count the model calls
 // it holds that the harness sent with the cache mark and with none (llm.Request's Mark): one
 // for most calls, one for each chunk of a phrases judgement. A candidate call, whose marks the
-// local Dispatch, the reviewer component or the detector's reader set, is in neither.
+// local Dispatch, the reviewer component or the detector's reader set, is in neither. SharedFrom
+// names the model of a lockstep run (score --models) whose run made the call: the writer's answer
+// to a side question that does not depend on the candidate, which this run took (sharedAnswers).
 type Call struct {
 	Model      string  `json:"model"`
 	Served     string  `json:"served,omitempty"`
@@ -403,6 +405,7 @@ type Call struct {
 	Marked     int     `json:"marked_calls,omitempty"`
 	Unmarked   int     `json:"unmarked_calls,omitempty"`
 	Seconds    float64 `json:"seconds"`
+	SharedFrom string  `json:"shared_from,omitempty"`
 }
 
 func callOf(r llm.Response) Call {

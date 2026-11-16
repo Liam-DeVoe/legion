@@ -182,39 +182,45 @@ func TestTheWriterMarksTheRecordAndSessionWhereItCallsAgain(t *testing.T) {
 	}
 }
 
-// The writer marks the calls of a prompt where the change can call it two or more times for one
-// case: change 3, once in each round of review, with two rounds or more. Changes 2, 5, 6 and
-// 7a, change 4 (which plays no writer) and change 3 with one round call each prompt at most once.
+// The writer marks the calls of a prompt where the lanes that make the change of a case can call
+// it two or more times in all: change 3, once in each round of review, with two rounds or more.
+// Changes 2, 5, 6 and 7a, change 4 (which plays no writer) and change 3 with one round call each
+// prompt at most once, so a run of one model leaves them unmarked; a lockstep of two models marks
+// change 7a's and change 3's.
 func TestOnlyAChangeThatCallsTheWriterAgainMarksItsCalls(t *testing.T) {
 	for _, c := range []struct {
 		changes []string
 		rounds  int
+		lanes   int
 		want    []string
 	}{
-		{[]string{changeRules}, 2, nil},
-		{[]string{changeFindings}, 2, []string{promptFindings}},
-		{[]string{changeFindings}, 3, []string{promptFindings}},
-		{[]string{changeFindings}, 1, nil},
-		{[]string{changeReviewRewrite}, 2, nil},
-		{[]string{changeRewrite}, 2, nil},
-		{[]string{changeDefine}, 2, nil},
-		{[]string{changeCheck}, 2, nil},
-		{[]string{changeRules, changeFindings, changeRewrite}, 2, []string{promptFindings}},
-		{[]string{changeRules, changeCheck}, 2, []string{promptRewrite}},
+		{[]string{changeRules}, 2, 1, nil},
+		{[]string{changeFindings}, 2, 1, []string{promptFindings}},
+		{[]string{changeFindings}, 3, 1, []string{promptFindings}},
+		{[]string{changeFindings}, 1, 1, nil},
+		{[]string{changeFindings}, 1, 2, []string{promptFindings}},
+		{[]string{changeReviewRewrite}, 2, 1, nil},
+		{[]string{changeReviewRewrite}, 2, 2, nil},
+		{[]string{changeRewrite}, 2, 1, nil},
+		{[]string{changeDefine}, 2, 1, nil},
+		{[]string{changeCheck}, 2, 1, nil},
+		{[]string{changeCheck}, 2, 2, []string{promptRewrite}},
+		{[]string{changeRules, changeFindings, changeRewrite}, 2, 1, []string{promptFindings}},
+		{[]string{changeRules, changeCheck}, 2, 1, []string{promptRewrite}},
 	} {
 		plan, err := planOf(strings.Join(c.changes, "+"), c.changes)
 		if err != nil {
 			t.Fatal(err)
 		}
-		marks := plan.writerMarks(c.rounds)
+		w := &Writer{Calls: plan.writerCalls(c.rounds)}
 		var got []string
 		for _, p := range []string{promptRewrite, promptFindings, promptAnswer} {
-			if marks[p] {
+			if w.marked(p, c.lanes) {
 				got = append(got, p)
 			}
 		}
 		if !slices.Equal(got, c.want) {
-			t.Errorf("changes %v with %d rounds mark %v, want %v", c.changes, c.rounds, got, c.want)
+			t.Errorf("changes %v with %d rounds and %d lanes mark %v, want %v", c.changes, c.rounds, c.lanes, got, c.want)
 		}
 	}
 }
