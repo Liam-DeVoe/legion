@@ -1,4 +1,11 @@
-import { useMutationState, useQueryClient } from "@tanstack/react-query";
+import {
+  skipToken,
+  useIsMutating,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
@@ -19,6 +26,15 @@ const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
  *  says why itself. */
 export function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
   return input !== undefined && Object.keys(input).length === 1 && input.status !== undefined;
+}
+
+/** Where the page holds a status picked while the picking caller's own other write of `key` is in
+ *  flight (`IssueHeaderWrites.pickStatus`): the status, or `null` - like no entry at all - for no
+ *  pick. Its first element is deliberately not `"issue"`, so no invalidation of the issue's own
+ *  read (`["issue", key]`) touches it. It is not module state: the query client is the provider
+ *  every caller of this hook on the page shares, and it goes with the page's app. */
+function heldStatusKey(key: string) {
+  return ["issue-held-status", key] as const;
 }
 
 /** What the shell's indicator calls each field the identity block writes: the page's own name
@@ -78,11 +94,22 @@ export interface IssueHeaderWrites {
   /** One press at a time on the pin, whose write is optimistic. */
   readonly pinGuard: SubmitGuard;
   readonly releaseClaim: KeyedWriteResult<Issue, void, unknown>;
-  /** The status a pick is saving right now, which the pill and the closed line show: the newest
+  /** The status a pick is saving right now, which the pill and the closed line show: a pick the
+   *  page holds until this issue's writes settle (`pickStatus`) when one stands, else the newest
    *  pending write of this issue's fields that holds a status, whichever caller on the page made
-   *  it, so the header and Details show one status while either saves it. */
+   *  it, so the header and Details show one status while either holds or saves it. */
   readonly pendingStatus: string | undefined;
+  /** Whether a pick is held or being saved: `pendingStatus` stands. */
   readonly statusSaving: boolean;
+  /**
+   * The Status pill's pick. A status picked while this caller's own other write of the issue (a
+   * title, a route, a parent) is in flight cannot go yet, and is held for the whole page rather
+   * than in one caller's state, so the header and Details show the same status; it is sent once,
+   * by whichever caller is drawn, when the issue's writes settle. The source page held it in one
+   * component's state (IssueMargin.tsx:216), where Details went on showing the old status: the
+   * held-status defect the reviewer found at the checkpoint.
+   */
+  readonly pickStatus: (next: string) => void;
   /** A parent Dispatch refused, with the reason it gave, drawn where the parent is edited. */
   readonly parentSaveFailed: boolean;
   readonly parentError: string;
@@ -182,7 +209,41 @@ export function useIssueHeaderWrites(
     filters: { exact: true, mutationKey: ["issue-update", issue.key], status: "pending" },
     select: (mutation) => (mutation.state.variables as IssueUpdateInput | undefined)?.status,
   });
-  const pendingStatus = pendingStatuses.filter((status) => status !== undefined).at(-1);
+  // The pick the page holds, read by every caller as it changes. Nothing ever fetches it: the
+  // entry is only what `pickStatus` and the effect below put there, and `skipToken` tells TanStack
+  // so, which otherwise logs a missing queryFn on every render. This observer keeps the entry
+  // alive while a caller is drawn, so a pick held longer than the cache's gcTime is not dropped.
+  const { data: heldStatus } = useQuery<string | null>({
+    enabled: false,
+    queryFn: skipToken,
+    queryKey: heldStatusKey(issue.key),
+    staleTime: Infinity,
+  });
+  const writing = useIsMutating({ exact: true, mutationKey: ["issue-update", issue.key] });
+  // Once no write of the issue's fields is out, a held pick goes. It is read from the cache as
+  // this runs, not as the render read it, since every caller on the page runs this: the first
+  // takes the pick before it sends, and every later one finds `null`, so it is sent once. It is
+  // taken with `null`, never `undefined` (TanStack's `setQueryData` ignores an `undefined` result,
+  // so the pick would stay and every caller would send it) and never by `removeQueries` (which
+  // drops the entry under the observers reading it). A pick its caller cannot send yet is put
+  // back for the next render.
+  useEffect(() => {
+    if (writing > 0) return;
+    const key = heldStatusKey(issue.key);
+    const pick = queryClient.getQueryData<string | null>(key);
+    if (pick === undefined || pick === null) return;
+    queryClient.setQueryData<string | null>(key, null);
+    if (!drafts.requestStatusSubmit(pick)) queryClient.setQueryData<string | null>(key, pick);
+  }, [drafts, issue.key, queryClient, writing]);
+  const pickStatus = (next: string) => {
+    // A pick that went out supersedes an older one still held; one that cannot go is held.
+    queryClient.setQueryData<string | null>(
+      heldStatusKey(issue.key),
+      drafts.requestStatusSubmit(next) ? null : next
+    );
+  };
+  const pendingStatus =
+    heldStatus ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,
@@ -192,6 +253,7 @@ export function useIssueHeaderWrites(
     parentError: apiErrorMessage(updateIssue.error, "Could not save parent."),
     parentSaveFailed: updateIssue.isError && updateIssue.variables?.parent !== undefined,
     pendingStatus,
+    pickStatus,
     pin,
     pinGuard,
     releaseClaim,
