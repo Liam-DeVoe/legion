@@ -102,7 +102,7 @@ const (
 	// with an action fit, is that too.
 	ChosenByRightChoices = "right_choices"
 	// ChosenByDisplayFit is R7's tiebreak: of the candidates level at the most right choices,
-	// the one alone in having a display fit.
+	// the one alone in having a display fit, and with an action fit.
 	ChosenByDisplayFit = "display_fit"
 	// ChosenByPerson is the candidate the architect named where the rule names none, the
 	// leading candidates being level on right choices and alike in the display fit, each with an
