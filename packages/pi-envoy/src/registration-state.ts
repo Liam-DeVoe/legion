@@ -301,6 +301,14 @@ export interface RegistrationState {
   /** Deregisters the session at the listener, carrying this instance's client instance id so a
    *  successor instance's registration under the same id is left alone. */
   readonly deregister: (sessionID: string) => Promise<void>;
+  /**
+   * Hands back at the listener every role hold this process still has there, for a session that
+   * is stopping: the role it holds, under the session id the listener names for it, and each hold
+   * it gave up and has not handed back yet (`HandBackLedger.handBackAll`). Each release carries
+   * this instance's client instance id, so the listener frees only the claims this process made.
+   * It runs outside the queues and changes no state: nothing runs after a stop.
+   */
+  readonly handBackAllHolds: () => Promise<void>;
   /** Forgets the role the listener refused to this session, so a pass may claim it again. */
   readonly clearRefusal: (sessionID: string) => void;
   /**
@@ -911,6 +919,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     deregister: async (sessionID) => {
       await deps.client().unregisterSession({ sessionID, clientInstanceID });
     },
+    handBackAllHolds: () =>
+      holds.handBackAll(
+        claimedRoleTopic === undefined || !claimedRoleSessionID
+          ? undefined
+          : { topic: claimedRoleTopic, id: claimedRoleSessionID }
+      ),
     clearRefusal: (sessionID) => {
       refusedRoles.delete(sessionID);
     },

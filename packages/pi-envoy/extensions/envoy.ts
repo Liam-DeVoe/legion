@@ -175,7 +175,7 @@ import {
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
-import { logger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
 import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
@@ -3007,16 +3007,25 @@ export default function envoyExtension(pi: PiApi): void {
     return registering;
   };
 
-  /** The whole of what the `session_shutdown` handler gives its deregistration and its drain. Oh
-   *  My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), and the
-   *  second this leaves is for the synchronous work ahead of the race and for the host. The
-   *  shared `SHUTDOWN_SETTLE_MS` is what that path spends waiting on a registration still on the
+  /** The whole of what a stop (`stopSession`) gives its role release, its deregistration and its
+   *  drain. Oh My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`),
+   *  and the second this leaves is for the synchronous work ahead of the race and for the host. A
+   *  SIGTERM gets no more: in a Legion pane the shim kills Oh My Pi 5 s after its SIGTERM
+   *  (`DefaultGrace`, `packages/daemon/internal/shim`), and the agent shares that grace. The
+   *  shared `SHUTDOWN_SETTLE_MS` is what the stop spends waiting on a registration still on the
    *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
    *  than a second would mean no DELETE was sent at all and the record outlived this process by
-   *  the gone horizon, where a DELETE that races a slow registration only may lose. The quarter
-   *  of a second it spends instead leaves 750 ms here (1.75 s of the host's 2 s) for the DELETE
-   *  to reach the wire. */
+   *  the gone horizon, where a DELETE that races a slow registration only may lose. The release
+   *  of the session's role claims goes before both (`SHUTDOWN_RELEASE_MS`), so the two waits
+   *  leave at least 500 ms here (1.5 s of the host's 2 s) for the DELETE to reach the wire. */
   const SHUTDOWN_DEADLINE_MS = 1_000;
+
+  /** How long the DELETE of a stop waits for the release of the session's role claims, which goes
+   *  first: a quarter of a second, as the wait on a registration still on the wire. A listener
+   *  that answers at all answers a release in tens of milliseconds. A release that has not
+   *  answered by then is left as it is: the DELETE goes, and nothing sends the release again. The
+   *  claim then stands until the session's next process takes it over at the listener. */
+  const SHUTDOWN_RELEASE_MS = 250;
 
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
@@ -3910,6 +3919,12 @@ export default function envoyExtension(pi: PiApi): void {
 
   pi.on("session_start", async (_event, context) => {
     if (await isSubagent(context)) return;
+    // The host's exit stops this session as its `session_shutdown` does (`stopSession`): in RPC
+    // mode a SIGTERM emits no `session_shutdown`. Once per instance, and never for a subagent's,
+    // which registers nothing. `exitOnly` keeps a cleanup pass the process lives on from it.
+    cancelStopAtExit ??= postmortem.register("pi-envoy-session-stop", () => stopSession(context), {
+      exitOnly: true,
+    });
     bindDispatchSession(context.sessionManager.getSessionId());
     restoreLocalSessionState(context);
     lastHeard = context.sessionManager.getSessionId();
@@ -4027,7 +4042,48 @@ export default function envoyExtension(pi: PiApi): void {
   pi.on("session_before_switch", async (event, context) => announce(event.reason, context));
   pi.on("session_before_branch", async (_event, context) => announce(undefined, context));
 
-  pi.on("session_shutdown", async (_event, context) => {
+  // Gives back at the listener each role claim this process holds, before the stop deletes the
+  // session's record, so the session's next process claims the role at once: the listener
+  // grants a claim under this session id to another process only once this one's claim is no
+  // longer renewed inside the live window. The release names this process
+  // (`handBackAllHolds`), so it frees no claim another process made. It gets its share of the
+  // stop (`SHUTDOWN_RELEASE_MS`); one that has not answered by then is left, and the stop goes
+  // on to the DELETE.
+  const releaseRoleClaims = async (): Promise<void> => {
+    if (active === undefined) return;
+    try {
+      await within(
+        registrationState.handBackAllHolds(),
+        SHUTDOWN_RELEASE_MS,
+        "the release of this session's role claims"
+      );
+    } catch (error) {
+      logger.warn("envoy: the listener did not answer the release of the role claims in time", {
+        sessionID,
+        error: messageFor(error),
+      });
+    }
+  };
+
+  // The stop of this instance's session, run once (`stopSession`) whichever end of the host
+  // reaches it first. One end is the host's `session_shutdown`. The other is the host's own exit
+  // callbacks (`postmortem` of `@oh-my-pi/pi-utils`, the host's module), which Oh My Pi runs and
+  // waits for on a SIGTERM, a SIGINT, a SIGHUP, a quit and a fatal error before the process
+  // exits: `session_start` adds this stop to them (`cancelStopAtExit`). In RPC mode, which a
+  // Legion pane runs, the exit disposes no session, so a SIGTERM emits no `session_shutdown`,
+  // and this callback is the stop. The interactive mode disposes the session from an exit
+  // callback of its own, so there both ends come together, and the second waits for the stop
+  // the first began.
+  let stopping: Promise<void> | undefined;
+  let cancelStopAtExit: (() => void) | undefined;
+  const stopSession = (context: SessionContext): Promise<void> => {
+    stopping ??= shutDownSession(context);
+    return stopping;
+  };
+
+  const shutDownSession = async (context: SessionContext): Promise<void> => {
+    cancelStopAtExit?.();
+    cancelStopAtExit = undefined;
     shuttingDown = true;
     // A reading still away answers nobody from here on: the DELETE below is what the session
     // leaves behind, and a place written after it would be a registration the heartbeat has
@@ -4072,22 +4128,24 @@ export default function envoyExtension(pi: PiApi): void {
     const deadline = Promise.withResolvers<void>();
     const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
-      // The heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
+      // The role claims go back first (`releaseRoleClaims`), and the record only after them: the
+      // DELETE goes once the release answered or its share of the deadline ran out. The
+      // heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
       // the wire is waited out before the DELETE, or it would land behind it and leave the session
       // registered with nobody heartbeating it. That wait takes `SHUTDOWN_SETTLE_MS` here rather
       // than the whole of `REGISTRATION_SETTLE_MS`, which is longer than the deadline
-      // below: the DELETE has to be on the wire before the host abandons this handler, since a
-      // record left behind outlives the process by the gone horizon. The drain runs beside the
-      // wait: it needs no listener call, and both share that deadline, which is what the host's
-      // own limit on a shutdown handler leaves them.
-      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS).catch(
-        () => undefined
+      // below: the DELETE has to be on the wire before the host abandons this stop, since a
+      // record left behind outlives the process by the gone horizon. The drain starts beside the
+      // deregistration: it needs no listener call, and all of them share that deadline, which is
+      // what the host's own limit on a shutdown handler leaves them.
+      const open = connection;
+      const stopped = releaseRoleClaims().then(() =>
+        Promise.allSettled([
+          deregisterSession(sessionID, SHUTDOWN_SETTLE_MS).catch(() => undefined),
+          open?.drain().catch(() => undefined),
+        ])
       );
-      const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();
-      await Promise.race([
-        Promise.allSettled([deregistration, draining]).then(() => undefined),
-        deadline.promise,
-      ]);
+      await Promise.race([stopped.then(() => undefined), deadline.promise]);
     } finally {
       clearTimeout(timer);
       connection = undefined;
@@ -4104,7 +4162,9 @@ export default function envoyExtension(pi: PiApi): void {
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }
-  });
+  };
+
+  pi.on("session_shutdown", async (_event, context) => stopSession(context));
 
   // An Envoy that is off registers no tool and no `/whoami`: there is no listener to reach. Every
   // tool validates its own arguments inside execute (one refusal naming every problem); the host's

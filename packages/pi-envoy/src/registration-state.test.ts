@@ -746,6 +746,77 @@ describe("deregister", () => {
   });
 });
 
+describe("handBackAllHolds", () => {
+  test("hands back the role held and every hold given up, each naming this process, and changes no state", async () => {
+    const harness = createHarness();
+    const { state, control, releases } = harness;
+    await harness.hold("alpha", "ses_a");
+    // A move to beta whose hand-back of alpha the listener refused: alpha under ses_a is
+    // abandoned.
+    control.unsubscribe = async () => {
+      throw new Error("listener failed");
+    };
+    await state.adoptClaimAfterSessionMoved(BETA, "ses_b", ALPHA, "ses_a");
+    // A claim the listener granted after its task's deadline: gamma under ses_c is pending.
+    const gamma = `${ROLE_TOPIC_PREFIX}gamma`;
+    state.recordClaimAfterDeadline(gamma, "ses_c");
+    control.unsubscribe = async () => {};
+    releases.length = 0;
+
+    await state.handBackAllHolds();
+
+    expect(
+      releases.map(({ sessionID, topics, clientInstanceID }) => ({
+        sessionID,
+        topics,
+        clientInstanceID,
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        { sessionID: "ses_b", topics: [BETA], clientInstanceID: state.clientInstanceID },
+        { sessionID: "ses_c", topics: [gamma], clientInstanceID: state.clientInstanceID },
+        { sessionID: "ses_a", topics: [ALPHA], clientInstanceID: state.clientInstanceID },
+      ])
+    );
+    expect(releases).toHaveLength(3);
+    // Nothing runs after a stop, so nothing is recorded either.
+    expect(state.heldRole()).toBe("beta");
+    expect(state.holdSessionID()).toBe("ses_b");
+  });
+
+  test("sends the releases side by side, and one the listener refuses is warned about and stops none of the others", async () => {
+    const harness = createHarness();
+    const { state, control, releases, warnings } = harness;
+    await harness.hold("alpha", "ses_a");
+    state.recordClaimAfterDeadline(BETA, "ses_b");
+    const held = Promise.withResolvers<void>();
+    control.unsubscribe = async (input) => {
+      if (input.sessionID === "ses_a") throw new Error("listener failed");
+      await held.promise;
+    };
+
+    const handingBack = state.handBackAllHolds();
+    // Both are on the wire while the second is still unanswered.
+    await Promise.resolve();
+    expect(releases.map((release) => release.sessionID).sort()).toEqual(["ses_a", "ses_b"]);
+    held.resolve();
+    await handingBack;
+
+    expect(warnings).toEqual([
+      {
+        message: "envoy: a role this process gave up was not handed back",
+        context: { topic: ALPHA, sessionID: "ses_a", error: "listener failed" },
+      },
+    ]);
+  });
+
+  test("sends nothing for a process that holds no role and owes no hand-back", async () => {
+    const { state, releases } = createHarness();
+    await state.handBackAllHolds();
+    expect(releases).toEqual([]);
+  });
+});
+
 describe("clearRefusal", () => {
   test("forgets the role the listener refused to that session", async () => {
     const { state, control } = createHarness();

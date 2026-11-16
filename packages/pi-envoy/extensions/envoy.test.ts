@@ -19914,6 +19914,60 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  // A clean stop gives back the role claim this process holds before it deletes the session's
+  // record, so the session's next process claims the role at once rather than being refused it
+  // for the stopped process's live window (R16 of dispatch://INFRA-3589). The release names this
+  // process, so the listener frees only the claim this process made. The SIGTERM rows, in which
+  // Oh My Pi's RPC mode emits no `session_shutdown`, are `stopping-session.test.ts`.
+  test("session_shutdown gives back the role this process holds before it deletes the session's record", async () => {
+    const requests: string[] = [];
+    const releases: unknown[] = [];
+    const deletions: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
+      if (url.pathname === "/v1/interests/unsubscribe") releases.push(body);
+      if (url.pathname === "/v1/sessions/ses_shutdown") deletions.push(url.search);
+      if (url.pathname === "/v1/roles/set") {
+        return response({
+          session_id: "ses_shutdown",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: ["notifications.role.reviewer"],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?shutdown-gives-back-role");
+    const fixture = createPi();
+
+    envoyExtension(fixture.pi);
+    const context = sessionContext("ses_shutdown");
+    await fixture.handlers.get("session_start")?.({}, context);
+    const claimed = await fixture.tools
+      .find((tool) => tool.name === "envoy_role_set")
+      ?.execute("", { role: "reviewer" }, undefined, undefined, context);
+    expect(claimed?.isError).toBeUndefined();
+    requests.length = 0;
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+
+    expect(requests).toEqual([
+      "POST /v1/interests/unsubscribe",
+      "DELETE /v1/sessions/ses_shutdown",
+    ]);
+    // The DELETE names the same process the release does.
+    const instance = new URLSearchParams(deletions[0]).get("client_instance_id");
+    expect(instance).toEqual(ANY_CLIENT_INSTANCE);
+    expect(releases).toEqual([
+      {
+        session_id: "ses_shutdown",
+        topics: ["notifications.role.reviewer"],
+        client_instance_id: instance,
+      },
+    ]);
+  });
+
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const { default: envoyExtension } = await import("./envoy.ts?shutdown-hang");

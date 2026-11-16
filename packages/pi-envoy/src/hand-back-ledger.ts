@@ -64,6 +64,14 @@ export interface HandBackLedger {
     holder: string | undefined,
     live: () => boolean
   ) => Promise<boolean>;
+  /**
+   * Hands back, side by side, `held` (the hold the process still keeps) and every hold in both
+   * books, each once, for a process whose session is stopping. Each release names this process,
+   * as every release here does, so the listener frees only a claim this process made. A release
+   * that fails is warned about and let go, and neither book changes: no pass runs after a stop,
+   * so nothing is left to send one again.
+   */
+  readonly handBackAll: (held: Hold | undefined) => Promise<void>;
 }
 
 /** One role hold this process gave up: the role topic, and the session id it was held as. */
@@ -173,6 +181,20 @@ export function createHandBackLedger(deps: HandBackLedgerDeps): HandBackLedger {
       }
       abandoned.set(key, { topic, id: hold.id, lastSeen: seen });
       return true;
+    },
+
+    handBackAll: async (held) => {
+      const owed = new Map<string, Hold>();
+      if (held !== undefined) owed.set(keyOf(held.topic, held.id), held);
+      for (const [key, hold] of pending) owed.set(key, hold);
+      for (const [key, hold] of abandoned) owed.set(key, { topic: hold.topic, id: hold.id });
+      await Promise.all(
+        [...owed.values()].map((hold) =>
+          handBack(hold.topic, hold.id).catch((error: unknown) =>
+            warnRefused(error, { topic: hold.topic, sessionID: hold.id })
+          )
+        )
+      );
     },
   };
 }
