@@ -5,6 +5,7 @@ import type { SessionAnswer } from "@legion/contracts";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
   isSessionAnswersText,
+  type RenderSessionAnswersOptions,
   renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
   sessionAnswersFailureLine,
@@ -183,6 +184,14 @@ function listOf(request: Request): string {
 function lastListOf(request: Request): string {
   expect(isSessionAnswersText(textOf(messagesOf(request).at(-1)))).toBe(true);
   return listOf(request);
+}
+
+/** The list `renderSessionAnswers` renders for `items`, which hold at least one answer, so the
+ *  render is a list and never the nothing it renders for none. */
+function rendered(items: readonly SessionAnswer[], options: RenderSessionAnswersOptions): string {
+  const text = renderSessionAnswers(items, options);
+  if (text === undefined) throw new Error("an empty list renders nothing");
+  return text;
 }
 
 /** Whether any message of the request is a list or the failure line. */
@@ -526,7 +535,7 @@ test.skipIf(skipped)(
     expect(carriesList(first as Seen)).toBe(false);
     // Compared after JSON parsing: the text the model reads, not its escaped bytes.
     const list = lastListOf(second as Seen);
-    expect(list).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(list).toBe(rendered([item], { now: Date.now() }));
     expect(list).toContain(item.text);
   },
   180_000
@@ -552,7 +561,7 @@ test.skipIf(skipped)(
     const third_ = JSON.stringify(messagesOf(third as Seen));
     expect(third_).not.toContain("First question.");
     expect(third_).toContain(session.summary);
-    expect(listOf(third as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(third as Seen)).toBe(rendered([item], { now: Date.now() }));
   },
   180_000
 );
@@ -576,7 +585,7 @@ test.skipIf(skipped)(
     expect(parentID).toBeString();
     const first = session.turns.find(isSubagentTurn);
     if (first === undefined) throw new Error("the subagent sent no Messages request");
-    expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first)).toBe(rendered([item], { now: Date.now() }));
     // Every read, the subagent's included, asked for the parent's list.
     expect(new Set(session.answers.map((request) => request.path))).toEqual(
       new Set([`/api/v1/agents/${parentID}/answers`])
@@ -633,7 +642,7 @@ test.skipIf(skipped)(
     const [first, ...rest] = session.turns;
     expect(rest).toEqual([]);
     const list = listOf(first as Seen);
-    expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
+    expect(list).toBe(rendered(items, { now: Date.now() }));
     for (const item of items) expect(list).toContain(item.text);
   },
   180_000
@@ -668,7 +677,7 @@ test.skipIf(skipped)(
         `\n\n${leftOut} older items left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`
       )
     ).toBe(true);
-    expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
+    expect(list).toBe(rendered(items, { now: Date.now() }));
   },
   180_000
 );
@@ -761,7 +770,7 @@ test.skipIf(skipped)(
       const [cachedFirst, cachedSecond] = cached.turns;
       if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
       const placed = listOf(cachedFirst);
-      expect(placed).toBe(renderSessionAnswers([item], { now: Date.now() }));
+      expect(placed).toBe(rendered([item], { now: Date.now() }));
       expect(listOf(cachedSecond)).toBe(placed);
       expect(textOf(messagesOf(cachedSecond).at(-1))).toBe("Second question.");
       return waitOf(cached, cachedSecond);
@@ -786,7 +795,7 @@ test.skipIf(skipped)(
       const carried = listOf(subFirst);
       const carriedCache = cachedOf(carried);
       expect(carriedCache.reason).toBe(deadline);
-      expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
+      expect(carried).toBe(rendered([item], { now: Date.now(), cached: carriedCache }));
       return waitOf(sub, subFirst);
     });
   },
@@ -834,8 +843,8 @@ test.skipIf(skipped)(
     expect(rest).toEqual([]);
     // Each list shows a new item, so each is the last message, with no cache_control, and they
     // differ.
-    expect(lastListOf(n)).toBe(renderSessionAnswers([older], { now: Date.now() }));
-    expect(lastListOf(next)).toBe(renderSessionAnswers([newer, older], { now: Date.now() }));
+    expect(lastListOf(n)).toBe(rendered([older], { now: Date.now() }));
+    expect(lastListOf(next)).toBe(rendered([newer, older], { now: Date.now() }));
     // N's messages through its last cache_control-bearing one are N+1's first, byte for byte.
     const messages = messagesOf(n);
     const anchor = messages.findLastIndex((message) =>
@@ -872,7 +881,7 @@ test.skipIf(skipped)(
       throw new Error("want three turns");
     }
     expect(rest).toEqual([]);
-    const expected = renderSessionAnswers([item], { now: Date.now() });
+    const expected = rendered([item], { now: Date.now() });
     expect(lastListOf(first)).toBe(expected);
     const listAt = (request: Request) =>
       messagesOf(request).findIndex((message) => isSessionAnswersText(textOf(message)));
@@ -967,8 +976,8 @@ test.skipIf(skipped)(
     // The main loop's turns on both sides carry the list, read fresh: no read was left hanging.
     const [first, second, ...rest] = session.turns;
     expect(rest).toEqual([]);
-    expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first as Seen)).toBe(rendered([item], { now: Date.now() }));
+    expect(listOf(second as Seen)).toBe(rendered([item], { now: Date.now() }));
   },
   180_000
 );
@@ -1002,8 +1011,8 @@ test.skipIf(skipped)(
 
     const [first, second, ...rest] = session.turns;
     expect(rest).toEqual([]);
-    expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first as Seen)).toBe(rendered([item], { now: Date.now() }));
+    expect(listOf(second as Seen)).toBe(rendered([item], { now: Date.now() }));
   },
   180_000
 );
@@ -1051,8 +1060,8 @@ test.skipIf(skipped)(
     expect(textOf(compacted.at(-1))).toBe("Third question.");
     expect(shapeOf(compacted)).toEqual(shapeOf(withoutList(third)));
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(third)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(third)).toBe(rendered([item], { now: Date.now() }));
+    expect(listOf(fourth)).toBe(rendered([item], { now: Date.now() }));
   },
   180_000
 );
@@ -1094,8 +1103,8 @@ test.skipIf(skipped)(
     expect(textOf(compacted.at(-1))).toContain("ENVOY-DELIVERY: CI finished.");
     expect(shapeOf(compacted)).toEqual(shapeOf(withoutList(delivered)));
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(delivered)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(delivered)).toBe(rendered([item], { now: Date.now() }));
+    expect(listOf(fourth)).toBe(rendered([item], { now: Date.now() }));
   },
   180_000
 );
@@ -1138,8 +1147,8 @@ test.skipIf(skipped)(
     expect(JSON.stringify(compacted)).toContain("QUIET-ONE: a notice.");
     expect(JSON.stringify(compacted)).toContain("First question.");
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first)).toBe(rendered([item], { now: Date.now() }));
+    expect(listOf(second)).toBe(rendered([item], { now: Date.now() }));
   },
   180_000
 );
