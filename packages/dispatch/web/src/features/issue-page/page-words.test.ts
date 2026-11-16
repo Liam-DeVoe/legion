@@ -263,11 +263,18 @@ test("every glyph token has an accessible name", () => {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);
   }
   expect(Object.keys(GLYPH_NAMES).sort()).toEqual([...tokens].sort());
-  expect(GLYPH_NAMES["check-passed"]).toBe("Passed check");
-  expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Waiting for review decision");
+  // A state's shape is named by its type and then its state, the state in lower case.
+  expect(GLYPH_NAMES["check-passed"]).toBe("Check: passed");
+  expect(GLYPH_NAMES["check-no-result"]).toBe("Check: no result");
+  expect(GLYPH_NAMES["check-older"]).toBe("Check: out of date");
+  expect(GLYPH_NAMES["check-unmarked"]).toBe("Check: cannot tell");
+  expect(GLYPH_NAMES["check-unreadable"]).toBe("Check: could not read");
+  expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Decision: waiting for review");
+  expect(GLYPH_NAMES["decision-change-requested"]).toBe("Decision: change requested");
+  expect(GLYPH_NAMES["ask-declined"]).toBe("Question: declined");
   // "Kept by" is followed by a name on the row; its shape is named without the word that
   // leads to it.
-  expect(GLYPH_NAMES["decision-kept"]).toBe("Kept decision");
+  expect(GLYPH_NAMES["decision-kept"]).toBe("Decision: kept");
   expect(GLYPH_NAMES[GLYPH_TOKENS.statements.met]).toBe(VERIFICATION_WORDS.states.met);
   expect(GLYPH_NAMES[GLYPH_TOKENS.no_check]).toBe(GAP_WORDS.no_check);
   expect(GLYPH_NAMES["plan-task"]).toBe("plan task");

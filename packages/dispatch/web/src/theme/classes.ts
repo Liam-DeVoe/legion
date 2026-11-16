@@ -951,7 +951,7 @@ export const pageComposer = {
   // On a phone the field takes the line's whole width once the box holds the caret, and the
   // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
   field:
-    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-bullet max-[760px]:group-focus-within:basis-full",
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[760px]:group-focus-within:basis-full",
   foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
   line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
   option:
