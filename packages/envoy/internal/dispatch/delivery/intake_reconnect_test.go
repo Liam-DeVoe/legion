@@ -714,15 +714,16 @@ func deliverSubjectSubscribers(t *testing.T, server *testnats.Server, subject st
 }
 
 // countingGitHub is a fake GitHub of one process's own, counting the pull request fetches that
-// process makes and answering every one of them 500, which the intake logs and acknowledges
-// (holdPullRequestOne). One per process is what lets a row say which process handled an envelope.
+// process makes and answering every one of them 404, a pull request GitHub does not have, which
+// the intake logs and acknowledges (holdPullRequestOne). One per process is what lets a row say
+// which process handled an envelope.
 func countingGitHub(t *testing.T) (*atomic.Int64, *githubapp.Client) {
 	t.Helper()
 	fetches := &atomic.Int64{}
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, _ *http.Request) {
 		fetches.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusNotFound)
 	})
 	return fetches, fake.newTestClient()
 }

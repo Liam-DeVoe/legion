@@ -30,7 +30,9 @@ import (
 // GitHub's commit-to-pull-request answer names nothing here, at the record and at every read,
 // which is what the results read's own read-through got for the commit in the deployment this
 // issue was found in: so the event is the only way the head can reach Dispatch, and the test
-// proves that way and no other.
+// proves that way and no other. The intake takes from the event which pull request changed and
+// reads that pull request from GitHub, so GitHub's single pull request read answers #7 as GitHub
+// holds it.
 func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "example/tools")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
@@ -85,6 +87,17 @@ func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *te
 		stopIntakes()
 	})
 
+	updated := time.Now().UTC().Format(time.RFC3339)
+	fake.pullAnswers(func(repo, number string) string {
+		if repo != "example/tools" || number != "7" {
+			return ""
+		}
+		return fmt.Sprintf(`{"number":7,"title":%q,"body":%q,"state":"open","merged":false,
+			"html_url":"https://github.com/example/tools/pull/7","updated_at":%q,
+			"head":{"ref":%q,"sha":%q,"repo":{"full_name":"example/tools"}},"base":{"ref":"main"}}`,
+			"The tools change ("+issue.Key+")", "Dispatch: "+issue.Key+"\n\nThe change.", updated,
+			"legion/"+issue.Key, headCommit)
+	})
 	payload, err := json.Marshal(map[string]string{
 		"kind": "pr", "action": "opened", "repo": "example/tools", "number": "7",
 		"title":    "The tools change (" + issue.Key + ")",
@@ -92,7 +105,7 @@ func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *te
 		"url":      "https://github.com/example/tools/pull/7",
 		"author":   "implementer[bot]",
 		"head_sha": headCommit, "head_ref": "legion/" + issue.Key, "head_repo": "example/tools",
-		"base_ref": "main", "merged": "false", "updated_at": time.Now().UTC().Format(time.RFC3339),
+		"base_ref": "main", "merged": "false", "updated_at": updated,
 	})
 	if err != nil {
 		t.Fatalf("encode the pull request's payload: %v", err)

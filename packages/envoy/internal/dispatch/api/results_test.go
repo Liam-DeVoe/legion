@@ -1861,6 +1861,32 @@ type commitPullsFake struct {
 	mu     sync.Mutex
 	asked  map[string]int
 	answer func(repo, sha string) string
+	// pull answers GET /repos/{owner}/{repo}/pulls/{number}, the read the delivery intake makes
+	// of the pull request an event names; "" or no function is GitHub's 404.
+	pull func(repo, number string) string
+}
+
+// pullAnswers sets what GET /repos/{owner}/{repo}/pulls/{number} answers from now on.
+func (f *commitPullsFake) pullAnswers(body func(repo, number string) string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pull = body
+}
+
+func (f *commitPullsFake) servePull(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	answer := f.pull
+	f.mu.Unlock()
+	body := ""
+	if answer != nil {
+		body = answer(r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("number"))
+	}
+	if body == "" {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+		return
+	}
+	fmt.Fprint(w, body)
 }
 
 // answers sets what GET /repos/{owner}/{repo}/commits/{sha}/pulls answers from now on: the JSON
@@ -1937,6 +1963,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", fake.serveCommitPulls)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", fake.servePull)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})

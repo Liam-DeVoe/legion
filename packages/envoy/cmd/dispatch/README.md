@@ -1418,7 +1418,13 @@ Postgres does not replay a notification sent while nothing listened, so the hub 
 
 **The GitHub intake** (`delivery.Intake`) binds its durable whether or not `delivery_settings` holds a row, since a `pull_request` envelope's first write is the pull request's head row, which every `before_merge` check result is compared with in every deployment:
 with no settings it writes that row and nothing else, and only a merge of the delivery population and a workflow run wait for the settings (`Intake.Run`, `route`).
-The durable is created with `DeliverAll`, so its first bind in a deployment whose durable never existed is handed the 72 hours the stream keeps, and writes the heads of the pull requests of those hours in event order.
+The envelope says only which pull request changed. The intake reads that pull request from GitHub (`GET /repos/{owner}/{repo}/pulls/{number}`) and writes the head, the state, the branch and the body GitHub answers, attributed as the reconcile attributes a row (`recordPullRequestHead`).
+So a `labeled` or `edited` event of a closed pull request leaves it closed, and an envelope GitHub never sent, which any Envoy `/v1` bearer can publish on a `notifications.github.` subject, moves no head.
+A pull request GitHub does not know, and a repository the App cannot read, write no row.
+A read is spared when the stored row already holds GitHub's answer for the event: GitHub's own `updated_at` on the row is at least the event's, and later, or read at least 5 s after the event's second (`headReadCovers`).
+A read that failed, a rate limit included, is handed back to NATS like a head write that failed; a rate limit is handed back after the limit's own wait, during which `githubapp.Client` sends no request at all.
+The durable is created with `DeliverAll`, so its first bind in a deployment whose durable never existed is handed the 72 hours the stream keeps.
+That replay costs one read of each pull request it names, and one more of its commits where its title, body, branch and links name no issue held to its repository, at most 4 at a time (`intakeMaxAckPending`).
 
 The intake checks each message's subject before it decodes anything:
 only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
@@ -2334,8 +2340,8 @@ A failed head pass is logged, and named in `delivery_settings.last_error` beside
 The head pass also takes every merged row credited to nobody that the rule the running build judges by has not judged
 — one no read of GitHub has reached, and one an older rule judged
 — and offers such a row once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
-a `pull_request` envelope naming no head repository attributes nobody, a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
-The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.ReadThroughCommitPulls`):
+a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
+The row is written outside the reconcile by the `pull_request` envelope's handler, which takes from the envelope only which pull request changed and writes GitHub's answer about it (`GET /repos/{owner}/{repo}/pulls/{number}`), and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.ReadThroughCommitPulls`):
 a recorded result makes one, and so does the read of an issue's results, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
 `pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
 — the first partial on `state`, `issue_key` and `checked_at`, the second on `state = 'merged'` and keyed by `attribution_rule` (`20261111060005_pull_request_heads_merged_rule`)

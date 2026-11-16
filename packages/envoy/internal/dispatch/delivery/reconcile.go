@@ -526,9 +526,9 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // the backstop for an event that never arrived — a delivery Dispatch was down for, a
 // repository whose webhook was installed late — and the one way a merge that happened while
 // Dispatch was not listening reaches the head row at all. The
-// merged arm is the backstop for an envelope that arrived but said too little, and for a rule
-// that has changed since: an envelope naming no head repository attributes nobody, only
-// GitHub's own answer, which always names `head.repo`, can attribute that row, and a merged row
+// merged arm is the backstop for a row a write left unattributed or unstamped, and for a rule
+// that has changed since: a write whose commit messages could not be read is incomplete, and
+// GitHub's own answer, read again here, can attribute that row, and a merged row
 // is the one row no other writer ever revisits before a result at its head stands at no basis
 // for good. A rate limit stops the batch and fails the pass, as every other GitHub step's does;
 // any other per-row failure is logged and leaves the row for the next pass.

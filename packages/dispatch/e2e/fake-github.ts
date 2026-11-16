@@ -28,6 +28,8 @@ interface FakePull {
   readonly head_repo?: string;
   readonly base_ref?: string;
   readonly updated_at?: string;
+  /** The commit GitHub made when the pull request merged, which a merged one answers. */
+  readonly merge_commit_sha?: string;
 }
 
 /** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
@@ -268,14 +270,20 @@ const server = Bun.serve({
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
       }
       return Response.json({
+        base: { ref: seeded.base_ref ?? "main" },
+        body: seeded.body ?? "",
         head: {
+          ref: seeded.head_ref ?? `branch-${pull[3]}`,
           repo: { full_name: seeded.head_repo ?? `${pull[1]}/${pull[2]}` },
           sha: seeded.head_sha,
         },
+        html_url: `https://github.com/${pull[1]}/${pull[2]}/pull/${pull[3]}`,
+        merge_commit_sha: seeded.merge_commit_sha ?? null,
         merged: seeded.merged ?? false,
         number: Number(pull[3]),
         state: seeded.state,
         title: seeded.title,
+        updated_at: seeded.updated_at ?? null,
       });
     }
 

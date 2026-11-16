@@ -27,10 +27,12 @@ import (
 // never a fork's (headAttribution). A child's pull request is attributed to the child, so it
 // answers for the child's own checks alone and never for a check of an issue above it.
 //
-// Three writers keep it: the `pull_request` envelope (intake.go, every action), the read-through
-// made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
-// result, and by the read of an issue's results for a `before_merge` result's commit, at most
-// once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
+// Three writers keep it, and each writes what GitHub itself answers about the pull request: the
+// `pull_request` envelope's handler (intake.go, every action), which takes from the envelope only
+// which pull request changed and reads that pull request from GitHub (recordPullRequestHead); the
+// read-through made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a
+// recorded result, and by the read of an issue's results for a `before_merge` result's commit, at
+// most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer than five minutes ago and every merged row the rule
 // this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
 // ListStalePullRequestHeads).
@@ -69,53 +71,43 @@ type PullRequestHead struct {
 	MergeCommitSHA string
 }
 
-// PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
-// that merged is merged, whatever the action, one that closed without merging is closed, and
-// every other action leaves it open. The merge is tested first: GitHub normalises every action
-// of a pull request, so a `labeled` or `edited` event on an already merged one must not store
-// its row as open again and put it back in the reconcile's stale list.
-func PullRequestHeadState(action string, merged bool) string {
+// PullRequestHeadState is the state GitHub's answer about a pull request gives its row: merged
+// where GitHub says it merged, closed where GitHub's `state` is closed, and open otherwise. It
+// reads GitHub's `state`, never an event's action: GitHub sends `labeled`, `edited`, `assigned`
+// and other actions for a closed pull request too, and a row stored open from one of those would
+// make the head of a pull request that will never merge a basis again (dispatch://INFRA-3992).
+func PullRequestHeadState(state string, merged bool) string {
 	if merged {
 		return "merged"
 	}
-	if action != "closed" {
+	if state != "closed" {
 		return "open"
 	}
 	return "closed"
 }
 
 // ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
-// making the same attempt again may get past, as against a failure to attribute one: nothing
-// else in Dispatch repairs a head row that was never stored — the reconcile's passes read the
-// rows that exist (ListStalePullRequestHeads), so a row no write ever made is offered to
-// nothing. The `pull_request` envelope's handler tests for it and hands the envelope back for
-// redelivery rather than acking it (Intake.handlePullRequestEnvelope, Intake.deliver), up to
-// headWriteMaxDeliveries deliveries of it, since both of the statements behind the write are
-// `on conflict … do update` and a redelivery writes the same pair.
+// making the same attempt again may get past: nothing else in Dispatch repairs a head row that
+// was never stored — the reconcile's passes read the rows that exist (ListStalePullRequestHeads),
+// so a row no write ever made is offered to nothing. The `pull_request` envelope's handler tests
+// for it and hands the envelope back for redelivery rather than acking it
+// (Intake.handlePullRequestEnvelope, Intake.deliver), up to headWriteMaxDeliveries deliveries of
+// it, since both of the statements behind the write are `on conflict … do update` and a
+// redelivery writes the same pair.
 //
-// It marks every database failure on the way to that write and not the write alone, because
-// they all end the same way and a connection-level outage reaches the earlier ones first. The
-// envelope's path to the write is two reads and the write: the canonical name of the
-// repository (refs.CanonicalRepo) and the attribution's own read of the issues its candidates
-// name (headAttribution, through resolveAttributionCandidates). A head row lost because
-// Postgres refused the first of those is as lost as one lost at the insert, so
-// recordPullRequestHead marks all three (markHeadNotStored).
-//
-// One failure of that path is deliberately left unmarked, because no redelivery mends it. A
-// read of GitHub the App refused is answered by the reconcile's own next pass, and handing
-// every rate-limited envelope back would spend the whole limit over again — the rate limit is
-// the only refusal of GitHub that comes back as an error at all, since attributeHead logs
-// every other one at Debug and writes an incomplete row.
+// It marks every failure on the way to that write that a later attempt may get past, because
+// they all end the same way: a read of Postgres (the repository's canonical name, the stored row
+// recordPullRequestHead compares the event with, and the attribution's read of the issues its
+// candidates name) and a read of GitHub that failed (a 5xx, a network failure, a rate limit).
+// A rate limit keeps its *githubapp.RateLimitError inside the mark, so Intake.deliver hands the
+// envelope back after the limit's own wait: while the limit stands githubapp.Client sends no
+// request at all, so the hand-back costs no GitHub call. The answers GitHub gives for good are
+// not marked: a pull request it does not know and a repository the App cannot read write no row
+// and are acknowledged (recordPullRequestHead).
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
-// markHeadNotStored marks err as ErrHeadNotStored unless it is the one failure that sentinel's
-// doc comment leaves unmarked: a rate limit (githubapp.AsRateLimit). Everything else the steps
-// before the head write answer is Postgres refusing a read, which is the fault the sentinel is
-// for.
+// markHeadNotStored marks err as ErrHeadNotStored, keeping err itself inside the mark.
 func markHeadNotStored(err error) error {
-	if _, limited := githubapp.AsRateLimit(err); limited {
-		return err
-	}
 	return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 }
 
@@ -1063,81 +1055,131 @@ func ReadThroughCommitPulls(
 	return written, atHead, nil
 }
 
-// recordPullRequestHead writes the head row one `pull_request` envelope reports, whatever its
-// action, author or repository, and answers the commit messages it read, nil when it read none.
-// It runs before the merge-only guard in handlePullRequestEnvelope, so an `opened`,
-// `synchronize`, `reopened` or `edited` event — which the delivery timeline ignores — still
-// moves the head a check result is measured against.
+// recordPullRequestHead writes the head row of the pull request one `pull_request` envelope
+// names, whatever its action, author or repository, from GitHub's own answer about that pull
+// request, and answers the commit messages the attribution read, nil when it read none. It runs
+// before the merge-only guard in handlePullRequestEnvelope, so an `opened`, `synchronize`,
+// `reopened` or `edited` event — which the delivery timeline ignores — still moves the head a
+// check result is measured against.
 //
-// The envelope carries the title, body, branch and head commit, which are four of the
-// attribution's five sources and outrank the fifth; the fifth, the commit messages, is read only
-// when no candidate those four name is held to the repository the pull request is in
-// (attributeHead), and a merge that follows reuses what was read rather than paging the same
-// commits again (completePullRequest). A read the App refuses attributes the row from the
-// envelope alone and makes the write an incomplete one, which deletes no attribution the row
-// already carries and leaves it unstamped; a rate limit is returned, as the reconcile's own
-// refresh returns it, so the caller does not persist a weaker attribution and then stamp the
-// row read.
+// The envelope says which pull request changed, and nothing it carries is written: the head,
+// the state, the branch, the title and the body all come from `GET
+// /repos/{owner}/{repo}/pulls/{number}` (fetchPullRequestPayload), attributed through all five
+// sources as the reconcile attributes a row (attributePayload, headRow). Two reasons, each
+// enough alone. An envelope carries no state, only the action, and GitHub sends `labeled`,
+// `edited` and `assigned` for a closed pull request too, so a state read from the action stored
+// a closed pull request as open again and a pass at its head stood. And an envelope on a
+// `notifications.github.` subject is not proof GitHub sent it: any Envoy /v1 bearer can publish
+// one, which is why handleWorkflowEnvelope reads its run from GitHub too, and a head a caller
+// set would be what a `before_merge` pass is judged against (dispatch://INFRA-3992).
 //
-// The envelope also carries the head's own repository (`head_repo`), which the attribution
-// holds the head to. An envelope that does not name it — one a publisher older than this field
-// made — attributes nobody, since a head that cannot be shown to be this repository's is a
-// fork's as far as Dispatch knows. That write is incomplete too: it leaves the row unstamped, so
-// the reconcile's own read of GitHub, which always names the head repository, attributes the row
-// on its next pass, and it leaves any attribution an earlier, fuller read stored exactly where
-// it is rather than clearing it on the way through — on a merge, which nothing but that arm of
-// the reconcile ever revisits, clearing it would be for good.
+// A pull request GitHub does not know (404 or 410) and a repository the App cannot read write
+// no row: there is no answer of GitHub's to write, and nothing an envelope says is one. Both
+// are acknowledged, since a redelivery gets the same answer. Every other failure is marked
+// ErrHeadNotStored (markHeadNotStored), so the envelope is handed back; a rate limit is handed
+// back after the limit's own wait (Intake.deliver). A name that is not `owner/repo` is
+// malformed in the envelope itself and is returned bare, since the same envelope delivered
+// again fails on it again.
+//
+// The read is spared where GitHub has already answered for the event (headReadCovers): the
+// stored row is at least as new as the envelope by GitHub's own updated_at, and either strictly
+// newer or read well after that second. That is what makes the events of one pull request that
+// waited together — the replay of the stream's backlog on a first start, or a burst of events
+// a stopped process missed — cost one read of that pull request rather than one each.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
 // canonicalised before anything is read or written (refs.CanonicalRepo), and no row is ever
-// written under a name a repository was renamed away from. It is also what the head is held to:
-// an envelope keyed by an old name carries a `head_repo` GitHub spells under the new one, and
-// comparing those two would make every such pull request a fork's (headInOwnRepository).
-//
-// Three of the four steps here can fail, and each failure is marked, or left bare, by what a
-// redelivery of the envelope would do with it (markHeadNotStored, ErrHeadNotStored). The
-// canonical read and the attribution are reads of Postgres before any row is written, so a
-// failure of either loses the head row exactly as a refused insert does and both are marked;
-// the attribution's own exception, a rate limit, is not. The split this function makes for
-// itself is the one failure it returns bare without asking markHeadNotStored at all: a name
-// that is not `owner/repo` is malformed in the envelope, so the next delivery of the same
-// envelope carries the same name and would fail on it again.
-func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
+// written under a name a repository was renamed away from.
+func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) (headRead, error) {
 	given := payload["repo"]
 	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
 	if err != nil {
-		return nil, markHeadNotStored(err)
+		return headRead{}, markHeadNotStored(err)
 	}
 	owner, repo, err := splitRepo(repoFull)
 	if err != nil {
-		return nil, err
+		return headRead{}, err
 	}
-	attributed, err := attributeHead(ctx, in.pool, in.github,
-		func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
-		attributionFacts{
-			Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],
-			HeadRef: payload["head_ref"],
-		}, payload["head_repo"], number)
+	if at := envelopeTime(payload["updated_at"]); at != nil {
+		covered, err := headReadCovers(ctx, in.pool, repoFull, number, *at)
+		if err != nil {
+			return headRead{}, markHeadNotStored(err)
+		}
+		if covered {
+			return headRead{}, nil
+		}
+	}
+	token, err := in.github.RepositoryToken(ctx, owner, repo)
 	if err != nil {
-		return nil, markHeadNotStored(err)
+		if repositoryUnreadable(err) {
+			slog.Info("dispatch delivery: no head row for a pull request of a repository the App cannot read",
+				"repo", repoFull, "number", number, "error", err)
+			return headRead{refused: err}, nil
+		}
+		return headRead{}, markHeadNotStored(fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err))
 	}
-	// The envelope is itself a fresh read of the head, so the row is stamped read and the
-	// reconcile does not spend three GitHub calls re-reading what the event just delivered —
-	// unless the read was incomplete, because the commit messages were wanted and could not be
-	// had or the envelope named no head repository, which the next pass settles either way.
+	pull, err := fetchPullRequestPayload(ctx, in.github, token, owner, repo, number)
+	if err != nil {
+		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
+			slog.Info("dispatch delivery: no head row for a pull request GitHub does not answer for",
+				"repo", repoFull, "number", number, "error", err)
+			return headRead{refused: err}, nil
+		}
+		return headRead{}, markHeadNotStored(err)
+	}
+	attributed, err := attributePayload(ctx, in.pool, in.github, token, repoFull, pull)
+	if err != nil {
+		return headRead{}, markHeadNotStored(err)
+	}
+	// A read whose commit messages could not be had is written unstamped, so the reconcile's
+	// next pass reads it again and no later event is spared its read (headReadCovers).
 	var checkedAt *time.Time
 	if attributed.complete {
 		now := time.Now()
 		checkedAt = &now
 	}
-	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, PullRequestHead{
-		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
-		BaseRef: payload["base_ref"], State: PullRequestHeadState(payload["action"], payload["merged"] == "true"),
-		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
-		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
-		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
-		MergeCommitSHA: payload["merge_commit_sha"],
-	}, given)
+	read := headRead{pull: &pull, token: token, messages: attributed.messages}
+	return read, upsertHeadUnderCanonicalName(ctx, in.pool, in.events,
+		headRow(repoFull, pull, attributed, checkedAt), given)
+}
+
+// headRead is what recordPullRequestHead learned from GitHub on the way to the head row, which
+// the merge that follows reads nothing of again (handlePullRequestEnvelope): the pull request
+// GitHub answered and the token it was read with, the commit messages the attribution paged,
+// and GitHub's lasting refusal to answer — a pull request it does not have, or a repository the
+// App cannot read. All are empty where the read was spared (headReadCovers).
+type headRead struct {
+	pull     *pullRequestPayload
+	token    string
+	messages []string
+	refused  error
+}
+
+// headReadMargin is how long after an event's second a read of GitHub must have been made for
+// that read to answer for the event: GitHub's updated_at is whole seconds, and its clock and
+// this process's agree to well inside the rest.
+const headReadMargin = 5 * time.Second
+
+// headReadCovers reports whether the stored row of repoFull's pull request number already holds
+// GitHub's answer about the change an event of updatedAt reports, so that reading the pull
+// request again would teach nothing: GitHub's own updated_at on the row is at least the event's,
+// and either later — GitHub's answer reflects a later second, and so every change of that one —
+// or read headReadMargin past the event's second. A row with no updated_at or no read time
+// covers nothing, and neither does a missing row.
+func headReadCovers(ctx context.Context, pool *store.Pool, repoFull string, number int, updatedAt time.Time) (bool, error) {
+	var covered bool
+	err := pool.QueryRow(ctx, `
+		select event_at is not null and $3 <= event_at
+			and ($3 < event_at or (checked_at is not null and checked_at >= $3 + make_interval(secs => $4)))
+		from pull_request_heads where repo = $1 and number = $2
+	`, repoFull, number, updatedAt, headReadMargin.Seconds()).Scan(&covered)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the stored head of %s#%d: %w", repoFull, number, err)
+	}
+	return covered, nil
 }
 
 // envelopeTime reads an envelope's RFC3339 timestamp; an absent or malformed one is no time,

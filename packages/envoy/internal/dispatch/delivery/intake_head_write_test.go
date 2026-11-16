@@ -42,8 +42,10 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	withoutBranchCommits(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
+	fake := newFakeGitHub(t)
+	serveMergedPullRequest(t, fake, 9101)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
@@ -71,6 +73,26 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	if stored != 0 {
 		t.Fatalf("head rows stored while branch_commits is away = %d, want none", stored)
 	}
+}
+
+// serveMergedPullRequest answers GitHub's read of acme/widgets#number as a pull request merged
+// into integration/x whose title, body and branch name no issue. The intake reads the pull
+// request an envelope names from GitHub and writes that answer, so a merge — what makes the head
+// write carry the branch seed this file's rows take branch_commits away under — is GitHub's.
+func serveMergedPullRequest(t *testing.T, fake *fakeGitHub, number int) {
+	t.Helper()
+	fake.handle(fmt.Sprintf("GET /repos/acme/widgets/pulls/%d", number), func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{
+			"number": number, "title": "A change", "state": "closed", "merged": true,
+			"merge_commit_sha": "2222222222222222222222222222222222222222",
+			"html_url":         fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+			"head": map[string]any{
+				"ref": "feature/x", "sha": "1111111111111111111111111111111111111111",
+				"repo": map[string]any{"full_name": "acme/widgets"},
+			},
+			"base": map[string]any{"ref": "integration/x"},
+		})
+	})
 }
 
 // headWriteHoldNumber is the pull request the row below publishes, its own, so that row reads
@@ -109,7 +131,14 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	held := make(chan struct{})
 	var first sync.Once
 	fake := newFakeGitHub(t)
+	serveMergedPullRequest(t, fake, headWriteHoldNumber)
 	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
+		// The merge's own first-commit read (per_page=1, completeFetchedPullRequest) follows the
+		// head write and is no handling of its own: only the attribution's page is counted.
+		if r.URL.Query().Get("per_page") == "1" {
+			mustEncode(t, w, []any{})
+			return
+		}
 		process.reads.Add(1)
 		holding := false
 		if hold {

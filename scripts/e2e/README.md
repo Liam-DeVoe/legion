@@ -4048,7 +4048,7 @@ It writes no `delivery_settings` row, as a deployment that never configured the 
 `acme/verification-live`'s `commits` names every commit a case records at, since the record route asks GitHub whether the repository holds a result's commit and refuses one it does not; the one commit it names nowhere is what the refusal case drives.
 `commit_pulls` is empty on purpose:
 the record route's read-through asks GitHub which pull requests name a result's commit, so with no answer there the only thing that can teach Dispatch a head is the envelope a case publishes.
-`pulls`, what GitHub answers about one pull request, is empty until the attribution case seeds the two its own stored rows name, since one reader alone reads it: the reconcile's refresh of a stored head row.
+`pulls`, what GitHub answers about one pull request, is set before each envelope a case publishes to what GitHub holds after that event, since the intake takes from an envelope only which pull request changed and reads that pull request from GitHub; the attribution case adds the two pull requests its own stored rows name, which the reconcile's refresh reads.
 Each case after the first seeds the issue it drives, with a spec that marks one requirement and a Verification document holding that case's checks.
 
 Each item below names a case and how it is driven, then what must hold for it to pass.

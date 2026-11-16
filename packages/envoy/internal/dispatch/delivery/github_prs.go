@@ -103,13 +103,10 @@ type commitPayload struct {
 }
 
 // FetchPullRequest fetches one pull request's complete facts: GET
-// /repos/{owner}/{repo}/pulls/{number} for everything but the first commit, then GET
-// /repos/{owner}/{repo}/pulls/{number}/commits?per_page=1 for FirstCommitAt (the first page's
-// first element's commit.author.date, or commit.committer.date when GitHub reports no author for
-// that commit). Mints its own token via client.RepositoryToken(ctx, owner, repo). A merged pull
-// request cannot have zero commits, but an empty or malformed commits answer is reported as an
-// error rather than indexed into, and every GitHub call error is wrapped with which call failed
-// and for which pull request.
+// /repos/{owner}/{repo}/pulls/{number} for everything but the first commit, then the first
+// commit (completeFetchedPullRequest). Mints its own token via client.RepositoryToken(ctx,
+// owner, repo). Every GitHub call error is wrapped with which call failed and for which pull
+// request.
 func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo string, number int) (FetchedPullRequest, error) {
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
@@ -119,6 +116,18 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 	if err != nil {
 		return FetchedPullRequest{}, err
 	}
+	return completeFetchedPullRequest(ctx, client, token, owner, repo, payload)
+}
+
+// completeFetchedPullRequest is FetchPullRequest's answer from a pull request GitHub has
+// already answered (payload): GET /repos/{owner}/{repo}/pulls/{number}/commits?per_page=1 for
+// FirstCommitAt (the first page's first element's commit.author.date, or commit.committer.date
+// when GitHub reports no author for that commit). The intake's merge passes the pull request its
+// head write read, so a merged envelope reads its pull request once. A merged pull request
+// cannot have zero commits, but an empty or malformed commits answer is reported as an error
+// rather than indexed into.
+func completeFetchedPullRequest(ctx context.Context, client *githubapp.Client, token, owner, repo string, payload pullRequestPayload) (FetchedPullRequest, error) {
+	number := payload.Number
 	commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=1", url.PathEscape(owner), url.PathEscape(repo), number)
 	commitsBody, commitsStatus, commitsHeader, err := readGitHubPage(ctx, client, token, commitsPath)
 	if err != nil {

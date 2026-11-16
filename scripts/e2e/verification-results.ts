@@ -315,8 +315,24 @@ async function record(key: string, input: Json): Promise<CheckResultRecorded> {
 
 /** Publishes one normalized `pull_request` envelope, the shape Envoy relays and the shape
  *  Dispatch's intake reads: the envelope's `payload` is the flat string map, and its subject is
- *  `notifications.github.<owner>.<repo>.pr.<number>` with each segment's dots written `_`. */
+ *  `notifications.github.<owner>.<repo>.pr.<number>` with each segment's dots written `_`.
+ *  The intake takes from it only which pull request changed and reads that pull request from
+ *  GitHub, so the fake's answer is set first to what GitHub holds after the event. */
 async function publishPullRequest(payload: Record<string, string>): Promise<string> {
+  await seedRepositories({
+    [payload.number]: {
+      base_ref: payload.base_ref,
+      body: payload.body,
+      head_ref: payload.head_ref,
+      head_repo: payload.head_repo,
+      head_sha: payload.head_sha,
+      merge_commit_sha: payload.merge_commit_sha,
+      merged: payload.merged === "true",
+      state: payload.action === "closed" ? "closed" : "open",
+      title: payload.title,
+      updated_at: payload.updated_at,
+    },
+  });
   const [owner, name] = repo.split("/");
   const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${payload.number}`;
   const eventID = `verification-results-pr-${payload.number}-${payload.action}-${payload.head_sha.slice(0, 7)}`;
@@ -598,22 +614,35 @@ function summarise(stopped?: string): never {
 // requests name a result's commit, and with no answer there the only thing that can teach
 // Dispatch a head is the envelope the cases publish.
 //
-// `pulls` is what GitHub answers about one pull request, which is read by one reader alone: the
-// reconcile's refresh of a stored head row. The attribution case seeds the two pull requests its
-// own stored rows name, since their titles name an issue this run creates, and the fixture route
-// replaces the whole map, so the seed is written here once and sent again with them.
+// `pulls` is what GitHub answers about one pull request. Two readers read it: the intake, which
+// takes from each envelope only which pull request changed and reads that pull request here,
+// and the reconcile's refresh of a stored head row. So each publish first sets the pull
+// request's answer to what GitHub holds after that event (publishPullRequest), and the
+// attribution case adds the two pull requests its own stored rows name. The fixture route
+// replaces the whole map, so every answer set is kept in `githubPulls` and sent again with the
+// next.
 
 /** One pull request the fake answers for, as its single-pull-request route reads a fixture:
- *  the head commit, the repository the head branch is in, the state and the title. */
+ *  the head commit and branch, the repository the head branch is in, the base branch, the
+ *  state, the title and body, the time GitHub last updated it, and the merge's own commit. */
 interface FakePullRequest {
+  readonly base_ref?: string;
+  readonly body?: string;
+  readonly head_ref?: string;
   readonly head_repo: string;
   readonly head_sha: string;
+  readonly merge_commit_sha?: string;
   readonly merged: boolean;
   readonly state: string;
   readonly title: string;
+  readonly updated_at?: string;
 }
 
+/** Every pull request answer set so far, keyed by number. */
+const githubPulls: Record<string, FakePullRequest> = {};
+
 async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise<void> {
+  Object.assign(githubPulls, pulls);
   const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
     body: JSON.stringify({
       [repo]: {
@@ -624,7 +653,7 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
         default_branch: "main",
         installation_id: 256,
         pull_requests: "read",
-        pulls,
+        pulls: githubPulls,
       },
       [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
     }),
@@ -633,7 +662,6 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
   }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
   if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
 }
-
 await seedRepositories({});
 
 for (const [key, name, mapped] of [

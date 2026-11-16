@@ -361,8 +361,8 @@ func consumerGenerationMetadata() map[string]string {
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg, handling := message.msg, d.handling
 	// headNotStored is set by the one route error NATS must redeliver, which the deferred answer
-	// below reads: every other path acknowledges.
-	headNotStored := false
+	// below reads, with the delay it is redelivered after: every other path acknowledges.
+	headNotStored, redeliverDelay := false, headWriteRedeliverAfter
 	defer func() {
 		if handling.Err() != nil {
 			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
@@ -375,7 +375,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 					"subject", msg.Subject)
 				return
 			}
-			redeliverAfter(msg, headWriteRedeliverAfter)
+			redeliverAfter(msg, redeliverDelay)
 			return
 		}
 		acknowledge(msg)
@@ -404,9 +404,14 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 				"subject", msg.Subject, "deliveries", delivered, "error", err)
 			return
 		}
+		// A rate limit is waited out rather than asked about again: githubapp.Client sends
+		// nothing while the limit stands, so an earlier redelivery would only spend a delivery.
+		if limited, ok := githubapp.AsRateLimit(err); ok && limited.Wait > redeliverDelay {
+			redeliverDelay = limited.Wait
+		}
 		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
 			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
-			"redeliver_after", headWriteRedeliverAfter, "error", err)
+			"redeliver_after", redeliverDelay, "error", err)
 		headNotStored = true
 		return
 	case err != nil:
@@ -518,21 +523,17 @@ func acknowledge(msg *natsgo.Msg) {
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
 // synchronize, reopened, edited and closed — records the pull request's head first
 // (recordPullRequestHead, pull_request_heads.go), for any author and any repository, since a
-// check result is measured against that head. A head write that could not be made at all is
-// the one failure this hands the envelope back for (delivery.ErrHeadNotStored): nothing else
-// repairs a head row that was never stored, since the reconcile's passes read the rows that
-// exist, and both statements behind that write are `on conflict … do update`, so the
-// redelivery writes the same pair. That covers the write itself and the two reads of Postgres
-// before it, the repository's canonical name and the attribution (recordPullRequestHead).
-// Two other failures of it are logged here and the merge handling goes on from them. A rate
-// limit the attribution hit leaves no row either, and no pass offers a row that was never
-// written, but it is acknowledged all the same: handing every rate-limited envelope back
-// would spend the whole limit over again, and the next `pull_request` event of that pull
-// request — a synchronize, a label, the merge — writes the row the limit cost this one. A
-// repository name that is not `owner/repo` is malformed in the envelope itself, so the same
-// envelope delivered again fails on the same name. A read of GitHub the App refused for any
-// other reason is no failure of this write at all: the row is written from the envelope
-// alone, incomplete and unstamped, and the reconcile's own pass reads it again.
+// check result is measured against that head. The head and the state are GitHub's answer about
+// the pull request the envelope names, never the envelope's own fields. A head write that could
+// not be made at all is the one failure this hands the envelope back for
+// (delivery.ErrHeadNotStored): nothing else repairs a head row that was never stored, since the
+// reconcile's passes read the rows that exist, and both statements behind that write are
+// `on conflict … do update`, so the redelivery writes the same pair. That covers the write
+// itself, the reads of Postgres before it, and a read of GitHub that failed, a rate limit
+// included. A pull request GitHub does not know, and a repository the App cannot read, write no
+// row and are not failures: a redelivery gets the same answer. A repository name that is not
+// `owner/repo` is malformed in the envelope itself, so the same envelope delivered again fails
+// on the same name, and it is logged here.
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
 // after that, and only where delivery is configured (settings is not nil): a deployment with no
 // settings has no population, so the head row is the whole of what an envelope is for there. The
@@ -549,9 +550,9 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 	if err != nil {
 		return false, fmt.Errorf("pull-request envelope: malformed number %q: %w", payload["number"], err)
 	}
-	// The commit messages the head write read, when it needed them, so the merge below pages
-	// the same commits once rather than twice.
-	messages, headErr := in.recordPullRequestHead(ctx, payload, number)
+	// What the head write read of GitHub, so the merge below reads the same pull request and
+	// pages the same commits once rather than twice.
+	read, headErr := in.recordPullRequestHead(ctx, payload, number)
 	if headErr != nil {
 		slog.Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
@@ -576,7 +577,16 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 		return false, err
 	}
 
-	fetched, fetchErr := FetchPullRequest(ctx, in.github, owner, repo, number)
+	var fetched FetchedPullRequest
+	var fetchErr error
+	switch {
+	case read.refused != nil:
+		fetchErr = read.refused
+	case read.pull != nil:
+		fetched, fetchErr = completeFetchedPullRequest(ctx, in.github, read.token, owner, repo, *read.pull)
+	default:
+		fetched, fetchErr = FetchPullRequest(ctx, in.github, owner, repo, number)
+	}
 	if fetchErr != nil {
 		// The population/task-label decision needs the fetch (labels aren't in the webhook
 		// payload); without it we cannot tell whether this PR belongs in the population at all,
@@ -600,7 +610,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, read.messages); err != nil {
 		return false, err
 	}
 	return true, nil
