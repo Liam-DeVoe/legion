@@ -52,6 +52,9 @@ type Claim struct {
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
+	if err := refusePersonTuples(tuples, claims); err != nil {
+		return "", nil, err
+	}
 	return writeArms(first, nodes, tuples, claims, true)
 }
 
@@ -61,6 +64,9 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 // node row moves onto the event (causeNodes), so a node made at the sentinel whose base
 // attributes were stated here would be a row naming one event and base tuples naming another.
 func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
+	if err := refusePersonTuples(tuples, claims); err != nil {
+		return "", nil, err
+	}
 	return writeArms(first, nodes, tuples, claims, false)
 }
 

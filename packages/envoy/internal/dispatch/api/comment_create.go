@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -1015,6 +1016,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The comment's thread in the Inbox (inboxwrite.Record), recorded below once its event is in:
+	// a comment whose pointers are stated is passed by the trigger user_threads_comment, so the
+	// event names the row its writer is about to hold as the trigger's own row was named.
+	inbox := inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project)
+	if stored.pointersStored {
+		payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
+	}
 	event, err := s.appendEvent(r.Context(), tx, owner.event(
 		"comment.created",
 		actor,
@@ -1061,6 +1069,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// racing over a session and an owner the store holds neither of would deadlock (R17).
 	if input.AskID != nil {
 		if _, err := asks.FollowAuthor(r.Context(), tx, *input.AskID, actor, createdAt, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// Who took part and whom the comment reached, after the event that stored it and every fact
+	// it states, its pointers among them: the one writer of the thread a person takes part in and
+	// of its user_threads rows. A comment whose pointers are no tuples is the trigger's, as an
+	// older build's is, and the backfill takes it.
+	if stored.pointersStored {
+		if err := inboxwrite.Record(r.Context(), tx, inbox, event.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

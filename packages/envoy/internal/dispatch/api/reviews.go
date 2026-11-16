@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -825,6 +826,10 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	// The requester takes part in the thread the request opens, recorded once its ask.opened is
+	// in, as an ask's create records its asker (createAskFor).
+	inbox := inboxwrite.Opened(ask.ID, actor, ask.CreatedAt, owner.IssueKey, owner.ArtifactID, project)
+	payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
 	event, err := s.appendEvent(ctx, tx, owner.event("ask.opened", actor, payload))
 	if err != nil {
 		return nil, model.Event{}, err
@@ -847,6 +852,9 @@ func (s *server) openApprovalAsk(
 	// event reads the follower row: its payload's logins are the thread's (events.ThreadLogins),
 	// and the outbox reads the followers after the commit.
 	if _, err := asks.FollowAuthor(ctx, tx, ask.ID, actor, ask.CreatedAt, event.ID); err != nil {
+		return nil, model.Event{}, err
+	}
+	if err := inboxwrite.Record(ctx, tx, inbox, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
 	ask.OpenedEventID = &event.ID

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -68,23 +69,22 @@ const waitingOnExpression = `case
 	else coalesce(lr.turn, 'human')
 end`
 
-// askedOfPersonExpression is the one rule for which person a question reaches, resolved as the
-// question is read, in three steps: the person somebody handed it to, the assignee of its issue
-// until somebody does, and the default assignee of the question's project while the issue holds
-// nobody - or where there is no issue at all, which is a question on a project document. Every
-// project names a default and the column refuses nothing
-// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so every question
-// reaches a person.
+// askedOfPersonExpression is the one rule for which person a question reaches
+// (asks.AskedOfPersonExpression, which spells it, and says why it lives below api): the person
+// somebody handed it to, the assignee of its issue until somebody does, and the default assignee
+// of the question's project while the issue holds nobody - or where there is no issue at all,
+// which is a question on a project document.
 //
-// Six reads share it. One is askReadColumns below, the column list every ask read selects: the
-// Inbox's rows (api/inbox.go), one ask, an issue's ask list, a document's ask list (api/asks.go)
-// and the decisions read (api/decisions.go). The other five write it into a statement of their
-// own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go), the author's read
-// behind `dispatch open-asks` (the active CTE of listOpenAsks in api/asks.go), the open ask the
-// Replies list leaves out, since the Inbox already lists it (myRepliesOwner in api/replies.go),
-// the read the hand-on route takes before it writes, which is whom the question waited on
-// until then (putAskAskedOf in api/ask_asked_of.go), and the person a write that opens a
-// question answers with (askWaitingOnPerson below).
+// Six reads of this package share it. One is askReadColumns below, the column list every ask
+// read selects: the Inbox's rows (api/inbox.go), one ask, an issue's ask list, a document's ask
+// list (api/asks.go) and the decisions read (api/decisions.go). The other five write it into a
+// statement of their own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go),
+// the author's read behind `dispatch open-asks` (the active CTE of listOpenAsks in api/asks.go),
+// the open ask the Replies list leaves out, since the Inbox already lists it (myRepliesOwner in
+// api/replies.go), the read the hand-on route takes before it writes, which is whom the question
+// waited on until then (putAskAskedOf in api/ask_asked_of.go), and the person a write that opens
+// a question answers with (askWaitingOnPerson below). A seventh, outside this package, is the
+// answer's catch-up of an ask an older build created (inboxwrite.ReadAsk).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three
 // the way askReadFrom does, the ask's own document among them: a question owned by an issue has
@@ -97,32 +97,23 @@ end`
 // from - the Inbox's person filter through askReadFrom, as it sits in the statement that
 // selects askReadColumns.
 //
-// It compares with = rather than wrapping either column in lower(btrim(...)): asks.asked_of,
-// issues.assignee and projects.default_assignee all hold what model.CanonicalLogin returns, so
-// the sides match as they are stored. The expression spans three tables, so no index on
-// issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
-const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
+// The expression spans three tables, so no index on issues.assignee
+// (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
+const askedOfPersonExpression = asks.AskedOfPersonExpression
 
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
-// a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
-// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
-// read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
-// this one text, so the rule and the tables it names move together. askReadFrom serves two of
-// the six reads, askReadColumns and the Inbox's person filter, which share one statement.
-// TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
-// its own.
+// a (asks.AskedOfPersonJoins): its issue as i, its own document as ar, and the project of
+// whichever of the two owns it as p. Five FROM clauses of this package carry them - askReadFrom
+// and askWaitingOnPerson below, the active CTE of listOpenAsks (api/asks.go), the not-exists
+// subquery of myRepliesOwner (api/replies.go) and the read putAskAskedOf takes before it writes
+// (api/ask_asked_of.go) - and each builds them from this one text, so the rule and the tables it
+// names move together. askReadFrom serves two of the six reads, askReadColumns and the Inbox's
+// person filter, which share one statement. TestOneExpressionDecidesWhoWaits holds them to this
+// one spelling as it holds the expression to its own.
 //
-// Each is an outer join: a question owned by an issue has no document row and one owned by a
-// document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
-// exactly one of the two, so the coalesce names the project either way - the shape this
-// repository already reads a question's project through (api/inbox.go, api/asks.go,
-// projectListQuery in api/projects.go). The leading newline makes it a block a caller appends
-// to its own `from <table> a`, whatever that caller indents its statement by.
-const askedOfPersonJoins = `
-	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+// The project is reached through either owner the way this repository already reads a
+// question's project (api/inbox.go, api/asks.go, projectListQuery in api/projects.go).
+const askedOfPersonJoins = asks.AskedOfPersonJoins
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an

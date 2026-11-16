@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -720,21 +721,28 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 // time is the transaction's now(), as the answer route's is: each process's host keeps its own
 // clock, and this one is the created_at of the ask.answered event appended here and of the review
 // the carry writes beside it, and the time the answer's part is written at (IndexAskPartsCounted
-// below).
+// below). The approver took part in the request's thread and the answer reached everyone else in
+// it, which the one writer of that thread records after the event (inboxwrite.Record), with what
+// the request still owed the store, read before the answer's update marks it (inboxwrite.ReadAsk).
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ask *model.Ask, actor model.Actor, reason, serverURL string) (model.Event, error) {
 	var answeredAt time.Time
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&answeredAt); err != nil {
 		return model.Event{}, fmt.Errorf("read the approval answer's time: %w", err)
 	}
 	answer := model.AskAnswer{User: actor.ID, Selected: []string{ApprovalOptionApprove}, Text: &reason, At: answeredAt.UTC()}
+	before, err := inboxwrite.ReadAsk(ctx, tx, ask.ID)
+	if err != nil {
+		return model.Event{}, fmt.Errorf("answer approval ask: %w", err)
+	}
 	var held graphstore.Uncaused
 	change := asks.Answered(answer)
-	change.From, change.Who, change.At, change.Held = asks.StateOpen, actor, answer.At, &held
+	change.From, change.Who, change.At, change.Held, change.TuplesStored = asks.StateOpen, actor, answer.At, &held, true
 	settled, err := asks.Settle(ctx, tx, ask.ID, change)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("answer approval ask: %w", err)
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
+	inbox := inboxwrite.Answered(before, *settled.Answer, actor)
 	// The answer is a part of the request, so its text reaches the graph with it, and the
 	// ask.answered below names what it moved.
 	changes, indexed, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
@@ -746,6 +754,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, as
 	if err != nil {
 		return model.Event{}, err
 	}
+	payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
 	event, err := broker.Append(ctx, tx, model.Event{
 		IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID,
 		Type: "ask.answered", Actor: actor,
@@ -765,6 +774,9 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, as
 	// What the answer's part states in the store, under the ask.answered that records it.
 	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 		return model.Event{}, fmt.Errorf("state approval ask %s's answer in the store: %w", ask.ID, err)
+	}
+	if err := inboxwrite.Record(ctx, tx, inbox, event.ID); err != nil {
+		return model.Event{}, fmt.Errorf("record approval ask %s's answer in its thread: %w", ask.ID, err)
 	}
 	return event, nil
 }

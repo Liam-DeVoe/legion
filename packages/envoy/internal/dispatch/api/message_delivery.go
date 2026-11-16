@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -1243,6 +1244,8 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	// The session takes no row of its own, so the event names exactly the rows already there.
+	inbox := stored.inbox(reply, actor)
 	event, err := s.appendEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
@@ -1263,6 +1266,12 @@ func (s *server) insertSessionReply(
 	// (recordAnsweredDelivery), which is the order that write is held to.
 	if stored.projected {
 		if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
+			return model.Message{}, model.Event{}, err
+		}
+		// Who took part and whom the reply reached, and the end of every Agent dismissal of its
+		// root, with the retraction of each (inboxwrite.Record): the clear trigger passes a reply
+		// whose row names its node (migration 20261116160001).
+		if err := inboxwrite.Record(ctx, tx, inbox, event.ID); err != nil {
 			return model.Message{}, model.Event{}, err
 		}
 	}

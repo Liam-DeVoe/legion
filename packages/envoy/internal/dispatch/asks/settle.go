@@ -50,6 +50,14 @@ type Change struct {
 	// transaction.
 	Event int64
 	Held  *graphstore.Uncaused
+	// TuplesStored says the caller states the answer this change writes in the node and tuple
+	// store in the same transaction - who answered took part in the ask's thread, and the answer
+	// reached everyone else in it (inboxwrite.Record) - so the update that writes the answer sets
+	// asks.tuples_stored_at to the answer's own moment (migration 20261116140001). That is the
+	// marker the trigger user_threads_ask reads (20261116160001): an answer whose moment the marker
+	// holds is this release's and passes it by, and any other answer is an older build's, which
+	// that trigger projects and the backfill takes. Only a change that writes an answer moves it.
+	TuplesStored bool
 }
 
 // Answered is the change an answer makes: the ask is answered with answer, and keeps the
@@ -144,10 +152,12 @@ func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.
 		update asks
 		set state = $2,
 		    answer = case when $3 then answer else $4::jsonb end,
-		    resolution = case when $5 then resolution else $6::jsonb end
+		    resolution = case when $5 then resolution else $6::jsonb end,
+		    tuples_stored_at = case when $7 then ($4::jsonb->>'at')::timestamptz else tuples_stored_at end
 		where id = $1::uuid
 		returning state, answer, resolution
-	`, askID, change.State, change.KeepAnswer, answer, change.KeepResolution, resolution).Scan(&settled.State, &storedAnswer, &storedResolution); err != nil {
+	`, askID, change.State, change.KeepAnswer, answer, change.KeepResolution, resolution,
+		change.TuplesStored && !change.KeepAnswer && change.Answer != nil).Scan(&settled.State, &storedAnswer, &storedResolution); err != nil {
 		return model.Ask{}, fmt.Errorf("write the answer state of ask %s: %w", askID, err)
 	}
 	if len(storedAnswer) > 0 {

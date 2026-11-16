@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -325,6 +326,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The asker takes part in the thread the ask opens (inboxwrite.Record, below, once the
+	// ask.opened is in): an ask holds its marker from its insert, so the trigger user_threads_ask
+	// passes it by, and the event names the row its asker is about to hold.
+	inbox := inboxwrite.Opened(ask.ID, actor, ask.CreatedAt, owner.IssueKey, owner.ArtifactID, project)
+	openedPayload.ThreadLogins = inbox.ThreadLogins(openedPayload.ThreadLogins)
 	// The person this question reaches, read under this write's own transaction through the rule
 	// every read of that person shares, so the caller is told whose Inbox it just landed in
 	// rather than having to read the ask again. It is set after the payload above is built:
@@ -355,6 +361,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// What the question and the parts state in the store, under the same event: the parts' nodes,
 	// their part_of and links, and the ask's citations.
 	if err := graphstore.Caused(r.Context(), tx, indexed, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := inboxwrite.Record(r.Context(), tx, inbox, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -549,6 +550,11 @@ func (s *server) writeBroadcast(
 		}
 		if stored.projected {
 			if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message.ID, actor, message.CreatedAt, event.ID); err != nil {
+				return broadcastRead{}, nil, err
+			}
+			// The sender takes part in the thread the copy opens (inboxwrite.Record): a copy is
+			// on no issue, so its thread keeps no user_threads row and names no one more.
+			if err := inboxwrite.Record(ctx, tx, stored.inbox(message, actor), event.ID); err != nil {
 				return broadcastRead{}, nil, err
 			}
 		}

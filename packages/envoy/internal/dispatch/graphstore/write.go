@@ -483,8 +483,12 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 // same row again and `do nothing` drops it. Each statement names its own partial unique index by
 // that index's exact column list and predicate - a partial index is not a constraint, so
 // `on conflict on constraint` cannot name it. Both keys are partial on `source_event <> 0`, so a
-// tuple at the sentinel is appended unconditionally.
+// tuple at the sentinel is appended unconditionally. It is what Write and Caused append through,
+// so a tuple of ToPerson's three kinds naming a person is refused here (refusePersonTuples).
 func appendTuples(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
+	if err := refusePersonTuples(tuples, nil); err != nil {
+		return err
+	}
 	relations, values := splitTuples(tuples)
 	if err := appendTupleRows(ctx, tx, tupleInsert(1, "")+relationRepeatKey, relations); err != nil {
 		return fmt.Errorf("append graph relations: %w", err)

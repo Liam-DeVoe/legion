@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -174,6 +175,24 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// would: a seeded database a server has to window is one it would rewrite.
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
 				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
+			}
+			// Who asked takes part in the ask's thread and keeps its row, and who answered
+			// replies in it, as the server's create and answer record them (inboxwrite.Record):
+			// the row holds its marker from the insert, at the moment its answer is dated, so the
+			// trigger user_threads_ask passes both by. The seed appends no event of its own.
+			project := r.itemProject(ask.Issue, ask.Document)
+			if err := inboxwrite.Record(ctx, tx, inboxwrite.Opened(ask.ID, seedAuthor, ask.CreatedAt, issueKey, artifactID, project), graphstore.NoEvent); err != nil {
+				return fmt.Errorf("record ask %s in its thread: %w", ask.ID, err)
+			}
+			if answer != nil {
+				answered := inboxwrite.Write{
+					Arm: inboxwrite.Replies, NodeKind: graphstore.KindAsk, NodeID: ask.ID,
+					Author: model.Actor{Kind: "user", ID: answer.User}, Who: seedAuthor, At: answer.At,
+					IssueKey: issueKey, ArtifactID: artifactID, Project: project,
+				}
+				if err := inboxwrite.Record(ctx, tx, answered, graphstore.NoEvent); err != nil {
+					return fmt.Errorf("record the answer of ask %s in its thread: %w", ask.ID, err)
+				}
 			}
 			// The event is owned by the ask's own owner and dated at the ask, as one appended
 			// with the ask is, and it is published (`notify` false, `published_at` set) like

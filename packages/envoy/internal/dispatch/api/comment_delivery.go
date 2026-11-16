@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -1351,6 +1352,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The reply's thread in the Inbox, recorded once its event is in, as a comment's is
+	// (createCommentFor).
+	inbox := inboxwrite.Comment(reply.ID, actor, reply.CreatedAt, reply.IssueKey, reply.ArtifactID, project)
+	if stored.pointersStored {
+		payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
+	}
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(reply.IssueKey, reply.ArtifactID).event(
 		"comment.answered", actor, payload,
 	))
@@ -1408,6 +1415,14 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if err := recordAnsweredDelivery(r.Context(), tx, answered, actor, event.CreatedAt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// Who took part and whom the reply reached, as a comment's write records it (createCommentFor),
+	// after the record of the attempt it answered.
+	if stored.pointersStored {
+		if err := inboxwrite.Record(r.Context(), tx, inbox, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

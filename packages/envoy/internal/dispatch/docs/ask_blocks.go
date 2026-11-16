@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -68,6 +69,10 @@ type settlementReconciliation struct {
 	// ask whose block left, the restoration of one whose block came back - each beside the event
 	// that records it, whose facts on the ask's node wait for that event (causeSettledAnswers).
 	answers []settledAnswer
+	// threads are the writes this settlement made in the threads of asks - each ask it opened,
+	// and each answer it restored - beside the type of the event that records each, which the one
+	// writer of those threads records once that event is appended (recordThreads).
+	threads []threadWrite
 	// copiedFrom is, for every ask block of the tree settlement read, the ask its block is a copy
 	// of (copiedAskSources), or "" for a block that is no copy, which claimCopies states as the
 	// copied_from of the block's node once the version's blocks are indexed.
@@ -183,11 +188,50 @@ type settledAnswer struct {
 }
 
 // openedFollow is one ask this settlement opened: the ask's own node, written before its row
-// (createAskBlock), and its follow by its author, both caused by the ask.opened that records it.
+// (createAskBlock), and its follow by its author, both caused by the ask.opened that records it,
+// and the ask's create as the one writer of its thread records it (inboxwrite.Opened).
 type openedFollow struct {
 	ask      string
 	node     graphstore.Uncaused
 	followed asks.Followed
+	inbox    inboxwrite.Write
+}
+
+// threadWrite is one write a settlement made in an ask's thread (inboxwrite.Write), and the type of
+// the event its settlement appends for it, found among the appended events by that type and the
+// ask, as causeSettledAnswers finds one.
+type threadWrite struct {
+	eventType string
+	write     inboxwrite.Write
+}
+
+// recordThreads records each write this settlement made in an ask's thread under the event that
+// records it, found among appended by its type and the ask its payload names: who opened each
+// ask, and who answered each answer a restoration brought back, take part in that thread, and a
+// restored answer reaches everyone else in it (inboxwrite.Record), as the trigger user_threads_ask
+// recorded it before this release marked such a write. A write whose event is not among appended
+// is a settlement that lost the event recording it, and fails here naming the ask.
+func (r *settlementReconciliation) recordThreads(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
+	if len(r.threads) == 0 {
+		return nil
+	}
+	type recorded struct{ ask, eventType string }
+	events := make(map[recorded]int64, len(r.threads))
+	for _, event := range appended {
+		if payload, ok := event.Payload.(model.AskEventPayload); ok {
+			events[recorded{payload.ID, event.Type}] = event.ID
+		}
+	}
+	for _, thread := range r.threads {
+		event, found := events[recorded{thread.write.NodeID, thread.eventType}]
+		if !found {
+			return fmt.Errorf("settlement wrote in the thread of ask %s and appended no %s for it", thread.write.NodeID, thread.eventType)
+		}
+		if err := inboxwrite.Record(ctx, tx, thread.write, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // indexedAsk is one ask this settlement indexed: its id, the type of the event of its own that
@@ -741,6 +785,10 @@ func (s *Service) reconcileAskBlocks(
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
+			// The asker takes part in the thread the ask opens, once its ask.opened is in
+			// (recordThreads), so the event names the row the asker is about to hold.
+			payload.ThreadLogins = opening.inbox.ThreadLogins(payload.ThreadLogins)
+			reconciled.threads = append(reconciled.threads, threadWrite{eventType: "ask.opened", write: opening.inbox})
 			indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
 			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: "ask.opened", write: indexed})
 			reconciled.follows = append(reconciled.follows, opening)
@@ -757,7 +805,7 @@ func (s *Service) reconcileAskBlocks(
 
 		if settlementRetracted(ask) && !issueClosed {
 			var held graphstore.Uncaused
-			restored, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
+			restored, answered, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
@@ -767,6 +815,9 @@ func (s *Service) reconcileAskBlocks(
 				eventType = "ask.answered"
 			}
 			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
+			if answered != nil {
+				reconciled.threads = append(reconciled.threads, threadWrite{eventType: eventType, write: *answered})
+			}
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved.
 			restoredAt := refs.AskPartsAt(ask)
@@ -780,6 +831,9 @@ func (s *Service) reconcileAskBlocks(
 				return settlementReconciliation{}, err
 			}
 			payload.Restored = true
+			if answered != nil {
+				payload.ThreadLogins = answered.ThreadLogins(payload.ThreadLogins)
+			}
 			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: eventType, write: indexed})
 			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, eventType, actor, payload))
 		}
@@ -1351,27 +1405,43 @@ func createAskBlock(
 	ask.Urgency = block.urgency
 	ask.State = "open"
 	ask.Kind = "question"
-	return ask, openedFollow{ask: ask.ID, node: node, followed: followed}, nil
+	inbox := inboxwrite.Opened(ask.ID, author, ask.CreatedAt, owner.IssueKey, ownerArtifactID, project)
+	return ask, openedFollow{ask: ask.ID, node: node, followed: followed, inbox: inbox}, nil
 }
 
 // restoreRetractedAsk gives an ask settlement retracted, whose block came back, the state and the
 // answer it held before the retraction (stateBeforeRetraction) and takes the retraction off,
 // through the one writer of an ask's answer state (asks.Settle) in who's name. What that writes on
 // the ask's node waits in held for the event the settlement appends for the restoration
-// (causeSettledAnswers).
-func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
+// (causeSettledAnswers). It answers, for a restoration that brings an answer back, that answer's
+// write in the ask's thread, which the settlement records under the same event (recordThreads),
+// and nil for one that restores the ask open.
+func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, *inboxwrite.Write, error) {
 	prior, err := stateBeforeRetraction(ctx, tx, ask.ID)
 	if err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, nil, err
+	}
+	// An answer the restoration brings back is a reply in the ask's thread again, as the trigger
+	// user_threads_ask projected it, so what the ask still owed the store is read before the
+	// update marks it (inboxwrite.ReadAsk), and that update moves the marker to the answer's moment.
+	var before inboxwrite.Ask
+	if prior.Answer != nil {
+		if before, err = inboxwrite.ReadAsk(ctx, tx, ask.ID); err != nil {
+			return model.Ask{}, nil, err
+		}
 	}
 	change := asks.Restored(prior.State, prior.Answer)
-	change.Who, change.At, change.Held = who, time.Now().UTC(), held
+	change.Who, change.At, change.Held, change.TuplesStored = who, time.Now().UTC(), held, prior.Answer != nil
 	settled, err := asks.Settle(ctx, tx, ask.ID, change)
 	if err != nil {
-		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
+		return model.Ask{}, nil, fmt.Errorf("restore retracted ask: %w", err)
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
-	return ask, nil
+	if settled.Answer == nil {
+		return ask, nil, nil
+	}
+	answered := inboxwrite.Answered(before, *settled.Answer, who)
+	return ask, &answered, nil
 }
 
 // stateBeforeRetraction is the ask askID as it stood before settlement retracted it, read from

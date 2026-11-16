@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -287,6 +288,14 @@ func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 	return &w.node.Kind, &w.node.ID
 }
 
+// inbox is message's write in its thread, as inboxwrite.Record records it, by author: in the
+// project of the issue the message is on, and in none for a message on no issue, whose thread
+// keeps no user_threads row. A message whose row names its node is passed by the triggers on
+// messages (migration 20261116160001), so its writer records it; one that names none is theirs.
+func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inboxwrite.Write {
+	return inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project)
+}
+
 // writeMessageNode writes the node of the message row names, which a request is about to store,
 // before its row (graphstore.MessageNode), with the page it hangs from where it hangs from one,
 // and answers the write held for the event that records the message, every pointer of the row
@@ -482,6 +491,10 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	inbox := stored.inbox(message, actor)
+	if stored.projected {
+		payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
+	}
 	event, err := s.appendEvent(ctx, tx, messageEvent(message, eventType, actor, payload))
 	if err != nil {
 		return model.Message{}, nil, err
@@ -503,6 +516,11 @@ func (s *server) createStoredMessage(
 	// none: the census holds the author of a row that names its node alone to a node.
 	if stored.projected {
 		if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message.ID, actor, message.CreatedAt, event.ID); err != nil {
+			return model.Message{}, nil, err
+		}
+		// Who took part in the message's thread and whom it reached, after its event and every
+		// fact it states, its replies_to among them (inboxwrite.Record).
+		if err := inboxwrite.Record(ctx, tx, inbox, event.ID); err != nil {
 			return model.Message{}, nil, err
 		}
 	}
