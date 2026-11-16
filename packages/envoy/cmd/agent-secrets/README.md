@@ -287,9 +287,11 @@ else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSD
 names, else the well-known credentials file, else the active gcloud account, else the metadata
 server. A source that is present but broken stops the command; every form prints the source it
 used (`using …`) before its first store call, and a store refusal names it and how to choose
-another. The store's IAM decides what each may do. `--owner me` is the email of the person that
-credential names, and is refused where it names none (a machine's role, a service account, a
-token without an email scope); `--owner <email>` names the owning person outright:
+another. On Google Cloud, these forms use Secret Manager's REST API, so a Google login granted
+through the airlock works with its HTTP/1.1 proxy and trust bundle. The store's IAM decides what
+each may do. `--owner me` is the email of the person that credential names, and is refused where
+it names none (a machine's role, a service account, a token without an email scope);
+`--owner <email>` names the owning person outright:
 
 ```sh
 agent-secrets secret list

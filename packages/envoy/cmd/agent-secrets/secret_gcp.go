@@ -156,8 +156,9 @@ var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, 
 // log (GOOGLE_SDK_GO_LOGGING_LEVEL): at debug level the SDK logs every request as protojson,
 // which for AddSecretVersion includes the secret's value, base64-encoded, in Payload.Data (the
 // broker's own GCP store takes the same precaution, internal/broker/secrets/gcp.go).
+// REST works through the airlock, whose TLS endpoint deliberately offers HTTP/1.1 only.
 var gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secretmanager.Client, error) {
-	return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)))
+	return secretmanager.NewRESTClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)))
 }
 
 // gcloudTokenLife is how long this command takes an access token `gcloud auth print-access-token`
