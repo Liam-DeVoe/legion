@@ -121,7 +121,7 @@ func (a Approved) Current() (Tree, []Problem) {
 	slices.SortFunc(tree.Checks, func(x, y Check) int { return cmp.Compare(x.ID, y.ID) })
 	slices.SortFunc(tree.Components, func(x, y Component) int { return cmp.Compare(x.ID, y.ID) })
 	slices.SortFunc(tree.Terms, func(x, y Term) int { return cmp.Compare(x.ID, y.ID) })
-	sortProblems(problems)
+	SortProblems(problems)
 	return tree, problems
 }
 
@@ -200,8 +200,9 @@ func nodesOf(tree Tree) []anyNode {
 	return all
 }
 
-// sortProblems sorts problems by file, line, node, rule and detail, as Validate sorts them.
-func sortProblems(problems []Problem) {
+// SortProblems sorts problems by file, line, node, rule and detail: the order of every list of
+// problems that this package gives, so a caller that joins two lists sorts them the same way.
+func SortProblems(problems []Problem) {
 	slices.SortFunc(problems, func(a, b Problem) int {
 		return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
 			cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))

@@ -3066,6 +3066,26 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `ci-caches.yaml`'s `architecture-check` job, a job of its own, runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>-<hash>` cache entry in main's scope (`<hash>` is the SHA-256 of `packages/envoy/go.sum`, and on a miss the action restores the newest entry of the same Go version and still saves the new key), since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
   a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
 
+- `cmd/spec-check compare --dir <dir> --approved <approved.json>` compares the spec files of one directory with an approved spec in the form `specgraph.ReadApproved` reads (`cmd/spec-check/compare.go`), by `specgraph.Compare`'s rules: unapproved-id, unapproved-text and removed-id.
+  A node in a text the approved spec never held is exit 1, one line on stderr for each, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, and `spec-check: <dir>: the comparison fails on <n> nodes` on stdout.
+  Otherwise it is exit 0, with `spec-check: <dir>: every text the files hold is approved; <m> of <n> approved statements are in the files at their current text`, then one line for each other approved statement: `spec-check: statement <id>: not in the files`, or `spec-check: statement <id>: the files hold approved version 1, and version 2 is current`.
+  Files that do not parse are exit 2 and no comparison, since a block that does not parse is missing from the tree and its text would pass;
+  so is a directory that holds no spec file, since every text of no file is approved.
+  It does not judge the tree, which is `tree`'s work.
+  `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
+  the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
+  Its blocks, like the JSON of `checks`, do not pass through `runnerlog.Say`, and no CI job runs `print`.
+  An id the approved spec does not hold, or removed, is exit 2 with nothing on stdout.
+
+- No CI job compares the spec files with the approved spec: Dispatch makes that comparison at each push (R2).
+  `spec-check guard --root <dir>` keeps that true (`cmd/spec-check/guard.go`): it reads every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`, and `specgraph.CIFilesThatCompare` names each line that holds `spec-check`, under any path or quoting, then white space and the word `compare`;
+  a line that ends in a backslash goes on in the next, as a shell reads it.
+  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line runs the comparison of the files with the approved spec, which no CI job does (R2)` on stderr for each, and `spec-check: <dir>: <n> lines of CI files run the comparison` on stdout.
+  No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
+  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files runs the comparison`.
+  The instrument reads text: a command held in a variable, a line a YAML folded scalar joins, and a Go program that calls `specgraph.Compare` are outside it.
+  `ci.yaml`'s `envoy-go-checks` runs it over this repository (`go run ./cmd/spec-check guard --root ../..`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them runs the step.
+
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
   Only the process stopping ends a flight early:

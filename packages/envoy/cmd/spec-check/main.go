@@ -1,14 +1,19 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
-// of package specgraph, and lists what changed between two such directories. It reads the
-// directory as the Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes
-// each .md file directly in it, within the size bound, and passes over every other entry. Every
-// rule is specgraph's (Parse and Validate); the command states none of its own.
+// of package specgraph, lists what changed between two such directories, compares one with an
+// approved spec and prints the approved text, and checks that no CI file of a repository runs that
+// comparison. It reads the directory as the Dispatch server's importer reads
+// .dispatch/architecture: notes.ReadSet takes each .md file directly in it, within the size
+// bound, and passes over every other entry. Every rule is specgraph's (Parse, Validate, Compare and
+// CIFilesThatCompare); the command states none of its own.
 //
 // Usage:
 //
 //	spec-check tree --dir <dir> [--allow-empty] [--retired <file>]
 //	spec-check changes --base <dir> --dir <dir>
 //	spec-check checks --dir <dir> --job <job>
+//	spec-check compare --dir <dir> --approved <approved.json>
+//	spec-check print --approved <approved.json> --id <id> [--id <id>...]
+//	spec-check guard --root <dir>
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -26,18 +31,44 @@
 // [{"id","runner","selector","job","procedure_sha256"}], [] when none, and exits 0. Both exit 2,
 // with the problems on standard error, when a tree they read has any problem.
 //
+// compare compares the files of one directory with an approved spec in the form of approved.json
+// (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec
+// never held, with one line for each such node on standard error, "spec-check:
+// <dir>/<file>:<line>: <node>: <detail>", and "spec-check: <dir>: the comparison fails on <n>
+// nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: every text the files
+// hold is approved; 5 of 7 approved statements are in the files at their current text" and one
+// line for each other approved statement, "spec-check: statement <id>: not in the files" or
+// "spec-check: statement <id>: the files hold approved version 1, and version 2 is current". It
+// exits 2, and makes no comparison, for files that do not parse or a directory that holds no spec
+// file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
+// Dispatch makes the comparison at each push.
+//
+// print writes the current approved block of each node it is named, in the order named, and after
+// a statement the block of each current check that serves it, each block once and the blocks
+// separated by one blank line, so that a change copies them into the files. It exits 2, and
+// prints nothing, when the approved spec does not hold an id or removed it.
+//
+// guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
+// <dir>/.github/scripts and <dir>/scripts, and names each line that runs the comparison
+// (specgraph.CIFilesThatCompare) on standard error, "spec-check: <dir>/<path>:<line>: this line
+// runs the comparison of the files with the approved spec, which no CI job does (R2)", with
+// "spec-check: <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It
+// exits 1 with "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file,
+// since an instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>:
+// no line of <k> CI files runs the comparison".
+//
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
-// Paths are printed absolute. Every line but the usage and the JSON of checks is written by
-// runnerlog.Say with the prefix "spec-check: ", so no text a file name, a file or an argument
-// holds starts a line of the runner's log or names a workflow command. The JSON line holds no raw
-// line break, as encoding/json escapes each control character, and checks writes the "[" of each
-// "##[" in it as \u005b, which a JSON reader reads back as "[".
+// Paths are printed absolute. Every line but the usage, the JSON of checks and the blocks of print
+// is written by runnerlog.Say with the prefix "spec-check: ", so no text a file name, a file or an
+// argument holds starts a line of the runner's log or names a workflow command. The JSON line holds
+// no raw line break, as encoding/json escapes each control character, and checks writes the "[" of
+// each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block as the
+// approved spec holds it, since a change copies it byte for byte; no CI job runs print.
 package main
 
 import (
-	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,10 +84,13 @@ import (
 
 const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <file>]
        spec-check changes --base <dir> --dir <dir>
-       spec-check checks --dir <dir> --job <job>`
+       spec-check checks --dir <dir> --job <job>
+       spec-check compare --dir <dir> --approved <approved.json>
+       spec-check print --approved <approved.json> --id <id> [--id <id>...]
+       spec-check guard --root <dir>`
 
-// prefix is the fixed text that starts every line the command prints but the usage and the JSON
-// of checks.
+// prefix is the fixed text that starts every line the command prints but the usage, the JSON of
+// checks and the blocks of print.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
@@ -65,6 +99,9 @@ var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"tree":    runTree,
 	"changes": runChanges,
 	"checks":  runChecks,
+	"compare": runCompare,
+	"print":   runPrint,
+	"guard":   runGuard,
 }
 
 func main() {
@@ -102,10 +139,15 @@ func counts(statements, checks, components, interfaces, terms int) string {
 
 // count is "<n> <noun>s", with the noun alone for one.
 func count(n int, noun string) string {
+	return fmt.Sprintf("%d %s", n, plural(n, noun))
+}
+
+// plural is "<noun>s", or the noun alone for one.
+func plural(n int, noun string) string {
 	if n == 1 {
-		return "1 " + noun
+		return noun
 	}
-	return fmt.Sprintf("%d %ss", n, noun)
+	return noun + "s"
 }
 
 // parse reads args into flags, the flags of one subcommand, and answers whether the subcommand
@@ -146,8 +188,9 @@ func absolute(stderr io.Writer, path string) (string, bool) {
 	return abs, true
 }
 
-// judged is one directory of spec files, read and judged: its tree, every problem of Parse and of
-// Validate in one list, sorted by file, line, node, rule and detail, and how many files it held.
+// judged is one directory of spec files, read and judged: its tree, every problem of Parse and,
+// for judge, of Validate in one list, sorted by file, line, node, rule and detail, and how many
+// files it held.
 type judged struct {
 	dir      string
 	tree     specgraph.Tree
@@ -155,11 +198,22 @@ type judged struct {
 	files    int
 }
 
-// judge reads dir with notes.ReadSet, warns on stderr of each entry that is not a spec file, and
-// parses and validates the files it read with o. The error is ReadSet's: notes.ErrNoDirectory for
-// a directory that does not exist, a *notes.SizeRefusal for a file above the bound, and an error
-// naming the path for any other failure to read.
+// judge reads and parses dir as read does, and validates the tree with o.
 func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
+	j, err := read(stderr, dir)
+	if err != nil {
+		return j, err
+	}
+	j.problems = append(j.problems, specgraph.Validate(j.tree, o)...)
+	specgraph.SortProblems(j.problems)
+	return j, nil
+}
+
+// read reads dir with notes.ReadSet, warns on stderr of each entry that is not a spec file, and
+// parses the files it read. The error is ReadSet's: notes.ErrNoDirectory for a directory that
+// does not exist, a *notes.SizeRefusal for a file above the bound, and an error naming the path
+// for any other failure to read.
+func read(stderr io.Writer, dir string) (judged, error) {
 	set, err := notes.ReadSet(os.DirFS(dir), dir)
 	for _, entry := range set.Rejected {
 		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
@@ -168,11 +222,7 @@ func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
 		return judged{dir: dir}, err
 	}
 	tree, problems := specgraph.Parse(set.Files)
-	problems = append(problems, specgraph.Validate(tree, o)...)
-	slices.SortFunc(problems, func(a, b specgraph.Problem) int {
-		return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
-			cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))
-	})
+	specgraph.SortProblems(problems)
 	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
 }
 

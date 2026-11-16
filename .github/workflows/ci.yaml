@@ -1525,6 +1525,12 @@ jobs:
               - '.github/actions/architecture-check/check.sh'
               # That same step judges the notes at the action's default path.
               - '.dispatch/architecture/**'
+              # The step "Check that no CI file of this repository compares the spec files" reads
+              # every file under these four.
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'scripts/**'
             # The envoy-infra module's own workspace (packages/envoy/infra/go.work binds it and
             # packages/envoy), the envoy packages its tests compile, and the Dispatch server and
             # listener infra/core/permissions_live_test.go:298-299 builds in the root workspace.
@@ -4844,7 +4850,8 @@ jobs:
   # the nine slow suites, which run in the merge queue and on a pull request labelled
   # `full-ci`, while these checks must come back on every push. No Postgres service: nothing
   # here opens a database. It restores go-envoy rather than go-envoy-test, which is the slow
-  # half's family alone (the test binary of every package of the envoy module).
+  # half's family alone (the test binary of every package of the envoy module). It also runs the
+  # guard that no CI file of this repository compares the spec files with the approved spec.
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4921,6 +4928,13 @@ jobs:
         working-directory: packages/contracts
       - name: Check the OpenAPI document is generated from the route table
         run: go run ./cmd/dispatch openapi --check
+        working-directory: packages/envoy
+      # No CI job compares the spec files with the approved spec: Dispatch makes that comparison
+      # at each push (R2 of The Spec). The guard reads every file under .github/workflows,
+      # .github/actions, .github/scripts and scripts, names each line that runs the command's
+      # comparison, and fails on it, and it fails when it read no workflow.
+      - name: Check that no CI file of this repository compares the spec files
+        run: go run ./cmd/spec-check guard --root ../..
         working-directory: packages/envoy
       - name: Check pmdoc fixtures are up to date
         run: bun run check

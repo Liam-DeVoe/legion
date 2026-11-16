@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -267,20 +268,352 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 	})
 
-	t.Run("a bad argument exits 2 with the usage", func(t *testing.T) {
+	t.Run("compare", func(t *testing.T) {
 		t.Parallel()
-		for _, args := range [][]string{
-			{"tree"},
-			{"tree", "--dir", valid, "extra"},
-			{"tree", "--bogus"},
-			{"changes", "--dir", valid},
-			{"checks", "--dir", valid},
+		testCompare(t, binary)
+	})
+	t.Run("print", func(t *testing.T) {
+		t.Parallel()
+		testPrint(t, binary)
+	})
+	t.Run("guard", func(t *testing.T) {
+		t.Parallel()
+		testGuard(t, binary)
+	})
+
+	t.Run("a bad argument exits 2 with the line that names it and the usage", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		for _, row := range []struct {
+			args []string
+			line string
+		}{
+			{[]string{"tree"}, "tree: --dir is required"},
+			{[]string{"tree", "--dir", valid, "extra"}, `tree: takes no argument but its flags, got "extra"`},
+			{[]string{"tree", "--bogus"}, "tree: flag provided but not defined: -bogus"},
+			{[]string{"changes", "--dir", valid}, "changes: --base is required"},
+			{[]string{"checks", "--dir", valid}, "checks: --job is required"},
+			{[]string{"compare", "--dir", valid}, "compare: --approved is required"},
+			{[]string{"compare", "--approved", approved}, "compare: --dir is required"},
+			{[]string{"print", "--approved", approved}, "print: --id is required"},
+			{[]string{"print", "--id", "order"}, "print: --approved is required"},
+			{[]string{"guard"}, "guard: --root is required"},
+			{[]string{"guard", "--root", valid, "extra"}, `guard: takes no argument but its flags, got "extra"`},
 		} {
-			got := runBinary(t, binary, "", args...)
-			if got.code != 2 || got.stdout != "" || !strings.HasPrefix(got.stderr, "spec-check: ") || !strings.HasSuffix(got.stderr, usage+"\n") {
-				t.Errorf("%q: exit %d, stdout %q, stderr %q; want exit 2, a line and the usage", args, got.code, got.stdout, got.stderr)
+			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "spec-check: " + row.line + "\n" + usage + "\n"})
+		}
+	})
+}
+
+// The Detail of each rule of specgraph.Compare, as the command prints it.
+const (
+	unapprovedID   = "unapproved-id: the approved spec never held this id"
+	unapprovedText = "unapproved-text: the approved spec never held this text"
+	removedID      = "removed-id: the approved spec removed this id and never held this text for it"
+)
+
+// testCompare runs compare over each fixture of specgraph's comparison tests (testdata/compare),
+// each the approved spec and the files of one change: a node in a text that the approved spec
+// never held fails the comparison, and the command names it with its file and line; the files
+// that hold only approved texts pass, and the command names each approved statement that the
+// files do not hold at its current text.
+func testCompare(t *testing.T, binary string) {
+	covered := map[string]bool{}
+	for _, row := range []struct {
+		fixture, file string
+		line          int
+		node, detail  string
+	}{
+		{"one-word", "orders.md", 7, "an-order-survives-a-restart", unapprovedText},
+		{"unapproved-statement", "orders.md", 29, "each-order-gets-one-bill", unapprovedID},
+		{"check-text", "orders.md", 11, "a-restart-keeps-each-order", unapprovedText},
+		{"component-purpose", "components.md", 7, "orders", unapprovedText},
+		{"interface-joins", "components.md", 11, "orders-to-billing", unapprovedText},
+		{"term-definition", "components.md", 19, "order", unapprovedText},
+		{"removed-id-reused", "orders.md", 29, "an-order-is-paid-once", removedID},
+		{"one-of-four", "orders.md", 29, "each-order-gets-one-bill", unapprovedText},
+	} {
+		covered[row.fixture] = true
+		t.Run(row.fixture+" fails on one node", func(t *testing.T) {
+			t.Parallel()
+			dir, approved := fixture(t, "compare", row.fixture, "spec"), fixture(t, "compare", row.fixture, "approved.json")
+			expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
+				code:   1,
+				stdout: "spec-check: " + dir + ": the comparison fails on 1 node\n",
+				stderr: "spec-check: " + filepath.Join(dir, row.file) + ":" + strconv.Itoa(row.line) + ": " + row.node + ": " + row.detail + "\n",
+			})
+		})
+	}
+	for _, row := range []struct {
+		fixture, held string
+		others        []string
+	}{
+		{"approved-text", "3 of 3", nil},
+		{"two-checks", "3 of 3", nil},
+		{"removed-kept", "3 of 3", nil},
+		{"earlier-text", "2 of 3", []string{"statement an-order-survives-a-restart: the files hold approved version 1, and version 2 is current"}},
+		{"not-in-files", "2 of 3", []string{"statement orders-reach-billing-only-through-the-interface: not in the files"}},
+	} {
+		covered[row.fixture] = true
+		t.Run(row.fixture+" passes", func(t *testing.T) {
+			t.Parallel()
+			dir, approved := fixture(t, "compare", row.fixture, "spec"), fixture(t, "compare", row.fixture, "approved.json")
+			want := "spec-check: " + dir + ": every text the files hold is approved; " + row.held + " approved statements are in the files at their current text\n"
+			for _, line := range row.others {
+				want += "spec-check: " + line + "\n"
+			}
+			expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: want})
+		})
+	}
+	entries, err := os.ReadDir(fixture(t, "compare"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !covered[entry.Name()] {
+			t.Errorf("testdata/compare/%s is in no row", entry.Name())
+		}
+	}
+
+	t.Run("two nodes in texts never approved are two lines, in file and line order", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		for _, name := range []string{"orders.md", "components.md"} {
+			content, err := os.ReadFile(fixture(t, "compare", "approved-text", "spec", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.Replace(string(content), "It keeps the orders that customers send.", "It keeps the orders that customers send and cancel.", 1)
+			writeFile(t, filepath.Join(dir, name), []byte(strings.Replace(text, "order service starts again.", "order service starts again fast.", 1)))
+		}
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", fixture(t, "compare", "approved-text", "approved.json")), result{
+			code:   1,
+			stdout: "spec-check: " + dir + ": the comparison fails on 2 nodes\n",
+			stderr: "spec-check: " + filepath.Join(dir, "components.md") + ":7: orders: " + unapprovedText + "\n" +
+				"spec-check: " + filepath.Join(dir, "orders.md") + ":7: an-order-survives-a-restart: " + unapprovedText + "\n",
+		})
+	})
+	t.Run("compare makes no comparison of files that do not parse", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "a.md"), []byte("A line outside a block.\n"))
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", fixture(t, "compare", "approved-text", "approved.json")), result{
+			code: 2,
+			stderr: "spec-check: " + filepath.Join(dir, "a.md") + ":1: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n" +
+				"spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
+		})
+	})
+	t.Run("compare refuses a directory that holds no spec file", func(t *testing.T) {
+		t.Parallel()
+		empty, missing := t.TempDir(), filepath.Join(t.TempDir(), "missing")
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		expect(t, runBinary(t, binary, "", "compare", "--dir", empty, "--approved", approved), result{code: 2, stderr: "spec-check: " + empty + ": holds no spec file\n"})
+		expect(t, runBinary(t, binary, "", "compare", "--dir", missing, "--approved", approved), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
+	})
+	t.Run("compare refuses an approved spec it cannot read", func(t *testing.T) {
+		t.Parallel()
+		dir := fixture(t, "compare", "approved-text", "spec")
+		missing := filepath.Join(t.TempDir(), "approved.json")
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", missing), result{
+			code:   2,
+			stderr: "spec-check: " + missing + ": cannot be read: open " + missing + ": no such file or directory\n",
+		})
+		bad := filepath.Join(t.TempDir(), "approved.json")
+		writeFile(t, bad, []byte(`{"nodes":[{"id":"order","versions":[]}]}`))
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", bad), result{
+			code:   2,
+			stderr: "spec-check: " + bad + `: specgraph: approved node "order": it has no version` + "\n",
+		})
+	})
+}
+
+// testPrint runs print over the fixtures of testdata/compare: it writes the current approved block
+// of each node it is named, and of each check of a statement it is named, byte for byte as the
+// files hold them. A copy of what it writes passes the comparison, and the same copy with one word
+// more fails it on that statement (v-two-specs: "A change copies the text that Dispatch prints for
+// an approved statement and its checks, and it passes the comparison. The same text with one word
+// changed fails it").
+func testPrint(t *testing.T, binary string) {
+	t.Run("print writes a statement and its two checks as the files hold them", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "two-checks", "approved.json")
+		want := `:::requirement{#an-order-survives-a-restart kind="behavior" parent="acme-keeps-each-order"}
+ACME keeps each stored order after the order service starts again.
+:::
+
+:::check{#a-crash-keeps-each-order serves="an-order-survives-a-restart" subject="code" procedure="program" runner="go" selector="example.com/acme/orders TestACrashKeepsEachOrder" job="go-checks"}
+Claim: The order service reads each stored order after a crash stops it and it starts again.
+Procedure: The program stores one order, stops the order service with a kill signal, starts it again and reads the orders.
+It must find the order one time.
+Failing example: An order service that writes its orders to disk only when it stops normally.
+:::
+
+:::check{#a-restart-keeps-each-order serves="an-order-survives-a-restart" subject="code" procedure="program" runner="go" selector="example.com/acme/orders TestARestartKeepsEachOrder" job="go-checks"}
+Claim: The order service reads each stored order after it starts again.
+Procedure: The program stores one order, starts the order service again and reads the orders.
+It must find the order one time.
+Failing example: An order service that keeps its orders in memory only.
+:::
+`
+		expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "an-order-survives-a-restart"), result{stdout: want})
+		files, err := os.ReadFile(fixture(t, "compare", "two-checks", "spec", "orders.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(files), want) {
+			t.Errorf("the files of two-checks do not hold the printed text %q", want)
+		}
+	})
+	t.Run("print writes a component, an interface and a term, and each block once", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		want := ":::component{#orders-to-billing name=\"Orders to billing\" kind=\"interface\" joins=\"billing orders\"}\nOrders sends each order to billing through it.\n:::\n\n" +
+			":::term{#order name=\"order\"}\nAn order is a request of a customer for one or more products.\n:::\n\n" +
+			":::component{#billing name=\"Billing\"}\nIt sends a bill for each order.\n:::\n"
+		expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "orders-to-billing", "--id", "order", "--id", "billing", "--id", "order"), result{stdout: want})
+	})
+	t.Run("print exits 2 on an id the approved spec does not hold or removed", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "removed-kept", "approved.json")
+		expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "acme-keeps-each-order", "--id", "an-order-is-paid-once", "--id", "each-order-gets-one-bill"), result{
+			code: 2,
+			stderr: "spec-check: " + approved + `: the approved spec removed node "an-order-is-paid-once", so it has no current text` + "\n" +
+				"spec-check: " + approved + `: the approved spec holds no node "each-order-gets-one-bill"` + "\n",
+		})
+	})
+
+	entries, err := os.ReadDir(fixture(t, "compare"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Run("a copy of the printed text of "+entry.Name()+" passes compare, and one word more fails it", func(t *testing.T) {
+			t.Parallel()
+			approved := fixture(t, "compare", entry.Name(), "approved.json")
+			content, err := os.ReadFile(approved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := specgraph.ReadApproved(strings.NewReader(string(content)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, _ := a.Current()
+			args := []string{"print", "--approved", approved}
+			for id, n := range a.Nodes {
+				if !n.Removed {
+					args = append(args, "--id", id)
+				}
+			}
+			printed := runBinary(t, binary, "", args...)
+			if printed.code != 0 || printed.stderr != "" {
+				t.Fatalf("print: exit %d, stderr %q", printed.code, printed.stderr)
+			}
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "spec.md"), []byte(printed.stdout))
+			n := strconv.Itoa(len(current.Statements))
+			expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
+				stdout: "spec-check: " + dir + ": every text the files hold is approved; " + n + " of " + n + " approved statements are in the files at their current text\n",
+			})
+
+			lines := strings.Split(printed.stdout, "\n")
+			opening := slices.IndexFunc(lines, func(line string) bool { return strings.HasPrefix(line, ":::requirement{#") })
+			if opening < 0 {
+				t.Fatal("the printed text holds no statement")
+			}
+			id, _, _ := strings.Cut(strings.TrimPrefix(lines[opening], ":::requirement{#"), " ")
+			lines[opening+1] = "planted " + lines[opening+1]
+			writeFile(t, filepath.Join(dir, "spec.md"), []byte(strings.Join(lines, "\n")))
+			expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
+				code:   1,
+				stdout: "spec-check: " + dir + ": the comparison fails on 1 node\n",
+				stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":" + strconv.Itoa(opening+1) + ": " + id + ": " + unapprovedText + "\n",
+			})
+		})
+	}
+}
+
+// testGuard runs guard over specgraph's CI-file fixtures and over trees it makes: it names each
+// line of a CI file that runs the comparison of the files with the approved spec (R2: "No CI job
+// compares the files"), and an instrument that read no workflow does not pass.
+func testGuard(t *testing.T, binary string) {
+	t.Run("guard passes CI files that do not run the comparison", func(t *testing.T) {
+		t.Parallel()
+		root := fixture(t, "ci-files", "clean")
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{stdout: "spec-check: " + root + ": no line of 4 CI files runs the comparison\n"})
+	})
+	t.Run("guard names each line that runs the comparison, from a workflow, an action and a script", func(t *testing.T) {
+		t.Parallel()
+		root := fixture(t, "ci-files", "planted")
+		line := ": this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n"
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 3 lines of CI files run the comparison\n",
+			stderr: "spec-check: " + filepath.Join(root, ".github", "actions", "compare", "action.yml") + ":9" + line +
+				"spec-check: " + filepath.Join(root, ".github", "workflows", "compare.yaml") + ":13" + line +
+				"spec-check: " + filepath.Join(root, "scripts", "compare.sh") + ":4" + line,
+		})
+	})
+	t.Run("guard names one line in the singular", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(root, ".github", "workflows", "spec.yaml"), []byte("on: pull_request\njobs:\n  spec:\n    steps:\n      - run: |\n          spec-check \\\n            compare --dir .dispatch/spec --approved a.json\n"))
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 1 line of CI files runs the comparison\n",
+			stderr: "spec-check: " + filepath.Join(root, ".github", "workflows", "spec.yaml") + ":6: this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n",
+		})
+	})
+	t.Run("guard does not pass when it reads no workflow", func(t *testing.T) {
+		t.Parallel()
+		root := fixture(t, "ci-files", "no-workflow")
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{code: 1, stderr: "spec-check: " + root + ": read no workflow\n"})
+		// A workflows directory that holds only an empty directory, beside an action: no workflow.
+		empty := t.TempDir()
+		for _, dir := range []string{filepath.Join(".github", "workflows", "nested"), filepath.Join(".github", "actions", "spec")} {
+			if err := os.MkdirAll(filepath.Join(empty, dir), 0o755); err != nil {
+				t.Fatal(err)
 			}
 		}
+		writeFile(t, filepath.Join(empty, ".github", "actions", "spec", "action.yml"), []byte("runs:\n  using: composite\n"))
+		expect(t, runBinary(t, binary, "", "guard", "--root", empty), result{code: 1, stderr: "spec-check: " + empty + ": read no workflow\n"})
+	})
+	t.Run("guard names a relative root by its absolute path", func(t *testing.T) {
+		t.Parallel()
+		root := fixture(t, "ci-files", "clean")
+		expect(t, runBinary(t, binary, filepath.Dir(root), "guard", "--root", "clean"), result{stdout: "spec-check: " + root + ": no line of 4 CI files runs the comparison\n"})
+	})
+	t.Run("guard exits 2 on a root it cannot read", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "guard", "--root", missing), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
+		file := filepath.Join(t.TempDir(), "file")
+		writeFile(t, file, []byte("A file.\n"))
+		expect(t, runBinary(t, binary, "", "guard", "--root", file), result{code: 2, stderr: "spec-check: " + file + ": is not a directory\n"})
+	})
+	t.Run("guard exits 2 on a CI directory it cannot read", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a directory of mode 000")
+		}
+		root := t.TempDir()
+		workflows := filepath.Join(root, ".github", "workflows")
+		if err := os.MkdirAll(workflows, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(workflows, "spec.yaml"), []byte("on: pull_request\n"))
+		locked := filepath.Join(root, "scripts")
+		if err := os.Mkdir(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   2,
+			stderr: "spec-check: " + locked + ": cannot be read: open " + locked + ": permission denied\n",
+		})
 	})
 }
 
