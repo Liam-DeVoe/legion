@@ -222,10 +222,9 @@ type DispatchArgs struct {
 	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
 	// one. Unset renders nothing.
 	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
-	// PrivateProjects true renders DISPATCH_PRIVATE_PROJECTS=1, which turns on Dispatch's private
-	// projects; false or unset renders nothing. Set it true only with an envoyImage whose
-	// envoy-dispatch reads the setting: a binary that does not know it ignores it, so the stack
-	// would say projects are private while that binary never makes them so.
+	// PrivateProjects true renders DISPATCH_PRIVATE_PROJECTS=1; false or unset renders nothing.
+	// No envoy-dispatch reads the setting yet, so true makes no project private, while the stack
+	// would say it had: leave it unset.
 	PrivateProjects *bool `pulumi:"privateProjects,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's

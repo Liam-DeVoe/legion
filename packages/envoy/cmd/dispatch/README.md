@@ -2573,7 +2573,8 @@ It exits 0 once the change commits;
 and 1 when the database cannot be opened or written.
 No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`).
 
-Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in, and every project created after it takes its default assignee as owner as it is inserted (`projects_owner_from_default`).
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+A project created after it is owned by the person `POST /api/v1/projects` creates it for, and an insert that names no owner takes its default assignee as owner (`projects_owner_from_default`).
 A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one, its default assignee and both repairs (`store.EnsureProjectOwners`, run right after `DISPATCH_DEFAULT_PROJECT`'s check):
 set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
 or give each one an owner with the command above.

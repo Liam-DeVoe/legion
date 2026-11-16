@@ -1666,10 +1666,12 @@ function accessWrite(change: string, principal: string): DispatchEvent {
     {
       change,
       groups: ["crew"],
+      not_signed_in: [],
       owner: "alice",
       people: ["carol@example.com"],
       principal,
       project: "CORE",
+      slack_channels: [],
       visibility: "public",
     },
     { actor: { id: "alice", kind: "user" }, issue_key: null, notify: false }
@@ -1682,7 +1684,7 @@ function accessWrite(change: string, principal: string): DispatchEvent {
 test.each([
   ["person_added", "carol@example.com"],
   ["group_removed", "crew"],
-  ["owner_changed", ""],
+  ["owner", ""],
 ] as const)("a project.access_changed of %s refreshes that project's access alone", (change, principal) => {
   const incoming = accessWrite(change, principal);
   expect(eventRefreshTargets(incoming, "alice")).toEqual([

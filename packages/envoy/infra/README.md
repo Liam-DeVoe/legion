@@ -1079,11 +1079,10 @@ account reads the answer. It is refused without `oidcAudience`, as `oidcIssuer` 
 full member, whom Dispatch makes, at boot, the owner of every project the migration left without
 one. Unset, nothing renders.
 
-`privateProjects`, `false` by default, renders `DISPATCH_PRIVATE_PROJECTS=1` when it is `true`,
-which turns on Dispatch's private projects; `false` or unset renders nothing, so the pod is the one
-it always was. Set it `true` only with an `envoyImage` whose `envoy-dispatch` reads the setting: a
-binary that does not know it ignores it, so the stack would say projects are private while that
-binary never makes them so.
+`privateProjects`, `false` by default, renders `DISPATCH_PRIVATE_PROJECTS=1` when it is `true`;
+`false` or unset renders nothing, so the pod is the one it always was. No `envoy-dispatch` reads
+the setting yet, so setting it `true` makes no project private, while the stack would say it had:
+leave it unset.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the

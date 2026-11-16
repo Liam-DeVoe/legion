@@ -14,8 +14,8 @@ import (
 )
 
 // A group is a named list of full members that a project's access list can name
-// (internal/dispatch/access). It has one owner, the full member who made it, and only that owner
-// writes or deletes it. Every route below needs the person scope; a write appends
+// (internal/dispatch/access). It has one owner, the full member who made it or was given it, and
+// only that owner writes or deletes it. Every route below needs the person scope; a write appends
 // access_group.changed, and a delete also takes the group off every access list that named it.
 
 // accessGroupInput is the body of PUT /api/v1/access-groups/{name}.

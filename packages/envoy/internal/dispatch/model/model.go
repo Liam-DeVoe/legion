@@ -333,7 +333,7 @@ type ProjectAccess struct {
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the
-// full member who made it, and its members, sorted and never null.
+// full member who made it or was given it, and its members, sorted and never null.
 type AccessGroup struct {
 	Name    string   `json:"name"`
 	Owner   string   `json:"owner"`

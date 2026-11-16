@@ -239,7 +239,7 @@ export const realStackReasons: Record<string, string> = {
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
   "project-access-ui.e2e.ts":
-    "the owner check, the email check and a group's existence are the server's to refuse, each write is read back after a reload, and giving the project away moves the owner check to another person",
+    "the owner check, the email check and a group's existence are the server's to refuse, the added person and group, the Slack channels and the new owner are read back after a reload, and giving the project away moves the owner check to another person",
   "project-default-assignee.e2e.ts":
     "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",

@@ -49,9 +49,9 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// patchProjectAccess gives the project to another full member, at any time, and sets its
-// visibility. Only its owner calls it; either field may be left out, and a body naming neither is
-// refused.
+// patchProjectAccess gives the project to another full member, at any time, sets its visibility,
+// and names its Slack channels. Only its owner calls it; any of the three fields may be left out,
+// and a body naming none is refused.
 func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	var input projectAccessInput
 	if err := decodeJSON(r, &input); err != nil {

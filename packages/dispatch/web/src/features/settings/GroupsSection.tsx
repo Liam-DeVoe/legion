@@ -55,11 +55,12 @@ const textAreaClass = `min-h-11 rounded-md px-3 py-2 text-sm disabled:cursor-not
 
 /**
  * Settings → Groups: every group a project's access list can name, each with its one owner (the
- * full member who made it) and its members, and a form that makes one. Only a group's owner edits
- * its members or deletes it, so those controls are disabled on any other group, with the owner
- * named as the reason in their title. A restricted member cannot make a group, which the form says
- * before anyone tries. A make is a PUT, which would write an existing group of that name again, so
- * the form refuses a name the list already holds and points at its row.
+ * full member who made it or was given it) and its members, and a form that makes one. Only a
+ * group's owner edits its members or deletes it, so those controls are disabled on any other
+ * group, with the owner named as the reason in their title. A restricted member cannot make a
+ * group, which the form says before anyone tries. A make is a PUT, which would write an existing
+ * group of that name again, so the form refuses a name the list already holds and points at its
+ * row.
  */
 export function GroupsSection(): ReactNode {
   const queryClient = useQueryClient();
