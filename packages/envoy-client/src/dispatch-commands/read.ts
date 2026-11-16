@@ -157,7 +157,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         ref.id,
         ref.owner,
         refOwnerName(ref),
-        readRefOwner(client, ref.owner, ref.artifact)
+        readRefOwner(client, ref.owner, () => documentIdOf(ref))
       );
     });
     await refuseItemOffRef(input.tool, "ask", ref, stringArg(args, "ref"), askRead.ask, () =>
@@ -194,7 +194,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         id,
         ref.owner,
         refOwnerName(ref),
-        readRefOwner(client, ref.owner, ref.artifact)
+        readRefOwner(client, ref.owner, () => documentIdOf(ref))
       );
     });
     await refuseItemOffRef(
@@ -273,7 +273,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
           named.id,
           { kind: "issue", issue: messageIssue },
           messageIssue,
-          readRefOwner(client, { kind: "issue", issue: messageIssue }, undefined)
+          readRefOwner(client, { kind: "issue", issue: messageIssue }, async () => undefined)
         );
       });
     const messageRef = dispatchChildRef(

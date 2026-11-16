@@ -16659,6 +16659,43 @@ for (const [name, documents, named] of [
   });
 }
 
+// The read of the owner says whether the owner or the item is missing. A read that fails for
+// another reason says nothing about the owner, so the item's own refusal stands: a caller met a
+// gateway error here where the true answer was that the issue holds no such comment
+// (dispatch://INFRA-1523).
+for (const [name, ownerAnswer] of [
+  ["a gateway", { status: 502, body: "<html>bad gateway</html>", text: true }],
+  ["a server error", { status: 500, body: { code: "INTERNAL", error: "internal" }, text: false }],
+] as const) {
+  test(`a correction keeps its own refusal when the owner read meets ${name}`, async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (/^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
+        return ownerAnswer.text
+          ? new Response(String(ownerAnswer.body), {
+              status: ownerAnswer.status,
+              headers: { "content-type": "text/html" },
+            })
+          : response(ownerAnswer.body, ownerAnswer.status);
+      }
+      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+    };
+    const error = await runWithFixture(
+      "dispatch_edit_comment",
+      {
+        comment: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555",
+        body: "corrected text",
+      },
+      fetchImpl
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(
+      "CORE-1 holds no comment 11111111-2222-4333-8444-555555555555"
+    );
+  });
+}
+
 // Dispatch answers a correction of a post it does not hold `404 NOT_FOUND` with the word
 // "not found", which names neither the post nor the id, so a reader cannot tell a post that is
 // gone from an issue or a route that is not there. The refusal names the id the call used.

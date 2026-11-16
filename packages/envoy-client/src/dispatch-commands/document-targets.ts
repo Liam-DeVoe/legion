@@ -493,18 +493,15 @@ async function resolveExistingIssue(
 
 /**
  * How `refuseMissingOfRef` reads the owner a `dispatch://` reference names, on the failing path
- * of a read of its item: the issue by its key, or the project document by the slug or filename
- * the reference carries, which is the read the item's own resolution skips when the reference
- * holds a whole id. A refusal of this read is what tells a reader that the owner, and not the
- * item, is what Dispatch does not hold.
+ * of a read of its item: the issue by its key, or the project document through `readDocument`,
+ * which the caller builds of the document it has already read, so the document is read once for
+ * the whole command (dispatch://INFRA-1523). A refusal of either read is what tells a reader
+ * that the owner, and not the item, is what Dispatch does not hold.
  */
 export function readRefOwner(
   client: DispatchClient,
   owner: Owner,
-  artifactReference: string | undefined
+  readDocument: () => Promise<unknown>
 ): () => Promise<unknown> {
-  return async () =>
-    owner.kind === "issue"
-      ? client.getIssue(owner.issue)
-      : (await resolveArtifact(client, owner, artifactReference, { canonical: true })).artifact;
+  return async () => (owner.kind === "issue" ? client.getIssue(owner.issue) : readDocument());
 }

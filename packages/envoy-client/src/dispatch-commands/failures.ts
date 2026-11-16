@@ -160,13 +160,21 @@ function dispatchNotFound(error: unknown): error is DispatchServiceError {
  * The refusal a reference's own read of a post or an ask earns when Dispatch answers
  * `404 NOT_FOUND`: its `not found` names neither the item nor its owner, so a reader cannot tell
  * an item that is not there from an issue or a document that is not (dispatch://INFRA-1523).
- * The owner is read once, on this failing path alone, by `readOwner`, which the caller builds of
- * the reference's own owner: a reference whose issue Dispatch does not hold is refused in those
- * words, one whose document it does not hold meets that read's own refusal, which names the
- * document and lists the project's, and one whose owner stands names the item that owner holds
- * no row of. Every caller that resolves a `dispatch://` reference runs it: the four correction
- * commands, `dispatch resolve-comment`, and `dispatch read` of a comment, a message or an ask
- * reference.
+ * The owner is read once for the whole command by `readOwner`, which the caller builds of the
+ * reference's own owner and of a document it has already read: a reference whose issue Dispatch
+ * does not hold is refused in those words, one whose document it does not hold meets that read's
+ * own refusal, which names the document and lists the project's, and one whose owner stands
+ * names the item that owner holds no row of.
+ *
+ * Only an answer that says the owner is missing changes what the caller is told. A read that
+ * failed for any other reason - a gateway, a 5xx, a transport error - says nothing about the
+ * owner, so the item's own refusal stands rather than being replaced by that failure: a reader
+ * meeting a gateway error here would be told something other than what is true of the request
+ * they made.
+ *
+ * The callers are the four correction commands, `dispatch resolve-comment`, and `dispatch read`
+ * of a comment, a message or an ask reference. The ask commands (`dispatch edit-ask`,
+ * `resolve-ask`, `follow`) resolve a reference of their own and do not run it.
  */
 export async function refuseMissingOfRef(
   error: unknown,
@@ -179,10 +187,22 @@ export async function refuseMissingOfRef(
   if (!dispatchNotFound(error)) return error;
   const missingOwner = await readOwner().then(
     () => undefined,
-    (caught: unknown) =>
-      owner.kind === "issue" && (dispatchNotFound(caught) || dispatchAnswered(caught, 404))
-        ? refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`)
-        : caught
+    (caught: unknown) => {
+      if (owner.kind === "issue") {
+        return dispatchAnswered(caught, 404)
+          ? refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`)
+          : undefined;
+      }
+      // A document that is not there is refused by its own resolution, which names it and lists
+      // the project's documents (`resolveArtifact`, `documentReferenceProblem`) and is no answer
+      // of Dispatch's. An answer or a failure of Dispatch's own - a gateway, a 5xx, a refusal of
+      // another kind - says nothing about the document, so the item's refusal stands.
+      return caught instanceof DispatchGatewayError ||
+        caught instanceof DispatchServiceError ||
+        caught instanceof DispatchNoRouteError
+        ? undefined
+        : caught;
+    }
   );
   return missingOwner ?? refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);
 }

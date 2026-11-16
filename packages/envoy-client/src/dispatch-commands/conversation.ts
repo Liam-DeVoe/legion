@@ -72,7 +72,7 @@ export async function resolveCommentArgument(
       id,
       ref.owner,
       refOwnerName(ref),
-      readRefOwner(client, ref.owner, ref.artifact)
+      readRefOwner(client, ref.owner, async () => document)
     );
   });
   await refuseItemOffRef(tool, "comment", ref, reference, read.comment, async () =>
@@ -122,7 +122,7 @@ export async function resolveMessageArgument(
         id,
         ref.owner,
         issueKey,
-        readRefOwner(client, ref.owner, undefined)
+        readRefOwner(client, ref.owner, async () => undefined)
       );
     });
   await refuseItemOffRef(
