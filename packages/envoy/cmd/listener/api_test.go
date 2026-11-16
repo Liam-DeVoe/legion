@@ -3678,13 +3678,19 @@ func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t 
 	if want := []string{own, interestIssueTopic}; !slices.Equal(answer.Topics, want) {
 		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
 	}
-	if len(answer.Warnings) != len(refused) {
-		t.Fatalf("warnings = %q, want one naming each of %v", answer.Warnings, refused)
+	// One warning names each refused topic, in order; the last names the issue topic the caller
+	// gave in the old form with its new form (store.Registry.LegacyTopicWarnings), which this
+	// registration stored as written.
+	if len(answer.Warnings) != len(refused)+1 {
+		t.Fatalf("warnings = %q, want one naming each of %v and one naming %s's new form", answer.Warnings, refused, interestIssueTopic)
 	}
 	for index, topic := range refused {
 		if !strings.HasPrefix(answer.Warnings[index], topic+" was not registered") {
 			t.Fatalf("warning %d = %q, want it to name %s as not registered", index, answer.Warnings[index], topic)
 		}
+	}
+	if last := answer.Warnings[len(refused)]; !strings.HasPrefix(last, interestIssueTopic+" is the old form of notifications.dispatch.issue.KEY.KEY-1.>") {
+		t.Fatalf("warning %d = %q, want it to name %s's new form", len(refused), last, interestIssueTopic)
 	}
 	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
 	if err != nil {

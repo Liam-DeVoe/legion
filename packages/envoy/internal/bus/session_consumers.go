@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/natsversion"
 )
 
 // The settings of every session consumer (SessionConsumers).
@@ -209,11 +210,30 @@ type SessionConsumers struct {
 // do, and it never sets the default instead (store.WithLogger says why). It is a parameter for
 // the reason inactiveThreshold is: no create or record runs before the logger is set, and
 // nothing writes the field while either reads it.
+//
+// A server that can skip a message on a consumer filtering on a wildcard and a literal at the same
+// token is refused, naming its version and the fixed releases (natsversion.ConnectedRefusal, which
+// reads the version only once the connection is connected): every session consumer filters on its
+// agent subject in both forms, notifications.agent.<session> beside notifications.agent.*.<session>,
+// and on such a server it would lose the session's old-form messages behind other sessions' traffic
+// with no error. The listener calls this at its start and ends the process on the error, so it
+// refuses to start against such a server.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {
 		return nil, err
 	}
+	if err := natsversion.ConnectedRefusal(context.Background(), client.Connection()); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("bus: session consumers: %w", err)
+	}
+	return sessionConsumersOn(client, inactiveThreshold, logger), nil
+}
+
+// sessionConsumersOn is SessionConsumers over client, whatever server it holds: the one
+// constructor ConnectSessionConsumers calls once the server passed, and the seam a test reaches a
+// refused server through.
+func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger *slog.Logger) *SessionConsumers {
 	return &SessionConsumers{
 		client:            client,
 		ackWait:           SessionConsumerAckWait,
@@ -221,7 +241,7 @@ func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, log
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
 		logger:            cmp.Or(logger, slog.Default()),
-	}, nil
+	}
 }
 
 // Close closes the connection; a pull in progress ends.
@@ -298,7 +318,7 @@ type SessionConsumerStart struct {
 }
 
 // Ensure makes sessionID's consumer carry the session consumer settings and the filters subjects
-// reduce to (ReduceFilterSubjects), and creates it when the stream holds none.
+// reduce to (SessionConsumerFilters), and creates it when the stream holds none.
 //
 // An existing consumer's filters and settings are updated, changing nothing when both already
 // match, and it keeps its position: the next stream sequence it examines. A newly followed subject
@@ -883,9 +903,12 @@ func sessionConsumerTarget(sessionID string, subjects []string) (string, []strin
 // (ReduceFilterSubjects). The forms are there while readers take the old form of a name too: an
 // issue's topic in either form, and the session's agent subject in the old form and under any
 // project, so a producer can move to the new form without the session missing one message,
-// whichever form the session registered. The two forms of a name never overlap, since they differ
-// in their token count or in the token after the family's prefix. It is the one computation of
-// that set, which a caller comparing a consumer with the row it was built from reads too.
+// whichever form the session registered. The two forms TopicForms gives a name never overlap: they
+// differ in their token count, or in the token after the family's prefix (an issue's key against
+// its project). An issue's topic under a wildcard project (notifications.dispatch.issue.*.KEY.>)
+// would overlap its old form, so contracts.LegacyTwin gives it none and it stays one filter. It is
+// the one computation of that set, which a caller comparing a consumer with the row it was built
+// from reads too.
 func SessionConsumerFilters(subjects []string) []string {
 	forms := make([]string, 0, 2*len(subjects))
 	for _, subject := range subjects {

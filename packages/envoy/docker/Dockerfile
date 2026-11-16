@@ -123,6 +123,9 @@ COPY packages/envoy/natscred ./natscred
 # natsgrant: the one NATS grant table, which envoy-broker's NATS auth service answers each
 # connection from.
 COPY packages/envoy/natsgrant ./natsgrant
+# natsversion: the nats-server versions envoy-listener refuses to start against, which its session
+# consumers read (internal/bus) and the Legion daemon reads too.
+COPY packages/envoy/natsversion ./natsversion
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go

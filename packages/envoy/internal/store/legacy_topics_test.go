@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,10 @@ func readLegacyFixture(t *testing.T) legacyFixture {
 
 // Each topic a registration names in the old form is counted once (kind="interest") and named in a
 // warning with its new form, which the subscribe route passes on in its answer's warnings; a topic
-// in the new form, or of a family the rename leaves alone, is neither.
+// in the new form, or of a family the rename leaves alone, is neither. A role's lane is named with
+// the claim that reaches it instead of a registration of its new form: an interest in a role's lane
+// delivers nothing (a role is held through POST /v1/roles/set), so advising one would send the
+// caller to a second topic that delivers nothing either.
 func TestEachOldFormTopicIsNamedWithItsNewFormAndCounted(t *testing.T) {
 	for _, row := range readLegacyFixture(t).CanonicalTopic {
 		counter := &kindCounter{}
@@ -67,7 +71,11 @@ func TestEachOldFormTopicIsNamedWithItsNewFormAndCounted(t *testing.T) {
 		var want []string
 		var wantKinds []string
 		if row.Legacy {
-			want = []string{row.Topic + " is the old form of " + row.Canonical + "; register " + row.Canonical}
+			advice := "; register " + row.Canonical
+			if role, isRole := strings.CutPrefix(row.Canonical, contracts.RoleTopicPrefix); isRole {
+				advice = "; a role's lane delivers nothing to an interest: claim " + role + " through POST /v1/roles/set"
+			}
+			want = []string{row.Topic + " is the old form of " + row.Canonical + advice}
 			wantKinds = []string{"interest"}
 		}
 		if !slices.Equal(warnings, want) || !slices.Equal(counter.kinds, wantKinds) {

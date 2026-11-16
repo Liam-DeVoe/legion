@@ -1,6 +1,10 @@
 package store
 
-import "github.com/sjawhar/envoy/internal/contracts"
+import (
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+)
 
 // The registry's side of the rename that put a project into an issue's, an agent's and a role's
 // names (contracts.CanonicalTopic, contracts.CanonicalRole): while every reader takes both forms,
@@ -19,9 +23,12 @@ import "github.com/sjawhar/envoy/internal/contracts"
 
 // LegacyTopicWarnings names each of topics a registration of sessionID gave in the old form, with
 // its new form, "<old> is the old form of <new>; register <new>", which the subscribe route passes
-// on in its answer's warnings, and counts each (kind="interest"). The session's own agent subject
-// in the old form is counted and named in no warning: a plugin registers it itself on every
-// heartbeat, and the caller named no such topic.
+// on in its answer's warnings, and counts each (kind="interest"). A role's lane is named with the
+// claim that reaches it instead, "<old> is the old form of <new>; a role's lane delivers nothing to
+// an interest: claim <project>.<role> through POST /v1/roles/set": a role is held by a claim, and
+// an interest in its lane, in either form, delivers nothing. The session's own agent subject in the
+// old form is counted and named in no warning: a plugin registers it itself on every heartbeat,
+// and the caller named no such topic.
 func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []string {
 	own := contracts.LegacyAgentSubject(sessionID)
 	var warnings []string
@@ -31,9 +38,14 @@ func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []stri
 			continue
 		}
 		r.countLegacy("interest")
-		if topic != own {
-			warnings = append(warnings, topic+" is the old form of "+canonical+"; register "+canonical)
+		if topic == own {
+			continue
 		}
+		advice := "; register " + canonical
+		if role, isRole := strings.CutPrefix(canonical, contracts.RoleTopicPrefix); isRole {
+			advice = "; a role's lane delivers nothing to an interest: claim " + role + " through POST /v1/roles/set"
+		}
+		warnings = append(warnings, topic+" is the old form of "+canonical+advice)
 	}
 	return warnings
 }
