@@ -2806,18 +2806,31 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // once typing rests, whose answer would take the bar's place. The slower search fails for the
     // whole step, so nothing but Retry's own keyword search can take the failure away. The
     // keyword search fails while the bar asks it twice more before it says it failed, and on
-    // until just before the press.
+    // until just before the press. The bar says so only once that search has failed three times:
+    // its first ask and the two retries a 5xx is given 500 ms apart (`queryRetry`,
+    // `queryRetryDelay`). TanStack holds a retry back while the page is hidden or offline
+    // (`canContinue` in query-core's retryer), and a refresh of a search with no answer asks it
+    // three times again (`fetchState`), so the step waits on the route's three answers, then
+    // reads what the bar says of them.
     where = `search bar at ${at}`;
     let failing = true;
-    const failSearch = (route: Route) =>
-      failing || !new URL(route.request().url()).searchParams.has("keywords_only")
-        ? route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 })
-        : route.fallback();
+    let keywordFailures = 0;
+    const failSearch = (route: Route) => {
+      const keywords = new URL(route.request().url()).searchParams.has("keywords_only");
+      if (keywords && !failing) return route.fallback();
+      if (keywords) keywordFailures += 1;
+      return route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 });
+    };
     await page.route(searchPath, failSearch);
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     const palette = page.getByRole("dialog", { name: "Search" });
     await control(controlRow(palette), CONTROL.searchBox).fill("rollout");
+    await expect
+      .poll(() => keywordFailures, {
+        message: `${where}: the bar asked the failing keyword search fewer than three times`,
+      })
+      .toBeGreaterThanOrEqual(3);
     const failure = palette.getByRole("alert").filter({ hasText: "Search failed." });
     await expect(failure, `${where}: the search never failed`).toBeVisible();
     const retry = failure.getByRole("button", { exact: true, name: "Retry" });

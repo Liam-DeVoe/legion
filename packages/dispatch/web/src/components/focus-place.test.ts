@@ -944,3 +944,50 @@ test("the same row removed right after the reader's press on it keeps today's ha
     await waitFor(() => expect(third.mark).toHaveFocus());
   });
 });
+
+// (ai) A control focused below the fold is one the engine is still to scroll into view - WebKit
+// does so a frame after the focus - and a scroll the page makes first can leave it there. No read
+// has then found it in the reader's sight since it took the focus, so no scroll took it out of
+// their sight, and the loss their Enter on it makes is answered as one they can see. Once a read
+// has found it in sight, a scroll that takes it out counts as before (aa). INFRA-3135 round 11,
+// measured in WebKit at 390x664: the Inbox's list keeping its rows in place scrolled the page
+// 203 px before the engine's own scroll, which had not come by the press, and in 9 of 40 runs
+// that scroll was read before Enter on a thread's Dismiss, which then left the focus on the body.
+test("a control focused below the fold, left there by a scroll the page made, is answered after the reader's press", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const [, second, third] = mainOf("First", "Second", "Third").buttons;
+      const dismiss = second as HTMLElement;
+      // Below the fold where it takes the focus, and still there after the page's own scroll.
+      placeAt(dismiss, 5_000);
+      dismiss.focus();
+      document.dispatchEvent(new Event("scroll"));
+      dismiss.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      if (withFocusout) lose(dismiss);
+      else dismiss.remove();
+      await waitFor(() => expect(third).toHaveFocus());
+    });
+  }
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const [, second, third] = mainOf("First", "Second", "Third").buttons;
+      const dismiss = second as HTMLElement;
+      // Scrolled into the reader's sight by the engine, then out of it by the reader.
+      placeAt(dismiss, 5_000);
+      dismiss.focus();
+      placeAt(dismiss, 300);
+      document.dispatchEvent(new Event("scroll"));
+      placeAt(dismiss, 5_000);
+      document.dispatchEvent(new Event("scroll"));
+      dismiss.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      dismiss.remove();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(third).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
