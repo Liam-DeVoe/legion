@@ -478,6 +478,64 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 	return oneReleasedClaim(ctx, tx, `and session = $4`, p.project, session, "session")
 }
 
+// ClaimInReleaseBySession is the live claim that holds session while a release of its issue's pod
+// has not ended, when that release was marked, and whether this daemon's project holds one. A
+// release stops a role's process before it records the claim as released, so a wake report that
+// comes in that gap finds no released claim and finds this one (workflow's listenerWake).
+func (p *PodRecords) ClaimInReleaseBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, time.Time, bool, error) {
+	return claimInRelease(ctx, tx, `c.session = $2`, p.project, session, "session")
+}
+
+// ClaimInReleaseByToken is ClaimInReleaseBySession for the claim whose token is token: the role
+// token a role message was published to.
+func (p *PodRecords) ClaimInReleaseByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, time.Time, bool, error) {
+	return claimInRelease(ctx, tx, `c.token = $2`, p.project, token, "role token")
+}
+
+// claimInRelease is the one claim of project that where selects, in a live state, whose issue's
+// release mark stands in issue_releases, with the mark's marked_at, and whether there is one. A
+// claim that is suspended, failed or retired is no release's to hold back: a released claim is a
+// wake's to take, and a claim another source suspended is that source's.
+func claimInRelease(ctx context.Context, tx pgx.Tx, where, project, value, what string) (supervise.Claim, time.Time, bool, error) {
+	if value == "" {
+		return supervise.Claim{}, time.Time{}, false, nil
+	}
+	var c supervise.Claim
+	var generation int64
+	var marked time.Time
+	err := tx.QueryRow(ctx, `select c.token, c.project, c.tree, c.issue, c.role, c.session, c.serving_generation, c.state, r.marked_at
+		from claims c join issue_releases r on r.project = c.project and r.issue = c.issue
+		where c.project = $1 and c.state not in ('suspended', 'failed', 'retired') and `+where+`
+		order by c.token limit 1`, project, value).Scan(
+		&c.Token, &c.Project, &c.Tree, &c.Issue, &c.Role, &c.Session, &generation, &c.State, &marked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return supervise.Claim{}, time.Time{}, false, nil
+	}
+	if err != nil {
+		return supervise.Claim{}, time.Time{}, false, fmt.Errorf("read the claim of %s %s in a release: %w", what, value, err)
+	}
+	if generation > 0 {
+		c.ServingGeneration = uint64(generation)
+	}
+	return c, marked, true, nil
+}
+
+// StartQueued is whether the outbox holds a `start` of issue's role at generation that names no
+// phase and waits for no admission slot. Two writers queue that row: a cancelled release, for each
+// claim it suspended (CancelIssueRelease, the daemon outbox's releaseResume), and a wake
+// (workflow's wakeRow). Neither is dropped by a phase fence, so a role with one queued is coming
+// back. A row the outbox has finished is deleted, so every row this reads is still to run.
+func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = 'supervise'
+		and payload @> jsonb_build_object('op', 'start', 'role', $2::text, 'generation', $3::bigint)
+		and coalesce(payload->>'phase', '') = '' and coalesce(payload->>'needsSlot', '') <> 'true')`,
+		issue, string(role), int64(generation)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a start of %s's %s is queued: %w", issue, role, err)
+	}
+	return queued, nil
+}
+
 // TakePodWake takes one wake of issue's role inside the caller's transaction, and is the whole
 // of what taking a wake is: the mark under the wake's own key, the resume recorded against the
 // release that wake ends, and the role's own backstop cancelled. It answers whether this call

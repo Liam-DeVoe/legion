@@ -208,12 +208,19 @@ type ConsumerSpec struct {
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
 }
 
-// RetryLater is an error ConsumerSpec.ReviewPermission returns when its read must not be made again
-// sooner than After, which GitHub names when it answers with its rate limit: the delivery is nacked
-// with a delay of After, or of NakDelay when that is longer.
+// RetryLater is an error that asks for the delivery to be nacked with a delay of After, or of
+// NakDelay when that is longer. Two users return one. ConsumerSpec.ReviewPermission returns one
+// when GitHub answers with its rate limit and names the wait. The workflow returns one, with
+// Waiting set, when a listener's wake report finds its claim in a release that has not ended
+// (workflow's listenerWakeInRelease).
+//
+// Waiting marks a retry that is expected rather than a failure: nakResolve logs it at INFO, and
+// every other retry at WARN. A wait that lasts minutes would otherwise write a WARN line each
+// delay, and those lines would hide the one WARN that says a wake was dropped.
 type RetryLater struct {
-	After time.Duration
-	Err   error
+	After   time.Duration
+	Waiting bool
+	Err     error
 }
 
 func (r *RetryLater) Error() string { return r.Err.Error() }
@@ -1028,14 +1035,19 @@ func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact,
 
 // nakResolve widens message's nak delay to a RetryLater's wait when it names one longer than
 // spec.NakDelay, logs what failed and the delay at warn, then naks the message with that delay,
-// logging nakWhat at error if the nak itself fails.
+// logging nakWhat at error if the nak itself fails. A RetryLater that is Waiting is no failure:
+// its line is at info and says the fact waits.
 func nakResolve(spec ConsumerSpec, message jetstream.Msg, eventID, what, nakWhat string, err error) {
 	delay := spec.NakDelay
+	level := slog.LevelWarn
 	var later *RetryLater
-	if errors.As(err, &later) && later.After > delay {
-		delay = later.After
+	if errors.As(err, &later) {
+		delay = max(delay, later.After)
+		if later.Waiting {
+			level, what = slog.LevelInfo, "an intake fact waits and is applied again after its delay"
+		}
 	}
-	logMessage(spec.Logger, slog.LevelWarn, what, message, "event_id", eventID, "retry_in", delay, "error", err)
+	logMessage(spec.Logger, level, what, message, "event_id", eventID, "retry_in", delay, "error", err)
 	if nakErr := message.NakWithDelay(delay); nakErr != nil {
 		logMessage(spec.Logger, slog.LevelError, nakWhat, message, "event_id", eventID, "error", nakErr)
 	}
