@@ -34,8 +34,7 @@ import (
 // the listener too, so the rule binds every caller of readRouteRoster: listIssues and getIssue
 // call it only once their pooled reads have finished, listAgents before its two aggregates run,
 // and a new caller must do the same. A landing (GET /api/v1/landing) reads it once for all of its
-// parts, on a goroutine and a connection mark of its own and under the landing's bound, and each
-// part that asks for the roster takes that one read (landingRoster).
+// parts, on a connection mark of its own (startLandingRoster).
 //
 // no_holder is one read and says only "nobody right now": a session that restarts or moves
 // between agent boxes keeps its id but is absent from the listener for minutes. The read does not
@@ -184,12 +183,8 @@ type rosterFetch struct {
 // lists the sessions answers it as one rather than as the listener's silence, while a caller
 // that only shows a route may read it unknown (routeRosterOrUnknown).
 //
-// A read made under a landing's context takes that landing's one read instead (landingRoster),
-// which is this same read made once under landingServiceBound, so every part of one landing
-// judges one roster and none waits on the listener past that bound. A landing's read the bound
-// ended answers as a read whose own context ended while it waited: unanswered and unreachable,
-// with no error, so a part that only shows a route reads it unknown and logs nothing, as it does
-// when the listener's silence is stored.
+// A read made under a landing's context waits on that landing's one read instead
+// (startLandingRoster).
 //
 // A read that found the row stale may reach the lock only after the fetch that was in flight
 // while it read has stored its answer and gone. It then takes the answer this process built
@@ -202,18 +197,19 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	if s.deps.Envoy == nil {
 		return routeRoster{reason: model.RouteReasonUnreachable}, nil
 	}
-	if shared, _ := ctx.Value(landingRosterKey{}).(*landingRoster); shared != nil {
+	// The landing's read is taken from its fields, never through wait, which would log it as a
+	// part of its own.
+	if part, ok := ctx.Value(landingRosterKey{}).(*landingServicePart[routeRoster]); ok {
 		select {
-		case <-shared.done:
-			return shared.roster, shared.err
+		case <-part.done:
+			return part.value, part.err
 		case <-ctx.Done():
 			return endedRouteRoster(ctx), nil
 		}
 	}
 	if s.deps.ListenerRosterUncached {
 		// An end-to-end test process: every read asks the listener itself, with no stored answer,
-		// no shared fetch and nothing kept. A landing's parts still take the landing's one read,
-		// above, which asked the listener this way.
+		// no shared fetch and nothing kept.
 		return s.listRouteRoster(ctx), nil
 	}
 	roster, fresh, now, seen, err := s.storedRouteRoster(ctx)

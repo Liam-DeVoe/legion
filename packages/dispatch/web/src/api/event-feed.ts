@@ -6,9 +6,10 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
+import { keptUntilRejected } from "../features/shell/chunk-loads";
 import { whenContentDrawn } from "../features/shell/content-drawn";
 
-import { type EventRefreshMap, loadEventRefresh } from "./event-refresh-load";
+import { loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
@@ -253,29 +254,17 @@ export function useEventFeed({
     // awaited by each event below. One promise at a time, which every event waits on, so the
     // events are read in order (`event-refresh-load.ts`).
     //
-    // A download that fails clears it, and the next event starts the import again. The failure
-    // does not always reload the tab: nothing reloads while the browser is offline, once the
-    // tab's recovery reloads are spent, or while the page is being left
+    // A download that fails is not kept (`keptUntilRejected`), and the next event starts the
+    // import again. The failure does not always reload the tab: nothing reloads while the browser
+    // is offline, once the tab's recovery reloads are spent, or while the page is being left
     // (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). A feed that kept the
-    // one failed promise then read every later event against it, refreshing nothing for as long
-    // as the tab stayed open. The events waiting on the failed download refresh everything
+    // one failed promise would read every later event against it, refreshing nothing for as long
+    // as the tab stays open. The events waiting on the failed download refresh everything
     // instead, below, as an event this page cannot map does; a later event asks for the chunk
     // again, which Chromium can answer with the same failure from its module map
     // (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that event too then
     // refreshes everything, under that refresh's own throttle, rather than nothing.
-    let refreshMap: Promise<EventRefreshMap> | undefined;
-    const awaitRefreshMap = (): Promise<EventRefreshMap> => {
-      if (refreshMap === undefined) {
-        const loading = whenContentDrawn().then(loadEventRefresh);
-        refreshMap = loading;
-        // Registered before any event's own handler, so an event that arrives after the failure
-        // finds no promise and starts the import again rather than meeting the same failure.
-        void loading.catch(() => {
-          refreshMap = undefined;
-        });
-      }
-      return refreshMap;
-    };
+    const awaitRefreshMap = keptUntilRejected(() => whenContentDrawn().then(loadEventRefresh));
     void awaitRefreshMap();
 
     const scheduleFlush = () => {

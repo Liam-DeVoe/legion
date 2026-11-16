@@ -40,9 +40,8 @@ let renderedChunksOut = 0;
 
 /** Starts a chunk nothing is waiting for yet, and swallows its failure: the same import runs
  *  again under `renderChunk` when a reader comes to wait on it - the router rendering the route,
- *  or a body drawn after the shell's warm of the Markdown engine failed, since the engine keeps
- *  no failed load (`features/refs/markdown-engine.ts`, `loadEngine`) - and that is where a reader
- *  meets a chunk that will not download. */
+ *  or a body drawn after a failed warm of the Markdown engine, which keeps no failed load
+ *  (`keptUntilRejected`) - and that is where a reader meets a chunk that will not download. */
 export function prefetchChunk(load: () => Promise<unknown>): void {
   prefetchedChunksOut += 1;
   void load()
@@ -64,6 +63,31 @@ export function renderChunk<T>(load: () => Promise<T>): Promise<T> {
       renderedChunksOut -= 1;
     });
   return chunk;
+}
+
+/**
+ * A function that runs `load` once and answers that promise to every later call while it is out
+ * or resolved; once it rejects it is dropped, and the next call runs `load` again. A promise that
+ * loads a chunk or a module is kept only while it is out or resolved, because a kept rejection
+ * answers every later caller with the same failure, runs no import, fires no `vite:preloadError`
+ * and reloads nothing. The drop is registered before the promise is returned, so it runs before
+ * any caller's own handler: a caller the failure reaches already finds nothing kept.
+ */
+export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
+  let kept: Promise<T> | undefined;
+  return () => {
+    if (kept !== undefined) {
+      return kept;
+    }
+    const loading = load();
+    kept = loading;
+    void loading.catch(() => {
+      if (kept === loading) {
+        kept = undefined;
+      }
+    });
+    return loading;
+  };
 }
 
 /**
@@ -107,14 +131,12 @@ export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
  * the page and never calls the loader again, so a rejection it holds answers every later render
  * of the component with the same failure. Online the rejection does not outlive the page: the
  * failure is Vite's `vite:preloadError` while `renderChunk` counts the render as waiting, so the
- * recovery reloads the tab while its budget lasts, and the page that kept the rejection is gone
- * with it. Offline the recovery reloads nothing (`DeploymentResilience.tsx`,
- * `reloadForChunkFailure`), so a component whose download failed there stayed broken after the
- * browser was back online, for the life of the tab. That was new for the margin, the reference
- * preview layer, the shell's dialogs and the Inbox, which dispatch://INFRA-1109 took out of the
- * entry. Under `importWhenOnline` the promise `lazy` keeps rejects only while the browser is
- * online, where a failure reloads; offline, the boundary's `Suspense` keeps its fallback until
- * the window fires `online` and the import runs again.
+ * recovery reloads the tab while its budget lasts, and the page that kept the rejection goes with
+ * it. Offline the recovery reloads nothing (`DeploymentResilience.tsx`, `reloadForChunkFailure`),
+ * so a rejection kept there would leave the component broken for the life of the tab. Under
+ * `importWhenOnline` the promise `lazy` keeps rejects only while the browser is online, where a
+ * failure reloads; offline, the boundary's `Suspense` keeps its fallback until the window fires
+ * `online` and the import runs again.
  *
  * Typed on the component, as `lazy` is, so the component keeps its own props.
  */
