@@ -67,12 +67,27 @@ interface SwatchPair {
 const RESTING_TOKEN_PATTERN =
   /^(dark:)?(hover:|disabled:|focus:|focus-visible:|enabled:hover:|enabled:)?(bg|text)-([a-z]+-\d{2,3}|white|black)$/;
 
+/** A `bg-`/`text-` token of the issue page's palette (`classes.ts`'s `PAGE_COLORS`), which
+ * carries both schemes in its one name: `styles.css` swaps the value behind it in the dark
+ * scheme, so it is read through the swatch pair the palette says it renders. */
+const PAGE_TOKEN_PATTERN =
+  /^(hover:|disabled:|focus:|focus-visible:|enabled:hover:|enabled:)?(bg|text)-([a-z][a-z-]*[a-z])$/;
+
 function classifyComposite(value: string): { bg?: SwatchPair; text?: SwatchPair } {
   const resting: {
     bg: Partial<Record<"light" | "dark", string>>;
     text: Partial<Record<"light" | "dark", string>>;
   } = { bg: {}, text: {} };
   for (const token of value.split(/\s+/).filter(Boolean)) {
+    const page = PAGE_TOKEN_PATTERN.exec(token);
+    const colors = page === null ? undefined : classes.PAGE_COLORS[page[3] ?? ""];
+    if (page !== null && colors !== undefined) {
+      if (page[1] !== undefined) continue;
+      const side = resting[page[2] as "bg" | "text"];
+      side.light = colors.light.name;
+      side.dark = colors.dark.name;
+      continue;
+    }
     const match = RESTING_TOKEN_PATTERN.exec(token);
     if (match === null) continue;
     const [, darkPrefix, modifier, prop, swatch] = match;
