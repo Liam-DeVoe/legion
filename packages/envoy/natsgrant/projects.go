@@ -54,6 +54,17 @@ func GitHubConsumerName(project, repository string) string {
 	return token(daemonConsumerPrefix+project+"-github-", repository)
 }
 
+// GitHubFilter is the filter of repository's GitHub consumer (GitHubConsumerName): every subject
+// Envoy's listener publishes that repository's events under, notifications.github.<owner>.<name>.>
+// with each segment spelled by contracts.SanitizeSubjectSegment (a dot written "_"). repository is
+// "owner/name". The daemon's consumer create and WithinProjects' grant both name it, and
+// nats-server refuses a create whose body's filter is not the one its subject names, so the two
+// must be built by this one function.
+func GitHubFilter(repository string) string {
+	owner, name, _ := strings.Cut(repository, "/")
+	return contracts.GithubRepositoryPrefix(owner, name) + ".>"
+}
+
 // token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
 // and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
 // tokens, and the result holds no '.', wildcard, whitespace or control character.
@@ -204,7 +215,7 @@ func newHeldScope(scope Scope) (heldScope, error) {
 		if !found || !repositoryPart(owner) || !repositoryPart(name) {
 			return heldScope{}, fmt.Errorf("natsgrant: scope repository %q is not owner/name", repository)
 		}
-		lanes[i] = contracts.GithubRepositoryPrefix(owner, name) + ".>"
+		lanes[i] = GitHubFilter(repository)
 		// Two repositories can spell one lane (a.b and a_b): the lane is held once.
 		if !slices.Contains(held.repoLanes, lanes[i]) {
 			held.repoLanes = append(held.repoLanes, lanes[i])
