@@ -31,7 +31,12 @@ const bearerPrefix = "Bearer "
 // listener cannot use it; a listener that requires a bearer checks no Host, since such a page
 // holds no bearer. A bearer the verifier rejects is answered 401 and never falls back to another
 // authentication path; the failure class goes to the log and never to the caller, since naming
-// it would tell an unauthenticated client which credential the listener is configured for.
+// it would tell an unauthenticated client which credential the listener is configured for. The
+// one verifier outcome that is not a rejection is oidc.ErrIssuerUnavailable: the issuer's keys
+// could not be read, so no verdict on the token was reached, and it is answered 503 with a
+// Retry-After, as refuseBrokerToken answers a broker that gave no answer. A client does not
+// retry a 401, so Dispatch would otherwise settle every delivery sent while the issuer cannot be
+// reached as failed, on a token that may be perfectly live, where a 503 asks it to come back.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
 // nil on one that does not), and there the scheme alone decides it, before both bearer ones:
@@ -111,6 +116,11 @@ func apiAuth(token string, verifier *oidc.Verifier, brokers *brokerTokens, allow
 				logger.Warn("listener: service-account token rejected",
 					slog.String("reason", oidc.Reason(err)),
 					slog.String("path", r.URL.Path))
+				if errors.Is(err, oidc.ErrIssuerUnavailable) {
+					w.Header().Set("Retry-After", "1")
+					writeJSONError(w, http.StatusServiceUnavailable, "the service-account token issuer cannot be reached; try again in a minute")
+					return
+				}
 			}
 		}
 

@@ -218,6 +218,62 @@ func TestAPIAuth(t *testing.T) {
 	}
 }
 
+// A service-account token the listener could not judge, because its issuer's key set cannot be
+// read, is answered 503 with a Retry-After, so Dispatch tries the call again rather than settling
+// it failed, and the log names the class as it does for a refusal. The outage turns no verdict
+// into a 503: a token for another audience is refused 401 during it, from its own claims. Once
+// the keys read again, the same token is admitted.
+func TestAPIAuthAnswersAnIssuerOutage503(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "listener-test-key")
+	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
+	if err != nil {
+		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
+	}
+	token := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
+	otherAudience := issuer.Claims(listenerTestSubject, listenerTestAudience)
+	otherAudience["aud"] = []string{"dispatch"}
+	otherAudienceToken := issuer.Mint(t, signing, otherAudience)
+	serve := func(authorize string) (*httptest.ResponseRecorder, string) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+		request.Host = "127.0.0.1:9020"
+		request.Header.Set("Authorization", authorize)
+		var logged bytes.Buffer
+		apiAuth("", verifier, nil, nil, logging.NewWithWriter("test-machine", &logged), next).ServeHTTP(recorder, request)
+		return recorder, logged.String()
+	}
+
+	// No key set has been read yet, so the outage is what answers rather than a cached key.
+	issuer.FailKeys(http.StatusInternalServerError)
+	recorder, logged := serve("Bearer " + token)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("while the issuer's key set answers 500: status = %d, want 503; body %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want 1", got)
+	}
+	if body, want := recorder.Body.String(), "{\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"; body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+	assertRejectionLog(t, logged, "unavailable", "Bearer "+token)
+
+	recorder, logged = serve("Bearer " + otherAudienceToken)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("a token for another audience during the outage: status = %d, want 401", recorder.Code)
+	}
+	assertRejectionLog(t, logged, "audience", "Bearer "+otherAudienceToken)
+
+	issuer.FailKeys(0)
+	if recorder, _ := serve("Bearer " + token); recorder.Code != http.StatusNoContent {
+		t.Fatalf("once the key set reads again: status = %d, want 204", recorder.Code)
+	}
+}
+
 func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

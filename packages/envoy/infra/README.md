@@ -948,10 +948,15 @@ projected volume `listener-account-token`, whose one source is a `serviceAccount
 `/var/run/secrets/envoy-listener`; `ENVOY_ACCOUNT_TOKEN_FILE` names
 `/var/run/secrets/envoy-listener/listener-account-token` in `ENVOY_TOKEN`'s place, and Dispatch
 reads it for its calls, never at boot, reusing what it read for at most 30 seconds
-(`packages/envoy/cmd/dispatch/README.md`). The listener
-verifies that token with the pair it carries in `ENVOY_API_TOKEN`'s place: `ENVOY_OIDC_ISSUER`,
-this component's cluster issuer (the `serviceAccountIssuer` output), and `ENVOY_OIDC_AUDIENCE`,
-`listenerAudience`. No bearer exists then: the Secret `<hostname>-listener` and the generated
+(`packages/envoy/cmd/dispatch/README.md`). The listener verifies that token with the pair it
+carries in `ENVOY_API_TOKEN`'s place: `ENVOY_OIDC_ISSUER`, this component's cluster issuer (the
+`serviceAccountIssuer` output), and `ENVOY_OIDC_AUDIENCE`, `listenerAudience`. The listener needs
+that issuer at boot: it reads the issuer's discovery document before it binds its port and exits
+when it cannot within 30 seconds, so a listener pod started while the issuer cannot be reached
+restarts until it can. Once started, a token it cannot judge because the issuer's key set cannot
+be read is answered 503 with `Retry-After`, which Dispatch tries again for up to 12 seconds, as
+it does a listener being replaced, and never 401, which it settles as failed at once. No bearer
+exists then: the Secret `<hostname>-listener` and the generated
 password `<hostname>-listener-token` are not registered, and neither pod template carries a
 `checksum/<hostname>-listener` annotation. The listener admits every token its issuer mints for
 that audience, so what keeps the cluster's other workloads out is the listener's NetworkPolicy,
