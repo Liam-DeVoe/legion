@@ -3288,3 +3288,50 @@ test("a filter panel cut to a short window scrolls to its last control @firefox 
   await last.dispose();
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135's review round 1, F2 item 1 (the architect's chip rule, restated 2026-11-15): a
+// column filter showed only on its column's header, and the columns menu hides any column, so a
+// reader could hide the column a link had narrowed by and be left with a list narrowed by a
+// filter they could neither see nor take off. Every narrowing that is on is a chip of the row,
+// whatever set it, and the row's trigger counts it.
+test("a column filter is visible and removable from the row even while its column is hidden", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  for (const [title, label] of [
+    ["Ledger rollout", "frontend"],
+    ["Mirror retries", "backend"],
+  ] as const) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels: [label] });
+  }
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const trigger = control(row, CONTROL.panelTrigger);
+  const rows = page.locator("[data-issue-row]");
+  const chip = row.getByRole("button", { exact: true, name: "Remove Label: frontend filter" });
+
+  // A link narrowing by a label: one row, one chip, and the trigger counts it.
+  await openIssuesTab(page, "CORE", "List");
+  await page.goto("/projects/CORE/issues?label=frontend");
+  await expect(rows).toHaveCount(1);
+  await expect(chip).toBeVisible();
+  await expect(trigger).toHaveText("Filters · 1");
+
+  // The reader hides the Labels column: its header, and the filter control on it, leave the
+  // page, and the narrowing stays on.
+  await control(row, CONTROL.columnsMenu).click();
+  await page.getByRole("checkbox", { exact: true, name: "Labels" }).click();
+  await page.keyboard.press("Escape");
+  await expect(main.getByRole("button", { name: /^Filter Labels/ })).toHaveCount(0);
+  await expect(rows).toHaveCount(1);
+
+  // The chip is the one place that narrowing is now, and its press takes it off.
+  await expect(chip, "no chip is left for a filter whose column is hidden").toBeVisible();
+  await expect(trigger).toHaveText("Filters · 1");
+  await chip.click();
+  await expect(rows).toHaveCount(2);
+  await expect(page).not.toHaveURL(/[?&]label=/);
+  await expect(trigger).toHaveText("Filters · 0");
+  await expect(chip).toHaveCount(0);
+});
