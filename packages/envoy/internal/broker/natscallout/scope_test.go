@@ -138,6 +138,13 @@ func (d *dispatchAnswers) fail(err error) {
 	d.failing = err
 }
 
+// drop takes project out of Dispatch, which then answers ErrProjectNotFound about it.
+func (d *dispatchAnswers) drop(project string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.answers, project)
+}
+
 // hide takes entryPerson off project's access list, or with hidden false puts them back on it.
 func (d *dispatchAnswers) hide(project string, hidden bool) {
 	d.mu.Lock()

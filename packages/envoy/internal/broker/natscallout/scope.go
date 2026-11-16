@@ -36,14 +36,13 @@ import (
 // entry does not name also maps, by a rename or by a second spelling of the lane
 // (Deps.RepoProjects): such a repository is withheld, and counted, since serving it would hand one
 // project's daemon another's events; a lane shared only among the entry's own projects is served.
-// WithinProjects writes that same reply prefix in place of _INBOX.>. Every
-// answer and the mapping the grant is built from come from one complete pass (heldAccess), never
-// two mixed. It is refused, naming why: an account no exchange entry lists, or whose entry names
-// no project; no complete pass held yet; Dispatch refusing the broker's own account token in that
-// pass; a project Dispatch does not hold, or whose answer says the entry's person cannot see it;
-// and a grant entry natsgrant.WithinProjects cannot hold.
-// ParseServices refuses a dispatch or listener entry with "-" at start, since their grants carry KV
-// calls.
+// WithinProjects writes that same reply prefix in place of _INBOX.>. Every answer and the mapping
+// the grant is built from come from one complete pass (heldAccess), never two mixed, narrowed by
+// the refusals of any later pass. It is refused, naming why: an account no exchange entry lists, or
+// whose entry names no project; no complete pass held yet; Dispatch refusing the broker's own
+// account token in that pass; a project Dispatch does not hold, or whose answer says the entry's
+// person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
+// refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
 //
 // Dispatch is never asked inside a decision: a decision reads only the pass the service holds.
 //
@@ -144,16 +143,20 @@ const accessFetchTimeout = 10 * time.Second
 // every accessRefresh after. A held entry's grant is built from one complete pass (heldPass) and
 // never from two mixed, since a mapping from one pass beside answers from another could serve a
 // repository neither alone would. A pass every question of which Dispatch answered replaces the
-// one held; a pass any question of which failed (Dispatch unreachable, a timeout) replaces nothing,
-// so the last complete pass stands, and each failure is logged at warn. Dispatch refusing the
+// one held. A pass any question of which failed (Dispatch unreachable, a timeout, an answer past
+// its bound) adds nothing, but every refusal it got applies at once (narrow): a project it answers
+// not found or not visible is refused so, and one whose repositories it answers keeps only those
+// both passes name, since the token exchange refuses a removed person's token whatever else
+// Dispatch answers; each failure is logged at warn. Dispatch refusing the
 // broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused) on any question of a
 // pass, a project's answer or the mapping, is the pass's outcome whatever its other questions
 // did, failures included: the token exchange refuses every trade that asks Dispatch then (oauth's
 // refusedByDispatch), so that pass is held, refuses every held connection until a later pass
 // replaces it, and is logged at error once a pass. With no complete pass held yet, a held connection
-// is refused, and its client retries; the newest complete pass is used however old it is, so while
-// Dispatch cannot be reached a connection is admitted or refused as Dispatch last answered a whole
-// pass. While Dispatch answers every question, the pass held is at most about a minute old: the
+// is refused, and its client retries; the newest complete pass, narrowed so, is used however old it
+// is, so while Dispatch cannot be reached a connection is admitted or refused as Dispatch last
+// answered a whole pass, or refused as any later answer said. While Dispatch answers every
+// question, the pass held is at most about a minute old: the
 // 30 s (projectaccess.CacheTTL) the Dispatch client may have kept an answer, the accessRefresh to
 // the next pass, and the accessFetchTimeout its questions may take.
 type heldAccess struct {
@@ -322,21 +325,54 @@ func (h *heldAccess) refresh(ctx context.Context) {
 		h.hold(&heldPass{began: pass.began, refused: true})
 		return
 	}
+	answered := make(map[heldKey]heldAnswer, len(h.asks))
+	for i, ask := range h.asks {
+		if errs[i] == nil {
+			answered[ask] = answers[i]
+		}
+	}
 	if slices.ContainsFunc(errs, func(err error) bool { return err != nil }) {
 		if ctx.Err() == nil {
 			for i, err := range errs {
 				if err != nil {
-					h.log.Warn("natscallout: Dispatch could not be asked a question of this pass, so the last complete pass is kept", "question", question(i), "error", err.Error())
+					h.log.Warn("natscallout: Dispatch could not be asked a question of this pass, so the last complete pass is kept, narrowed by this pass's refusals", "question", question(i), "error", err.Error())
 				}
 			}
 		}
+		h.narrow(pass.began, answered)
 		return
 	}
-	pass.answers = make(map[heldKey]heldAnswer, len(h.asks))
-	for i, ask := range h.asks {
-		pass.answers[ask] = answers[i]
-	}
+	pass.answers = answered
 	h.hold(pass)
+}
+
+// narrow applies to the pass held the refusals an incomplete pass, begun at began, got in
+// answers: a held key it answers not found or not visible is refused so at once, and one it
+// answers visible keeps only the repositories both passes name. It adds nothing: a key answered
+// visible again, and a repository or lane new to the pass held, wait for a complete pass, so the
+// grant still never holds what one complete pass did not. A pass held as refused stays refused.
+func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	held := h.pass
+	if held == nil || held.refused || began.Before(held.began) {
+		return
+	}
+	narrowed := &heldPass{began: began, answers: maps.Clone(held.answers), lanes: held.lanes}
+	for key, fresh := range answers {
+		kept, ok := narrowed.answers[key]
+		switch {
+		case !ok || kept.notFound || !kept.answer.Visible:
+		case fresh.notFound || !fresh.answer.Visible:
+			narrowed.answers[key] = fresh
+		default:
+			kept.answer.Repositories = slices.DeleteFunc(slices.Clone(kept.answer.Repositories), func(repository string) bool {
+				return !slices.Contains(fresh.answer.Repositories, repository)
+			})
+			narrowed.answers[key] = kept
+		}
+	}
+	h.pass = narrowed
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must
