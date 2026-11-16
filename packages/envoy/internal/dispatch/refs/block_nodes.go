@@ -57,42 +57,65 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 	return fits, past
 }
 
-// blockNode is one block's node as a version's index writes it: project-visible, in state, made
-// by the version's writer at its time, and with no cause yet - graphstore.Caused gives it the
-// version's event. A node already there keeps its made_at and made_by, so a block is made by
-// the version that first indexed it.
-func blockNode(address string, writer model.Actor, at time.Time, state string) graphstore.Node {
+// blockNode is one block's node as a version's index writes it: project-visible, in state, in the
+// project of the document that holds it, made by the version's writer at its time, and with no
+// cause yet - graphstore.Caused gives it the version's event. A node already there keeps its
+// made_at and made_by, so a block is made by the version that first indexed it, and a block an
+// earlier build indexed with no project takes its document's here (graphstore.Write fills a
+// project the row does not hold).
+func blockNode(address string, document indexedDocument, at time.Time, state string) graphstore.Node {
 	return graphstore.Node{
 		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
 		Visibility: graphstore.VisibilityProject, State: state,
-		MadeAt: at, MadeBy: writer, SourceEvent: graphstore.NoEvent,
+		Project: document.project, Parties: document.parties,
+		MadeAt: at, MadeBy: document.writer, SourceEvent: graphstore.NoEvent,
 	}
 }
 
-// indexedVersionRecord is what the version's own row says of the pass: the document's ref_key,
-// which every block's address starts with, and the actor that row records as the version's
-// writer, which every node and tuple this pass writes carries. A version no row records - a
-// caller indexing blocks of its own, as the seed does - leaves the writer nobody, the zero
-// actor, exactly as a node of the store written on a credential that names nobody carries.
-func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, version int) (string, model.Actor, error) {
-	var refKey string
+// indexedDocument is what the version's own row and its document's row say of the pass: the
+// document's ref_key, which every block's address starts with; the actor the version's row
+// records as its writer, which every node and tuple this pass writes carries; and the project the
+// document belongs to, or for an agent conversation's file the session it is between, which every
+// block node the pass writes carries (graphstore.Node's Project and Parties). A conversation holds
+// no markdown document (api's agentOwnsFilesOnly), so no block has parties today; the read keeps
+// the one rule every document's node follows.
+type indexedDocument struct {
+	refKey  string
+	writer  model.Actor
+	project string
+	parties []string
+}
+
+// indexedVersionRecord reads indexedDocument in one statement, under the owner row the pass's
+// caller already holds. A version no row records - a caller indexing blocks of its own, as the
+// seed does - leaves the writer nobody, the zero actor, exactly as a node of the store written on
+// a credential that names nobody carries.
+func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, version int) (indexedDocument, error) {
+	var document indexedDocument
+	var project, session *string
 	var authors []byte
 	if err := tx.QueryRow(ctx, `
-		select a.ref_key, v.authors
+		select a.ref_key, a.project_key, a.session_id, v.authors
 		from artifacts a
 		left join artifact_versions v on v.artifact_id = a.id and v.number = $2
 		where a.id = $1::uuid
-	`, artifactID, version).Scan(&refKey, &authors); err != nil {
-		return "", model.Actor{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
+	`, artifactID, version).Scan(&document.refKey, &project, &session, &authors); err != nil {
+		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
+	}
+	if project != nil {
+		document.project = *project
+	}
+	if session != nil {
+		document.parties = []string{graphstore.PartySession(*session)}
 	}
 	writers, err := storedActors(authors)
 	if err != nil {
-		return "", model.Actor{}, fmt.Errorf("decode the authors of version %d of %s: %w", version, artifactID, err)
+		return indexedDocument{}, fmt.Errorf("decode the authors of version %d of %s: %w", version, artifactID, err)
 	}
-	if len(writers) == 0 {
-		return refKey, model.Actor{}, nil
+	if len(writers) > 0 {
+		document.writer = writers[0]
 	}
-	return refKey, writers[0], nil
+	return document, nil
 }
 
 // scanFreshBlocks reads back the rows the document_blocks statement wrote: the created_at of
