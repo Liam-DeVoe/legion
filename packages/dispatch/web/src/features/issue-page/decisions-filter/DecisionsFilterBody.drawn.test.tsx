@@ -666,6 +666,58 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   await waitFor(() => expect(focusedRow(replaced)).toBe(D("second")));
 });
 
+// R6, the class of the review list's case above (the tester's round 2): an entry that moves to
+// another part of the list by no act of the reader keeps the focus where it now stands. Another
+// person answers the open question the reader is on, which moves it under Your decisions; a
+// decisions read ties the foot's decision the reader is on to a statement, which moves it to
+// the review list. Each row is drawn again in its new part, and the focus is on it there, not
+// on the page.
+test("an entry that moves to another part by no act of the reader keeps the focus", async () => {
+  const whole = wholeIssue();
+  const answered = renderBody(whole);
+  await act(async () => rowOf(answered, "q-open").focus());
+  expect(focusedRow(answered)).toBe("q-open");
+  answered.again({
+    children: whole.children.map((child) =>
+      child.id === "q-open"
+        ? answeredAsk(
+            "q-open",
+            { at: "2026-11-16T09:00:00Z", by: { id: "bob", kind: "user" }, text: "At 1280 px." },
+            {
+              options: [
+                { description: "Where the rail fits.", label: "1280 px" },
+                { label: "1024 px" },
+              ],
+              text: "At which width does the header condense?",
+            }
+          )
+        : child
+    ),
+  });
+  await waitFor(() => expect(rowsOfPart(answered, "yours")).toContain("q-open"));
+  expect(rowsOfPart(answered, "open_questions")).toEqual([]);
+  await waitFor(() => expect(focusedRow(answered)).toBe("q-open"));
+  answered.unmount();
+
+  const tied = renderBody(whole);
+  await act(async () => tied.getByRole("button", FOOT_CONTROL).click());
+  await waitFor(() => expect(rowsOfPart(tied, "agents")).toContain(D("minor")));
+  await act(async () => rowOf(tied, D("minor")).focus());
+  expect(focusedRow(tied)).toBe(D("minor"));
+  await act(async () =>
+    tied.client.setQueryData(
+      ["decisions", KEY],
+      decisionsRead(
+        whole.made.map((made) =>
+          made.block_id === "minor" ? { ...made, links: [shaped(specRef("s3"))] } : made
+        )
+      )
+    )
+  );
+  await waitFor(() => expect(rowsOfPart(tied, "review")).toContain(D("minor")));
+  await waitFor(() => expect(focusedRow(tied)).toBe(D("minor")));
+});
+
 // A closed issue takes no write, so the review list keeps its rows and draws no control.
 test("a closed issue draws the review list with no Keep and no Change", () => {
   const view = renderBody(wholeIssue(), { isClosed: true });
