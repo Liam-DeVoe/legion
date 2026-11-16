@@ -191,7 +191,8 @@ type CarriedEdit struct {
 // the write that stored the item, which the caller appends after this and hands to
 // graphstore.Caused: the block nodes it wrote before their rows, each block's part_of to the item
 // and the links its blocks hold (IndexItem), and the item's citations, its refs rows as mentions
-// out of its node (citationTuples).
+// out of its node (replaceRefsOf). Every one of them is dated by `at`, the item's own created_at,
+// since each is a fact of the write that stored the item.
 func ReplaceCountedItem(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -236,7 +237,10 @@ func ReplaceCountedItemEdit(
 // replaceItemRefs indexes the item's blocks and their mentions (IndexItem) and reconciles its own
 // references (replaceRefs) to located, the mentions of body, and returns the targets either
 // inserted or deleted, and what both state in the store, held for the caller's event. Both are
-// written under the one reading of the item's scope.
+// written under the one reading of the item's scope, and both at `at`: a refs row the reconcile
+// inserts takes it as its created_at, which dates its citation, and a citation it drops is
+// retracted at it, so the item's citations carry the moment of the write that moved them and not
+// the transaction's now(), which for a comment is earlier than its own clock-read created_at.
 func replaceItemRefs(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -254,7 +258,7 @@ func replaceItemRefs(
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
-	changed, cited, err := replaceRefsOf(ctx, tx, string(kind), itemID, text.Refs(located), nil, scope)
+	changed, cited, err := replaceRefsOf(ctx, tx, string(kind), itemID, text.Refs(located), &at, scope)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
@@ -385,6 +389,19 @@ type itemBlockSource struct {
 // deletes (replaceItemBlockRefs). A call that changed no block writes no node and states no
 // part_of, so a re-index of unchanged text appends nothing but a link a new grammar moved.
 //
+// Every node it writes is made at `at`, the moment of the write whose text it indexes - the
+// created_at of an insert, the edited_at of an edit, an answer's own time, the time the owed pass
+// finds the text was written (IndexOwedItemBlocks) - and so is every block row it inserts, whose
+// created_at the insert writes as `at` rather than leave to the column's default, the
+// transaction's now(): a comment's created_at is a clock read taken after now() (api's
+// createCommentFor), so a block row dated by now() would place the block in its comment before
+// the comment was written. Each part_of and each link is dated by the row it is the projection of,
+// which the release before this one answers from its created_at, so graph_edges answers it at one
+// time on either release. A row an older build wrote, which this pass takes over, keeps its own
+// created_at, and so does a link row the first indexing dates by its item's own refs row: each
+// records the earlier write that stated it, which a backfill dates by the row too
+// (graphcensus.Backfill).
+//
 // It returns the targets of the block mentions it inserted or deleted, and of the links a block
 // holds whose excerpt it rewrote, and what it states in the store, held for its caller's event:
 // the nodes it wrote and the base attributes that write stated, the part_of of each block it
@@ -495,12 +512,8 @@ func indexItemBlocks(
 		if write, err = graphstore.WriteUncaused(ctx, tx, nodes, nil); err != nil {
 			return nil, graphstore.Uncaused{}, fmt.Errorf("write the block nodes of %s %s: %w", kind, itemID, err)
 		}
-		created, err := writeItemBlocks(ctx, tx, kind, tables, itemID, revision, at, madeAt, written, kept, removed)
-		if err != nil {
+		if err := writeItemBlocks(ctx, tx, kind, tables, itemID, revision, at, madeAt, written, kept, removed); err != nil {
 			return nil, graphstore.Uncaused{}, err
-		}
-		for _, row := range kept {
-			created[row.id] = rows[row.id].createdAt
 		}
 		// Every current block is one the revision wrote or kept, so the blocks it places are the
 		// current ones that are nodes, in body order.
@@ -511,7 +524,7 @@ func indexItemBlocks(
 				placed = append(placed, id)
 			}
 		}
-		parents, err := itemBlockParents(ctx, tx, kind, itemID, scope, placed, created)
+		parents, err := itemBlockParents(ctx, tx, kind, itemID, at, scope, placed, rows)
 		if err != nil {
 			return nil, graphstore.Uncaused{}, err
 		}
@@ -754,18 +767,18 @@ type itemBlockRow struct {
 }
 
 // writeItemBlocks stores one new revision of the item's blocks: written (new, changed or restored
-// blocks) take the revision and `at` as their changed facts, and a new one madeAt; kept blocks
-// move their position, type and excerpt; removed ones lose their position at `at`. A kind with
-// revisions records each written block's text, and null for each removed one, at the revision. A
-// kind whose blocks record a maker writes each written block's; a kept block keeps the maker it
-// was written with, as it keeps its text.
+// blocks) take the revision and `at` as their changed facts, and a new one madeAt and `at` as its
+// created_at, the moment its part_of is dated by (itemBlockParents), which the insert writes rather
+// than leave to the column's default, the transaction's now(); a written row already stored keeps
+// its created_at. Kept blocks move their position, type and excerpt; removed ones lose their
+// position at `at`. A kind with revisions records each written block's text, and null for each
+// removed one, at the revision. A kind whose blocks record a maker writes each written block's; a
+// kept block keeps the maker it was written with, as it keeps its text.
 //
 // Each written and kept row names its node in the statement that writes it where the block is a
 // node (itemBlockRow.named), and names none where it is not, so the row says which arm of
 // graph_edges answers it (migration 20261116140008); the node is already written, since the
-// foreign key is checked inside the statement. A removed row keeps the node columns it had. It
-// answers the created_at of each written row, by id, which is the moment that block's part_of is
-// dated by.
+// foreign key is checked inside the statement. A removed row keeps the node columns it had.
 func writeItemBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -777,19 +790,17 @@ func writeItemBlocks(
 	madeAt *time.Time,
 	written, kept []itemBlockRow,
 	removed []string,
-) (map[string]time.Time, error) {
-	created := make(map[string]time.Time, len(written)+len(kept))
+) error {
 	if len(removed) > 0 {
 		if _, err := tx.Exec(ctx, `
 			update `+tables.blocks+` set position = null, removed_at = $2
 			where `+tables.item+` = $1::uuid and block_id = any($3)
 		`, itemID, at, removed); err != nil {
-			return nil, fmt.Errorf("remove the blocks %s %s no longer holds: %w", kind, itemID, err)
+			return fmt.Errorf("remove the blocks %s %s no longer holds: %w", kind, itemID, err)
 		}
 	}
 	if len(written) > 0 {
 		ids, positions, types, sums, excerpts, makers, named := itemBlockColumns(written)
-		var rows pgx.Rows
 		var err error
 		if tables.revisions() {
 			// Only a kind whose blocks record a maker has the column, so the three fragments are
@@ -798,11 +809,11 @@ func writeItemBlocks(
 			if tables.makers {
 				maker, makerValue, makerUpdate = ", made_by", ", b.made_by::jsonb", ", made_by = excluded.made_by"
 			}
-			rows, err = tx.Query(ctx, `
-				insert into `+tables.blocks+` (`+tables.item+`, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_revision, changed_at`+maker+`)
+			_, err = tx.Exec(ctx, `
+				insert into `+tables.blocks+` (`+tables.item+`, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_revision, changed_at, created_at`+maker+`)
 				select $1::uuid, b.id, '`+string(kind)+`/' || $1::uuid::text || '#' || b.id,
 				       case when b.named then $12 end, case when b.named then '`+string(kind)+`/' || $1::uuid::text || '#' || b.id end,
-				       b.position, b.type, b.sum, b.excerpt, $2, $3, $4`+makerValue+`
+				       b.position, b.type, b.sum, b.excerpt, $2, $3, $4, $4`+makerValue+`
 				from unnest($5::text[], $6::int[], $7::text[], $8::text[], $9::text[], $10::text[], $11::boolean[]) as b (id, position, type, sum, excerpt, made_by, named)
 				on conflict (`+tables.item+`, block_id) do update set
 					node_kind = excluded.node_kind,
@@ -814,16 +825,15 @@ func writeItemBlocks(
 					changed_revision = excluded.changed_revision,
 					changed_at = excluded.changed_at,
 					removed_at = null`+makerUpdate+`
-				returning block_id, created_at
 			`, itemID, madeAt, revision, at, ids, positions, types, sums, excerpts, makers, named, BlockNodeKind)
 		} else {
 			// A message is never edited, so its blocks are made and last changed when it was
 			// written; a reindex under another parser moves only those of new text.
-			rows, err = tx.Query(ctx, `
-				insert into message_blocks (message_id, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_at)
+			_, err = tx.Exec(ctx, `
+				insert into message_blocks (message_id, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_at, created_at)
 				select $1::uuid, b.id, 'message/' || $1::uuid::text || '#' || b.id,
 				       case when b.named then $9 end, case when b.named then 'message/' || $1::uuid::text || '#' || b.id end,
-				       b.position, b.type, b.sum, b.excerpt, $2, $2
+				       b.position, b.type, b.sum, b.excerpt, $2, $2, $2
 				from unnest($3::text[], $4::int[], $5::text[], $6::text[], $7::text[], $8::boolean[]) as b (id, position, type, sum, excerpt, named)
 				on conflict (message_id, block_id) do update set
 					node_kind = excluded.node_kind,
@@ -834,14 +844,10 @@ func writeItemBlocks(
 					excerpt = excluded.excerpt,
 					changed_at = excluded.changed_at,
 					removed_at = null
-				returning block_id, created_at
 			`, itemID, at, ids, positions, types, sums, excerpts, named, BlockNodeKind)
 		}
-		if err == nil {
-			err = scanCreatedBlocks(rows, created)
-		}
 		if err != nil {
-			return nil, fmt.Errorf("record the blocks of %s %s: %w", kind, itemID, err)
+			return fmt.Errorf("record the blocks of %s %s: %w", kind, itemID, err)
 		}
 	}
 	if len(kept) > 0 {
@@ -852,11 +858,11 @@ func writeItemBlocks(
 			from unnest($2::text[], $3::int[], $4::text[], $5::text[], $6::boolean[]) as k (id, position, type, excerpt, named)
 			where b.`+tables.item+` = $1::uuid and b.block_id = k.id
 		`, itemID, ids, positions, types, excerpts, named, BlockNodeKind); err != nil {
-			return nil, fmt.Errorf("move the unchanged blocks of %s %s: %w", kind, itemID, err)
+			return fmt.Errorf("move the unchanged blocks of %s %s: %w", kind, itemID, err)
 		}
 	}
 	if !tables.revisions() || len(written)+len(removed) == 0 {
-		return created, nil
+		return nil
 	}
 	textIDs := make([]string, 0, len(written)+len(removed))
 	texts := make([]*string, 0, len(written)+len(removed))
@@ -871,24 +877,9 @@ func writeItemBlocks(
 		select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
 		on conflict (`+tables.item+`, block_id, revision) do update set text = excluded.text
 	`, itemID, revision, textIDs, texts); err != nil {
-		return nil, fmt.Errorf("record the block texts of revision %d of %s %s: %w", revision, kind, itemID, err)
+		return fmt.Errorf("record the block texts of revision %d of %s %s: %w", revision, kind, itemID, err)
 	}
-	return created, nil
-}
-
-// scanCreatedBlocks reads the block_id and created_at of each row an insert of item blocks
-// returned into created.
-func scanCreatedBlocks(rows pgx.Rows, created map[string]time.Time) error {
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		var at time.Time
-		if err := rows.Scan(&id, &at); err != nil {
-			return err
-		}
-		created[id] = at
-	}
-	return rows.Err()
+	return nil
 }
 
 // itemBlockColumns is rows as the parallel arrays an unnest reads.
@@ -911,16 +902,21 @@ func itemBlockColumns(rows []itemBlockRow) (ids []string, positions []int32, typ
 // for every block rather than one per block, through graph_tuples_inbound, whose columns the read
 // binds up to the block's address. A block's place never moves - its parent is its item, which is
 // what its address names - so a block the store already places states nothing, and a re-index
-// that only moved the blocks appends nothing. Each part_of is dated by its row's created_at
-// (created), as the old arm of graph_edges dates it, and made by the item's maker.
+// that only moved the blocks appends nothing. Each part_of is dated by its block row's created_at,
+// the column the release before this one answers it from, so graph_edges answers it at one time on
+// either release: `at` for a row this revision inserted, which writeItemBlocks writes as its
+// created_at, and, for a row already stored (stored), which named no node until this pass took it
+// over, the row's own, the moment of the earlier write that inserted it. Each is made by the item's
+// maker.
 func itemBlockParents(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
 	itemID string,
+	at time.Time,
 	scope itemScope,
 	placed []string,
-	created map[string]time.Time,
+	stored map[string]storedItemBlock,
 ) ([]graphstore.UncausedTuple, error) {
 	if len(placed) == 0 {
 		return nil, nil
@@ -948,10 +944,14 @@ func itemBlockParents(
 		if slices.Contains(held, address) {
 			continue
 		}
+		placedAt := at
+		if row, kept := stored[placed[index]]; kept {
+			placedAt = row.createdAt
+		}
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: graphstore.TuplePartOf,
 			ToKind: string(kind), ToID: itemID,
-			At: created[placed[index]], Who: scope.node.MadeBy, Asserted: true,
+			At: placedAt, Who: scope.node.MadeBy, Asserted: true,
 		}})
 	}
 	return tuples, nil
@@ -1135,15 +1135,20 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // reports whether it indexed it. It takes the item row `for no key update`, the lock an edit of
 // the item takes, then indexes it as a reply naming one of its blocks does (IndexItemIfOwed),
 // which takes the state row after it; it never takes an owner row. A new block and a new mention
-// take the time the item's text was written: a comment's and an ask's coalesce(edited_at,
-// created_at), a message's created_at. An item a write site indexed since it was listed is no
-// longer owed and is left alone; one deleted since took its state row with it (on delete
-// cascade), so nothing is owed. It runs from the block-index reconciliation
+// take the time the item's text was written, and so do the nodes it writes and the facts it states,
+// each dated by its row (indexItemBlocks): a comment's and an ask's coalesce(edited_at,
+// created_at), a message's created_at. The pass runs after that write, at the sentinel, so its own
+// clock is no moment of the item's: the facts it states are facts of the item's text, as old as the
+// write that stored that text, which is the item's created_at until an edit. An edited item's text
+// is the edit's, so its blocks date from edited_at; dating them by created_at would state them
+// before the text they hold was written. An item a write site indexed since it was listed is no
+// longer owed and is left alone; one deleted since took its state row with it (on delete cascade),
+// so nothing is owed. It runs from the block-index reconciliation
 // (docs.(*Service).ReconcileBlockIndex) and indexes through IndexItemIfOwed, which indexes nothing
-// unless the item's index is owed, so every mention it records is of text an earlier write
-// already appended an event for. A block mention takes the source_seq of the item's own refs row
-// for its target at the item's first indexing (indexItemBlocks) and none otherwise, and no
-// ?since= read lists a row with none until a later write of the item stamps it (Stamp).
+// unless the item's index is owed, so every mention it records is of text an earlier write already
+// appended an event for. A block mention takes the source_seq of the item's own refs row for its
+// target at the item's first indexing (indexItemBlocks) and none otherwise, and no ?since= read
+// lists a row with none until a later write of the item stamps it (Stamp).
 func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, serverURL string) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {

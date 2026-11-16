@@ -29,7 +29,10 @@ import (
 // What the index states in the node and tuple store - the block nodes, their part_of and links,
 // and the item's citations - is appended here, at the sentinel (graphstore.NoEvent): an owed
 // index is of text an earlier write already appended an event for, and no event records this
-// pass, whichever transaction it runs in.
+// pass, whichever transaction it runs in. For the same reason it is dated by the time that text
+// was written (writtenAt: a comment's coalesce(edited_at, created_at), a message's created_at),
+// and not by this pass's clock: the facts are the item's text's, not the pass's
+// (IndexOwedItemBlocks).
 func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serverURL string) (bool, error) {
 	var query string
 	switch kind {
