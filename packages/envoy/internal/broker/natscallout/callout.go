@@ -75,6 +75,10 @@ type Service struct {
 	sub   *nats.Subscription
 	slots chan struct{}
 	wait  sync.WaitGroup
+	// stopHeld ends the asks about the projects a held entry can name (heldAccess.run), and
+	// heldDone is closed once they have ended.
+	stopHeld context.CancelFunc
+	heldDone chan struct{}
 }
 
 // decideFunc is how the service decides a request: Decide, unless a test of the guard replaces
@@ -91,7 +95,7 @@ func Start(ctx context.Context, settings Settings, deps Deps) (*Service, error) 
 	return start(ctx, settings, deps, Decide)
 }
 
-func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (*Service, error) {
+func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc) (*Service, error) {
 	issuer, err := readSeed("BROKER_NATS_ISSUER_SEED_FILE", settings.IssuerSeedFile, nkeys.PrefixByteAccount)
 	if err != nil {
 		return nil, err
@@ -124,7 +128,16 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
-	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions)}
+	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions), stopHeld: func() {}, heldDone: make(chan struct{})}
+	// Dispatch's answers about the projects of the entries held to their exchange projects are
+	// asked for in the background from now on, so no decision waits on Dispatch (scopeGrant).
+	if deps.held = newHeldAccess(deps, settings.Services); deps.held != nil {
+		var asks context.Context
+		asks, s.stopHeld = context.WithCancel(context.WithoutCancel(ctx))
+		go func() { defer close(s.heldDone); deps.held.run(asks) }()
+	} else {
+		close(s.heldDone)
+	}
 	answer := &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide}
 	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, func(msg *nats.Msg) {
 		s.slots <- struct{}{}
@@ -135,6 +148,8 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		}()
 	})
 	if err != nil {
+		s.stopHeld()
+		<-s.heldDone
 		conn.Close()
 		return nil, fmt.Errorf("natscallout: subscribe %s: %w", authSubject, err)
 	}
@@ -146,6 +161,8 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 func (s *Service) Close() {
 	_ = s.sub.Unsubscribe()
 	s.wait.Wait()
+	s.stopHeld()
+	<-s.heldDone
 	s.conn.Close()
 }
 

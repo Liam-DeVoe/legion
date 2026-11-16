@@ -40,10 +40,11 @@ type Deps struct {
 	// whether that is a Google account, and when the token was issued and expires.
 	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
 	// Exchange is the projects the broker's own exchange list gives account, and false for an
-	// account no entry lists (exchange.Set.ProjectsForAccount). Nil, with Access, holds no
+	// account no entry lists (exchange.Set.ProjectsForAccount). Nil, or a nil Access, holds no
 	// service to its projects, and refuses every entry that is not an all-projects one.
 	Exchange func(account string) ([]string, bool)
-	// Access is Dispatch's answer about one project (projectaccess).
+	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
+	// the service asks it in the background and decides on the answers it holds (heldAccess).
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
@@ -53,6 +54,11 @@ type Deps struct {
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
 	Metrics *Metrics
+
+	// held is Dispatch's last answer about each project a held entry can name, which Start asks
+	// for and a decision reads (scopeGrant); nil until then, when every such project is not yet
+	// known.
+	held *heldAccess
 }
 
 func (d Deps) now() time.Time {

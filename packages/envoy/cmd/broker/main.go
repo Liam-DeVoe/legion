@@ -731,11 +731,20 @@ func main() {
 	// the drain begins.
 	var callout *natscallout.Service
 	if cfg.NATS.Enabled() {
+		// A service held to its exchange projects is held by the exchange list this broker trades
+		// by and by Dispatch's answers about those projects, which the service asks for in the
+		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
+		// service by name.
+		var projectAccess func(context.Context, string, string) (projectaccess.Answer, error)
+		if exchangeConfig.Projects != nil {
+			projectAccess = exchangeConfig.Projects.Access
+		}
 		callout, err = natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Exchange: exchangePolicy.ProjectsForAccount, Access: projectAccess,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		})
 		fatal(err)
