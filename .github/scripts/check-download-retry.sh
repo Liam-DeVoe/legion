@@ -64,86 +64,99 @@
 # 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
 # stopped at the `run:` saw the arithmetic of none of them.
 #
-# HOW RULE 8 FINDS A CALL (dispatch://INFRA-1545, round 37). SCRIPT_CALL finds each occurrence
-# of a path naming a script under .github/scripts/, outside a comment, in a workflow step's
-# `run:`, a composite action step's `run:` or a script this check reads, and call_of reads where
-# in its command that occurrence sits. A comment is the one bash reads: from a `#` that starts
-# a word outside quotes to the end of its physical line, which a backslash there does not
-# continue, so `true;# …` holds one, the line after `# … \` is a command, and a line starting
-# with `#` inside a quoted string is that string's. Each occurrence is one of three things, and
-# both lists below are closed:
+# THE FORMS RULE 8 READS, AND NO OTHERS (dispatch://INFRA-1545, round 37). Each reading of rule
+# 8 accepts the forms this tree writes, measured on the tree at d65e47ae with an instrumented copy
+# of this check, and refuses every other form by name where what it can hide fetches: the file,
+# the line, the step or the script, the form, and a listed form to write instead. A form that is
+# not on its list is not modelled, so it is charged nothing and refused, and never read as
+# nothing where the step may wait for it. Until round 37 each reading also modelled shapes no
+# step writes, and each round's newest model held the next undercount. The counts are the tree's.
 #
-#   1. A RECOGNISED CALL, in command position once the wrappers reduce_words strips are gone
-#      (an assignment prefix, a shell keyword, `timeout <seconds>`, `env`, `sudo`, `exec`,
-#      `command` and the rest of PASSTHROUGH), at top level, inside a `( … )` subshell, or as
-#      the whole command of a `$( … )` or backtick substitution, in the body of an `if`, a
-#      `while` or a `for`, in an arm of a `case` and on either side of `&&`, `||` and `|`. It
-#      takes two forms:
-#        - a RUN: the path is the command word, in any spelling ending in `/<name>.sh` —
-#          `.github/scripts/x.sh`, `./.github/scripts/x.sh`,
-#          `$GITHUB_WORKSPACE/.github/scripts/x.sh`, `$GITHUB_ACTION_PATH/../../scripts/x.sh`,
-#          `$script_dir/x.sh`, `../../.github/scripts/x.sh`, `$(dirname "${BASH_SOURCE[0]}")/x.sh`
-#          — or the first word after `bash` or `sh` and their options, where `-o` and `+o`
-#          take the word after them as their value (shell_options);
-#        - a SOURCE: `. <path>` or `source <path>`, outside any loop that runs it more than
-#          once.
-#   2. A RECOGNISED NON-CALL: an argument of `echo`, `printf` or `grep` (NONCALL_COMMANDS)
-#      whose output is not piped into a shell, which covers every `::error`, `::warning` and
-#      `::notice` line written through the first two, and a comment. It is charged nothing and
-#      refused nothing. Until round 37 a path anywhere on a line that was not a comment line
-#      was a call, so a message a step echoed charged the step the whole script it named: two
-#      echo lines of ci.yaml's `tool-fallback` step that checks its eight installs failed read
-#      as calls, 3843 s where its call is 1281 s.
-#   3. ANYTHING ELSE: a path in a variable assignment or in an array, behind `eval`, in the
-#      text of a `bash -c` or `sh -c`, in a command whose output is piped into a shell (an
-#      `echo` or `printf` included, since the shell runs what it prints), in a process
-#      substitution, inside the body of a function, in a source inside a loop that runs it more
-#      than once, in a redirect, in the words of a `for` or of a `case`, or an argument of any
-#      other command — a `die`, `fail` or `note` helper, `cp`, `cat`, `xargs`. Such an
-#      occurrence naming a script that fetches, which is a script holding a retried call or
-#      reaching one through its recognised calls, is refused by name: the file and the line,
-#      the step or the script holding it, the script it names, the form, and the rewrite — the
-#      path written as the command word, or sourced with `.`; for a process substitution,
-#      where the path may be the command word already, the script run as a command of its own
-#      with what it reads or writes passed through a file; for a function body, the call
-#      written outside the function; and for a source inside a loop, the library sourced once
-#      before it. It is not charged, and a refusal stands where its figure would be. One
-#      naming a script that fetches nothing is neither charged nor refused.
+#   1. A CALL OF A SCRIPT. SCRIPT_CALL finds each occurrence of a path naming a script under
+#      .github/scripts/, outside a comment, in a workflow step's `run:`, a composite action
+#      step's `run:` or a script this check reads, and call_of reads where in its command the
+#      occurrence sits. A comment is the one bash reads: from a `#` that starts a word outside
+#      quotes to the end of its physical line, which a backslash there does not continue. Three
+#      forms are read:
+#        - a RUN, 256: the path is the command word, spelled in any way ending in `/<name>.sh`
+#          (`.github/scripts/x.sh`, `../../.github/scripts/x.sh`, `$script_dir/x.sh`,
+#          `$GITHUB_WORKSPACE/.github/scripts/x.sh`, `$(dirname "${BASH_SOURCE[0]}")/x.sh`,
+#          `$GITHUB_ACTION_PATH/../../scripts/x.sh`), with nothing before it but variable
+#          assignments, at top level or as the whole command of a `$( … )`, outside a
+#          function's body;
+#        - a SOURCE, 128: `. <path>` or `source <path>` with nothing before it, at top level,
+#          outside a function's body and outside any loop that runs it more than once;
+#        - a NON-CALL, 16: an argument of `echo` or `grep` (NONCALL_COMMANDS) whose output no
+#          shell runs, and a comment, charged nothing and refused nothing. Until round 37 a path
+#          anywhere on a line that was not a comment line was a call, so two echo lines of
+#          ci.yaml's `tool-fallback` step read as calls, 3843 s where its call is 1281 s.
+#      Every other place is refused where the script it names fetches, which is a script holding
+#      a retried call or reaching one through its recognised calls: `bash <path>`, a path after
+#      a reserved word, `timeout`, `env` or any other wrapper, inside a `( … )` subshell,
+#      backticks, a process substitution or a `$( … )` inside another, in a variable assignment
+#      or an array, an argument of `printf`, `eval`, a shell's `-c` text or any other command, a
+#      pipe into a shell, a redirect, the words of a `for` or a `case`, a function's body, and a
+#      source inside a loop. It is not charged, and the refusal stands where its figure would
+#      be. One naming a script that fetches nothing is neither charged nor refused.
+#   2. A CALL OF A FUNCTION, 503: a command whose first word is the name of a function the same
+#      text defines, outside that function's own body, after no word (480) or after `if` (9),
+#      `if !` (9), `!` (4) or `elif !` (1) (CALL_PREFIXES). A call after any other word — a
+#      `then` or a `do` on its line, an assignment prefix, `timeout`, `command` — is refused by
+#      name where the function fetches. A function is read in one spelling, `name() { … }`,
+#      which each of the tree's 170 definitions writes; every other spelling is refused by name
+#      where a fetch is in its reach, as the list below says.
+#   3. A LIBRARY'S FUNCTIONS: a library is a script a body sources, and a call of one of its
+#      fetching functions is read as a call of a function is, with the same words before it.
+#      This tree sources three, ci-retry.sh, ci-tools.sh and runner-shutdown.sh, and calls into
+#      the last two 21 times. Refused by name: a name two of the libraries a body sources
+#      define, or the body and one of them, where either definition fetches, since bash runs
+#      the one it read last; and a call of a library's function that calls a function through
+#      a variable, `run() { "$1"; }`, where the body can see a function that fetches, since such
+#      a call runs whatever the body hands it and the library's own reading cannot see that.
+#   4. A DECLARATION, keyed as the tree keys it: a DECLARED_LOOPS entry names a workflow step by
+#      its file, its name and the verb, or a script by its file and the verb, with no step; a
+#      DECLARED_LIBRARIES entry names a workflow step by its file and its name, or a script or a
+#      composite action by its file, with no step; a DECLARED_CALLS entry names a script and
+#      the variable. An entry keyed any other way matches nothing and fails this check, so two
+#      steps of one action cannot be priced by two entries of one library, and one entry cannot
+#      be charged to one of two steps of one name.
+#   5. A LOOP'S PASSES: a `for x in <literal words>`, 19, of which dequeued.yaml's seven-pass
+#      timeline poll is the one around a priced call, with a `sleep <n>` of that loop's body
+#      as its wait. A `$(seq …)` list, a `for ((…))`, a `while`, and a `for` over anything else
+#      is a loop whose passes this check does not read, refused where it holds a priced call
+#      unless a DECLARED_LOOPS entry writes its seconds; the tree's four `$(seq …)` loops and
+#      its one `for ((…))`, over check-pr-text.sh's `lists`, enter no figure.
+#   6. A BOUND: `retry_fetch <what> <seconds> --`, the helper's signature, 135 calls, the bound
+#      read in that place alone; and a curl's own `--max-time <seconds>`, written once, which
+#      this tree writes outside a Dockerfile as ci-tools.sh's `--max-time "$max_time"`,
+#      declared. A curl writing its bound more than once is refused by name, since curl takes
+#      the last.
+#   7. SHELL TEXT AND HEREDOCS: `bash -c '<text>'`, with `-c` the shell's one option and no loop
+#      or function in the text, one in this tree, dispatch-browser-run-reads.sh's jobs read.
+#      Text in any other form — options before `-c`, `sh -c`, `eval` — is still read for its
+#      sites, and refused by name where it fetches. A heredoc's body is data, as it is for the
+#      consumers this tree feeds one to, `python3`, `cat` and `read`, and its operator is one
+#      the Scanner reads outside quotes and comments (heredocs_of), so an `echo` of
+#      GitHub's multi-line output syntax is no heredoc: until round 37 it was one, and every line
+#      after it was read as data by every rule. A heredoc fed to anything else, to a command
+#      piped into a shell on its line, or unquoted with a command substitution in its body, is
+#      refused by name where its body holds a fetch or names a script that fetches.
 #
-# Rule 8 models no shell shape this tree does not write (dispatch://INFRA-1545, round 37): a
-# shape it does not read is refused by name, or read as a call it charges in full or a place it
-# refuses, and never as nothing where the step may wait for it. Each of these is REFUSED BY NAME
-# where a fetch, or a call of a script that fetches, is written in its reach, with the file, the
-# line, the step or the script, the shape and the form to write instead:
+# Each of these shapes is REFUSED BY NAME where a fetch, or a call of a script that fetches, is
+# in its reach, with the file, the line, the step or the script, the shape and the form to write
+# instead:
 #   - a function defined with the `function` keyword, with a blank before or inside its `()`,
 #     with a body that is not a `{ … }` group, after a reserved word on its line, inside
 #     another function's body, under a name the same text defines again, or on the line another
 #     function's body ends on, and a function that calls itself, directly or through another
 #     (function_bodies, structure). A call in its body would be charged once for any number of
-#     calls of the function; `name() { …; }`, on a line of its own, is the form this check
-#     reads. Its reach runs from its definition to the last line its body can reach, and into
-#     the body of every function a call there calls. download-retry-proof.sh defines two
-#     helpers inside the function calling them, and no fetch is written there, so nothing is
-#     refused;
-#   - two loops on one line, a loop opened after a reserved word on its line (`then for x in 1
-#     2; do`), and a loop whose written count is no pass (structure), each refused where the
-#     text holding it fetches anywhere: a loop is read by the line it opens on and only where
-#     its word opens a command, so the first priced one loop's call by the other's passes, the
-#     second was no loop at all, and the third multiplied a call beside it on its line by no
-#     passes;
-#   - a heredoc whose shell the command in front of its operator does not name as this check
-#     reads one — a shell given `-O`, `+O`, `--rcfile` or `--init-file`, a shell named by a
-#     variable, a command naming a shell among its words, a command piped into a shell on the
-#     operator's line, or an unquoted body holding a command substitution
-#     (unread_shell_heredocs) — whose body this check reads as data the shell may run, refused
-#     for any fetch in it, a bare one included, since no other rule reads that body;
-#   - a library sourced inside a loop, which the third list above holds: charging it took a
-#     model of every path to the library, and the first one undercounted it;
-#   - a `bash -c`, `sh -c` or `eval` whose text holds a loop or a function, whose passes and
-#     calls this check does not count there. A fetch in such a text is otherwise charged once
-#     for each pass of the loops around the command, which until round 37 it was not; one
-#     script of this tree fetches in such a text, dispatch-browser-run-reads.sh's page read,
-#     whose text holds neither a loop nor a function;
+#     calls of the function. Its reach runs from its definition to the last line its body can
+#     reach, and into the body of every function a call there calls. download-retry-proof.sh
+#     defines two helpers inside the function calling them, and no fetch is written there, so
+#     nothing is refused;
+#   - two loops on one line and a loop opened after a reserved word on its line (`then for x in
+#     1 2; do`), each refused where the text holding it fetches anywhere: a loop is read by the
+#     line it opens on and only where its word opens a command;
 #   - a script that reaches itself, running or sourcing a script that runs or sources it again,
 #     refused at the call that leads back where it fetches (leads_back): a path stops at a
 #     script it is already inside, so the run the shell makes on entering it again is charged
@@ -166,9 +179,7 @@
 # or refuses a place where its script fetches, and never charges less than the step waits for:
 # a path in a `[[ … ]]`, in an extglob pattern such as `@(a|b)` or in a `case` pattern, whose
 # `(`, `)`, `|`, `<` and `>` read as a subshell, a pipe and a redirect, so the path is a run, an
-# argument of the word before it, a redirect target or the words of the `case`; and a run after
-# `bash -`, `bash -O <option>`, `bash --rcfile <file>` or `bash --init-file <file>`, whose `-` or
-# value reads as the script, so the path is refused as an argument of `bash`.
+# argument of the word before it, a redirect target or the words of the `case`.
 #
 # The recognised calls are then charged (shell_arithmetic). A RUN is charged once for every
 # time the step runs it: the loops around it, the calls of the function holding it and the
@@ -187,7 +198,7 @@
 # or runs a variable no line of the body sets to a written path — is no occurrence SCRIPT_CALL
 # finds, since the path is no text this check can read: the script is still read as a file of
 # its own, so rules 1 to 6 hold it, but its arithmetic reaches no step's budget. A path that is
-# written, in a variable or in any other place the third list names, is refused instead where
+# written, in a variable or in any other place the first list refuses, is refused instead where
 # its script fetches. And a script outside .github/scripts/ is not read at all, since that one
 # directory is the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
 # packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
@@ -196,20 +207,9 @@
 # dispatch://INFRA-2899's question. Moving one under .github/scripts/ is what brings it back
 # under both rules, and a new file there is read without anyone remembering to list it.
 #
-# A heredoc's body belongs to the command it is fed to, and runs_heredoc reads that command off
-# the line the operator sits on, so the body of a `bash` heredoc is shell the step runs and the
-# calls in it are the step's own, while `cat`, a redirect into a file, `jq` and a `python3`
-# heredoc take their body as data, where a path written in it is a path something prints rather
-# than runs, and a body read as data is blanked before any rule reads the step
-# (without_heredocs). A shell's own options are read by shell_options, so `bash -e`, `bash -`
-# and `sh -eu` each run their body, and a `-c` after `bash -o pipefail` is read as the text it
-# runs. Where the command in front of the operator does not name the shell this check reads, the
-# body is refused by name where it holds a fetch or names a script that fetches, and never read
-# as nothing (unread_shell_heredocs): a shell given `-O`, `+O`, `--rcfile` or `--init-file`; a
-# shell named by a variable, such as `"$SHELL"`; a command naming a shell among its words, such
-# as `ssh host bash` or `/usr/bin/env bash`; a command whose output a pipe on the operator's line
-# hands to a shell, such as a `cat` piped into `bash`; and an unquoted body holding a command
-# substitution, which the step's own shell expands before any consumer reads it.
+# A heredoc's body is blanked before any rule reads the step (without_heredocs), so a path
+# written in it is a path something prints rather than runs, and the Python a `python3` heredoc
+# of a script runs is read by rule 6 alone.
 # The harnesses left out are named at TEST_HARNESS below, with the two network calls they hold
 # today and why a retry at either would destroy what the test measures.
 #
@@ -457,20 +457,19 @@
 #          page read written once in a function that a seven-pass loop calls is seven ladders
 #          and not one. check-pr-text.sh reads like that instance and is not it: its page read
 #          sits in read_list's `while :`, a loop this check cannot count, so the fold stops
-#          there and never reaches the `for ((i = 0; i < ${#lists[@]}; i += 2))` that runs
-#          read_list once per list. The three lists are carried by hand instead, in that
-#          script's DeclaredArithmetic entry below, which writes the 3 x in its own sum.
+#          there and never reaches the `for ((…))` over `lists` that runs read_list once per
+#          list, whose passes this check reads no more than it reads the `while :`'s. The three
+#          lists are carried by hand instead, in that script's DeclaredArithmetic entry below,
+#          which writes the 3 x in its own sum.
 #        * the loop a step wraps around the script it runs. The script's whole arithmetic is
 #          the step's once per pass, as a call written in the `run:` would be.
 #
 #      Two written calls of one function are two, branches or not, as two fetches written in
 #      one `run:` are two: this check reads no branch, and the figure it sums is the one a step
-#      could wait for. The pass count is read where the loop writes it, and only in the three
-#      shapes this check is sure of: a `for x in 1 2 3 4 5 6 7`, whose list is literal words, a
-#      `for x in $(seq 1 7)`, and a `for ((i = 0; i < <bound>; i += <step>))` whose bound is a
-#      number or `${#name[@]}` for an array the same body writes out as words. dequeued.yaml's
-#      timeline read is one `retry_fetch` call of 300 s written inside a seven-pass poll, so
-#      the step waits 2100 s for it and not 300 s. The
+#      could wait for. The pass count is read where the loop writes it, and only in the shape
+#      this tree writes, a `for x in 1 2 3 4 5 6 7`, whose list is literal words (THE FORMS RULE
+#      8 READS, 5). dequeued.yaml's timeline read is one `retry_fetch` call of 300 s written
+#      inside a seven-pass poll, so the step waits 2100 s for it and not 300 s. The
 #      loop's own waits between the passes are added where they are written as a `sleep <n>` of
 #      that loop's body — the poll's six 10 s waits above — and a loop whose wait is computed
 #      rather than written adds none, so the figure there is the attempts alone and the passes
@@ -508,19 +507,15 @@
 #      WHAT IT COUNTS ONCE OR MISCOUNTS, which is the other half of this rule and the half a
 #      reader is owed plainly. Round 37 took off this list every shape it named that priced a
 #      step under its real cost and that this tree does not write, each now refused by name as
-#      HOW RULE 8 FINDS A CALL lists, or read: two loops on one line, a loop opened after a
-#      reserved word, a loop of no pass beside a call, a function that calls itself, and a
-#      `for ((…; i < ${#name[@]}; …))` over an array whose words are not all written out —
-#      `($var)`, `(a{1,2,3})`, `("$@")`, an element assigned later such as `name[2]=c`, a
-#      `mapfile` — which is now a loop whose passes this check cannot read. A call of a function
-#      after a reserved word or a wrapper, as the condition of an `if`, behind `!` or behind an
-#      assignment prefix such as `GH_HOST=x`, or inside a one-line `for x in a b c; do fetch;
-#      done`, is read as the call it is, since this tree writes `if fn`, `! fn` and `elif ! fn`
-#      (dispatch://INFRA-1545, round 37). This list therefore names no shape that prices a step
-#      under its real cost: each is read, refused by name, or refused by name unless a
-#      declaration writes its figure by hand. Three shapes this tree writes are the last kind,
-#      each refused where no declaration covers it, and each declaration's figure is the one the
-#      budget holding it already writes, with the sum it comes from:
+#      THE FORMS RULE 8 READS and the list after it say: two loops on one line, a loop opened
+#      after a reserved word, a function that calls itself, a loop over an array or over
+#      `$(seq …)` and every `for ((…))`, which are loops whose passes this check cannot read, and
+#      a call of a function after any word but `if`, `if !`, `!` and `elif !`, which is no call
+#      it reads (dispatch://INFRA-1545, round 37). This list therefore names no shape that
+#      prices a step under its real cost: each is read, refused by name, or refused by name
+#      unless a declaration writes its figure by hand. Three shapes this tree writes are the
+#      last kind, each refused where no declaration covers it, and each declaration's figure is
+#      the one the budget holding it already writes, with the sum it comes from:
 #
 #        * a call of a function through a variable, such as `"$fn"` or `$fetch`, which is no
 #          call this check reads (variable_calls). Where the text can see a function that
@@ -556,19 +551,16 @@
 #      What is read correctly, though a reader may expect otherwise: a retried call written
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
 #      assignment prefix such as `GH_HOST=x`, and a loop written on its own line inside an
-#      `if`, are each multiplied by their loop. A
-#      `for x in` over any `"${name[@]}"`, a literal array's included, over `$var` or over a
-#      brace expansion, and a `for ((…; i < ${#name[@]}; …))` over an array that `mapfile` fills
-#      or `name+=(…)` extends, are loops whose passes
-#      this check cannot read, and are refused, as the paragraph below that begins "A step
-#      whose budget reaches a loop" says.
+#      `if`, are each multiplied by their loop. A `for` over anything but literal words, an
+#      array's `"${name[@]}"` and a `$(seq 1 7)` included, and every `for ((…))`, are loops whose
+#      passes this check cannot read, and are refused, as the paragraph below that begins "A
+#      step whose budget reaches a loop" says.
 #
 #      The rest goes the other way, and is accepted: each prices a step at or above its real
 #      cost, or refuses a step that is right. A script call and a loop written on one line are
 #      read as the loop holding the call, and so is a command written on the line a one-line
-#      function's body sits on, which is multiplied by that function's calls; a name behind
-#      `retry_fetch … --` or `timeout` is read as a call of the function of that name, which
-#      neither runs; a body defined again charges every call of its name; and each refusal by
+#      function's body sits on, which is multiplied by that function's calls; a body defined
+#      again charges every call of its name; and each refusal by
 #      name above stands wherever a fetch is written in its reach, whatever the shape hides
 #      there, a loop's reach being the whole text holding it.
 #
@@ -870,13 +862,12 @@ CALL_RUN = "run"
 CALL_SOURCED = "sourced"
 CALL_NONE = "non-call"
 CALL_UNREAD = "unread"
-# The commands whose arguments are text a step prints or searches and never runs: a path written
-# as an argument of one of them is a recognised non-call, an `::error` message included, unless
-# that command's output is piped into a shell, which runs the text it prints and is read as any
-# other pipe into a shell is (dispatch://INFRA-1545, round 37).
-NONCALL_COMMANDS = {"echo", "printf", "grep"}
-# The builtins whose arguments are assignments, read as a bare `name=value` is.
-ASSIGN_BUILTINS = {"export", "local", "readonly", "declare", "typeset"}
+# The commands whose arguments are text a step prints or searches and never runs, the two this
+# tree writes a script's path after: a path written as an argument of one of them is a
+# recognised non-call, an `::error` message included, unless that command's output is piped into
+# a shell, which runs the text it prints and is read as any other pipe into a shell is
+# (dispatch://INFRA-1545, round 37).
+NONCALL_COMMANDS = {"echo", "grep"}
 # The canonical inline retry of a Dockerfile RUN, already in the shape the comparison uses: its
 # continuations joined and each run of blank space one space.
 CANONICAL = (
@@ -927,36 +918,25 @@ FUNCTION_WORD = re.compile(r"^[A-Za-z_][\w:.-]*\(\)$")
 # of a function's name, a spelling this check refuses by name rather than reads (Scanner's
 # blank_parens; dispatch://INFRA-1545, round 37).
 FUNCTION_PARENS = re.compile(r"\([ \t]*\)")
-# A heredoc operator and its terminator word.
+# A heredoc operator and its terminator word, read where the Scanner finds a `<<` outside quotes
+# and comments (heredocs_of).
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-# A shell option that takes a value besides `-o` and `+o`, which shell_options does not read: a
-# heredoc fed to a shell given one is refused by name (unread_shell_heredocs).
-UNREAD_SHELL_OPTION = re.compile(r"[-+][A-Za-z]*O|--rcfile|--init-file")
+# The consumers a heredoc of this tree is fed to, each of which takes the body as data: Python's
+# program, a `cat` writing it out and a `read` taking its words. A heredoc fed to anything else
+# is refused by name where its body fetches (unread_heredocs; dispatch://INFRA-1545, round 37).
+HEREDOC_DATA = {"python3", "cat", "read"}
 # A command word that is one variable's value: `$fn`, `${fn}`, `$1`, quoted or not. A call of a
-# function through one, and a heredoc fed to a shell named by one, are refused by name where they
-# can hide a fetch (variable_calls, unread_shell_heredocs; dispatch://INFRA-1545, round 37).
+# function through one is refused by name where it can hide a fetch (variable_calls;
+# dispatch://INFRA-1545, round 37).
 VARIABLE_CALL = re.compile(r"\$\{?(?:[A-Za-z_]\w*|\d)\}?")
 # A word of a `for` list that is itself and nothing else: no expansion, no glob, no quoting. A
-# list of these is a pass count rule 8 can read off the loop (passes_of below).
+# list of these is the one pass count rule 8 reads off a loop (passes_of below).
 LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
-# A `for ((i = 0; i < <bound>; i += <step>))`, the third shape rule 8 reads a pass count off: the
-# counter is set to a number, tested against a bound, and raised by a number or by one. The bound
-# is a number or `${#name[@]}`, the length of an array the body writes out (array_words below).
-ARITHMETIC_FOR = re.compile(
-    r"for\s*\(\(\s*([A-Za-z_]\w*)\s*=\s*(\d+)\s*;"
-    r"\s*\1\s*(<=?)\s*([^;]+?)\s*;"
-    r"\s*(?:\1\s*\+=\s*(\d+)|\1\s*\+\+|\+\+\s*\1)\s*\)\)"
-)
-ARRAY_LENGTH = re.compile(r"\$\{#([A-Za-z_]\w*)\[[@*]\]\}")
-# What an array this check counts the words of may not hold, because each of these makes one
-# written word into a number of words only the run knows.
-UNCOUNTABLE_WORD = re.compile(r"\$\(|`|\[[@*]\]|[*?]")
 # Transparent in command position, taking no argument of their own.
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
-# Transparent, but the command they run is inside the script string behind `-c`. These are also
-# the shells runs_heredoc reads a heredoc body as commands for, since a shell runs what it reads
-# on its standard input.
+# Transparent, but the command they run is inside the script string behind `-c`, which rule 8
+# reads in one form, `bash -c '<text>'` (sites_of_command).
 INTERPRETERS = {"bash", "sh", "dash", "zsh"}
 # Transparent, and the verb is what they run: a package runner resolves a binary the workspace's
 # own install already provides.
@@ -1018,156 +998,86 @@ def problem(path: str, line: int, message: str) -> None:
 # ---------------------------------------------------------------- reading the shell
 
 
-def shell_options(rest: list[str]) -> tuple[int | None, bool, bool]:
-    """The words after a shell's name, read for the script it runs: the index among them of the
-    script argument, None where none is written; whether a `-c` makes the text behind it the
-    script; and whether a `-s` makes standard input the script whatever the words after it. `--`
-    ends the options, `-o` and `+o` take the word after them as their value, every other word
-    starting with `-` or `+` is an option of its own, and the first word that is none of these,
-    a lone `-` included, is the script. call_of reads a script's run with this and runs_heredoc a
-    heredoc's consumer, so the two read one set of options. The other options bash gives a
-    value, `-O`, `+O`, `--rcfile` and `--init-file`, are not modelled (dispatch://INFRA-1545,
-    round 37): their value reads as the script, so a run behind one is refused as an argument of
-    the shell where its script fetches, and a heredoc fed to one is refused by name
-    (unread_shell_heredocs). No step of this tree writes either."""
-    stdin = False
-    position = 0
-    while position < len(rest):
-        word = rest[position]
-        if word == "--":
-            return (position + 1 if position + 1 < len(rest) else None), False, stdin
-        if not word or word[0] not in "-+" or word == "-":
-            return position, False, stdin
-        flags = word[1:] if word[1:2] != "-" else ""
-        if "c" in flags:
-            return None, True, stdin
-        if "s" in flags:
-            stdin = True
-        position += 2 if flags[-1:] == "o" else 1
-    return None, False, stdin
-
-
-def runs_heredoc(before: str) -> bool:
-    """Whether the command a heredoc is fed to runs its body as shell. `before` is the line in
-    front of the operator, where that command word sits: the last simple command of it, read with
-    the Scanner below and stripped of the wrappers reduce_words strips, so a `sudo bash`, a
-    `timeout 60 /bin/bash` and a bare `sh` are one answer. A shell of INTERPRETERS runs what it
-    reads on its standard input, so a body of one is the commands the step itself runs; every
-    other consumer — `cat`, a redirect into a file, `jq`, a `read`, the `python3 <<'PY'` rule 6
-    reads as Python — takes its body as data.
-
-    Two shapes of an interpreter take it as data as well, and both are the shell's own rule: a
-    `-c <script>` runs the word behind the option and leaves the body on that script's standard
-    input, and a script file argument does the same. `-s` is what overrides the second, since
-    `bash -s a b` reads the script from standard input and hands the words after it to it as
-    arguments, and a `-` written for that argument is standard input spelled out. The options
-    before the script are shell_options's reading."""
-    commands = Scanner(1).scan(before)
-    words = reduce_words(commands[-1].words)[0] if commands else []
-    if not words or PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] not in INTERPRETERS:
-        return False
-    script, text, stdin = shell_options(words[1:])
-    if text:
-        return False
-    return stdin or script is None or words[1 + script] == "-"
+def heredocs_of(text: str) -> list[tuple[int, re.Match, list[str]]]:
+    """Each heredoc of a shell body, as the line of its operator, counted from 0, the operator
+    with its terminator word, matched on that line, and the lines of its body. An operator is a
+    `<<` the Scanner reads outside quotes and comments, fed the text a line at a time so that a
+    string spanning lines is read as one, and a body's own lines are not read for one. Until
+    round 37 every `<<` on a line was an operator, so a `<<` inside a quoted word, such as the
+    `echo "files<<FILES"` a step writes to $GITHUB_OUTPUT, opened a body that no line closes, and
+    every line after it was read as data by every rule (dispatch://INFRA-1545, round 37)."""
+    found = []
+    lines = text.split("\n")
+    scanner = Scanner(1)
+    index = 0
+    while index < len(lines):
+        number = index
+        index += 1
+        scanner.operators = []
+        scanner.scan(lines[number] + "\n")
+        for start in scanner.operators:
+            match = HEREDOC.match(lines[number], start)
+            if match is None:
+                continue
+            body = []
+            while index < len(lines) and lines[index].strip() != match.group(2):
+                body.append(lines[index])
+                index += 1
+            index += 1
+            found.append((number, match, body))
+    return found
 
 
 def without_heredocs(text: str) -> tuple[str, list[tuple[int, str]]]:
-    """The text with every heredoc body its consumer reads as data blanked, and those bodies as
-    (line, text) pairs. A body belongs to the command it is fed to: a shell runs what it reads on
-    its standard input, so such a body stays in the text as the commands it is and the shell rules
-    read it where it is written; every other consumer takes it as data, so the shell rules never
-    read one, and the Python a `python3 <<'PY'` runs is read by rule 6 instead, off the bodies
-    this returns. A heredoc inside a body a shell runs is read the same way, which is what the
-    recursion below is for: a `cat <<'INNER'` written inside a `bash <<'OUTER'` is still data."""
-    out: list[str] = []
+    """The text with every heredoc body blanked, and those bodies as (line, text) pairs, the
+    line counted from 1. A body is data to every rule reading the shell, which it is for the
+    consumers this tree feeds one to, HEREDOC_DATA: the Python a `python3 <<'PY'` runs is read by
+    rule 6 instead, off the bodies this returns, and a heredoc fed to anything else is refused by
+    name where its body fetches (unread_heredocs). Until round 37 a body fed to a shell was read
+    as the step's own commands, with a model of the shell's options in front of the operator,
+    and no step of this tree feeds one to a shell (dispatch://INFRA-1545, round 37)."""
+    lines = text.split("\n")
     bodies: list[tuple[int, str]] = []
-    lines = text.split("\n")
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        out.append(line)
-        index += 1
-        for match in HEREDOC.finditer(line):
-            terminator = match.group(2)
-            first = index + 1
-            body: list[str] = []
-            while index < len(lines) and lines[index].strip() != terminator:
-                body.append(lines[index])
-                index += 1
-            if body and runs_heredoc(line[:match.start()]):
-                inner, nested = without_heredocs("\n".join(body))
-                out.extend(inner.split("\n"))
-                bodies.extend((first + number - 1, body_line) for number, body_line in nested)
-            else:
-                out.extend("" for _ in body)
-                bodies.extend((first + offset, body_line)
-                              for offset, body_line in enumerate(body))
-            if index < len(lines):
-                out.append(lines[index])
-                index += 1
-    return "\n".join(out), bodies
+    for number, _match, body in heredocs_of(text):
+        for offset, body_line in enumerate(body):
+            lines[number + 1 + offset] = ""
+            bodies.append((number + 2 + offset, body_line))
+    return "\n".join(lines), bodies
 
 
-def unread_shell_heredocs(text: str) -> list[tuple[int, str, str]]:
-    """Each heredoc of this body whose body a shell may run while this check reads it as data,
-    as the line of its operator, counted from 0, its body, and what its refusal says. Such a
-    heredoc is refused by name where its body holds a fetch or names a script that fetches
-    (dispatch://INFRA-1545, round 37), rather than read with a model of its consumer, since no
-    step of this tree writes one. Five consumers: a shell given `-O`, `+O`, `--rcfile` or
-    `--init-file`, whose value shell_options reads as the shell's script; a shell named by a
-    variable, `"$SHELL"` or `$sh`, written in front of the operator; a command that names a
-    shell among its words, such as `ssh host bash` or `/usr/bin/env bash`; a command whose
-    output a pipe on the operator's line hands to a shell, a `cat` piped into `bash`; and any
-    consumer of an unquoted body holding a command substitution, which the step's own shell
-    expands before the consumer reads it. A body runs_heredoc reads as shell is the step's own
-    commands, and is not one of these. Every line of the text is read for the first, a line
-    inside another heredoc included; the other four are read on the lines a shell runs, outside
-    the bodies without_heredocs blanks as data, since a line of a data body runs nothing."""
-    found: list[tuple[int, str, str]] = []
-    lines = text.split("\n")
-    run = without_heredocs(text)[0].split("\n")
-    for number, line in enumerate(lines):
-        for match in HEREDOC.finditer(line):
-            before = line[:match.start()]
-            commands = Scanner(1).scan(before)
-            words = reduce_words(commands[-1].words)[0] if commands else []
-            names = [PROGRAM.sub("", word).rsplit("/", 1)[-1] for word in words]
-            body = []
-            for later in lines[number + 1:]:
-                if later.strip() == match.group(2):
-                    break
-                body.append(later)
-            sentence = None
-            if (names and names[0] in INTERPRETERS
-                    and any(UNREAD_SHELL_OPTION.fullmatch(word) for word in words[1:])):
-                sentence = HEREDOC_REFUSAL
-            elif runs_heredoc(before) or run[number] != line:
-                continue
-            elif words and VARIABLE_CALL.fullmatch(words[0]):
-                sentence = HEREDOC_UNREAD.format(
-                    consumer=f"a shell named by a variable, `{words[0]}`",
-                    cure="Name the shell itself, `bash`, as the command the operator follows")
-            elif any(name in INTERPRETERS for name in names[1:]):
-                sentence = HEREDOC_UNREAD.format(
-                    consumer=f"`{words[0]}`, which names a shell among its words",
-                    cure="Feed the body to the shell itself, `bash`, as the command the "
-                         "operator follows")
-            elif re.search(r"\|&?\s*(?:\S*/)?(?:bash|sh|dash|zsh)\b", line[match.end():]):
-                sentence = HEREDOC_UNREAD.format(
-                    consumer="a command whose output a pipe on the operator's line hands to a "
-                             "shell",
-                    cure="Feed the body to the shell itself, `bash`, as the command the "
-                         "operator follows, rather than a printed copy of it")
-            elif not match.group(1) and re.search(r"\$\(|`", "\n".join(body)):
-                sentence = HEREDOC_UNREAD.format(
-                    consumer="a command that reads it as data, unquoted and holding a command "
-                             "substitution, which the step's own shell runs before that command "
-                             "reads the body",
-                    cure="Quote the terminator word, and run what the substitution ran as a "
-                         "command of its own before the heredoc")
-            if sentence is not None:
-                found.append((number, "\n".join(body), sentence))
+def unread_heredocs(text: str) -> list[tuple[int, str, str]]:
+    """Each heredoc of this body that something may run while this check reads its body as
+    data, as the line of its operator, counted from 0, its body, and what its refusal says. Such
+    a heredoc is refused by name where its body holds a fetch or names a script that fetches
+    (dispatch://INFRA-1545, round 37). Three shapes: a consumer that is not one of HEREDOC_DATA,
+    read off the operator's line as the last command in front of it once the wrappers
+    reduce_words strips are gone, a shell, `"$SHELL"` or `ssh host bash` among them; a command
+    whose output a pipe on the operator's line hands to a shell, a `cat` piped into `bash`; and
+    an unquoted body holding a command substitution, which the step's own shell runs before any
+    consumer reads the body."""
+    found = []
+    for number, match, body in heredocs_of(text):
+        commands = Scanner(1).scan(match.string[:match.start()])
+        words = reduce_words(commands[-1].words)[0] if commands else []
+        if not words or PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] not in HEREDOC_DATA:
+            sentence = HEREDOC_UNREAD.format(
+                consumer=f"`{words[0]}`" if words else "no command",
+                cure="Write the body's commands in the step itself")
+        elif re.search(r"\|&?\s*(?:\S*/)?(?:bash|sh|dash|zsh)\b", match.string[match.end():]):
+            sentence = HEREDOC_UNREAD.format(
+                consumer=f"`{words[0]}`, whose output a pipe on the operator's line hands to a "
+                         "shell",
+                cure="Write the body's commands in the step itself, rather than a printed copy "
+                     "of them")
+        elif not match.group(1) and re.search(r"\$\(|`", "\n".join(body)):
+            sentence = HEREDOC_UNREAD.format(
+                consumer=f"`{words[0]}` unquoted, and the body holds a command substitution, "
+                         "which the step's own shell runs before that command reads the body",
+                cure="Quote the terminator word, and run each command the substitution ran on "
+                     "its own before the heredoc")
+        else:
+            continue
+        found.append((number, "\n".join(body), sentence))
     return found
 
 
@@ -1215,7 +1125,10 @@ class Scanner:
     each command's line and offset, so a problem names where to edit. `blank_parens` holds the
     line of each empty `()` with blanks before or inside it, `name ()` or `name( )`, which bash
     reads as a function's name and this check refuses by name rather than reads
-    (dispatch://INFRA-1545, round 37)."""
+    (dispatch://INFRA-1545, round 37). `operators` holds the offset of each `<<` it reads outside
+    quotes and comments, which is a heredoc operator, and `quote` is the quote still open when a
+    scan ends, so a body fed to it one line at a time is read as one text (heredocs_of;
+    dispatch://INFRA-1545, round 37)."""
 
     def __init__(self, first_line: int) -> None:
         self.commands: list[Command] = []
@@ -1233,6 +1146,8 @@ class Scanner:
         # The substitutions and subshells open here, innermost last.
         self.open_subs: list[tuple] = []
         self.blank_parens: list[int] = []
+        self.operators: list[int] = []
+        self.quote: str | None = None
 
     def add(self, char: str, offset: int) -> None:
         if not self.started:
@@ -1279,7 +1194,7 @@ class Scanner:
         self.end_command()
 
     def scan(self, text: str) -> list[Command]:
-        quote = None
+        quote = self.quote
         open_subs = self.open_subs
         i = 0
         while i < len(text):
@@ -1349,6 +1264,8 @@ class Scanner:
                 if open_subs and open_subs[-1][0] == "paren":
                     quote = open_subs.pop()[1]
             elif char in "<>":
+                if text[i:i + 2] == "<<" and text[i + 2:i + 3] != "<":
+                    self.operators.append(i)
                 self.end_word()
                 self.redirect_target = True
                 while text[i + 1:i + 2] in ("<", ">", "&", "|"):
@@ -1366,6 +1283,7 @@ class Scanner:
                 self.add(char, i)
             i += 1
         self.end_command()
+        self.quote = quote
         return self.commands
 
 
@@ -1577,11 +1495,16 @@ class Loops:
         # blank_parens (dispatch://INFRA-1545, round 37).
         self.odd_functions: list[tuple[int, int | None, str]] = []
         # The loops this check refuses by name rather than reads, as (line, shape), each shape
-        # one of LOOP_SHARED, LOOP_AFTER_WORD and LOOP_EMPTY (dispatch://INFRA-1545, round 37).
+        # one of LOOP_SHARED and LOOP_AFTER_WORD (dispatch://INFRA-1545, round 37).
         self.odd_loops: list[tuple[int, tuple[str, str, str]]] = []
-        # The lines of each `bash -c`, `sh -c` or `eval` whose text holds a loop or a function,
-        # refused by name where the text fetches (dispatch://INFRA-1545, round 37).
-        self.shell_texts: list[int] = []
+        # Each `bash -c`, `sh -c` or `eval` text this check refuses by name where it fetches, as
+        # (line, the words up to the text, why): one written in another form than `bash -c
+        # '<text>'`, or holding a loop or a function (dispatch://INFRA-1545, round 37).
+        self.shell_texts: list[tuple[int, str, str]] = []
+        # Each call of a function this body defines written after a word CALL_PREFIXES does not
+        # hold, as (line, name, the words before the name), refused by name where the function
+        # fetches (dispatch://INFRA-1545, round 37).
+        self.odd_calls: list[tuple[int, str, list[str]]] = []
         # The commands of the body and the text they were read off, which the readings of a
         # call through a variable and of a library's functions need (commands_of;
         # dispatch://INFRA-1545, round 37).
@@ -1603,86 +1526,18 @@ class Loops:
         return found
 
 
-def array_words(text: str, name: str) -> int | None:
-    """The words an array this body writes out holds — `lists=(a b c)` is three. None where the
-    body writes that name anywhere else than one `name=(…)` — a `name[2]=c`, a `mapfile`, a
-    `readarray` or a `read -a` of it included — where the parentheses do not close, or where one
-    written word can become more than one at run time: a `$(…)`, a backtick, another array's
-    `[@]`, a `"$@"`, a glob, and an expansion or a brace written outside quotes, `($var)` and
-    `(a{1,2,3})`, which until round 37 were one word each (dispatch://INFRA-1545, round 37). The
-    count is read rather than the words, so a `"$x/y"` is the one word it is."""
-    opens = list(re.finditer(rf"(?m)^\s*{re.escape(name)}\+?=\(", text))
-    if len(opens) != 1:
-        return None
-    index = opens[0].end()
-    depth = 0
-    quote: str | None = None
-    while index < len(text):
-        char = text[index]
-        if quote:
-            if char == quote:
-                quote = None
-        elif char in "'\"":
-            quote = char
-        elif char == "(":
-            depth += 1
-        elif char == ")":
-            if depth == 0:
-                break
-            depth -= 1
-        index += 1
-    else:
-        return None
-    inner = text[opens[0].end():index]
-    unquoted = re.sub(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", "", inner)
-    written = re.escape(name)
-    if (UNCOUNTABLE_WORD.search(inner) or "$@" in inner or re.search(r"[${]", unquoted)
-            or re.search(rf"(?<![\w$#{{]){written}\[[^]\n]*\]\+?=", text)
-            or re.search(rf"\b(?:mapfile|readarray)\b[^\n;|&]*\s{written}\b", text)
-            or re.search(rf"\bread\b[^\n;|&]*\s-a\s*{written}\b", text)):
-        return None
-    return sum(len(command.words) for command in Scanner(1).scan(inner))
-
-
 def passes_of(text: str, command: Command) -> int | None:
-    """The passes a loop makes, where the loop writes a count this check is sure of: a `for x in
-    1 2 3 4 5 6 7`, whose list is literal words; a `for x in $(seq 1 7)`, whose list is a count
-    of them; and a `for ((i = 0; i < <bound>; i += <step>))`, whose bound is a number or the
-    length of an array this body writes out. Everything else — a `while`, an `until`, a `for`
-    over a variable or over the lines a command printed — writes no count, and reads as None
-    rather than as one pass."""
-    if arithmetic := ARITHMETIC_FOR.match(text[command.offset:]):
-        first = int(arithmetic.group(2))
-        written = arithmetic.group(4).strip()
-        step = int(arithmetic.group(5)) if arithmetic.group(5) else 1
-        if step <= 0:
-            return None
-        if re.fullmatch(r"\d+", written):
-            bound = int(written)
-        elif length := ARRAY_LENGTH.fullmatch(written):
-            counted = array_words(text, length.group(1))
-            if counted is None:
-                return None
-            bound = counted
-        else:
-            return None
-        if arithmetic.group(3) == "<=":
-            bound += 1
-        return max(0, -(-(bound - first) // step))
+    """The passes a loop makes, where the loop writes them as this tree does: a `for x in 1 2 3
+    4 5 6 7`, whose list is literal words. Everything else — a `while`, an `until`, a `for` over
+    a variable, over the lines a command printed or over `$(seq 1 7)`, and a `for ((…))` —
+    writes no count this check reads, and reads as None rather than as one pass, which is a loop
+    refused unless a declaration writes its seconds. Until round 37 a `$(seq …)` list and a
+    `for ((i = 0; i < <bound>; i += <step>))` over a number or an array's `${#name[@]}` were
+    counted too, and the count of an array's words read `read -ra name` and `("${@}")` as one
+    word each; no such loop of this tree holds a call whose figure its passes enter
+    (dispatch://INFRA-1545, round 37)."""
     match = re.match(r"for\s+[A-Za-z_]\w*\s+in\s+([^\n;]*)", text[command.offset:])
-    if not match:
-        return None
-    listed = match.group(1).strip()
-    if seq := re.fullmatch(r"\$\(\s*seq\s+([\d\s]+)\)", listed):
-        # `seq <last>` counts from 1, and `seq <first> <last>` from <first>. A step argument, or
-        # a bound that is not a number, is a shape this check does not read.
-        numbers = [int(number) for number in seq.group(1).split()]
-        if len(numbers) == 1:
-            return numbers[0]
-        if len(numbers) == 2:
-            return numbers[1] - numbers[0] + 1 if numbers[1] >= numbers[0] else 0
-        return None
-    words = listed.split()
+    words = match.group(1).split() if match else []
     if words and all(LITERAL_WORD.fullmatch(word) for word in words):
         return len(words)
     return None
@@ -1710,7 +1565,8 @@ FUNCTION_CALLS_ITSELF = "that calls itself, directly or through another function
 # it asks the author to write, which is the form below unless FUNCTION_CURES names another.
 FUNCTION_REFUSAL = (
     "defines a function {shape}, a form this check does not read as a function, and a fetch, or "
-    "a call of a script that fetches, is written after it. A call in a function's body runs once "
+    "a call of a script that fetches, is in its reach: written after it, or in the body of a "
+    "function that a call written after it calls. A call in a function's body runs once "
     "for every call of the function, and this check counts those calls only for a function "
     "written `name() {{ …; }}`: its name with `()` against it, then a `{{ … }}` group, on the "
     "name's line or the next, as a command of its own outside any other function. Read as "
@@ -1724,6 +1580,18 @@ FUNCTION_CURES = {
                             "`for pass in 1 2 3; do`, around a call of a function that calls "
                             "no function holding it"),
 }
+# The words a call of a function may follow on its command, which are the ones this tree writes
+# (dispatch://INFRA-1545, round 37): none, `if`, `if !`, `!` and `elif !`. A call after any other
+# word — `then f` and `do f` on one line, an assignment prefix, `timeout`, `command` — is read as
+# no call and refused by name where the function fetches, since its passes or its count were what
+# a reading of it could miss.
+CALL_PREFIXES = {(), ("if",), ("if", "!"), ("!",), ("elif", "!")}
+CALL_REFUSAL = (
+    "calls `{name}` after `{prefix}`, a form this check does not read as a call of a function, "
+    "and `{name}` fetches. This check counts a call where the function's name opens its command "
+    "or follows `if`, `if !`, `!` or `elif !`, the forms this tree writes, so the fetches this "
+    "call runs are charged as though it were not made. Write the call as a command of its own, "
+    "on a line of its own or after one of those words")
 # The loops this check refuses by name rather than reads, none written in this tree: a loop is
 # read by the line it opens on and only where its word opens a command, so each of these hides
 # passes a call makes (dispatch://INFRA-1545, round 37). Each is (what the refusal says it
@@ -1737,37 +1605,26 @@ LOOP_AFTER_WORD = ("a loop after a reserved word on its line, such as `then for 
                    "its passes",
                    "Open the loop on a line of its own, `then` on one line and `for x in 1 2; "
                    "do` on the next")
-LOOP_EMPTY = ("a loop whose written count is no pass",
-              "Every command written on its lines, a call beside the loop included, is "
-              "multiplied by those no passes and charged nothing",
-              "Delete the loop, which runs nothing, or write it on lines that hold nothing else")
 LOOP_REFUSAL = ("writes {shape}, and a fetch, or a call of a script that fetches, is written in "
                 "the same text. This check reads a loop by the line it opens on, and finds one "
                 "only where its word opens a command. {why}. {cure}")
-# What the refusal of a heredoc unread_shell_heredocs finds says after naming the step or script.
-HEREDOC_REFUSAL = (
-    "feeds a heredoc to a shell given `-O`, `+O`, `--rcfile` or `--init-file`, and the body holds "
-    "a fetch or names a script that fetches. This check does not read those options: it reads "
-    "the option's value as the shell's script and the body as data that script reads, so what "
-    "the shell runs of the body is charged nothing. Write the option in the body instead, `shopt "
-    "-s <name>` for `-O <name>` and `shopt -u <name>` for `+O <name>`, and feed the body to the "
-    "shell with no such option, or move the body into a script under .github/scripts/ and run "
-    "that")
-# What the refusal of a heredoc whose shell this check cannot name says: the consumer, and the form
-# to write instead (unread_shell_heredocs; dispatch://INFRA-1545, round 37).
+# What the refusal of a heredoc unread_heredocs finds says after naming the step or the script:
+# the consumer, and the form to write instead (dispatch://INFRA-1545, round 37).
 HEREDOC_UNREAD = (
     "feeds a heredoc to {consumer}, and the body holds a fetch or names a script that fetches. "
-    "This check reads a heredoc's body as the shell's commands only where the command the "
-    "operator follows names the shell, so it reads this body as data, and what runs of it is "
-    "charged nothing. {cure}, or move the body into a script under .github/scripts/ and run "
-    "that")
-# What the refusal of a `bash -c`, `sh -c` or `eval` whose text holds a loop or a function says.
+    "This check reads every heredoc's body as data, which it is for `python3`, `cat` and `read` "
+    "with nothing piped into a shell, the consumers this tree writes, so what runs of this one is "
+    "charged nothing. {cure}, or move them into a script under .github/scripts/ and run that")
+# What the refusal of shell text written in a form other than `bash -c '<text>'`, or holding a
+# loop or a function, says after naming the step or the script (dispatch://INFRA-1545, round 37).
 SHELL_TEXT_REFUSAL = (
-    "runs `bash -c`, `sh -c` or `eval` text that holds a loop or a function, and a fetch. This "
-    "check reads the commands of such text one by one: it counts no pass of a loop and no call "
-    "of a function written there, so a fetch in one is charged once whatever the passes or the "
-    "calls. Write the loop or the function in the step itself, or in a script under "
-    ".github/scripts/ that the step runs, where this check reads it")
+    "runs `{form}` text, {why}, and a fetch is written in it. This check reads shell text in one "
+    "form, `bash -c '<text>'`, with `-c` the shell's one option and no loop and no function in "
+    "the text, which is the form this tree writes: it charges a fetch there once for each time "
+    "the command runs, and counts no option's effect, no pass of a loop and no call of a "
+    "function written there. Write `bash -c '<text>'`, setting any option inside the text "
+    "(`set -o pipefail`, `shopt -s <name>`), and write a loop or a function in the step itself "
+    "or in a script under .github/scripts/ that the step runs, where this check reads it")
 
 
 def function_bodies(commands: list[Command]) -> tuple[list[str | None], dict[str, int],
@@ -1853,12 +1710,13 @@ def structure(commands: list[Command], text: str) -> Loops:
     loop's extent, passes and own wait between two passes, the loop each function holds, and
     where each function this body defines is written and called — function_bodies's reading of
     which commands a function's body holds, with the definitions it does not read. A call is a
-    command whose first word, once the wrappers reduce_words strips are gone, is a function's
-    name, outside that function's own body, wherever its line is: `if fetch`, `! fetch`,
-    `do fetch` and `GH_HOST=x fetch` each call `fetch`, which until round 37 was a call only as
-    its command's first word (dispatch://INFRA-1545, round 37). The loops and the functions it
-    refuses by name rather than reads are LOOP_SHARED, LOOP_AFTER_WORD, LOOP_EMPTY and
-    FUNCTION_CALLS_ITSELF."""
+    command whose first word, once the words CALL_PREFIXES lists are gone, is a function's name,
+    outside that function's own body: `fetch`, `if fetch`, `if ! fetch`, `! fetch` and
+    `elif ! fetch` each call `fetch`, the five forms this tree writes. A call after any other
+    word, a `then` or a `do` on its line, an assignment prefix or a wrapper, is no call here
+    and is refused by name where the function fetches (odd_calls; dispatch://INFRA-1545, round
+    37). The loops and the functions it refuses by name rather than reads are LOOP_SHARED,
+    LOOP_AFTER_WORD and FUNCTION_CALLS_ITSELF."""
     loops: list[int] = []
     last = 0
     read = Loops()
@@ -1891,8 +1749,6 @@ def structure(commands: list[Command], text: str) -> Loops:
                 read.odd_loops.append((command.line, LOOP_SHARED))
             loops.append(command.line)
             read.passes[command.line] = passes_of(text, command)
-            if read.passes[command.line] == 0:
-                read.odd_loops.append((command.line, LOOP_EMPTY))
     # A loop or a function whose closing word this body never writes runs to the end of it.
     for line in loops:
         read.extent[line] = last
@@ -1907,6 +1763,10 @@ def structure(commands: list[Command], text: str) -> Loops:
         reduced = reduce_words(command.words)[0]
         name = reduced[0] if reduced else ""
         if name not in defined or index == defined[name]:
+            continue
+        if tuple(command.words[:len(command.words) - len(reduced)]) not in CALL_PREFIXES:
+            read.odd_calls.append((command.line, name,
+                                   command.words[:len(command.words) - len(reduced)]))
             continue
         if holder is not None:
             calls_from.setdefault(holder, set()).add(name)
@@ -1960,20 +1820,17 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | N
                     bound = int(match.group(1)) * SUFFIX[match.group(2)]
             continue
         if first == "retry_fetch":
+            # `retry_fetch <what> <bound> --`, the helper's own signature and the one form this
+            # tree writes: the bound is the second word, and a call in any other form stops in
+            # the helper with no attempt made, so it bounds none here. Until round 37 the bound
+            # was the first count of seconds among the three words, so `retry_fetch 5 300 -- …`
+            # read 5 s an attempt where the helper allows 300 s (dispatch://INFRA-1545, round 37).
             retry = "retry_fetch"
-            words.pop(0)
-            # `<what> <bound> --`: the bound is the one of those words that is a count of
-            # seconds, and a call written without one bounds no attempt.
-            for _ in range(3):
-                if not words:
-                    break
-                word = words.pop(0)
-                if re.fullmatch(r"[1-9]\d*", word):
-                    bounded = True
-                    if bound is None:
-                        bound = int(word)
-                if word == "--":
-                    break
+            if len(words) > 3 and words[3] == "--" and re.fullmatch(r"[1-9]\d*", words[2]):
+                bounded = True
+                if bound is None:
+                    bound = int(words[2])
+            del words[:words.index("--", 0, 4) + 1 if "--" in words[:4] else 1]
             continue
         if first == "retry" and len(words) > 2 and re.fullmatch(r"\d+", words[1]):
             retry = "retry"
@@ -2097,13 +1954,32 @@ def verb_in(words: list[str]) -> tuple[str, list[str]] | None:
     return None
 
 
+def curl_bounds(words: list[str]) -> list[str | None]:
+    """Each value a curl writes for its per-attempt bound, in the order written and in each
+    spelling curl takes, `--max-time <s>`, `--max-time=<s>` and `-m <s>`, None for one with no
+    word after it. curl takes the last; this tree writes one, as `--max-time <s>`, and a curl
+    writing more than one is refused by name, since rule 8 read the first until round 37
+    (dispatch://INFRA-1545, round 37)."""
+    found: list[str | None] = []
+    for index, word in enumerate(words):
+        if word.startswith("--max-time="):
+            found.append(word.partition("=")[2])
+        elif word in ("--max-time", "-m"):
+            found.append(words[index + 1] if index + 1 < len(words) else None)
+    return found
+
+
 def curl_options(words: list[str]) -> tuple[int | None, bool, bool, bool]:
     """What a curl carries: its `--retry` count, whether it passes `--retry-all-errors`, whether
     it bounds each attempt with `--max-time`, and whether a persistent error fails it (`--fail`,
-    the `f` of a short cluster, or a read of the status it wrote out)."""
+    the `f` of a short cluster, or a read of the status it wrote out). The bound is the last one
+    curl_bounds reads, as curl takes it, and a `--max-time 0` sets no limit, as `timeout 0`
+    does, nor does a `--max-time` with no value, on which curl stops with an error before any
+    attempt (dispatch://INFRA-1545, round 37)."""
     retries = None
     all_errors = False
-    bounded = False
+    bounds = curl_bounds(words)
+    bounded = bool(bounds) and bounds[-1] is not None and not ZERO_SECONDS.fullmatch(bounds[-1])
     fails = "%{http_code}" in " ".join(words)
     index = 1
     while index < len(words):
@@ -2118,13 +1994,6 @@ def curl_options(words: list[str]) -> tuple[int | None, bool, bool, bool]:
                 retries = int(value)
         elif word == "--retry-all-errors":
             all_errors = True
-        elif word in ("--max-time", "-m"):
-            # `--max-time 0` sets no limit, as `timeout 0` does, so it bounds nothing; until
-            # round 37 it read as a bound, and the refusal said the bound was written as a
-            # variable (dispatch://INFRA-1545, round 37).
-            if value is None and index + 1 < len(words):
-                value = words[index + 1]
-            bounded = value is None or not ZERO_SECONDS.fullmatch(value)
         elif word in ("--fail", "--fail-with-body", "--fail-early"):
             fails = True
         elif re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", word):
@@ -2134,17 +2003,12 @@ def curl_options(words: list[str]) -> tuple[int | None, bool, bool, bool]:
 
 
 def curl_bound(words: list[str]) -> int | None:
-    """The seconds a curl gives each of its own attempts, its `--max-time`, where that option
-    carries a number: rule 8's `<bound>` for a curl that makes the attempts itself."""
-    for index, word in enumerate(words):
-        value = None
-        if word.startswith("--max-time="):
-            value = word.partition("=")[2]
-        elif word in ("--max-time", "-m") and index + 1 < len(words):
-            value = words[index + 1]
-        if value and re.fullmatch(r"\d+", value) and int(value) > 0:
-            return int(value)
-    return None
+    """The seconds a curl gives each of its own attempts, its `--max-time`, where the first
+    value it writes for it is a number above 0: rule 8's `<bound>` for a curl that makes the
+    attempts itself. A curl writing more than one is refused by name (curl_bounds)."""
+    bounds = curl_bounds(words)
+    first = bounds[0] if bounds else None
+    return int(first) if first and re.fullmatch(r"\d+", first) and int(first) > 0 else None
 
 
 def curl_waits(words: list[str]) -> tuple[int | None, int | None, bool]:
@@ -2493,9 +2357,13 @@ def call_of(commands: list[Command], in_function: list[bool],
             redirects: list[tuple[int, int]], pos: int, name: str) -> tuple[str, str]:
     """What the occurrence of `/<name>` at character `pos` of the body is, as (kind, form): a run
     or a source, the two recognised calls; a recognised non-call; or an occurrence this check
-    does not read, with `form` naming the place it is written in. The places are the closed
-    lists the header's rule 8 reading writes out (dispatch://INFRA-1545, round 37). A comment
-    never reaches here: occurrences_of leaves out what CallScanner read as one."""
+    does not read, with `form` naming the place it is written in. The recognised places are the
+    ones this tree writes, and the header's rule 8 reading lists them (dispatch://INFRA-1545,
+    round 37): a RUN, the path as the command word with nothing before it but assignment
+    prefixes, at top level or as the whole command of a `$( … )`; a SOURCE, `. <path>` or
+    `source <path>` with nothing before it, at top level; and a non-call, an argument of `echo`
+    or `grep` whose output no shell runs. A comment never reaches here: occurrences_of leaves
+    out what CallScanner read as one."""
     found = next(((index, word) for index, command in enumerate(commands)
                   for word, span in enumerate(command.spans)
                   if span and span[0] <= pos <= span[1]), None)
@@ -2533,31 +2401,24 @@ def call_of(commands: list[Command], in_function: list[bool],
     if argument == 0:
         if not ends:
             return CALL_UNREAD, "a command word that holds more than the script's path"
-        kind = CALL_RUN
-    elif head in INTERPRETERS:
-        # `bash [options] <path>`: the first word that is no option, and no option's value, is
-        # the script the shell runs, as shell_options reads them. A `-c` makes the text behind it
-        # the script instead.
-        first, text, _stdin = shell_options(reduced[1:])
-        if text:
-            return CALL_UNREAD, f"`{head} -c` text"
-        if first is None or first + 1 != argument or not ends:
-            return CALL_UNREAD, f"an argument of `{head}`"
-        kind = CALL_RUN
-    elif head in (".", "source"):
-        if argument != 1 or not ends:
-            return CALL_UNREAD, f"an argument of `{head}`"
-        kind = CALL_SOURCED
-    elif head == "eval":
-        return CALL_UNREAD, "`eval`"
-    elif head in ASSIGN_BUILTINS and ASSIGNMENT.match(words[at]):
-        return CALL_UNREAD, "a variable assignment"
+        kind, places = CALL_RUN, ((), ("dollar",))
+    elif head in (".", "source") and argument == 1 and ends:
+        kind, places = CALL_SOURCED, ((),)
+    elif into_shell:
+        return CALL_UNREAD, "a pipe into a shell"
     else:
-        if into_shell:
-            return CALL_UNREAD, "a pipe into a shell"
         return CALL_UNREAD, f"an argument of `{head}`"
-    if "proc" in command.context:
-        return CALL_UNREAD, "a process substitution"
+    behind = next((word for word in words[:wrappers]
+                   if kind == CALL_SOURCED or not ASSIGNMENT.match(word)), None)
+    if behind is not None:
+        return CALL_UNREAD, f"a command behind `{behind}`"
+    if command.context not in places:
+        context = command.context
+        return CALL_UNREAD, ("a process substitution" if "proc" in context
+                             else "a `( … )` subshell" if "paren" in context
+                             else "a backtick substitution" if "tick" in context
+                             else "a `$( … )`" if context == ("dollar",)
+                             else "a `$( … )` inside another")
     if in_function[index]:
         return CALL_UNREAD, "a function body"
     return kind, ""
@@ -2594,15 +2455,14 @@ def occurrences_of(text: str, first_line: int, loops: Loops) -> list[Occurrence]
     loop and again after it: `for p in 1 2 3; do . <lib>; sleep 60; done` and then `. <lib>`, the
     lib at 1050 s, waits 3270 s and was charged 3150 s.
 
-    A heredoc body a shell runs is read here with the rest of the text, and one its consumer
-    takes as data is left out with the comments, which is the reading without_heredocs makes:
-    a `bash <<EOF` body is the step's own commands, so a script it calls is a script the step
-    waits for, and the paths a `cat`, a `jq` or a `python3 <<'PY'` body spells are paths
-    something prints rather than runs — check-ci-images.sh's `MIRROR_SCRIPT`, which names the
-    script a reader is told to run, and this file's own EXEMPTIONS and DECLARED_LOOPS, which
-    name the files their entries cover. Counting those as calls gave the lint step that runs
-    this check 15000 s of other scripts' arithmetic, and the ci-images job's two check steps
-    mirror-ci-images.sh's 3000 s, none of which those steps wait for."""
+    A heredoc body is left out with the comments, which is the reading without_heredocs makes:
+    the paths a `cat` or a `python3 <<'PY'` body spells are paths something prints rather than
+    runs — check-ci-images.sh's `MIRROR_SCRIPT`, which names the script a reader is told to
+    run, and this file's own EXEMPTIONS and DECLARED_LOOPS, which name the files their entries
+    cover. Counting those as calls gave the lint step that runs this check 15000 s of other
+    scripts' arithmetic, and the ci-images job's two check steps mirror-ci-images.sh's 3000 s,
+    none of which those steps wait for. A body fed to anything that may run it names a script
+    that fetches only to be refused by name (unread_heredocs)."""
     stripped = without_heredocs(text)[0]
     # The expressions masked to as many characters, so a word's span is an offset of `stripped`.
     scanner = CallScanner(first_line)
@@ -2672,19 +2532,19 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
                      ) -> list[tuple[int, str, bool, set[str]]]:
     """The shapes of one shell body this check refuses by name rather than reads
     (dispatch://INFRA-1545, round 37): each function definition function_bodies, structure and
-    Scanner name, each loop structure names, each heredoc fed to a shell given an option
-    shell_options does not read, and each `bash -c`, `sh -c` or `eval` whose text holds a loop
-    or a function. Each is (line, sentence, waits, targets): the line it is written on, what the
-    refusal says of it, whether a fetch it can hide is written in it, and the scripts it can
-    hide a call of. It is refused where it holds such a fetch or one of those scripts fetches,
-    which is known only once every script is read. A function's reach is every fetch and every
-    recognised call from its line to the last its body can reach, since its body follows its
-    name, and the body of every function a call in that reach calls, in turn, since a fetch
-    there runs once for each of those calls; a loop's is the whole text, since what it hides is
-    a count of lines; a heredoc's is its body, read as shell for this question alone, where any
-    fetch counts, since no other rule reads that body; and a text's is the fetches read in it,
-    each a site on the command's line. A script path in such a text is refused as `bash -c`
-    text already."""
+    Scanner name, each loop structure names, each call of a function structure names, each
+    heredoc unread_heredocs names, and each `bash -c`, `sh -c` or `eval` text sites_of_command
+    names. Each is (line, sentence, waits, targets): the line it is written on, what the refusal
+    says of it, whether a fetch it can hide is written in it, and the scripts it can hide a call
+    of. It is refused where it holds such a fetch or one of those scripts fetches, which is known
+    only once every script is read. A function's reach is every fetch and every recognised call
+    from its line to the last its body can reach, since its body follows its name, and the body
+    of every function a call in that reach calls, in turn, since a fetch there runs once for each
+    of those calls; a call's is the reach of the function it calls, from its definition; a loop's
+    is the whole text, since what it hides is a count of lines; a heredoc's is its body, read as
+    shell for this question alone, where any fetch counts, since no other rule reads that body;
+    and a text's is the fetches read in it, each a site on the command's line. A script path in
+    such a text is refused as an argument of the shell already."""
     end = first_line + text.count("\n")
 
     def reach(start: int, last: int) -> set[int]:
@@ -2711,18 +2571,24 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
                                                      cure=FUNCTION_CURES.get(shape, FUNCTION_CURE)),
                        any(site.line in within and one_call(site) != 0 for site in found),
                        {call.target for call in called if call.line in within}))
+    for line, name, prefix in loops.odd_calls:
+        start, last = loops.function_span[name]
+        within = reach(start, last)
+        shapes.append((line, CALL_REFUSAL.format(name=name, prefix=" ".join(prefix)),
+                       any(site.line in within and one_call(site) != 0 for site in found),
+                       {call.target for call in called if call.line in within}))
     for line, (shape, why, cure) in dict.fromkeys(loops.odd_loops):
         shapes.append((line, LOOP_REFUSAL.format(shape=shape, why=why, cure=cure),
                        any(one_call(site) != 0 for site in found),
                        {call.target for call in called}))
-    for number, body, sentence in unread_shell_heredocs(text):
+    for number, body, sentence in unread_heredocs(text):
         held = sites_of(path, body, first_line + number + 1, step)[0]
         shapes.append((first_line + number, sentence, bool(held),
                        {str(SCRIPTS / match.group(1)) for match in SCRIPT_CALL.finditer(body)}
                        & script_files))
-    for line in loops.shell_texts:
+    for line, form, why in loops.shell_texts:
         # A fetch in the text is a site on the command's own line (sites_of_command).
-        shapes.append((line, SHELL_TEXT_REFUSAL,
+        shapes.append((line, SHELL_TEXT_REFUSAL.format(form=form, why=why),
                        any(site.line == line and one_call(site) != 0 for site in found), set()))
     return shapes
 
@@ -2841,31 +2707,26 @@ def sites_of_command(path: str, command: Command, loops: Loops,
         return []
     name = PROGRAM.sub("", words[0]).rsplit("/", 1)[-1]
     if name in INTERPRETERS or name == "eval":
-        script = None
-        if name == "eval":
-            script = " ".join(words[1:])
-        else:
-            rest = words[1:]
-            while rest and rest[0].startswith(("-", "+")):
-                flag = rest.pop(0)
-                if not flag.startswith("--") and "c" in flag:
-                    script = rest[0] if rest else None
-                    break
-                # `-o <name>` and `+o <name>` take the word after them, so a `-c` after
-                # `bash -o pipefail` is still read, as shell_options reads one; until round 37
-                # the reading stopped at the value and the text's fetch was no site at all
-                # (dispatch://INFRA-1545, round 37).
-                if not flag.startswith("--") and flag[-1:] == "o" and rest:
-                    rest.pop(0)
-        if script is None:
+        # The text a shell runs is the word after its first option holding a `c`, whatever the
+        # options around it, so a fetch in it is a site to every rule. Rule 8 reads it in one
+        # form, `bash -c '<text>'` holding no loop and no function, which is the form this tree
+        # writes, and refuses any other by name where the text fetches (unread_shapes_of): until
+        # round 37 the options before a `-c` were read with a model of `-o`'s value alone, so
+        # the text after `bash -O extglob -c` was no site at all (dispatch://INFRA-1545, round
+        # 37).
+        flag = 0 if name == "eval" else next(
+            (at for at, word in enumerate(words) if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", word)),
+            len(words))
+        if flag + 1 >= len(words):
             return []
+        script = " ".join(words[1:]) if name == "eval" else words[flag + 1]
         inner = Scanner(command.line).scan(script)
         held = structure(inner, script)
+        form = " ".join(words[:flag + 1])
         if held.passes or held.function_span or held.odd_functions or held.odd_loops:
-            # A loop or a function in the text is a count of passes or calls this reading does
-            # not make there: the command is refused by name where its text fetches
-            # (unread_shapes_of; dispatch://INFRA-1545, round 37).
-            loops.shell_texts.append(command.line)
+            loops.shell_texts.append((command.line, form, "whose text holds a loop or a function"))
+        elif name != "bash" or words[1] != "-c":
+            loops.shell_texts.append((command.line, form, "a form other than `bash -c`"))
         found = []
         for sub in inner:
             sub.line = command.line
@@ -2997,11 +2858,10 @@ class DeclaredArithmetic:
         self.below: dict[int, int] = {}
 
     def covers(self, site: Site) -> bool:
-        return (
-            site.path == self.path
-            and (self.step is None or self.step == site.step)
-            and site.verb == self.verb
-        )
+        # A step's site is matched by its step's name and a script's, read with no step, by
+        # None, the two forms this tree writes; until round 37 None matched every step of a
+        # workflow too (dispatch://INFRA-1545, round 37).
+        return (site.path, self.step or "-", site.verb) == (self.path, site.step, self.verb)
 
     def names(self) -> str:
         """How a refusal names this entry."""
@@ -3226,16 +3086,19 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
 
 
 class DeclaredCall:
-    """What the calls through one variable add to the body writing them, where that body can
-    see a function that fetches and the call runs whatever the variable names
-    (dispatch://INFRA-1545, round 37). `path` and `step` name the body: a step by its file and
-    name, a script by its path with `step` None. `word` is the variable as the command word
-    writes it, and `seconds` is added to that body's figure once; `why` writes it out. An
-    entry naming a file this tree holds and matching nothing fails this check."""
+    """What the calls through one variable add to the script writing them, where that script
+    can see a function that fetches and the call runs whatever the variable names
+    (dispatch://INFRA-1545, round 37). `path` names the script, `word` is the variable as the
+    command word writes it, and `seconds` is added to that script's figure once, so every step
+    running it carries it; `why` writes it out. A script is the one body this tree declares such
+    calls in: a workflow step or a composite action's step is matched by none, so one writing a
+    call through a variable writes the function's name there instead, or moves the call into a
+    script. Until round 37 an entry could name a step, and one entry two steps of one name match
+    charged the first of them alone. An entry naming a file this tree holds and matching nothing
+    fails this check."""
 
-    def __init__(self, path: str, step: str | None, word: str, seconds: int, why: str) -> None:
+    def __init__(self, path: str, word: str, seconds: int, why: str) -> None:
         self.path = path
-        self.step = step
         self.word = word
         self.seconds = seconds
         self.why = why
@@ -3243,11 +3106,11 @@ class DeclaredCall:
 
 
 DECLARED_CALLS: list[DeclaredCall] = [
-    DeclaredCall(".github/scripts/release-push.sh", None, "$leak_engine", 0,
+    DeclaredCall(".github/scripts/release-push.sh", "$leak_engine", 0,
                  "the leak engine, gitleaks, a binary this script fetched into its own "
                  "directory or was handed in RELEASE_PUSH_LEAK_ENGINE: it names no function, "
                  "and scanning a text fetches nothing, so the calls add 0 s"),
-    *(DeclaredCall(".github/scripts/release-push.sh", None, word, 0,
+    *(DeclaredCall(".github/scripts/release-push.sh", word, 0,
                    "a flag this script sets to `true` or `false` where it uses it, which runs "
                    "as the builtin of that name: it names no function and fetches nothing, so "
                    "the calls add 0 s")
@@ -3372,8 +3235,7 @@ unread_shapes: list[tuple[str, int, str, str, bool, set[str]]] = []
 # Every shell body's reading, for the two readings made once every script is read: a call of a
 # function through a variable, and a library's fetching functions called more than once
 # (dispatch://INFRA-1545, round 37). Each is (file, step name or "-", (what a refusal calls the
-# body, the lines a refusal adds back, loops, sites, recognised calls), the step's Budget or
-# None).
+# body, loops, sites, recognised calls), the step's Budget or None).
 body_reads: list[tuple[str, str, tuple, "Budget | None"]] = []
 script_files = set(scripts)
 
@@ -3473,28 +3335,31 @@ for path in workflows + actions:
         blocked: list[Uncounted] = []
         body_read = None
         if isinstance(step.get("run"), str):
+            # The line the body's first line is written on: a block scalar's text starts on the
+            # line after its `run:` key, and a plain scalar's on the key's own line. Every line
+            # a refusal names is counted from here, so each names the line it reads; until
+            # round 37 a block's lines were counted from the key, so rules 1 to 9 and the
+            # declarations' refusals named the line before the one they meant, and only the
+            # refusals of an occurrence and of a shape added it back (dispatch://INFRA-1545,
+            # round 37).
             first_line = step.lines.get("run", 0)
+            if re.match(r"\s*[|>][+-]?\d*\s*(#.*)?$",
+                        source_lines[first_line - 1].split("run:", 1)[-1]):
+                first_line += 1
             found, loops_read = sites_of(path, step["run"], first_line, name,
                                          sets_pipefail(shell))
             occurrences = occurrences_of(step["run"], first_line, loops_read)
             called = recognised(occurrences)
             blocked = uncounted_of(found) + blocked_calls(path, called)
-            # A block scalar's text starts on the line after its `run:` key, which is the line
-            # this body's lines are counted from, so a refusal of an occurrence adds that line
-            # back to name the line the path is written on.
-            block = re.match(r"\s*[|>][+-]?\d*\s*(#.*)?$",
-                             source_lines[first_line - 1].split("run:", 1)[-1])
             who = (f"step '{name}' of job '{job}'" if job is not None
                    else f"step '{name}' of {path}")
-            for occurrence in occurrences:
-                if occurrence.kind == CALL_UNREAD:
-                    unread_calls.append((path, occurrence.shown + (1 if block else 0), who,
-                                         occurrence))
+            unread_calls += [(path, occurrence.shown, who, occurrence)
+                             for occurrence in occurrences if occurrence.kind == CALL_UNREAD]
             unread_shapes.extend(
-                (path, line + (1 if block else 0), who, sentence, waits, targets)
+                (path, line, who, sentence, waits, targets)
                 for line, sentence, waits, targets
                 in unread_shapes_of(path, step["run"], first_line, name, loops_read, found, called))
-            body_read = (who, 1 if block else 0, loops_read, found, called)
+            body_read = (who, loops_read, found, called)
             # Exception (d) reads every occurrence that might run the script it names, which is
             # every occurrence but a recognised non-call: it asks what a credentialed job could
             # run, and a call rule 8 cannot read can run all the same.
@@ -3574,7 +3439,7 @@ for path in scripts:
         (path, line, path, sentence, waits, targets)
         for line, sentence, waits, targets
         in unread_shapes_of(path, text, 1, "-", script_read[path][1], found, script_reach[path]))
-    body_reads.append((path, "-", (path, 0, script_read[path][1], found, script_reach[path]),
+    body_reads.append((path, "-", (path, script_read[path][1], found, script_reach[path]),
                        None))
     for site in found:
         script_cost[path] = added(script_cost.get(path, 0), arithmetic_of(site))
@@ -3748,6 +3613,16 @@ for site in sites:
                         "measured incidents were hosts refusing for about a minute. Drop the "
                         f"option and take curl's own waits, which reach 127 s at `--retry "
                         f"{RETRY_FLOOR}`, or write one that reaches {LADDER_FLOOR} s.")
+        bounds = curl_bounds(site.words)
+        if site.retry is None and len(bounds) > 1:
+            problem(site.path, site.line,
+                    f"{where} writes its per-attempt bound {len(bounds)} times, "
+                    + " and ".join("no value" if value is None else f"`{value}`"
+                                   for value in bounds) + ", and curl takes the "
+                    "last one while rule 8 reads one, the form this tree writes: until round 37 "
+                    "it read the first, so `--max-time 30 --max-time 300` was priced at 30 s an "
+                    "attempt for a curl that waits 300 s. Write `--max-time <seconds>` once "
+                    "(dispatch://INFRA-1545, round 37).")
         continue
     if site.verb == "apt-get update" and not apt_error_mode(site.words):
         problem(site.path, site.line,
@@ -4156,21 +4031,23 @@ for path, line, who, occurrence in unread_calls:
         cure = ("Source the library once, before the loop: its functions stay defined for every "
                 "pass, and this check charges a library once for each shell that sources it. A "
                 "library whose own commands fetch each time it is sourced is a script: run it "
-                f"in the loop as `bash {occurrence.target}`, a run this check charges once for "
-                "each pass")
+                f"in the loop as `{occurrence.target}`, a run this check charges once for each "
+                "pass")
     else:
-        cure = (f"Write the path as the command word — `{occurrence.target} …`, or `bash "
-                f"{occurrence.target} …` — or source it with `. {occurrence.target}`, which are "
-                "the two calls this check reads: a run it charges once for each time the step "
-                "runs it, and a library it charges once for each shell that sources it")
+        cure = (f"Write the path as the command word of a command of its own — "
+                f"`{occurrence.target} …`, with nothing before it but variable assignments, at "
+                "top level or as the whole of a `$( … )` — or source it at top level with "
+                f"`. {occurrence.target}`, which are the two calls this check reads: a run it "
+                "charges once for each time the step runs it, and a library it charges once for "
+                "each shell that sources it")
     problem(path, line,
             f"{who} names {occurrence.target} in {occurrence.form}, a place this check does "
             "not read as a call, and that script fetches: it holds a retried call, or runs or "
             "sources a script that does. So whatever runs this line may wait for every attempt "
             "that script makes, and rule 8 can put no figure on that wait: it is not charged "
             f"to any budget, and this refusal stands in its place. {cure}. A path a step only "
-            "prints is a path in a comment or an argument of `echo`, `printf` or `grep` whose "
-            "output no shell runs, which this check charges nothing and refuses nothing "
+            "prints is a path in a comment or an argument of `echo` or `grep` whose output no "
+            "shell runs, which this check charges nothing and refuses nothing "
             "(dispatch://INFRA-1545, round 37).")
 
 # A shape this check refuses by name rather than reads (unread_shapes_of), where what it can hide
@@ -4274,17 +4151,64 @@ def fetching_functions(found: list[Site], loops: Loops) -> set[str]:
     return names
 
 
-def library_functions(path: str, seen: frozenset[str] = frozenset()) -> dict[str, str]:
-    """The fetching functions a library defines, each with the library defining it, and those
-    of every library it sources in turn."""
+def libraries_of(path: str, seen: tuple[str, ...] = ()) -> list[str]:
+    """This script and every library it sources in turn, in the order the sources are written."""
     if path in seen or path not in script_read:
-        return {}
-    named = {name: path for name in fetching_functions(*script_read[path])}
+        return []
+    found = [path]
     for call in script_reach.get(path, []):
         if call.kind == CALL_SOURCED:
-            for name, library in library_functions(call.target, seen | {path}).items():
-                named.setdefault(name, library)
+            found += [library for library in libraries_of(call.target, seen + (path,))
+                      if library not in found]
+    return found
+
+
+def library_definitions(path: str) -> dict[str, str]:
+    """Every function a library defines, and every library it sources in turn, each with the
+    library defining it. A name two of them define is refused by name in the reading of the
+    file sourcing both (dispatch://INFRA-1545, round 37)."""
+    named: dict[str, str] = {}
+    for library in libraries_of(path):
+        for name in script_read[library][1].function_span:
+            named.setdefault(name, library)
     return named
+
+
+def library_functions(path: str) -> dict[str, str]:
+    """The fetching functions a library defines, each with the library defining it, and those
+    of every library it sources in turn."""
+    named = library_definitions(path)
+    fetching = {library: fetching_functions(*script_read[library])
+                for library in set(named.values())}
+    return {name: library for name, library in named.items() if name in fetching[library]}
+
+
+def variable_holders(path: str) -> dict[str, tuple[str, str]]:
+    """The functions of a library, and of every library it sources in turn, that call a function
+    through a variable, directly or through a call of another such function, each with the
+    library defining it and the variable's word. Such a function runs whatever its caller
+    hands it, which no reading of the library sees (dispatch://INFRA-1545, round 37)."""
+    libraries = libraries_of(path)
+    holders: dict[str, tuple[str, str]] = {}
+    for library in libraries:
+        loops = script_read[library][1]
+        for command, word in variable_calls(loops):
+            holder = loops.function_of(command.line)
+            if holder is not None:
+                holders.setdefault(holder, (library, word))
+    grown = True
+    while grown:
+        grown = False
+        for library in libraries:
+            loops = script_read[library][1]
+            for command in loops.commands:
+                reduced = reduce_words(command.words)[0]
+                holder = loops.function_of(command.line)
+                if (holder is not None and holder not in holders and reduced
+                        and reduced[0] in holders):
+                    holders[holder] = (library, holders[reduced[0]][1])
+                    grown = True
+    return holders
 
 
 def function_sites(found: list[Site], loops: Loops, name: str) -> list[Site]:
@@ -4296,59 +4220,99 @@ def function_sites(found: list[Site], loops: Loops, name: str) -> list[Site]:
 # The library calls each body makes more than once, as (file, step name or "-", the step's
 # Budget or None, what a refusal calls the body, {library: (line, the functions called)}).
 library_calls: list[tuple[str, str, "Budget | None", str, dict[str, tuple[int, list[str]]]]] = []
-for path, name, (who, shift, loops, found, called), owner in body_reads:
+for path, name, (who, loops, found, called), owner in body_reads:
     libraries: dict[str, str] = {}
+    holders: dict[str, tuple[str, str]] = {}
+    # Each function this text defines and each its libraries define, with the files defining it
+    # in the order they are read: bash runs the definition it read last, and this check reads a
+    # name as one function, so a name two of them define is refused by name where either
+    # definition fetches. A name two libraries of one source define is that source's own
+    # reading's (dispatch://INFRA-1545, round 37).
+    places: dict[str, list[str]] = {function: [path] for function in loops.function_span}
+    twice: dict[str, int] = {}
     for call in called:
-        if call.kind == CALL_SOURCED:
-            for function, library in library_functions(call.target).items():
-                libraries.setdefault(function, library)
+        if call.kind != CALL_SOURCED:
+            continue
+        for function, library in library_functions(call.target).items():
+            libraries.setdefault(function, library)
+        for function, held in variable_holders(call.target).items():
+            holders.setdefault(function, held)
+        for function, library in library_definitions(call.target).items():
+            if any(place != library for place in places.get(function, [])):
+                twice.setdefault(function, call.shown)
+            places.setdefault(function, []).append(library)
     local = fetching_functions(found, loops)
+    for function, line in sorted(twice.items()):
+        if function in local or function in libraries:
+            files = " and ".join("this text" if place == path else place
+                                 for place in dict.fromkeys(places[function]))
+            problem(path, line,
+                    f"{who} reaches two definitions of `{function}`, in {files}, and one of them "
+                    "fetches. Bash runs the definition it read last, and this check reads one "
+                    "name as one function, so the calls of it can be charged at a body the step "
+                    "never runs. Give each definition a name of its own (dispatch://INFRA-1545, "
+                    "round 37).")
     # A call through a variable can run any of these functions, and is charged nothing: it is
     # refused unless a DECLARED_LOOPS entry writes the whole of each fetch it can reach, which
-    # is how ci-tools.sh's `$fetch` calls are priced, by its `curl` entry, or a DeclaredCall
-    # entry writes what the calls through that variable add.
+    # is how ci-tools.sh's `$fetch` calls are priced, by its `curl` entry, or, in a script, a
+    # DeclaredCall entry writes what the calls through that variable add.
     reached = [site for function in sorted(local)
                for site in function_sites(found, loops, function)]
     reached += [site for function, library in sorted(libraries.items())
                 for site in function_sites(*script_read[library], function)]
     owed = [site for site in reached if declared_arithmetic(site) is None]
+    named = "; ".join(f"`{site.verb}` at {site.path}:{site.line}" for site in owed)
     for command, word in variable_calls(loops) if owed else ():
         entry = next((entry for entry in DECLARED_CALLS
-                      if (entry.path, entry.step, entry.word)
-                      == (path, None if name == "-" else name, word)), None)
+                      if name == "-" and (entry.path, entry.word) == (path, word)), None)
         if entry is not None:
             if not entry.used:
-                if owner is not None:
-                    owner.cost = added(owner.cost, entry.seconds)
-                elif path in action_files:
-                    action_cost[path] = added(action_cost.get(path, 0), entry.seconds)
-                else:
-                    script_cost[path] = added(script_cost.get(path, 0), entry.seconds)
+                script_cost[path] = added(script_cost.get(path, 0), entry.seconds)
             entry.used += 1
             continue
-        named = "; ".join(f"`{site.verb}` at {site.path}:{site.line}" for site in owed)
-        problem(path, command.line + shift,
+        problem(path, command.line,
                 f"{who} calls a function through a variable, `{word}`, and a function this "
                 f"text defines or sources fetches — {named}. This check reads a call of a "
                 "function only where its name is written, so the fetches such a call runs are "
                 "charged nothing. Write the function's name at the call; or declare each of "
                 "those fetches in DECLARED_LOOPS in .github/scripts/check-download-retry.sh, "
-                "whose figure is that fetch's whole contribution for every caller, or declare "
-                "what the calls through that variable add in DECLARED_CALLS there, each with "
-                "the sum it comes from (dispatch://INFRA-1545, round 37).")
+                "whose figure is that fetch's whole contribution for every caller, or, in a "
+                "script, declare what the calls through that variable add in DECLARED_CALLS "
+                "there, with the sum it comes from (dispatch://INFRA-1545, round 37).")
         break
     # A library is charged once for each shell, so a body calling its fetching functions more
-    # than once, or inside a loop whose passes this check cannot read, is charged one call.
+    # than once, or inside a loop whose passes this check cannot read, is charged one call. A
+    # call of one after a word CALL_PREFIXES does not hold is no call this check reads, and one
+    # of a library function that calls through a variable runs whatever this text hands it,
+    # which the library's own reading cannot see: each is refused by name
+    # (dispatch://INFRA-1545, round 37).
     counts: dict[str, int | None] = {}
     over: dict[str, tuple[int, list[str]]] = {}
     for command in loops.commands:
         reduced = reduce_words(command.words)[0]
         function = reduced[0] if reduced else ""
+        if function in loops.function_span:
+            continue
+        if function in holders and owed:
+            library, word = holders[function]
+            problem(path, command.line,
+                    f"{who} calls `{function}`, which {library} defines and which calls a "
+                    f"function through a variable, `{word}`, and a function this text defines "
+                    f"or sources fetches — {named}. Such a call runs whatever this text hands "
+                    "it, and this check reads a call of a function only where its name is "
+                    "written, so the fetches it runs are charged nothing. Call the function "
+                    "that fetches by its name here (dispatch://INFRA-1545, round 37).")
         library = libraries.get(function)
-        if library is None or function in loops.function_span:
+        if library is None:
+            continue
+        prefix = command.words[:len(command.words) - len(reduced)]
+        if tuple(prefix) not in CALL_PREFIXES:
+            problem(path, command.line,
+                    f"{who} " + CALL_REFUSAL.format(name=function, prefix=" ".join(prefix))
+                    + " (dispatch://INFRA-1545, round 37).")
             continue
         times = times_run(loops, command.line, command.loops)[0]
-        line, functions = over.setdefault(library, (command.line + shift, []))
+        line, functions = over.setdefault(library, (command.line, []))
         functions.append(function)
         known = counts.get(library, 0)
         counts[library] = None if times is None or known is None else known + times
@@ -4391,7 +4355,12 @@ for budget in budgets:
         if owner is budget:
             keys = [mine]
         elif owner is None and path in seen:
-            keys = [mine, (path, name if path in action_files else None), (path, None)]
+            # The file whose calls these are, as a whole: a composite action's step is keyed by
+            # the action, which is the form this tree writes, so the steps of one action cannot
+            # match two entries that price one library differently; until round 37 one could,
+            # and the first entry matched priced the library in every step of the action
+            # (dispatch://INFRA-1545, round 37).
+            keys = [mine, (path, None)]
         else:
             continue
         for library, (line, functions) in sorted(over.items()):
@@ -4405,6 +4374,11 @@ for budget in budgets:
                          "Declare what that library contributes to the step in DECLARED_LIBRARIES "
                          "in .github/scripts/check-download-retry.sh, with the sum it comes from, "
                          "or write each fetch where it is called", keys))
+    # Where two entries price one library for this step, the first in `owed` is taken: the
+    # step's own, which every reading asks for first, else the entry the shared reading names,
+    # which is the composite action the step uses and so covers the scripts that action runs,
+    # else a script's. The ci-ok report steps are this tree's instance: ci-ok-report/action.yml's
+    # 1560 s over ci-ok-report.sh's 780 s (dispatch://INFRA-1545, round 37).
     priced: dict[str, int] = {}
     for library, where, line, sentence, keys in owed:
         entry = next((entry for key in keys for entry in DECLARED_LIBRARIES
@@ -4564,9 +4538,8 @@ for budget in budgets:
                 "DeclaredArithmetic entry there writes the seconds the site contributes to "
                 "this budget and the sum they come from.")
         count_advice = ("" if variable_bound else
-                        "Write the count where this check reads it — a "
-                        "`for x in 1 2 3 4 5 6 7`, a `for x in $(seq 1 7)`, or a "
-                        "`for ((i = 0; i < 7; i++))` — or ")
+                        "Write the count where this check reads it, as literal words — a "
+                        "`for x in 1 2 3 4 5 6 7` — or ")
         # A site with no bound is told to write one first, as a number, which is the figure
         # the passes multiply, and then the ordinary advice about the loop: a bound alone
         # leaves the loop unread (dispatch://INFRA-1545, round 37).
@@ -4965,30 +4938,39 @@ for entry in DECLARED_LOOPS:
             f"are written for {entry.figure()}, because {entry.why}.")
 
 # A DECLARED_CALLS or DECLARED_LIBRARIES entry naming a file this tree holds and matching no
-# reading of it fails, as a stale DECLARED_LOOPS entry does. One naming a file the tree does not
-# hold covers nothing, so it can charge nothing short, and is left alone (dispatch://INFRA-1545,
-# round 37).
+# reading of it fails, as a stale DECLARED_LOOPS entry does, and one keyed in a form this check
+# does not read is told so. One naming a file the tree does not hold covers nothing, so it can
+# charge nothing short, and is left alone (dispatch://INFRA-1545, round 37).
 read_files = set(workflows) | action_files | script_files
 for entry in DECLARED_CALLS:
     if entry.used or entry.path not in read_files:
         continue
     problem(SELF, 1,
-            f"the declared call figure for `{entry.word}` in {entry.path}"
-            + (f" step '{entry.step}'" if entry.step else "")
-            + " matches no call through that variable in a body that can see a function that "
-            "fetches. A declaration outliving what it answered for is a figure nobody checks "
-            f"again: drop it, or point it at where that call moved. It said {entry.seconds} s, "
-            f"because {entry.why} (dispatch://INFRA-1545, round 37).")
+            f"the declared call figure for `{entry.word}` in {entry.path} "
+            + ("matches no call through that variable in a script that can see a function that "
+               "fetches. A declaration outliving what it answered for is a figure nobody checks "
+               "again: drop it, or point it at where that call moved" if entry.path in script_files
+               else "names a workflow or a composite action, and a declared call is read for a "
+                    "script's own calls alone, the form this tree writes. Write the function's "
+                    "name at the call, or move the call into a script under .github/scripts/ and "
+                    "declare it there")
+            + f". It said {entry.seconds} s, because {entry.why} (dispatch://INFRA-1545, "
+            "round 37).")
 
 for entry in DECLARED_LIBRARIES:
     if entry.used or entry.path not in read_files:
         continue
     problem(SELF, 1,
-            f"the declared library figure for {entry.names()} matches no step that reaches that "
-            "library along more than one path or through more than one call of its fetching "
-            "functions. A declaration outliving what it answered for is a figure nobody checks "
-            f"again: drop it, or point it at where that reach moved. It said {entry.seconds} s, "
-            f"because {entry.why} (dispatch://INFRA-1545, round 37).")
+            f"the declared library figure for {entry.names()} "
+            + ("matches no step that reaches that library along more than one path or through "
+               "more than one call of its fetching functions. A declaration outliving what it "
+               "answered for is a figure nobody checks again: drop it, or point it at where that "
+               "reach moved" if (entry.step is not None) == (entry.path in workflows)
+               else "is keyed in a form this check does not read: a workflow step by its file "
+                    "and its name, or a script or a composite action by its path, with no step, "
+                    "which are the forms this tree writes. Key it in one of them")
+            + f". It said {entry.seconds} s, because {entry.why} (dispatch://INFRA-1545, "
+            "round 37).")
 
 if MODE in ("--list", "--jobs") and not problems:
     # A reader of these lists pipes them (`| head`, `| cut`), so a closed pipe ends this the way
