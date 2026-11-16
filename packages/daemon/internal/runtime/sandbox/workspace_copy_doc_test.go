@@ -14,12 +14,23 @@ import (
 // or that names the copy without its period, sends the operator to look for a node of its own
 // that no longer exists, or to wait for work that no copy holds.
 //
-// Each check reads one region of the document, bounded by its first and last words, and fails by
-// naming the marker it could not find. That bound is the whole structure. The reclaim paragraph's
-// own checks (reclaim_doc_test.go) were written after an earlier version of them passed over a
-// paragraph that was wrong, because a word it searched for happened to appear elsewhere in a
-// document of thousands of lines; a search of the whole file for "no death charged" would pass
-// here the same way, with the annotation bullet saying the opposite of what it says now.
+// These checks do not read the guide. They read workspace_copy_doc_extract.txt, this package's
+// own copy of the four regions in the guide's bytes, which internal/textcheck's
+// TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds to the guide's lines between the same
+// markers. The split is what keeps docs/kubernetes.md out of this job's filter: a declared read
+// applies to every compiled source file of a run, so a test that reads the guide starts the whole
+// daemon Go lane on a documentation-only edit. The copy names each region by the two markers
+// below, and internal/testdoc fails a check whose markers name no region of it, so a reworded
+// paragraph is its markers changed here, in the copy and in the guide in one commit. The AWS
+// paragraph's start marker is built from doNotDisruptAnnotation, so a changed annotation key is
+// such a change too.
+//
+// Each check reads one region, bounded by its first and last words, and fails by naming the
+// marker it could not find. That bound is the whole structure. The reclaim paragraph's own checks
+// (reclaim_doc_test.go) were written after an earlier version of them passed over a paragraph that
+// was wrong, because a word it searched for happened to appear elsewhere in a document of
+// thousands of lines; a search of the whole guide for "no death charged" would pass here the same
+// way, with the annotation bullet saying the opposite of what it says now.
 //
 // Where a region is a list, it is read as a list: the two readings that earn an uncharged
 // continue are two bullets, each held to the facts of its own bullet. A fact proved from the
@@ -39,6 +50,10 @@ import (
 // What these checks cannot do: they read what the document says, never whether it is true. A
 // reader is still the only check on that.
 const (
+	// workspaceCopyDocExtract is read from this package's own directory, where the file sits
+	// beside the code it is about and needs no declared read of its own.
+	workspaceCopyDocExtract = "workspace_copy_doc_extract.txt"
+
 	annotationRuleStart = "the project controller's pod additionally carries"
 	annotationRuleEnd   = "with no death charged"
 
@@ -57,7 +72,7 @@ const (
 // an operator reads that rule and what a Burstable issue pod gives up for it.
 func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testing.T) {
 	const what = `docs/kubernetes.md's annotation bullet of "Anatomy of a Sandbox pod"`
-	_, region := testdoc.Region(t, "docs/kubernetes.md", what, annotationRuleStart, annotationRuleEnd)
+	_, region := testdoc.Region(t, workspaceCopyDocExtract, what, annotationRuleStart, annotationRuleEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
 		{Fact: "the annotation the rule is about", Phrase: safeToEvictAnnotation},
 		{Fact: "that the controller's pod carries it whatever its reservation", Phrase: "whatever its reservation"},
@@ -75,7 +90,7 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 // holds a pod, and how the operator's psql recipe reads the running copy's own table.
 func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 	const what = `docs/kubernetes.md's two-kinds paragraph of "The copy of a running pod's workspace"`
-	_, region := testdoc.Region(t, "docs/kubernetes.md", what, copyKindsStart, copyKindsEnd)
+	_, region := testdoc.Region(t, workspaceCopyDocExtract, what, copyKindsStart, copyKindsEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
 		{Fact: "the release bundle's table", Phrase: "workspace_bundles"},
 		{Fact: "the running copy's table", Phrase: "workspace_running_copies"},
@@ -95,7 +110,7 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 // are still charged as a death.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
-	lines, region := testdoc.Region(t, "docs/kubernetes.md", what, podEndReadingsStart, podEndReadingsEnd)
+	lines, region := testdoc.Region(t, workspaceCopyDocExtract, what, podEndReadingsStart, podEndReadingsEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
 		{Fact: "the line one pod end writes", Phrase: podEndLine},
 		{Fact: "that each role is continued in its own session", Phrase: "in that role's own session"},
@@ -145,7 +160,7 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 // it gains the copy and the uncharged continue and pays no repacking for them.
 func TestKubernetesDocStatesKarpentersAnnotationStaysOnEveryPod(t *testing.T) {
 	const what = `docs/kubernetes.md's AWS paragraph of "The copy of a running pod's workspace"`
-	_, region := testdoc.Region(t, "docs/kubernetes.md", what, karpenterStart, karpenterEnd)
+	_, region := testdoc.Region(t, workspaceCopyDocExtract, what, karpenterStart, karpenterEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
 		{Fact: "the annotation that stays", Phrase: doNotDisruptAnnotation},
 		{Fact: "that every pod carries it whatever its reservation", Phrase: "every Legion pod carries it whatever its reservation"},

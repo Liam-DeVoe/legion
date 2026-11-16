@@ -1,12 +1,21 @@
-// Package testdoc holds the reading of a repository document that the daemon's doc tests share.
-// A doc test holds one region of a guide, bounded by its first and last words, to the facts that
-// region must state, and the bound is the whole structure: a phrase found anywhere in a document
-// of thousands of lines would answer a check about a paragraph that says the opposite. Region
-// finds the bounded region and fails by naming a marker it cannot place; RequireDocFacts holds a
-// region, or one bullet of it, to its facts; RegionBullets and BulletNaming read a region that is
-// a list as the list it is, so each fact is held to the bullet that carries it. Which facts a
-// region must state stays each test's own, and so does a list whose shape is its own, such as the
-// reclaim paragraph's two lists under their headings.
+// Package testdoc holds the reading of a guide's region that the daemon's doc tests share. A doc
+// test holds one region of a guide, bounded by its first and last words, to the facts that region
+// must state, and the bound is the whole structure: a phrase found anywhere in a document of
+// thousands of lines would answer a check about a paragraph that says the opposite.
+//
+// A doc test reads no guide. It reads its package's extract, a copy of the regions it checks in
+// the guide's own bytes, committed in the test's own directory, and internal/textcheck holds each
+// region of that copy to the guide's lines between the same two markers. A test that read the
+// guide would put the guide in its job's filter, since a declared read applies to every compiled
+// source file of a run, and a documentation-only edit would then start the whole daemon Go lane;
+// a read that walked up to the repository root, as this package's once did, is one the filter
+// check cannot see, so CI would stop running the test on a guide-only edit at all.
+//
+// Region finds the region an extract names by its two markers and fails by naming what it cannot
+// place; RequireDocFacts holds a region, or one bullet of it, to its facts; RegionBullets and
+// BulletNaming read a region that is a list as the list it is, so each fact is held to the bullet
+// that carries it. Which facts a region must state stays each test's own, and so does a list whose
+// shape is its own, such as the reclaim paragraph's two lists under their headings.
 package testdoc
 
 import (
@@ -24,30 +33,117 @@ type Fact struct {
 	Phrase string
 }
 
-// Region is the part of doc, a slash-separated path from the repository root, between the first
-// and the last words of one region, as its lines and as one flattened string; what names the
-// region in every failure. Every check reads a region and never the whole document, which is the
-// miss these checks exist against.
+// The two lines that open a region of an extract. regionFrom and the region's start marker make
+// the first, regionTo and its end marker the line under it, and every line under those two, to
+// the next regionFrom line, is the region in the guide's own bytes; above the first region an
+// extract carries its `#` header. internal/textcheck reads the same two lines with a parse of its
+// own, and finds the guide's lines by the markers they name.
+const (
+	regionFrom = "from: "
+	regionTo   = "to: "
+)
+
+// Region is the region of extract, a file in the calling test's own package directory, that the
+// extract names by the markers start and end, as its lines and as one flattened string; what
+// names the region in every failure. Every check reads a region and never the whole document,
+// which is the miss these checks exist against.
 //
-// It fails by name rather than skipping or passing. A document that cannot be read, or a marker
-// that cannot be found, is a region that was moved or reworded, and a check that cannot find what
-// it bounds is a check that stopped checking, which reads exactly like a pass. A start marker
-// found twice fails as well, since the check would read whichever comes first.
+// It fails by name rather than skipping or passing. An extract that cannot be read, a region it
+// does not name by both markers, or a marker that region does not carry, is a region that was
+// moved or reworded, and a check that cannot find what it bounds is a check that stopped
+// checking, which reads exactly like a pass. The region is named by the test's own two markers
+// because internal/textcheck finds the guide's lines by them: a marker changed in the test alone
+// would otherwise hold the facts to one bound and the guide to another. A start marker found
+// twice in the region fails as well, since the check would read whichever comes first.
 //
 // The markers are prose and may straddle line ends, so they are found in a flattened copy and
 // carried back to the lines they cover, which is what a list read as a list needs
-// (RegionBullets). The last line is the one the end marker finishes on, so a marker that wraps
-// takes its whole last line with it.
-func Region(t testing.TB, doc, what, start, end string) ([]string, string) {
+// (RegionBullets). The lines run from the one the start marker opens on through the one the end
+// marker finishes on, so a marker that wraps takes its whole last line with it; the flattened
+// string runs from the start marker's first word through the end marker's last.
+func Region(t testing.TB, extract, what, start, end string) ([]string, string) {
 	t.Helper()
-	text, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(doc)))
+	text, err := os.ReadFile(filepath.FromSlash(extract))
 	if err != nil {
-		t.Fatalf("read %s: %v", doc, err)
+		t.Fatalf("read %s: %v", extract, err)
 	}
-	return region(t, doc, string(text), what, start, end)
+	return regionOfExtract(t, extract, string(text), what, start, end)
 }
 
-// region is Region of a document already read, text being the content of doc.
+// regionOfExtract is Region of an extract already read, text being the content of extract.
+func regionOfExtract(t testing.TB, extract, text, what, start, end string) ([]string, string) {
+	t.Helper()
+	var named []string
+	for _, r := range extractRegions(t, extract, text) {
+		if r.start == start && r.end == end {
+			named = append(named, strings.Join(r.lines, "\n"))
+		}
+	}
+	if len(named) != 1 {
+		t.Fatalf("%s has %d regions from %q to %q, want exactly 1, so %s cannot be read: the extract names "+
+			"each region by the two markers its test bounds it by, and internal/textcheck holds the guide's "+
+			"lines between those markers to it, so change a marker in the test, the extract and the guide "+
+			"together", extract, len(named), start, end, what)
+	}
+	return region(t, extract, named[0], what, start, end)
+}
+
+// extractRegion is one region of an extract: the two markers its opening lines name, and the
+// guide's lines under them.
+type extractRegion struct {
+	start, end string
+	lines      []string
+}
+
+// extractRegions reads an extract into its regions. Above the first regionFrom line a line is the
+// `#` header or blank; a regionFrom line opens a region, and the line under it must be that
+// region's regionTo line; every other line is the open region's own, and the blank lines that end
+// a region are dropped, since a region ends on the line holding its end marker. The parse is a
+// split and a switch and shares no code with internal/textcheck's of the same files: two readers
+// that agree with each other while both drift are what a copy of a document is most at risk of.
+func extractRegions(t testing.TB, extract, text string) []extractRegion {
+	t.Helper()
+	var regions []extractRegion
+	for i, line := range strings.Split(text, "\n") {
+		open := len(regions) - 1
+		switch {
+		case strings.HasPrefix(line, regionFrom):
+			start := strings.TrimPrefix(line, regionFrom)
+			if start == "" {
+				t.Fatalf("%s:%d: %q names no start marker, so the region it opens cannot be found", extract, i+1, line)
+			}
+			regions = append(regions, extractRegion{start: start})
+		case open < 0:
+			if line != "" && !strings.HasPrefix(line, "#") {
+				t.Fatalf("%s:%d: %q stands above the first %q line, where only the `#` header is, so which "+
+					"region it belongs to cannot be read", extract, i+1, line, regionFrom)
+			}
+		case regions[open].end == "":
+			end, ok := strings.CutPrefix(line, regionTo)
+			if !ok || end == "" {
+				t.Fatalf("%s:%d: the region from %q has no %q line naming its end marker under its %q line, so "+
+					"where it ends cannot be read", extract, i+1, regions[open].start, regionTo, regionFrom)
+			}
+			regions[open].end = end
+		default:
+			regions[open].lines = append(regions[open].lines, line)
+		}
+	}
+	for i, r := range regions {
+		for len(r.lines) > 0 && r.lines[len(r.lines)-1] == "" {
+			r.lines = r.lines[:len(r.lines)-1]
+		}
+		if r.end == "" || len(r.lines) == 0 {
+			t.Fatalf("%s's region from %q carries no %q line or no line of the guide, so it holds nothing a "+
+				"check could read", extract, r.start, regionTo)
+		}
+		regions[i].lines = r.lines
+	}
+	return regions
+}
+
+// region is the part of text, the content of doc, between the first and the last words of one
+// region, as Region answers it.
 func region(t testing.TB, doc, text, what, start, end string) ([]string, string) {
 	t.Helper()
 	lines := strings.Split(text, "\n")
@@ -68,28 +164,6 @@ func region(t testing.TB, doc, text, what, start, end string) ([]string, string)
 	}
 	last := startOffset + endOffset + len(end) - 1
 	return lines[lineOf[startOffset] : lineOf[last]+1], flat[startOffset : last+1]
-}
-
-// repositoryRoot is the checkout that holds this module, found by walking up from the directory
-// the test runs in, which is its package's own, to the one holding packages/daemon/go.mod. A test
-// of any package of the module finds the same root, however deep the package sits.
-func repositoryRoot(t testing.TB) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("read the working directory: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "packages", "daemon", "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no packages/daemon/go.mod above the working directory, so the repository root that " +
-				"holds the documents cannot be found")
-		}
-		dir = parent
-	}
 }
 
 // flattenKeepingLines collapses the document's whitespace so prose that was wrapped reads as one

@@ -1,0 +1,201 @@
+# A copy of the four regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
+# holds to the runtime's annotations and pod-end reasons, each in the guide's own bytes and none of
+# the prose around it, in the guide's order: the extended-run-time annotation's bullet of "Anatomy
+# of a Sandbox pod", the paragraphs under **An end from outside the pod.** in "The disk dies with
+# its pod", and the two-kinds paragraphs and the AWS paragraph of "The copy of a running pod's
+# workspace". A region is every line of the guide from the one holding its start marker through
+# the one its end marker finishes on.
+#
+# The guide still answers for the runtime, in two halves. This package's
+# workspace_copy_doc_test.go reads each region out of this copy through internal/testdoc and holds
+# it to safeToEvictAnnotation, doNotDisruptAnnotation, clusterEndedReasons, evictedReason and
+# podEndLine and to the facts it must state; packages/daemon/internal/textcheck's
+# TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds each region to the guide's own lines
+# between the same two markers. Splitting it that way is what lets an edit to the guide alone
+# start the text-check run rather than every Go lane: the product test no longer reads the guide
+# at all.
+#
+# So this file is changed only when one of those regions changes, in the same commit as the
+# guide. A line changed here and not there, or there and not here, fails the text-check half; a
+# region that no longer states a constant or a fact fails the product half.
+#
+# The format: above the first region, a line that opens with # is this header and a blank line is
+# passed over. A region opens with two lines of its own, `from: ` and its start marker, then
+# `to: ` and its end marker: the words its test bounds it by, which the text-check half finds the
+# guide's lines by. Every line under those two, to the next `from: ` line, is the region in the
+# guide's own bytes, its blank lines included; the blank line that closes it is none of them,
+# since a region ends on the line holding its end marker.
+
+from: the project controller's pod additionally carries
+to: with no death charged
+  - the project controller's pod additionally carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, the upstream Cluster Autoscaler's own annotation, whatever its reservation, and an issue pod carries it only while its cpu request equals its cpu limit and its memory request equals its memory limit, which is the `Guaranteed` reservation (`podKind.asksExtendedRunTime`, `podkind.go`);
+    GKE Autopilot honours it as a request for up to seven days of extended-duration protection from its own scale-down and node-upgrade eviction
+    — not indefinitely, and not from node pressure or an OOM, a higher-priority Pod, Compute Engine maintenance or node repair, or an operator-initiated drain.
+    An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
+    it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
+    What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node;
+    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod));
+
+from: The daemon reads what ended each watched pod once
+to: would be relaunched for ever.
+The daemon reads what ended each watched pod once, where its informer delivers the end, and writes one line for it (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
+`sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
+The line is written before any claim is decided and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
+Two readings say something outside the pod ended it:
+
+- the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for, while the pod was not yet terminal.
+  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and it records each such act of its own before it makes it, so an end no record of its own answers for was made by something else.
+  That record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged, which the run limit below bounds;
+
+- the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
+  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
+  A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
+
+A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
+So a failed pod the cluster did not end is charged whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
+The rule has one cost: an outside delete the daemon first sees when the pod is already terminal is charged a death.
+That is rare: the informer hands the daemon each watch event in order, and a graceful delete sets the deletion timestamp on the running pod before the kubelet makes it terminal, so the daemon sees the running pod's deletion first.
+It sees the terminal pod first only when its watch missed that update and a relist delivered only the later state, which is an inference from how client-go's watch and relist behave that no test proves.
+
+An end of either reading costs its roles nothing.
+The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
+The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
+
+The third such end in a row is charged all the same.
+The daemon counts these ends in two runs, by whether the claim's agent was ready when its pod ended: the third end of either run is charged, and so is every end of that run after it until the run is reset (`launch_failure_limit`, 3 by default).
+A pod that uses more memory than it requested can drive its own node into pressure, its start as much as its work, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
+Both runs are kept in the claim's row (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), so a daemon restart starts neither again.
+Each claim writes its own line for what it got:
+`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing` at info for an end below the limit, and, for the end that reaches the limit, `supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts` at warn in its place.
+Both lines carry the same keys: the two runs' counts (`podEndsNotOurs` and `startEndsNotOurs`), the `limit`, `starting`, which says which run counted the end (`true` for the run of a start's ends), and the `detail` of the reading.
+
+The first run counts the ends that find the claim's agent ready with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
+When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own.
+Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it.
+A completed turn starts the count again, and so does the end of the task the run was counted against, however that task ends: a suspension or a phase change that retires it ends the run with it, as it ends the claim's deaths.
+A turn of the daemon's own relaunch record, which tells a relaunched agent that holds nothing what its last process ended, is no such turn and starts nothing again, and neither does that record's end: the record is the daemon's act, not the claim's work, so it ends neither this run nor the claim's deaths.
+Nothing else resets it, the agent's ready included, so the run survives a relaunch: the agent that comes up has completed no turn, and the count goes on from where the last pod left it.
+An architect's turns and the controller's start from messages, so a claim whose pod the cluster ends in every such turn adds one to its run each time and is charged at the limit rather than being relaunched for ever.
+An end that finds the agent ready and idle between assignments, with no task and no turn open, is neither counted nor charged and leaves both runs where they were, since a claim that completes no turn would otherwise be charged for a pod the cluster repacks now and then.
+
+The second run counts the ends that find the claim's agent not yet ready, whatever work the claim holds, and such an end counts in it alone.
+Its third end is charged as the end of any process whose agent never came up is, as a launch failure, so a start the cluster ends every time fails its claim once its launch failures run out rather than being relaunched for ever, with a task or without one.
+The agent's ready resets this run, as it resets the launch failures: a start that reaches ready is one the cluster let finish, so the ends of starts that each reach ready cost nothing.
+
+One run could not bound both loops.
+Reset at the agent's ready, it would start again at each turn a message started and the cluster ended, since the agent relaunched after such a turn comes up with no task and no turn, and that claim would never reach the limit.
+Kept past the ready, it could not count the start of a claim with no task, such as an architect a message woke, the controller or a phase worker between assignments: such a claim completes no turn, so its count would only grow and charge it for starts the cluster ends now and then.
+
+An end of neither reading is charged as a death exactly as before, so a pod that fails by itself still ends its claim once that claim's deaths run out ([Liveness rules](#liveness-rules)).
+`Evicted` with no `DisruptionTarget` condition is such an end:
+the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
+A reason outside those three is such an end too, `UnexpectedAdmissionError` among them:
+a node refused that pod before it ran, the pod that replaces it would meet the same refusal, and an end the daemon waived would be relaunched for ever.
+
+from: An issue therefore holds up to two kinds of copy
+to: and both stay through a linger and a park.
+An issue therefore holds up to two kinds of copy, and the two are rows in two tables.
+The release bundle is what an idle release saves, in `workspace_bundles` ([Idle release](#idle-release)).
+The running copy is what the cadence takes, in `workspace_running_copies`.
+A new pod of the issue is sent the newer of the two, by when the take of each began, and its launcher restores it before any role starts.
+The older is closed unsent:
+the daemon spends its one restore attempt and discards its body, because a copy left open could still be sent to a later pod whose workspace already holds the descendants of the work the newer copy put back.
+A tie goes to the release bundle, which was taken while the roles were idle.
+The bytes of a closed copy stay in the database for an operator.
+
+Every time the restore compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn its choice.
+[The times the restore compares](#the-times-the-restore-compares) names each of them in one table, with the clock and the statement that set it and the rule that reads it.
+A copy's time, the `at` of its row, is the database's clock when its take began, which the daemon reads before it asks the shim to read the workspace: the shim's own reading of when it took the copy is not kept.
+It is not the time the database wrote the copy, because the write lands seconds later, once the bundle is built and carried, and a copy read before a push and written just after the push was recorded would then carry a time after the push and be sent over the pushed commits.
+A copy whose take began before the push is older than the push however late it is written.
+A daemon that cannot read the database's clock as a take begins takes no copy, and logs the reason `clock_unread`.
+Each row also keeps `written_at`, the database's clock when the copy was written.
+A push's time is when the database recorded the push in the push's own transaction (the time rule below).
+A pod's time is when it first asked for a restore, which its launcher does at the pod's first role start, recorded by the database in the `workspace_restore_asks` table, one row per pod, keyed by the issue and the pod's uid.
+A later ask of the same pod leaves that row as it is, and each issue keeps the rows of its 16 newest pods.
+The pod's `creationTimestamp` is not read, so a pod the API server stamps created seconds before a copy is still sent that copy when it first asks after the copy was written.
+Every write of a copy and every pod's ask first take one lock per issue in the database and read the clock only once they hold it, so whichever of a copy's write and a pod's first ask comes first has committed before the other reads the clock.
+A copy written before a pod's first ask is then always read at that ask, and a copy written after it always carries the later `written_at`.
+
+One comparison with another clock is left, on the pod's side: the launcher applies no copy to a workspace whose creation record, stamped by its own node's clock, is not after the copy's time, because that workspace is the one the copy came out of.
+It reads the node's clock because the workspace is made on the node, and its gap is not seconds: the workspace it refuses was made when the pod the copy came off started, that pod's whole life before the copy, and the workspace it accepts is made when a later pod starts, after the pod the copy came off has ended.
+A node clock a few seconds off the database's moves neither across.
+
+The copy offered to a pod is sent to it when the pod first asked at or after the copy was written.
+This rule reads `written_at` and not `at`: the lock orders a copy's write against a pod's first ask, so the write says whether the copy was there to be read at that ask, whenever its take began.
+A copy written after the pod first asked is a late copy, such as the last copy of the pod before it, read before that pod ended and written once the new pod had already asked; its take often began before that ask.
+The new pod is sent nothing of a late copy, on that ask or any later one, and nothing is recorded on the copy: the pod has been working since its first ask, and the copy would `jj edit` its workspace back over that work.
+The copy keeps its one attempt, and the next pod of the issue, whose first ask comes after the copy was written, is sent it.
+The late copy's work reaches that pod only while the working pod takes no copy of its own: the working pod's next copy replaces the late one, and a copy of the working pod that finds nothing unpushed drops it.
+The copy a confirmed restore keeps is the working pod's own copy too, taken at the confirmation, so a late copy written after the confirmation is not stored.
+That loss needs a copy's write stalled through a whole pod start, and is accepted.
+The daemon logs, at Info, a line that begins `launcher bundle: the saved workspace copy was written after this pod first asked for a restore` with the issue, the pod, the copy, `firstAsked` and `written`, both by the database's clock.
+A copy is written a moment after the shim reads the workspace, and a push the daemon records while a copy is being read marks that copy overtaken, so it is not stored and the copy the push asks for is taken behind it.
+
+A restore the new pod's launcher confirms keeps the work it put back as that pod's own running copy, whichever kind of copy it was.
+The confirmation counts only from the pod the copy was sent to: a report from any other launcher of the issue, such as one whose pod first asked before the copy was written, changes nothing, so a release bundle's row stays and with it the `bundle_unrestored` hold.
+A restored running copy stays in its row, names the new pod as the pod its work is on, and takes a new `restore_id` with no attempt spent.
+A restored release bundle leaves `workspace_bundles` and is written into `workspace_running_copies` in the same transaction, unless the issue's running copy is the newer of the two by the rule above, in which case that copy stays as it is.
+Either way both of the kept row's times, `at` and `written_at`, are the moment of the confirmation by the database's clock, not the times of the copy it keeps.
+The new pod's disk is then the only place the work is, and a pod whose agents come up Ready and take no turn takes no copy of its own: no turn ends to copy it, the cadence copies an issue between turns only to retry a copy that came to nothing, and otherwise only a push would.
+So a second end of that pod from outside before any turn of it, such as an eviction of a `Burstable` pod, still restores the work: the pod after it first asks after the confirmation and is sent the kept copy, whatever the API server's clock stamped it created at, and the pod that restored it is sent nothing of it, since its own workspace holds the work.
+The confirmation's time is what keeps a push recorded before it, such as GitHub's "Update branch" during a release, from refusing the kept copy under the time rule below; a push recorded after it takes a copy of its own off the new pod's live roles.
+Like any running copy, the kept copy is replaced by the pod's next copy, goes when an idle release of that pod saves its bundle, and goes when the workspace holds nothing unpushed.
+
+A cancelled idle release leaves the pod's work copied outside it.
+A release cancelled after its save stored the bundle, by a wake or a delivery, moves that bundle out of `workspace_bundles` and into `workspace_running_copies` in the cancel's own transaction, still naming the pod it came off and with both its times stamped with the database's clock at the cancel.
+The save had deleted the issue's running copy, and the resumed agents come up Ready and take no copy until a woken turn ends, so without the move an eviction of the pod in that window would restore nothing.
+The pod the roles resume in is sent nothing of the moved copy, and the pod after it is sent the work.
+When the issue's running copy is the newer of the two by the rule above, that copy stays as it is and the bundle's row goes alone.
+A release whose save fails, because the bundler fails or the bundle is over 40 MiB, is cancelled before it replaced the running copy, and the pod goes on idle with that copy as the only copy of its work outside it.
+Neither kept copy moves anything back over a push: the pod the roles resume in is the pod the copy came off and is sent nothing of it, and every restore withholds the issue's branch and refuses a running copy taken before the newest push the daemon recorded.
+
+No restore sets the issue's branch `legion/<KEY>` or its rescue branch `legion/<KEY>-rescue`, so no restore can move either branch.
+The daemon sends every copy without the copy's own values of those two bookmarks, so the launcher's `jj bookmark set --allow-backwards` of each bookmark it is sent leaves each of the two where the new pod's fetch from GitHub put it.
+The copy's work comes back as visible commits and as the working copy, which the launcher restores with `jj edit` back to the copy's head, and the role's own `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work, or jj refuses the move as backwards or sideways.
+The rescue branch is withheld because it only moves forward: no daemon of this release pushes one, but an earlier daemon's push check did, that branch stays on GitHub, and a role may push it.
+A copy holds a local bookmark of it where that bookmark is on a commit no remote branch holds, and a rescue pushed after the copy is taken moves GitHub's tip past that commit.
+Set back there, the bookmark would sit behind GitHub's tip: a `jj git push` of it moves the branch backwards and drops the later rescue, and the next rescue push leaves the bookmark conflicted, which jj then refuses to push.
+The daemon logs, at Info, one line that begins `launcher bundle: the saved workspace copy's own values of the issue's branch and its rescue branch are withheld` with the issue, the copy and, under `withheld`, each of the two bookmarks the copy held with the commit it held it on.
+
+The time rule is the second line, and it guards running copies only: a running copy is not sent when its take began before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
+Such a copy would put the workspace back on work behind what GitHub holds, which the roles would then have to bring forward over the pushed commits.
+A running copy is taken while the roles work and push, so this is its common case: an update round replaces a pod just after its roles push.
+A refused running copy off another pod is still the newer of the issue's two copies, so a release bundle older than it is closed unsent rather than sent in its place.
+A release bundle is never refused by this rule.
+An idle release saves it while the issue's roles are idle, just before it stops them, and it is the pod's last copy, so a push the daemon records after it is none of those roles' pushes: it is a push from outside the pod, such as GitHub's "Update branch" or a person's push, or one the daemon applied late, such as a push whose webhook was lost and that the daemon's read of the pull request rebuilt.
+The bundle is restored like any other, the withheld bookmark keeps that push on GitHub, and the role brings its work forward over it.
+Refusing the bundle would leave its work in the database alone and hold the issue's pod under `bundle_unrestored` from then on.
+The daemon keeps its own record of each issue's newest push in the `issue_pushes` table: one row per issue, holding `pushed_at`, the database's clock when the push's own transaction recorded the push of `legion/<KEY>` on the issue's recorded repository, and `head`, the commit that push left.
+The row is written in the push's own transaction whether or not the issue has a pull request, because a branch is pushed before its pull request opens.
+Beside it, the `issue_push_heads` table holds every commit the issue's recorded pushes replaced or left, the 256 the database recorded last.
+A push that leaves the branch on one of those commits moves neither column, so a webhook delivered twice, a push the daemon's read of the pull request rebuilds after its webhook, and a webhook that arrives after a newer push never move the record back, although the database records each of them later.
+A push to a commit the table does not hold moves both columns, and `pushed_at` only ever moves later.
+A push that deletes the branch moves neither column, and the all-zero sha GitHub sends as a new branch's `before` and a deleted branch's `after` names no commit and is never held.
+What the record cannot order is a late push whose two commits it has never seen, such as one more than a push behind the newest whose pushes between are late as well; it takes that push as the newest, which costs at most a refused restore and no commit on GitHub, since no restore sets the branch.
+For an issue the daemon has recorded no push for, the rule refuses nothing, since nothing newer than its copies is known to be on GitHub.
+The comparison is the copy's time, when its take began, against the push's, both by the database's clock: no node's or daemon's clock enters it, and no write time does.
+The time rule alone misses two copies whose `legion/<KEY>` is behind GitHub's branch or beside it, and in both it is the withheld bookmark that keeps the pushed commits on GitHub:
+a copy taken after a push from outside the pod that the workspace never fetched, which is newer than that push by the clock, and a copy taken before a push the daemon has not recorded, whose webhook is late or was lost.
+A refused running copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded` with the issue, the copy, the copy's time, the push's time and the head the push left.
+Each time a push moves the issue's `issue_pushes` row the daemon also takes a copy of that issue's workspace, through the same one copy in flight, so the issue's newest copy is normally one taken after its newest push and holds whatever came after it.
+A push that leaves the row where it was asks for no copy, so a webhook delivered twice neither bundles the workspace again nor discards a copy being built.
+A copy already being built when the push is recorded is not stored, because it read the workspace before the push although the database would write it after; the copy the push asked for follows it.
+The daemon marks such a copy only once the push's transaction has committed, so a copy whose write lands just after the push's record, before that mark, is stored all the same, and the time rule refuses it: its time is when its take began, before the push.
+The release's own save takes the same one place in flight and waits out a copy being built, so no two bundlers ever run in one workspace.
+A copy asked for while the save holds that place, by a push above all, is owed behind it and started as soon as the save gives the place back.
+Behind a save that stored no bundle it is taken; behind a save that stored one it is refused before any role is asked, as every copy off that pod is while the bundle stands, since that bundle is the pod's last copy.
+The two kinds differ in what an unrestored copy holds back:
+a release bundle no pod has restored holds the issue's pod, which is the `bundle_unrestored` hold ([Idle release](#idle-release)), and a running copy holds no pod at all, since the disk it was taken off still has that work, so an issue that holds one is released when it is idle like any other.
+An operator reads a running copy with the `psql` recipe [Idle release](#idle-release) gives for a release bundle, against the other table:
+`select encode(bundle, 'base64') from workspace_running_copies where issue = '<KEY>'`, since the column is `bundle` there too, and the row's `head` and `bookmarks` mean there what they mean in a release bundle's row.
+The pod's launcher names every copy it restores by the id the slices carry, in lines such as `the bundle of release <id>`, because the launcher the worker image carries predates the running copy.
+An id of 4611686018427387904 (2^62) or more in such a line names no release: it is a running copy's `restore_id`, and `select issue, at, size_bytes from workspace_running_copies where restore_id = <id>` finds its row until a newer copy replaces it or the confirmation of its restore gives the kept row an id of its own.
+An id below that number is the `issue_releases.id` of the release that saved a release bundle, as before.
+Both copies of an issue go when the issue is done or its tree closes, and both stay through a linger and a park.
+
+from: `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation
+to: and no repacking of its pods.
+`karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
+Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
+So an AWS deployment gains the copy and the uncharged resume from this change, and no repacking of its pods.

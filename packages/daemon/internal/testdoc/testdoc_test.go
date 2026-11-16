@@ -8,56 +8,85 @@ import (
 	"testing"
 )
 
-// A region whose end marker wraps runs through the line the marker finishes on. Ending on the line
-// the marker starts on, as one copy of this reader did, drops the wrapped tail of the last bullet:
-// the facts that tail carries then read as missing from a document that states them.
-func TestRegionRunsThroughTheLineItsEndMarkerFinishesOn(t *testing.T) {
-	const doc = "Before the region.\n" +
-		"The region starts\n" +
+// Region answers the region its extract names by both markers, from the line the start marker
+// opens on through the line the end marker finishes on. Ending on the line the marker starts on,
+// as one copy of this reader did, drops the wrapped tail of the last bullet, and the facts that
+// tail carries then read as missing from a guide that states them. Reading another region of the
+// extract than the one both markers name, or taking the blank line that closes a region into it,
+// would hold a test's facts to lines the guide does not carry there.
+func TestRegionReadsTheRegionItsExtractNamesThroughTheLineItsEndMarkerFinishesOn(t *testing.T) {
+	const extract = "# A copy of two regions of a guide.\n" +
+		"\n" +
+		"from: A first region\n" +
+		"to: ends the region here.\n" +
+		"A first region ends the region here.\n" +
+		"\n" +
+		"from: The region starts here\n" +
+		"to: ends the region here.\n" +
+		"Before it. The region starts\n" +
 		"here and lists:\n" +
 		"\n" +
 		"- one bullet\n" +
 		"  that wraps.\n" +
 		"\n" +
 		"- the last bullet, which ends the\n" +
-		"  region here.\n" +
-		"After the region.\n"
-	lines, flat := region(t, "guide.md", doc, "the region", "The region starts here", "ends the region here.")
+		"  region here. After it.\n" +
+		"\n"
+	lines, flat := regionOfExtract(t, "guide_extract.txt", extract, "the region", "The region starts here", "ends the region here.")
 
-	if want := strings.Split(doc, "\n")[1:9]; !slices.Equal(lines, want) {
-		t.Errorf("the region's lines are %q, want %q: from the line the start marker opens on through the line the end marker finishes on", lines, want)
+	if want := strings.Split(extract, "\n")[8:16]; !slices.Equal(lines, want) {
+		t.Errorf("the region's lines are %q, want %q: the region both markers name, from the line the start marker opens on through the line the end marker finishes on", lines, want)
 	}
 	if want := "The region starts here and lists: - one bullet that wraps. - the last bullet, which ends the region here."; flat != want {
-		t.Errorf("the region's flattened text is %q, want %q", flat, want)
+		t.Errorf("the region's flattened text is %q, want %q: from the start marker's first word through the end marker's last", flat, want)
 	}
-	if bullets, want := RegionBullets(lines), []string{"one bullet that wraps.", "the last bullet, which ends the region here."}; !slices.Equal(bullets, want) {
+	if bullets, want := RegionBullets(lines), []string{"one bullet that wraps.", "the last bullet, which ends the region here. After it."}; !slices.Equal(bullets, want) {
 		t.Errorf("the region's bullets are %q, want %q: each bullet whole, its indented lines joined to it", bullets, want)
 	}
 }
 
-// A marker Region cannot place fails the test, naming the marker and the region. Each of these is
-// a region a check would otherwise read wrong while passing: a start marker gone, one found twice
-// so the first is read whichever was meant, and an end marker found only before the start.
-func TestRegionFailsNamingTheMarkerItCannotPlace(t *testing.T) {
-	const doc = "A first paragraph ends here.\nA second paragraph ends here.\n"
+// What Region cannot place fails the test, naming it, the extract and the region. Each of these is
+// a region a check would otherwise read wrong while passing: a region no longer named by the
+// test's markers, or named twice, so the guide's lines textcheck holds and the lines read here can
+// part; a start marker gone from the region, one found twice so the first is read whichever was
+// meant, and an end marker found only before the start; and an extract whose shape says no longer
+// where a region begins or ends.
+func TestRegionFailsNamingWhatItCannotPlace(t *testing.T) {
+	const twoParagraphs = "from: A first paragraph\n" +
+		"to: ends here.\n" +
+		"A first paragraph ends here.\n" +
+		"A second paragraph ends here.\n"
 	for _, row := range []struct {
-		name, start, end string
-		want             []string
+		name, extract, start, end string
+		want                      []string
 	}{
-		{"a start marker gone", "A third paragraph", "ends here.", []string{`guide.md has no "A third paragraph"`, "the region"}},
-		{"a start marker found twice", "paragraph", "ends here.", []string{`guide.md has "paragraph" more than once`, "the region"}},
-		{"an end marker only before the start", "A second paragraph", "A first", []string{`guide.md has no "A first" after "A second paragraph"`, "the region"}},
+		{"no region named by both markers", twoParagraphs, "A first paragraph", "ends there.",
+			[]string{`guide_extract.txt has 0 regions from "A first paragraph" to "ends there."`, "the region"}},
+		{"two regions named by both markers", twoParagraphs + "\n" + twoParagraphs, "A first paragraph", "ends here.",
+			[]string{`guide_extract.txt has 2 regions from "A first paragraph" to "ends here."`, "the region"}},
+		{"a start marker its region does not carry", "from: A third paragraph\nto: ends here.\nA first paragraph ends here.\n",
+			"A third paragraph", "ends here.", []string{`guide_extract.txt has no "A third paragraph"`, "the region"}},
+		{"a start marker found twice in its region", "from: paragraph\nto: ends here.\nA first paragraph ends here.\nA second paragraph ends here.\n",
+			"paragraph", "ends here.", []string{`guide_extract.txt has "paragraph" more than once`, "the region"}},
+		{"an end marker only before the start", "from: A second paragraph\nto: A first\nA first paragraph ends here.\nA second paragraph ends here.\n",
+			"A second paragraph", "A first", []string{`guide_extract.txt has no "A first" after "A second paragraph"`, "the region"}},
+		{"a region with no end marker line", "from: A first paragraph\nA first paragraph ends here.\n", "A first paragraph", "ends here.",
+			[]string{`guide_extract.txt:2: the region from "A first paragraph" has no "to: " line`}},
+		{"a line above the first region", "A first paragraph ends here.\n" + twoParagraphs, "A first paragraph", "ends here.",
+			[]string{`guide_extract.txt:1: "A first paragraph ends here." stands above the first "from: " line`}},
+		{"a region with no line of the guide", "from: A first paragraph\nto: ends here.\n\n", "A first paragraph", "ends here.",
+			[]string{`guide_extract.txt's region from "A first paragraph" carries no "to: " line or no line of the guide`}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := &recorder{TB: t}
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				region(r, "guide.md", doc, "the region", row.start, row.end)
+				regionOfExtract(r, "guide_extract.txt", row.extract, "the region", row.start, row.end)
 			}()
 			<-done
 			if r.fatal == "" {
-				t.Fatalf("Region between %q and %q returned a region of %q instead of failing", row.start, row.end, doc)
+				t.Fatalf("Region from %q to %q returned a region of %q instead of failing", row.start, row.end, row.extract)
 			}
 			for _, want := range row.want {
 				if !strings.Contains(r.fatal, want) {

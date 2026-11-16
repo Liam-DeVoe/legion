@@ -15,15 +15,23 @@ import (
 // (runningCopyUnsavedLine). An operator reads the period to know how much work an end the cluster
 // made can cost, and searches the log for the line. So the check reads each from the constants
 // themselves: a period, a budget or a line changed here is a document that must change with it,
-// and nobody has to remember to edit this file. The two regions' markers are written here alone,
-// so a reworded paragraph is one marker to change. The sandbox runtime's own doc test
+// and nobody has to remember to edit this file. The sandbox runtime's own doc test
 // (internal/runtime/sandbox's workspace_copy_doc_test.go) checks the document's other paragraphs
 // on the copy and on pod ends through the same reader, internal/testdoc.
 //
-// Each check reads one region of the document, bounded by its first and last words, and fails by
-// naming the marker it could not find: a phrase found anywhere in a document of thousands of lines
-// would answer a check about a paragraph that says the opposite. Where the fact belongs to one
-// bullet of a list, it is held to that bullet: the three kinds of end are three bullets, and a fact
+// These checks do not read the guide. They read workspace_copy_doc_extract.txt, this package's
+// own copy of the two regions in the guide's bytes, which internal/textcheck's
+// TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds to the guide's lines between the same
+// markers. The split is what keeps docs/kubernetes.md out of this job's filter: a declared read
+// applies to every compiled source file of a run, so a test that reads the guide starts the whole
+// daemon Go lane on a documentation-only edit. The copy names each region by the two markers
+// below, and internal/testdoc fails a check whose markers name no region of it, so a reworded
+// paragraph is its markers changed here, in the copy and in the guide in one commit.
+//
+// Each check reads one region, bounded by its first and last words, and fails by naming the
+// marker it could not find: a phrase found anywhere in a document of thousands of lines would
+// answer a check about a paragraph that says the opposite. Where the fact belongs to one bullet
+// of a list, it is held to that bullet: the three kinds of end are three bullets, and a fact
 // proved from the region's flat text alone would let the close's bullet stand on a sentence
 // written for the release.
 //
@@ -31,6 +39,10 @@ import (
 // daemon's behaviour. That the cadence really waits runningCopyPeriod is this package's other
 // tests' to say.
 const (
+	// workspaceCopyDocExtract is read from this package's own directory, where the file sits
+	// beside the code it is about and needs no declared read of its own.
+	workspaceCopyDocExtract = "workspace_copy_doc_extract.txt"
+
 	copyCadenceStart = "The daemon keeps a copy of each issue workspace's unpushed work outside the pod while the pod runs"
 	copyCadenceEnd   = "under the `bundle_too_large` hold"
 
@@ -46,7 +58,7 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 	period := docMinutes(t, runningCopyPeriod)
 
 	const cadence = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
-	_, region := testdoc.Region(t, "docs/kubernetes.md", cadence, copyCadenceStart, copyCadenceEnd)
+	_, region := testdoc.Region(t, workspaceCopyDocExtract, cadence, copyCadenceStart, copyCadenceEnd)
 	testdoc.RequireDocFacts(t, cadence, region, []testdoc.Fact{
 		{Fact: "the second trigger and its bound, runningCopyPeriod", Phrase: "every " + period + " while a turn of that issue runs"},
 		{Fact: "the bound on a cadence copy's start after the copy before it, whatever took that one, runningCopyPeriod less idleTickInterval at the least",
@@ -56,7 +68,7 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 	})
 
 	const ends = `docs/kubernetes.md's "What each kind of end loses and keeps" paragraph`
-	lines, _ := testdoc.Region(t, "docs/kubernetes.md", ends, endsApartStart, endsApartEnd)
+	lines, _ := testdoc.Region(t, workspaceCopyDocExtract, ends, endsApartStart, endsApartEnd)
 	if bullet, ok := testdoc.BulletNaming(t, ends, testdoc.RegionBullets(lines), "an end the cluster made"); ok {
 		testdoc.RequireDocFacts(t, ends+", its bullet for an end the cluster made", bullet, []testdoc.Fact{
 			{Fact: "how much work the restored copy can be behind, runningCopyPeriod", Phrase: period},
@@ -71,7 +83,7 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 // checked against them (TestKubernetesDocStatesTheRunningCopysConstants).
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 	const what = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
-	_, region := testdoc.Region(t, "docs/kubernetes.md", what, copyCadenceStart, copyCadenceEnd)
+	_, region := testdoc.Region(t, workspaceCopyDocExtract, what, copyCadenceStart, copyCadenceEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
 		{Fact: "the first trigger, a turn's end", Phrase: "the end of each turn of the issue"},
 		{Fact: "that the period runs from the start of the copy before it", Phrase: "from the start of the copy before it"},
@@ -94,7 +106,7 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 // reader tells an end the cluster made from an idle release and from an issue's close by them.
 func TestKubernetesDocStatesWhatEachKindOfPodEndLosesAndKeeps(t *testing.T) {
 	const what = `docs/kubernetes.md's "What each kind of end loses and keeps" paragraph`
-	lines, _ := testdoc.Region(t, "docs/kubernetes.md", what, endsApartStart, endsApartEnd)
+	lines, _ := testdoc.Region(t, workspaceCopyDocExtract, what, endsApartStart, endsApartEnd)
 	bullets := testdoc.RegionBullets(lines)
 	if len(bullets) != 3 {
 		t.Fatalf("%s lists %d kinds of end, want the 3 a reader tells apart: %q", what, len(bullets), bullets)

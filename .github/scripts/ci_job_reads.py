@@ -512,6 +512,19 @@ RULES = {
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/upgrade_way_back_extract.txt for "
          "way_back_doc_test.go:45, the committed copy it holds the guide's block to (quotedBody)")),
+    # internal/daemon/workspace_copy_doc_test.go and internal/runtime/sandbox/
+    # workspace_copy_doc_test.go read no text outside their own packages and have no row: each
+    # reads the workspace_copy_doc_extract.txt beside it through internal/testdoc, and this row is
+    # what holds those two copies to the guide, in the text-check job (dispatch://INFRA-1117).
+    f"{DAEMON}/internal/textcheck/workspace_copy_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
+                               "for workspace_copy_doc_test.go:54 (shippedText)"),
+        (f"{DAEMON}/internal/daemon/workspace_copy_doc_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/workspace_copy_doc_extract.txt for "
+         "workspace_copy_doc_test.go:99, the committed copy it holds the guide's regions to (readExtract)"),
+        (f"{DAEMON}/internal/runtime/sandbox/workspace_copy_doc_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../runtime/sandbox/workspace_copy_doc_extract.txt "
+         "for workspace_copy_doc_test.go:99, the committed copy it holds the guide's regions to (readExtract)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
