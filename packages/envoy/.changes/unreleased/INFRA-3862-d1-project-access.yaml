@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The secrets broker can ask Dispatch whether a project is private, whether a person may see it,
+  and what kind of member a person is (`internal/broker/projectaccess`). Set
+  `BROKER_PROJECT_ACCESS_URL` to Dispatch's base URL and `BROKER_PROJECT_ACCESS_TOKEN_FILE` to the
+  broker's own projected ServiceAccount token for Dispatch's audience, both or neither; one alone
+  refuses the start naming the other. Answers are kept 30 seconds. With neither set the broker asks
+  Dispatch nothing and behaves as before.
+time: 2026-11-16T01:48:34Z
+custom:
+    Issue: INFRA-3862

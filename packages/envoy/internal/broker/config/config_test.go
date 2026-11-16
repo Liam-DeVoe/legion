@@ -2089,3 +2089,50 @@ func TestTheJudgesURLsAreHeldToTheirForm(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectAccessSettingsComeTogether pins BROKER_PROJECT_ACCESS_URL and
+// BROKER_PROJECT_ACCESS_TOKEN_FILE: neither set is a broker that asks Dispatch nothing, which is
+// every deployment with no private project; both set are read as given, the URL without the
+// slashes it ends in; one alone refuses the start naming the other, as the judge's settings do;
+// and a URL that is no absolute http(s) URL refuses the start naming the setting.
+func TestProjectAccessSettingsComeTogether(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectAccessURL != "" || cfg.ProjectAccessTokenFile != "" {
+		t.Fatalf("with neither set the broker reads URL %q and token file %q; want both empty", cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	}
+
+	e := validEnv()
+	e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766//"
+	e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectAccessURL != "http://dispatch.internal.example:8766" || cfg.ProjectAccessTokenFile != "/var/run/secrets/dispatch-access/token" {
+		t.Fatalf("with both set the broker reads URL %q and token file %q; want the URL without its trailing slashes and the file as given", cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	}
+
+	for set, missing := range map[string]string{
+		"BROKER_PROJECT_ACCESS_URL":        "BROKER_PROJECT_ACCESS_TOKEN_FILE",
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE": "BROKER_PROJECT_ACCESS_URL",
+	} {
+		alone := validEnv()
+		alone[set] = e[set]
+		_, err := Load(env(alone))
+		if err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("Load(%s alone) = %v; want a refusal naming %s", set, err, missing)
+		}
+	}
+
+	for _, bad := range []string{"dispatch.internal.example", "//dispatch.internal.example", "ftp://dispatch.internal.example", "http://", "http://%zz"} {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = bad
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
+			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
+		}
+	}
+}

@@ -307,6 +307,18 @@ type Config struct {
 	// control of the check the judge belongs to. For the broker's local stack alone: a
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
+	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
+	// is private, whether a person may see it, and what kind of member a person is
+	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
+	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
+	// Dispatch nothing, a token or an enrollment that names no project is made as before, and
+	// one that names a project is refused, since nothing could say its person may see it.
+	ProjectAccessURL string
+	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
+	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
+	// asks and not at boot, through brokertoken.AccountToken, which reads the file again once what
+	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
+	ProjectAccessTokenFile string
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -1261,6 +1273,8 @@ func Load(getenv func(string) string) (Config, error) {
 		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
 		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
 		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
+		ProjectAccessURL:          strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_URL")), "/"),
+		ProjectAccessTokenFile:    strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_TOKEN_FILE")),
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
 		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
@@ -1401,6 +1415,21 @@ func Load(getenv func(string) string) (Config, error) {
 		if !slices.Contains(judgeModelProtocols, cfg.JudgeModelProtocol) {
 			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
 				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
+		}
+	}
+	// The project-access settings are both or neither, as the judge's are: a URL with no token to
+	// present would be refused at every call, and a token with nowhere to present it asks nothing,
+	// so either alone is a deployment that meant to turn the check on and did not.
+	switch {
+	case cfg.ProjectAccessURL == "" && cfg.ProjectAccessTokenFile == "":
+		// No project-access check, which is every deployment with no private project.
+	case cfg.ProjectAccessTokenFile == "":
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_URL is set and BROKER_PROJECT_ACCESS_TOKEN_FILE is not: the broker presents its own projected ServiceAccount token from that file on every call to Dispatch, so set both or neither")
+	case cfg.ProjectAccessURL == "":
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_TOKEN_FILE is set and BROKER_PROJECT_ACCESS_URL is not: that URL names the Dispatch the broker asks about projects, so set both or neither")
+	default:
+		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
+			return Config{}, err
 		}
 	}
 	switch cfg.SecretsStore {
