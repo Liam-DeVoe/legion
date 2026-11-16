@@ -15831,6 +15831,46 @@ test("an edit an older build takes does not say Dispatch keeps the body it repla
   expect(result.text).not.toContain("Dispatch keeps the body it replaced");
 });
 
+// An empty comment id puts the request at /api/v1/comments/, and a Dispatch of this release
+// answers that path with its router's no-route 404 too, since no route takes an empty id. So
+// the empty id must be refused before any request: read as an answer, it says a current server
+// predates post corrections, and the caller then posts a second comment saying what changed.
+for (const [tool, args] of [
+  ["dispatch_edit_comment", { comment: "", body: "corrected text" }],
+  ["dispatch_delete_comment", { comment: "" }],
+] as const) {
+  test(`${tool} refuses an empty comment id without calling Dispatch`, async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      requests.push(`${init?.method ?? "GET"} ${pathname}`);
+      return response(
+        { code: "NOT_FOUND", error: `no route for ${init?.method ?? "GET"} ${pathname}` },
+        404
+      );
+    };
+    const error: unknown = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      sleep: async () => {},
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain("predates post corrections");
+    expect(requests).toEqual([]);
+  });
+}
+
 test("dispatch delete-comment against a Dispatch without the route says that server predates corrections", async () => {
   await expect(
     olderDispatch("dispatch_delete_comment", { comment: correctedComment })
