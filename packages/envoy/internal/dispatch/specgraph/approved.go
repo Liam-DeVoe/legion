@@ -12,11 +12,11 @@ import (
 
 // ApprovedVersion is one text that the approved spec held for a node (R2: "Dispatch keeps each
 // text that the approved spec held"): its version number, the time of the approval that wrote it,
-// and Block, the node's block as Print writes it, which a change copies into the files.
+// and Document, the node's YAML document as Print writes it, which a change copies into the files.
 type ApprovedVersion struct {
-	Version int       `json:"version"`
-	At      time.Time `json:"at"`
-	Block   string    `json:"block"`
+	Version  int       `json:"version"`
+	At       time.Time `json:"at"`
+	Document string    `json:"document"`
 }
 
 // ApprovedNode is one statement, check, component, interface or term of the approved spec, with
@@ -38,13 +38,13 @@ type Approved struct {
 
 // ReadApproved reads an approved spec in the form of approved.json:
 //
-//	{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}
+//	{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","document"}]}]}
 //
 // It refuses what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is
 // written in other letters, a field that one object gives two times, text after the object), a
 // node with no id, an id on two nodes, a node with no version, version numbers that do not go up
-// from 1, a version with no time or older than the one before it, and a block that is not its
-// node's one block as Print writes it. The error names the node and the version.
+// from 1, a version with no time or older than the one before it, and a document that is not its
+// node's one document as Print writes it. The error names the node and the version.
 func ReadApproved(r io.Reader) (Approved, error) {
 	var file struct {
 		Nodes []ApprovedNode `json:"nodes"`
@@ -84,7 +84,7 @@ func (n ApprovedNode) check() error {
 			fault = fmt.Sprintf("it is older than version %d", n.Versions[i-1].Version)
 		default:
 			if _, problems := versionText(n.ID, v); len(problems) != 0 {
-				fault = fmt.Sprintf("%s (line %d of its block)", problems[0].Detail, problems[0].Pos.Line)
+				fault = fmt.Sprintf("%s (line %d of its document)", problems[0].Detail, problems[0].Pos.Line)
 			}
 		}
 		if fault != "" {
@@ -96,8 +96,8 @@ func (n ApprovedNode) check() error {
 
 // Current is the tree of the current text of each node that the approved spec did not remove.
 // Each node is at the position "approved <id> version <n>", line 1. A caller that builds an
-// Approved itself, as the pilot does from the store, can give a block that ReadApproved would
-// refuse: Current leaves that node out and gives each problem of its block.
+// Approved itself, as the pilot does from the store, can give a document that ReadApproved would
+// refuse: Current leaves that node out and gives each problem of its document.
 func (a Approved) Current() (Tree, []Problem) {
 	var tree Tree
 	var problems []Problem
@@ -131,27 +131,35 @@ func (a Approved) Since(id string) time.Time {
 }
 
 // versionText is the tree of the one node that version v of the approved node id holds, at the
-// position "approved <id> version <n>". problems is each reason it holds none: a line that Parse
-// refuses, or bad-approved-block for a block of no node or of two, of a node with another id, or
-// not as Print writes its node.
+// position "approved <id> version <n>". problems is each reason it holds none: a problem of the
+// reader in the document (bad-yaml, no-node, bad-time-limit), or bad-approved-document for a
+// document of no node or of two, of a node with another id, or not as Print writes its node. The
+// schema's problems are the rules' of the files, as Validate's are, and pass here: an approved text
+// that breaks a rule reads as its node, so a check with no failing example reads as such (R9).
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
-	tree, problems := Parse(map[string][]byte{name: []byte(v.Block)})
+	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
+	// Parse holds a document with no problem to the document that Print writes (not-printed); a
+	// document with a problem of the schema it does not hold to it, so the check below does.
+	shaped := len(problems) > 0
+	problems = slices.DeleteFunc(problems, func(p Problem) bool { return p.Rule == "schema" })
 	if len(problems) != 0 {
 		return Tree{}, problems
 	}
 	refuse := func(detail string) (Tree, []Problem) {
-		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, "bad-approved-block: "+detail)}
+		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, "bad-approved-document: "+detail)}
 	}
 	nodes := nodesOf(tree)
 	switch {
 	case len(nodes) != 1:
-		return refuse(fmt.Sprintf("the block holds %d nodes, not one", len(nodes)))
+		return refuse(fmt.Sprintf("the document holds %d nodes, not one", len(nodes)))
 	case nodes[0].id != id:
-		return refuse(fmt.Sprintf("the block holds node %q, not %q", nodes[0].id, id))
+		return refuse(fmt.Sprintf("the document is of node %q, not %q", nodes[0].id, id))
 	}
-	if printed, err := nodes[0].node.Print(); err != nil || printed != v.Block {
-		return refuse("the block is not as Print writes it")
+	if shaped {
+		if printed, err := nodes[0].node.Print(); err != nil || printed != v.Document {
+			return refuse("the document is not as Print writes it")
+		}
 	}
 	return tree, nil
 }

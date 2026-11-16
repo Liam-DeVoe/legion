@@ -107,10 +107,10 @@ func TestScenarioRefusals(t *testing.T) {
 	replace := func(file, old, new string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) { replaceIn(t, filepath.Join(dir, file), old, new) }
 	}
-	const failingExample = "Failing example: A listener that deletes its stored messages when it starts.\n"
+	const failingExample = "failing_example:\n  - A listener that deletes its stored messages when it starts.\n"
 	const firstOutcome = `"outcome": "pass",`
-	serving := ":::requirement{#messages-reach-sessions kind=\"behavior\"}"
-	loop := ":::requirement{#messages-reach-sessions kind=\"behavior\" serves=\"a-stored-message-survives-a-restart\"}"
+	serving := "id: messages-reach-sessions\nkind: behavior\n"
+	loop := "id: messages-reach-sessions\nkind: behavior\nserves:\n  - a-stored-message-survives-a-restart\n"
 	loopDetail := "loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[serves]-> a-stored-message-survives-a-restart"
 	for _, row := range []struct {
 		name, scenario string
@@ -125,18 +125,18 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a check with no failing example", "carry", func(t *testing.T, dir string) {
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 				v := &approvedNode(t, nodes, "a-restart-loses-no-message").Versions[0]
-				v.Block = strings.Replace(v.Block, failingExample, "", 1)
+				v.Document = strings.Replace(v.Document, failingExample, "", 1)
 				return nodes
 			})
 			editSpecFiles(t, dir, failingExample, "")
-		}, filepath.Join("files", "c2", "spec.md") + ":20", "a-restart-loses-no-message: no-failing-example: the check has no failing example"},
+		}, filepath.Join("files", "c2", "spec.yaml") + ":32", "a-restart-loses-no-message: schema: node: missing property 'failing_example'"},
 		// R6: "Each leaf statement has one or more checks."
 		{"a leaf with no check", "carry", func(t *testing.T, dir string) { removeCheck(t, dir, "production-delivery-takes-under-a-second") },
-			filepath.Join("files", "c2", "spec.md") + ":1", "delivery-is-fast: leaf-without-check: no statement is under it and no check serves it"},
+			filepath.Join("files", "c2", "spec.yaml") + ":1", "delivery-is-fast: leaf-without-check: no statement is under it and no check serves it"},
 		// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
 		// change that makes one."
 		{"a loop of parent and support relations in the files", "carry", func(t *testing.T, dir string) { editSpecFiles(t, dir, serving, loop) },
-			filepath.Join("files", "c2", "spec.md") + ":16", "a-stored-message-survives-a-restart: " + loopDetail},
+			filepath.Join("files", "c2", "spec.yaml") + ":27", "a-stored-message-survives-a-restart: " + loopDetail},
 		{"a loop of parent and support relations in the approved spec", "carry", func(t *testing.T, dir string) {
 			looping := specgraph.Statement{ID: "messages-reach-sessions", Kind: specgraph.KindBehavior,
 				Serves: []string{"a-stored-message-survives-a-restart"}, Text: "Envoy delivers each message to the session that it is for."}
@@ -145,7 +145,7 @@ func TestScenarioRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Block = block
+				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Document = block
 				return nodes
 			})
 		}, "approved.json", loopDetail},
@@ -180,8 +180,10 @@ func TestScenarioRefusals(t *testing.T) {
 			"notes.txt", "the format of a scenario holds no such file"},
 		{"no subjects.json", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "subjects.json")) },
 			"subjects.json", "does not exist"},
-		{"a spec file that does not parse", "carry", write(filepath.Join("files", "c2", "spec.md"), "A line outside a block.\n"),
-			filepath.Join("files", "c2", "spec.md") + ":1", "-: text-outside-block: a spec file holds only blocks, headings and blank lines"},
+		{"a spec file that does not read", "carry", write(filepath.Join("files", "c2", "spec.yaml"), "A line that is no node.\n"),
+			filepath.Join("files", "c2", "spec.yaml") + ":1", "-: schema: node: got string, want object"},
+		{"a spec file that is not YAML", "carry", write(filepath.Join("files", "c2", "spec.md"), "A spec file of the block format.\n"),
+			filepath.Join("files", "c2", "spec.md"), "the spec files of a commit are *.yaml files directly in its directory"},
 		{"a subject whose commit has no spec files", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "files", "c4")) },
 			filepath.Join("files", "c4"), "does not exist, and subject 4 reads the spec files of its commit there"},
 		{"spec files that no subject reads", "carry", func(t *testing.T, dir string) {
@@ -307,12 +309,12 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		spec := filepath.Join(dir, "files", "m1", "spec.md")
+		spec := filepath.Join(dir, "files", "m1", "spec.yaml")
 		content, err := os.ReadFile(spec)
 		if err != nil {
 			t.Fatal(err)
 		}
-		writeFile(t, spec, append(append(content, '\n'), block...))
+		writeFile(t, spec, append(content, block...))
 	}
 	holds := "wait of u-b on a-message-survives-a-restart: holds (not met)"
 	for _, row := range []struct {
@@ -386,12 +388,12 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			spec := filepath.Join(dir, "files", "m2", "spec.md")
+			spec := filepath.Join(dir, "files", "m2", "spec.yaml")
 			content, err := os.ReadFile(spec)
 			if err != nil {
 				t.Fatal(err)
 			}
-			writeFile(t, spec, append(append(content, '\n'), block...))
+			writeFile(t, spec, append(content, block...))
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
 			results = append(results,
@@ -430,7 +432,7 @@ func addApproved(t *testing.T, dir, id string, node interface{ Print() (string, 
 		t.Fatal(err)
 	}
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Block: block}}})
+		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Document: block}}})
 	})
 }
 
@@ -444,18 +446,18 @@ func approvedNode(t *testing.T, nodes []specgraph.ApprovedNode, id string) *spec
 	return &nodes[i]
 }
 
-// removeCheck takes the check id out of the scenario at dir: its node of approved.json, its block
-// from each spec file (the block of its version 1, which the files hold), its results and its tie.
-// The results and the ties are edited as JSON values, since no type of specgraph holds the form of
-// results.json, and a row of a test takes a member out of a result.
+// removeCheck takes the check id out of the scenario at dir: its node of approved.json, its
+// document from each spec file (the document of its version 1, which the files hold), its results
+// and its tie. The results and the ties are edited as JSON values, since no type of specgraph holds
+// the form of results.json, and a row of a test takes a member out of a result.
 func removeCheck(t *testing.T, dir, id string) {
 	t.Helper()
 	var block string
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		block = approvedNode(t, nodes, id).Versions[0].Block
+		block = approvedNode(t, nodes, id).Versions[0].Document
 		return slices.DeleteFunc(nodes, func(n specgraph.ApprovedNode) bool { return n.ID == id })
 	})
-	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.md"))
+	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no spec file under %s: %v", dir, err)
 	}
@@ -465,14 +467,10 @@ func removeCheck(t *testing.T, dir, id string) {
 			t.Fatal(err)
 		}
 		text := string(content)
-		switch {
-		case strings.Contains(text, block+"\n"):
-			text = strings.Replace(text, block+"\n", "", 1)
-		case strings.Contains(text, "\n"+block):
-			text = strings.Replace(text, "\n"+block, "", 1)
-		default:
-			t.Fatalf("%s does not hold the block of %s", path, id)
+		if !strings.Contains(text, block) {
+			t.Fatalf("%s does not hold the document of %s", path, id)
 		}
+		text = strings.Replace(text, block, "", 1)
 		writeFile(t, path, []byte(text))
 	}
 	var results []map[string]any
@@ -507,11 +505,11 @@ func writeJSONFile(t *testing.T, path string, v any) {
 	writeFile(t, path, out)
 }
 
-// editSpecFiles replaces old by new in each files/<commit>/spec.md of dir, and fails when one of
+// editSpecFiles replaces old by new in each files/<commit>/spec.yaml of dir, and fails when one of
 // them does not hold old, so that no row passes on a change that changed nothing.
 func editSpecFiles(t *testing.T, dir, old, new string) {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.md"))
+	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no spec file under %s: %v", dir, err)
 	}

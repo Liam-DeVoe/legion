@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,14 +35,14 @@ func testCompare(t *testing.T, binary string) {
 		line          int
 		node, detail  string
 	}{
-		{"one-word", "orders.md", 7, "an-order-survives-a-restart", unapprovedText},
-		{"unapproved-statement", "orders.md", 29, "each-order-gets-one-bill", unapprovedID},
-		{"check-text", "orders.md", 11, "a-restart-keeps-each-order", unapprovedText},
-		{"component-purpose", "components.md", 7, "orders", unapprovedText},
-		{"interface-joins", "components.md", 11, "orders-to-billing", unapprovedText},
-		{"term-definition", "components.md", 19, "order", unapprovedText},
-		{"removed-id-reused", "orders.md", 29, "an-order-is-paid-once", removedID},
-		{"one-of-four", "orders.md", 29, "each-order-gets-one-bill", unapprovedText},
+		{"one-word", "orders.yaml", 7, "an-order-survives-a-restart", unapprovedText},
+		{"unapproved-statement", "orders.yaml", 51, "each-order-gets-one-bill", unapprovedID},
+		{"check-text", "orders.yaml", 14, "a-restart-keeps-each-order", unapprovedText},
+		{"component-purpose", "components.yaml", 8, "orders", unapprovedText},
+		{"interface-joins", "components.yaml", 15, "orders-to-billing", unapprovedText},
+		{"term-definition", "components.yaml", 32, "order", unapprovedText},
+		{"removed-id-reused", "orders.yaml", 51, "an-order-is-paid-once", removedID},
+		{"one-of-four", "orders.yaml", 51, "each-order-gets-one-bill", unapprovedText},
 	} {
 		covered[row.fixture] = true
 		t.Run(row.fixture+" fails on one node", func(t *testing.T) {
@@ -122,8 +121,8 @@ func testCompare(t *testing.T, binary string) {
 		t.Parallel()
 		dir := t.TempDir()
 		for name, ids := range map[string][]string{
-			"orders.md":     {"a-restart-keeps-each-order"},
-			"components.md": {"shipping", "orders-to-billing", "order"},
+			"orders.yaml":     {"a-restart-keeps-each-order"},
+			"components.yaml": {"shipping", "orders-to-billing", "order"},
 		} {
 			content, err := os.ReadFile(fixture(t, "compare", "approved-text", "spec", name))
 			if err != nil {
@@ -131,7 +130,7 @@ func testCompare(t *testing.T, binary string) {
 			}
 			text := string(content)
 			for _, id := range ids {
-				text = withoutBlock(t, text, id)
+				text = withoutDocument(t, text, id)
 			}
 			writeFile(t, filepath.Join(dir, name), []byte(text))
 		}
@@ -148,11 +147,12 @@ func testCompare(t *testing.T, binary string) {
 			if n.ID != "a-restart-keeps-each-order" && n.ID != "shipping" && n.ID != "orders-to-billing" && n.ID != "order" {
 				return
 			}
-			// Version 2 adds one word to the first line of the text of version 1.
+			// Version 2 adds one word to the first line of the text of version 1 that ends a
+			// sentence.
 			n.Versions = append(n.Versions, specgraph.ApprovedVersion{
-				Version: 2,
-				At:      time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC),
-				Block:   strings.Replace(n.Versions[0].Block, ".\n", " now.\n", 1),
+				Version:  2,
+				At:       time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC),
+				Document: strings.Replace(n.Versions[0].Document, ".\n", " now.\n", 1),
 			})
 			changed++
 		})
@@ -171,22 +171,22 @@ func testCompare(t *testing.T, binary string) {
 	// follows a noun in the singular.
 	t.Run("the first line of compare gives its noun and its verb one number", func(t *testing.T) {
 		t.Parallel()
-		only := func(keep func(id, block string) bool) string {
+		only := func(keep func(id, document string) bool) string {
 			return approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
-				if !keep(n.ID, n.Versions[len(n.Versions)-1].Block) {
+				if !keep(n.ID, n.Versions[len(n.Versions)-1].Document) {
 					n.Removed = true
 				}
 			})
 		}
 		oneStatement := only(func(id, _ string) bool { return id == "acme-keeps-each-order" })
-		threeStatements := only(func(_, block string) bool { return strings.HasPrefix(block, ":::requirement{") })
+		threeStatements := only(func(_, document string) bool { return strings.HasPrefix(document, "---\ntype: requirement\n") })
 		empty, one := t.TempDir(), t.TempDir()
-		writeFile(t, filepath.Join(empty, "spec.md"), nil)
-		writeFile(t, filepath.Join(one, "spec.md"), []byte(":::requirement{#acme-keeps-each-order kind=\"behavior\"}\nACME keeps each order that a customer sends.\n:::\n"))
+		writeFile(t, filepath.Join(one, "spec.yaml"), []byte("---\ntype: requirement\nid: acme-keeps-each-order\nkind: behavior\ntext:\n  - ACME keeps each order that a customer sends.\n"))
 		held := ": the approved spec held every text that the files hold; "
-		expect(t, runBinary(t, binary, "", "compare", "--dir", empty, "--approved", oneStatement), result{
+		expect(t, runBinary(t, binary, "", "compare", "--allow-empty", "--dir", empty, "--approved", oneStatement), result{
 			stdout: "spec-check: " + empty + held + "0 of 1 approved statements are in the files at their current text\n" +
 				"spec-check: statement acme-keeps-each-order: not in the files\n",
+			stderr: "spec-check: " + empty + ": holds no spec file, so compare reads it as the empty tree\n",
 		})
 		expect(t, runBinary(t, binary, "", "compare", "--dir", one, "--approved", oneStatement), result{
 			stdout: "spec-check: " + one + held + "1 of 1 approved statement is in the files at its current text\n",
@@ -201,7 +201,7 @@ func testCompare(t *testing.T, binary string) {
 	t.Run("two nodes in texts never approved are two lines, in file and line order", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		for _, name := range []string{"orders.md", "components.md"} {
+		for _, name := range []string{"orders.yaml", "components.yaml"} {
 			content, err := os.ReadFile(fixture(t, "compare", "approved-text", "spec", name))
 			if err != nil {
 				t.Fatal(err)
@@ -212,17 +212,17 @@ func testCompare(t *testing.T, binary string) {
 		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", fixture(t, "compare", "approved-text", "approved.json")), result{
 			code:   1,
 			stdout: "spec-check: " + dir + ": the comparison fails on 2 nodes\n",
-			stderr: "spec-check: " + filepath.Join(dir, "components.md") + ":7: orders: " + unapprovedText + "\n" +
-				"spec-check: " + filepath.Join(dir, "orders.md") + ":7: an-order-survives-a-restart: " + unapprovedText + "\n",
+			stderr: "spec-check: " + filepath.Join(dir, "components.yaml") + ":8: orders: " + unapprovedText + "\n" +
+				"spec-check: " + filepath.Join(dir, "orders.yaml") + ":7: an-order-survives-a-restart: " + unapprovedText + "\n",
 		})
 	})
-	t.Run("compare makes no comparison of files that do not parse", func(t *testing.T) {
+	t.Run("compare makes no comparison of files that do not read", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, "a.md"), []byte("A line outside a block.\n"))
+		writeFile(t, filepath.Join(dir, "a.yaml"), []byte("A line that is no node.\n"))
 		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", fixture(t, "compare", "approved-text", "approved.json")), result{
 			code: 2,
-			stderr: "spec-check: " + filepath.Join(dir, "a.md") + ":1: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n" +
+			stderr: "spec-check: " + filepath.Join(dir, "a.yaml") + ":1: -: schema: node: got string, want object\n" +
 				"spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
 		})
 	})
@@ -326,7 +326,7 @@ func testCompare(t *testing.T, binary string) {
 		t.Parallel()
 		ci := []string{"GITHUB_ACTIONS=true", "CI=true"}
 		approved := fixture(t, "compare", "approved-text", "approved.json")
-		if got := runBinaryIn(t, binary, "", ci, "print", "--approved", approved, "--id", "order"); got.code != 0 || got.stderr != "" {
+		if got := runBinaryIn(t, binary, "", ci, "print", "--approved", approved, "--id", "order", "--dir", t.TempDir()); got.code != 0 || got.stderr != "" {
 			t.Errorf("print in a CI job: exit %d, stderr %q; want exit 0", got.code, got.stderr)
 		}
 		clean := ciFiles(t, "clean")
@@ -397,25 +397,29 @@ func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
 			replaceIn(t, approved, row.old, row.new)
 			want := result{code: 2, stderr: "spec-check: " + approved + ": specgraph: approved spec: " + row.fault + "\n"}
 			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(fixtureDir, "spec"), "--approved", approved), want)
-			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "acme-keeps-each-order"), want)
+			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "acme-keeps-each-order", "--dir", t.TempDir()), want)
 		})
 	}
 }
 
-// withoutBlock is text with the block of the node id taken out, from its opening line to its
-// closing ":::" line.
-func withoutBlock(t *testing.T, text, id string) string {
+// withoutDocument is text, a spec file, with the document of the node id taken out, from its
+// "---" line to the next.
+func withoutDocument(t *testing.T, text, id string) string {
 	t.Helper()
-	lines := strings.SplitAfter(text, "\n")
-	start := slices.IndexFunc(lines, func(line string) bool {
-		return strings.HasPrefix(line, ":::") && (strings.Contains(line, "{#"+id+" ") || strings.Contains(line, "{#"+id+"}"))
-	})
-	if start < 0 {
-		t.Fatalf("the text holds no block of %s", id)
+	var kept, documents []string
+	for line := range strings.Lines(text) {
+		if line == "---\n" {
+			documents = append(documents, "")
+		}
+		documents[len(documents)-1] += line
 	}
-	end := slices.IndexFunc(lines[start+1:], func(line string) bool { return strings.TrimRight(line, "\r\n") == ":::" })
-	if end < 0 {
-		t.Fatalf("the block of %s has no closing line", id)
+	for _, document := range documents {
+		if !strings.Contains(document, "\nid: "+id+"\n") {
+			kept = append(kept, document)
+		}
 	}
-	return strings.Join(slices.Delete(lines, start, start+end+2), "")
+	if len(kept) == len(documents) {
+		t.Fatalf("the text holds no document of %s", id)
+	}
+	return strings.Join(kept, "")
 }

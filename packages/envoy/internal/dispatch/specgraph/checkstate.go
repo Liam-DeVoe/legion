@@ -173,15 +173,17 @@ type checkJudge struct {
 	changed map[string]changedPaths // History.Changed(commit, Subject.Commit), by commit
 }
 
-// refusals is the first rule, in Validate's order, that refuses each check and statement of files
-// (the derivation gives no clean state for a tree that the rules refuse, since the pilot calls it
-// with no reader). A problem that names a check or a statement refuses that node. Any other
-// problem, of a component, an interface, a term or no node, refuses each check and statement of
-// files: a file is no relation of The Spec, so the split of the tree into files changes no state.
-// Validate runs with no Options, as the scenario reader runs it: the files may still hold a node
-// that the approved spec removed (Compare).
+// refusals is the first rule, in the order of SortProblems, that refuses each check and statement
+// of files (the derivation gives no clean state for a tree that the rules refuse, since the pilot
+// calls it with no reader): the schema's rules over the data of each node (schemaProblems), then
+// Validate's. A problem that names a check or a statement refuses that node. Any other problem, of
+// a component, an interface, a term or no node, refuses each check and statement of files: a file
+// is no relation of The Spec, so the split of the tree into files changes no state. Validate runs
+// with no Options, as the scenario reader runs it: the files may still hold a node that the
+// approved spec removed (Compare).
 func refusals(files Tree) map[string]string {
-	problems := Validate(files, Options{})
+	problems := append(schemaProblems(files), Validate(files, Options{})...)
+	SortProblems(problems)
 	if len(problems) == 0 {
 		return nil
 	}

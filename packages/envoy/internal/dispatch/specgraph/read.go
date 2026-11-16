@@ -18,6 +18,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 	"gopkg.in/yaml.v3"
@@ -66,12 +67,11 @@ type document struct {
 
 // readDocuments reads the documents of one spec file, the steps of readFile before the schema: it
 // decodes each document with yaml.v3 into a yaml.Node, then into a value, and writes the value as
-// JSON. A fault of the YAML is bad-yaml: one that ends the stream stops the reading and keeps the
-// documents before it; one that only its document holds, such as a key written two times or a key
-// that is not a string, keeps the document with no data. A file with no document is no-node.
-func readDocuments(name string, data []byte) ([]document, []Problem) {
-	var documents []document
-	var problems []Problem
+// JSON. A fault of the YAML is bad-yaml: one that ends the stream stops the reading, keeps the
+// documents before it and answers stopped; one that only its document holds, such as a key written
+// two times or a key that is not a string, keeps the document with no data. A file with no
+// document is no-node.
+func readDocuments(name string, data []byte) (documents []document, problems []Problem, stopped bool) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	for {
 		var doc yaml.Node
@@ -81,6 +81,7 @@ func readDocuments(name string, data []byte) ([]document, []Problem) {
 		}
 		if err != nil {
 			problems = append(problems, yamlProblem(name, err.Error(), 1))
+			stopped = true
 			break
 		}
 		d := document{line: doc.Line}
@@ -106,7 +107,7 @@ func readDocuments(name string, data []byte) ([]document, []Problem) {
 	if len(documents) == 0 && len(problems) == 0 {
 		problems = append(problems, idProblem(Position{File: name, Line: 1}, "", "no-node: a spec file holds one or more nodes"))
 	}
-	return documents, problems
+	return documents, problems, stopped
 }
 
 // yamlProblem is the bad-yaml problem of one message of yaml.v3, without its "yaml: " prefix, at
@@ -142,13 +143,17 @@ func stringKeys(value any) bool {
 	return true
 }
 
-// readFile reads one spec file: each node of its documents, in order, with Pos{name, the line of
-// its document's "---"}, and each problem. A document whose data the schema refuses still gives
-// its node when its keys have the schema's types, so one fault gives one problem. When the file
-// has no other problem, it must be exactly the documents that printNode writes for its nodes, in
-// its order: one node has one spelling.
-func readFile(name string, data []byte) ([]any, []Problem) {
-	documents, problems := readDocuments(name, data)
+// readFile reads one spec file: each of its documents, in order, with its node (Pos{name, the
+// line of its document's "---"}, nil for a document that gives none) and its text, and each
+// problem. A document whose data the schema refuses still gives its node when its keys have the
+// schema's types, so one fault gives one problem. When the file has no other problem, it must be
+// exactly the documents that printNode writes for its nodes, in its order: one node has one
+// spelling. The texts of the documents, joined, are data: the text of a document runs from the
+// line of its "---" to the next document's (the first from the start of the file), and the part of
+// a file after a fault that stopped the reading is a document of its own with no node, from the
+// first line after the last document read that starts the next one ("---" or "...").
+func readFile(name string, data []byte) ([]Document, []Problem) {
+	documents, problems, stopped := readDocuments(name, data)
 	var nodes []any
 	var lines []int
 	for _, d := range documents {
@@ -167,7 +172,100 @@ func readFile(name string, data []byte) ([]any, []Problem) {
 			problems = append(problems, idProblem(Position{File: name, Line: line}, nodeID(node), fmt.Sprintf("not-printed: line %d is not as Print writes the node", line)))
 		}
 	}
-	return nodes, problems
+	return splitFile(data, documents, nodes, lines, stopped), problems
+}
+
+// splitFile is the documents of data, each with its node: documents is each document read, at
+// its line, and nodes the node of each document at lines that gave one.
+func splitFile(data []byte, documents []document, nodes []any, lines []int, stopped bool) []Document {
+	text := string(data)
+	// starts is the byte offset of the start of each line, from line 1.
+	starts := []int{0}
+	for i := range len(text) {
+		if text[i] == '\n' {
+			starts = append(starts, i+1)
+		}
+	}
+	offset := func(line int) int { return starts[min(max(line, 1), len(starts))-1] }
+	cuts := make([]int, 0, len(documents)+1)
+	for i, d := range documents {
+		at := offset(d.line)
+		if i == 0 {
+			at = 0
+		}
+		cuts = append(cuts, at)
+	}
+	if stopped {
+		rest := len(text)
+		if len(documents) == 0 {
+			rest = 0
+		} else {
+			for line := documents[len(documents)-1].line + 1; line <= len(starts); line++ {
+				if l := text[offset(line):]; strings.HasPrefix(l, "---") || strings.HasPrefix(l, "...") {
+					rest = offset(line)
+					break
+				}
+			}
+		}
+		cuts = append(cuts, rest)
+	}
+	var result []Document
+	for i, at := range cuts {
+		end := len(text)
+		if i+1 < len(cuts) {
+			end = cuts[i+1]
+		}
+		if at == end && i == len(documents) {
+			continue // a stop at the end of the file leaves no text after the documents
+		}
+		d := Document{Text: text[at:end]}
+		if i < len(documents) {
+			if k := slices.Index(lines, documents[i].line); k >= 0 {
+				d.Node = nodes[k]
+			}
+		}
+		result = append(result, d)
+	}
+	if len(result) == 0 && len(text) > 0 {
+		result = []Document{{Text: text}}
+	}
+	return result
+}
+
+// schemaRefusals is one schema problem at pos, of the node id, for each place where the data inst
+// breaks the schema, each detail once.
+func schemaRefusals(pos Position, id string, inst any) []Problem {
+	var refused *jsonschema.ValidationError
+	if !errors.As(nodeSchema().Validate(inst), &refused) {
+		return nil
+	}
+	var problems []Problem
+	for _, leaf := range schemaLeaves(refused) {
+		problems = append(problems, idProblem(pos, id, "schema: "+schemaDetail(leaf)))
+	}
+	slices.SortFunc(problems, func(a, b Problem) int { return strings.Compare(a.Detail, b.Detail) })
+	return slices.CompactFunc(problems, func(a, b Problem) bool { return a.Detail == b.Detail })
+}
+
+// schemaProblems is each problem that the schema finds in the data of a node of tree, at the
+// node's position, as Parse finds it in the node's document. A tree that a caller builds with no
+// reader, as the pilot does, meets the same rules of shape as the files: CheckStates judges the
+// tree by schemaProblems and Validate.
+func schemaProblems(tree Tree) []Problem {
+	var problems []Problem
+	for _, n := range nodesOf(tree) {
+		file, _ := fileOf(n.node)
+		js, err := json.Marshal(file)
+		if err != nil {
+			continue
+		}
+		inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(js))
+		if err != nil {
+			continue
+		}
+		problems = append(problems, schemaRefusals(n.pos, n.id, inst)...)
+	}
+	return problems
 }
 
 // readNode checks the data of one document against the schema, and gives its node: nil for a
@@ -180,15 +278,7 @@ func readNode(name string, d document) (any, []Problem) {
 	}
 	object, _ := inst.(map[string]any)
 	id, _ := object["id"].(string)
-	var problems []Problem
-	var refused *jsonschema.ValidationError
-	if errors.As(nodeSchema().Validate(inst), &refused) {
-		for _, leaf := range schemaLeaves(refused) {
-			problems = append(problems, idProblem(pos, id, "schema: "+schemaDetail(leaf)))
-		}
-		slices.SortFunc(problems, func(a, b Problem) int { return strings.Compare(a.Detail, b.Detail) })
-		problems = slices.CompactFunc(problems, func(a, b Problem) bool { return a.Detail == b.Detail })
-	}
+	problems := schemaRefusals(pos, id, inst)
 	typ, _ := object["type"].(string)
 	switch typ {
 	case "requirement":
@@ -323,16 +413,56 @@ func nodeID(node any) string {
 	return ""
 }
 
-// parseFiles reads each file by readFile and gives the tree, each slice sorted by ID then Pos, and
-// every problem, sorted by SortProblems.
-func parseFiles(files map[string][]byte) (Tree, []Problem) {
-	var tree Tree
+// FileSuffix is the ending of the name of a spec file.
+const FileSuffix = ".yaml"
+
+// IsFile reports whether one entry of the spec directory is a spec file: a regular file (kind
+// notes.KindFile) directly in the directory, whose name ends in FileSuffix. Every reader of the
+// spec files takes its entries by this rule: spec-check, the reporter of CI results and the
+// results route of Dispatch.
+func IsFile(name string, kind notes.Kind) bool {
+	return kind == notes.KindFile && !strings.Contains(name, "/") && strings.HasSuffix(name, FileSuffix)
+}
+
+// ReadLayout reads the spec files, keyed by their names directly in the spec directory, as Parse
+// does, and keeps each document of each file with its node and its text, so Layout.Bytes gives
+// each file back byte for byte. Parse is ReadLayout and the tree of its documents, so one reader
+// serves both. The problems are sorted by SortProblems.
+func ReadLayout(files map[string][]byte) (Layout, []Problem) {
+	l := Layout{Files: make(map[string][]Document, len(files))}
 	var problems []Problem
 	for _, name := range slices.Sorted(maps.Keys(files)) {
-		nodes, found := readFile(name, files[name])
+		documents, found := readFile(name, files[name])
+		l.Files[name] = documents
 		problems = append(problems, found...)
-		for _, node := range nodes {
-			switch n := node.(type) {
+	}
+	SortProblems(problems)
+	return l, problems
+}
+
+// Parse reads the spec files, keyed by their names directly in the spec directory, and gives the
+// tree they hold, each list sorted by ID then Pos, and every problem, sorted by SortProblems.
+//
+// A spec file holds one or more nodes, one YAML document for each. The reader decodes each
+// document with yaml.v3 (bad-yaml for YAML it does not read, a key written two times, or a value
+// that JSON cannot hold), checks its data against the schema of schema/spec-node.schema.json
+// (schema, with the JSON pointer of the value it refuses), and reads a positive Go duration from a
+// time limit (bad-time-limit). A document that the schema refuses still gives its node when its
+// keys have the schema's types, so one fault gives one problem. A file with no document is
+// no-node, and a file with no other problem must be exactly the documents that Print writes for
+// its nodes, in its order (not-printed): the reader normalizes nothing, so one node has one
+// spelling in git. A node is at the line of its document's "---".
+func Parse(files map[string][]byte) (Tree, []Problem) {
+	l, problems := ReadLayout(files)
+	return l.tree(), problems
+}
+
+// tree is the node of each document of l, each list sorted by ID, then by Pos.
+func (l Layout) tree() Tree {
+	var tree Tree
+	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
+		for _, d := range l.Files[name] {
+			switch n := d.Node.(type) {
 			case Statement:
 				tree.Statements = append(tree.Statements, n)
 			case Check:
@@ -351,6 +481,5 @@ func parseFiles(files map[string][]byte) (Tree, []Problem) {
 	slices.SortStableFunc(tree.Checks, func(a, b Check) int { return byIDThenPos(a.ID, b.ID, a.Pos, b.Pos) })
 	slices.SortStableFunc(tree.Components, func(a, b Component) int { return byIDThenPos(a.ID, b.ID, a.Pos, b.Pos) })
 	slices.SortStableFunc(tree.Terms, func(a, b Term) int { return byIDThenPos(a.ID, b.ID, a.Pos, b.Pos) })
-	SortProblems(problems)
-	return tree, problems
+	return tree
 }

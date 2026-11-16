@@ -2,11 +2,15 @@ package specgraph
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
 // Each document of the hand-written files of testdata/nodes reads, with yaml.v3 and as JSON, as
@@ -15,7 +19,7 @@ import (
 func TestNodesDecodeToTheirData(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"all-kinds", "quoted"} {
-		documents, problems := readDocuments(name+".yaml", []byte(fileText(t, "testdata/nodes/"+name+".yaml")))
+		documents, problems, _ := readDocuments(name+".yaml", []byte(fileText(t, "testdata/nodes/"+name+".yaml")))
 		if len(problems) != 0 {
 			t.Fatalf("%s.yaml: problems %+v", name, problems)
 		}
@@ -42,9 +46,9 @@ func TestNodesDecodeToTheirData(t *testing.T) {
 // document's "---", and finds no problem in it.
 func TestReadReadsEachNodeKind(t *testing.T) {
 	t.Parallel()
-	tree, problems := parseFiles(map[string][]byte{"all-kinds.yaml": []byte(fileText(t, "testdata/nodes/all-kinds.yaml"))})
+	tree, problems := Parse(map[string][]byte{"all-kinds.yaml": []byte(fileText(t, "testdata/nodes/all-kinds.yaml"))})
 	if len(problems) != 0 {
-		t.Fatalf("parseFiles: problems %+v, want none", problems)
+		t.Fatalf("Parse: problems %+v, want none", problems)
 	}
 	nodes := allKinds()
 	at := func(line int) Position { return Position{File: "all-kinds.yaml", Line: line} }
@@ -58,16 +62,16 @@ func TestReadReadsEachNodeKind(t *testing.T) {
 		Terms:      []Term{term},
 	}
 	if !reflect.DeepEqual(tree, want) {
-		t.Errorf("parseFiles:\n got %+v\nwant %+v", tree, want)
+		t.Errorf("Parse:\n got %+v\nwant %+v", tree, want)
 	}
 
 	// The control: the same documents in the reverse order read with no problem and keep each
 	// digest.
 	documents := splitDocuments(fileText(t, "testdata/nodes/all-kinds.yaml"))
 	slices.Reverse(documents)
-	other, problems := parseFiles(map[string][]byte{"reversed.yaml": []byte(strings.Join(documents, ""))})
+	other, problems := Parse(map[string][]byte{"reversed.yaml": []byte(strings.Join(documents, ""))})
 	if len(problems) != 0 {
-		t.Fatalf("parseFiles(reversed): problems %+v, want none", problems)
+		t.Fatalf("Parse(reversed): problems %+v, want none", problems)
 	}
 	if got, want := digests(other), digests(tree); !reflect.DeepEqual(got, want) {
 		t.Errorf("digests of the reversed file %v, want %v", got, want)
@@ -149,12 +153,12 @@ func TestReadRefuses(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			tree, problems := parseFiles(map[string][]byte{"x.yaml": []byte(row.text)})
+			tree, problems := Parse(map[string][]byte{"x.yaml": []byte(row.text)})
 			if !reflect.DeepEqual(problems, []Problem{row.want}) {
-				t.Errorf("parseFiles(%q):\n got %+v\nwant %+v", row.text, problems, []Problem{row.want})
+				t.Errorf("Parse(%q):\n got %+v\nwant %+v", row.text, problems, []Problem{row.want})
 			}
 			if got := len(nodesOf(tree)); got != row.nodes {
-				t.Errorf("parseFiles(%q): the tree holds %d nodes, want %d: %+v", row.text, got, row.nodes, tree)
+				t.Errorf("Parse(%q): the tree holds %d nodes, want %d: %+v", row.text, got, row.nodes, tree)
 			}
 		})
 	}
@@ -171,4 +175,94 @@ func splitDocuments(text string) []string {
 		documents[len(documents)-1] += line
 	}
 	return documents
+}
+
+// An entry of the spec directory is a spec file when it is a regular file directly in the
+// directory whose name ends in .yaml; every other entry is passed over.
+func TestIsFile(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name string
+		kind notes.Kind
+		want bool
+	}{
+		{"a.yaml", notes.KindFile, true},
+		{"a.yml", notes.KindFile, false},
+		{"a.md", notes.KindFile, false},
+		{"a.json", notes.KindFile, false},
+		{"a.yaml", notes.KindSymlink, false},
+		{"sub/a.yaml", notes.KindFile, false},
+		{"a.yaml", notes.KindDirectory, false},
+	} {
+		if got := IsFile(row.name, row.kind); got != row.want {
+			t.Errorf("IsFile(%q, %v) = %t, want %t", row.name, row.kind, got, row.want)
+		}
+	}
+}
+
+// A layout keeps each file byte for byte, also a file that the reader refuses: a file with a key
+// that the schema refuses, a file with a fault of the YAML after a node, and a file of no YAML.
+func TestReadLayoutKeepsEachFile(t *testing.T) {
+	t.Parallel()
+	all := fileText(t, "testdata/nodes/all-kinds.yaml")
+	files := map[string][]byte{
+		"all-kinds.yaml": []byte(all),
+		"surprise.yaml":  []byte(strings.Replace(all, "name: work unit\n", "name: work unit\nsurprise: true\n", 1)),
+		"broken.yaml":    []byte(all + "---\ntype: [\n"),
+		"prose.yaml":     []byte("A line that a person wrote.\n"),
+	}
+	l, problems := ReadLayout(files)
+	if len(problems) == 0 {
+		t.Fatal("ReadLayout found no problem in the three refused files")
+	}
+	if got := l.Bytes(); !reflect.DeepEqual(got, files) {
+		t.Errorf("Bytes:\n got %q\nwant %q", got, files)
+	}
+	if n := len(l.Files["broken.yaml"]); n != 6 || l.Files["broken.yaml"][5].Node != nil || l.Files["broken.yaml"][5].Text != "---\ntype: [\n" {
+		t.Errorf("broken.yaml: %d documents %+v, want the five nodes and the text after them as a document of no node", n, l.Files["broken.yaml"])
+	}
+}
+
+// readFiles reads every file directly in dir, by name, as Parse takes them.
+func readFiles(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[entry.Name()] = content
+	}
+	return files
+}
+
+// digests is the digest of every node of tree, by its kind and id.
+func digests(tree Tree) map[string]string {
+	all := map[string]string{}
+	for _, n := range nodesOf(tree) {
+		all[kindName(n.node)+" "+n.id] = n.node.Digest()
+	}
+	return all
+}
+
+// specFile is the spec file of nodes: the document that Print writes for each, in order.
+func specFile(t *testing.T, nodes ...any) []byte {
+	t.Helper()
+	var b strings.Builder
+	for _, node := range nodes {
+		document, err := printNode(node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(document)
+	}
+	return []byte(b.String())
 }

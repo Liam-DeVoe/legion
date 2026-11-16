@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// Position is where a block or a problem is: File, the name of the file inside the spec directory,
-// and Line, the 1-based line of the block's opening ::: line, or of the line a problem names.
+// Position is where a node or a problem is: File, the name of the file inside the spec directory,
+// and Line, the 1-based line of the node's document's "---" line, or of the line a problem names.
 type Position struct {
 	File string
 	Line int
@@ -23,10 +23,10 @@ const (
 	KindProperty  Kind = "property"
 )
 
-// Statement is a requirement block: one or two sentences that must be true of the software.
+// Statement is a requirement node: one or two sentences that must be true of the software.
 type Statement struct {
 	ID string
-	// Text is the body, its lines joined with "\n", each line without its trailing white space.
+	// Text is its text, the lines of its document's text joined with "\n".
 	Text string
 	Kind Kind
 	// Parent is the statement it sits under, "" at the top level.
@@ -64,24 +64,24 @@ type Test struct {
 	Runner, Selector, Job string
 }
 
-// Check is a check block: a claim that the system decides by itself, under one statement.
+// Check is a check node: a claim that the system decides by itself, under one statement.
 type Check struct {
 	ID string
-	// Serves holds the id of the one statement the check sits under. Parse writes the ids the
-	// attribute names joined by one space, so Validate can refuse a check that names two.
+	// Serves holds the id of the one statement the check sits under; the schema refuses a value
+	// that is not one id, such as two ids joined by a space.
 	Serves                               string
 	Claim, ProcedureText, FailingExample string
 	Subject                              Subject
 	Procedure                            Procedure
-	// Test is non-nil exactly when the block names a runner, a selector or a job.
+	// Test is non-nil exactly when the document holds a test part.
 	Test *Test
 	// TimeLimit is how long a result of the check counts (R9); 0 is no time limit.
 	TimeLimit time.Duration
 	Pos       Position
 }
 
-// Component is a component block (R15). An interface is a component with Interface set, which
-// joins two or more components.
+// Component is a component node (R15). An interface is a component with Interface set, which
+// joins two or more components; the document of each holds its kind, component or interface.
 type Component struct {
 	ID, Name, Purpose, Parent string
 	Interface                 bool
@@ -90,7 +90,7 @@ type Component struct {
 	Pos   Position
 }
 
-// Term is a term block: a noun of the system and its definition of one sentence (R50).
+// Term is a term node: a noun of the system and its definition of one sentence (R50).
 type Term struct {
 	ID, Name, Definition string
 	Pos                  Position
@@ -104,8 +104,8 @@ type Tree struct {
 	Terms      []Term
 }
 
-// Problem is one fault of the files: where it is, the id of its node ("-" for a block with no id
-// or a line in no block), its rule, and a Detail that begins with the rule.
+// Problem is one fault of the files: where it is, the id of its node ("-" for a document with no
+// id or a fault of no document), its rule, and a Detail that begins with the rule.
 type Problem struct {
 	Pos                Position
 	Node, Rule, Detail string

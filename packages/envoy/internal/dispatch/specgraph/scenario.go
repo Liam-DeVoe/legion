@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
 // Scenario is a scenario of The Spec, in the format of testdata/scenarios that `spec-check state`
@@ -203,7 +205,7 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md,
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.yaml,
 // parses them and judges the tree by Validate, and refuses the first problem of Parse, or else of
 // Validate, with its file and line.
 func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree, error) {
@@ -226,8 +228,8 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		files := map[string][]byte{}
 		for _, entry := range entries {
 			name := path.Join(dir, entry.Name())
-			if !entry.Type().IsRegular() || path.Ext(entry.Name()) != ".md" {
-				return nil, scenarioFault(name, "the spec files of a commit are *.md files directly in its directory")
+			if !IsFile(entry.Name(), notes.FileKind(entry.Type())) {
+				return nil, scenarioFault(name, "the spec files of a commit are *.yaml files directly in its directory")
 			}
 			if files[entry.Name()], err = fs.ReadFile(fsys, name); err != nil {
 				return nil, &ScenarioError{File: name, Err: err}

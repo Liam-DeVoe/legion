@@ -1,6 +1,8 @@
 package specgraph
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -146,17 +148,17 @@ func TestPrintThenReadKeepsEveryText(t *testing.T) {
 			if strings.ContainsAny(document, "\u0085\u2028\u2029") {
 				t.Errorf("printNode(%+v) = %q: a scalar holds a line end of YAML 1.1 as it is", node, document)
 			}
-			tree, problems := parseFiles(map[string][]byte{"x.yaml": []byte(document)})
+			tree, problems := Parse(map[string][]byte{"x.yaml": []byte(document)})
 			if len(problems) != 0 {
-				t.Errorf("parseFiles(printNode(%+v)) = parseFiles(%q): problems %+v", node, document, problems)
+				t.Errorf("Parse(printNode(%+v)) = Parse(%q): problems %+v", node, document, problems)
 				continue
 			}
 			got, want := onlyTreeNode(t, tree), sortedLists(node)
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("parseFiles(%q):\n got %+v\nwant %+v", document, got, want)
+				t.Errorf("Parse(%q):\n got %+v\nwant %+v", document, got, want)
 			}
 			if nodeDigest(got) != nodeDigest(node) {
-				t.Errorf("parseFiles(%q) has another digest than the node it printed", document)
+				t.Errorf("Parse(%q) has another digest than the node it printed", document)
 			}
 		}
 	}
@@ -180,14 +182,85 @@ func FuzzPrintThenRead(f *testing.F) {
 		if err != nil {
 			t.Fatalf("printNode(%q): %v", line, err)
 		}
-		tree, problems := parseFiles(map[string][]byte{"x.yaml": []byte(document)})
+		tree, problems := Parse(map[string][]byte{"x.yaml": []byte(document)})
 		if len(problems) != 0 || len(tree.Terms) != 1 {
-			t.Fatalf("parseFiles(%q): %+v, problems %+v", document, tree, problems)
+			t.Fatalf("Parse(%q): %+v, problems %+v", document, tree, problems)
 		}
 		if got := tree.Terms[0].Definition; got != line {
-			t.Fatalf("parseFiles(%q): the definition reads back as %q, want %q", document, got, line)
+			t.Fatalf("Parse(%q): the definition reads back as %q, want %q", document, got, line)
 		}
 	})
+}
+
+// Print refuses a node that no document can hold as the same node, naming the node and the field,
+// rather than write a document that Parse reads as another node or as no node of the files' form.
+func TestPrintRefusesUnprintable(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name  string
+		node  interface{ Print() (string, error) }
+		field string
+	}{
+		{name: "a node with no id", node: Term{Name: "term", Definition: "A term."}, field: "id"},
+		{name: "a claim of two lines", node: Check{ID: "a-check", Serves: "s", Claim: "One.\nTwo.", Subject: SubjectCode, Procedure: ProcedureAgent}, field: "claim"},
+		{name: "a text with an empty line", node: Component{ID: "a-component", Name: "C", Purpose: "It runs.\n\nIt stops."}, field: "purpose"},
+		{name: "a name that holds a line break", node: Component{ID: "a-component", Name: "C\nD", Purpose: "It runs."}, field: "name"},
+		{name: "a carriage return", node: Statement{ID: "a-statement", Kind: KindBehavior, Text: "One.\rTwo."}, field: "text"},
+		{name: "a NUL byte", node: Term{ID: "a-term", Name: "term", Definition: "A te\x00rm."}, field: "definition"},
+		{name: "a byte that is not UTF-8", node: Term{ID: "a-term", Name: "caf\xe9", Definition: "A term."}, field: "name"},
+		{name: "a test part that names nothing", node: Check{ID: "a-check", Serves: "s", Claim: "One.", Subject: SubjectCode, Procedure: ProcedureProgram, Test: &Test{}}, field: "test"},
+		{name: "a negative time limit", node: Check{ID: "a-check", Serves: "s", Claim: "One.", Subject: SubjectCode, Procedure: ProcedureAgent, TimeLimit: -time.Hour}, field: "time limit"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			printed, err := row.node.Print()
+			if !errors.Is(err, ErrUnprintable) {
+				t.Fatalf("Print = %q, %v; want an error wrapping ErrUnprintable", printed, err)
+			}
+			id := reflect.ValueOf(row.node).FieldByName("ID").String()
+			if !strings.Contains(err.Error(), `"`+id+`"`) || !strings.Contains(err.Error(), row.field) {
+				t.Errorf("Print: %q, want an error naming %q and the field %s", err, id, row.field)
+			}
+		})
+	}
+}
+
+// A digest holds no file and no position: the same documents, each in a file of its own and in
+// the reverse order, keep every digest, and one more word in one statement changes that
+// statement's digest alone.
+func TestDigestIgnoresTheFileAndTheOrder(t *testing.T) {
+	t.Parallel()
+	all := fileText(t, "testdata/nodes/all-kinds.yaml")
+	documents := splitDocuments(all)
+	reversed := map[string][]byte{}
+	for i, document := range documents {
+		reversed[fmt.Sprintf("z%d.yaml", len(documents)-i)] = []byte(document)
+	}
+	one, problems := Parse(map[string][]byte{"all-kinds.yaml": []byte(all)})
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	other, problems := Parse(reversed)
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	if got, want := digests(other), digests(one); !reflect.DeepEqual(got, want) {
+		t.Errorf("digests in other files %v, want %v", got, want)
+	}
+	if other.Statements[0].Pos == one.Statements[0].Pos {
+		t.Fatalf("the statement is at %v in both trees; the test moves nothing", one.Statements[0].Pos)
+	}
+
+	changed, problems := Parse(map[string][]byte{"all-kinds.yaml": []byte(strings.Replace(all, "after the listener starts again.", "after the listener starts again soon.", 1))})
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	before, after := digests(one), digests(changed)
+	for key := range before {
+		if moved := before[key] != after[key]; moved != (key == "statement a-stored-message-survives-a-restart") {
+			t.Errorf("%s: digest changed %t", key, moved)
+		}
+	}
 }
 
 // onlyTreeNode is the one node tree holds, with no position.

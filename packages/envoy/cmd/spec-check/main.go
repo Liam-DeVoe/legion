@@ -1,12 +1,13 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
-// approved spec and prints the approved text, checks that no CI file of a repository runs that
-// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
-// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
-// within the size bound, and passes over every other entry. Every rule of the spec files and of a
-// scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive and WaitCycle); the
-// command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
-// CI files and no spec file.
+// approved spec and prints the approved text into the files, checks that no CI file of a
+// repository runs that comparison, and derives the states of a scenario. It reads the directory
+// as the Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes each
+// specgraph.IsFile entry, a *.yaml file directly in it, within the size bound, and passes over
+// every other entry. Every rule of the spec files and of a scenario is specgraph's (Parse, its
+// schema, Validate, Compare, Layout.Place, ReadScenario, Derive and WaitCycle); the command states
+// none of its own. The rule of guard is the command's (cifiles.go), since it reads CI files and
+// no spec file.
 //
 // Usage:
 //
@@ -14,7 +15,7 @@
 //	spec-check changes --base <dir> --dir <dir>
 //	spec-check checks --dir <dir> --job <job>
 //	spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
-//	spec-check print --approved <approved.json> --id <id> [--id <id>...]
+//	spec-check print --approved <approved.json> --id <id> [--id <id>...] --dir <dir>
 //	spec-check guard --root <dir>
 //	spec-check state --scenario <dir> [--json]
 //	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)
@@ -69,10 +70,21 @@
 // GITHUB_ACTIONS, and the command compares there: only guard names such a line, in the files that
 // it reads.
 //
-// print writes the current approved block of each node it is named, in the order named, and after
-// a statement the block of each current check that serves it, each block once and the blocks
-// separated by one blank line, so that a change copies them into the files. It exits 2, and
-// prints nothing, when the approved spec does not hold an id or removed it.
+// print writes the current approved document of each node it is named, and of each current check
+// that serves a statement it is named, into the spec files of --dir, each node at its place by
+// specgraph.Layout.Place with the bound of one file (1048576 bytes): a node that the files hold is
+// replaced where it stands, a check goes after its statement, a statement at the end of its
+// parent's file or of <id>.yaml, a component or an interface at the end of components.yaml, a term
+// at the end of terms.yaml, and a block that does not fit moves to the next file of its file's
+// series (<stem>-2.yaml and on). The run places the components and interfaces, then the terms,
+// then each statement with its checks, parents first. It writes nothing, and exits 2 with one line
+// for each refusal on standard error, when Place refuses a node ("spec-check: print would write …",
+// for a check whose statement or a statement whose parent the files do not hold, a block larger
+// than one file, or a node that two places hold), or when the judgment of tree finds a problem in
+// the files that the run would leave ("spec-check: print would leave <dir>/<file>:<line>: <node>:
+// <detail>"); it exits 2 too when the approved spec does not hold an id or removed it. Else it
+// writes each file that changes, through a temporary file and a rename, prints "spec-check: wrote
+// <id> to <dir>/<file>:<line>" for each node, and exits 0.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts as text, and names each line that names the command that
@@ -125,14 +137,15 @@
 // is closed at the start reads as /dev/null, since the Go runtime opens /dev/null on it before the
 // program starts, so the text is lost as with >/dev/null. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
-// Paths are printed absolute. Every line but the usage, the JSON of checks and of state, the
-// blocks of print, and the statement, check and wait lines of state is written by runnerlog.Say
-// with the prefix "spec-check: ", so no text a file name, a file or an argument holds starts a line
-// of the runner's log or names a workflow command. Each statement, check and wait line starts with
-// its fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no
-// raw line break, as encoding/json escapes each control character, and checks and state write the
-// "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block
-// as the approved spec holds it, since a change copies it byte for byte; no CI job runs print.
+// Paths are printed absolute. Every line but the usage, the JSON of checks and of state, and the
+// statement, check and wait lines of state is written by runnerlog.Say with the prefix
+// "spec-check: ", so no text a file name, a file or an argument holds starts a line of the
+// runner's log or names a workflow command. Each statement, check and wait line starts with its
+// fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no raw
+// line break, as encoding/json escapes each control character, and checks and state write the "["
+// of each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each document
+// into the files as the approved spec holds it, since a change copies it byte for byte; no CI job
+// runs print.
 package main
 
 import (
@@ -140,6 +153,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -153,13 +167,13 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check changes --base <dir> --dir <dir>
        spec-check checks --dir <dir> --job <job>
        spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
-       spec-check print --approved <approved.json> --id <id> [--id <id>...]
+       spec-check print --approved <approved.json> --id <id> [--id <id>...] --dir <dir>
        spec-check guard --root <dir>
        spec-check state --scenario <dir> [--json]
          (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
-// checks and of state, the blocks of print, and the statement, check and wait lines of state.
+// checks and of state, and the statement, check and wait lines of state.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
@@ -208,8 +222,8 @@ func say(w io.Writer, format string, args ...any) {
 }
 
 // counts is the count line's "3 statements, 4 checks, 2 components, 1 interface, 1 term": the
-// blocks the tree holds, where components counts the components other than interfaces and
-// interfaces the components with kind="interface", each noun in the singular for one.
+// nodes the tree holds, where components counts the components other than interfaces and
+// interfaces the components of kind interface, each noun in the singular for one.
 func counts(statements, checks, components, interfaces, terms int) string {
 	return fmt.Sprintf("%s, %s, %s, %s, %s", count(statements, "statement"), count(checks, "check"),
 		count(components, "component"), count(interfaces, "interface"), count(terms, "term"))
@@ -262,41 +276,65 @@ func absolute(stderr io.Writer, path string) (string, bool) {
 }
 
 // judged is one directory of spec files, read and judged: its tree, every problem of Parse and,
-// for judge, of Validate in one list, sorted by file, line, node, rule and detail, and how many
-// files it held.
+// for judge, of Validate in one list, sorted by file, line, node, rule and detail, how many files
+// it held, and for judgeFiles each file above the size bound, in place of the problems.
 type judged struct {
 	dir      string
 	tree     specgraph.Tree
 	problems []specgraph.Problem
 	files    int
+	oversize []error
 }
 
-// judge reads and parses dir as read does, and validates the tree with o.
+// judge reads dir with readFiles and judges its files with judgeFiles.
 func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
-	j, err := read(stderr, dir)
-	if err != nil {
-		return j, err
-	}
-	j.problems = append(j.problems, specgraph.Validate(j.tree, o)...)
-	specgraph.SortProblems(j.problems)
-	return j, nil
-}
-
-// read reads dir with notes.ReadSet, warns on stderr of each entry that is not a spec file, and
-// parses the files it read. The error is ReadSet's: notes.ErrNoDirectory for a directory that
-// does not exist, a *notes.SizeRefusal for a file above the bound, and an error naming the path
-// for any other failure to read.
-func read(stderr io.Writer, dir string) (judged, error) {
-	set, err := notes.ReadSet(os.DirFS(dir), dir)
-	for _, entry := range set.Rejected {
-		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
-	}
+	files, err := readFiles(stderr, dir)
 	if err != nil {
 		return judged{dir: dir}, err
 	}
-	tree, problems := specgraph.Parse(set.Files)
-	specgraph.SortProblems(problems)
-	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
+	return judgeFiles(dir, files, o), nil
+}
+
+// judgeFiles is the judgment of tree over files in memory: notes.CheckSize of each file, Parse,
+// and Validate with o, its problems sorted. A file above the bound is in oversize, and then no file
+// is parsed, as the importer refuses a set before it parses any. print judges the files that a run
+// would leave with it, so print and tree judge by one rule.
+func judgeFiles(dir string, files map[string][]byte, o specgraph.Options) judged {
+	j := judged{dir: dir, files: len(files)}
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		if err := notes.CheckSize(filepath.Join(dir, name), int64(len(files[name]))); err != nil {
+			j.oversize = append(j.oversize, err)
+		}
+	}
+	if len(j.oversize) > 0 {
+		return j
+	}
+	j.tree, j.problems = specgraph.Parse(files)
+	j.problems = append(j.problems, specgraph.Validate(j.tree, o)...)
+	specgraph.SortProblems(j.problems)
+	return j
+}
+
+// read reads dir with readFiles and parses the files it read, with no rule of Validate.
+func read(stderr io.Writer, dir string) (judged, error) {
+	files, err := readFiles(stderr, dir)
+	if err != nil {
+		return judged{dir: dir}, err
+	}
+	tree, problems := specgraph.Parse(files)
+	return judged{dir: dir, tree: tree, problems: problems, files: len(files)}, nil
+}
+
+// readFiles reads the spec files of dir with notes.ReadSet and specgraph.IsFile, and warns on
+// stderr of each entry that is not a spec file. The error is ReadSet's: notes.ErrNoDirectory for a
+// directory that does not exist, a *notes.SizeRefusal for a file above the bound, and an error
+// naming the path for any other failure to read.
+func readFiles(stderr io.Writer, dir string) (map[string][]byte, error) {
+	set, err := notes.ReadSet(os.DirFS(dir), dir, specgraph.IsFile)
+	for _, entry := range set.Rejected {
+		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
+	}
+	return set.Files, err
 }
 
 // sayProblems writes one line of stderr for each problem: "<dir>/<file>:<line>: <node>: <detail>".
@@ -306,7 +344,7 @@ func (j judged) sayProblems(stderr io.Writer) {
 	}
 }
 
-// counts is the count line's counts of the blocks the tree holds.
+// counts is the count line's counts of the nodes the tree holds.
 func (j judged) counts() string {
 	interfaces := 0
 	for _, c := range j.tree.Components {

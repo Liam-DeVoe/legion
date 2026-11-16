@@ -48,12 +48,12 @@ func TestTheComparisonFailsOnATextNeverApproved(t *testing.T) {
 		fixture string
 		want    Problem
 	}{
-		{"one-word", Problem{Position{"orders.md", 7}, "an-order-survives-a-restart", "unapproved-text", wantUnapprovedText}},
-		{"unapproved-statement", Problem{Position{"orders.md", 29}, "each-order-gets-one-bill", "unapproved-id", wantUnapprovedID}},
-		{"check-text", Problem{Position{"orders.md", 11}, "a-restart-keeps-each-order", "unapproved-text", wantUnapprovedText}},
-		{"component-purpose", Problem{Position{"components.md", 7}, "orders", "unapproved-text", wantUnapprovedText}},
-		{"interface-joins", Problem{Position{"components.md", 11}, "orders-to-billing", "unapproved-text", wantUnapprovedText}},
-		{"term-definition", Problem{Position{"components.md", 19}, "order", "unapproved-text", wantUnapprovedText}},
+		{"one-word", Problem{Position{"orders.yaml", 7}, "an-order-survives-a-restart", "unapproved-text", wantUnapprovedText}},
+		{"unapproved-statement", Problem{Position{"orders.yaml", 51}, "each-order-gets-one-bill", "unapproved-id", wantUnapprovedID}},
+		{"check-text", Problem{Position{"orders.yaml", 14}, "a-restart-keeps-each-order", "unapproved-text", wantUnapprovedText}},
+		{"component-purpose", Problem{Position{"components.yaml", 8}, "orders", "unapproved-text", wantUnapprovedText}},
+		{"interface-joins", Problem{Position{"components.yaml", 15}, "orders-to-billing", "unapproved-text", wantUnapprovedText}},
+		{"term-definition", Problem{Position{"components.yaml", 32}, "order", "unapproved-text", wantUnapprovedText}},
 	} {
 		t.Run(row.fixture, func(t *testing.T) {
 			t.Parallel()
@@ -124,7 +124,7 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 			dir := t.TempDir()
 			write := func(id, block string) {
 				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(block), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, id+".yaml"), []byte(block), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -152,7 +152,7 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 				t.Fatal(err)
 			}
 			write(planted.ID, block)
-			want := []Problem{{Position{planted.ID + ".md", 1}, planted.ID, "unapproved-text", wantUnapprovedText}}
+			want := []Problem{{Position{planted.ID + ".yaml", 1}, planted.ID, "unapproved-text", wantUnapprovedText}}
 			if got := Compare(parseDir(t, dir), approved); !reflect.DeepEqual(got.Problems, want) {
 				t.Errorf("Problems with one planted word:\n got %+v\nwant %+v", got.Problems, want)
 			}
@@ -166,7 +166,7 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 func TestARemovedIdThatComesBackIsRefused(t *testing.T) {
 	t.Parallel()
 	got := compareFixture(t, "removed-id-reused")
-	want := []Problem{{Position{"orders.md", 29}, "an-order-is-paid-once", "removed-id", wantRemovedID}}
+	want := []Problem{{Position{"orders.yaml", 51}, "an-order-is-paid-once", "removed-id", wantRemovedID}}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Errorf("Problems:\n got %+v\nwant %+v", got.Problems, want)
 	}
@@ -182,7 +182,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 	t.Parallel()
 	approved := readApproved(t, "testdata/compare/removed-kept/approved.json")
 	files := readFiles(t, "testdata/compare/removed-kept/spec")
-	last := string(files["orders.md"])
+	last := string(files["orders.yaml"])
 	earlier := strings.Replace(last, " and refunds each second payment.", ".", 1)
 	if earlier == last {
 		t.Fatal("the fixture holds no last approved text of the removed statement")
@@ -190,7 +190,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 	for name, content := range map[string]string{"its last approved text": last, "an earlier approved text": earlier} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			files := map[string][]byte{"orders.md": []byte(content), "components.md": files["components.md"]}
+			files := map[string][]byte{"orders.yaml": []byte(content), "components.yaml": files["components.yaml"]}
 			tree, problems := Parse(files)
 			if len(problems) != 0 {
 				t.Fatal(problems)
@@ -226,7 +226,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 func TestTheFirstFailingNodeIsNamedNotTheGate(t *testing.T) {
 	t.Parallel()
 	got := compareFixture(t, "one-of-four")
-	want := []Problem{{Position{"orders.md", 29}, "each-order-gets-one-bill", "unapproved-text", wantUnapprovedText}}
+	want := []Problem{{Position{"orders.yaml", 51}, "each-order-gets-one-bill", "unapproved-text", wantUnapprovedText}}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Errorf("Problems:\n got %+v\nwant %+v", got.Problems, want)
 	}
@@ -243,17 +243,17 @@ func TestTheFirstFailingNodeIsNamedNotTheGate(t *testing.T) {
 	}
 }
 
-// ReadApproved refuses a version whose block does not parse, here a text line that starts with
-// :::, and names the node and the version (Review focus 1).
-func TestTheApprovedFixtureRefusesAnUnprintableBlock(t *testing.T) {
+// ReadApproved refuses a version whose document does not read, here YAML that yaml.v3 does not
+// read, and names the node and the version (Review focus 1).
+func TestTheApprovedFixtureRefusesADocumentThatDoesNotRead(t *testing.T) {
 	t.Parallel()
 	_, err := ReadApproved(strings.NewReader(`{"nodes":[{"id":"a-page-shows-it","versions":[` +
-		`{"version":1,"at":"2026-11-10T00:00:00Z","block":":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"},` +
-		`{"version":2,"at":"2026-11-11T00:00:00Z","block":":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n::: and more\n:::\n"}]}]}`))
+		`{"version":1,"at":"2026-11-10T00:00:00Z","document":"---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"},` +
+		`{"version":2,"at":"2026-11-11T00:00:00Z","document":"---\ntype: [\n"}]}]}`))
 	if err == nil {
-		t.Fatal("ReadApproved accepted a block that does not parse")
+		t.Fatal("ReadApproved accepted a document that does not read")
 	}
-	for _, want := range []string{`"a-page-shows-it"`, "version 2", "bad-block-line"} {
+	for _, want := range []string{`"a-page-shows-it"`, "version 2", "bad-yaml"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("ReadApproved: %q, want an error that names %s", err, want)
 		}
@@ -265,10 +265,10 @@ func TestTheApprovedFixtureRefusesAnUnprintableBlock(t *testing.T) {
 func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	t.Parallel()
 	block := func(id, text string) string {
-		return `":::requirement{#` + id + ` kind=\"behavior\"}\n` + text + `\n:::\n"`
+		return `"---\ntype: requirement\nid: ` + id + `\nkind: behavior\ntext:\n  - ` + text + `\n"`
 	}
 	version := func(n, at, block string) string {
-		return `{"version":` + n + `,"at":"` + at + `","block":` + block + `}`
+		return `{"version":` + n + `,"at":"` + at + `","document":` + block + `}`
 	}
 	good := version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it."))
 	for _, row := range []struct{ name, json, want string }{
@@ -288,14 +288,16 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 			`approved node "a-page-shows-it" version 1: the versions are 1 and more, oldest first`},
 		{"a version older than the one before it", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `,` + version("2", "2026-11-09T00:00:00Z", block("a-page-shows-it", "The page shows all.")) + `]}]}`,
 			`approved node "a-page-shows-it" version 2: it is older than version 1`},
-		{"a version with no time", `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":1,"block":` + block("a-page-shows-it", "The page shows it.") + `}]}]}`,
+		{"a version with no time", `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":1,"document":` + block("a-page-shows-it", "The page shows it.") + `}]}]}`,
 			`approved node "a-page-shows-it" version 1: it has no time`},
-		{"a block of another node", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-all", "The page shows all.")) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: bad-approved-block: the block holds node "a-page-shows-all"`},
-		{"a block of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", `The page shows it.\n:::\n\n:::term{#page name=\"page\"}\nA page is a view.`)) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: bad-approved-block: the block holds 2 nodes`},
-		{"a block that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `":::requirement{#a-page-shows-it  kind=\"behavior\"}\nThe page shows it.\n:::\n"`) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: bad-approved-block: the block is not as Print writes it`},
+		{"a document of another node", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-all", "The page shows all.")) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is of node "a-page-shows-all", not "a-page-shows-it"`},
+		{"a document of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", `The page shows it.\n---\ntype: term\nid: page\nname: page\ndefinition:\n  - A page is a view.`)) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: the document holds 2 nodes, not one`},
+		{"a document that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind:  behavior\ntext:\n  - The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: not-printed: line 4 is not as Print writes the node`},
+		{"a document that Print does not write, of a node that breaks a rule of the schema", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\ntext:\n  -   The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is not as Print writes it`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -346,25 +348,25 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	}
 }
 
-// An approved spec that a caller builds, as the pilot builds it from the store, can hold a block
-// that does not parse. Current leaves that node out and names it with its version; Compare
+// An approved spec that a caller builds, as the pilot builds it from the store, can hold a document
+// that the reader refuses. Current leaves that node out and names it with its version; Compare
 // counts no text of it as approved.
-func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
+func TestCurrentNamesADocumentThatDoesNotRead(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	broken := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n::: and more\n:::\n"
+	broken := "---\n# A comment.\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"
 	approved := Approved{Nodes: map[string]ApprovedNode{
-		"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: broken}}},
+		"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Document: broken}}},
 	}}
 	current, problems := approved.Current()
 	if len(current.Statements) != 0 {
 		t.Errorf("Current holds %+v, want no statement", current.Statements)
 	}
-	want := []Problem{{Position{"approved a-page-shows-it version 1", 3}, "a-page-shows-it", "bad-block-line", "bad-block-line: the line opens no block"}}
+	want := []Problem{{Position{"approved a-page-shows-it version 1", 2}, "a-page-shows-it", "not-printed", "not-printed: line 2 is not as Print writes the node"}}
 	if !reflect.DeepEqual(problems, want) {
 		t.Errorf("Current problems:\n got %+v\nwant %+v", problems, want)
 	}
-	files, _ := Parse(map[string][]byte{"spec.md": []byte(broken)})
+	files, _ := Parse(map[string][]byte{"spec.yaml": []byte(broken)})
 	if got := Compare(files, approved).Problems; len(got) != 1 || got[0].Rule != "unapproved-text" {
 		t.Errorf("Compare: %+v, want one unapproved-text", got)
 	}
