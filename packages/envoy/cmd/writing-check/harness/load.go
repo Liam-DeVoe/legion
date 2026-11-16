@@ -305,10 +305,14 @@ func (ld *loader) load(ctx context.Context, c *Case) Loaded {
 		// Each case has an issue of its own, and cases of one issue tree have like titles, so
 		// the create skips Dispatch's check for a like issue (force) that would refuse them.
 		body := map[string]any{"project": c.Record.Project, "title": is.Title, "assignee": out.Reader, "force": true}
+		// The spec goes with the create, as Dispatch takes an issue's primary document; it is
+		// left out of the document uploads below whether the create took it or refused it.
 		var spec *CaseDocument
+		specID := ""
 		for i, d := range c.Record.Documents {
 			if d.Name == "spec.md" && !d.Missing {
 				spec = &c.Record.Documents[i]
+				specID = d.ArtifactID
 			}
 		}
 		if spec != nil {
@@ -331,7 +335,7 @@ func (ld *loader) load(ctx context.Context, c *Case) Loaded {
 			out.Documents = append(out.Documents, LoadedDocument{ArtifactID: spec.ArtifactID, Name: spec.Name, Version: spec.Version, LocalID: local})
 		}
 		for _, d := range c.Record.Documents {
-			if d.Missing || (spec != nil && d.ArtifactID == spec.ArtifactID) {
+			if d.Missing || d.ArtifactID == specID {
 				continue
 			}
 			content, ok := ld.ds.docs[docKey{d.ArtifactID, d.Version}]
@@ -339,17 +343,13 @@ func (ld *loader) load(ctx context.Context, c *Case) Loaded {
 				continue
 			}
 			var art map[string]any
-			name := d.Name
-			if name == "" {
-				name = "document-" + d.ArtifactID[:8] + ".md"
-			}
-			err := ld.client.send(ctx, writer, http.MethodPost, "/api/v1/issues/"+url.PathEscape(out.Issue)+"/artifacts", map[string]any{"name": name, "content": content}, &art)
+			err := ld.client.send(ctx, writer, http.MethodPost, "/api/v1/issues/"+url.PathEscape(out.Issue)+"/artifacts", map[string]any{"name": d.Name, "content": content}, &art)
 			if refused := markdownRefusal(err); refused != "" {
 				out.Skipped = append(out.Skipped, LoadedDocument{ArtifactID: d.ArtifactID, Name: d.Name, Version: d.Version, Reason: refused})
 				continue
 			}
 			if err != nil {
-				return fail(fmt.Errorf("document %s: %w", name, err))
+				return fail(fmt.Errorf("document %s: %w", d.Name, err))
 			}
 			id, _ := art["id"].(string)
 			out.Documents = append(out.Documents, LoadedDocument{ArtifactID: d.ArtifactID, Name: d.Name, Version: d.Version, LocalID: id})

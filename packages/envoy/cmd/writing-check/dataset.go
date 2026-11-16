@@ -372,8 +372,11 @@ type dsVersionRef struct {
 }
 
 type dsArtifact struct {
-	id, kind, name, issue, project string
-	versions                       []dsVersionRef
+	id, kind, issue, project string
+	// names is each name the document had from an event on. Dispatch calls a document's name its
+	// title (artifact_rename.go), so each is a titleEntry.
+	names    []titleEntry
+	versions []dsVersionRef
 }
 
 // before is the version in force just before event, nil when none was written before it.
@@ -397,19 +400,29 @@ type dsIssue struct {
 	titles          []titleEntry
 }
 
-// titleAt is the issue's title just before event.
-func (is *dsIssue) titleAt(event int64) string {
+// titleAt is the title entries give just before event: the last one set before it, else the
+// first.
+func titleAt(entries []titleEntry, event int64) string {
 	title := ""
-	for _, e := range is.titles {
+	for _, e := range entries {
 		if e.eventID >= event {
 			break
 		}
 		title = e.title
 	}
-	if title == "" && len(is.titles) > 0 {
-		title = is.titles[0].title
+	if title == "" && len(entries) > 0 {
+		title = entries[0].title
 	}
 	return title
+}
+
+// withTitle is entries with title set from event on. An empty title, or the one already in
+// force, adds nothing.
+func withTitle(entries []titleEntry, event int64, title string) []titleEntry {
+	if title == "" || len(entries) > 0 && entries[len(entries)-1].title == title {
+		return entries
+	}
+	return append(entries, titleEntry{eventID: event, title: title})
 }
 
 // dsAct is an act of the owner on an agent's text that wrote no text: an answer that only chose
@@ -589,6 +602,8 @@ func (ix *dsIndex) addEvent(raw []byte) error {
 		err = ix.addArtifactCreated(ev)
 	case "artifact.version":
 		err = ix.addArtifactVersion(ev)
+	case "artifact.renamed":
+		err = ix.addArtifactRenamed(ev)
 	case "comment.created", "comment.answered":
 		err = ix.addComment(ev)
 	case "message.created", "message.answered":
@@ -629,12 +644,11 @@ func (ix *dsIndex) addIssue(ev event) error {
 		_ = json.Unmarshal(p.Parent, &parent)
 		is.parent = deref(parent)
 	}
-	if p.Title != "" && (len(is.titles) == 0 || is.titles[len(is.titles)-1].title != p.Title) {
-		is.titles = append(is.titles, titleEntry{eventID: ev.ID, title: p.Title})
-	}
+	is.titles = withTitle(is.titles, ev.ID, p.Title)
 	if id := deref(p.PrimaryArtifactID); ev.Type == "issue.created" && id != "" {
 		a := ix.artifact(id)
-		a.kind, a.project = "doc", cmp.Or(p.Project, ev.Project)
+		// Dispatch names an issue's primary document spec.md (internal/dispatch/api/issue_create.go).
+		a.kind, a.names, a.project = "doc", withTitle(a.names, ev.ID, "spec.md"), cmp.Or(p.Project, ev.Project)
 		ix.placeArtifact(a, p.Key)
 		if !a.has(1) {
 			ix.addVersion(ev, a, 1, "", 0)
@@ -665,7 +679,7 @@ func (ix *dsIndex) addArtifactCreated(ev event) error {
 		return nil
 	}
 	a := ix.artifact(p.Artifact.ID)
-	a.kind, a.name = p.Artifact.Kind, cmp.Or(p.Artifact.Name, a.name)
+	a.kind, a.names = p.Artifact.Kind, withTitle(a.names, ev.ID, p.Artifact.Name)
 	a.project = cmp.Or(deref(p.Artifact.Project), ev.Project)
 	ix.placeArtifact(a, cmp.Or(deref(p.Artifact.IssueKey), deref(ev.IssueKey)))
 	if a.kind != "doc" {
@@ -707,10 +721,30 @@ func (ix *dsIndex) addArtifactVersion(ev event) error {
 	if a.kind != "doc" || a.has(p.Version.Number) {
 		return nil
 	}
-	a.name = cmp.Or(p.Name, a.name)
+	a.names = withTitle(a.names, ev.ID, p.Name)
 	a.project = cmp.Or(a.project, ev.Project)
 	ix.placeArtifact(a, deref(ev.IssueKey))
 	ix.addVersion(ev, a, p.Version.Number, deref(p.Version.Summary), p.Version.Size)
+	return nil
+}
+
+// addArtifactRenamed follows a person's correction of a document's name: a record written after
+// the event shows the new name, and one written before it keeps the old one.
+func (ix *dsIndex) addArtifactRenamed(ev event) error {
+	var p struct {
+		Artifact struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		return err
+	}
+	if p.Artifact.ID == "" {
+		return nil
+	}
+	a := ix.artifact(p.Artifact.ID)
+	a.names = withTitle(a.names, ev.ID, p.Artifact.Name)
 	return nil
 }
 
@@ -3071,19 +3105,19 @@ func (ix *dsIndex) tree(t *dsText) string {
 }
 
 // record is Dispatch's record as it stood just before t was written: its issue with the title it
-// had then, each of the issue's documents at the version then in force, and the texts of its
-// thread written before it.
+// had then, each of the issue's documents at the version then in force under the name it had
+// then, and the texts of its thread written before it.
 func (ix *dsIndex) record(t *dsText) dsCaseRecord {
 	rec := dsCaseRecord{Project: t.Project, Documents: []dsCaseDocument{}, Thread: []dsCaseText{}}
 	if t.Issue != "" {
 		ci := &dsCaseIssue{Key: t.Issue, Root: ix.root(t.Issue)}
 		if is := ix.issues[t.Issue]; is != nil {
-			ci.Title, ci.Parent = is.titleAt(t.EventID), is.parent
+			ci.Title, ci.Parent = titleAt(is.titles, t.EventID), is.parent
 		}
 		rec.Issue = ci
 	}
 	for _, k := range ix.recordVersions(t) {
-		d := dsCaseDocument{ArtifactID: k.artifact, Name: ix.artifacts[k.artifact].name, Version: k.number}
+		d := dsCaseDocument{ArtifactID: k.artifact, Name: titleAt(ix.artifacts[k.artifact].names, t.EventID), Version: k.number}
 		if sum, ok := ix.versionSHA[k]; ok {
 			d.SHA256 = sum
 		} else {

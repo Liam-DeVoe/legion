@@ -271,7 +271,7 @@ func TestDatasetBuildIsDeterministic(t *testing.T) {
 	}
 	cases := readDatasetCases(t, filepath.Join(dir, "first"))
 	groups := map[string]int{}
-	var named, document, phraseCorrection, phraseLabelled bool
+	var named, document, phraseCorrection, phraseLabelled, uneditedSpec bool
 	for _, c := range cases {
 		groups[c.Group]++
 		named = named || c.NamedByOwner && c.Group == dsGroupAnswer && c.Question != nil && c.Question.SourceID == fixtureOwnerID(2)
@@ -286,6 +286,14 @@ func TestDatasetBuildIsDeterministic(t *testing.T) {
 		if c.Record.Issue == nil || c.Record.Issue.Root == "" || c.WriteTime == "" || c.Agent.SHA256 == "" {
 			t.Errorf("case %s lacks its record, its issue's root, its write time or its digest: %+v", c.ID, c)
 		}
+		// A record names each of its documents. Every document of the fixture is an issue's primary
+		// document, and only TREE-101's has a later version, whose event names it.
+		for _, d := range c.Record.Documents {
+			if d.Name != "spec.md" {
+				t.Errorf("case %s: document %s of its record is named %q, want spec.md", c.ID, d.ArtifactID, d.Name)
+			}
+			uneditedSpec = uneditedSpec || d.ArtifactID != "art-TREE-101"
+		}
 	}
 	for _, g := range dsGroups {
 		if groups[g] == 0 {
@@ -295,8 +303,9 @@ func TestDatasetBuildIsDeterministic(t *testing.T) {
 	if groups[dsGroupPlain] != groups[dsGroupQuestion] {
 		t.Errorf("%d plain cases, want as many as the %d question cases", groups[dsGroupPlain], groups[dsGroupQuestion])
 	}
-	if !named || !document || !phraseCorrection || !phraseLabelled {
-		t.Errorf("named answer %t, document question %t, corrected phrase %t, labelled phrase %t; want each", named, document, phraseCorrection, phraseLabelled)
+	if !named || !document || !phraseCorrection || !phraseLabelled || !uneditedSpec {
+		t.Errorf("named answer %t, document question %t, corrected phrase %t, labelled phrase %t, a record with a spec no later version names %t; want each",
+			named, document, phraseCorrection, phraseLabelled, uneditedSpec)
 	}
 }
 
@@ -454,6 +463,39 @@ func TestDatasetReplyChainFindsTheAgentText(t *testing.T) {
 	// A top-level note answers the last agent text on its issue before it.
 	if a, how := ix.answered(text("comment:person-3")); a == nil || a.Key != "comment:agent-2" || how != dsFoundIssue {
 		t.Errorf("the top-level note answers %v (%s), want comment:agent-2 by its issue", a, how)
+	}
+}
+
+// A record names each document as Dispatch named it just before the write. An issue's primary
+// document is spec.md though no event after issue.created names it. A document a person renamed
+// keeps its old name in a record written before the rename, and has the new one after it.
+func TestDatasetRecordNamesEachDocumentAsItWasNamedThen(t *testing.T) {
+	t.Parallel()
+	f := newDSFixture()
+	f.issue("DOC-1", "", "Launch", "Spec.")
+	f.event("artifact.created", fixtureAgent, "DOC-1", map[string]any{"artifact": map[string]any{
+		"id": "art-notes", "kind": "doc", "name": "Draft notes", "issue_key": "DOC-1", "versions": []map[string]any{{"number": 1}}}})
+	f.comment("before", "DOC-1", fixtureAgent, "The launch is on Monday.", "")
+	f.event("artifact.renamed", fixturePerson, "DOC-1", map[string]any{
+		"artifact": map[string]any{"id": "art-notes", "kind": "doc", "name": "Launch notes"}, "previous_name": "Draft notes"})
+	f.comment("after", "DOC-1", fixtureAgent, "The launch moved to Tuesday.", "")
+	snapshot, _ := f.write(t, t.TempDir())
+	ix, err := loadIndex(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"comment:before": "Draft notes", "comment:after": "Launch notes"} {
+		ts := ix.texts[key]
+		if len(ts) == 0 {
+			t.Fatalf("no text %s", key)
+		}
+		names := map[string]string{}
+		for _, d := range ix.record(ts[0]).Documents {
+			names[d.ArtifactID] = d.Name
+		}
+		if len(names) != 2 || names["art-DOC-1"] != "spec.md" || names["art-notes"] != want {
+			t.Errorf("the record of %s names its documents %v, want spec.md and %q", key, names, want)
+		}
 	}
 }
 

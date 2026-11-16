@@ -943,7 +943,7 @@ Each case holds these fields:
 | `kind` | `ask`, `comment`, `message` or `document`. |
 | `conversation` | `true` for a reply in a thread, to a message or on an ask. `false` for a text outside a conversation. |
 | `writer_session`, `write_time` | The session that wrote the agent text, from the event's actor (the session, or the session that acted for a person), and the time it wrote it, which is where its session is cut. |
-| `record` | Dispatch's record just before the write: the project; the issue with its title then, its parent and its root; each of the issue's documents at the version then in force (`artifact_id`, `name`, `version`, `sha256`); and the texts of the agent text's thread written before it. |
+| `record` | Dispatch's record just before the write: the project; the issue with its title then, its parent and its root; each of the issue's documents at the version then in force, under the name it had then (`artifact_id`, `name`, `version`, `sha256`; an issue's primary document is `spec.md`, the name Dispatch gives it); and the texts of the agent text's thread written before it. |
 | `tree`, `split_group`, `part` | The case's issue tree, its split group, and `held_out` or `development`. |
 | `found`, `named_by_owner` | How the agent text was found, and whether the owner links the case on INFRA-3231. |
 
