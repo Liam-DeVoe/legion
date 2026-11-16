@@ -20,8 +20,9 @@ import (
 // startFromScript runs script, a StartScript, with a stub nats-server first on PATH, so the script
 // writes its configuration to configPath and its exec ends at once. It then starts nats-server in
 // this process on that file and serverArgs, through server.ConfigureOptions, the parse nats-server's
-// own main runs, so the file and the flags merge as they do in a task. It returns the address the
-// monitoring listener bound.
+// own main runs, so the file and the flags merge as they do in a task, on a random client port,
+// since the box's 4222 may be another program's. It returns the address the monitoring listener
+// bound.
 func startFromScript(t *testing.T, script, configPath string, serverArgs []string) *net.TCPAddr {
 	t.Helper()
 	bin := t.TempDir()
@@ -34,7 +35,7 @@ func startFromScript(t *testing.T, script, configPath string, serverArgs []strin
 	fs := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	opts, err := natsserver.ConfigureOptions(fs, append([]string{"--config", configPath}, serverArgs...), nil, nil, nil)
 	require.NoError(t, err)
-	opts.NoSigs = true
+	opts.NoSigs, opts.Port = true, natsserver.RANDOM_PORT
 	s, err := natsserver.NewServer(opts)
 	require.NoError(t, err)
 	go s.Start()

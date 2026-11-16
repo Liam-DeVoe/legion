@@ -2016,7 +2016,8 @@ tailnet-state file system, group and access point. The rules, mount targets and 
 The task runs two containers, both logging to the log group through `awslogs` in `region`:
 
 - `nats`, `natsImage`: clients on 4222, cluster routes on 6222 and monitoring on 8222, JetStream's
-  store at `/data`, and a health check fetching `http://localhost:8222/healthz`. Without
+  store at `/data`, and a health check fetching `http://localhost:8222/healthz`, or
+  `http://127.0.0.1:8222/healthz` beside `privateProjects`, where monitoring listens on loopback alone. Without
   `authorization` the image's entrypoint runs `nats-server` with `serverArgs`. With it, `/bin/sh -c`
   runs a start script that writes the rendered configuration, public keys only
   ([NATS authorization](#nats-authorization)), to `configPath` and execs
@@ -2045,7 +2046,7 @@ system), `logGroupName`, `taskDefinitionArn`, `metricNamespace` and `internalUrl
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `authorization` | unset | The server's nkey authorization, an `aws:Authorization` ([NATS authorization](#nats-authorization)): `users`, `noAuthUser`, the auth service's `callout`, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), and `privateProjects`, refused without `callout`, beside `noAuthUser`, beside any user but `callout.serviceUser`, and when `callout.serviceUser` is granted more than the auth service's grant. With `privateProjects` the start script binds nats-server's monitoring to `127.0.0.1`, whatever port `serverArgs` open it on: the port answers `/connz`, `/subsz` and `/jsz` with no authentication, naming every client's subjects, connections and consumers, and the task's port mapping and the consumer's security group would otherwise let a peer in the VPC read them. The container's health check reads `localhost:8222`, so it is unchanged. Unset, NATS runs with no authorization block. |
+| `authorization` | unset | The server's nkey authorization, an `aws:Authorization` ([NATS authorization](#nats-authorization)): `users`, `noAuthUser`, the auth service's `callout`, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), and `privateProjects`, refused without `callout`, beside `noAuthUser`, beside any user but `callout.serviceUser`, and when `callout.serviceUser` is granted more than the auth service's grant. With `privateProjects` the start script binds nats-server's monitoring to `127.0.0.1`, whatever port `serverArgs` open it on: the port answers `/connz`, `/subsz` and `/jsz` with no authentication, naming every client's subjects, connections and consumers, and the task's port mapping and the consumer's security group would otherwise let a peer in the VPC read them. Beside `privateProjects` the container's health check reads `127.0.0.1:8222` (`core.PrivateMonitorHost`), since busybox `wget` on the image takes `::1` for `localhost` whenever the task's loopback has IPv6, and nothing listens there; without it the check reads `localhost:8222`, as before. Unset, NATS runs with no authorization block. |
 | `configHeader` | with `authorization` | The rendered configuration's header lines, each written as a `# ` comment; `[]` for none. Required with `authorization` and refused without it, since only its start script writes a configuration. |
 | `serverArgs` | required | `nats-server`'s arguments: JetStream, its store directory, the ports. With `authorization` they follow `--config <configPath>`. |
 | `configPath` | with `authorization` | Where the start script writes the configuration in the container. Required with `authorization` and refused without it. |

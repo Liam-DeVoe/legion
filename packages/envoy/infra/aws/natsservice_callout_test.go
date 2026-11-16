@@ -42,9 +42,8 @@ func privateNatsService() *envoyaws.NatsServiceArgs {
 	return args
 }
 
-// natsCommand is the NATS container's command the run registered: the script its entry point,
-// /bin/sh -c, runs.
-func natsCommand(t *testing.T, args *envoyaws.NatsServiceArgs) []any {
+// natsContainer is the NATS container the run registered.
+func natsContainer(t *testing.T, args *envoyaws.NatsServiceArgs) map[string]any {
 	t.Helper()
 	m, _, err := run(t, args, true)
 	require.NoError(t, err)
@@ -52,11 +51,18 @@ func natsCommand(t *testing.T, args *envoyaws.NatsServiceArgs) []any {
 	require.NoError(t, json.Unmarshal([]byte(m.One(t, taskDefinitionType).Inputs["containerDefinitions"].StringValue()), &containers))
 	for _, c := range containers {
 		if c["name"] == "nats" {
-			return c["command"].([]any)
+			return c
 		}
 	}
 	require.Fail(t, "the task definition has no nats container")
 	return nil
+}
+
+// natsCommand is the NATS container's command the run registered: the script its entry point,
+// /bin/sh -c, runs.
+func natsCommand(t *testing.T, args *envoyaws.NatsServiceArgs) []any {
+	t.Helper()
+	return natsContainer(t, args)["command"].([]any)
 }
 
 // TestPrivateProjectsNeedTheAuthService (c-private-needs-callout, R12), for aws:NatsService, whose
@@ -136,4 +142,23 @@ func TestNatsServiceRendersTheCallout(t *testing.T) {
 	require.Contains(t, script, "  ]\n  auth_callout {\n")
 	require.NotContains(t, script, "timeout")
 	require.Equal(t, []any{script}, natsCommand(t, args))
+}
+
+// Beside privateProjects the start script binds monitoring to core.PrivateMonitorHost, so the NATS
+// container's health check reads /healthz there: on the hub's image busybox wget takes ::1 for
+// localhost when the loopback has IPv6, where nothing listens (core's
+// TestThePrivateTasksHealthCheckPasses runs it). Without privateProjects the check reads localhost,
+// as before (nats-authorized.golden and nats-unauthorized.golden pin the whole task).
+//
+// Control: make NatsLaunch leave monitorOnLoopback unset; the private row fails.
+func TestNatsServiceHealthCheckReadsWhereMonitoringListens(t *testing.T) {
+	healthCheck := func(t *testing.T, args *envoyaws.NatsServiceArgs) any {
+		t.Helper()
+		return natsContainer(t, args)["healthCheck"].(map[string]any)["command"]
+	}
+	require.Equal(t, []any{"CMD-SHELL", "wget -qO- http://" + core.PrivateMonitorHost + ":8222/healthz || exit 1"}, healthCheck(t, privateNatsService()))
+	public := privateNatsService()
+	public.Authorization.PrivateProjects = false
+	require.Equal(t, []any{"CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"}, healthCheck(t, public))
+	require.Equal(t, []any{"CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"}, healthCheck(t, exampleArgs()))
 }

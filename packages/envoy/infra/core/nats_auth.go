@@ -368,20 +368,27 @@ func (a Authorization) StartScript(configHeader, serverArgs []string, configPath
 	return "set -eu; printf '%s' " + ShellQuote(config) + " > " + ShellQuote(configPath) + "; exec " + ShellJoin(command), nil
 }
 
+// PrivateMonitorHost is the address a start script binds nats-server's monitoring to beside
+// private projects (privateMonitorLines), and so the address a health check in the task reads it on:
+// localhost would not do, since busybox wget on the hub's image takes ::1 for it whenever the
+// loopback has IPv6, and nothing listens there.
+const PrivateMonitorHost = "127.0.0.1"
+
 // privateMonitorLines end a start script's configuration beside private projects. nats-server's
 // monitoring answers /connz, /subsz and /jsz with no authentication, and they name every client's
 // subjects, connections and consumers, a private project's among them. The `http` key sets the
 // monitoring host (nats-server v2.15.1 server/opts.go:1278-1286), which no flag sets: a server
 // argument's -m or --http_port replaces only the port (opts.go:5987-5989), and without the key the
 // host is the client host, every address by default (opts.go:6068-6070). So the listener binds
-// 127.0.0.1 (server.go:3150, :3163), where aws:NatsService's container health check reads /healthz
-// on localhost, and no peer of the task reaches it, whatever its security group admits. Port 0
-// opens no listener of its own (server.go:3060, :4443): monitoring runs only where serverArgs open
-// it, as before. The hubs render no such line: their servers' monitoring answers health checks from
-// outside the server, which their own rules bound (gcp:ClusteredNatsHub refuses monitorNamespaces
-// beside privateProjects; gcp:NatsHub admits only Google Cloud's health-check ranges).
+// PrivateMonitorHost (server.go:3150, :3163), where aws:NatsService's container health check reads
+// /healthz beside private projects (aws/rendering NatsLaunch), and no peer of the task reaches it,
+// whatever its security group admits. Port 0 opens no listener of its own (server.go:3060, :4443):
+// monitoring runs only where serverArgs open it, as before. The hubs render no such line: their
+// servers' monitoring answers health checks from outside the server, which their own rules bound
+// (gcp:ClusteredNatsHub refuses monitorNamespaces beside privateProjects; gcp:NatsHub admits only
+// Google Cloud's health-check ranges).
 const privateMonitorLines = "# private projects: monitoring answers on loopback alone, so no peer of the task reads /connz, /subsz or /jsz\n" +
-	"http: \"127.0.0.1:0\"\n"
+	"http: \"" + PrivateMonitorHost + ":0\"\n"
 
 // authorizationFlags are the nats-server flags a server argument must not set, with what each does
 // to the rendered authorization. nats-server parses its arguments with Go's flag package, so each
