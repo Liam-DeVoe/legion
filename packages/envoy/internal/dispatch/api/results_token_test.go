@@ -33,7 +33,7 @@ func resultsOnlyToken(jkt, project string) brokertoken.Introspection {
 		Session:      "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml",
 		Person:       "ada@example.com",
 		ProjectScope: brokertoken.ProjectScopeResults,
-		Project:      project,
+		Projects:     []string{project},
 		Scope:        brokertoken.ScopeResults,
 		CI: &brokertoken.CIRun{
 			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",

@@ -635,7 +635,7 @@ func TestAForgedAccessTokenIsRefusedAtTheRoute(t *testing.T) {
 func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	named := liveNamedToken(rig.caller.jkt)
-	named.Project = specResultsProject
+	named.Projects = []string{specResultsProject}
 	const session = "a-session-token-of-the-project"
 	rig.broker.Says(session, named)
 	rig.refusedWith(t, rig.post(t, specResultsProject, session, passOf(probeCheck)), http.StatusForbidden, "RESULTS_SCOPE_REQUIRED")
