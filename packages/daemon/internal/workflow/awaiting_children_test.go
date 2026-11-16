@@ -509,11 +509,12 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 	})
 }
 
-// An implementing task asks for the forward merge while the parent owes it and its pull request
-// has not merged, and no other task does.
+// An implementing task asks for the forward merge while the parent owes it, and no other task
+// does. The task reads the flag alone: a merge of the pull request clears it where the merge is
+// recorded (Engine.merged, TestFactsDuringTheWaitStartNothing), so no record owes the merge of a
+// merged pull request.
 func TestAnImplementingTaskAsksForTheForwardMergeWhileItIsOwed(t *testing.T) {
 	open := &record.PullRequest{State: record.PullRequestOpen, Number: 42}
-	merged := &record.PullRequest{State: record.PullRequestMerged, Number: 42}
 	owed := record.Issue{Key: cwParent, Title: "parent", DefaultBranch: "main", Phase: phase.Implementing, ForwardMergeOwed: true}
 	request := cwParent + " waited on its children: before anything else, merge the default branch main into the branch, push, and complete with a new handoff record, however the children left; end your forward-merge comment with the line `children merged: full test round`."
 	for _, tc := range []struct {
@@ -524,7 +525,6 @@ func TestAnImplementingTaskAsksForTheForwardMergeWhileItIsOwed(t *testing.T) {
 	}{
 		{name: "implementing, owed, open", issue: func(i record.Issue) record.Issue { return i }, pr: open, asks: true},
 		{name: "implementing, owed, no pull request yet", issue: func(i record.Issue) record.Issue { return i }, asks: true},
-		{name: "implementing, owed, merged", issue: func(i record.Issue) record.Issue { return i }, pr: merged},
 		{name: "implementing, not owed", issue: func(i record.Issue) record.Issue { i.ForwardMergeOwed = false; return i }, pr: open},
 		{name: "planning, owed", issue: func(i record.Issue) record.Issue { i.Phase = phase.Planning; return i }, pr: open},
 		{name: "testing, owed", issue: func(i record.Issue) record.Issue { i.Phase = phase.Testing; return i }, pr: open},

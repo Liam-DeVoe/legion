@@ -1469,7 +1469,7 @@ func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate
 	standing := ""
 	if gate.OnBasis() {
 		standing = gate.Basis.Issue
-		accepted, err := record.BasisAcceptance(ctx, a.store, tx, standing)
+		accepted, _, err := record.BasisAcceptance(ctx, a.store, tx, standing)
 		if err != nil {
 			return nil, err
 		}
@@ -1483,7 +1483,7 @@ func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate
 	var rests []string
 	for _, ancestor := range gate.RestsOn {
 		if ancestor != standing {
-			accepted, err := record.BasisAcceptance(ctx, a.store, tx, ancestor)
+			accepted, _, err := record.BasisAcceptance(ctx, a.store, tx, ancestor)
 			if err != nil {
 				return nil, err
 			}

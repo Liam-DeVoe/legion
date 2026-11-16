@@ -143,9 +143,16 @@ func Accepted(issue Issue) bool {
 // a basis (dispatch://INFRA-3320), as the daemon's own store shows it now, or "" where it still
 // does: what the daemon last read of Dispatch shows it done or retro (AcceptedStatus), in its
 // mirror of Dispatch's issues or in its record of the ancestor, or the daemon records it in its
-// retro or its merge (Accepted) or done. Where neither the mirror nor the record knows the
-// ancestor, nothing the daemon holds says that it is accepted. The answer is a sentence's subject
-// and verb, naming the ancestor and what holds it ("Dispatch shows LEGION-100 done").
+// retro or its merge (Accepted). Where neither the mirror nor the record knows the ancestor,
+// nothing the daemon holds says that it is accepted. A root a person parked stands at phase done
+// while its tree lingers (workflow's beginLinger), and R1 counts backlog and icebox as not
+// accepted, so the phase alone says nothing: a real close is the status Dispatch shows. The answer
+// is a sentence's subject and verb, naming the ancestor and what holds it ("Dispatch shows
+// LEGION-100 done").
+//
+// It answers the daemon's record of the ancestor too, nil where it records none, and nil where the
+// mirror alone answered, which reads no record: a caller that reads more of the record where the
+// ancestor is not accepted reads it here, in the same read.
 //
 // It is the one reading of that half of the condition inside a transaction of the daemon's own: a
 // registration on a basis reads it again under the lock every fact applies under (workflow's
@@ -153,31 +160,29 @@ func Accepted(issue Issue) bool {
 // ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and the
 // person's approval as its live event read it before either opens a step; and a step carried onto
 // a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
-func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, error) {
+func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
 	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
 	if err != nil {
-		return "", fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
+		return "", nil, fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
 	}
 	for _, row := range mirrored {
 		if row.Key == ancestor && AcceptedStatus(row.Status) {
-			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil
+			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil, nil
 		}
 	}
 	recorded, err := store.Issue(ctx, tx, ancestor)
 	if err != nil {
-		return "", fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+		return "", nil, fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
 	}
 	switch {
 	case recorded == nil:
-		return "", nil
+		return "", nil, nil
 	case AcceptedStatus(recorded.DispatchStatus):
-		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), nil
+		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), recorded, nil
 	case Accepted(*recorded):
-		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), nil
-	case StandsAt(*recorded) == phase.Done:
-		return fmt.Sprintf("The daemon records %s done", ancestor), nil
+		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), recorded, nil
 	}
-	return "", nil
+	return "", recorded, nil
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own

@@ -64,6 +64,17 @@ func seedLiveAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedTreeLifecycle(t, pool, basisAncestor)
 }
 
+// seedParkedAncestor records LEGION-100 as a park leaves a root (workflow's leave, beginLinger):
+// at phase done with its tree lingering, and with the status Dispatch showed, backlog. R1 counts
+// such an ancestor as not accepted.
+func seedParkedAncestor(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	until := basisEngineNow.Add(time.Hour)
+	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
+		Rank: "T", HandedOver: true, LastDispatchSeq: 1, LingerUntil: &until})
+}
+
 // pendingSeeds is every pending-basis seed the outbox holds for issue, in order.
 func pendingSeeds(t *testing.T, pool *pgxpool.Pool, issue string) []record.PendingBasisSeed {
 	t.Helper()
@@ -349,11 +360,7 @@ func TestABasisOnAnAncestorInNoLiveTreeQueuesNoRestingRoot(t *testing.T) {
 		seed func(t *testing.T, pool *pgxpool.Pool)
 	}{
 		{"an ancestor the daemon does not record", func(*testing.T, *pgxpool.Pool) {}},
-		{"an ancestor parked on the backlog", func(t *testing.T, pool *pgxpool.Pool) {
-			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "backlog", Rank: "T",
-				HandedOver: true, LastDispatchSeq: 1})
-		}},
+		{"an ancestor parked on the backlog", seedParkedAncestor},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

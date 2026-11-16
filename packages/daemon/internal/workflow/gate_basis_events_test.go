@@ -403,9 +403,7 @@ func TestAPendingBasisOpensOnTheApprovalThatReadmitsAParkedAncestor(t *testing.T
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
 	seedGatedTree(t, pool)
-	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "backlog", Rank: "T",
-		HandedOver: true, LastDispatchSeq: 1})
+	seedParkedAncestor(t, pool)
 	apply("register-pending", onBasis(pendingBasis(), 6))
 	approved := ancestorReview(intake.DispatchArtifactApproved, 4, 60, "")
 	approved.Issue = &dispatch.Issue{Key: basisAncestor, Status: "backlog", HandedOver: true, PrimaryArtifactID: basisDoc}
@@ -506,7 +504,7 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 	// The seed's read of the ancestor's issue shows it at work and carrying the legion label.
 	read := func(edit func(*intake.PendingBasisRead)) intake.PendingBasisRead {
 		fact := intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1, ArtifactID: gateDoc, BasisArtifactID: basisDoc,
-			BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, RequestOpen: true, AncestorStatus: "in_progress", AncestorLegion: true}
+			BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, RequestOpen: true, AncestorStatus: "in_progress", AncestorHandedOver: true}
 		edit(&fact)
 		return fact
 	}
@@ -525,7 +523,7 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 			f.Approval, f.RequestOpen, f.AncestorStatus = approval, false, "retro"
 		}), ended: 1},
 		{name: "approved by the person, with the ancestor no longer labelled", fact: read(func(f *intake.PendingBasisRead) {
-			f.Approval, f.RequestOpen, f.AncestorLegion = approval, false, false
+			f.Approval, f.RequestOpen, f.AncestorHandedOver = approval, false, false
 		}), ended: 1},
 		{name: "sent back", fact: read(func(f *intake.PendingBasisRead) { f.Changes, f.RequestOpen = changes, false }), ended: 1},
 		{name: "a newer version", fact: read(func(f *intake.PendingBasisRead) { f.LatestVersion = 5 }), ended: 1},

@@ -2848,7 +2848,7 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 		if err != nil {
 			return fmt.Errorf("read Dispatch issue %s, the ancestor whose document %s is: %w", approval.IssueKey, payload.BasisArtifactID, err)
 		}
-		fact.AncestorStatus, fact.AncestorLegion = ancestor.Status, dispatch.CarriesLegionLabel(ancestor.Labels)
+		fact.AncestorStatus, fact.AncestorHandedOver = ancestor.Status, ancestor.HandedOver
 	}
 	var found string
 	switch {

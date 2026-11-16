@@ -762,8 +762,8 @@ func specGateOf(t *testing.T, h *harness) *record.DesignGate {
 
 // Calls at one sequence of the root that move the step's basis back and forth are each a fact the
 // workflow applies, never a duplicate of an earlier call of the same body that answers 200 and
-// changes nothing: the fact's id names how many times the step's basis has changed
-// (record.DesignGate.BasisChanges). A registration with no basis over a step that a pending basis
+// changes nothing: the fact's id names how many times the step's basis has moved
+// (record.DesignGate.BasisMoves). A registration with no basis over a step that a pending basis
 // left waiting ends that wait, and a registration on the pending basis again after that puts the
 // step back on it. A call made again over a step whose basis its first attempt left as it was
 // stays one fact.

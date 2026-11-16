@@ -33,7 +33,7 @@ const AwaitingChildrenNoticeKind = record.NoticeKind("awaiting-children")
 const waitingOnChildren = "WAITING_ON_CHILDREN"
 
 // childrenMergedLine is the line an implementer ends its forward-merge comment with in the first
-// implementing round after a wait on the children (forwardMergeRequest): the tester reads it and
+// implementing round after a wait on the children (withForwardMerge): the tester reads it and
 // runs a full round of every check of the issue rather than the forward-merge re-check
 // (dispatch://INFRA-3320 R12).
 const childrenMergedLine = "children merged: full test round"
@@ -227,22 +227,27 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 	return record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: from, Summary: hold.Summary, Verdict: hold.Verdict, Reason: reason}
 }
 
-// forwardMergeRequest is the request an implementing task of issue carries while the parent owes
-// the forward merge of its children's work (record.Issue.ForwardMergeOwed) and its pull request
-// has not merged, and "" for every other task (dispatch://INFRA-3320 R12): merge the default
-// branch into the branch before anything else, push, and complete with a new handoff record,
-// however the children left, and end the forward-merge comment with the line the tester reads as
-// asking for a full round (childrenMergedLine). task adds it, and so does the resume task of a
-// phase under way (ResumePhaseTask), so every task that starts the implementing round that owes
-// the merge, or starts it again, asks for it: the return's (ReturnFromChildren), a transition's
-// into implementing, the release of a hold and the operator's restart of the phase (retryPhase),
-// and the start of a re-admitted tree's mid-phase member (StartPromotedWorker). Writing such a
-// task settles nothing; the implementer's completion of that round does (settleForwardMerge).
-func forwardMergeRequest(issue record.Issue, pr *record.PullRequest) string {
-	if issue.Phase != phase.Implementing || !issue.ForwardMergeOwed || (pr != nil && pr.State == record.PullRequestMerged) {
-		return ""
+// withForwardMerge is text, a task of issue's phase worker, ending with the request to merge the
+// default branch into the branch before anything else, push, and complete with a new handoff
+// record, however the children left, and to end the forward-merge comment with the line the
+// tester reads as asking for a full round (forwardMergeText, childrenMergedLine), where issue
+// stands in implementing and owes the forward merge of its children's work
+// (record.Issue.ForwardMergeOwed); text as it is otherwise (dispatch://INFRA-3320 R12).
+//
+// The rule is that every task of an implementing phase whose issue owes the merge asks for it, so
+// every place that builds such a task ends it here: task, which builds a transition's task and a
+// retry's (retryPhase), the return from awaiting_children (ReturnFromChildren), and the resume task
+// of a phase under way (ResumePhaseTask), which the silence repair, the boot's resume, the
+// catch-up, a re-admitted tree's promotion and the send of an entry that names no task (entryWork)
+// hand out. The pull request is not read: a merge clears the flag in the transaction that records
+// it (Engine.merged), and every path into awaiting_children skips a merged pull request, so the
+// flag alone says whether the merge is owed. Writing such a task settles nothing; the
+// implementer's completion of that round does (settleForwardMerge).
+func withForwardMerge(text string, issue record.Issue) string {
+	if issue.Phase != phase.Implementing || !issue.ForwardMergeOwed {
+		return text
 	}
-	return forwardMergeText(issue)
+	return text + " " + forwardMergeText(issue)
 }
 
 // settleForwardMerge clears the forward merge issue owes (record.Issue.ForwardMergeOwed) where
@@ -251,7 +256,7 @@ func forwardMergeRequest(issue record.Issue, pr *record.PullRequest) string {
 // record is over. Writing a task that carries the request settles nothing, since the round that
 // task starts can be started again before it is done — a claim that fails before it takes its
 // start and the architect's retry, a fresh session, a re-admitted tree's promotion — and each of
-// those tasks asks for the merge again because the flag still stands (forwardMergeRequest). A
+// those tasks asks for the merge again because the flag still stands (withForwardMerge). A
 // merged pull request clears the flag as well (Engine.merged). The transition is the one caller,
 // and a completion an open child holds moves the parent into a new wait before it gets here,
 // which owes the merge again (awaitChildren).
@@ -262,7 +267,7 @@ func settleForwardMerge(issue *record.Issue, trigger TriggerKind) {
 }
 
 // forwardMergeText is the words of issue's forward-merge request whether or not the issue owes
-// one: the one text forwardMergeRequest adds and the return takes out of a held task that already
+// one: the one text withForwardMerge adds and the return takes out of a held task that already
 // carries it (ReturnFromChildren), so a task carries the request once or not at all.
 func forwardMergeText(issue record.Issue) string {
 	base := "the default branch"
@@ -415,10 +420,10 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //     which carries the reason its transition wrote. A held start of testing, reviewing or
 //     accepting starts implementing in its place, since a test or a review of a head without the
 //     children's merges proves nothing, with a task that names the held start and its reason.
-//   - While the forward merge is owed and the pull request has not merged, the implementing task
-//     ends with the request to merge the default branch forward (forwardMergeRequest), once,
-//     whatever the held task carried. The record owes the merge until the implementer completes
-//     that round (settleForwardMerge), so a task that starts the round again asks for it too.
+//   - While the forward merge is owed, the implementing task ends with the request to merge the
+//     default branch forward (withForwardMerge), once, whatever the held task carried. The record
+//     owes the merge until the implementer completes that round (settleForwardMerge), so a task
+//     that starts the round again asks for it too.
 //   - A parent whose pull request merged during the wait goes back to the very start it held,
 //     with no forward merge (the merge cleared the debt, Engine.merged), and keeps today's path
 //     for a merged pull request from there. A held accepting goes back to accepting, where no
@@ -465,8 +470,8 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	if back.Phase != held.Start {
 		work = task(back, record.PhaseRow{}, pr, fmt.Sprintf("%s goes back from awaiting_children now that no Dispatch child of it is open, and starts implementing in place of the start of %s it held, since a test or a review of a head without its children's merges proves nothing. The held start of %s was for this: %s",
 			issue.Key, held.Start, held.Start, held.Reason))
-	} else if request := forwardMergeRequest(back, pr); request != "" {
-		work += " " + request
+	} else {
+		work = withForwardMerge(work, back)
 	}
 	status := PhaseStatus(back.Phase)
 	if err := e.status(ctx, tx, issue, status); err != nil {

@@ -22,9 +22,10 @@ import (
 // architect's retry are TestTheReturnsForwardMergeSurvivesAFailedImplementerAndTheRetry; the
 // cases here are the other ways the round is started again, and its end.
 
-// fmReturned is the red test's parent: the open child held its tester's fail, and the child's
-// close took it back to implementing, whose first task asks for the forward merge once. It
-// answers the pool, the admission and that first implementer start.
+// fmReturned builds a parent back from awaiting_children: its tester failed its head while an open
+// child held the start of implementing that fail raised, and the child's close took the parent
+// back to implementing, whose first implementer task asks for the forward merge once. It answers
+// the pool, the admission and that first implementer start.
 func fmReturned(t *testing.T) (*pgxpool.Pool, *Admission, record.SuperviseRequest) {
 	t.Helper()
 	failed := intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester",
@@ -51,8 +52,7 @@ func fmAsksOnce(t *testing.T, what, task string) {
 // restartWorkedPhase, for a claim that failed or an operator stopped, and for one that comes back
 // in a new session owing no task). The new session has read none of the return's task, and no
 // implementer has merged the children's work forward yet, so the restarted task asks for the
-// merge, once, and the record still owes it. The code before this test cleared the debt in the
-// return's own write, and the restart built its task from that record, which asked for nothing.
+// merge, once, and the record still owes it.
 func TestAFreshSessionRetryOfTheReturnsImplementerStillAsksForTheForwardMerge(t *testing.T) {
 	pool, admission, first := fmReturned(t)
 
@@ -78,8 +78,7 @@ func TestAFreshSessionRetryOfTheReturnsImplementerStillAsksForTheForwardMerge(t 
 // starts the member's implementer again on the resume task of its phase (startMidPhaseMembers,
 // workflow.Engine.StartPromotedWorker), which raises the entry the re-admission cleared the task
 // of. No implementer has merged the children's work forward yet, so the promoted task asks for
-// the merge, once, and the record still owes it. The code before this test cleared the debt in
-// the return's own write, and its resume task never named the merge.
+// the merge, once, and the record still owes it.
 func TestAReadmittedTreesPromotedImplementerStillAsksForTheForwardMerge(t *testing.T) {
 	const root, member, grandchild = "LEGION-208", "LEGION-209", "LEGION-210"
 	pool := migratedPool(t)
@@ -132,8 +131,7 @@ func TestAReadmittedTreesPromotedImplementerStillAsksForTheForwardMerge(t *testi
 // The implementer's completion of the first implementing round after the wait is what settles
 // the forward merge: the record owes it through that round, and owes none once the implementer
 // completes, so the next implementing round, after the tester fails the merged head, asks for no
-// forward merge and no full test round. The code before this test cleared the debt in the
-// return's own write, so the record owed nothing through the round that was to do the merge.
+// forward merge and no full test round.
 func TestTheImplementersCompletionSettlesTheForwardMerge(t *testing.T) {
 	pool, admission, _ := fmReturned(t)
 	if got := issue(t, pool, spParent); !got.ForwardMergeOwed {

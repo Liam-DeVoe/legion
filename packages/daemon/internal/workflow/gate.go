@@ -88,7 +88,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if refusal, accepted, err := e.acceptedBasis(ctx, tx, fact); err != nil || accepted {
+	if refusal, err := e.acceptedBasis(ctx, tx, fact); err != nil || refusal.Refusal != nil {
 		return refusal, err
 	}
 	request, err := e.mirrorRegisteredRequest(ctx, tx, *issue, fact)

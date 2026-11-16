@@ -394,13 +394,13 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// a pending basis waits on, and the ancestor the view fact names. A registration with no basis
 	// after one with a basis at the same version and sequence is a new fact, not a duplicate that
 	// answers 200 and changes nothing. The record is read as well: the id names how many times the
-	// step's basis has changed (record.DesignGate.BasisChanges, stepBasisChanges), so a call made
+	// step's basis has moved (record.DesignGate.BasisMoves, stepBasisMoves), so a call made
 	// again over a step whose basis a registration has moved since, as a registration with no basis
 	// over a step a pending basis left waiting, or one on that pending basis again after the wait
 	// ended, is a new fact the handlers apply, while a call made again over a step whose basis its
 	// first attempt left as it was stays one.
-	var basisChanges int
-	if basisChanges, ok = s.stepBasisChanges(w, r, req.Issue, step); !ok {
+	var basisMoves int
+	if basisMoves, ok = s.stepBasisMoves(w, r, req.Issue, step); !ok {
 		return
 	}
 	id := fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since)
@@ -413,8 +413,8 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if fact.ViewOf != "" {
 		id += ":view-of:" + fact.ViewOf
 	}
-	if basisChanges > 0 {
-		id += fmt.Sprintf(":basis-changes:%d", basisChanges)
+	if basisMoves > 0 {
+		id += fmt.Sprintf(":basis-moves:%d", basisMoves)
 	}
 	if s.gateRead != nil {
 		s.gateRead(r.Context(), req.Issue)
@@ -422,25 +422,25 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, id, fact, GateRegisterResponse{})
 }
 
-// stepBasisChanges is how many times the basis of step of issue has changed in its generation, as
-// the record shows it now (record.DesignGate.BasisChanges), zero for a step with no row, which a
+// stepBasisMoves is how many times the basis of step of issue has moved in its generation, as
+// the record shows it now (record.DesignGate.BasisMoves), zero for a step with no row, which a
 // register_gate fact's id names (gateRegister). A failed read refuses the call with
 // RECORD_UNAVAILABLE and records nothing.
-func (s *server) stepBasisChanges(w http.ResponseWriter, r *http.Request, issue string, step record.DesignStep) (int, bool) {
+func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue string, step record.DesignStep) (int, bool) {
 	if s.pool == nil || s.records == nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the design gate of "+issue)
 		return 0, false
 	}
-	var changes int
+	var moves int
 	if err := pgx.BeginTxFunc(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		gates, err := s.records.GatesOf(r.Context(), tx, issue)
-		changes = gates[step].BasisChanges
+		moves = gates[step].BasisMoves
 		return err
 	}); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the design gate of "+issue)
 		return 0, false
 	}
-	return changes, true
+	return moves, true
 }
 
 // registeredStep is the design-gate step a registration records, from the step the call named and

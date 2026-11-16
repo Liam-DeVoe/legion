@@ -40,14 +40,15 @@
 -- names to those the row holds and takes none away. A pending step rests on its ancestor through
 -- basis_issue alone, so a wait that ends without opening leaves no rest behind.
 --
--- basis_changes is how many times the step's basis has changed in this generation: a basis set
--- on a step that had none, a change of the basis's ancestor, document, version or pending
--- request (an opening on the person's answer included), and the end of a basis.
--- record.Postgres.PutGate counts each such write and nothing else, starting a new row at one where
--- it carries a basis and at zero where it does not. register_gate names it in the id of the fact
--- it applies (api's gateRegister), so a call made again over a step whose basis a registration
--- has moved since is a fact of its own, while one made again over a step whose basis its first
--- attempt left as it was is not.
+-- basis_moves is how many times the step's basis has moved in this generation: a basis set on a
+-- step that had none, a change of the basis's ancestor, document, version or pending request (an
+-- opening on the person's answer included), and the end of a basis. A person's changes request on
+-- the basis document moves no basis, so it counts nothing here. record.Postgres.PutGate counts
+-- each such write and nothing else, starting a new row at one where it carries a basis and at zero
+-- where it does not. register_gate names it in the id of the fact it applies (api's
+-- gateRegister), so a call made again over a step whose basis a registration has moved since is a
+-- fact of its own, while one made again over a step whose basis its first attempt left as it was
+-- is not.
 --
 -- issues.view_of is the ancestor whose requirement blocks the issue's spec is a view on, written
 -- at each registration of the spec step, null where there is none.
@@ -61,7 +62,7 @@
 -- itself (record.Postgres.PutGate writes a basis whole and a kept approval only while a basis
 -- stands, and its reader, record.scanGate, reads a basis an earlier release's write moved as
 -- ended). A daemon of an earlier release running on this schema names none of these columns: its
--- reads leave them out, its inserts leave them null and basis_changes at its default of zero, and
+-- reads leave them out, its inserts leave them null and basis_moves at its default of zero, and
 -- its upserts leave them as they are. So it reads a step a basis opened as approved at the version
 -- the root registered, which opens the tree as the basis does, and calls that version a person's
 -- approval in its texts; it reads a pending step as registered and not approved. A new version, a
@@ -69,7 +70,7 @@
 -- step moves approved_version and leaves the basis columns behind; when this release runs again,
 -- its reader takes the moved row as that act's end of the basis (a newer version falling back to
 -- the kept approval), and its next write of the row clears what is left and counts that end in
--- basis_changes. A version or a review it applies to a pending step ends no wait, and this release
+-- basis_moves. A version or a review it applies to a pending step ends no wait, and this release
 -- finds that step still pending; its pending-basis seed at boot reads the ancestor's request
 -- again. It finds no step by its basis, so an ancestor's sign-off does not wait on resting roots
 -- and a request's close ends no pending step while it runs, and its phase tasks name no view. Its
@@ -94,7 +95,7 @@ alter table design_gates add column kept_person_at timestamptz;
 
 alter table design_gates add column rests_on text[];
 
-alter table design_gates add column basis_changes integer not null default 0;
+alter table design_gates add column basis_moves integer not null default 0;
 
 create index design_gates_basis_artifact_id on design_gates (basis_artifact_id) where basis_artifact_id is not null;
 create index design_gates_basis_pending_ask on design_gates (basis_pending_ask) where basis_pending_ask is not null;

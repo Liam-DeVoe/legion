@@ -324,29 +324,29 @@ type BasisReview struct {
 // otherwise. Changes is a changes request on that version: after such an approval, the newest
 // one; with none, the first review of that version, where it is a changes request. LatestVersion
 // is the document's latest version, and RequestOpen says the request still stands open.
-// AncestorStatus and AncestorLegion are what Dispatch shows of the ancestor's issue, read as
+// AncestorStatus and AncestorHandedOver are what Dispatch shows of the ancestor's issue, read as
 // register_gate reads it and only where the read found such an approval, which alone opens the
-// step: its status, and whether it carries dispatch.LegionLabel. The approval opens the step only
-// on an ancestor that still meets R1's first condition.
+// step: its status, and whether it carries dispatch.LegionLabel (dispatch.Issue.HandedOver). The
+// approval opens the step only on an ancestor that still meets R1's first condition.
 //
 // It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
 // root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
 // own gate as well. The workflow applies it only to a step of that generation still pending on
 // that request, so a read of a wait that has ended or opened since changes nothing.
 type PendingBasisRead struct {
-	Issue           string
-	Step            record.DesignStep
-	Generation      uint64
-	ArtifactID      string
-	BasisArtifactID string
-	BasisVersion    int
-	Ask             string
-	Approval        *BasisReview
-	Changes         *BasisReview
-	LatestVersion   int
-	RequestOpen     bool
-	AncestorStatus  string
-	AncestorLegion  bool
+	Issue              string
+	Step               record.DesignStep
+	Generation         uint64
+	ArtifactID         string
+	BasisArtifactID    string
+	BasisVersion       int
+	Ask                string
+	Approval           *BasisReview
+	Changes            *BasisReview
+	LatestVersion      int
+	RequestOpen        bool
+	AncestorStatus     string
+	AncestorHandedOver bool
 }
 
 func (PendingBasisRead) isFact() {}

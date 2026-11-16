@@ -894,7 +894,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // pass reads it as the tester's report, never as a field of its own completion.
 //
 // An implementing task of a parent that still owes the forward merge of its children's work ends
-// with the request for it (forwardMergeRequest).
+// with the request for it (withForwardMerge).
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -913,10 +913,7 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
-	if request := forwardMergeRequest(issue, pr); request != "" {
-		text += " " + request
-	}
-	return text
+	return withForwardMerge(text, issue)
 }
 
 // continueLine opens every phase task: the issue, its key and the phase the worker starts, and,
@@ -959,19 +956,13 @@ func handoffWord(role claim.Role) string {
 // begins that phase — the run that did is over — so the task names the phase and says to carry
 // the work on, which is what a resumed session needs to tell this phase from its last.
 //
-// An implementing phase whose parent still owes the forward merge of its children's work is the
-// round that owes it, so its resume task asks for the merge as every implementing task does
-// (forwardMergeRequest): the start of a re-admitted tree's mid-phase member (StartPromotedWorker),
-// and the send of an entry whose task the re-admission cleared (entryWork), each start that round
-// again, and the session they reach may have read none of the task that first asked. No pull
-// request is read for it: a merge clears the flag in the transaction that records it
-// (Engine.merged), so the flag alone says whether the merge is owed.
+// Every task of an implementing phase whose issue owes the forward merge of its children's work
+// asks for it, and the resume task is no exception (withForwardMerge): the silence repair, the
+// boot's resume, the catch-up, a re-admitted tree's promotion (StartPromotedWorker) and the send
+// of an entry that names no task (entryWork) each hand it to a session that may have read none of
+// the task that first asked.
 func ResumePhaseTask(issue record.Issue) string {
-	text := continueLine(issue) + " Resume the existing phase work."
-	if request := forwardMergeRequest(issue, nil); request != "" {
-		text += " " + request
-	}
-	return text
+	return withForwardMerge(continueLine(issue)+" Resume the existing phase work.", issue)
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

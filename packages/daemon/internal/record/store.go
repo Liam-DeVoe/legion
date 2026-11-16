@@ -1547,7 +1547,7 @@ func scannedMark(seq *int64, at *time.Time) EventMark {
 const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened,
 	coalesce(basis_issue, ''), coalesce(basis_artifact_id, ''), coalesce(basis_version, 0), basis_approved_seq, basis_approved_at, coalesce(basis_approver, ''),
 	nullif(basis_serves, '{}'), coalesce(basis_reason, ''), coalesce(basis_session, ''), basis_registered_at, coalesce(basis_pending_ask, ''),
-	kept_person_version, kept_person_seq, kept_person_at, nullif(rests_on, '{}'), basis_changes`
+	kept_person_version, kept_person_seq, kept_person_at, nullif(rests_on, '{}'), basis_moves`
 
 // scanGate reads a gate row in the shape PutGate writes: an approval's mark only with the approval,
 // a told changes request's reason and mark only with its version, a basis only with its document,
@@ -1567,7 +1567,7 @@ func scanGate(row scanner) (DesignGate, error) {
 		&gate.ToldChangesVersion, &gate.ToldChangesReason, &toldSeq, &toldAt, &gate.EverOpened,
 		&basis.Issue, &basis.ArtifactID, &basis.Version, &basisSeq, &basisAt, &basis.Approver,
 		&basis.Serves, &basis.Reason, &basis.Session, &registeredAt, &pendingAsk,
-		&keptVersion, &keptSeq, &keptAt, &gate.RestsOn, &gate.BasisChanges); err != nil {
+		&keptVersion, &keptSeq, &keptAt, &gate.RestsOn, &gate.BasisMoves); err != nil {
 		return DesignGate{}, err
 	}
 	gate.Step = DesignStep(step)
@@ -1785,7 +1785,7 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	// every ancestor the row names and adds those the gate names that it does not, in the order
 	// each was first written, and a write that carries none takes nothing away.
 	//
-	// basis_changes is the write's own count of the basis moving (DesignGate.BasisChanges): a new
+	// basis_moves is the write's own count of the basis moving (DesignGate.BasisMoves): a new
 	// row starts at one where it carries a basis and at zero where it does not, and a write over a
 	// row adds one where the basis it writes differs from the row's in its ancestor, document,
 	// version or request, which counts a basis set on a row that had none and the end of one, and
@@ -1794,7 +1794,7 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened,
 		basis_issue, basis_artifact_id, basis_version, basis_approved_seq, basis_approved_at, basis_approver, basis_serves,
 		basis_reason, basis_session, basis_registered_at, basis_pending_ask, kept_person_version, kept_person_seq, kept_person_at, rests_on,
-		basis_changes)
+		basis_moves)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
 		$13, $14, $15, $16, $17, $18, $19::text[], $20, $21, $22, $23, $24, $25, $26, nullif($27::text[], '{}'),
 		case when $13::text is null then 0 else 1 end)
@@ -1814,7 +1814,7 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 			select ancestor, min(place) as first
 			from unnest(coalesce(design_gates.rests_on, '{}') || coalesce(excluded.rests_on, '{}')) with ordinality as named (ancestor, place)
 			group by ancestor) as kept),
-		basis_changes = design_gates.basis_changes + case
+		basis_moves = design_gates.basis_moves + case
 			when (design_gates.basis_issue, design_gates.basis_artifact_id, design_gates.basis_version, design_gates.basis_pending_ask)
 				is distinct from (excluded.basis_issue, excluded.basis_artifact_id, excluded.basis_version, excluded.basis_pending_ask) then 1
 			else 0 end`,

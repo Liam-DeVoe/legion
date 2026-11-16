@@ -1283,7 +1283,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
 // then: the held reviewing goes back as implementing, whatever that round came to. A retry of
 // implementing while the parent owes the forward merge of its children's work asks for it again
-// (forwardMergeRequest): the round it starts again is the one that owes the merge, and only the
+// (withForwardMerge): the round it starts again is the one that owes the merge, and only the
 // implementer's completion of that round settles it (settleForwardMerge).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a conflicting head raised out of retro or merging is

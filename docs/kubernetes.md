@@ -2216,6 +2216,8 @@ update public.issues set forward_merge_owed = false where forward_merge_owed;
 Once the earlier daemon is up, ask the implementer of each returned issue's next implementing round (the round under way for an issue in `implementing`), in a comment on the issue, to merge the default branch into the branch before anything else, push, and complete with a new handoff record, however the children left, as this release's implementing task would have asked (workflow's `forwardMergeText`).
 For an issue the move above put in `implementing`, put the ask in the comment that gives its implementer the held work, before the retry.
 Ask the tester of the testing round after it for a full test round as well: this release has the implementer end its forward-merge comment with the line `children merged: full test round`, which this release's tester prompt reads as that request and the earlier release's does not.
+An issue the read returns in `done` needs no ask now: a root a person parked and a child that closed keep the flag when they leave the workflow, and neither has an implementing round under way.
+Keep its key all the same: should a person bring it back, ask the implementer of its next implementing round as above, since the earlier release asks for none.
 
 What the clear costs: once this release is rolled forward, none of its implementing tasks asks for these merges, so an implementer that has not merged by then is asked by the comment alone.
 Left set, the column has the first implementing task of each such issue after the roll forward ask again for a merge the operator has already asked for.

@@ -83,7 +83,7 @@ func newBasisSeedRig(t *testing.T) *basisSeedRig {
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	client := &basisDispatch{approvals: map[string]dispatch.Approval{}, reviews: map[string][]dispatch.Review{},
 		owners: map[string]string{basisSeedDoc: basisSeedAncestor, basisSeedRootDoc: basisSeedRoot},
-		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}}}}
+		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}}}
 	rig := &basisSeedRig{t: t, pool: pool, records: records, client: client,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, handlers: []intake.Handler{engine}, now: time.Now}}
 	for _, issue := range []record.Issue{
@@ -209,7 +209,7 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 	}{
 		{name: "approved by the person", approval: approvedRead, reviews: []dispatch.Review{approved}, open: true},
 		{name: "approved by the person, with the ancestor done", approval: approvedRead, reviews: []dispatch.Review{approved},
-			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "done", Labels: []string{dispatch.LegionLabel}},
+			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "done", Labels: []string{dispatch.LegionLabel}, HandedOver: true},
 			ended:    "Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
 		{name: "approved by the person, with the ancestor no longer labelled", approval: approvedRead, reviews: []dispatch.Review{approved},
 			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{"infra"}},

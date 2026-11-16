@@ -227,11 +227,11 @@ type Issue struct {
 	ChildrenWait *ChildrenWait
 	// ForwardMergeOwed is whether the parent still owes a forward merge of its children's work. It
 	// is set whenever a parent enters awaiting_children (workflow's awaitChildren), and after the
-	// return every task that starts or starts again the implementing round that owes it asks for
-	// the merge (workflow's forwardMergeRequest). Writing such a task clears nothing: the flag stays
-	// set until the implementer completes that round (workflow's settleForwardMerge), and a merged
-	// pull request clears it too (dispatch://INFRA-3320 R12). It outlives the phase, so PutIssue
-	// carries it on every write.
+	// return every task of the implementing phase that owes it asks for the merge (workflow's
+	// withForwardMerge). Writing such a task clears nothing: the flag stays set until the
+	// implementer completes that round (workflow's settleForwardMerge), and a merged pull request
+	// clears it too (dispatch://INFRA-3320 R12). It outlives the phase, so PutIssue carries it on
+	// every write.
 	ForwardMergeOwed bool
 	// ChildrenWaitedAt is when the parent last moved into awaiting_children, nil for a parent that
 	// never did. It outlives the phase, which the late-completion guard needs: it refuses a
@@ -1267,15 +1267,16 @@ type DesignGate struct {
 	// through its basis instead, and stops resting on it when the wait ends without opening
 	// (RestsOnIssue).
 	RestsOn []string
-	// BasisChanges is how many times the step's basis has changed in this generation: a basis set
-	// on a step that had none, a change of the ancestor, its document, the version or the request a
+	// BasisMoves is how many times the step's basis has moved in this generation: a basis set on a
+	// step that had none, a change of the ancestor, its document, the version or the request a
 	// pending basis waits on (an opening on the person's answer included), and the end of a basis.
-	// Store.PutGate counts each write that makes such a change and no other, and a write never sets
+	// Store.PutGate counts each write that makes such a move and no other, and a write never sets
 	// it; a re-admission clears it with the generation's rows. It is the row's own reading of
 	// whether its basis has moved, which a register_gate fact's id names (api's gateRegister), so a
 	// call made again over a step whose basis a registration moved since is a fact of its own, and
-	// one made again over a step whose basis its first attempt left as it was is not.
-	BasisChanges int
+	// one made again over a step whose basis its first attempt left as it was is not. It is no count
+	// of changes requests: a person's changes request on the basis document moves no basis (R3).
+	BasisMoves int
 }
 
 // GateBasis is an ancestor's approval that a step of a root stands open on, or the ancestor's

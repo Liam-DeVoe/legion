@@ -539,10 +539,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		if got := issue(t, pool, spParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
 			t.Fatalf("the parent after its planner's completion = phase %s, merge owed %t; want implementing, the merge owed until its implementer completes the round", got.Phase, got.ForwardMergeOwed)
 		}
-		work := pnWorkerStart(t, pool, spParent, claim.RoleImplementer).Task
-		if !strings.Contains(work, pnForwardMerge) || strings.Count(work, spMergeLine) != 1 {
-			t.Fatalf("the first implementing task after the wait = %q, want the forward merge and the line %s once", work, spMergeLine)
-		}
+		fmAsksOnce(t, "the first implementing task after the wait", pnWorkerStart(t, pool, spParent, claim.RoleImplementer).Task)
 	})
 
 	t.Run("a parent whose pull request merged during the wait comes back at the start it held, with no forward merge", func(t *testing.T) {
