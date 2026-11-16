@@ -236,6 +236,26 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the pin and the missing label" "$(has_line "UNKNOWN: LINUX: ${worker_a} names no org.opencontainers.image.revision label")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
+# The compare call takes any ref GitHub resolves, so a revision label that names a branch or a tag
+# (`main`) would compare as wherever that ref points today, not as the commit the image was built
+# from. The gate compares a revision only when it is 7 to 40 lowercase hex digits.
+#
+# Negative control, run when this was written: drop the commit-id check from judge; the rows below
+# that expect `which is no commit id` print `PASS` instead, with a compare call for the label.
+echo "case: a daemon image whose revision label is no commit id"
+new_case revision-not-commit
+legion_stack "$fleet"
+single "$worker_a" "$legion" "main"
+single "$worker_b" "$legion" "abcdef1"
+compare "main" ahead 0
+compare "abcdef1" identical 0
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the pin and its revision" "$(has_line "UNKNOWN: LINUX: ${worker_a} names revision main, which is no commit id")"
+check "makes no compare call for that revision" "$(lacks "...main" "$calls")"
+check "a revision of 7 hex digits is a commit id, and is compared" "$(has_line "PASS: INFRA runs abcdef1 (identical to ${commit})")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
 echo "case: the compare API cannot be reached"
 new_case api-down
 legion_stack "$fleet"
@@ -274,6 +294,54 @@ legion_stack "    - key: LINUX
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the entry" "$(has_line "UNKNOWN: LINUX runs a daemon and names neither daemonImage nor image")"
+
+# agent-infra legion/host.go: an entry at `runtime: tmux` runs its daemon on the project's host VM
+# from host.legionWorker's legion (checkHost refuses daemonImage, replicas and daemon on it), so its
+# `image` says nothing about the daemon. The gate reads no image for it: it is UNKNOWN by name. So is
+# a runtime the gate does not know; an entry that names `runtime: kubernetes` is read as before.
+#
+# Negative control, run when this was written: drop the runtime branch from daemon_pins; the rows
+# below that expect the runtime's UNKNOWN line print `PASS` for the entry's image instead.
+readonly worker_tmux="ghcr.io/cybermonklabs/legion-worker@sha256:6666"
+readonly worker_host="ghcr.io/cybermonklabs/legion-worker@sha256:7777"
+echo "case: an entry on runtime tmux runs its daemon on a host, not from its image"
+new_case tmux
+legion_stack "    - key: LINUX
+      replicas: 1
+      runtime: kubernetes
+      daemonImage: ${worker_a}
+    - key: HOSTED
+      runtime: tmux
+      image: ${worker_tmux}
+      host:
+        legionWorker: ${worker_host}"
+single "$worker_a" "$legion" "$ahead_rev"
+single "$worker_tmux" "$legion" "$ahead_rev"
+single "$worker_host" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the entry and its tmux host" \
+  "$(has_line "UNKNOWN: HOSTED runs its daemon on a tmux host (runtime: tmux), from host.legionWorker, an image this gate does not read")"
+check "never reads the entry's image" "$(lacks "$worker_tmux" "$calls")"
+check "never reads the host's image either" "$(lacks "$worker_host" "$calls")"
+check "an entry that names runtime kubernetes is still read" "$(has_line "PASS: LINUX runs ${ahead_rev} (ahead of ${commit})")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+echo "case: an entry on a runtime the gate does not know"
+new_case runtime-unknown
+legion_stack "    - key: ODD
+      replicas: 1
+      runtime: nomad
+      image: ${worker_tmux}"
+single "$worker_tmux" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the entry and its runtime" \
+  "$(has_line "UNKNOWN: ODD names runtime nomad, which this gate does not know, so it reads no image for its daemon")"
+check "never reads the entry's image" "$(lacks "$worker_tmux" "$calls")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: a stack that lists no running daemon"
 new_case empty
@@ -501,6 +569,24 @@ compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 0" "$(is "$status" 0)"
 check "reads the single image's own labels" "$(has_line "PASS: envoy runs ${ahead_rev} (ahead of ${commit})")"
+
+echo "case: --listeners, revision labels that are no commit id"
+new_case listeners-revision-not-commit
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+index "$envoy_pin" "$legion" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+index "$cluster_pin" "$legion" "abcdef"
+index "$dispatch_listener_pin" "$legion" "${ahead_rev}a"
+compare "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" ahead 0
+compare "abcdef" ahead 0
+compare "${ahead_rev}a" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses upper-case hex" \
+  "$(has_line "UNKNOWN: envoy: ${envoy_pin} names revision AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, which is no commit id")"
+check "refuses 6 hex digits" "$(has_line "UNKNOWN: envoy-cluster: ${cluster_pin} names revision abcdef, which is no commit id")"
+check "refuses 41 hex digits" "$(has_line "UNKNOWN: dispatch: ${dispatch_listener_pin} names revision ${ahead_rev}a, which is no commit id")"
+check "makes no compare call" "$(lacks "/compare/" "$calls")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 if [ "$failures" -ne 0 ]; then
   printf '%s check(s) failed\n' "$failures"

@@ -468,7 +468,10 @@ packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
 
 Without `--listeners` it reads the image each Legion daemon runs: each entry of
 theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
-`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. With `--listeners`
+`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
+`runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
+its `image` (agent-infra `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
+by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
 it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
 dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
 Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
@@ -481,7 +484,9 @@ deployment records as the same repository — the `repositoryRenames` pairs of `
 which the daemon reads as `repository_renames`, so a build made as `sjawhar/legion` before the
 transfer is a build of this repository — passes when GitHub's compare of `<commit>...<revision>`
 answers `ahead` or `identical`, its line naming the rename; a pin built from any other repository
-is refused by name and never compared.
+is refused by name and never compared. A revision label that is not a commit id, 7 to 40 lowercase
+hex digits, prints `UNKNOWN` and is never compared: GitHub's compare resolves any ref, so a label
+naming a branch (`main`) would compare as wherever that branch points now.
 
 It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
 `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`

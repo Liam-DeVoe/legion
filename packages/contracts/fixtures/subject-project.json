@@ -61,7 +61,12 @@
     { "role": "legion-cybermonklabslegion-controller", "project": "_" },
     { "role": "legion-infra", "project": "_" },
     { "role": "legion-", "project": "_" },
-    { "role": "", "project": "_" }
+    { "role": "", "project": "_" },
+    { "role": "legion-infra-\n", "project": "INFRA" },
+    { "role": "legion-infra-\r", "project": "INFRA" },
+    { "role": "legion-infra-\u2028", "project": "INFRA" },
+    { "role": "legion-INFRA-controller", "project": "_" },
+    { "role": "legion-ßk-controller", "project": "_" }
   ],
   "subjectProject": [
     {
@@ -124,6 +129,8 @@
     { "subject": "notifications.legion.priv.PRIV-1", "project": "PRIV", "repo": "", "ok": true },
     { "subject": "notifications.legion.priv.wake", "project": "PRIV", "repo": "", "ok": true },
     { "subject": "notifications.legion.wake", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.legion.INFRA.wake", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.legion.ßk.wake", "project": "_", "repo": "", "ok": true },
     {
       "subject": "notifications.github.acme.widgets.pull_request.4.opened",
       "project": "",
@@ -303,10 +310,8 @@
       "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
       "twin": "notifications.dispatch.issue.INFRA-12.>"
     },
-    {
-      "canonical": "notifications.dispatch.issue.*.INFRA-12.>",
-      "twin": "notifications.dispatch.issue.INFRA-12.>"
-    },
+    { "canonical": "notifications.dispatch.issue.*.INFRA-12.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.*.INFRA-12.comment.created", "twin": null },
     {
       "canonical": "notifications.dispatch.issue.INFRA.INFRA-12",
       "twin": "notifications.dispatch.issue.INFRA-12"
@@ -419,6 +424,30 @@
     { "project": "LEGION", "role": "lead-reviewer", "key": "LEGION.lead-reviewer" }
   ],
   "issueEventKey": [
+    {
+      "subject": "notifications.dispatch.issue.TEST1A0A2A10F5EC-2.issue.updated",
+      "key": "TEST1A0A2A10F5EC-2",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.TEST1A0A2A10F5EC.TEST1A0A2A10F5EC-2.issue.updated",
+      "key": "TEST1A0A2A10F5EC-2",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.T-1.issue.created",
+      "key": "T-1",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.T.T-1.issue.created",
+      "key": "T-1",
+      "legacy": false,
+      "ok": true
+    },
     {
       "subject": "notifications.dispatch.issue.INFRA-12.comment.created",
       "key": "INFRA-12",

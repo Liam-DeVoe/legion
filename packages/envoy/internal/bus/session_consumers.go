@@ -298,7 +298,7 @@ type SessionConsumerStart struct {
 }
 
 // Ensure makes sessionID's consumer carry the session consumer settings and the filters subjects
-// reduce to (ReduceFilterSubjects), and creates it when the stream holds none.
+// reduce to (SessionConsumerFilters), and creates it when the stream holds none.
 //
 // An existing consumer's filters and settings are updated, changing nothing when both already
 // match, and it keeps its position: the next stream sequence it examines. A newly followed subject
@@ -883,9 +883,12 @@ func sessionConsumerTarget(sessionID string, subjects []string) (string, []strin
 // (ReduceFilterSubjects). The forms are there while readers take the old form of a name too: an
 // issue's topic in either form, and the session's agent subject in the old form and under any
 // project, so a producer can move to the new form without the session missing one message,
-// whichever form the session registered. The two forms of a name never overlap, since they differ
-// in their token count or in the token after the family's prefix. It is the one computation of
-// that set, which a caller comparing a consumer with the row it was built from reads too.
+// whichever form the session registered. The two forms TopicForms gives a name never overlap: they
+// differ in their token count, or in the token after the family's prefix (an issue's key against
+// its project). An issue's topic under a wildcard project (notifications.dispatch.issue.*.KEY.>)
+// would overlap its old form, so contracts.LegacyTwin gives it none and it stays one filter. It is
+// the one computation of that set, which a caller comparing a consumer with the row it was built
+// from reads too.
 func SessionConsumerFilters(subjects []string) []string {
 	forms := make([]string, 0, 2*len(subjects))
 	for _, subject := range subjects {

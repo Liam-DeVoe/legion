@@ -27,6 +27,7 @@ import {
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
+  topicForms,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
@@ -1294,7 +1295,12 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    ...(envelope.topic === legacyAgentSubject(sessionID) ? { to: `you (${sessionID})` } : {}),
+    // The session's inbox in either form, the session alone or under a project, names it the
+    // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
+    ...(envelope.topic !== undefined &&
+    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
+      ? { to: `you (${sessionID})` }
+      : {}),
     from: senderLabel(envelope),
     at: inboundTimestamp(envelope.issued_at),
     id: envelope.event_id ?? "unknown",
