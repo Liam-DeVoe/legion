@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeRecorder, renderDelivery } from "./envoy-inbox";
+import { makeRecorder, PROBE_HEADER, renderDelivery, takeMessage } from "./envoy-inbox";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -82,4 +82,71 @@ test("records nothing for a frame that is not an envelope", () => {
   const write = makeRecorder(record);
   expect(write("rig-asker", "not json at all")).toBe(false);
   expect(existsSync(record)).toBe(false);
+});
+
+/** A relay frame as the listener publishes it: the stored envelope's bytes, on a reply subject. */
+function frame(envelope: object, reply = "_INBOX.relay.1") {
+  return { data: new TextEncoder().encode(JSON.stringify(envelope)), reply };
+}
+
+test("answers a relay frame done once it is recorded, and a repeat of it done too", () => {
+  const record = join(workDir(), "inbox.jsonl");
+  const write = makeRecorder(record);
+  const answers: [string, string][] = [];
+  const answer = (reply: string, word: string) => answers.push([reply, word]);
+  const envelope = {
+    topic: "notifications.agent.rig-asker",
+    dedupe_key: "agent.rig-asker.1",
+    payload: "the answer",
+  };
+  takeMessage("rig-asker", frame(envelope, "_INBOX.relay.1"), write, answer);
+  // The relay offers a frame again after a restart at its consumer's ack floor: recorded once,
+  // answered each time, so the listener acknowledges it rather than offering it for ever.
+  takeMessage("rig-asker", frame(envelope, "_INBOX.relay.2"), write, answer);
+  expect(answers).toEqual([
+    ["_INBOX.relay.1", "done"],
+    ["_INBOX.relay.2", "done"],
+  ]);
+  expect(readFileSync(record, "utf8").trim().split("\n")).toHaveLength(1);
+});
+
+test("answers the listener's connection probe done and records nothing of it", () => {
+  const record = join(workDir(), "inbox.jsonl");
+  const answers: [string, string][] = [];
+  const probe = {
+    data: new Uint8Array(),
+    reply: "_INBOX.probe.1",
+    headers: { get: (name: string) => (name === PROBE_HEADER ? "1" : "") },
+  };
+  takeMessage("rig-asker", probe, makeRecorder(record), (reply, word) =>
+    answers.push([reply, word])
+  );
+  expect(answers).toEqual([["_INBOX.probe.1", "done"]]);
+  expect(existsSync(record)).toBe(false);
+});
+
+test("answers a frame that is no envelope done, and a message with no reply subject not at all", () => {
+  const record = join(workDir(), "inbox.jsonl");
+  const write = makeRecorder(record);
+  const answers: [string, string][] = [];
+  const answer = (reply: string, word: string) => answers.push([reply, word]);
+  takeMessage(
+    "rig-asker",
+    { data: new TextEncoder().encode("not json"), reply: "_INBOX.x" },
+    write,
+    answer
+  );
+  takeMessage("rig-asker", { data: new TextEncoder().encode("{}") }, write, answer);
+  expect(answers).toEqual([["_INBOX.x", "done"]]);
+});
+
+test("leaves a frame whose record failed unanswered, so its consumer offers it again", () => {
+  const answers: string[] = [];
+  const failing = () => {
+    throw new Error("disk full");
+  };
+  expect(() =>
+    takeMessage("rig-asker", frame({ topic: "t" }), failing, (reply) => answers.push(reply))
+  ).toThrow("disk full");
+  expect(answers).toEqual([]);
 });

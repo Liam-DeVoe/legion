@@ -197,6 +197,18 @@ conversation_text() {
 }
 # conversation_holds NAME NEEDLE: NAME's conversation holds NEEDLE, whatever entry carries it.
 conversation_holds() { conversation_text "$1" | grep -qF -- "$2"; }
+# text_compactions NAME: how many compactions NAME's Oh My Pi conversation holds whose summary is
+# text the loop's reader reads. The reader declines the two others (compactionSummary in
+# packages/daemon/internal/conversation/omp/context.go): Oh My Pi's image-based snapcompact, an
+# entry whose preserveData carries `snapcompact`, which it writes for a compaction that carries no
+# instructions, a person's bare `/compact` among them; and a context rollover (details.kind
+# `experimental-context-rollover`). A question to a conversation holding either is passed on, not
+# answered.
+text_compactions() {
+  conversation_text "$1" | jq -R -s '[split("\n")[] | fromjson? | select(.type == "compaction")
+    | select(((.preserveData? | objects | has("snapcompact")) // false) | not)
+    | select((.details.kind? // "") != "experimental-context-rollover")] | length'
+}
 # notices_in_conversation NAME NEEDLE: how many entries of NAME's conversation that are not its own
 # replies hold NEEDLE (what reached it, as prompts and notices).
 notices_in_conversation() {
@@ -290,6 +302,29 @@ listener_handoffs_to() {
   jq -R -s --arg s "$1" \
     '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .session_id == $s)] | length' \
     "$evidence/logs/listener.log"
+}
+
+# ---- the listener's answers ----------------------------------------------------------------------------
+# consumer_registration ANSWER SESSION [TOPIC...]: the listener's ANSWER to SESSION's registration
+# (POST /v1/interests/subscribe) gives SESSION a consumer of its own, relayed on SESSION's relay
+# subject (`notifications.envoy.deliver.<session>`, the one subject the run's inbox reads for it),
+# and stores every TOPIC. A registration that asks for no consumer is refused `409 not_requested`
+# with no delivery at all, and a controller lane is stored only for a session holding that
+# project's controller role, so an answer that left one out does not hold it.
+consumer_registration() {
+  local answer=$1 session=$2
+  shift 2
+  jq -e --arg s "$session" '.session_id == $s and .delivery.mode == "consumer"
+    and .delivery.subject == "notifications.envoy.deliver." + $s
+    and ((.topics // []) as $stored | all($ARGS.positional[]; . as $topic | any($stored[]; . == $topic)))' \
+    --args "$@" <<<"${answer:-null}" >/dev/null 2>&1
+}
+# stored_for_stopped BODY SESSION: the listener's answer to a send stored the message for SESSION as
+# a session that is not running (`state: stopped`), the answer a send to a stopped agent gets with
+# `answers` removed, on the base commit as on the branch. A send handed to a stopped agent's daemon
+# names its recipient with no state, and a session Envoy knows nothing of is a 404 naming none.
+stored_for_stopped() {
+  jq -e --arg s "$2" '.recipient == $s and .state == "stopped"' <<<"${1:-null}" >/dev/null 2>&1
 }
 
 # ---- the recording proxy's records ---------------------------------------------------------------------
@@ -415,10 +450,24 @@ collaborator_role_token() {
 comment_delivered_to() {
   jq -e --arg s "$2" '.deliveries[0].state == "sent" and .deliveries[0].session_id == $s' <<<"${1:-null}" >/dev/null 2>&1
 }
-# one_failed_delivery DELIVERIES: the delivery records are one, and it failed — what a message to a
-# session or role nobody holds records, the negative control A3 and A13 share.
-one_failed_delivery() {
-  jq -e 'type == "array" and length == 1 and .[0].state == "failed"' <<<"${1:-null}" >/dev/null 2>&1
+# comment_deliveries COMMENT prints COMMENT's delivery records as Dispatch holds them now
+# (GET comments/<id>), each as {state, error}, and `[]` for a comment it answers no record of. A
+# mention's delivery is read again rather than off the comment's own answer, which can carry it
+# pending while its sender waits out a listener take-over.
+comment_deliveries() {
+  local body
+  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  jq -c '[.comment.deliveries[]? | {state, error}]' <<<"${body:-null}" 2>/dev/null || printf '[]\n'
+}
+# one_delivery_in DELIVERIES STATE [ERROR]: the delivery records are one, in STATE, and, with ERROR
+# given, its error begins with ERROR. A3's control reads a mention of a session nobody registered
+# as `failed` with `no live session <id>`, the refusal no listener keeps; A13 reads Dispatch's
+# delivery to a stopped agent's role as `failed` and to its session as `queued`, the message stored
+# for a session that may run again.
+one_delivery_in() {
+  jq -e --arg state "$2" --arg error "${3:-}" \
+    'type == "array" and length == 1 and .[0].state == $state and ((.[0].error // "") | startswith($error))' \
+    <<<"${1:-null}" >/dev/null 2>&1
 }
 # rows_hold_paths ROWS PATH...: the omp_session_files rows hold a row for each PATH.
 rows_hold_paths() {
@@ -575,19 +624,27 @@ tree_claims_parked() {
 
 # ---- A13: branch against base ------------------------------------------------------------------------
 # a13_same FILE: branch's and base's FILE for the current store say the same thing — byte for byte,
-# except the identifiers a listener mints for each event it accepts (its own and its source's id,
-# its dedupe key, its trace id and the time it was issued), which no two calls can share. A role
-# topic whose holder record has lapsed answers 404 with a body of its own; one whose record has
-# aged out of the bus altogether answers 202 with a fresh event's, and both stacks answer the same
-# way on the same snapshot. Both captures must exist and hold bytes before any comparison: `cmp`
-# reads two empty files, or two missing ones, as the same, so a probe that captured nothing on
-# either stack would pass.
-a13_minted='del(.event_id, .source_event_id, .dedupe_key, .trace_id, .issued_at)'
+# but for what each stack minted for its own call, which no two calls can share. A listener's answer
+# (send.body, publish.body) mints its envelope's ids — its own and its source's, its dedupe key and
+# its trace id — and the time it was issued, and its answer to a role message it keeps for the
+# role's next holder names the end of that copy's hour, `kept_until`, the time the stream stored the
+# copy plus the hour. Dispatch's delivery records (dispatch-session.json, dispatch-role.json) mint
+# the envelope each delivery sent, `envelope_id`. A minted field is compared by whether it is there
+# at all: one side that carries it and one that carries none, or null, still differ. The status
+# files are compared byte for byte. Both captures must exist and hold bytes before any comparison:
+# `cmp` reads two empty files, or two missing ones, as the same, so a probe that captured nothing
+# on either stack would pass.
+a13_minted_answer='with_entries(if (.key | IN("event_id", "source_event_id", "dedupe_key", "trace_id", "issued_at", "kept_until")) and .value != null then .value = "minted" else . end)'
+a13_minted_deliveries='map(with_entries(if .key == "envelope_id" and .value != null then .value = "minted" else . end))'
 a13_same() {
-  local branch=$evidence/a13/branch/$store/$1 base=$evidence/a13/base/$store/$1 left right
+  local branch=$evidence/a13/branch/$store/$1 base=$evidence/a13/base/$store/$1 minted left right
   [ -s "$branch" ] && [ -s "$base" ] || return 1
   cmp -s "$branch" "$base" && return 0
-  [ "$1" = publish.body ] || return 1
-  left=$(jq -S "$a13_minted" "$branch") && right=$(jq -S "$a13_minted" "$base") || return 1
+  case "$1" in
+    send.body | publish.body) minted=$a13_minted_answer ;;
+    dispatch-session.json | dispatch-role.json) minted=$a13_minted_deliveries ;;
+    *) return 1 ;;
+  esac
+  left=$(jq -S "$minted" "$branch" 2>/dev/null) && right=$(jq -S "$minted" "$base" 2>/dev/null) || return 1
   [ "$left" = "$right" ]
 }

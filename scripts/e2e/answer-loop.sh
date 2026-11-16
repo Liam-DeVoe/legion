@@ -683,18 +683,21 @@ start_proxy() {
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/proxy.log' | grep -q 'recording-proxy listening'"
 }
 
-# start_inbox subscribes the run's inbox to the subjects of its two stand-in sessions over core
-# NATS: the asker's own agent subject, where an answer to one of its questions lands, and both
-# passes' controller lanes, `notifications.legion.<project token>.controller`. Neither can be heard
-# through the listener: a private stream subject is dropped from a registration, and the listener
-# delivers nothing to a session's port (/v1/interests/subscribe refuses one; cmd/listener/api.go).
+# start_inbox subscribes the run's inbox to the relay subjects of its two stand-in sessions,
+# `notifications.envoy.deliver.<session>`, where the listener relays each session's own consumer:
+# no session receives from a plain NATS subscription ("Session consumers" in
+# packages/envoy/AGENTS.md). The asker's consumer carries the answers to its questions, and the
+# controller stand-in's the notices on both passes' controller lanes, whose roles it holds
+# (register_asker). The inbox answers each frame `done` once it has recorded it, and the
+# listener's connection probe on the subject `done` too (lib/envoy-inbox.ts). It subscribes before
+# the first registration, so the relay of a consumer that registration creates finds it there.
 start_inbox() {
   local offset
   offset=$(log_size inbox)
   start_process inbox "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/envoy-inbox.ts" \
     --nats "nats://127.0.0.1:$port_nats" --record "$evidence/inbox.jsonl" \
-    --watch "$asker_session=notifications.agent.$asker_session" \
-    --watch "$controller_session=notifications.legion.alf$run_tag.controller,notifications.legion.alp$run_tag.controller"
+    --watch "$asker_session=notifications.envoy.deliver.$asker_session" \
+    --watch "$controller_session=notifications.envoy.deliver.$controller_session"
   await_start inbox "$inbox_pid" 30 "the Envoy inbox" \
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/inbox.log' | grep -q 'envoy-inbox listening'"
 }
@@ -856,24 +859,50 @@ more_than() {
   shift
   [ "$("$@")" -gt "$n" ]
 }
-# register_asker makes the run's own sender session live in the listener's registry, so a send in
-# its name resolves and the answer to it is published on its own agent subject; the inbox hears
-# that subject over core NATS (start_inbox), since this listener delivers to no port of a
-# session's own. The registration carries no port for that reason: /v1/interests/subscribe refuses
-# one (cmd/listener/api.go), and a self-subscribed session with no consumer resolves Skipped, which
-# is the 200 the send wants. The second registration is the stand-in for the project's controller
-# (the operator launches none under tmux), naming both passes' controller topics; the listener
-# drops those from the stored row (a private stream subject, bus.ReachesPrivateStreamSubject), so
-# the controller notices the daemons publish are heard on core NATS too.
+# register_asker registers the run's two stand-in sessions on the listener as every session
+# registers now: each asks for a consumer of its own (`delivery.consumer`), since the listener
+# refuses a registration it can give no consumer (`409 not_requested`) and writes nothing for it.
+# Both carry one client instance for the run, which is also their consumers' epoch, as a plugin
+# mints one per NATS connection: the inbox holds one connection for the whole run. The first is the
+# asker, the sender of the run's questions: with it live in the listener's registry a send in its
+# name resolves, the answer to that send is stored on its agent subject, and its consumer relays
+# the answer to the inbox (start_inbox). The second stands in for the project's controller (the
+# operator launches none under tmux). It holds both passes' controller roles,
+# `legion-<project token>-controller`, because the listener stores a project's controller lane,
+# `notifications.legion.<project token>.controller`, only for the session holding that role
+# (bus.ReachesPrivateStreamSubject), and registers both lanes, so the notices the daemons publish
+# there reach the inbox through its consumer. Every registration renews the roles its session
+# holds; the roles are claimed, under the run's client instance, only after a registration whose
+# answer left a lane out, and that registration is made again. Each registration's answer is kept
+# in $work/registration-<session>.json, and register_asker fails unless both answers name consumer
+# delivery on the session's relay subject with every topic it registered (consumer_registration).
 asker_session=legion-e2eal-asker-$$
 controller_session=legion-e2eal-controller-$$
+stand_in_instance=legion-e2eal-$$-$run_tag
+controller_lanes=("notifications.legion.alf$run_tag.controller" "notifications.legion.alp$run_tag.controller")
+# register_stand_in SESSION TITLE [TOPIC...] registers SESSION with a consumer of its own and every
+# TOPIC, keeps the listener's answer, and fails unless that answer gives both.
+register_stand_in() {
+  local session=$1 title=$2 answer
+  shift 2
+  answer=$(envoy --data "$(jq -cn --arg s "$session" --arg dir "$work" --arg title "$title" --arg instance "$stand_in_instance" \
+    '{session_id: $s, topics: $ARGS.positional, dir: $dir, title: $title, capabilities: ["steer"], driving: true,
+      client_instance_id: $instance, delivery: {consumer: true, epoch: $instance}}' --args "$@")" \
+    "$(listener_url /v1/interests/subscribe)") || answer=
+  printf '%s\n' "$answer" >"$work/registration-$session.json"
+  consumer_registration "$answer" "$session" "$@"
+}
 register_asker() {
-  envoy -f -o /dev/null --data "$(jq -cn --arg s "$asker_session" --arg dir "$work" \
-    '{session_id: $s, topics: [], dir: $dir, title: "answer-loop rig asker", capabilities: ["steer"], driving: true, self_subscribed: true}')" \
-    "$(listener_url /v1/interests/subscribe)"
-  envoy -f -o /dev/null --data "$(jq -cn --arg s "$controller_session" --arg dir "$work" --arg tag "$run_tag" \
-    '{session_id: $s, topics: ["notifications.legion.alf\($tag).controller", "notifications.legion.alp\($tag).controller"], dir: $dir, title: "answer-loop rig controller", capabilities: ["steer"], driving: true, self_subscribed: true}')" \
-    "$(listener_url /v1/interests/subscribe)"
+  local lane token
+  register_stand_in "$asker_session" "answer-loop rig asker" || return 1
+  register_stand_in "$controller_session" "answer-loop rig controller" "${controller_lanes[@]}" && return 0
+  for lane in "${controller_lanes[@]}"; do
+    token=${lane#notifications.legion.}
+    token=${token%.controller}
+    envoy -f -o /dev/null --data "$(jq -cn --arg s "$controller_session" --arg role "legion-$token-controller" --arg instance "$stand_in_instance" \
+      '{session_id: $s, role: $role, soft: true, client_instance_id: $instance}')" "$(listener_url /v1/roles/set)" || return 1
+  done
+  register_stand_in "$controller_session" "answer-loop rig controller" "${controller_lanes[@]}"
 }
 
 # ---- the pass's Dispatch project -------------------------------------------------------------------
@@ -1337,8 +1366,13 @@ start_inbox
 start_listener "$work/branch"
 start_dispatch "$work/branch" dispatch
 note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox (pid $inbox_pid), listener $port_listener (pid $listener_pid), Dispatch $port_dispatch (pid $dispatch_pid)"
-# The asker's session lapses with the session bucket's TTL like any other: a loop renews it every
-# minute, so an answer that comes late still finds it live.
+# The stand-ins are registered once here, and a registration the listener refuses, or answers with
+# no consumer, ends the run naming the listener's answers: every answering criterion reads what the
+# asker is delivered. Their sessions lapse with the session bucket's TTL like any other, so a loop
+# renews them every minute, and an answer that comes late still finds the asker live.
+register_asker ||
+  fail "the listener gave a stand-in no consumer of its own: asker $(cat "$work/registration-$asker_session.json" 2>/dev/null); controller $(cat "$work/registration-$controller_session.json" 2>/dev/null)"
+note "the stand-ins registered with their own consumers: $(jq -c '{session_id, delivery, topics}' "$work/registration-$asker_session.json" "$work/registration-$controller_session.json" | tr '\n' ' ')"
 (while :; do
   register_asker >/dev/null 2>&1 || true
   sleep 60
@@ -1386,10 +1420,12 @@ criterion() {
 # agent's session (TARGET_KIND session) or role token (role), and prints `<status> <event id>`.
 envoy_ask() { envoy_ask_text "$1" "$2" "$(question_text "$3") (question $3 of run $run_tag)" "${4:-}"; }
 # envoy_ask_text TARGET_KIND TARGET TEXT [KEY] is envoy_ask with a text of the check's own; KEY is the
-# send's idempotency key, so the same KEY is the same question.
+# send's idempotency key, so the same KEY is the same question. Its one line on stdout is the
+# status line every caller reads with `$(…)`: whatever else it says goes to stderr, which the
+# transcript keeps as well.
 envoy_ask_text() {
   local kind=$1 target=$2 text=$3 key=${4:-} body out code
-  register_asker || note "the listener refused the asker's subscribe; the send follows anyway"
+  register_asker || note "the listener refused a stand-in's registration (its answers are in $work/registration-*.json); the send follows anyway" >&2
   out=$work/ask-$RANDOM$RANDOM.json
   if [ "$kind" = session ]; then
     body=$(jq -cn --arg s "$target" --arg m "$text" --arg from "$asker_session" --arg key "$key" \
@@ -1555,13 +1591,19 @@ check_a2() {
 # (the Legion agent registry's entries for the issue, the list the mention picker offers stopped
 # agents from), and asks on the closed issue's own thread with a role mention of that tester; the
 # answer is the tester's reply to that comment, in its own name, holding what only the replacing
-# tester's conversation holds. Control: a role mention of a token no registry entry names, on the
-# same closed issue, fails its delivery as today. Then the second leg, a3_conversation_page: the
-# same person, in a browser, opens the closed issue's Collaborators view, follows the tester's own
-# link to its conversation page and asks a second question there. A3 passes only on both legs.
+# tester's conversation holds. Control: a mention of a session nobody ever registered, on the same
+# closed issue, fails its delivery `no live session <id>`: the listener answers such a send 404 and
+# the Legion agent registry names no such session. A role nobody holds is no control: the listener
+# keeps a role message with no live holder for an hour, for the role's next holder, on the base
+# commit as on the branch, so that mention's delivery stays pending. Dispatch settles the refusal
+# only after it has waited out a listener take-over (takeoverRetry, 12 s), so the control's
+# delivery is read again until it is refused. Then the second leg, a3_conversation_page: the same
+# person, in a browser, opens the closed issue's Collaborators view, follows the tester's own link
+# to its conversation page and asks a second question there. A3 passes only on both legs.
+a3_control_refused() { one_delivery_in "$(comment_deliveries "$1")" failed "no live session $2"; }
 check_a3() {
   criterion A3 "a question on a closed issue's own thread, by a role mention of its stopped tester, is answered there, and a second asked from the tester's conversation page reached through the issue's Collaborators view is answered there" infra448 || return 0
-  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} collaborators token comment id reply='' control before thread_leg='' page_leg=''
+  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} collaborators token comment id reply='' control control_id nobody=legion-e2eal-nobody-$run_tag before thread_leg='' page_leg=''
   set_status "$issue" "done"
   note "closed $issue: status $(dispatch_get "issues/$issue" | jq -r .status)"
   collaborators=$(dispatch_get "issues/$issue/collaborators") || collaborators='{"agents":[],"legion_registry":"unavailable"}'
@@ -1580,20 +1622,22 @@ check_a3() {
     reply=$(comment_reply_by "$issue" "$id" "$session")
     note "answered after $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   fi
-  control=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg t "role:legion-e2eal-nobody-$run_tag-tester" \
-    '{body: "control: a role nobody registered", mentions: [{target: $t}]}')" | jq -c '[.deliveries[]? | {state, error}]')
-  note "control: a mention of an unregistered role on closed $issue: $control"
+  control_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg t "session:$nobody" \
+    '{body: "control: a session nobody registered", mentions: [{target: $t}]}')" | jq -r '.id // empty') || control_id=
+  soft_wait 60 "the control's mention of session $nobody to be refused" a3_control_refused "$control_id" "$nobody" || true
+  control=$(comment_deliveries "$control_id")
+  note "control: a mention of session $nobody, which nobody registered, on closed $issue (comment $control_id): $control"
   if [ -n "$reply" ] && answer_holds tester-closed-thread "$reply" >/dev/null &&
     comment_delivered_to "$comment" "$session" &&
-    one_failed_delivery "$control"; then
+    one_delivery_in "$control" failed "no live session $nobody"; then
     thread_leg=1
-    note "thread leg: the role mention on closed $issue reached tester $session, which answered in the thread; an unregistered role's mention failed as today"
+    note "thread leg: the role mention on closed $issue reached tester $session, which answered in the thread; the mention of a session nobody registered failed no live session"
   else
-    note "thread leg: no reply with the answer key from $session to comment $id, or its delivery was not sent to it, or the control did not fail"
+    note "thread leg: no reply with the answer key from $session to comment $id, or its delivery was not sent to it, or the control was not refused no live session $nobody"
   fi
   a3_conversation_page "$issue" "$session" && page_leg=1
   if [ -n "$thread_leg" ] && [ -n "$page_leg" ]; then
-    record_result A3 PASS "the role mention on closed $issue reached tester $session, which answered in the thread from its conversation, and a question asked from that tester's conversation page, reached through the issue's Collaborators view, was answered there; an unregistered role's mention failed as today"
+    record_result A3 PASS "the role mention on closed $issue reached tester $session, which answered in the thread from its conversation, and a question asked from that tester's conversation page, reached through the issue's Collaborators view, was answered there; the mention of a session nobody registered failed no live session"
   else
     record_result A3 FAIL "the thread leg $([ -n "$thread_leg" ] && printf 'held' || printf 'did not hold') and the conversation-page leg $([ -n "$page_leg" ] && printf 'held' || printf 'did not hold') (each leg's evidence is above)"
   fi
@@ -1977,13 +2021,13 @@ check_a9() {
 # check_a10: A10's Claude Code leg (the pre-change reviewer, answered twice within the cache
 # lifetime: the first request carries the effort the transcript last ran at and every thinking
 # signature it holds, byte for byte; the second reads the conversation from cache; resumed after,
-# its first request holds both exchanges) and its compaction leg (the architect compacts its
-# conversation on a person's /compact, is answered from the compacted conversation, and resumes
-# after holding the exchange). The GPT-6.1 leg waits on the OpenAI API.
+# its first request holds both exchanges) and its compaction leg (the architect's session compacted
+# by the daemon's own compaction, is answered from the compacted conversation, and resumes after
+# holding the exchange). The GPT-6.1 leg waits on the OpenAI API.
 check_a10() {
   criterion A10 "a GPT-6.1 conversation's reasoning replayed byte-equal and its cache read" openai || true
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
-  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs missing m counts ok_claude=0 ok_compact=0 t3 s3 e3
+  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
   transcript=$(conversation_text pre_change)
   want_effort=$(transcript_effort "$transcript")
   sigs=$(transcript_signatures "$transcript")
@@ -2026,13 +2070,19 @@ check_a10() {
     [ "$(cache_read_tokens "$line")" -gt 0 ] && [ "$counts" = "1 1" ]; then
     ok_claude=1
   fi
-  # The compaction leg: a person's /compact from the architect's conversation page, typed input the
-  # running pane runs as Oh My Pi's command.
+  # The compaction leg: the architect's session compacted as Legion compacts one, by the daemon's
+  # own compaction (`legion claims compact`, packages/daemon/internal/api/compact.go), which has Oh
+  # My Pi write the summary as text to instructions of its own (compactInstructions). A compaction
+  # that carries no instructions, a person's bare `/compact` among them, is Oh My Pi's image-based
+  # snapcompact under the pinned release, and the loop's reader declines that one: the question
+  # after it is passed on, not answered (compactionSummary, conversation/omp/context.go). So the
+  # leg waits for a compaction whose summary is text (text_compactions) and counts no other kind.
   resume_agent architect || true
-  dispatch_human POST "agents/${agent[$store:architect.session]}/messages" '{"body": "/compact", "delivery": "steer"}' >/dev/null || true
-  compacted() { conversation_holds architect '"type":"compaction"'; }
-  soft_wait 300 "the architect's conversation to hold a compaction" compacted || true
-  note "the architect's conversation holds a compaction: $(compacted && echo yes || echo no)"
+  compaction=$(claims_cmd compact --claim "${agent[$store:architect.token]}" 2>&1) || compaction="refused: $compaction"
+  note "legion claims compact: $(tr '\n' ' ' <<<"$compaction")"
+  compacted() { [ "$(text_compactions architect)" -gt 0 ]; }
+  soft_wait 300 "the architect's conversation to hold a compaction written as text" compacted || true
+  note "the architect's conversation holds a compaction written as text: $(compacted && echo yes || echo no) ($(occurrences "$(conversation_text architect)" '"type":"compaction"') compaction entries of any kind)"
   suspend_agent architect || true
   t3="$(question_text in-order-2) (question in-order-2 of run $run_tag, A10 after compaction)"
   s3=$(envoy_ask_text session "${agent[$store:architect.session]}" "$t3")
@@ -2518,7 +2568,7 @@ done
 # A13: the same stopped agents, the same bus state, the branch with `answers` removed against the
 # base commit's binaries.
 run_a13() {
-  local differs probe_store
+  local differs probe_store branch
   begin a13
   store=-
   a13_project=A13$run_tag
@@ -2575,12 +2625,19 @@ run_a13() {
     done)
     printf '== A13 (%s): with answers removed, a stopped agent is refused exactly as the base commit refuses it\n' "$store"
     note "branch vs base ($base_commit): $(cd "$evidence/a13" && for f in send.body publish.body; do printf '%s %s ' "$f" "$(sha256sum "branch/$store/$f" | cut -c1-12)/$(sha256sum "base/$store/$f" | cut -c1-12)"; done)"
-    if [ -z "$differs" ] && [ "${a13_quiet[$store]}" = 0 ] && grep -q '^404$' "$evidence/a13/branch/$store/send.status" &&
-      one_failed_delivery "$(cat "$evidence/a13/branch/$store/dispatch-session.json")" &&
-      one_failed_delivery "$(cat "$evidence/a13/branch/$store/dispatch-role.json")"; then
-      record_result A13 PASS "envoy_send 404, Dispatch's two failed deliveries and the role publish ($(cat "$evidence/a13/branch/$store/publish.status")) say what the base commit says; the daemon wrote nothing to the registry and ran no loop"
+    # Beside the comparison, what both commits answer today: the send is stored for the stopped
+    # session (200, state stopped) and Dispatch's delivery to that session is queued for it, while
+    # Dispatch's delivery to the role fails and the role publish is kept for the role's next holder.
+    # None of those is a hand-off: a send handed to a stopped agent's daemon carries no state, and
+    # a role delivery handed to it is queued for that agent's session.
+    branch=$evidence/a13/branch/$store
+    if [ -z "$differs" ] && [ "${a13_quiet[$store]}" = 0 ] && grep -q '^200$' "$branch/send.status" &&
+      stored_for_stopped "$(cat "$branch/send.body")" "${agent[$store:architect.session]}" &&
+      one_delivery_in "$(cat "$branch/dispatch-session.json")" queued &&
+      one_delivery_in "$(cat "$branch/dispatch-role.json")" failed; then
+      record_result A13 PASS "envoy_send stored for the stopped session (200, state stopped), Dispatch's deliveries (to the session queued, to the role failed) and the role publish ($(cat "$branch/publish.status")) say what the base commit says; the daemon wrote nothing to the registry and ran no loop"
     else
-      record_result A13 FAIL "differs: ${differs:-nothing}; registry or loop lines with answers removed: ${a13_quiet[$store]}"
+      record_result A13 FAIL "differs: ${differs:-nothing}; registry or loop lines with answers removed: ${a13_quiet[$store]}; the branch's send $(cat "$branch/send.status") $(jq -c '{recipient, state}' "$branch/send.body" 2>/dev/null), Dispatch to the session $(jq -c 'map({state, error})' "$branch/dispatch-session.json" 2>/dev/null), to the role $(jq -c 'map({state, error})' "$branch/dispatch-role.json" 2>/dev/null)"
     fi
   done
   pass

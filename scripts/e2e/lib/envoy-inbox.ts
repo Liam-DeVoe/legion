@@ -1,10 +1,12 @@
 // scripts/e2e/lib/envoy-inbox.ts: the inbox of a live proof's stand-in sessions, a core NATS
-// subscriber. A proof that sends an Envoy message as its own session reads what comes back on that
-// session's own subject, `notifications.agent.<session>`, and a proof that stands in for a Legion
-// controller reads the notices published to `notifications.legion.<project token>.controller` —
-// a private stream subject no registration may carry (bus.ReachesPrivateStreamSubject), and the
-// listener delivers nothing to a serving port of its own (POST /v1/interests/subscribe refuses
-// `port`, cmd/listener/api.go), so both are heard on the bus itself.
+// subscriber of each one's relay subject. A session is delivered its messages from its own
+// durable consumer, which the listener holding its registration relays as core frames on
+// `notifications.envoy.deliver.<session>`, and from no plain subscription of the session's own
+// ("Session consumers" in packages/envoy/AGENTS.md). So a proof that registers a stand-in with a
+// consumer (`delivery.consumer`) reads here what the stand-in is delivered: the answers to its
+// own sends, which the listener stores on its agent subject, and, for a stand-in holding a
+// project's controller role, the notices on that project's controller lane, which its
+// registration then stores and its consumer then carries.
 //
 //   bun scripts/e2e/lib/envoy-inbox.ts --nats <url> --record <file.jsonl> \
 //     --watch <session>=<subject>[,<subject>] [--watch <session>=<subject>…]
@@ -15,6 +17,14 @@
 // when it carries no payload), a blank line and `Topic: <topic>`. An envelope whose dedupe key was
 // already recorded is left out, so a proof counting the answers to one question counts deliveries,
 // not the copies a redelivery makes.
+//
+// A relay frame carries a reply subject, and the inbox answers it `done` once the frame is
+// recorded, or left out as a repeat or as no envelope: the listener acknowledges the message to
+// the session's consumer on that word, and a frame left unanswered pauses the relay and comes
+// again ("Relay over NATS" in packages/envoy/AGENTS.md). The listener's connection probe on the
+// same subject (`Envoy-Probe: 1`, no body) is answered `done` before anything is read of it, and
+// recorded as nothing, as a plugin answers it (RelayHeader.probe in @legion/envoy-client). A frame
+// whose record could not be written is not answered, so its consumer offers it again.
 //
 // It prints `envoy-inbox listening` once every subscription is on the wire.
 import { appendFileSync } from "node:fs";
@@ -61,6 +71,41 @@ export function makeRecorder(record: string): (session: string, frame: string) =
   };
 }
 
+/** The header of the listener's connection probe, which is no frame (bus.ConnectionProbeHeader). */
+export const PROBE_HEADER = "Envoy-Probe";
+
+/** The one word the inbox answers a relay frame and a probe with: the frame is the session's, and
+ * the listener acknowledges it to the session's consumer. */
+export const RELAY_DONE = "done";
+
+/** The parts of a NATS message the inbox reads. */
+export interface InboxMessage {
+  readonly data: Uint8Array;
+  readonly reply?: string;
+  readonly headers?: { get(name: string): string };
+}
+
+const decoder = new TextDecoder();
+
+/** Takes one message of a watched subject for `session`: a probe is answered `done` and recorded
+ * as nothing; any other message is given to `record`, and then answered `done` when it carries a
+ * reply subject, whether `record` wrote it or left it out. A `record` that throws leaves the
+ * message unanswered, and the throw goes to the caller. */
+export function takeMessage(
+  session: string,
+  message: InboxMessage,
+  record: (session: string, frame: string) => boolean,
+  answer: (reply: string, word: string) => void
+): void {
+  const reply = message.reply ?? "";
+  if (message.headers?.get(PROBE_HEADER) === "1") {
+    if (reply !== "") answer(reply, RELAY_DONE);
+    return;
+  }
+  record(session, decoder.decode(message.data));
+  if (reply !== "") answer(reply, RELAY_DONE);
+}
+
 export interface InboxWatch {
   session: string;
   subjects: string[];
@@ -72,19 +117,23 @@ export interface InboxOptions {
   watches: InboxWatch[];
 }
 
-/** Subscribes to every watched subject and records what lands on it until the process ends. It
- * answers once every subscription has reached the server, so a caller that waits for the readiness
- * line misses nothing sent after it. */
+/** Subscribes to every watched subject and records what lands on it until the process ends,
+ * answering each relay frame and probe (takeMessage). It answers once every subscription has
+ * reached the server, so a caller that waits for the readiness line misses nothing sent after it. */
 export async function startInbox(options: InboxOptions) {
   const connection = await connect({ servers: options.nats });
   const record = makeRecorder(options.record);
-  const decoder = new TextDecoder();
+  const answer = (reply: string, word: string) => connection.publish(reply, word);
   for (const watch of options.watches) {
     for (const subject of watch.subjects) {
       const subscription = connection.subscribe(subject);
       void (async () => {
         for await (const message of subscription) {
-          record(watch.session, decoder.decode(message.data));
+          try {
+            takeMessage(watch.session, message, record, answer);
+          } catch (error) {
+            console.error(`envoy-inbox: ${watch.session}'s frame was not recorded: ${error}`);
+          }
         }
       })();
     }

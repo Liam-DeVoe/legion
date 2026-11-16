@@ -1473,6 +1473,9 @@ when the agent it answers is stopped too, the listener hands that answer to its 
 - **The model** is the conversation's own:
   an `anthropic/…` model run on `anthropic-messages` through Anthropic's Messages API, an `openai/…` model run on `openai-responses` through OpenAI's Responses API, a Claude Code conversation's model through Anthropic's.
   Any other is not answered (`no_provider`), nor is a conversation holding a record its reader does not know (`unknown_format`), and no model call is made for either.
+  An Oh My Pi compaction written as images, its snapcompact, is such a record:
+  Oh My Pi writes one for a compaction that carries no instructions, a person's bare `/compact` among them, so the reader declines it and the question is passed on.
+  The daemon's own compaction carries instructions, so its summary is text, which the reader reads ([Starting fresh when a session is lost or wedged](#starting-fresh-when-a-session-is-lost-or-wedged)).
   A provider's 429, 5xx or transport error is retried once, within the answer's time; nothing else retries.
 
 - **The reply** is one JSON object the daemon checks, of four kinds:

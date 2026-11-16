@@ -46,6 +46,10 @@ const emptyEvidence = join(dir, "empty-evidence");
 const bareEvidence = join(dir, "bare-evidence");
 /** A13's probes of the branch alone: the base commit's captures are not there. */
 const branchOnlyEvidence = join(dir, "branch-only-evidence");
+/** A13's probes where a minted field is on one side and not the other: the branch's publish is
+ * the base's with `kept_until` left out, and its Dispatch delivery names no envelope where the
+ * base's names one. */
+const presenceEvidence = join(dir, "presence-evidence");
 
 beforeAll(() => {
   writeFileSync(daemonLog, bootOne + bootTwo);
@@ -68,11 +72,26 @@ beforeAll(() => {
   cpSync(join(data, "a13", "branch"), join(branchOnlyEvidence, "a13", "branch"), {
     recursive: true,
   });
+  cpSync(join(data, "a13"), join(presenceEvidence, "a13"), { recursive: true });
+  const presence = join(presenceEvidence, "a13", "branch", "files");
+  const basePublish = JSON.parse(
+    readFileSync(join(data, "a13", "base", "files", "publish.body"), "utf8")
+  ) as Record<string, unknown>;
+  delete basePublish.kept_until;
+  writeFileSync(join(presence, "publish.body"), JSON.stringify(basePublish));
+  const baseSession = JSON.parse(
+    readFileSync(join(data, "a13", "base", "files", "dispatch-session.json"), "utf8")
+  ) as Record<string, unknown>[];
+  writeFileSync(
+    join(presence, "dispatch-session.json"),
+    JSON.stringify(baseSession.map((delivery) => ({ ...delivery, envelope_id: null })))
+  );
 });
 
 const conversations = {
   architect: join(data, "omp-architect.jsonl"),
   twice: join(data, "omp-architect-twice.jsonl"),
+  snapcompact: join(data, "omp-architect-snapcompact.jsonl"),
   reviewer: join(data, "claude-reviewer.jsonl"),
   plain: join(data, "claude-reviewer-plain.jsonl"),
 };
@@ -104,6 +123,7 @@ evidence=${shq(evidence)}
 empty_evidence=${shq(emptyEvidence)}
 bare_evidence=${shq(bareEvidence)}
 branch_only_evidence=${shq(branchOnlyEvidence)}
+presence_evidence=${shq(presenceEvidence)}
 daemon_log=${shq(daemonLog)}
 empty_log=${shq(emptyLog)}
 quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
@@ -121,6 +141,7 @@ questions_file=${shq(join(data, "questions.json"))}
 declare -A agent=(
   [files:architect.file]=${shq(conversations.architect)}
   [files:twice.file]=${shq(conversations.twice)}
+  [files:snapcompact.file]=${shq(conversations.snapcompact)}
   [files:pre_change.file]=${shq(conversations.reviewer)}
   [files:plain.file]=${shq(conversations.plain)}
   [files:empty.file]=${shq(emptyConversation)}
@@ -360,6 +381,20 @@ describe("the stopped agents' conversations", () => {
     expect(run(`conversation_holds empty '"type":"compaction"'`).code).toBe(1);
   });
 
+  test("text_compactions counts the compactions the loop's reader reads, never a snapcompact", () => {
+    expect(read("text_compactions twice")).toEqual({ code: 0, text: "1" });
+    // A person's bare /compact is the image-based snapcompact, and a rollover is no summary the
+    // reader reads either: both are compactions, and neither counts.
+    expect(run(`conversation_holds snapcompact '"type":"compaction"'`).code).toBe(0);
+    expect(read("text_compactions snapcompact")).toEqual({ code: 0, text: "0" });
+    expect(read("text_compactions architect")).toEqual({ code: 0, text: "0" });
+    expect(read("store=postgres; pg_rows='[]'; text_compactions architect")).toEqual({
+      code: 0,
+      text: "0",
+    });
+    expect(read("text_compactions empty")).toEqual({ code: 0, text: "0" });
+  });
+
   test("notices_in_conversation counts what reached the agent, never its own words", () => {
     expect(read(`notices_in_conversation architect 'question in-order-1 of run 4242'`).text).toBe(
       "1"
@@ -500,6 +535,74 @@ describe("the listener's log", () => {
       code: 0,
       text: "0",
     });
+  });
+});
+
+describe("the listener's answers", () => {
+  const controller = "legion-e2eal-controller-4242";
+  const lanes = "notifications.legion.alf4242.controller notifications.legion.alp4242.controller";
+  /** The answer to the controller stand-in's registration once it holds both controller roles. */
+  const registered = JSON.stringify({
+    session_id: controller,
+    machine_id: "legion-e2eal-1",
+    dir: "/work",
+    topics: [
+      `notifications.agent.${controller}`,
+      "notifications.legion.alf4242.controller",
+      "notifications.legion.alp4242.controller",
+      "notifications.role.legion-alf4242-controller",
+      "notifications.role.legion-alp4242-controller",
+    ],
+    updated_at: 1794867234870,
+    delivery: {
+      mode: "consumer",
+      subject: `notifications.envoy.deliver.${controller}`,
+      stream_id: "stream-1",
+      consumer_start: 12,
+    },
+  });
+
+  test("consumer_registration reads the consumer a registration was given and the topics it stored", () => {
+    expect(run(`consumer_registration ${shq(registered)} ${controller} ${lanes}`).code).toBe(0);
+    expect(run(`consumer_registration ${shq(registered)} ${controller}`).code).toBe(0);
+    // The registration of a session holding no controller role: the listener left both lanes out
+    // of what it stored, with a warning, and still gave the session its consumer.
+    const laneless = JSON.stringify({
+      ...JSON.parse(registered),
+      topics: [`notifications.agent.${controller}`],
+      warnings: ["notifications.legion.alf4242.controller was not registered: …"],
+    });
+    expect(run(`consumer_registration ${shq(laneless)} ${controller}`).code).toBe(0);
+    expect(run(`consumer_registration ${shq(laneless)} ${controller} ${lanes}`).code).toBe(1);
+    // The listener's refusal of a registration that asks for no consumer (main's #2603) names no
+    // delivery at all, which is what the rig's self-subscribed stand-ins were answered.
+    const refused = JSON.stringify({
+      error: "this listener delivers to a session only from its own consumer",
+      reason: "not_requested",
+    });
+    expect(run(`consumer_registration ${shq(refused)} ${controller}`).code).toBe(1);
+    // A consumer relayed on another session's subject is no delivery the inbox reads.
+    expect(run(`consumer_registration ${shq(registered)} legion-e2eal-asker-4242`).code).toBe(1);
+    const elsewhere = JSON.stringify({
+      ...JSON.parse(registered),
+      delivery: { mode: "consumer", subject: "notifications.envoy.deliver.another-session" },
+    });
+    expect(run(`consumer_registration ${shq(elsewhere)} ${controller}`).code).toBe(1);
+    expect(run(`consumer_registration '' ${controller}`).code).toBe(1);
+    // A body that is no JSON at all (curl's own error text) is no registration either.
+    expect(run(`consumer_registration 'not json' ${controller}`).code).not.toBe(0);
+  });
+
+  test("stored_for_stopped reads a send stored for a stopped session, never a hand-off", () => {
+    const stored = readFileSync(join(data, "a13", "branch", "files", "send.body"), "utf8").trim();
+    expect(run(`stored_for_stopped ${shq(stored)} session-architect`).code).toBe(0);
+    expect(run(`stored_for_stopped ${shq(stored)} session-planner`).code).toBe(1);
+    // A send handed to the stopped agent's daemon names its recipient and no state.
+    const handedOff = JSON.stringify({ ...JSON.parse(stored), state: "" });
+    expect(run(`stored_for_stopped ${shq(handedOff)} session-architect`).code).toBe(1);
+    const refused = `{"error":"no live session session-architect","state":"gone"}`;
+    expect(run(`stored_for_stopped '${refused}' session-architect`).code).toBe(1);
+    expect(run(`stored_for_stopped '' session-architect`).code).toBe(1);
   });
 });
 
@@ -681,17 +784,46 @@ describe("Dispatch", () => {
     expect(read(`collaborator_role_token '' session-tester`)).toEqual({ code: 0, text: "" });
   });
 
-  test("comment_delivered_to and one_failed_delivery read Dispatch's delivery records", () => {
+  test("comment_delivered_to and one_delivery_in read Dispatch's delivery records", () => {
     const sent = `{"id":"c","deliveries":[{"state":"sent","session_id":"session-tester"}]}`;
     expect(run(`comment_delivered_to '${sent}' session-tester`).code).toBe(0);
     expect(run(`comment_delivered_to '${sent}' session-planner`).code).toBe(1);
     expect(run(`comment_delivered_to '' session-tester`).code).toBe(1);
-    expect(run(`one_failed_delivery '[{"state":"failed","error":"no session"}]'`).code).toBe(0);
-    expect(run(`one_failed_delivery '[{"state":"sent"}]'`).code).toBe(1);
-    expect(run(`one_failed_delivery '[{"state":"failed"},{"state":"failed"}]'`).code).toBe(1);
-    expect(run(`one_failed_delivery '[]'`).code).toBe(1);
-    expect(run(`one_failed_delivery '{"state":"failed"}'`).code).toBe(1);
-    expect(run(`one_failed_delivery ''`).code).toBe(1);
+    const refused = `[{"state":"failed","error":"no live session legion-e2eal-nobody-4242"}]`;
+    expect(run(`one_delivery_in '${refused}' failed`).code).toBe(0);
+    expect(
+      run(`one_delivery_in '${refused}' failed 'no live session legion-e2eal-nobody-4242'`).code
+    ).toBe(0);
+    // A failure of another kind is no refusal of the session the control names.
+    const noHolder = `[{"state":"failed","error":"no holder for role legion-e2eal-nobody-4242-tester"}]`;
+    expect(
+      run(`one_delivery_in '${noHolder}' failed 'no live session legion-e2eal-nobody-4242'`).code
+    ).toBe(1);
+    // A role message the listener keeps for the role's next holder stays pending, the answer a
+    // mention of a role nobody holds now gets, the base commit's included: it is no failure.
+    expect(run(`one_delivery_in '[{"state":"pending","error":null}]' failed`).code).toBe(1);
+    expect(run(`one_delivery_in '[{"state":"queued","error":null}]' queued`).code).toBe(0);
+    expect(run(`one_delivery_in '[{"state":"sent"}]' failed`).code).toBe(1);
+    expect(run(`one_delivery_in '[{"state":"failed"},{"state":"failed"}]' failed`).code).toBe(1);
+    expect(run(`one_delivery_in '[]' failed`).code).toBe(1);
+    expect(run(`one_delivery_in '{"state":"failed"}' failed`).code).toBe(1);
+    expect(run(`one_delivery_in '' failed`).code).toBe(1);
+  });
+
+  test("comment_deliveries reads a comment's deliveries as Dispatch holds them now", () => {
+    expect(read("comment_deliveries comment-90").text).toBe(
+      `[{"state":"failed","error":"no live session legion-e2eal-nobody-4242"}]`
+    );
+    expect(
+      run(
+        `one_delivery_in "$(comment_deliveries comment-90)" failed 'no live session legion-e2eal-nobody-4242'`
+      ).code
+    ).toBe(0);
+    expect(read("comment_deliveries comment-91").text).toBe(`[{"state":"pending","error":null}]`);
+    // Dispatch's error body, a comment it answers nothing for, and no comment id at all: no records.
+    expect(read("comment_deliveries comment-404")).toEqual({ code: 0, text: "[]" });
+    expect(read("comment_deliveries comment-never")).toEqual({ code: 0, text: "[]" });
+    expect(read("comment_deliveries ''")).toEqual({ code: 0, text: "[]" });
   });
 
   test("rows_hold_paths and scan_rows read the daemon's and Oh My Pi's own rows", () => {
@@ -931,11 +1063,30 @@ describe("the daemon's own record and state", () => {
 });
 
 describe("A13: the branch's answer against the base commit's", () => {
-  test("a13_same reads two bodies as the same but for the ids a listener mints", () => {
+  test("a13_same reads the listener's two answers as the same but for what each call minted", () => {
+    // Both sends were stored for the stopped session; they differ in their envelope's ids, its
+    // dedupe key, its trace id and its issue time alone, as the proof run's captures did.
     expect(run("a13_same send.body").code).toBe(0);
+    // Both role publishes were kept for the role's next holder, each until its own copy's hour
+    // ends (`kept_until`), which is the field the ids alone did not cover.
     expect(run("a13_same publish.body").code).toBe(0);
-    expect(run("a13_same send.status").code).toBe(1);
     expect(run("evidence=$bare_evidence; a13_same send.body").code).toBe(1);
+  });
+
+  test("a13_same reads Dispatch's deliveries as the same but for the envelope each one minted", () => {
+    expect(run("a13_same dispatch-session.json").code).toBe(0);
+    // The branch's role delivery was queued for the stopped architect where the base's failed
+    // `no holder`: a real difference, which no normalization hides.
+    expect(run("a13_same dispatch-role.json").code).toBe(1);
+  });
+
+  test("a13_same compares a minted field by whether it is there at all, and a status byte for byte", () => {
+    // The branch's publish carries no kept_until where the base's carries one.
+    expect(run("evidence=$presence_evidence; a13_same publish.body").code).toBe(1);
+    // The branch's delivery names no envelope where the base's names one.
+    expect(run("evidence=$presence_evidence; a13_same dispatch-session.json").code).toBe(1);
+    expect(run("a13_same send.status").code).toBe(0);
+    expect(run("a13_same publish.status").code).toBe(1);
   });
 
   test("a13_same reads a probe that captured nothing as no answer, never as the same", () => {

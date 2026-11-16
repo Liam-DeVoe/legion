@@ -71,6 +71,38 @@
     }
   ],
   "issues/ALX-8/comments": [],
+  "comments/comment-90": {
+    "comment": {
+      "id": "comment-90",
+      "body": "control: a session nobody registered",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "session:legion-e2eal-nobody-4242",
+          "state": "failed",
+          "error": "no live session legion-e2eal-nobody-4242",
+          "session_id": "legion-e2eal-nobody-4242"
+        }
+      ]
+    },
+    "replies": []
+  },
+  "comments/comment-91": {
+    "comment": {
+      "id": "comment-91",
+      "body": "control: a role nobody registered",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:legion-e2eal-nobody-4242-tester",
+          "state": "pending",
+          "error": null
+        }
+      ]
+    },
+    "replies": []
+  },
+  "comments/comment-404": { "error": { "code": "NOT_FOUND", "message": "comment not found" } },
   "issues/ALX-3/collaborators": {
     "legion_registry": "available",
     "agents": [

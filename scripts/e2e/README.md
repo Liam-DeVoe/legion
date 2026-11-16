@@ -1369,10 +1369,13 @@ CI does not run it.
   A12's reply out of form and its first reply that calls the `gh` tool, the two model steps no real model gives on demand.
 
 - [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts):
-  the inbox of the run's two stand-in sessions, a core NATS subscriber (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
-  It watches the asker's own subject, `notifications.agent.<asker>`, and both passes' controller lanes, `notifications.legion.<project token>.controller`, and writes each envelope that lands there as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice.
-  Neither subject can be heard through the listener:
-  it delivers nothing to a port of a session's own (`/v1/interests/subscribe` refuses `port`) and drops a private stream subject, the controller lane included, from a registration.
+  the inbox of the run's two stand-in sessions, a core NATS subscriber of each one's relay subject (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
+  Both stand-ins register as every session registers since main's #2603, each asking for a consumer of its own (`delivery.consumer`), which the listener relays on `notifications.envoy.deliver.<session>`:
+  the listener refuses a registration that asks for none (`409 not_requested`), and no session receives from a plain NATS subscription ("Session consumers" in `packages/envoy/AGENTS.md`).
+  The asker's consumer carries the answers to its questions.
+  The controller stand-in holds both passes' controller roles, `legion-<project token>-controller`, since the listener stores a project's controller lane, `notifications.legion.<project token>.controller`, only for the session holding that role, so its consumer carries the notices the daemons publish there.
+  The inbox writes each envelope it is relayed as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice — and then answers the frame `done`, which acknowledges it to the consumer.
+  It answers the listener's connection probe on the same subject (`Envoy-Probe: 1`) `done` too, and records nothing of it.
 
 - The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`, `DISPATCH_*`, `LEGION_*` and model keys reach none of them.
   The daemon's `PATH` starts with the run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
@@ -1417,8 +1420,10 @@ Claims-only, a spec has no repository and the runtime makes `<state>/workspaces/
 **Session waits.**
 A stopped pane does not unregister its session: its entry in the listener's session bucket lapses with the bucket's 5-minute TTL.
 Every wait for a session to leave (after each agent is made, and in `suspend_agent`) is 420 s long; `resume_agent` waits for the session to be live again.
-A loop renews the run's asker's registration every minute, so a late answer still finds it live:
-the registration carries no port, and the answer published on the asker's own subject is read from NATS by `lib/envoy-inbox.ts`, which also hears each pass's controller lane (the operator launches no controller under tmux), so the controller notices the daemons publish land in `inbox.jsonl` under the stand-in controller's session.
+The run registers both stand-ins once at bring-up and ends there, naming the listener's answers, when either registration is refused or answered with no consumer of its own.
+A loop then renews both registrations every minute, so a late answer still finds the asker live, and so the controller stand-in's roles are renewed with it (the operator launches no controller under tmux).
+The roles are claimed again only after a registration that left a lane out, and that registration is then made again.
+The answers to the asker and the controller notices land in `inbox.jsonl` under the stand-in's session, through each one's consumer.
 
 **The checks**, per pass unless said:
 
@@ -1436,7 +1441,8 @@ the registration carries no port, and the answer published on the asker's own su
   its role token is read from `GET /issues/{key}/collaborators` (the list the mention picker offers stopped agents from);
   a person's comment on the closed issue mentions `role:<token>`;
   the delivery is `sent` to that tester's session and its reply in the thread holds the answer key.
-  Control: a mention of a role no entry names fails as today.
+  Control: a mention of a session nobody registered, on the same closed issue, fails `no live session <id>`, read again from `GET /comments/{id}` until it settles, since Dispatch first waits out a listener take-over (12 s).
+  A mention of a role nobody holds is no control since main's #4079: the listener keeps such a role message for an hour for the role's next holder, on the base commit as on the branch, so its delivery stays `pending`.
   Conversation-page leg: the same person, in Playwright's Chromium signed in by the trusted identity header, opens the closed issue's Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one no later session replaced) by its link to `/agents/<session>/live`, sends a second question there in the mode the page offers a stopped agent (Aside), and waits four minutes for the answer;
   it must hold that question's key both on the page's own thread and in the record the page reads (`GET /agents/{session}/messages`).
   A screenshot per step goes to `a3/<store>/`, and a Collaborators view that names no such tester, or a link that leads elsewhere, is a FAIL naming every row the page drew.
@@ -1484,8 +1490,9 @@ the registration carries no port, and the answer published on the asker's own su
   0`, and the resumed reviewer's first model call holds both exchanges once
   — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
   The second question is asked once the first answer is posted and ten seconds after that, since a cache entry is not always readable the moment it is written (in the run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s earlier), and the cache-read clause judges the loop's cache policy, not the provider's propagation delay.
-  Compaction leg: a person's `/compact` from the architect's conversation page (`POST /agents/{session}/messages`, delivery `steer`) puts a `"type":"compaction"` entry in its conversation;
-  a question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
+  Compaction leg: the resumed architect's session is compacted as Legion compacts one, by the daemon's own `legion claims compact`, which has Oh My Pi write the summary as text to the daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`), and its conversation must then hold a compaction whose summary is text (`text_compactions`).
+  A person's bare `/compact` is no such compaction: under the pinned Oh My Pi a compaction that carries no instructions is the image-based snapcompact, which the loop's reader declines, so the question is passed on (docs/kubernetes.md, "The answer loop").
+  A question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
   The GPT-6.1 leg records WAITING: the OpenAI API is paused (dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19).
 
 - A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
@@ -1534,9 +1541,12 @@ the registration carries no port, and the answer published on the asker's own su
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it;
   the branch's listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to its role topic;
   then the bus is restored and the base commit's three binaries take the same four.
-  Each of the eight answers must say what the base commit's says, byte for byte but for the identifiers a listener mints for an event it accepts;
-  the `envoy_send` must be `404` and both Dispatch deliveries `failed`.
-  The role publish is `404` while the role's holder record has only lapsed and `202` once it has aged out of the bus, which is what both stacks then answer.
+  Each of the eight answers must say what the base commit's says, byte for byte but for what each stack minted for its own call (`a13_same`):
+  in the listener's two answers the envelope's ids, its dedupe key, its trace id, its issue time and, for a role message kept for the role's next holder, `kept_until`, the end of that copy's hour;
+  in Dispatch's two delivery records the `envelope_id`.
+  A minted field is compared by whether it is there at all, and the statuses byte for byte.
+  What both commits answer today is then asserted of the branch's answers too: the `envoy_send` is `200`, stored for the stopped session (`state: stopped`), Dispatch's delivery to that session `queued`, and its delivery to the role `failed`.
+  The role publish is read by the comparison alone: both stacks keep it for the role's next holder (`202`, `kept: true`), whether the role's holder record has lapsed or aged out of the bus.
   The control is the daemon's own log: with `answers` removed it writes no conversation to the agent registry and no `answers:` line.
   It does write the project's answering heartbeat, saying it does not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next boot;
   on a listener without that route the heartbeat is the one 404 the boot shows.
