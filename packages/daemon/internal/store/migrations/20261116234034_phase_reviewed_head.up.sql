@@ -1,0 +1,35 @@
+-- 20261116234034_phase_reviewed_head.up.sql — the commit the reviewer's own newest deciding review
+-- read, kept on the reviewer's phases row across its rounds.
+--
+-- phases.reviewed_head is record.PhaseRow.ReviewedHead. A review that approves or requests changes,
+-- submitted from the review App session of the reviewer's claim, writes the head its Legion footer
+-- names (workflow's review). No entry into a phase clears it, unlike the round's decision beside it
+-- (workflow's clearHandoff), so the task of the reviewer's next round names it as
+-- `Last reviewed commit: <sha>.` and the reviewer reads the difference from that commit to the
+-- head. A new generation clears it with the decision (record.Store.ClearGeneration and
+-- ClearTreeGeneration).
+--
+-- Every row the table already holds takes the default, the empty string, and nothing fills it: the
+-- release before this one kept no such commit, since the decision that held one was cleared at each
+-- entry into a phase. So the first round after the upgrade of an issue already in review names no
+-- commit, and its reviewer reads the whole change, as it did before.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the transaction below, run with the daemon stopped:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table phases drop column if exists reviewed_head;
+--   delete from schema_version where version = 20261116234034;
+--   commit;
+--   SQL
+--
+-- The release before this one needs neither statement: its phases read and its phases write name
+-- each column they touch (record's Phases and PutPhase), so the column would stand there unread,
+-- and every row that release inserts would take the default. Both are owed to the roll-forward:
+-- with the column dropped and the row deleted, store.apply finds no row of this version and runs
+-- this file again, which adds the column again at its default. The drop is also what lets this
+-- file run again at all, since an add of a column that stands fails. What the drop costs is the
+-- commit each reviewer's row held, so the next round of each issue then in review reads the whole
+-- change.
+alter table phases add column reviewed_head text not null default '';
