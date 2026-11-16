@@ -330,6 +330,35 @@ export function roleClaimKey(project: string, role: string): string {
 }
 
 /**
+ * The project a claim of `role` works for, given the project the claim requested (`undefined` or
+ * `""` for none), or an `Error` for a request the rule refuses. It is the one place a claim's
+ * project is decided, so the listener's route and Dispatch's reader cannot answer it two ways.
+ *
+ * A Legion role token (`legion-<token>-…`) works for the project its own name gives
+ * (`roleProject`), whatever the claim asks for, and a request naming another project is refused
+ * rather than quietly ignored: a caller that asked for one project and got another would believe
+ * a claim it does not hold. Only a free-form role name takes a requested project, which must be a
+ * project key or `NO_PROJECT`. A claim that requests none works for `roleProject`.
+ */
+export function claimProject(role: string, requested?: string): string | Error {
+  const own = roleProject(role);
+  if (requested === undefined || requested === "") return own;
+  if (own !== NO_PROJECT) {
+    return requested === own
+      ? own
+      : new Error(
+          `role ${role} works for project ${own}, and a claim of it cannot ask for project ${requested}`
+        );
+  }
+  if (!PROJECT_KEY_PATTERN.test(requested) && requested !== NO_PROJECT) {
+    return new Error(
+      `a claim of role ${role} asks for project ${requested}, which is no project key`
+    );
+  }
+  return requested;
+}
+
+/**
  * A role claim's key read back to the project and role it was written from (`roleClaimKey`): a key
  * naming a project and a role is that pair, and a bare key is the role, working for the project
  * its name says (`roleProject`). Unlike `canonicalRole`, which goes with the old form of a claimed

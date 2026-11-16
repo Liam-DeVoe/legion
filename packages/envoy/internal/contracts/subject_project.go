@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -346,6 +347,34 @@ func RoleClaimKey(project, role string) string {
 		return role
 	}
 	return project + "." + role
+}
+
+// ClaimProject is the project a claim of role works for, given the project the claim requested
+// ("" for none). It is the one place a claim's project is decided, so the listener's route and
+// Dispatch's reader cannot answer it two ways.
+//
+// A Legion role token (legion-<token>-…) works for the project its own name gives
+// (RoleProject), whatever the claim asks for: the role is that project's by construction, and a
+// request naming another is refused rather than quietly ignored, since a caller that asked for
+// one project and got another would believe a claim it does not hold. Only a free-form role name
+// (lead-reviewer, reviewer) takes a requested project, which must be a project key or NoProject;
+// a request naming anything else is refused. A claim that requests none works for RoleProject,
+// which is NoProject for every free-form name.
+func ClaimProject(role, requested string) (string, error) {
+	own := RoleProject(role)
+	if requested == "" {
+		return own, nil
+	}
+	if own != NoProject {
+		if requested != own {
+			return "", fmt.Errorf("role %s works for project %s, and a claim of it cannot ask for project %s", role, own, requested)
+		}
+		return own, nil
+	}
+	if !projectKey.MatchString(requested) && requested != NoProject {
+		return "", fmt.Errorf("a claim of role %s asks for project %s, which is no project key", role, requested)
+	}
+	return requested, nil
 }
 
 // ParseRoleClaimKey reads a role claim's key back to the project and role it was written from

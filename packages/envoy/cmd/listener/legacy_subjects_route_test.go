@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A session that registers an issue's topic in the old form, the key alone, is answered with the
@@ -119,6 +125,69 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	holder, err := rig.harness.registry.RoleHolder(role)
 	if err != nil || holder != other {
 		t.Fatalf("holder of %s = %q, %v; want %s, whose claim named the new form", role, holder, err, other)
+	}
+}
+
+// A role's claim is keyed by its bare name in this slice, whichever form named it
+// (store.Registry.ClaimedRole), so every reader of a role name must resolve it to that bare name
+// before it looks the claim up: a send to the role's lane in the new form, and GET
+// /v1/roles/<role>. A reader that takes the name as it stands looks up "_.lead-reviewer", which
+// no claim is keyed by, so the publish is answered 202 kept with no holder and the message
+// reaches nobody.
+func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	handler := publishHandler(state, logging.New("test"))
+	uri := testnats.URL(t)
+
+	for _, tc := range []struct{ role, project, holder string }{
+		{"lead-reviewer", contracts.NoProject, "ses_lead_holder"},
+		{"legion-infra-infra-12-architect", "INFRA", "ses_architect_holder"},
+	} {
+		t.Run(tc.role, func(t *testing.T) {
+			if err := sessions.Put(tc.holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+				t.Fatalf("register the holder: %v", err)
+			}
+			if _, err := registry.SetRole(tc.holder, "test-machine", tc.role, false); err != nil {
+				t.Fatalf("claim %s: %v", tc.role, err)
+			}
+			startStandIn(t, uri, tc.holder)
+
+			for _, topic := range []string{
+				contracts.RoleTopicPrefix + tc.role,
+				contracts.RoleSubject(tc.project, tc.role),
+			} {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish",
+					strings.NewReader(`{"topic":"`+topic+`","message":"please review","source":"agent"}`)))
+				var answer struct {
+					Holder     string `json:"holder"`
+					Kept       bool   `json:"kept"`
+					KeptReason string `json:"kept_reason"`
+				}
+				if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+					t.Fatalf("decode the publish to %s: %v", topic, err)
+				}
+				if recorder.Code != http.StatusOK || answer.Holder != tc.holder || answer.Kept {
+					t.Fatalf("a publish to %s answered %d %+v, want 200 naming %s and not kept", topic, recorder.Code, answer, tc.holder)
+				}
+			}
+
+			for _, name := range []string{tc.role, tc.project + "." + tc.role} {
+				recorder := httptest.NewRecorder()
+				roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
+				var answer struct {
+					Holder string `json:"holder"`
+				}
+				if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+					t.Fatalf("decode GET /v1/roles/%s (%d): %v", name, recorder.Code, err)
+				}
+				if recorder.Code != http.StatusOK || answer.Holder != tc.holder {
+					t.Fatalf("GET /v1/roles/%s answered %d naming %q, want 200 naming %s", name, recorder.Code, answer.Holder, tc.holder)
+				}
+			}
+		})
 	}
 }
 

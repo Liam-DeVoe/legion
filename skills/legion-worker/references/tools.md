@@ -169,7 +169,7 @@ after the change that added them; `command -v unzip yq` says whether yours has t
   program — kislyuk's Python wrapper over `jq`, 3.4.3 in trixie — so an expression written for one
   does not run on the other, and a recipe you found may be written for the other one.
 
-`model-gateway/apply_test.sh` of theorem-labs/agent-infra calls both.
+`model-gateway/apply_test.sh` of the deployment repository calls both.
 
 ## Why a tool the image lacks is an image change, not an install
 

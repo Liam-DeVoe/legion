@@ -124,8 +124,8 @@ func TestParseValueDecodesEachKindsFields(t *testing.T) {
 		{"google-login", `{"type":"authorized_user","client_id":"client-id","client_secret":"client-not-a-secret","refresh_token":"refresh-not-a-secret"}`, func(v secrets.Value) bool {
 			return v.GoogleLogin == secrets.GoogleLoginValue{ClientID: "client-id", ClientSecret: "client-not-a-secret", RefreshToken: "refresh-not-a-secret"} && v.GitHubApp.Key == nil
 		}},
-		{"google-service-account", `{"service_account":"robot-1@acme-agent-infra.iam.gserviceaccount.com"}`, func(v secrets.Value) bool {
-			return v.GoogleServiceAccount.ServiceAccount == "robot-1@acme-agent-infra.iam.gserviceaccount.com" && v.AzureLogin == (secrets.AzureLoginValue{})
+		{"google-service-account", `{"service_account":"robot-1@acme-<deployment repo>.iam.gserviceaccount.com"}`, func(v secrets.Value) bool {
+			return v.GoogleServiceAccount.ServiceAccount == "robot-1@acme-<deployment repo>.iam.gserviceaccount.com" && v.AzureLogin == (secrets.AzureLoginValue{})
 		}},
 		{"azure-login", azureLoginValue, func(v secrets.Value) bool {
 			return v.AzureLogin == secrets.AzureLoginValue{TenantID: "tenant-id", ClientID: "client-id"} && v.GoogleServiceAccount == (secrets.GoogleServiceAccountValue{})

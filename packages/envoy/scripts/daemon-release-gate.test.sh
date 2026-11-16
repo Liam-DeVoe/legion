@@ -21,14 +21,14 @@ mkdir -p "${temporary_dir}/bin"
 
 readonly commit="52b3cf5c1b6c7f42f6b8d2a1e3c4d5e6f7a8b9c0"
 readonly legion="https://github.com/cybermonklabs/legion"
-readonly agent_infra="https://github.com/theorem-labs/agent-infra"
+readonly <deployment repo>="https://github.com/<owner>/<deployment repo>"
 readonly old_name="https://github.com/sjawhar/legion"
 readonly ahead_rev="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 readonly identical_rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 readonly behind_rev="cccccccccccccccccccccccccccccccccccccccc"
 readonly other_rev="dddddddddddddddddddddddddddddddddddddddd"
 
-# The fake gh. `api repos/theorem-labs/agent-infra/contents/<path> --jq .content` answers the base64
+# The fake gh. `api repos/<owner>/<deployment repo>/contents/<path> --jq .content` answers the base64
 # of FAKE_ROOT/files/<path>; `api repos/cybermonklabs/legion/compare/<base>...<head> --jq ...`
 # answers FAKE_ROOT/compare/<head>, and fails as an unreachable API when FAKE_API_DOWN=1.
 cat >"${temporary_dir}/bin/gh" <<'EOF'
@@ -36,8 +36,8 @@ cat >"${temporary_dir}/bin/gh" <<'EOF'
 printf 'gh %s\n' "$*" >>"${FAKE_CALLS:?}"
 [ "$1" = api ] || { echo "fake gh: unexpected command: $*" >&2; exit 2; }
 case "$2" in
-  repos/theorem-labs/agent-infra/contents/*)
-    file="${FAKE_ROOT:?}/files/${2#repos/theorem-labs/agent-infra/contents/}"
+  repos/<owner>/<deployment repo>/contents/*)
+    file="${FAKE_ROOT:?}/files/${2#repos/<owner>/<deployment repo>/contents/}"
     [ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     base64 -w 76 <"$file"
     ;;
@@ -134,15 +134,15 @@ labels() {
 }
 # legion_stack <yaml body>: legion/Pulumi.prod.yaml, its projects list being the body.
 legion_stack() {
-  printf 'config:\n  agent-infra-legion:roleModels: {}\n  agent-infra-legion:projects:\n%s\n' "$1" >"${case_root}/files/legion/Pulumi.prod.yaml"
+  printf 'config:\n  <deployment repo>-legion:roleModels: {}\n  <deployment repo>-legion:projects:\n%s\n' "$1" >"${case_root}/files/legion/Pulumi.prod.yaml"
 }
 # listener_stacks <envoy> <envoy-cluster> <dispatch envoyImage> [<dispatch listenerImage>]
 listener_stacks() {
-  printf 'config:\n  agent-infra-envoy:listenerImage: %s\n' "$1" >"${case_root}/files/envoy/Pulumi.prod.yaml"
-  printf 'config:\n  agent-infra-envoy-cluster:envoyImage: %s\n' "$2" >"${case_root}/files/envoy-cluster/Pulumi.prod.yaml"
+  printf 'config:\n  <deployment repo>-envoy:listenerImage: %s\n' "$1" >"${case_root}/files/envoy/Pulumi.prod.yaml"
+  printf 'config:\n  <deployment repo>-envoy-cluster:envoyImage: %s\n' "$2" >"${case_root}/files/envoy-cluster/Pulumi.prod.yaml"
   {
-    printf 'config:\n  agent-infra-dispatch:envoyImage: %s\n' "$3"
-    [ -z "${4:-}" ] || printf '  agent-infra-dispatch:listenerImage: %s\n' "$4"
+    printf 'config:\n  <deployment repo>-dispatch:envoyImage: %s\n' "$3"
+    [ -z "${4:-}" ] || printf '  <deployment repo>-dispatch:listenerImage: %s\n' "$4"
   } >"${case_root}/files/dispatch/Pulumi.prod.yaml"
 }
 
@@ -180,13 +180,13 @@ is() { [ "$1" = "$2" ] && echo true || echo false; }
 readonly worker_a="ghcr.io/cybermonklabs/legion-worker@sha256:aaaa"
 readonly worker_b="ghcr.io/cybermonklabs/legion-worker@sha256:bbbb"
 readonly worker_smoke="ghcr.io/cybermonklabs/legion-worker@sha256:5555"
-readonly infra_image="us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-infra@sha256:1111"
+readonly infra_image="us-west1-docker.pkg.dev/theorem-<deployment repo>/legion/worker-infra@sha256:1111"
 readonly fleet="    - key: SMOKE
       replicas: 0
       image: ${worker_smoke}
     - key: LINUX
       replicas: 1
-      image: us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-lean@sha256:2222
+      image: us-west1-docker.pkg.dev/theorem-<deployment repo>/legion/worker-lean@sha256:2222
       daemonImage: ${worker_a}
     - key: INFRA
       replicas: 1
@@ -247,15 +247,15 @@ check "refuses UNKNOWN naming the pin and GitHub's answer" "$(has_line "UNKNOWN:
 check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
 echo "case: a daemon image built from another repository"
-new_case agent-infra
+new_case the deployment repository
 legion_stack "$fleet"
-single "$worker_a" "$agent_infra" "$other_rev"
+single "$worker_a" "$<deployment repo>" "$other_rev"
 single "$worker_b" "$legion" "$identical_rev"
 compare "$identical_rev" identical 0
 compare "$other_rev" ahead 0
 run_gate -- "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "refuses naming the source" "$(has_line "GATE SHUT: LINUX runs an image built from ${agent_infra}")"
+check "refuses naming the source" "$(has_line "GATE SHUT: LINUX runs an image built from ${<deployment repo>}")"
 check "makes no compare call for that revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: an image the registry does not answer for"
@@ -289,7 +289,7 @@ echo "case: the stack file cannot be read"
 new_case no-stack
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: cannot read theorem-labs/agent-infra legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: cannot read the deployment repository legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
 
 echo "case: a commit that is no commit id"
 new_case usage
@@ -320,16 +320,23 @@ check "dispatch's server image is never read" "$(lacks "$server_pin" "$calls")"
 check "each real platform is read, and no attestation entry" \
   "$(grep -qF '(index .Image "linux/arm64")' "$calls" && grep -qF '(index .Image "linux/amd64")' "$calls" && lacks '(index .Image "unknown/unknown")' "$calls")"
 
-echo "case: --listeners, a dispatch stack with no listenerImage runs envoyImage"
-new_case listeners-fallback
+# The deployment requires dispatch's listenerImage (the deployment repository dispatch/main.go loadSettings; its
+# pinListenerImage reads that key and no other), so a stack that sets none runs no listener this
+# gate can read. Reading the server's envoyImage in its place would open the gate on an image the
+# listener does not run, and for a configuration the deployment itself refuses.
+echo "case: --listeners, a dispatch stack with no listenerImage is UNKNOWN, never the server's image"
+new_case listeners-no-listener-pin
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin"
 index "$envoy_pin" "$legion" "$ahead_rev"
 index "$cluster_pin" "$legion" "$ahead_rev"
 index "$server_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
-check "exits 0" "$(is "$status" 0)"
-check "dispatch's listener is read from envoyImage" "$(grep -qF "$server_pin" "$calls" && echo true || echo false)"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the key it needs" \
+  "$(has_line "UNKNOWN: dispatch: dispatch/Pulumi.prod.yaml sets no <deployment repo>-dispatch:listenerImage")"
+check "never reads dispatch's server image" "$(lacks "$server_pin" "$calls")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --listeners, an index whose platforms name different revisions"
 new_case listeners-disagree

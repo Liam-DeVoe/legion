@@ -55,8 +55,8 @@ const TagVariable = "LEGION_LEAK_CHECK_TAG"
 // fixtures its own self-test reads. The whole directory is what the daemon packs and the launcher
 // installs for that reason — a launcher without its neighbours is a check that cannot start.
 const (
-	checkOwner = "theorem-labs"
-	checkRepo  = "agent-infra"
+	checkOwner = "<owner>"
+	checkRepo  = "<deployment repo>"
 	// CheckSlug is the check's repository, which the daemon reads with a token of its own.
 	CheckSlug      = checkOwner + "/" + checkRepo
 	checkDirectory = "leak-check"

@@ -76,8 +76,9 @@
 # carries no consumer of that session, and the session is resumed from its session file under the
 # same id: its consumer is created again, at the position recorded before the delete, and the
 # issue comments stored while it was away reach it exactly once. The run ends the same way, both
-# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer at
-# all.
+# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer of
+# either session the run registered; a consumer of any other session is another run's and is left
+# alone.
 #
 # A direct send is judged by its own answer. The listener stores a send to every session Envoy
 # knows, whether it holds a live registration for it or knows it only from its 30-day

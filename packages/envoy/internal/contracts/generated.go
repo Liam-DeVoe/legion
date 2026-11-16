@@ -508,6 +508,10 @@ func LegacyAgentSubject(session string) string {
 	return "notifications.agent." + session
 }
 
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return "notifications.dispatch.issue." + issueKey + "." + typ
+}
+
 func RoleSubject(project, role string) string {
 	return "notifications.role." + project + "." + role
 }

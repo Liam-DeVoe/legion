@@ -63,7 +63,7 @@ func serveLeakCheckRepo(t *testing.T) *leakCheckRepo {
 	repo.url = githubtest.Server(t, githubtest.Spec{Token: leakCheckLease,
 		Record: func(*http.Request) { repo.asked.Add(1) },
 		Handle: func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/repos/theorem-labs/agent-infra/tarball/") {
+			if !strings.HasPrefix(r.URL.Path, "/repos/<owner>/<deployment repo>/tarball/") {
 				githubtest.Unexpected(t, w, r)
 				return
 			}
@@ -72,14 +72,14 @@ func serveLeakCheckRepo(t *testing.T) *leakCheckRepo {
 	return repo
 }
 
-// The check is read with a token of its own: the implement App's read lease on theorem-labs's
+// The check is read with a token of its own: the implement App's read lease on the company's organization's
 // installation, at the reading permissions — one request, on that installation and no other, and
 // naming no repository, the installation deciding what it reaches (INFRA-2543) — and that token
 // reads the tarball.
 func TestTheLeakCheckIsReadWithAReadLeaseOnItsOwner(t *testing.T) {
 	const checkInstallation, otherInstallation = "71", "72"
 	github := provisioningStandIn(t,
-		provisioningInstallation{id: checkInstallation, owner: "theorem-labs", granted: leakCheckGrant,
+		provisioningInstallation{id: checkInstallation, owner: "<owner>", granted: leakCheckGrant,
 			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
 				mintedToken(w, leakCheckLease, repositories, permissions)
 			}},
@@ -100,7 +100,7 @@ func TestTheLeakCheckIsReadWithAReadLeaseOnItsOwner(t *testing.T) {
 	}
 	requests := github.requestsTo(checkInstallation)
 	if len(requests) != 1 {
-		t.Fatalf("%d token requests on theorem-labs's installation, want the one read mint: %+v", len(requests), requests)
+		t.Fatalf("%d token requests on the company's organization's installation, want the one read mint: %+v", len(requests), requests)
 	}
 	if requests[0].repositories != nil || !maps.Equal(requests[0].permissions, leakCheckReadSet) {
 		t.Fatalf("the token request named %v with %v, want no repository with %v", requests[0].repositories, requests[0].permissions, leakCheckReadSet)
@@ -116,7 +116,7 @@ func TestTheLeakCheckIsReadWithAReadLeaseOnItsOwner(t *testing.T) {
 func TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken(t *testing.T) {
 	const checkInstallation = "73"
 	github := provisioningStandIn(t,
-		provisioningInstallation{id: checkInstallation, owner: "theorem-labs", granted: leakCheckGrant,
+		provisioningInstallation{id: checkInstallation, owner: "<owner>", granted: leakCheckGrant,
 			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
 				if maps.Equal(permissions, leakCheckReadSet) {
 					provisioningRefusal(w)
@@ -127,7 +127,7 @@ func TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken(t *testing.T) {
 	)
 	repo := serveLeakCheckRepo(t)
 	_, err := leakCheckSource(github.tokens, repo.url).Get(context.Background(), leakCheckTag)
-	const want = leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on theorem-labs, and the daemon reads theorem-labs/agent-infra with no wider token: "
+	const want = leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on the company's organization, and the daemon reads the deployment repository with no wider token: "
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("a refused narrowing = %v, want the sentence %q", err, want)
 	}
@@ -140,7 +140,7 @@ func TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken(t *testing.T) {
 }
 
 // A read of the check GitHub answers 401 drops the read lease the App's token manager cached for
-// agent-infra, so the next read mints a new token: two token requests, the second read served. A
+// the deployment repository, so the next read mints a new token: two token requests, the second read served. A
 // read answered 404 drops nothing, and the next read is made with the cached lease: one token
 // request.
 func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
@@ -155,7 +155,7 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			const checkInstallation = "76"
 			github := provisioningStandIn(t,
-				provisioningInstallation{id: checkInstallation, owner: "theorem-labs", granted: leakCheckGrant,
+				provisioningInstallation{id: checkInstallation, owner: "<owner>", granted: leakCheckGrant,
 					answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
 						mintedToken(w, leakCheckLease, repositories, permissions)
 					}},
@@ -163,7 +163,7 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 			raw := leakCheckTarball(t)
 			var asked atomic.Int32
 			url := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
-				if !strings.HasPrefix(r.URL.Path, "/repos/theorem-labs/agent-infra/tarball/") {
+				if !strings.HasPrefix(r.URL.Path, "/repos/<owner>/<deployment repo>/tarball/") {
 					githubtest.Unexpected(t, w, r)
 					return
 				}
@@ -176,7 +176,7 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 			}})
 			source := leakCheckSource(github.tokens, url)
 
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d", leakguard.RefusalPrefix, leakCheckTag, tc.status)
+			want := fmt.Sprintf("%sGitHub answered the read of the deployment repository at %s with HTTP %d", leakguard.RefusalPrefix, leakCheckTag, tc.status)
 			if _, err := source.Get(context.Background(), leakCheckTag); err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("the first read = %v, want the sentence %q", err, want)
 			}
@@ -186,7 +186,7 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 			}
 			requests := github.requestsTo(checkInstallation)
 			if len(requests) != tc.requests {
-				t.Fatalf("%d token requests on theorem-labs's installation, want %d: %+v", len(requests), tc.requests, requests)
+				t.Fatalf("%d token requests on the company's organization's installation, want %d: %+v", len(requests), tc.requests, requests)
 			}
 			for _, request := range requests {
 				if request.repositories != nil || !maps.Equal(request.permissions, leakCheckReadSet) {
@@ -198,22 +198,22 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 }
 
 // A mint GitHub refuses for any other reason is refused with the mint's sentence: an App with no
-// installation on theorem-labs (appauth.ErrNotInstalled), and an installation whose token
+// installation on <owner> (appauth.ErrNotInstalled), and an installation whose token
 // exchange answers 401.
 func TestAMintGitHubRefusesIsRefusedWithTheMintSentence(t *testing.T) {
-	const want = leakguard.RefusalPrefix + "the daemon could not mint its read-only token for theorem-labs/agent-infra: "
+	const want = leakguard.RefusalPrefix + "the daemon could not mint its read-only token for the deployment repository: "
 	for _, tc := range []struct {
 		name          string
 		installations []provisioningInstallation
 		// is, when set, is what the token function's own error carries.
 		is error
 	}{
-		{"an App with no installation on theorem-labs", []provisioningInstallation{
+		{"an App with no installation on <owner>", []provisioningInstallation{
 			{id: "74", owner: "acme", granted: leakCheckGrant,
 				answer: func(w http.ResponseWriter, _ []string, _ map[string]string) { w.WriteHeader(http.StatusTeapot) }},
 		}, appauth.ErrNotInstalled},
 		{"a token exchange answering 401", []provisioningInstallation{
-			{id: "75", owner: "theorem-labs", granted: leakCheckGrant,
+			{id: "75", owner: "<owner>", granted: leakCheckGrant,
 				answer: func(w http.ResponseWriter, _ []string, _ map[string]string) {
 					w.WriteHeader(http.StatusUnauthorized)
 					fmt.Fprint(w, `{"message":"Bad credentials"}`)
@@ -237,14 +237,14 @@ func TestAMintGitHubRefusesIsRefusedWithTheMintSentence(t *testing.T) {
 			}
 			for _, installation := range tc.installations {
 				requests := github.requestsTo(installation.id)
-				if installation.owner != "theorem-labs" {
+				if installation.owner != "<owner>" {
 					if len(requests) != 0 {
 						t.Fatalf("%d token requests on %s's installation, want none: %+v", len(requests), installation.owner, requests)
 					}
 					continue
 				}
 				if len(requests) == 0 {
-					t.Fatalf("no token request on theorem-labs's installation, want the read mint GitHub refused")
+					t.Fatalf("no token request on the company's organization's installation, want the read mint GitHub refused")
 				}
 				for _, request := range requests {
 					if request.repositories != nil || !maps.Equal(request.permissions, leakCheckReadSet) {
@@ -296,7 +296,7 @@ func (b leakCheckBroker) runs(t *testing.T) []string {
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
-// In token mode the check's token is the operator's command run for theorem-labs, read-only, and
+// In token mode the check's token is the operator's command run for the company's organization, read-only, and
 // that token reads the check; a broker that refuses the narrowing is refused with the refusal's
 // sentence, after that one run and no wider one.
 func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) {
@@ -321,7 +321,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 					fmt.Fprint(w, `{"id":12345,"slug":"legion-implementer"}`)
 				case r.URL.Path == "/users/legion-implementer[bot]":
 					fmt.Fprint(w, `{"id":271566630}`)
-				case r.URL.Path == "/repos/theorem-labs/agent-infra/tarball/"+leakCheckTag:
+				case r.URL.Path == "/repos/<owner>/<deployment repo>/tarball/"+leakCheckTag:
 					tarballs.Add(1)
 					if r.Header.Get("Authorization") != "Bearer "+leakCheckLease {
 						t.Errorf("the tarball read carried Authorization %q, want the released token", r.Header.Get("Authorization"))
@@ -335,8 +335,8 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 				appauth.Options{BaseURL: github.URL, HTTPClient: github.Client(), Stderr: io.Discard})
 
 			served, err := leakCheckSource(tokens, github.URL).Get(context.Background(), leakCheckTag)
-			if runs := broker.runs(t); !slices.Equal(runs, []string{"theorem-labs|1"}) {
-				t.Fatalf("the command ran as %q, want once for theorem-labs and read-only", runs)
+			if runs := broker.runs(t); !slices.Equal(runs, []string{"<owner>|1"}) {
+				t.Fatalf("the command ran as %q, want once for <owner> and read-only", runs)
 			}
 			if !tc.refuse {
 				if err != nil || len(served.Body) == 0 || tarballs.Load() != 1 {
@@ -344,7 +344,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 				}
 				return
 			}
-			const want = leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on theorem-labs, and the daemon reads theorem-labs/agent-infra with no wider token: "
+			const want = leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on the company's organization, and the daemon reads the deployment repository with no wider token: "
 			if err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("a broker refusing the narrowing = %v, want the sentence %q", err, want)
 			}

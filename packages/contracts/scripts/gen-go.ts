@@ -92,6 +92,7 @@ import {
   DISPATCH_ISSUE_TOPIC_PREFIX,
   dispatchIssueSubject,
   legacyAgentSubject,
+  legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
   legionWakeSubject,
   NO_PROJECT,
@@ -219,6 +220,10 @@ const agentSubjectText = goConcat(
 const legacyAgentSubjectText = goConcat(
   splitAtSentinels(legacyAgentSubject(sessionSentinel), sessionSentinel),
   ["session"]
+);
+const legacyDispatchIssueSubjectText = goConcat(
+  splitAtSentinels(legacyDispatchIssueSubject(issueSentinel, typeSentinel), issueSentinel, typeSentinel),
+  ["issueKey", "typ"]
 );
 const roleSubjectText = goConcat(
   splitAtSentinels(roleSubject(projectSentinel, roleSentinel), projectSentinel, roleSentinel),
@@ -641,6 +646,10 @@ func AgentSubject(project, session string) string {
 
 func LegacyAgentSubject(session string) string {
 	return ${legacyAgentSubjectText}
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return ${legacyDispatchIssueSubjectText}
 }
 
 func RoleSubject(project, role string) string {

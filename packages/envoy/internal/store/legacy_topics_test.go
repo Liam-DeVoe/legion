@@ -198,17 +198,32 @@ func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 }
 
 // An unsubscribe of either form of a topic removes both from the record: the two forms are one
-// interest, and leaving the other would keep the session's consumer filtered on it.
+// interest, and leaving the other would keep the session's consumer filtered on it. An agent's
+// name and a role's lane under a project are the rows a reading that takes the new form's
+// wildcard (notifications.agent.*.s1) as a literal key leaves behind.
 func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
-	item := Interest{Topics: []string{
-		"notifications.dispatch.issue.INFRA-12.>",
-		"notifications.dispatch.issue.INFRA.INFRA-12.>",
-		"notifications.github.o.r.>",
-	}}
-	for _, removed := range []string{"notifications.dispatch.issue.INFRA-12.>", "notifications.dispatch.issue.INFRA.INFRA-12.>"} {
-		if got := Remove(item, []string{removed}).Topics; !slices.Equal(got, []string{"notifications.github.o.r.>"}) {
-			t.Errorf("Remove(%q) left %q, want the GitHub topic alone", removed, got)
-		}
+	const kept = "notifications.github.o.r.>"
+	for _, tc := range []struct{ name, stored, removed string }{
+		{"an issue by its old name", "notifications.dispatch.issue.INFRA.INFRA-12.>", "notifications.dispatch.issue.INFRA-12.>"},
+		{"an issue by its new name", "notifications.dispatch.issue.INFRA-12.>", "notifications.dispatch.issue.INFRA.INFRA-12.>"},
+		{"an agent by its old name", "notifications.agent._.ses_a", "notifications.agent.ses_a"},
+		{"an agent under a project by its old name", "notifications.agent.PRIV.ses_a", "notifications.agent.ses_a"},
+		{"an agent by its new name", "notifications.agent.ses_a", "notifications.agent._.ses_a"},
+		{"a role by its old name", "notifications.role.PRIV.lead-reviewer", "notifications.role.lead-reviewer"},
+		{"a role by its new name", "notifications.role.lead-reviewer", "notifications.role._.lead-reviewer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := Interest{Topics: []string{tc.stored, kept}}
+			if got := Remove(item, []string{tc.removed}).Topics; !slices.Equal(got, []string{kept}) {
+				t.Fatalf("a record holding %q, asked to remove %q, left %q; want the GitHub topic alone", tc.stored, tc.removed, got)
+			}
+		})
+	}
+	// Another session's agent subject and another role's lane are other interests, whatever their
+	// form: a removal that took them would unsubscribe what the caller never named.
+	item := Interest{Topics: []string{"notifications.agent._.ses_other", "notifications.role.PRIV.other-role", kept}}
+	if got := Remove(item, []string{"notifications.agent.ses_a", "notifications.role.lead-reviewer"}).Topics; !slices.Equal(got, item.Topics) {
+		t.Fatalf("removing one session's and one role's topics left %q, want every topic of another session and another role", got)
 	}
 }
 

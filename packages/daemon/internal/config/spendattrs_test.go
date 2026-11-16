@@ -9,7 +9,7 @@ import (
 )
 
 // liveSpendAttributes is what the live deployment writes into the operator's
-// OTEL_RESOURCE_ATTRIBUTES, one value per lane: legion/Pulumi.prod.yaml of theorem-labs/agent-infra
+// OTEL_RESOURCE_ATTRIBUTES, one value per lane: legion/Pulumi.prod.yaml of the deployment repository
 // at main on 2026-11-11, one entry per lane under each project's pod env. No line is cited,
 // because that file moves under every edit of it; search it for the variable's name. The five
 // values differ in the project as well as the lane, so each is written out as the deployment

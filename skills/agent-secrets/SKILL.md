@@ -218,7 +218,7 @@ for two reasons:
 
 - **The machine is not logged in.** `agent-secrets machine login-status` prints `issued` only while
   the machine holds its credential. The person logs the machine in; step 4b of `docs/joining.md` in
-  theorem-labs/agent-infra, "Log the VM in to the secrets broker", is that step.
+  the deployment repository, "Log the VM in to the secrets broker", is that step.
 - **The agent is not a broker session.** The helper knows only the process tree it registered. The
   person restarts the agent as one:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.

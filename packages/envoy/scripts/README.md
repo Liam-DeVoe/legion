@@ -467,11 +467,13 @@ packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
 ```
 
 Without `--listeners` it reads the image each Legion daemon runs: each entry of
-theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
+the deployment repository `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
 `image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. With `--listeners`
 it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
-dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`
-(`envoyImage` where it sets none). Each pin's `org.opencontainers.image.source` and `.revision`
+dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
+Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
+that key (the deployment repository `dispatch/main.go`) and the listener runs no other image. Each pin's
+`org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
 platform agreeing. A pin built from any repository but `https://github.com/cybermonklabs/legion` is

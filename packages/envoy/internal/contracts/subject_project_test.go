@@ -62,6 +62,12 @@ type subjectProjectFixture struct {
 		Legacy  bool   `json:"legacy"`
 		OK      bool   `json:"ok"`
 	} `json:"issueEventKey"`
+	ClaimProject []struct {
+		Role      string `json:"role"`
+		Requested string `json:"requested"`
+		Project   string `json:"project"`
+		Error     bool   `json:"error"`
+	} `json:"claimProject"`
 }
 
 func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
@@ -87,6 +93,7 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 		"topicForms":     {len(fixture.TopicForms), 7},
 		"roleClaimKey":   {len(fixture.RoleClaimKey), 9},
 		"issueEventKey":  {len(fixture.IssueEventKey), 13},
+		"claimProject":   {len(fixture.ClaimProject), 12},
 	} {
 		if count[0] < count[1] {
 			t.Fatalf("the shared cases' %s section holds %d rows, want at least %d", section, count[0], count[1])
@@ -209,6 +216,26 @@ func TestAnIssueEventNamesItsKeyInEitherForm(t *testing.T) {
 		key, legacy, ok := IssueEventKey(row.Subject)
 		if key != row.Key || legacy != row.Legacy || ok != row.OK {
 			t.Errorf("IssueEventKey(%q) = %q, %v, %v; want %q, %v, %v", row.Subject, key, legacy, ok, row.Key, row.Legacy, row.OK)
+		}
+	}
+}
+
+// A claim's project is decided in one place (ClaimProject): a Legion role token works for the
+// project its own name gives, whatever a claim requests, and only a free-form role name takes a
+// requested project, which must be a project key or NoProject. A request the rule refuses is an
+// error the route answers 400 with, never a claim keyed under a project the role does not work
+// for.
+func TestAClaimsProjectIsItsRolesOrTheOneItAsksFor(t *testing.T) {
+	for _, row := range readSubjectProjectFixture(t).ClaimProject {
+		project, err := ClaimProject(row.Role, row.Requested)
+		if row.Error {
+			if err == nil {
+				t.Errorf("ClaimProject(%q, %q) = %q, nil; want an error", row.Role, row.Requested, project)
+			}
+			continue
+		}
+		if err != nil || project != row.Project {
+			t.Errorf("ClaimProject(%q, %q) = %q, %v; want %q", row.Role, row.Requested, project, err, row.Project)
 		}
 	}
 }

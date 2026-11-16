@@ -9,7 +9,7 @@
 # workflow in silence.
 #
 # Without --listeners it reads the image that runs each Legion daemon: for each entry of the
-# `agent-infra-legion:projects` list of theorem-labs/agent-infra legion/Pulumi.prod.yaml, its
+# `<deployment repo>-legion:projects` list of the deployment repository legion/Pulumi.prod.yaml, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). An entry that runs
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. With --listeners it
 # reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
@@ -31,7 +31,7 @@
 # the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one,
 # `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error exits 2.
 #
-# It needs bash, gh (signed in with read access to theorem-labs/agent-infra and cybermonklabs/legion),
+# It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
 # docker with buildx, jq, base64 and python3 with PyYAML. Docker must be able to read each pin's
 # registry: for ghcr.io, a login with a token holding read:packages, made into a config directory of
 # your own so the shared one is untouched:
@@ -65,16 +65,16 @@ compared=0
 
 first_line() { head -n 1 "$1"; }
 
-# stack_file <path>: the text of <path> in theorem-labs/agent-infra on its default branch, into
+# stack_file <path>: the text of <path> in the deployment repository on its default branch, into
 # $work/stack.yaml. An unreadable file is UNKNOWN, named with GitHub's answer.
 stack_file() {
   local encoded
-  if ! encoded=$(gh api "repos/theorem-labs/agent-infra/contents/$1" --jq .content 2>"$work/err"); then
-    printf 'UNKNOWN: cannot read theorem-labs/agent-infra %s: %s\n' "$1" "$(first_line "$work/err")"
+  if ! encoded=$(gh api "repos/<owner>/<deployment repo>/contents/$1" --jq .content 2>"$work/err"); then
+    printf 'UNKNOWN: cannot read the deployment repository %s: %s\n' "$1" "$(first_line "$work/err")"
     return 1
   fi
   if ! printf '%s' "$encoded" | base64 -d >"$work/stack.yaml" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot decode theorem-labs/agent-infra %s: %s\n' "$1" "$(first_line "$work/err")"
+    printf 'UNKNOWN: cannot decode the deployment repository %s: %s\n' "$1" "$(first_line "$work/err")"
     return 1
   fi
 }
@@ -90,9 +90,9 @@ import yaml
 
 with open(sys.argv[1]) as handle:
     document = yaml.safe_load(handle) or {}
-projects = (document.get("config") or {}).get("agent-infra-legion:projects")
+projects = (document.get("config") or {}).get("<deployment repo>-legion:projects")
 if not isinstance(projects, list):
-    print("ERROR\tit holds no agent-infra-legion:projects list")
+    print("ERROR\tit holds no <deployment repo>-legion:projects list")
     sys.exit(0)
 for entry in projects:
     key = entry.get("key") or "<an entry with no key>"
@@ -258,7 +258,7 @@ listener() {
     return
   fi
   if [ -z "$ref" ]; then
-    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets none of %s\n' "$key" "$stack" "$*"
+    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$*"
     unknown=$((unknown + 1))
     return
   fi
@@ -266,12 +266,16 @@ listener() {
 }
 
 if [ "$mode" = listeners ]; then
-  listener envoy envoy agent-infra-envoy:listenerImage
-  listener envoy-cluster envoy-cluster agent-infra-envoy-cluster:envoyImage
-  listener dispatch dispatch agent-infra-dispatch:listenerImage agent-infra-dispatch:envoyImage
+  listener envoy envoy <deployment repo>-envoy:listenerImage
+  listener envoy-cluster envoy-cluster <deployment repo>-envoy-cluster:envoyImage
+  # dispatch's listener runs listenerImage and nothing else: the deployment repository dispatch/main.go requires
+  # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
+  # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
+  # so it is UNKNOWN rather than a reading of the server's image.
+  listener dispatch dispatch <deployment repo>-dispatch:listenerImage
 elif stack_file legion/Pulumi.prod.yaml; then
   if ! daemon_pins >"$work/pins" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot read theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$(first_line "$work/err")"
+    printf 'UNKNOWN: cannot read the deployment repository legion/Pulumi.prod.yaml: %s\n' "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi
   while IFS=$'\t' read -r key what detail; do
@@ -283,7 +287,7 @@ elif stack_file legion/Pulumi.prod.yaml; then
         unknown=$((unknown + 1))
         ;;
       *)
-        printf 'UNKNOWN: theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$what"
+        printf 'UNKNOWN: the deployment repository legion/Pulumi.prod.yaml: %s\n' "$what"
         unknown=$((unknown + 1))
         ;;
     esac

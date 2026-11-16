@@ -190,36 +190,36 @@ func TestGitHubCredentialBundlesEveryOwnerOfTheProject(t *testing.T) {
 // directory names that owner's repositories. No directory holds a token wider than its name.
 func TestGitHubCredentialNarrowsEverySiblingRepositoryToItsOwnDirectory(t *testing.T) {
 	var minted []string
-	repos := projectRepos("cybermonklabs/legion", "theorem-labs/agent-infra", "theorem-labs/nats-server")
+	repos := projectRepos("cybermonklabs/legion", "<owner>/<deployment repo>", "<owner>/nats-server")
 	credential := GitHubCredential(countingTokens{minted: &minted}, repos, ghrepo.Renames{}, nil, quietBundleLog())
-	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("theorem-labs/agent-infra"))
+	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("<owner>/<deployment repo>"))
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
 	want := map[string]string{
-		"theorem-labs":             "implement-token-for-theorem-labs/agent-infra",
-		"theorem-labs/nats-server": "implement-read-for-theorem-labs/nats-server",
+		"<owner>":             "implement-token-for-<owner>/<deployment repo>",
+		"<owner>/nats-server": "implement-read-for-<owner>/nats-server",
 		"cybermonklabs":            "implement-read-for-cybermonklabs/legion",
 	}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 		t.Errorf("tokens = %v, want %v", got, want)
 	}
-	if bundle.Default != "theorem-labs" {
-		t.Errorf("Default = %q, want theorem-labs, the issue's own owner's directory", bundle.Default)
+	if bundle.Default != "<owner>" {
+		t.Errorf("Default = %q, want the company's organization, the issue's own owner's directory", bundle.Default)
 	}
 	// The issue's own repository has no directory of its own: its token is the write one, in the
 	// owner's directory, and a second directory for it would hold a read-only token the role
 	// would read in place of the write one.
-	if _, held := bundle.Dirs["theorem-labs/agent-infra"]; held {
+	if _, held := bundle.Dirs["<owner>/<deployment repo>"]; held {
 		t.Error("the bundle holds a directory for the issue's own repository beside its owner's")
 	}
-	if want := []string{"cybermonklabs", "theorem-labs", "theorem-labs/nats-server"}; !slices.Equal(bundle.DirNames(), want) {
+	if want := []string{"cybermonklabs", "<owner>", "<owner>/nats-server"}; !slices.Equal(bundle.DirNames(), want) {
 		t.Errorf("directories = %q, want %q", bundle.DirNames(), want)
 	}
-	if dirs := GitHubDirs(repos, ghrepo.Renames{}, nil, Roles, ghrepo.MustParse("theorem-labs/agent-infra")); !slices.Equal(dirs, bundle.DirNames()) {
+	if dirs := GitHubDirs(repos, ghrepo.Renames{}, nil, Roles, ghrepo.MustParse("<owner>/<deployment repo>")); !slices.Equal(dirs, bundle.DirNames()) {
 		t.Errorf("GitHubDirs = %q, want the bundle's own directories %q", dirs, bundle.DirNames())
 	}
-	if want := []string{"cybermonklabs/legion", "theorem-labs/agent-infra", "theorem-labs/nats-server"}; !slices.Equal(minted, want) {
+	if want := []string{"cybermonklabs/legion", "<owner>/<deployment repo>", "<owner>/nats-server"}; !slices.Equal(minted, want) {
 		t.Errorf("minted for %v, want one lease per scope %v", minted, want)
 	}
 	if err := bundle.Validate(); err != nil {
@@ -711,11 +711,11 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 }
 
 // chainedRenames are two configured pairs whose owners chain while their repositories do not:
-// sjawhar/legion moved to cybermonklabs, and cybermonklabs/agent-infra moved on to
-// theorem-labs. NewRenames holds them — its chain check compares whole repositories, and no
+// sjawhar/legion moved to cybermonklabs, and cybermonklabs/<deployment repo> moved on to
+// the company's organization. NewRenames holds them — its chain check compares whole repositories, and no
 // owner's repositories move to two owners — so the owner whose installation serves a role's own
 // repository is itself an owner a configured pair moved a repository away from.
-var chainedRenames = ghrepo.MustRenames(legionRename, ghrepo.MustRename("cybermonklabs/agent-infra", "theorem-labs/agent-infra"))
+var chainedRenames = ghrepo.MustRenames(legionRename, ghrepo.MustRename("cybermonklabs/<deployment repo>", "<owner>/<deployment repo>"))
 
 // An owner the project serves repositories of under its own name is minted for itself, so the
 // repository directories are cut for the owner whose installation serves the role's own
@@ -723,12 +723,12 @@ var chainedRenames = ghrepo.MustRenames(legionRename, ghrepo.MustRename("cybermo
 // owner.
 //
 // This catches mintOwner redirecting that owner: the directories would be cut over
-// theorem-labs' repositories, which theorem-labs' own directory already reads, and
+// <owner>' repositories, which <owner>' own directory already reads, and
 // cybermonklabs/tools would be named by no lease of the bundle at all — `legion gh` and git for
 // it would fall back to the cybermonklabs directory, whose write lease names
 // cybermonklabs/legion alone, and GitHub would refuse them.
 func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testing.T) {
-	served := []string{"Cybermonklabs/legion", "cybermonklabs/tools", "theorem-labs/agent-infra", "theorem-labs/nats-server"}
+	served := []string{"Cybermonklabs/legion", "cybermonklabs/tools", "<owner>/<deployment repo>", "<owner>/nats-server"}
 	repos := projectRepos(served...)
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	credential := GitHubCredential(ownerTokens{}, repos, chainedRenames, nil, quietBundleLog())
@@ -741,7 +741,7 @@ func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testi
 		"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
 		"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
 		"sjawhar":             "implement-token-for-cybermonklabs/legion",
-		"theorem-labs":        "implement-read-for-theorem-labs/agent-infra+nats-server",
+		"<owner>":        "implement-read-for-<owner>/<deployment repo>+nats-server",
 	}
 	if !maps.Equal(tokens, want) {
 		t.Errorf("tokens = %v, want %v", tokens, want)
@@ -875,22 +875,22 @@ func TestGitHubCredentialKeepsTheReadLeaseTheReachableRepositoriesGive(t *testin
 // served.
 func TestGitHubCredentialLeavesOutASiblingRepositoryGitHubRefuses(t *testing.T) {
 	log, said := bundleLog()
-	repos := projectRepos("theorem-labs/agent-infra", "theorem-labs/nats-server", "cybermonklabs/legion")
-	tokens := ownerTokens{unreachable: map[string]bool{"theorem-labs/nats-server": true}}
+	repos := projectRepos("<owner>/<deployment repo>", "<owner>/nats-server", "cybermonklabs/legion")
+	tokens := ownerTokens{unreachable: map[string]bool{"<owner>/nats-server": true}}
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
 
-	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("theorem-labs/agent-infra"))
+	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("<owner>/<deployment repo>"))
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
 	want := map[string]string{
 		"cybermonklabs": "implement-read-for-cybermonklabs/legion",
-		"theorem-labs":  "implement-token-for-theorem-labs/agent-infra",
+		"<owner>":  "implement-token-for-<owner>/<deployment repo>",
 	}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 		t.Errorf("tokens = %v, want %v: the refused repository's directory is left out and the rest whole", got, want)
 	}
-	if _, held := bundle.Dirs["theorem-labs/nats-server"]; held {
+	if _, held := bundle.Dirs["<owner>/nats-server"]; held {
 		t.Error("the bundle holds a directory for a repository the installation does not reach")
 	}
 	if err := bundle.Validate(); err != nil {
