@@ -615,6 +615,61 @@ test("one post-approval thread loop for each role, in every copy", () => {
   );
 });
 
+// The carry that makes the text-fix loop cost no round: a result that passed one push below the
+// approved head still counts there when that push's own diff changes no code that runs and the
+// reviewer's approval of the head says so. merge-gate.md states it once, and every other text
+// that states a gate a carried result meets points at that statement rather than writing a gate
+// at the approved head alone (R4). The architect's three such texts, written in
+// cybermonklabs/legion#3530, had no carry, so an architect that followed them sent the text-only
+// fix back to testing, measured by the tester's rehearsal on 2026-11-16, where Dispatch reads "A
+// pass stands: no" at the fix head because its results ran one push below. Retro's step 1, the
+// parent's last round, the design gate's account of the reviewer and the reviewer's own round
+// sentence had the same gap. Each pin is the gate sentence as it now reads, so one that loses its
+// carry clause fails here, and so does the one statement losing its half that a push changing
+// code that runs carries nothing.
+test("every text stating a gate a carried result meets points at the one carry rule", () => {
+  countedOncePerFile(
+    "The carry rests on the diff and on your statement of it, never on the push being called a text fix: where that push's diff changes code that runs every result is stale, as it is after any other push,",
+    ["skills/legion-worker/references/merge-gate.md"]
+  );
+  const rule = "the carry rule in `skill://legion-worker/references/merge-gate.md` says";
+  const skill = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
+  expect(skill).toContain(
+    `Accept only when each requirement the spec states has a check, no criterion left the tree, and a pass stands for every \`before_merge\` check of this issue at the approved head or is carried to it across one push whose diff changes no code that runs, as the reviewer's approval of that head states and ${rule}; on a parent, that head is section 4's last round.`
+  );
+  expect(skill).toContain(
+    "When a check has neither a pass standing at that head nor one carried to it under the carry rule in `skill://legion-worker/references/merge-gate.md`, or a result contradicts what you read: `request_backward_move`"
+  );
+  expect(skill).toContain(
+    `the reviewer approves only once a pass stands for every \`before_merge\` check at the head, or is carried to it across one push whose diff changes no code that runs, as ${rule}.`
+  );
+  countedOncePerFile(
+    `each needs a pass standing at that head, which \`dispatch results --issue <issue>\` shows, or a pass carried to that head across one push whose diff changes no code that runs, as the reviewer's approval of that head states and ${rule}.`,
+    [
+      "packages/daemon/internal/prompts/roles/architect.md",
+      "packages/daemon/internal/prompts/roles/architect-root.md",
+    ]
+  );
+  expect(collapsed(pinnedFile("packages/daemon/internal/prompts/roles/reviewer.md"))).toContain(
+    "Approval is refused while any `before_merge` check of the issue's own Verification document has neither a pass standing at the head you are reviewing, the check's own answer in `dispatch results --issue <issue>`, nor one carried to it across one push whose diff changes no code that runs, as your gate below and the carry rule in `skill://legion-worker/references/merge-gate.md` say:"
+  );
+  expect(
+    collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"))
+  ).toContain(
+    `never a pass at another commit, a pass recorded under an older wording of the check or a retracted one, except a pass carried to the head across one push whose diff changes no code that runs, as ${rule}.`
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
+    `Each needs a passing result at that head, or carried to it across one push whose diff changes no code that runs as ${rule}, or, for one in another repository,`
+  );
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    `A pass stands for every \`before_merge\` check of the issue at the approved head, from the implementer and from the tester alike, or is carried to it across one push whose diff changes no code that runs, as the reviewer's approval of that head states and ${rule},`
+  );
+  expect(retro).toContain(
+    "When a check has neither a pass standing at that head nor one carried to it as above, or"
+  );
+});
+
 // R3's first clause, which no reading of prose can keep true: nothing in Legion holds the merge
 // for an open review thread. The daemon reads no thread state at all, so a Go file of it that
 // names GitHub's thread API is the clause going quietly false.

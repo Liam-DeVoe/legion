@@ -6,6 +6,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { WORLD_PROJECT } from "./run-names";
 import type * as seedModule from "./seed";
 import type * as handoffSeedsModule from "./seed-handoffs";
+import { WORLD_REPO, WORLD_SPEC, WORLD_TITLE, worldPlan, worldVerification } from "./world-issue";
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what
@@ -113,6 +114,13 @@ class FakeDispatch {
     body: string;
   }[] = [];
   results: Record<string, unknown>[] = [];
+  /** Each issue write's body, as `PATCH /api/v1/issues/{key}` took it, with its caller. */
+  issueWrites: { issue: string; who: string; body: Record<string, unknown> }[] = [];
+  /** Each repository mapping, as `PUT /api/v1/settings/repo-projects/{owner}/{repo}` took it. */
+  repoProjects: { repo: string; who: string; body: Record<string, unknown> }[] = [];
+  /** Each plan review, as `POST /api/v1/artifacts/{id}/plan-reviews` took it. */
+  planReviews: { artifact: string; body: Record<string, unknown> }[] = [];
+  projects: Record<string, unknown>[] = [];
   /** A seeded spec's ask blocks no settlement has indexed yet, by issue. Dispatch settles a
    * seeded document a moment after the issue is created; here the issue's second read of its asks
    * is the first to find them. */
@@ -356,7 +364,7 @@ class FakeDispatch {
             versions: [],
           };
           this.artifacts.push(artifact);
-          return json(strip(artifact), 201);
+          return json({ artifact: strip(artifact), version: { number: 1 } }, 201);
         },
       ],
       [
@@ -377,6 +385,34 @@ class FakeDispatch {
             { result, line: `- Check ${body?.check} (before_merge): ${body?.verdict}` },
             201
           );
+        },
+      ],
+      [
+        /^PATCH \/api\/v1\/issues\/([^/]+)$/,
+        (issue) => {
+          this.issueWrites.push({ issue, who, body: body ?? {} });
+          return json({ key: issue, status: body?.status });
+        },
+      ],
+      [
+        /^PUT \/api\/v1\/settings\/repo-projects\/([^/]+)\/([^/]+)$/,
+        (owner, repo) => {
+          this.repoProjects.push({ repo: `${owner}/${repo}`, who, body: body ?? {} });
+          return json({ repo: `${owner}/${repo}`, ...body });
+        },
+      ],
+      [
+        /^POST \/api\/v1\/artifacts\/([^/]+)\/plan-reviews$/,
+        (artifact) => {
+          this.planReviews.push({ artifact, body: body ?? {} });
+          return json({ artifact_id: artifact, state: "approved", version: body?.version }, 201);
+        },
+      ],
+      [
+        /^POST \/api\/v1\/projects$/,
+        () => {
+          this.projects.push({ ...body, who });
+          return json(body, 201);
         },
       ],
     ];
@@ -1061,30 +1097,77 @@ describe("capture-spec", () => {
   });
 });
 
+describe("project", () => {
+  // Catches: a project with no repository, whose every issue reads `Repository: none` and whose
+  // checks compare with nothing (the batch of 2026-11-16 at 8a7d5cc12b43): the world's project maps
+  // the world's repository as its default, as a person maps it on the Settings page.
+  test("files the world's project with the world's repository as its default", async () => {
+    await seed.seedProject();
+    expect(dispatch.projects).toEqual([{ key: WORLD_PROJECT, name: "Widgets", who: "alice" }]);
+    expect(dispatch.repoProjects).toEqual([
+      { repo: WORLD_REPO, who: "alice", body: { project: WORLD_PROJECT, default: true } },
+    ]);
+  });
+});
+
 describe("tester-proof", () => {
   // Catches: a seeding that shares one issue between a batch's runs, or that the duplicate check
-  // refuses on the second run.
-  test("files the run's own greet() issue, forced past the duplicate check", async () => {
+  // refuses on the second run; a check that serves no requirement, which `dispatch read` prints as
+  // a coverage gap on every requirement; and an issue left in triage with no `legion` label, which
+  // a reviewer read as a test scenario (round 24).
+  test("files the run's own greet() issue, forced past the duplicate check, and hands it to Legion", async () => {
     const file = path.join(freshDir("seed"), "fixture.json");
     await seed.testerProofIssue(file);
     const posts = dispatch.calls.filter((call) => call.method === "POST");
     expect(`${posts[0]?.who} ${posts[0]?.path}`).toBe("agent /api/v1/issues");
-    expect(posts[0]?.body).toMatchObject({ project: WORLD_PROJECT, force: true });
-    expect(String(posts[0]?.body?.spec)).toContain(":::requirement{#r1}");
-    expect(String(posts[0]?.body?.spec)).not.toContain("## Acceptance");
+    expect(posts[0]?.body).toMatchObject({
+      project: WORLD_PROJECT,
+      force: true,
+      title: WORLD_TITLE,
+      spec: WORLD_SPEC,
+    });
     expect(`${posts[1]?.who} ${posts[1]?.path}`).toBe(`agent /api/v1/issues/${KEY}/artifacts`);
-    expect(String(posts[1]?.body?.content)).toContain(':::check{#k1 surface="cli"');
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY });
+    expect(posts[1]?.body?.content).toBe(worldVerification(KEY, "r2"));
+    expect(String(posts[1]?.body?.content)).toContain(
+      `serves="dispatch://${KEY}/spec#b-r1 dispatch://${KEY}/spec#b-r2 dispatch://${KEY}/spec#b-r3"`
+    );
+    expect(String(posts[1]?.body?.content)).toContain("when the name is blank");
+    expect(dispatch.issueWrites).toEqual([
+      { issue: KEY, who: "alice", body: { status: "todo" } },
+      {
+        issue: KEY,
+        who: "agent",
+        body: { status: "in_progress", labels_add: ["legion"], actor: handoffSeeds.DAEMON },
+      },
+    ]);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY, covers: "r2" });
+  });
+
+  // Catches: the world whose CLI dropped the blank-name guard given a check that covers the blank
+  // name, which would hold a pass its head fails; and that check's words drifting from the words
+  // every world's check had before 2026-11-16, which the architect keeps as that world's defect.
+  test("no-name gives the issue the check that missed the blank name, word for word", async () => {
+    const file = path.join(freshDir("seed"), "fixture.json");
+    await seed.testerProofIssue(file, "no-name");
+    const content = String(dispatch.calls[1]?.body?.content);
+    expect(content).toContain(
+      'surface="cli" run="bun greet.ts Ada" when="before_merge" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}\n`bun greet.ts <name>` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.\n:::'
+    );
+    expect(content).not.toMatch(/blank|spaces/);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY, covers: "no-name" });
   });
 
   // Catches: a seed write made as e2e/api.ts's own seeding session (`e2e-seed`), or under a
   // session named for the rig (`rig-implementer`): the issue's events show each to every agent
   // that reads them, and the batch at c273084d took 68 of the 107 sentences that called the world
-  // a test from `rig-<role>`. Every session a seed writes as has the shape of a role's, a UUIDv7.
-  test("every agent write of a seed names a session shaped like any role's, and none is the rig's", async () => {
+  // a test from `rig-<role>`. Every session a seed writes as has the shape of a role's, a UUIDv7,
+  // but the daemon's, which writes every status as production's daemon writes it.
+  test("every agent write of a seed names a session shaped like any role's or the daemon's own, and none is the rig's", async () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
+    writeFileSync(path.join(dir, "plan-body.json"), JSON.stringify({ filesChanged: ["greet.ts"] }));
+    await handoffSeeds.planSeed(file, path.join(dir, "plan-body.json"), "5".repeat(40));
     for (const phase of ["implement", "test", "review"] as const) {
       writeFileSync(
         path.join(dir, `${phase}.json`),
@@ -1093,18 +1176,22 @@ describe("tester-proof", () => {
       await handoffSeeds.phaseHandoff(file, path.join(dir, `${phase}.json`), phase, "4".repeat(40));
     }
     const actors = dispatch.calls
-      .filter((call) => call.method === "POST" && call.who === "agent")
+      .filter((call) => call.method !== "GET" && call.who === "agent")
       .map((call) => (call.body?.actor as Actor | undefined)?.id);
-    // The issue, its verification document, three handoffs and two results.
-    expect(actors).toHaveLength(7);
-    for (const id of actors)
+    // The issue, its verification document and the hand-over; plan.md, its review and the plan
+    // handoff; three handoffs, two results and the two statuses their phases' ends write.
+    expect(actors).toHaveLength(13);
+    expect(actors.filter((id) => id === handoffSeeds.DAEMON.id)).toHaveLength(3);
+    expect(handoffSeeds.DAEMON.id).toBe(`legion-daemon:${WORLD_PROJECT}`);
+    for (const id of actors.filter((id) => id !== handoffSeeds.DAEMON.id))
       expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   // Catches: an implement record under the run's session (which the daemon would take as the
-  // tester's own), a body re-encoded on the way, a fixture that forgets the record's version, or a
-  // seed that leaves the tester no implementer result to judge.
-  test("records the implement handoff and the implementer's result, under its own session", async () => {
+  // tester's own), a body re-encoded on the way, a fixture that forgets the record's version, a
+  // seed that leaves the tester no implementer result to judge, and an issue left `in_progress`
+  // once its implementer has finished, which the daemon moves to `testing`.
+  test("records the implement handoff and the implementer's result, under its own session, and writes testing", async () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
@@ -1131,9 +1218,15 @@ describe("tester-proof", () => {
         actor: handoffSeeds.IMPLEMENTER,
       }),
     ]);
+    expect(dispatch.issueWrites.at(-1)).toEqual({
+      issue: KEY,
+      who: "agent",
+      body: { status: "testing", actor: handoffSeeds.DAEMON },
+    });
     expect(handoffSeeds.IMPLEMENTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: KEY,
+      covers: "r2",
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },
     });
   });
@@ -1152,8 +1245,10 @@ describe("tester-proof", () => {
   });
 
   // Catches: a tester result the reviewer's approval gate would not read (another check, another
-  // commit, the run's own session), or one that drops the implementer's record from the fixture.
-  test("records the tester's handoff and result at the head, beside the implementer's", async () => {
+  // commit, the run's own session), one that drops the implementer's record from the fixture, and
+  // an issue left in `testing` once its tester has finished, which the daemon moves to
+  // `needs_review`.
+  test("records the tester's handoff and result at the head, beside the implementer's, and writes needs_review", async () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
@@ -1178,13 +1273,45 @@ describe("tester-proof", () => {
       commit_sha: commit,
       actor: handoffSeeds.TESTER,
     });
+    expect(dispatch.issueWrites.map((write) => write.body.status)).toEqual([
+      "todo",
+      "in_progress",
+      "testing",
+      "needs_review",
+    ]);
     expect(handoffSeeds.TESTER.id).not.toBe(handoffSeeds.IMPLEMENTER.id);
     expect(handoffSeeds.TESTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: KEY,
+      covers: "r2",
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },
       test: { id: dispatch.handoffs[1]?.id, version: 1 },
     });
+  });
+
+  // Catches: a result whose negative control covers what the world's check does not, or misses
+  // what it does: each role ran what the check names, so the world whose check misses the blank
+  // name recorded runs that missed it too.
+  test("each recorded negative control is the one the issue's check names", async () => {
+    for (const covers of ["r2", "no-name"] as const) {
+      const dir = freshDir("seed");
+      const file = path.join(dir, "fixture.json");
+      await seed.testerProofIssue(file, covers);
+      writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+      await handoffSeeds.phaseHandoff(
+        file,
+        path.join(dir, "implement.json"),
+        "implement",
+        "6".repeat(40)
+      );
+    }
+    const controls = dispatch.calls
+      .filter((call) => call.path.endsWith("/results"))
+      .map((call) => String(call.body?.negative_control));
+    expect(controls).toEqual([
+      "bun greet.ts → exit 2, usage: greet.ts <name> on stderr; bun greet.ts '   ' → exit 2, the same line on stderr",
+      "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
+    ]);
   });
 
   // Catches: a tester body that is no JSON object reaching Dispatch, which implement-handoff
@@ -1221,11 +1348,115 @@ describe("tester-proof", () => {
       }),
     ]);
     expect(dispatch.results).toEqual([]);
+    // A review round's end writes no status: reviewing and accepting both show needs_review.
+    expect(dispatch.issueWrites.map((write) => write.body.status)).toEqual(["todo", "in_progress"]);
     expect(handoffSeeds.REVIEWER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: KEY,
+      covers: "r2",
       review: { id: dispatch.handoffs[0]?.id, version: 1 },
     });
+  });
+
+  // Catches: an issue past planning with no plan document, whose roles fall back to a plan record
+  // no world held; a plan no review approved, which every later role is told to build from the
+  // approved version of; a plan that names a file the change leaves alone, a task left undone; and
+  // a plan handoff under the run's own session.
+  test("plan records plan.md, its review's approval of the version it made, and the plan handoff, under the planner's session", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    const files = ["greet.ts", "greet.test.ts", "docs/cli.md", ".github/workflows/greet.yml"];
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ filesChanged: files }));
+    const base = "7".repeat(40);
+    await handoffSeeds.planSeed(file, path.join(dir, "implement.json"), base);
+    const plan = dispatch.artifacts.find((artifact) => artifact.name === "plan.md");
+    expect(plan?.markdown).toBe(worldPlan(KEY, files));
+    expect(plan?.markdown).toContain(":::plan_task{#t3 ");
+    expect(plan?.markdown).toContain(":::plan_task{#t4 ");
+    expect(worldPlan(KEY, ["greet.ts", "greet.test.ts"])).not.toMatch(/#t3|#t4/);
+    expect(dispatch.planReviews).toEqual([
+      { artifact: plan?.id ?? "no plan.md", body: { actor: handoffSeeds.PLANNER, version: 1 } },
+    ]);
+    expect(dispatch.handoffs).toEqual([
+      expect.objectContaining({ phase: "plan", version: 1, author: handoffSeeds.PLANNER }),
+    ]);
+    expect(JSON.parse(dispatch.handoffs[0]?.body ?? "{}")).toMatchObject({
+      schemaVersion: 1,
+      phase: "plan",
+      issue: KEY,
+      head: base,
+      planReview: { verdict: "approved", rounds: 1 },
+      specDepartures: [],
+    });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      issue: KEY,
+      covers: "r2",
+      plan: { id: dispatch.handoffs[0]?.id, version: 1 },
+    });
+    await expect(
+      handoffSeeds.planSeed(file, path.join(dir, "implement.json"), "main")
+    ).rejects.toThrow("main is no 40-character commit");
+  });
+
+  // Catches: a head row Dispatch would attribute to no issue (another repository's pull request,
+  // a branch naming another issue), a head that is no commit, and a database URL taken from
+  // anywhere but the variable rig.sh's seed_ts sets. The write itself is rig.test.ts's real
+  // Dispatch row's to prove, since no stub stands in for Postgres.
+  test("pull-request refuses a head Dispatch would attribute to no issue, and a database no variable names", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    const answers = (pr: Record<string, unknown>) => {
+      const answersFile = path.join(dir, `answers-${++dirs}.json`);
+      const view = {
+        number: 1001,
+        url: `https://github.com/${WORLD_REPO}/pull/1001`,
+        title: `feat: greet() (${KEY})`,
+        state: "OPEN",
+        headRefName: `legion/${KEY}`,
+        baseRefName: "main",
+        ...pr,
+      };
+      writeFileSync(
+        answersFile,
+        JSON.stringify({ routes: [{ match: "^gh pr view", stdout: view }] })
+      );
+      return answersFile;
+    };
+    // The run's remote, holding the pull request's branch at one commit, and one holding none.
+    const remote = path.join(dir, "remote");
+    const git = (...args: string[]) =>
+      expect(Bun.spawnSync(["git", "-C", remote, ...args]).exitCode).toBe(0);
+    mkdirSync(remote);
+    git("init", "-q", "-b", "main");
+    git("-c", "user.name=n", "-c", "user.email=n@n", "commit", "-q", "--allow-empty", "-m", "a");
+    git("branch", `legion/${KEY}`);
+    const empty = path.join(dir, "empty");
+    mkdirSync(empty);
+    expect(Bun.spawnSync(["git", "-C", empty, "init", "-q"]).exitCode).toBe(0);
+    const saved = process.env[handoffSeeds.DATABASE_URL_VARIABLE];
+    delete process.env[handoffSeeds.DATABASE_URL_VARIABLE];
+    try {
+      await expect(
+        handoffSeeds.pullRequestHead(
+          file,
+          answers({ url: "https://github.com/someone/else/pull/1001" }),
+          remote
+        )
+      ).rejects.toThrow(`is no pull request #1001 of ${WORLD_REPO}`);
+      await expect(
+        handoffSeeds.pullRequestHead(file, answers({ headRefName: "legion/WID-9" }), remote)
+      ).rejects.toThrow(`names no issue but legion/${KEY}`);
+      await expect(handoffSeeds.pullRequestHead(file, answers({}), empty)).rejects.toThrow(
+        `${empty} holds no branch legion/${KEY}`
+      );
+      await expect(handoffSeeds.pullRequestHead(file, answers({}), remote)).rejects.toThrow(
+        `${handoffSeeds.DATABASE_URL_VARIABLE} names no database`
+      );
+    } finally {
+      if (saved !== undefined) process.env[handoffSeeds.DATABASE_URL_VARIABLE] = saved;
+    }
   });
 
   // Catches: a capture that keeps only the metadata Dispatch lists, or loses the newest-first order

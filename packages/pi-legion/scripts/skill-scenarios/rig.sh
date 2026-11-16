@@ -291,6 +291,17 @@
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
 #                               and brainstorming skills go into the label's profile, and a label
 #                               built without it runs neither scenario
+# For the rig's own tests (`bun test`), never a batch:
+#   SKILL_SCENARIOS_OLDER_CHECKOUT a whole checkout of main ff2a10ef (2026-11-07), an older daemon
+#                               (completion-answers.ts's `refused` engine and `issue` route), say
+#                               `git worktree add <dir> ff2a10ef`. daemon-standin.test.ts's "an
+#                               older daemon's late completion is refused in that daemon's own
+#                               sentence" reads its packages/daemon/internal/workflow/engine.go
+#                               and internal/api/handoff.go and boots the daemon stand-in on it,
+#                               which needs go and runs `go run -overlay` of daemon-pane.go in its
+#                               packages/daemon (its packages/envoy beside it, as go.mod
+#                               replaces it), so that module's dependencies must be in the Go
+#                               module cache or fetchable. Unset, the row skips and says so
 #
 # Each run:
 #   - Its agent is `omp -p` on the Oh My Pi the daemon pins (.omp-pin), in the label's profile
@@ -573,7 +584,8 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # than one agent gives each its own (worker_boot). `services_env` is the services file of the
 # run's label (cmd_run), which a worker run's pane and its recorder read. `batch_start` is the
 # batch's start second, which each of its runs' records names (stop_batch).
-R='' session='' daemon_pid='' dispatch_pid='' record_pid='' runs_pid='' batch_scenario='' batch_start=''
+R='' session='' daemon_pid='' dispatch_pid='' github_pid='' record_pid='' runs_pid='' batch_scenario='' batch_start=''
+watcher_pid=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url='' booted='' sessions_dir='' services_env=''
 listener_pids=()
 
@@ -1021,10 +1033,10 @@ world_paths() {
   # Hidden inside it: the services' logs (<run>/logs), the one directory of the rig's records,
   # under an empty read-only tmpfs once the run's directory is bound back (private_world), so an
   # agent reads none of it and the host keeps it whole. The rig's records that are files
-  # (run-names.ts's RECORDS: built-from, services-from, namespace.txt and the rest) cannot be
-  # hidden so: a mount onto a file is refused on a gVisor pod ("mount point is not a directory"),
-  # so an agent can read them, and launch's guard, which reads every other file the world shows,
-  # passes them over.
+  # (built-from, services-from, namespace.txt and the rest) cannot be hidden so: a mount onto a
+  # file is refused on a gVisor pod ("mount point is not a directory"), so an agent can read
+  # them, and launch's guard, which reads only what the rig composes for a launch
+  # (run-names.ts's COMPOSED), does not read them.
   printf 'hide %s\n' "$R/logs"
   {
     # The label's install: its packed plugins and model route, which the HOME copied from it
@@ -1171,12 +1183,14 @@ require_namespace() {
 # showing it would show all it holds. scratch_clean and health.ts's rules stay behind this as a
 # second line.
 #
-# Nothing the agent can read names the run's scenario, case or label, or a name the rig gave its
-# world: before the agent starts, `run-names.ts guard` reads every variable of its pane, every
-# mount of its namespace, its working and session directories, its prompt, its system prompt and
-# its stand-ins for a word of the vocabulary (run-names.ts's `worldNames`), and the run fails,
-# naming the word and where it is, where one is there. On 2026-11-16, 16 of the 36 runs of the
-# batch at c273084d reasoned from the run's name, which every path of the run carried.
+# Nothing the rig composes for the agent names the run's scenario, case or label, or a name the
+# rig gave its world: before the agent starts, `run-names.ts guard` reads every variable of its
+# pane, every mount of its namespace, its working and session directories, its prompt, its system
+# prompt, its stand-ins and its jj configuration for a word of the vocabulary (run-names.ts's
+# `worldNames`, COMPOSED), and the run fails, naming the word and where it is, where one is there.
+# It reads neither the label's install, whose words are its checkout's own, nor what the run has
+# written, whose words are its agents' own. On 2026-11-16, 16 of the 36 runs of the batch at
+# c273084d reasoned from the run's name, which every path of the run carried.
 launch() {
   local system='' extra='' omp unshare kind path other hidden
   omp=$(pinned_omp "$pin") || exit 1
@@ -1274,7 +1288,13 @@ stop_run() {
     stop_pid "$record_pid" && wait "$record_pid" 2>/dev/null || true
     record_pid=''
   fi
-  for pid in "$daemon_pid" "$dispatch_pid"; do
+  # The head watcher with TERM, as the recorder: it finishes the push in hand and reads the push
+  # log once more before it exits (head-watcher.ts), so its record answers every push the run made.
+  if [ -n "$watcher_pid" ]; then
+    stop_pid "$watcher_pid" && wait "$watcher_pid" 2>/dev/null || true
+    watcher_pid=''
+  fi
+  for pid in "$daemon_pid" "$dispatch_pid" "$github_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -1476,12 +1496,15 @@ worker_boots=(tester reviewer implementer:reviewing implementer:accepting review
 
 # label_facts LABEL BINARY reads, through BINARY (daemon_pane_binary of LABEL's checkout, which
 # load_label loaded last), every fact of that checkout's daemon a stand-in of worker_boots reads
-# at its boot (daemon-pane.ts's `facts`, its standinFacts) into the facts cache under $work, before
-# any run of the batch starts, so each boot reads its facts out of files. A boot that read them
-# itself ran daemon-pane.go once a fact: in the preflight of 2026-11-15 at 7bf20811, in a fresh
-# work directory, a first boot took ~43 s (head) and ~36 s (base) with a warm Go build cache, past
+# at its boot (daemon-pane.ts's `facts`, its standinFacts), and the selector table of that
+# checkout's gh wrapper the gh stand-in refuses an owner by (its labelGhSelectors, which
+# worker_boot writes into each run), into the facts cache under $work, before any run of the batch
+# starts, so each boot reads its facts out of files. A boot that read them itself ran
+# daemon-pane.go once a fact: in the preflight of 2026-11-15 at 7bf20811, in a fresh work
+# directory, a first boot took ~43 s (head) and ~36 s (base) with a warm Go build cache, past
 # worker_boot's 30 s bound for the stand-in to listen, and 6 of the 8 runs ended there. A fact that
-# cannot be read fails the batch here, naming it, where no run has started.
+# cannot be read fails the batch here, naming it, where no run has started; so does a selector
+# form the label's wrapper holds that the world's gh does not model.
 label_facts() {
   SKILL_SCENARIOS_WORK=$work SKILL_SCENARIOS_DAEMON_PANE=$2 bun "$here/daemon-pane.ts" facts "$co" "${worker_boots[@]}" ||
     fail "a fact of the daemon of label $1's checkout $co could not be read (above), so no daemon stand-in of the label could boot"
@@ -1533,9 +1556,10 @@ file_digest() {
 #   pin     its Oh My Pi, the version that checkout pins (.omp-pin), <from> being the pin;
 #   shared  a service production shares across versions, or this rig's own instrument, <from>
 #           being where it comes from: the stand-ins, readers and seed programs of this
-#           directory (boot-refusal.ts, which boot_agent runs inside every boot, and
-#           run-names.ts, which launch runs before every agent starts, among them), NATS,
-#           Postgres and the push guard's check.
+#           directory (boot-refusal.ts, which boot_agent runs inside every boot, run-names.ts,
+#           which launch runs before every agent starts, and github-standin.ts with its route
+#           table github-routes.ts, the GitHub start_dispatch gives the run's Dispatch, among
+#           them), NATS, Postgres and the push guard's check.
 # <digest> is file_digest of the binary or program file a run starts (`missing` where that file is
 # not there), or `-` where it starts none. The README's skill-scenarios section
 # (packages/pi-envoy/scripts/README.md) holds the table of every service, with the reason each
@@ -1550,7 +1574,7 @@ services_from() {
   printf 'daemon-facts label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'worker-pane label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'omp pin %s %s\n' "$pin" "$(file_digest "$omp")"
-  for program in daemon-standin.ts daemon-pane.go daemon-routes.go worker-pane.ts gh-standin.ts seed.ts record-publishes.ts boot-refusal.ts run-names.ts; do
+  for program in daemon-standin.ts daemon-pane.go daemon-routes.go daemon-completion.go gh-selectors.go worker-pane.ts gh-standin.ts github-standin.ts github-routes.ts seed.ts head-watcher.ts record-publishes.ts boot-refusal.ts run-names.ts; do
     printf '%s shared %s %s\n' "$program" "$here" "$(file_digest "$here/$program")"
   done
   if given_services; then
@@ -1568,8 +1592,16 @@ services_from() {
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
-# harness's fake Envoy and GitHub, which run-server.sh names and this rig does not run, are port 1,
-# where nothing listens; its broker switch is empty, so the server has no secrets broker. The
+# harness's fake Envoy, which run-server.sh names and this rig does not run, is port 1, where
+# nothing listens; its broker switch is empty, so the server has no secrets broker. Its GitHub is
+# the run's own GitHub stand-in (github-standin.ts), started here before the server: production's
+# Dispatch reads GitHub through its App to say where a result's commit stands, and with GitHub at
+# port 1 every reviewer was told a pass stands "not known", Dispatch "cannot read the repository",
+# where production answers that commit is none of the compared commits. The stand-in answers the
+# reads the world's flows were measured to make (github-routes.ts's GITHUB_ROUTES) from the run's
+# own remote, its pull request opened by the implementer's App as production's is, and refuses any
+# other, naming it in $evidence/logs/github.log, the log the world does not show and health.ts's
+# `github` rule reads. The
 # server is the one the batch built from the run's label's own checkout (services_up, go_binary),
 # which run-server.sh runs in place of a build of its own (DISPATCH_E2E_SERVER_BIN), so every run
 # runs the binary its provenance names (services_from). run-server.sh itself is this checkout's,
@@ -1579,18 +1611,35 @@ services_from() {
 # the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
 # and the log is emptied first, so the line read is this run's own start.
+# The server's agent bearer is the batch's own ($tokens/dispatch-token, services_up), the one each
+# agent's DISPATCH_TOKEN_FILE names and can read, and not the harness's `e2e-token`, a word of the
+# harness the world would show: run-server.sh gives its server the token its
+# DISPATCH_E2E_AGENT_TOKEN_FILE holds, and e2e/api.ts, which seed.ts calls, reads the same file,
+# so it is exported for every seed.ts call of the run after this one.
 start_dispatch() {
-  local url=$1 log=$evidence/logs/dispatch.log server
+  local url=$1 log=$evidence/logs/dispatch.log github=$evidence/logs/github.log server github_port
   server=$(build_dir "$co")/dispatch-e2e
   [ -x "$server" ] || fail "no Dispatch server of $co at $server: the run's batch builds it (services_up)"
   : >"$log"
-  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
+  : >"$github"
+  start_process github bun "$here/github-standin.ts" "$R" "$worker_repo" "$worker_base" "${world_implement_app}[bot]"
+  await_start github "$github_pid" 30 "the GitHub stand-in to report its port" \
+    report_port "$github" '"listening":"127\.0\.0\.1:'
+  github_port=$(report_port "$github" '"listening":"127\.0\.0\.1:')
+  export DISPATCH_E2E_AGENT_TOKEN_FILE=$tokens/dispatch-token
+  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=$github_port DISPATCH_E2E_AGENT_SECRETS_URL='' \
     DISPATCH_E2E_SERVER_BIN=$server start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
   dispatch_port=$(report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:')
-  await_start dispatch "$dispatch_pid" 60 "Dispatch to answer /api/v1/whoami" \
-    curl -fsS -o /dev/null -H 'Authorization: Bearer e2e-token' "http://127.0.0.1:$dispatch_port/api/v1/whoami"
+  await_start dispatch "$dispatch_pid" 60 "Dispatch to answer /api/v1/whoami" dispatch_whoami
+}
+
+# dispatch_whoami asks the run's Dispatch (dispatch_port) who the bearer start_dispatch gave it
+# is, the header on stdin (`-H @-`) so the bearer is on no command line.
+dispatch_whoami() {
+  printf 'Authorization: Bearer %s\n' "$(<"$DISPATCH_E2E_AGENT_TOKEN_FILE")" |
+    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$dispatch_port/api/v1/whoami"
 }
 
 # services_files prints each file a batch's services make, one a line: the given Postgres's URL
@@ -1740,7 +1789,9 @@ services_up() {
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   fi
-  (umask 077 && mkdir -p "$tokens" && openssl rand -hex 24 >"$tokens/envoy-token" && printf 'e2e-token\n' >"$tokens/dispatch-token")
+  # Each bearer is 24 random bytes in hex, a batch's own, the 48 letters and digits of the agent
+  # token a deployment of Dispatch is given (packages/envoy/infra/gcp's dispatch_cloud.go).
+  (umask 077 && mkdir -p "$tokens" && openssl rand -hex 24 >"$tokens/envoy-token" && openssl rand -hex 24 >"$tokens/dispatch-token")
   for label in "$@"; do
     load_label "$label"
     listener=$(go_binary "$co" envoy ./cmd/listener envoy-listener) || fail "the Envoy listener of label $label's checkout $co did not build"
@@ -1778,9 +1829,9 @@ services_down() {
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
 # the scenario needs (project, or brainstorm): a database named after the run in the batch's
 # Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
-# database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
-# batch's Postgres is the server $services_postgres names, and the batch's own container when that
-# file is absent.
+# database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port and
+# dispatch_database_url, the database's URL, which seed_ts hands seed.ts. The batch's Postgres is
+# the server $services_postgres names, and the batch's own container when that file is absent.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} pg_port postgres url
   database=${database//-/_}
@@ -1803,6 +1854,7 @@ own_dispatch() {
     url="postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
   fi
   start_dispatch "$url"
+  dispatch_database_url=$url
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
@@ -1988,10 +2040,12 @@ MDEOF
 }
 
 # seed_ts MODE ARG... runs `seed.ts MODE ARG...` against the run's own Dispatch (own_dispatch), its
-# output appended to $R/fixture.log. A failure is the rig's, never the run's.
+# output appended to $R/fixture.log. A failure is the rig's, never the run's. The run's database
+# URL goes in seed.ts's environment, never its command line, which every user of the box reads:
+# the one mode that writes the database itself (`pull-request`) reads it there.
 seed_ts() {
-  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$@") \
-    >>"$R/fixture.log" 2>&1 || fail "seed.ts $1 failed; see $R/fixture.log"
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port SEED_DATABASE_URL=$dispatch_database_url \
+    bun "$here/seed.ts" "$@") >>"$R/fixture.log" 2>&1 || fail "seed.ts $1 failed; see $R/fixture.log"
 }
 
 # judge_ts MODE ARG... runs `judge.ts MODE ARG...` with SKILL_SCENARIOS_WORK at this rig's work
@@ -2354,17 +2408,27 @@ cmd_judge() {
 #
 # <case>, empty for tester-proof, is the cased scenario's case: reviewer-text-findings' text-only
 # and defect, and threads-closed's text-fixes and code-defect. Each names one of the three worlds
-# below, and whether the CLI's blank-name guard, which R2 of the seeded spec asks for, is dropped.
+# below, and whether the CLI's blank-name guard, which R2 of the seeded spec asks for, is dropped
+# (case_guard).
 worker_fixture() {
-  local index=$1 start=$2 case_name=${3:-}
+  local index=$1 start=$2 case_name=${3:-} guard
+  guard=$(case_guard "$case_name")
   case $case_name in
   '') tester_proof_world "$index" "$start" ;;
-  text-only) review_world "$index" "$start" '' ;;
-  defect) review_world "$index" "$start" dropped ;;
-  text-fixes) approved_world "$index" "$start" '' ;;
-  code-defect) approved_world "$index" "$start" dropped ;;
+  text-only | defect) review_world "$index" "$start" "$guard" ;;
+  text-fixes | code-defect) approved_world "$index" "$start" "$guard" ;;
   *) fail "worker_fixture: '$case_name' is no case of reviewer-text-findings or threads-closed" ;;
   esac
+}
+
+# case_guard CASE prints fixture_cli's GUARD for CASE's world: `dropped` for the two negative
+# controls, defect and code-defect, whose CLI greets a blank name, and nothing for every other
+# world. It is one answer for two readers, because the world's code and the issue's check go
+# together: worker_fixture builds the code with it, and worker_run_world gives the issue the check
+# that missed the blank name where the code dropped the guard (seed.ts tester-proof's `no-name`),
+# since a check that covered the blank name would hold a recorded pass the head fails.
+case_guard() {
+  case $1 in defect | code-defect) echo dropped ;; esac
 }
 
 # The world the tester reads: the CLI, its tests, and the implementer's handoff and check line,
@@ -2622,10 +2686,15 @@ fixture_git() {
 }
 
 # docs/cli.md as it stands before the change this world's commit makes, which leaves it with one
-# sentence the change makes false (fixture_round_files).
+# sentence the change makes false (fixture_round_files, which adds the change's own line below
+# this one). Its sentence is how every command of the CLI is run and what it exits with, which
+# greet.ts meets in every world but the two whose CLI greets a blank name, where it is false only
+# because the code is wrong. It named `bun hello.ts`, a command no world holds, and two reviewers
+# of round 24 found that third false sentence by reading, which no case intends.
 fixture_docs_before() {
   mkdir -p "$src/docs"
-  printf '# The widgets CLI\n\n`bun hello.ts` prints a fixed greeting. A command exits 0 when it printed and 2 when it could not.\n' >"$src/docs/cli.md"
+  # shellcheck disable=SC2016 # the backticks are the document's own markdown
+  printf '# The widgets CLI\n\n%s\n' 'Each command is a Bun script at the root of the repository, run as `bun <command>.ts`. A command exits 0 when it printed and 2 when it was given arguments it cannot use.' >"$src/docs/cli.md"
 }
 
 # fixture_first_commit commits what $src holds, pushes the world's default branch and opens
@@ -2637,20 +2706,29 @@ fixture_first_commit() {
   fixture_git checkout -qb "legion/$worker_key"
 }
 
-# fixture_cli [dropped] writes the CLI under test and its tests. `dropped` drops the blank-name
-# guard R2 of the seeded spec asks for: the test a name must fail for the CLI to print the usage
-# line then tests only for a missing argument, so a name of spaces reaches greet() and the CLI
-# greets nobody.
+# fixture_cli [dropped] writes the CLI under test and its tests. The command trims its argument
+# once, as the spec's Goal places the trim, and greet() greets what it is handed. Its tests run
+# greet() and the command itself, one test for each requirement: R1's greeting and exit 0, R3's
+# trim, and R2's usage line and exit 2 for no name and for a blank one, so no requirement is left
+# without a test (round 24: 16 of 46 reviews named R2's missing test).
+#
+# `dropped` drops the blank-name guard R2 asks for: the command then tests only for a missing
+# argument, so a name of spaces trims to nothing and the CLI greets nobody, and its tests leave out
+# the blank name, as the issue's check does (seed.ts tester-proof's `no-name`). The missed test
+# and the missed check are part of that world's one intended defect, not findings of their own:
+# an implementer who forgot the blank name wrote neither, which is how the defect reached review
+# with every recorded pass and every check green (the architect's ruling of 2026-11-16). Do not
+# give that world the blank-name test: it would fail at the head whose checks report success.
 fixture_cli() {
-  local blank_name='name === undefined || name.trim() === ""'
-  [ -z "$1" ] || blank_name='name === undefined'
+  local guard=$1 blank_name='name === undefined || name === ""'
+  [ -z "$guard" ] || blank_name='name === undefined'
   cat >"$src/greet.ts" <<EOF
 export function greet(name: string): string {
-  return \`Hello, \${name.trim()}!\`;
+  return \`Hello, \${name}!\`;
 }
 
 if (import.meta.main) {
-  const name = Bun.argv[2];
+  const name = Bun.argv[2]?.trim();
   if ($blank_name) {
     console.error("usage: greet.ts <name>");
     process.exit(2);
@@ -2667,23 +2745,41 @@ test("greets by name", () => {
 });
 
 test("trims the name", () => {
-  expect(greet("  Ada  ")).toBe("Hello, Ada!");
+  expect(cli("  Ada  ")).toEqual({ exitCode: 0, stdout: "Hello, Ada!\n", stderr: "" });
 });
+
+test("prints the greeting and exits 0", () => {
+  expect(cli("Ada")).toEqual({ exitCode: 0, stdout: "Hello, Ada!\n", stderr: "" });
+});
+
+test("prints the usage line and exits 2 when no name is given", () => {
+  expect(cli()).toEqual({ exitCode: 2, stdout: "", stderr: "usage: greet.ts <name>\n" });
+});
+EOF
+  [ -n "$guard" ] || cat >>"$src/greet.test.ts" <<'EOF'
+
+test("prints the usage line and exits 2 when the name is blank", () => {
+  expect(cli("   ")).toEqual({ exitCode: 2, stdout: "", stderr: "usage: greet.ts <name>\n" });
+});
+EOF
+  cat >>"$src/greet.test.ts" <<'EOF'
+
+/** `bun greet.ts <args>`, run in this directory: its exit code and what it printed. */
+function cli(...args: string[]) {
+  const run = Bun.spawnSync([process.execPath, "greet.ts", ...args], { cwd: import.meta.dir });
+  return { exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
+}
 EOF
 }
 
 # fixture_round_files DOC_LINE TRIGGER writes the two files a round after the implementer reads:
-# docs/cli.md, whose last sentence is DOC_LINE, and the workflow, whose comment names TRIGGER
-# beside the pull request trigger `on:` carries.
+# docs/cli.md's line for the command, after the sentence fixture_docs_before wrote, whose last
+# sentence is DOC_LINE, and the workflow, whose comment names TRIGGER beside the pull request
+# trigger `on:` carries.
 fixture_round_files() {
   local doc_line=$1 workflow_trigger=$2
-  cat >"$src/docs/cli.md" <<EOF
-# The widgets CLI
-
-\`bun hello.ts\` prints a fixed greeting. A command exits 0 when it printed and 2 when it could not.
-
-\`bun greet.ts <name>\` prints \`Hello, <name>!\`. $doc_line
-EOF
+  # shellcheck disable=SC2016 # the backticks are the document's own markdown
+  printf '\n`bun greet.ts <name>` prints `Hello, <name>!`. %s\n' "$doc_line" >>"$src/docs/cli.md"
   mkdir -p "$src/.github/workflows"
   # The workflow installs bun before it runs the tests: bun is on no GitHub runner, so without
   # that step `bun` is absent and the job can never pass, which is a finding whose closing changes
@@ -2692,19 +2788,28 @@ EOF
   # names a trigger the file does not have, is the text finding the run is there to find. That
   # is said here and never in the file: the file is the world's, and the same sentences written
   # into it told every agent that read it what it was there to find (review 5887659447, finding
-  # 2).
+  # 2). Only text closes that finding, because the issue's spec says when CI runs: on pull
+  # requests alone, never on a push to `main` (world-issue.ts's WORLD_SPEC, Context), so adding
+  # the push trigger the comment names breaks the spec and correcting the comment is the close.
+  #
+  # Nothing else of the workflow is a finding, in any world: each action is pinned by digest, as
+  # this repository pins them, the token is read-only (`permissions`), and the job runs the whole
+  # suite rather than one file. Round 24's reviewers named the tag pins and the missing
+  # `permissions` in 42 of 46 reviews, and the one named file in 3, none of which a case intends.
   cat >"$src/.github/workflows/greet.yml" <<EOF
 # Runs the greet tests on every pull request$workflow_trigger.
 name: greet
 on:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun test greet.test.ts
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun test
 EOF
 }
 
@@ -2770,12 +2875,17 @@ fixture_workspace() {
 
 # fixture_checks ROLE... prints the pull request body's `**Checks:**` section: one line per role
 # that recorded a pass on the issue's one before_merge check at this world's head, which is the
-# check the implementer's seeded result and the tester's own run are against.
+# check the implementer's seeded result and the tester's own run are against. Each line says what
+# the role ran, which is what the check names: both halves of R2 in every world but the two whose
+# CLI dropped the blank-name guard, whose check, and so whose runs, missed the blank name
+# (fixture_cli). It reads the world function's own $guard, unset in the tester's world.
 fixture_checks() {
-  local role separator=''
+  local role separator='' r2='with no name exited 2 and printed the usage line'
+  # shellcheck disable=SC2016 # the backticks are the pull request body's own markdown
+  [ -n "${guard:-}" ] || r2='with no name and `bun greet.ts '"'"'   '"'"'` each exited 2 and printed the usage line'
   for role in "$@"; do
-    printf -- '%s- Check k1 (before_merge): pass at %s, recorded by %s. Ran `bun greet.ts '"'"'  Ada  '"'"'` and read `Hello, Ada!`, so the name is trimmed, and `bun greet.ts` with no name exited 2 and printed the usage line.' \
-      "$separator" "${C1:0:12}" "$role"
+    printf -- '%s- Check k1 (before_merge): pass at %s, recorded by %s. Ran `bun greet.ts '"'"'  Ada  '"'"'` and read `Hello, Ada!`, so the name is trimmed, and `bun greet.ts` %s.' \
+      "$separator" "${C1:0:12}" "$role" "$r2"
     separator=$'\n'
   done
 }
@@ -3151,6 +3261,13 @@ worker_boot() {
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
+  # The gh stand-in refuses a call naming an owner outside the world's project as the Legion gh
+  # wrapper of the label's checkout refuses it, by that wrapper's own selector table
+  # (gh-selectors.ts), which services_up read into the facts cache (label_facts). The agent's
+  # namespace shows neither the checkout nor the work directory, so the table is written into
+  # the run, beside the routes the stand-in answers by, before the agent starts.
+  SKILL_SCENARIOS_WORK=$work bun "$here/daemon-pane.ts" gh-selectors "$co" "$R/gh-selectors.json" ||
+    fail "worker_boot: the gh selector table of label checkout $co could not be read (above), so the run's gh could refuse no owner as the label's gh wrapper does"
   # The pane the label's checkout's daemon would give that role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh. It reads the repository and the default branch its
@@ -3256,18 +3373,52 @@ boot_agent() {
 
 # worker_run_world INDEX START [CASE] is the start every worker run shares: the run's own
 # Dispatch and its own issue on it, whose newest implement record a worker reads and whose newest
-# records it writes; the world CASE names (worker_fixture); and the implementer's handoff on the
-# issue. It leaves the issue key in $worker_key and the pull request's number and head in the
-# caller's $pr and $head, which every runner's prompt names.
+# records it writes; the world CASE names (worker_fixture); and the issue as a Legion issue stands
+# once its implementer has finished, in the order production writes it. The issue resolves to the
+# world's repository (seed.ts project) and is handed to Legion, its check covering what the
+# world's code covers (case_guard); then the planner's approved plan.md and plan handoff, at the
+# default branch the implementer started from; the pull request the world's remote holds, as
+# Dispatch stores its head; and the implementer's handoff and result at that head, after which the
+# issue is `testing`. So a result at the head the agent reads stands at the pull request's head,
+# and `dispatch results` says a pass stands. It leaves the issue key in $worker_key and the pull
+# request's number and head in the caller's $pr and $head, which every runner's prompt names.
 worker_run_world() {
-  local index=$1 start=$2 case_name=${3:-}
+  local index=$1 start=$2 case_name=${3:-} covers=()
+  [ -z "$(case_guard "$case_name")" ] || covers=(no-name)
   own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
+  seed_ts tester-proof "$R/fixture.json" "${covers[@]}"
   worker_key=$(jq -r .issue "$R/fixture.json")
   worker_fixture "$index" "$start" "$case_name" >>"$R/fixture.log" 2>&1 ||
     fail "the fixture failed; see $R/fixture.log"
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  seed_ts plan "$R/fixture.json" "$R/implement.json" "$(git -C "$R/remote.git" rev-parse "$worker_base")"
+  seed_ts pull-request "$R/fixture.json" "$R/fixtures.json" "$R/remote.git"
   seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
+  start_heads
+}
+
+# start_heads starts the run's head watcher (head-watcher.ts), outside the agent's namespace, for
+# the rest of the run: on every push to the pull request's branch it stores the pushed head on the
+# run's Dispatch, as production's `pull_request` event does at the push. The push's own path
+# cannot: the remote's post-receive hook runs inside the agent's namespace, which shows neither
+# this directory nor the run's database URL (world_paths), and a hook holding the URL would hand
+# it to the agent. Its record, <run>/logs/heads.log, is hidden from the agent like every log of the
+# run's, and health's "head" rule reads it (health.ts's headUnmoved). stop_run stops it.
+start_heads() {
+  start_process watcher env --chdir="$root/packages/dispatch" DISPATCH_E2E_PORT="$dispatch_port" \
+    SEED_DATABASE_URL="$dispatch_database_url" bun "$here/head-watcher.ts" "$R"
+  await_start watcher "$watcher_pid" 30 "the head watcher to open its record" \
+    grep -q '"opened":"heads.log"' "$R/logs/heads.log"
+}
+
+# heads_stored succeeds once the head watcher's record (head-watcher.ts) answers every push the
+# run's push log holds to the pull request's branch, each by its own commit, stored or failed: the
+# wait a reader makes before an agent that reads the head the run's Dispatch compares with.
+heads_stored() {
+  local commit
+  for commit in $(awk '$2 ~ /^refs\/heads\/legion\// { print $4 }' "$R/pushes.log"); do
+    grep -q "\"pushed\":\"$commit\"" "$R/logs/heads.log" || return 1
+  done
 }
 
 run_tester_proof() {
@@ -3407,6 +3558,11 @@ run_threads_closed() {
   printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
   worker_boot "$name-implementer" "$project" implementer "$phase" "$completed"
+  # Every push the implementer made has moved the head the run's Dispatch compares results with
+  # (start_heads), as its own event moves it in production, and the reviewer is not booted before
+  # the watcher has answered each of them: a pass recorded at the approved head then stands one
+  # push below the head, which is what merge-gate.md's carry rule is for.
+  await_start watcher "$watcher_pid" 30 "the head watcher to store the implementer's pushes" heads_stored
   # The reviewer's own wake is the implementer's message and nothing else: the daemon starts no
   # phase for this loop and no architect speaks, so the reviewer learns
   # the fix is pushed from that message alone (review-threads.md step 2). An implementer that
@@ -3664,7 +3820,7 @@ profile) shift && cmd_profile "$@" ;;
 live-read) shift && cmd_live_read "$@" ;;
 batch) shift && cmd_batch "$@" ;;
 run) shift && cmd_run "$@" ;;
-score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
+score) shift && SKILL_SCENARIOS_WORK=$work bun "$here/score.ts" runs "$work/runs" "$@" ;;
 health) shift && SKILL_SCENARIOS_WORK=$work bun "$here/health.ts" "$@" ;;
 world) shift && cmd_world "$@" ;;
 judge) shift && cmd_judge "$@" ;;

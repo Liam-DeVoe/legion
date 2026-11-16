@@ -87,7 +87,9 @@ const now = () => new Date().toISOString();
 // that is true — what was sent in the gap is unknown.
 const nats = await connect({
   servers: url,
-  name: `skill-scenarios-record-${prefix}`,
+  // A name of the world's own, as any Envoy subscriber's: the server lists every connection's
+  // name to whatever reads its connections.
+  name: `envoy-audit-${prefix}`,
   reconnect: false,
 });
 const subscription = nats.subscribe("notifications.>");

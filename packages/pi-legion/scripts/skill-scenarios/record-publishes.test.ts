@@ -5,6 +5,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
 import { connect } from "nats";
+import { nameWords, vocabulary } from "./run-names";
 import { bundled } from "./test-programs";
 
 // The recorder reads the bus, so a host with no NATS server runs none of this.
@@ -381,7 +382,10 @@ test.skipIf(skip)(
   120_000
 );
 
-// Catches: a recorder that says it is recording before the server has taken its subscription.
+// Catches: a recorder that says it is recording before the server has taken its subscription;
+// and a recorder whose connection names the rig (`skill-scenarios-record-…`), which the server
+// lists to whatever reads its connections: the name its CONNECT gives is held to the words
+// run-names.ts derives.
 // The rig boots its first agent on that line (rig.sh's start_recorder waits for it), so a line
 // written while the subscription was still on its way leaves whatever that agent published
 // first reaching no record, and the score reads a wake that was sent as one that never was.
@@ -401,6 +405,7 @@ test("the record opens only once the server has taken the subscription", async (
   let held: Socket<undefined> | undefined;
   let subscribed = false;
   let answering = false;
+  let connected = "";
   const bus = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
@@ -422,6 +427,7 @@ test("the record opens only once the server has taken the subscription", async (
       data(socket, data) {
         for (const line of new TextDecoder().decode(data).split("\r\n")) {
           if (line.startsWith("SUB ")) subscribed = true;
+          if (line.startsWith("CONNECT ")) connected = line.slice("CONNECT ".length);
           if (line !== "PING") continue;
           // The client's own PING, which `connect` waits for, is answered; the one the flush
           // sends after the subscription is held until the check has looked at the record. A
@@ -433,7 +439,7 @@ test("the record opens only once the server has taken the subscription", async (
       },
     },
   });
-  const recorder = Bun.spawn(["bun", RECORDER, file, "legion-held-lweval-1-"], {
+  const recorder = Bun.spawn(["bun", RECORDER, file, "legion-held-wid-1-"], {
     env: { ...process.env, SKILL_SCENARIOS_NATS_URL: `nats://127.0.0.1:${bus.port}` },
     stdout: "pipe",
     stderr: "pipe",
@@ -449,8 +455,11 @@ test("the record opens only once the server has taken the subscription", async (
     held?.write("PONG\r\n");
     while ((await Bun.file(file).text()) === "") await Bun.sleep(20);
     expect(JSON.parse((await Bun.file(file).text()).split("\n")[0] ?? "")).toMatchObject({
-      recording: "legion-held-lweval-1-",
+      recording: "legion-held-wid-1-",
     });
+    const name = String(JSON.parse(connected).name);
+    expect(name).toBe("envoy-audit-legion-held-wid-1-");
+    expect(nameWords(name, vocabulary([]))).toBe(undefined);
   } finally {
     recorder.kill();
     bus.stop(true);

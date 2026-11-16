@@ -413,23 +413,34 @@ scratch, the other label's skills or the pod's credentials, nor leave a file in 
 run. A run recorded before this world is read against the world it had (its own `namespace.txt`,
 or, with none, a world that showed its checkout, the rig's directory and the services).
 
-Nothing an agent can read names its run's scenario, case or label, or a name the rig once gave
-its world: before an agent starts, `launch` runs `run-names.ts guard`, which reads every variable
-of the pane (its name and its value: the profile, the Legion project, issue and role its Envoy
-topics are made of, HOME, TMPDIR, PATH), every mount of the namespace (each is a mount point and
-the host source `/proc/self/mountinfo` names, so the work directory's own path is held too), the
-working and session directories, the prompt and system prompt (`/proc/1`'s command line), and
-every regular file the world shows under the work directory (the run's own directory, its
-label's install and the batch's tokens; `bin/gh`, `bin/bun` and the `gh` bundle in `lib/` among
-them), up to 1 MiB and passing over a file with a NUL byte in its first 8 KiB, and the run fails,
-naming the word and the place (for a file, the file and the text around the word), where one is
-there. The services' logs (`<run>/logs/`) are hidden from the agent under an empty read-only
-tmpfs. The rig's records that are files at the top of the run's directory (`run-names.ts`'s
-`RECORDS`: `built-from`, `services-from`, `namespace.txt`, `launch.sh` and the rest) are not
-hidden, since a gVisor pod refuses a mount onto a file, and the guard passes them over, since
-`services-from` names the rig's own directory in every run: an agent can still read them, and
-hiding them needs them moved into a directory the namespace covers. The words are derived, never
-typed: every scenario and case of `run-names.ts`'s
+Nothing the rig composes for an agent names its run's scenario, case or label, or a name the rig
+once gave its world: before an agent starts, `launch` runs `run-names.ts guard`, which reads every
+variable of the pane (its name and its value: the profile, the Legion project, issue and role its
+Envoy topics are made of, HOME, TMPDIR, PATH), every mount of the namespace (each is a mount point
+and the host source `/proc/self/mountinfo` names, so the work directory's own path is held too),
+the working and session directories, the prompt and system prompt (`/proc/1`'s command line), and
+the files the rig writes for each launch (`run-names.ts`'s `COMPOSED`: `bin/gh`, `bin/bun`, the
+`gh` bundle `lib/gh.js` and `jj.toml`), each read whole, and the run fails, naming the word and the
+place with the text around it, where one is there. It reads nothing else the world shows:
+
+- not the label's install (`installs/<id>`: its packed plugins, HOME and model route), a
+  checkout's production artifact whose words are production's, which a production agent reads
+  too: several scenario words are ordinary words of this product, and the preflight at `cc09c638`
+  refused every base agent on `SPEC_WRITING_POINTER` in pi-legion's `dist/legion.js`, while the
+  head's passed only because its `legion.js` was over a size bound;
+- not what the run has written (`sessions/`, `out*.txt`, `cwd/`, `ws/`, `calls.jsonl`, a HOME an
+  agent used), which holds its agents' own words: read before a run's second agent, the first
+  agent's transcript refused it;
+- not the world's repositories and gh answers (`world.json`, `fixtures.json`, `src/`, `ws/`,
+  `remote.git`), which the run writes into after its first agent, and which `rig.test.ts`'s "what
+  the rig writes into a run's world" holds to the same words for every world `rig.sh` builds.
+
+The services' logs (`<run>/logs/`) are hidden from the agent under an empty read-only tmpfs. The
+rig's records that are files at the top of the run's directory (`built-from`, `services-from`,
+`namespace.txt`, `launch.sh` and the rest) are not hidden, since a gVisor pod refuses a mount onto
+a file, and the guard does not read them, since `services-from` names the rig's own directory in
+every run: an agent can still read them, and hiding them needs them moved into a directory the
+namespace covers. The words are derived, never typed: every scenario and case of `run-names.ts`'s
 `SCENARIOS`, the rig's one scenario table, every label, and `REMOVED_NAMES` (`rig-`,
 `skill-scenario`, `lweval`, `e2e-seed`, `example/widgets`). So the work directory's default is
 `$TMPDIR/work`, the world's repository is `fernbrook/widgets`, its Dispatch project is `WID`, the
@@ -476,8 +487,8 @@ same run, as production's daemon relaunches an agent whose process exits at its 
 stand-in refused its `claims/register`, or its plugin printed its sentence for a claim boot that
 registered and could not finish and exited, read in the wording of the run's own label: the
 opening is read out of `packages/pi-shared/src/legion-claim-core.ts` in the checkout the run's
-`built-from` names (this checkout's `claim boot failed at <step> …`, main `ff2a10ef`'s `claim
-boot failed after claims/register registered …`). Round 23 lost
+`built-from` names (this checkout's `claim boot failed at <step> …`, an older plugin's, main
+`ff2a10ef`'s, `claim boot failed after claims/register registered …`). Round 23 lost
 `reviewer-text-findings-text-only-base-1` so, to the Envoy listener's refusal of a session that
 held no consumer. `boot_agent` runs `boot-refusal.ts` itself to decide it from what the run
 recorded (`health.ts --boot-refusal` answers the same, for a replay through the old entry);
@@ -515,8 +526,10 @@ worker pane among them (below); no agent's claim boot was
 refused but a first attempt's before its first turn, which the rig relaunched (a run refused on
 both attempts is unhealthy, naming both, and so is one refused after a turn); every completion
 line names a role the scenario boots, and every completion the daemon stand-in refused was
-answered as
-`completion-answers.ts`'s `ANSWERS` table allows for the run's scenario, label and that role; a
+answered as `completion-answers.ts`'s `ANSWERS` table allows for the run's scenario and that
+role: an answer a daemon of either shape gives it, or one the daemon of the run's own label gives
+it, read out of the checkout the run's `built-from` names (below; a run with such an answer
+whose daemon cannot be read is unhealthy); a
 reviewer-text-findings world took the reviewer's completion at least once; no request the daemon
 stand-in answered 404 is of a route the run's label's daemon registers, read out of the source of
 the checkout the run's `built-from` names (the stand-in answers by the same routes, and a run with
@@ -527,7 +540,9 @@ agent, and no `out*.txt`, holds a line the push guard prints when it refuses a p
 no `gh` call the gh stand-in refused (`calls.jsonl`) with a refusal `health.ts`'s `GH_DECLARED`
 does not declare for the scenario and the calling role (a call no route of the world answers
 never is; the refusals production gives for a workflow run the world holds none of, GitHub's 404
-for its jobs and gh's for `gh run view` and `gh run watch`, are, for every role; the world answers
+for its jobs and gh's for `gh run view` and `gh run watch`, are, for every role, and so is the
+Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner is outside the
+project; the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
 rig's tests pin against both checkouts); no request of an agent that the run's own Dispatch server
 answered with an error, 4xx or 5xx, by the server's own line of it in `<run>/logs/dispatch.log`,
@@ -545,12 +560,26 @@ issue workspaces, the work directory or any label's checkout, the other runs' gi
 outside its own directory, `/tmp` and what its world shows again; no tool call reads another
 process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
 `/var/run/secrets`, by either name; no call reaches a host other than the loopback, the hosts
-its pane's URLs name and the model gateway its profile's `models.yml` names; and no sentence of
-an agent's own text or thinking, in any transcript of the run, says the measurement: a scenario
-or case word with a character that is no letter or digit (`text-only`, `threads-closed`), a run's
-name in the old shape, or a case word beside a label word (`defect head`), by the same derived
-words as the guard's (`run-names.ts`'s `proseNames`); a plain word alone is the work's own
-(`head SHA`, `base branch`, `not a defect`), and the unhealthy line quotes the sentence. A URL is text until
+its pane's URLs name and the model gateway its profile's `models.yml` names, but a GET or a HEAD
+with no body, or a `git ls-remote` (which reads refs alone; a fetch, a clone and a push stay off the
+world),
+of a public repository the world's own workflow names in a `uses:` line (read from the run's
+remote at `world.json`'s seeded head) on `api.github.com`, `github.com`,
+`raw.githubusercontent.com` or `codeload.github.com`, as production reaches it; and no agent says a
+word of the measurement an input gave it: a scenario or case word with a character that is no
+letter or digit (`text-only`, `threads-closed`), a run's name in the old shape, or a case word
+beside a label word (`defect head`), by the same derived words as the guard's (`run-names.ts`'s
+`proseNames`; a plain word alone is the work's own: `head SHA`, `base branch`, `not a defect`),
+in its own text or thinking, where its prompt, its system prompt or an entry of a transcript that
+is not an agent's own (a user message, a tool result, a message it was sent, an entry Oh My Pi put
+in its context) held the word before any agent of the run wrote it, its tool calls' arguments
+included: earlier in the same transcript, or earlier by the entries' times across two, so a
+message one agent sends another carries the sender's own word. The unhealthy line quotes the
+sentence and names the input. A word the run's agents wrote before any input held it is theirs:
+`health: names its agents wrote before any input held them (no verdict): <n> of <m> runs: <run>
+(<sentence>); …` names each such run and its first sentence, and the run stays healthy, since the
+preflight at `cc09c638` found "text-only" in three head runs where no skill file, user message or
+tool result held it first. A URL is text until
 something runs it: every `web_search` reaches off the world; a `bash` command, a `read`, a
 `fetch`, an `eval` cell's code, a here-document an interpreter reads on stdin and a file the run
 wrote and then ran are read for the hosts they reach; an `eval` cell's `tool.<name>(…)` call is
@@ -588,15 +617,15 @@ its boot, by label (`health: boot relaunches, <label>: <n> in <r> of <m> runs`: 
 each a first attempt kept under `<run>/boot-1/<role>/`, in <r> of the label's <m> runs), then the
 runs that wrote outside their own directory, then a count. It exits 0 when every run is
 healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is not a
-run of a scenario and label the table names. Start a batch only once a run of each label in each
+run of a scenario the table names. Start a batch only once a run of each label in each
 scenario case is healthy.
 
 A rule that matches text a label's own world prints reads only what both labels print alike, or
 reads the run's own label: tester-proof's PR body check line is read up to `at <commit>, recorded
-by tester.` and its commit taken from that `at` alone, since main `ff2a10ef`'s Dispatch ends the
-line with the check's own words and this checkout's with the reading the tester recorded; the
-claim boot sentence is read as the relaunch paragraph above says, by `rig.sh score` and
-`rig.sh health` alike.
+by tester.` and its commit taken from that `at` alone, since an older Dispatch's, main
+`ff2a10ef`'s, ends the line with the check's own words and this checkout's with the reading the
+tester recorded; the claim boot sentence is read as the relaunch paragraph above says, by
+`rig.sh score` and `rig.sh health` alike.
 
 Two tools read production Dispatch, with GET requests only, as the calling session does (its
 envoy.json, or `DISPATCH_URL` with a token): `fetch-spec-sources.ts`, which writes a source's input
@@ -612,10 +641,11 @@ read when a source directory it would write, or `agent-texts.json`, is already u
 A label's agents load the plugins of the label's own checkout, so every service that speaks to
 those plugins comes from that checkout too, as one deploy pairs them in production. The first
 exception found was the Envoy listener, which a batch built once from the rig's own checkout: a
-base run paired main `ff2a10ef`'s pi-envoy (from before #2603) with a listener from after it, a
-pairing no deploy ever had, and lost its claim boot to the listener's `409 not_requested`. A batch
-now builds one listener per label, in that label's checkout, and starts each on a port and a
-machine id of its own (a listener's durable NATS consumer is named for its machine). The Dispatch
+base run, then built from main `ff2a10ef`, paired its pi-envoy (from before #2603) with a
+listener from after it, a pairing no deploy ever had, and lost its claim boot to the listener's
+`409 not_requested`. A batch now builds one listener per label, in that label's checkout, and
+starts each on a port and a machine id of its own (a listener's durable NATS consumer is named for
+its machine). The Dispatch
 server was the second: what an agent reads of it is not the same across versions. `ff2a10ef`'s
 `dispatch result` prints a result's pull-request line ending with the check's text where this
 checkout's ends with the role's reading (`packages/envoy/internal/dispatch/api/results.go`,
@@ -630,11 +660,13 @@ and the rig's own instrument, stays shared, and the table says why.
 | Packed plugins (pi-envoy with its `dispatch` CLI, pi-legion) | the label's checkout (`rig.sh profile`, `install-plugin-profile.sh`) | the same | label |
 | Model route (the installer that writes the profile's `models.yml`) | the label's checkout's `scripts/e2e/lib/install-*.sh`; the provider route is the rig's `install_provider_route` | the same | label for the installer; the gateway or endpoint it names is shared, since every version's agents reach one gateway |
 | Oh My Pi | the pin the label's checkout's `.omp-pin` names, from mise | the same | pin |
-| Daemon facts (routes, phase table, refusals, launch failure limit) | the label's checkout's `packages/daemon`, which the run's `built-from` names, read at each stand-in's boot by the rig's `daemon-pane.go` (`go run` in that module, a compile of it per fact) and `daemon-routes.go` | the same sources, read once a batch before any run starts by `daemon-pane.go` built in the label's checkout's `packages/daemon` (`$SKILL_SCENARIOS_WORK/builds/<checkout>/daemon-pane`) into `$SKILL_SCENARIOS_WORK/daemon-facts`, which each boot reads | label for the facts and the build; the two readers' source is the rig's instrument |
+| Daemon facts (routes, how the daemon takes a completion, phase table, refusals, launch failure limit, the selector table of its gh wrapper) | the label's checkout's `packages/daemon`, which the run's `built-from` names, read at each stand-in's boot by the rig's `daemon-pane.go` (`go run` in that module, a compile of it per fact) and `daemon-routes.go`; how the daemon takes a completion was a table keyed by the label's name; which owner the gh stand-in refused was a reader of its own, of three selector forms | the same sources, read once a batch before any run starts by `daemon-pane.go` built in the label's checkout's `packages/daemon` (`$SKILL_SCENARIOS_WORK/builds/<checkout>/daemon-pane`), `daemon-routes.go`, `daemon-completion.go` and `gh-selectors.go` into `$SKILL_SCENARIOS_WORK/daemon-facts`, which each boot reads; the gh selectors are written into each worker run as `<run>/gh-selectors.json` | label for the facts and the build; the four readers' source is the rig's instrument |
 | Worker pane (`worker-pane.ts`, then `daemon-pane.go pane`) | composed by the label's checkout's daemon module (`go run`); the composer, and the `@legion/envoy-client` settings reader it calls, are the rig's | the same, composed by the label's build of `daemon-pane.go` | label |
 | Daemon stand-in (`daemon-standin.ts`) | the rig's directory, answering by the label's daemon facts | the same | shared program: it stands in for the label's daemon from that daemon's own facts |
 | Dispatch server (`dispatch-e2e`) | the rig's checkout, built once per batch and given to the rig's `run-server.sh` as `DISPATCH_E2E_SERVER_BIN` for every label | `go build ./cmd/dispatch` in the label's checkout's `packages/envoy`, kept at `$SKILL_SCENARIOS_WORK/builds/<checkout>/dispatch-e2e`; each run's own Dispatch is started from its label's build by the rig's `run-server.sh` | label: what an agent reads of it differs across versions (above); `run-server.sh`, the harness that starts a build, is the rig's, and hands a build of either tree the same environment |
 | gh and bun stand-ins (`gh-standin.ts`, bundled into `<run>/lib/gh.js`, and `$R/bin/bun`) | the rig's directory, and the bun the rig runs on | the same | shared: GitHub is one service for every version |
+| GitHub API stand-in (`github-standin.ts`, its routes in `github-routes.ts`), the GitHub each run's Dispatch server reads as `DISPATCH_GITHUB_API_BASE` | none: the server's GitHub was port 1, where nothing listens, so every read failed and a reviewer was told a pass stands "not known", Dispatch "cannot read the repository" | the rig's directory, one process per run, which `start_dispatch` starts before the run's Dispatch and `stop_run` stops; it answers the routes the world's flows were measured to read (`GITHUB_ROUTES`) from the run's own remote and refuses any other, logging each request to `<run>/logs/github.log` | shared program, per run: GitHub is one service for every version, as for the gh stand-in, and each run's GitHub is that run's world |
+| Head watcher (`head-watcher.ts`), the push event each run's Dispatch server hears | none: the server learned no head from a push, since it runs no NATS intake and its read-through asks GitHub only for the commits of results that stand at no head (`results_comparison.go`, `learn` → `readThroughHead`), so after the implementer's push `dispatch results` compared with the approved head and said a pass stands; 3 of 20 recorded text-fixes implementers (4 calls, all base) read exactly that | the rig's directory, one process per worker run, which `start_heads` starts outside the agent's namespace once the issue is seeded and `stop_run` stops; on each push to `legion/<key>` that `<run>/pushes.log` records it stores the pushed head as Dispatch's intake stores it (the write of `seed.ts pull-request`), and logs one line per push to `<run>/logs/heads.log`, `{at, ref, pushed, ok, error?}` after an opening `{at, opened}`, which health's `head` rule holds every push to; the push itself cannot, since the remote's hook runs inside the agent's namespace, which shows neither the rig nor the run's database URL | shared program, per run: the instrument's stand-in for production's `pull_request` intake, which the world's Dispatch does not run |
 | Seed, capture and the boot and world readers (`seed.ts`, `record-publishes.ts`, `score.ts published`, `boot-refusal.ts`, which `boot_agent` runs in every boot, and `run-names.ts`, whose guard `launch` runs before every agent) | the rig's directory, and its checkout's `packages/dispatch` e2e client | the same | shared: the instrument, one reading for every label |
 | NATS | a container pinned by digest, or `SKILL_SCENARIOS_NATS_URL` | the same | shared: production runs one NATS for every version |
 | Postgres | a container pinned by digest, or `SKILL_SCENARIOS_POSTGRES_URL` | the same | shared: production's one database server |
@@ -662,6 +694,38 @@ starts, reads with that build every fact a stand-in of any scenario boots on (`r
 naming it. A boot reads each fact out of a file, and the stand-in and the worker pane run the
 label's build for anything else they read.
 
+How the label's daemon takes a completion is one of those facts, and it is read the same way,
+never by the label's name: `daemon-completion.go` reads the checkout's
+`internal/workflow/engine.go` for how its engine answers a role that does not run the issue's
+phase (`recorded`: `handoff` asks `leftItsPhase`, which records such a completion when the role's
+row holds none, this checkout's; `refused`: `if RoleFor(issue.Phase) != fact.Role { return
+refused("HANDOFF_NOT_CURRENT_PHASE", …) }`, an older daemon's, main `ff2a10ef`'s among them) and
+`internal/api/handoff.go` for the phase its completion route holds a record to (`left`, the phase
+the completion is of, `phase.Of`, this checkout's; `issue`, the phase the issue stands in, the
+older daemon's). A source in neither shape, or in both, fails the read naming the file and what
+it looked for, and a source that is not there fails it naming the file without running the reader.
+The base label was main `ff2a10ef`, and is main at the commit the head's newest
+forward merge brought in, which moves with every later forward merge, so a table keyed by the
+label's name modelled a daemon the base checkout no longer had. The stand-in answers each
+completion by the shapes it read at boot; `rig.sh health` and `rig.sh score` read the run's own
+label's through the same facts cache (each is given the work directory), out of the checkout the
+run's `built-from` names, and only for an answer the two shapes do not give alike
+(`completion-answers.ts`'s `ANSWERS`' `byShape`). A process reads each source once: the cache
+keeps every reading that succeeded, and the process keeps each refusal, so a run whose checkout
+cannot be read costs no more than the first run that asked.
+
+The rig's tests hold both shapes of each file to sources they write themselves, so they need no
+older checkout on the host. One row also reads an older daemon's own source where one is given:
+`SKILL_SCENARIOS_OLDER_CHECKOUT` names a whole checkout of main `ff2a10ef` (2026-11-07), for
+instance `git worktree add <dir> ff2a10ef`, and `daemon-standin.test.ts`'s "an older daemon's
+late completion is refused in that daemon's own sentence" reads its `engine.go` and `handoff.go`
+as the older shapes and boots the daemon stand-in on it. That boot needs go and runs `go run
+-overlay` of `daemon-pane.go` in the checkout's `packages/daemon`, with its `packages/envoy` beside
+it (its `go.mod` replaces that module), so the older module's dependencies must be in the Go module
+cache or fetchable. With the variable unset the row skips and says so. It is a test input only:
+no batch reads it, and it is not the base label's checkout, which `SKILL_SCENARIOS_BASE_CHECKOUT`
+names for the rows that read the base label's own contract.
+
 ### What the gh world keeps, and where it stops
 
 The gh stand-in answers GitHub from the world's seed and the effect of every call the run made,
@@ -676,6 +740,27 @@ Every world's base protection requires the checks the head reports (`test`, `lin
 are reported on the commit read (its `head_sha`, GitHub Actions as their App, their times counted
 from when that commit reached the run's remote). A `contents` read answers the file or directory
 at the ref it names, or on the default branch where it names none, raw or as GitHub's JSON.
+A call naming an owner outside the world's project is refused as the Legion gh wrapper of the
+run's label refuses it, for every role: exit 2 and the line the wrapper prints for the form that
+names the owner, never a 404. The world reads the call by the wrapper's own selector table
+(`legion gh`, `packages/daemon/cmd/legion`: `ghSlotKinds`, `ghOptionKinds`, `ghLeafQuirks` and
+`ghKindRank` in `gh_help.go`, read with the wrapper's own patterns of a value), read out of the
+label's checkout by `gh-selectors.go` at `services_up` and kept in the facts cache, joined with
+the gh help that checkout saves for the wrapper's tests (`testdata/gh-help`), and written into
+each worker run by `worker_boot`, since the agent's namespace hides the checkout
+(`gh-selectors.ts`). A form naming one repository of that owner and no other (`gh repo view
+actions/checkout`, `gh release view v7.0.1 -R actions/checkout`, `gh api
+repos/actions/checkout/…`, a pull request's URL) gets the leak guard's line, `legion gh: LEAK
+CHECK SETUP ERROR: the gh call: the visibility of <owner>/<repo> could not be read: gh api
+repos/<owner>/<repo> exited 2: legion gh: "<owner>" is not an owner of this project:
+<LEGION_GH_OWNERS_DIR> holds no gh directory for it`; a form naming the owner alone (`gh search
+repos checkout --owner actions`, `gh repo list actions`, `gh api orgs/actions/…`) gets the last
+part of it alone, `legion gh: "<owner>" is not an owner of this project: <LEGION_GH_OWNERS_DIR>
+holds no gh directory for it`, since the guard has no repository to read; and a call naming the
+world's owner beside it, its own repository read from the pane's `GH_REPO` where gh reads it,
+gets the wrapper's `the command names more than one owner, …`. A form the label's wrapper holds
+that this reading does not model fails the batch at `services_up`, naming it, and so does the
+pin in `gh-standin.test.ts`, which runs every form the table holds through the world.
 
 Each role commits as its App's bot, `<slug>[bot]` and
 `<id>+<slug>[bot]@users.noreply.github.com`, as production gives it (`packages/daemon/internal/appauth`'s
@@ -698,3 +783,14 @@ Stated limits, each known and kept so:
   GitHub's documented form. No recorded run made that call, since before the world gave a
   thread's comment its `databaseId` no agent had an id to name, so its pin follows GitHub's
   documentation rather than a recorded call.
+- A GET of a repository the world's workflow names (an action's tag, read to check the commit its
+  `uses:` line pins) reaches the live GitHub, as it does in production, so its answer is GitHub's
+  and not the world's. A run in which that read fails for a network reason is not unhealthy for
+  it, since a production reviewer can meet the same failure.
+- A behaviour of the Legion gh wrapper that its selector table does not describe is not modelled:
+  a gh alias or an extension, a set `GH_TOKEN`, `GITHUB_TOKEN` or `GH_HOST`, an option or an
+  argument the wrapper cannot place, the working directory's git remotes (a world's workspace,
+  a clone of the run's own bare remote, names none), and an option gh's help gives a command
+  that the label's saved help does not show (`gh variable list -R`: no saved help shows that
+  group's inherited `-R`). The world then answers such a call otherwise than production, health
+  calls the run unhealthy, and the run is replaced.

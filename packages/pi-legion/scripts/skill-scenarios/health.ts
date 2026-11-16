@@ -16,19 +16,23 @@
  *      the first role, <run>/sessions/<role>/*.jsonl for each later one, a subagent's beside them
  *      none of it). A run with no record is unhealthy (`unfinished`);
  *   2. completions: every completion line names a role the scenario boots, and no `handoff/complete`
- *      was refused 4xx with an answer its world's entry does not allow for the run's label and that
- *      role. The scorer's refused-completion rule reads this through the same function
+ *      was refused 4xx with an answer its world does not allow that role, by the answers a daemon
+ *      of either shape gives it there or else by those of how the run's label's daemon takes a
+ *      completion (completion-answers.ts's `ANSWERS`), read out of the checkout the run's
+ *      built-from names (daemon-pane.ts's `labelDaemon`) only for an answer that turns on it. A
+ *      run with such an answer whose daemon cannot be read is unhealthy (`withDaemon`). The
+ *      scorer's refused-completion rule reads this through the same function
  *      (`refusedCompletion`, which score.ts's `unscored` calls);
  *   3. taken: a scenario whose world must take a role's completion (`ANSWERS`' `takes`) took it at
- *      least once, with an answer the entry allows. reviewer-text-findings requires one of the
- *      reviewer's; threads-closed requires none;
+ *      least once, with an answer its world allows, read as rule 2 reads it.
+ *      reviewer-text-findings requires one of the reviewer's; threads-closed requires none;
  *   4. routes: no request the daemon stand-in answered 404 is of a route the run's label's daemon
  *      registers (`unservedRoute`): the routes read out of the source of the checkout the run's
  *      built-from names (daemon-pane.ts's `labelRoutes`), which the stand-in itself answers by
  *      (daemon-standin.ts's `ROUTES`). A 404 of a route that daemon does not register is that
- *      daemon's own answer, as the base label's to this checkout's `claims/turn-outcome` is. A
- *      run with a 404 whose daemon's routes cannot be read is unhealthy, since which it was is
- *      unknown;
+ *      daemon's own answer, as an older daemon's (main ff2a10ef's) to this checkout's
+ *      `claims/turn-outcome` is. A run with a 404 whose daemon's routes cannot be read is
+ *      unhealthy, since which it was is unknown;
  *   5. failed claim: no turn outcome the daemon stand-in answered failed the claim (its line's
  *      `failed`, `failedClaim`): the daemon fails a claim whose provider refused turns up to its
  *      launch failure limit, stops its process and takes its secret, so what the run did after
@@ -38,7 +42,12 @@
  *      (GUARD_REFUSAL). No world of this rig plants a secret, so a refusal is the guard refusing
  *      what a production pod would let through, or a guard that could not start;
  *   7. gh: no `gh` call the gh stand-in refused (calls.jsonl, exit not 0) with a refusal the
- *      scenario does not declare for the calling role (GH_DECLARED, `ghRefusal`);
+ *      scenario does not declare for the calling role (GH_DECLARED, `ghRefusal`). The Legion gh
+ *      wrapper's refusal of a call naming an owner outside the project, exit 2, is declared for
+ *      every role (GH_DECLARED_EVERY_ROLE), the owners a call names read by the selector table of
+ *      the wrapper of the run's label, which the world refused it by (<run>/gh-selectors.json,
+ *      gh-selectors.ts's `runSelectors`). A worker run with a refused call whose selectors cannot
+ *      be read is unhealthy, since which refusal it was is unknown;
  *   8. another run: no tool call of the run names a path under another run's directory
  *      (`otherRun`): a sibling under the same runs directory, an archived run, or a run of another
  *      batch, wherever it sits;
@@ -75,7 +84,15 @@
  *      serves only for github.com and the loopback; and a gh named by a path, or run as
  *      `legion gh`, that is not the run's own stand-in (<run>/bin/gh), whatever it names. A
  *      wrapper (sudo, env, timeout, nice, nohup, xargs, command, exec, time, `sh -c`) is read off,
- *      and the command it runs read as if it stood alone;
+ *      and the command it runs read as if it stood alone. One reach off the world is allowed, as
+ *      production allows it (`githubRead`): a GET or a HEAD with no body (a `curl` or `wget`
+ *      sending none, a `read` or `fetch` of the URL), or a `git ls-remote`, which reads refs
+ *      alone (`refsRead`), of a public repository the world's own workflow names in a `uses:`
+ *      line, read from the run's remote at world.json's seeded head (`workflowRepositories`), on
+ *      api.github.com,
+ *      github.com, raw.githubusercontent.com or codeload.github.com (GITHUB_READ_HOSTS); any
+ *      other method, a body, a fetch, a clone, a push and any other repository or host stay off
+ *      the world;
  *  14. claim boot: no agent's claim boot was refused but a first attempt's at boot, before its
  *      first turn, which rig.sh relaunched once and keeps under <run>/boot-1/<role>/ (`claimBoot`):
  *      a world answer production's daemon meets with a relaunch. A run whose relaunch registered
@@ -96,16 +113,45 @@
  *      `dispatchUndeclared`). A request is the agent's whose daemon stand-in opened last before the
  *      request began (`agentBoots`); a run with no such log is unhealthy. It is read right after
  *      rule 7;
- *  17. names: no sentence of an agent's own text or thinking, in any transcript of the run, says a
- *      scenario, case or label word (`namesSaid`): a word of run-names.ts's vocabulary, derived
- *      from its SCENARIOS and the labels of LABEL_DAEMONS and the run's own, as run-names.ts's
- *      `proseNames` reads a sentence — a distinctive word (`text-only`, `threads-closed`), a run's
- *      name in rig.sh's old shape, or a case word beside a label word (`defect head`), and never a
- *      plain word alone (`head SHA`, `base branch`, `not a defect`). The world names none of them
- *      (rig.sh's launch refuses one that does), so a word an agent says came from no name it was
- *      given, and the run is read no further until it is traced: on 2026-11-16, 16 of the 36 runs
- *      of the batch at c273084d reasoned from the run's name, which named the scenario, the case
- *      and the label.
+ *  17. names: a scenario, case or label word an agent of the run says, in its own text or
+ *      thinking, makes the run unhealthy only where an input held it before any agent of the run
+ *      wrote it (`namesSaid`, the leak test the tester's reader uses): the run's prompt or system
+ *      prompt (<run>/prompt.txt, <run>/system-args), or an entry of a transcript that is not an
+ *      agent's own — a user message, a tool result (so every file an agent read), a message it
+ *      was sent, an entry Oh My Pi put in its context. The word is run-names.ts's vocabulary,
+ *      derived from its SCENARIOS, completion-answers.ts's LABELS and the run's own label, as its
+ *      `proseNames` reads a sentence: a distinctive word (`text-only`, `threads-closed`), a run's
+ *      name in rig.sh's old shape, or a case word beside a label word (`defect head`), never a
+ *      plain word alone (`head SHA`, `base branch`, `not a defect`). "Before" is the agent's first
+ *      writing of the word anywhere, its tool calls' arguments included: earlier in the same
+ *      transcript, or earlier by the entries' times across two (a message one agent sent another
+ *      holds what the sender wrote first). A word the run's agents wrote before any input held it
+ *      is their own, and is reported with no verdict (`ownNames`): the preflight at cc09c638 found
+ *      "text-only" in three head runs that no skill file, user message or tool result held first.
+ *      On 2026-11-16, 16 of the 36 runs of the batch at c273084d reasoned from the run's name,
+ *      which every path the run gave its agents carried;
+ *  18. github: the run's own GitHub stand-in (github-standin.ts, which rig.sh's start_dispatch
+ *      gives the run's Dispatch as its GitHub) answered as GitHub does (`githubRefusal`): its
+ *      log, <run>/logs/github.log, opens with the stand-in's one `listening` line and holds no
+ *      second one, no `refused` line, no request outside github-routes.ts's GITHUB_ROUTES, no
+ *      success but the status GitHub answers its route with, no answer of 400 or more the
+ *      scenario does not declare (GITHUB_DECLARED), and no line that is not the stand-in's own.
+ *      A route it refused changed what Dispatch told an agent whether or not an agent asked for
+ *      it. A worker world (run-names.ts's SCENARIOS, `world: "worker"`), whose seeds make its
+ *      Dispatch ask GitHub, must also have kept that record and a request in it: a log missing,
+ *      empty, not opening with the `listening` line, or holding that line alone is a run whose
+ *      record was not kept, never one with no refusals. It is read right after rule 16;
+ *  19. head: the head the run's Dispatch compares results with is the pull request's, as the
+ *      push's own event moves it in production (`headUnmoved`): the run's head watcher
+ *      (head-watcher.ts, which rig.sh's start_heads starts) recorded every push of
+ *      <run>/pushes.log to the pull request's branch (a `refs/heads/legion/` line) as stored,
+ *      `"ok":true`, in <run>/logs/heads.log, and the branch of the run's own remote stands at
+ *      world.json's seeded head or at a head the record stored. A worker world's record, and any
+ *      pushing run's, missing, empty or not opening with the watcher's `opened` line; a push with
+ *      no line or a line saying the write failed; and a branch that moved with no line storing
+ *      it are each unhealthy: an agent that read `dispatch results` after it was told a pass
+ *      stands at a head the pull request no longer has (3 of 20 recorded text-fixes runs). It is
+ *      read right after rule 18;
  * Rules 6, 8 to 13 and 17 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each
  * agent's and each subagent's) through score.ts's readers. The run's own directory is the one its
  * record names (run-names.ts's `ran`; for a run recorded before the names left the world, the one
@@ -126,8 +172,8 @@
  * had a path appear in the shared scratch while they ran that none of their calls wrote, each by
  * name with those paths (`wroteOutside`), which is no verdict; then `health: <n> of <m> runs
  * unhealthy`. Exits 0 when every run is healthy, 1 otherwise, and 2, printing no run, for no
- * argument or for a path that is not a run directory of a scenario `ANSWERS` names and of a label
- * `LABEL_DAEMONS` names.
+ * argument or for a path that is not a run directory of a scenario `ANSWERS` names whose label is
+ * read (`labelOf`).
  *
  * `health.ts --boot-refusal <run dir> <role> <since> <sessions dir>` is the question rig.sh's
  * boot_agent asked after an agent's launch in every batch before the names left the world (it
@@ -150,16 +196,27 @@ import {
   DAEMON_LOG,
   daemonLines,
   exited,
-  LABEL_DAEMONS,
+  LABELS,
+  type LabelDaemon,
   labelOf,
   refusedCompletion,
   SKIPS,
   scenarioOf,
   takenCompletions,
 } from "./completion-answers";
-import { labelCheckout, labelRoutes, serves } from "./daemon-pane";
+import { judgedOnDaemon, labelCheckout, labelRoutes, serves } from "./daemon-pane";
 import { isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
-import { proseNames, RUN_ID, runIdentity, SCENARIOS, vocabulary } from "./run-names";
+import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
+import { githubRouteOf } from "./github-routes";
+import {
+  holds,
+  proseNames,
+  RUN_ID,
+  runIdentity,
+  SCENARIOS,
+  vocabulary,
+  workerWorld,
+} from "./run-names";
 import { CALLS, Opened } from "./run-records";
 import {
   ABSOLUTE_PATH,
@@ -172,7 +229,7 @@ import {
   transcriptFiles,
   withoutBodies,
 } from "./score";
-import { transcriptEntries } from "./transcript";
+import { type SessionEntry, transcriptEntries } from "./transcript";
 
 const USAGE = "usage: rig.sh health [--tmp-snapshot <file>] <run dir>...";
 const BOOT_USAGE = "usage: health.ts --boot-refusal <run dir> <role> <since> <sessions dir>";
@@ -194,6 +251,42 @@ interface Access {
   readonly tool: string;
 }
 
+/** An entry of a transcript an agent wrote or was given, or a file of the run it was given
+ * (rule 17): where it is (a transcript's path under the run, or `<run>/prompt.txt`), its kind,
+ * its text, its place in that transcript (-1 for a file of the run, which every agent was given
+ * before it wrote anything) and its time (NaN where the entry has none). */
+interface TracedPart {
+  readonly file: string;
+  readonly kind: string;
+  readonly text: string;
+  readonly index: number;
+  readonly at: number;
+}
+
+/** What an input entry of a transcript is, as rule 17's sentence names it. */
+function inputKind(entry: SessionEntry): string {
+  const role = entry.message?.role;
+  if (role === "toolResult") return `the result of ${entry.message?.toolName ?? "a tool call"}`;
+  if (role !== undefined) return `a ${role} message`;
+  if (entry.type === "custom_message") return `the ${entry.customType ?? "custom"} message`;
+  if (entry.customType !== undefined) return `the ${entry.customType} entry`;
+  return `its ${entry.type ?? "untyped"} entry`;
+}
+
+/** All an input entry of a transcript can put in the agent's context: a message's parts, a
+ * delivered message's content, a custom entry's data. */
+function inputText(entry: SessionEntry): string {
+  const parts = (entry.message?.content ?? []).map((part) => part.text ?? "");
+  const content =
+    entry.content === undefined
+      ? ""
+      : typeof entry.content === "string"
+        ? entry.content
+        : JSON.stringify(entry.content);
+  const data = entry.data === undefined ? "" : JSON.stringify(entry.data);
+  return [...parts, content, data].filter((one) => one !== "").join("\n");
+}
+
 /** One run as the rules read it. */
 interface Run {
   readonly dir: string;
@@ -209,9 +302,15 @@ interface Run {
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
   /** Every tool result's text of every transcript of the run, with the transcript it is in. */
   readonly results: readonly { file: string; text: string }[];
-  /** Every text and thinking part an agent of the run wrote, with the transcript it is in and
-   * its kind (`text` or `thinking`). */
-  readonly said: readonly { file: string; kind: string; text: string }[];
+  /** Every text and thinking part an agent of the run wrote, with the transcript it is in, its
+   * kind (`text` or `thinking`), the entry's place in that transcript and its time. */
+  readonly said: readonly TracedPart[];
+  /** Every assistant entry of the run, its text, thinking and tool calls' arguments together:
+   * all an agent wrote, and when (rule 17). */
+  readonly wrote: readonly TracedPart[];
+  /** Every other entry of every transcript, each an input of the agent whose transcript it is in:
+   * a user message, a tool result, a message delivered, an entry Oh My Pi kept (rule 17). */
+  readonly heard: readonly TracedPart[];
   /** What the run wrote outside its own directory, HOME and TMPDIR, and what appeared in the
    * shared scratch while it ran (`writesOf`). */
   readonly writes: readonly Access[];
@@ -271,25 +370,35 @@ export function loadRun(dir: string, scenario: string, label: string): Run {
   const ran = { dir, label, namespaced: existsSync(path.join(dir, NAMESPACE)) };
   const calls: { file: string; tool: string; args: ToolArgs; at: number }[] = [];
   const results: { file: string; text: string }[] = [];
-  const said: { file: string; kind: string; text: string }[] = [];
+  const said: TracedPart[] = [];
+  const wrote: TracedPart[] = [];
+  const heard: TracedPart[] = [];
   for (const full of transcriptFiles(dir)) {
     const file = path.relative(dir, full);
-    for (const entry of transcriptEntries(full)) {
+    for (const [index, entry] of transcriptEntries(full).entries()) {
       const message = entry.message;
-      if (message?.role === "assistant")
+      const at = Date.parse(entry.timestamp ?? "");
+      if (message?.role === "assistant") {
+        const own: string[] = [];
         for (const part of message.content ?? []) {
-          if (part.type === "toolCall")
+          if (part.type === "toolCall") {
             calls.push({
               file,
               tool: part.name ?? "tool",
               args: ToolArgs.safeParse(part.arguments).data ?? {},
-              at: Date.parse(entry.timestamp ?? ""),
+              at,
             });
+            own.push(JSON.stringify(part.arguments ?? {}));
+          }
           // An agent's own words: its text, and its thinking (`{type: "thinking", thinking}`).
           const words = part.type === "thinking" ? part.thinking : part.text;
-          if ((part.type === "text" || part.type === "thinking") && typeof words === "string")
-            said.push({ file, kind: part.type, text: words });
+          if ((part.type === "text" || part.type === "thinking") && typeof words === "string") {
+            said.push({ file, kind: part.type, text: words, index, at });
+            own.push(words);
+          }
         }
+        wrote.push({ file, kind: "assistant", text: own.join("\n"), index, at });
+      } else heard.push({ file, kind: inputKind(entry), text: inputText(entry), index, at });
       if (message?.role === "toolResult")
         results.push({
           file,
@@ -306,6 +415,8 @@ export function loadRun(dir: string, scenario: string, label: string): Run {
     calls,
     results,
     said,
+    wrote,
+    heard,
     writes: writesOf(ran, calls, writable),
     reads: calls.flatMap((call) =>
       readsOf(call.tool, call.args).map((read) => ({ ...call, path: reachedIn(ran, read) }))
@@ -336,7 +447,7 @@ const GUARD_REFUSAL =
 
 /** Rule 4: the first push-guard refusal an agent of the run was shown, in a tool result of any
  * transcript or in its own output. */
-function guardRefusal(run: Run): string | undefined {
+export function guardRefusal(run: Pick<Run, "dir" | "results">): string | undefined {
   const texts = [...run.results, ...outputs(run.dir).map(([file, text]) => ({ file, text }))];
   for (const { file, text } of texts) {
     const found = GUARD_REFUSAL.exec(text);
@@ -372,6 +483,21 @@ const NO_RUN = [JOBS_404, RUN_404, VIEW_ID_REQUIRED, WATCH_ID_REQUIRED];
 /** `repos/<owner>/<repo>/actions/runs/<id>/jobs`, with the leading slash and the query string
  * `gh api` takes. */
 const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
+/** The Legion gh wrapper's refusal of a call naming an owner outside the project, which the
+ * world's gh gives as the wrapper does (gh-selectors.ts's `ownerRefusal`, in the line the wrapper
+ * prints for the form that names it): exit 2 before gh runs, read back from the call by the
+ * owners the wrapper's own selector table reads in it (`ghTargetOf`). It is judged by that status
+ * alone, whichever of the wrapper's lines it was, as the tester's reader judges it, and a call
+ * naming such an owner that exited with any other status is the world's gh answering otherwise
+ * than production (OWNER_NOT_REFUSED), which no declaration takes. */
+const OWNER_REFUSED = 'legion gh: "<owner>" is not an owner of this project (exit 2)';
+const OWNER_NOT_REFUSED =
+  "the refusal of an owner outside the project with another status than the Legion gh wrapper's 2";
+/** The refusals every role of every scenario may meet: OWNER_REFUSED, since a correct agent of
+ * any role may read a repository of another owner (a reviewer reading the tag an action of the
+ * world's workflow is pinned to from that action's own repository, in the rehearsal of
+ * 2026-11-16), and production refuses that read so for every role. */
+const GH_DECLARED_EVERY_ROLE: readonly string[] = [OWNER_REFUSED];
 
 /** The gh refusals each scenario provokes on purpose, or that a correct agent meets in it, by the
  * role that meets them; every other refusal is unhealthy (rule 7). Both labels' worlds are one
@@ -445,9 +571,11 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 function ghRefusal(
   call: RecordedCall,
   routes: readonly Route[],
-  repo: string | undefined
+  repo: string | undefined,
+  outside: boolean
 ): string | undefined {
   const argv = call.argv ?? [];
+  if (outside) return call.exit === 2 ? OWNER_REFUSED : OWNER_NOT_REFUSED;
   if (repo !== undefined && argv[0] === "api" && isPost(argv)) {
     if (argv.some((arg) => submitsReview(arg, repo) !== undefined))
       return call.review === undefined ? SUBMIT_422 : undefined;
@@ -470,9 +598,13 @@ function ghRefusal(
   return UNROUTED;
 }
 
-/** Rule 7: the first `gh` call of calls.jsonl the stand-in refused with a refusal GH_DECLARED does
- * not declare for the scenario and the calling role. */
-function ghUndeclared(run: Run): string | undefined {
+/** Rule 7: the first `gh` call of calls.jsonl the stand-in refused with a refusal neither
+ * GH_DECLARED_EVERY_ROLE nor GH_DECLARED declares for the scenario and the calling role. In a
+ * worker world each such call is read first for an owner outside the project, by the selectors
+ * the world refused an owner by (gh-selectors.ts's `runSelectors`, which worker_boot writes from
+ * the run's label's checkout), read at the first call that needs them. A run holding none was
+ * answered by a world that refused no owner by them, and its calls are judged by their routes. */
+export function ghUndeclared(run: Pick<Run, "dir" | "scenario">): string | undefined {
   const file = path.join(run.dir, CALLS);
   if (!existsSync(file)) return undefined;
   const fixtures = path.join(run.dir, "fixtures.json");
@@ -481,15 +613,32 @@ function ghUndeclared(run: Run): string | undefined {
     : [];
   const read = readWorld(run.dir);
   const repo = "world" in read ? read.world.repo : undefined;
+  let selectors: GhSelectors | undefined | null = null;
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     if (line.trim() === "") continue;
     const call = RecordedCall.parse(JSON.parse(line));
     if (call.as !== "gh" || call.exit === undefined || call.exit === 0) continue;
-    const refusal = ghRefusal(call, routes, repo);
+    const named = `${CALLS}:${index + 1}, \`gh ${(call.argv ?? []).join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
+    if (repo !== undefined && selectors === null) {
+      try {
+        selectors = runSelectors(run.dir);
+      } catch (error) {
+        return `gh refusal unknown: ${named}, and the selectors its world refused an owner outside the project by cannot be read: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    const outside =
+      repo !== undefined &&
+      selectors !== null &&
+      selectors !== undefined &&
+      namesOwnerOutside(ghTargetOf(call.argv ?? [], selectors, {}), repo);
+    const refusal = ghRefusal(call, routes, repo, outside);
     if (refusal === undefined) continue;
-    const declared = GH_DECLARED[run.scenario]?.[call.by ?? ""] ?? [];
+    const declared = [
+      ...GH_DECLARED_EVERY_ROLE,
+      ...(GH_DECLARED[run.scenario]?.[call.by ?? ""] ?? []),
+    ];
     if (declared.includes(refusal)) continue;
-    return `gh refusal: ${CALLS}:${index + 1}, \`gh ${(call.argv ?? []).join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}: ${refusal}, which ${run.scenario} does not declare for that role`;
+    return `gh refusal: ${named}: ${refusal}, which ${run.scenario} does not declare for that role`;
   }
   return undefined;
 }
@@ -547,23 +696,20 @@ const noHandoff = (phase: string) => `GET /api/v1/issues/{key}/handoffs/${phase}
  * segment of any value; every other error answer of the run's Dispatch to an agent is unhealthy
  * (rule 16). The server's line keeps the status of an answer and not the code its body carried,
  * so a declaration names a path whose status says which answer it was. Declared:
- *   - HANDOFF_NOT_FOUND for the newest `plan` handoff, for every role of both scenarios: the worker
- *     skill has each role read every handoff before its phase, `plan` first, and says a phase with
- *     no handoff answers HANDOFF_NOT_FOUND (skills/legion-worker/SKILL.md, "Read first"), and no
- *     world of this rig records a plan;
  *   - HANDOFF_NOT_FOUND for the newest `review` handoff, for the reviewer of
  *     reviewer-text-findings: its world records no review before the reviewer writes its own, and
  *     the reviewer reads that phase first, as the skill has it, and at a completion made before
  *     its own write, which the plugin reads it for.
- * Not declared: HANDOFF_NOT_FOUND for the `implement` and `test` handoffs, which every world
- * records before its first agent (seed.ts's implement-handoff and tester-result), or for
- * threads-closed's `review`, which its world records too (review-handoff): a world that lost one
- * is missing an answer production gives. Nor is any other error answer of any route, a `dispatch
- * handoff-read --version` of a version that is not there among them, which the command answers
- * itself after a list Dispatch answers 200, and so never reaches this log. */
+ * Not declared: HANDOFF_NOT_FOUND for the `plan`, `implement` and `test` handoffs, which every
+ * worker world records before its first agent (seed.ts's plan, implement-handoff and
+ * tester-result), or for threads-closed's `review`, which its world records too (review-handoff):
+ * a world that lost one is missing an answer production gives. The `plan` one was declared for
+ * every role while no world recorded a plan, and an issue past planning holds one in production.
+ * Nor is any other error answer of any route, a `dispatch handoff-read --version` of a version
+ * that is not there among them, which the command answers itself after a list Dispatch answers
+ * 200, and so never reaches this log. */
 const DISPATCH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
-  "reviewer-text-findings": { reviewer: [noHandoff("plan"), noHandoff("review")] },
-  "threads-closed": { implementer: [noHandoff("plan")], reviewer: [noHandoff("plan")] },
+  "reviewer-text-findings": { reviewer: [noHandoff("review")] },
 };
 
 /** Whether `declared`, an entry of DISPATCH_DECLARED, is the answer the server gave `request`. */
@@ -746,6 +892,184 @@ function dispatchUndeclared(run: Run): string | undefined {
     return `dispatch refusal: ${call} of the ${boot.role}, answered ${request.status}, which ${run.scenario} does not declare for that role`;
   }
   return undefined;
+}
+
+/** The run's own GitHub stand-in's log (github-standin.ts), start_process's log of the service
+ * rig.sh's start_dispatch starts as `github`, emptied before it starts. */
+export const GITHUB_LOG = "logs/github.log";
+/** One answer of GitHub's own the stand-in gave a route of its table, which a scenario's world
+ * provokes or a correct agent of it meets: the route's template and the status. */
+export interface GithubDeclared {
+  readonly route: string;
+  readonly status: number;
+  readonly reason: string;
+}
+/** The answers of 400 or more the GitHub stand-in may give in each scenario's world, by scenario:
+ * every other one makes the run unhealthy (rule 18), and a `refused` line, a route the stand-in's
+ * table does not hold, is never declared, since GitHub answers every route. None is declared: no
+ * measured flow of any world met one. A row names the scenario it holds for, as GH_DECLARED's do,
+ * so a 404 one world provokes is no declared 404 in another. */
+export const GITHUB_DECLARED: Readonly<Record<string, readonly GithubDeclared[]>> = {};
+/** A line of the stand-in's log: its `listening` line, or a request it answered. */
+const GithubLine = z.union([
+  z.object({ at: z.string(), listening: z.string() }),
+  z.object({
+    at: z.string(),
+    method: z.string(),
+    path: z.string(),
+    accept: z.string(),
+    status: z.number(),
+    route: z.string().optional(),
+    refused: z.string().optional(),
+  }),
+]);
+/** Why a run with no record of its GitHub is unhealthy, by how the record is absent: a worker
+ * world's missing, any run's empty or not opened, and a worker world's that holds no request. */
+export const GITHUB_NOT_KEPT = {
+  missing: `github: ${GITHUB_LOG} is missing, so the run kept no record of what its Dispatch asked GitHub`,
+  empty: `github: ${GITHUB_LOG} is empty, so the run kept no record of what its Dispatch asked GitHub`,
+  unopened: `github: ${GITHUB_LOG} does not open with the stand-in's listening line, so it is no record of the run's GitHub`,
+  unasked: `github: ${GITHUB_LOG} holds the stand-in's listening line and no request, so the run's Dispatch never asked GitHub what its world's seeds make it ask`,
+};
+
+/** Rule 18: why the run's GitHub stand-in's record makes it unhealthy, or undefined. A worker
+ * world (run-names.ts's `workerWorld`, the rig's scenario table), whose seeds make its Dispatch
+ * ask GitHub (measured: the installation read, the token's mint and a commit read at each result
+ * a seed records), must have kept the record and must hold a request in it (GITHUB_NOT_KEPT). Any
+ * other run that has a record is read the same way but for that last, and one with none started
+ * no stand-in. Then each line after the first: one the stand-in does not write, a second
+ * `listening` line (the stand-in started twice), a refusal, a request that is no route of
+ * GITHUB_ROUTES (`githubRouteOf`, read from the table whatever route the line names), a success
+ * other than the one GitHub answers that route with (its `status`), and an answer of 400 or more
+ * `declared` (GITHUB_DECLARED) does not declare for the run's scenario. */
+export function githubRefusal(
+  run: Pick<Run, "dir" | "scenario">,
+  declared: Readonly<Record<string, readonly GithubDeclared[]>> = GITHUB_DECLARED
+): string | undefined {
+  const file = path.join(run.dir, GITHUB_LOG);
+  const worker = workerWorld(run.scenario);
+  if (!existsSync(file)) return worker ? GITHUB_NOT_KEPT.missing : undefined;
+  const lines = readFileSync(file, "utf8").split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) return GITHUB_NOT_KEPT.empty;
+  const parsed = lines.map((line) => {
+    try {
+      return GithubLine.safeParse(JSON.parse(line));
+    } catch {
+      return undefined;
+    }
+  });
+  const first = parsed[0];
+  if (first?.success !== true || !("listening" in first.data)) return GITHUB_NOT_KEPT.unopened;
+  let requests = 0;
+  for (const [index, read] of parsed.entries()) {
+    if (index === 0) continue;
+    const where = `${GITHUB_LOG}:${index + 1}`;
+    if (read?.success !== true)
+      return `github: ${where} is no line the stand-in writes: ${(lines[index] ?? "").slice(0, 200)}`;
+    const line = read.data;
+    if (!("method" in line))
+      return `github: ${where} is a second listening line, so the stand-in started twice in one run`;
+    requests += 1;
+    const asked = `${line.method} ${line.path} (Accept: ${line.accept})`;
+    if (line.refused !== undefined)
+      return `github refusal: ${where}, ${asked} answered ${line.status}: ${line.refused}, which no declaration of ${run.scenario} can take, since GitHub answers every route`;
+    const route = githubRouteOf(line.method, line.path, line.accept)?.route;
+    if (route === undefined)
+      return `github: ${where}, ${asked} is no route of GITHUB_ROUTES (github-routes.ts), whatever route the line names`;
+    if (line.status < 400) {
+      if (line.status === route.status) continue;
+      return `github: ${where}, ${asked} answered ${line.status} on ${route.route}, where GitHub answers ${route.status}`;
+    }
+    const held = declared[run.scenario] ?? [];
+    if (held.some((answer) => answer.route === route.route && answer.status === line.status))
+      continue;
+    return `github refusal: ${where}, ${asked} answered ${line.status} on ${route.route}, which ${run.scenario} does not declare (health.ts GITHUB_DECLARED)`;
+  }
+  return worker && requests === 0 ? GITHUB_NOT_KEPT.unasked : undefined;
+}
+
+/** The run's head watcher's record (head-watcher.ts), under the run directory. */
+const HEADS_LOG = "logs/heads.log";
+/** The record's first line, which the watcher writes when it starts. */
+const HeadsOpened = z.object({ at: z.string(), opened: z.literal("heads.log") });
+/** One line of that record after its first: a push to the pull request's branch, and whether its
+ * head was stored. */
+const HeadLine = z.looseObject({
+  pushed: z.string(),
+  ok: z.boolean(),
+  error: z.string().optional(),
+});
+/** Why a run with no record of its heads is unhealthy, by how the record is absent: a worker
+ * world's, or a run's that pushed, missing; and any run's empty or not opened. */
+export const HEADS_NOT_KEPT = {
+  missing: `head: ${HEADS_LOG} is missing, so the run kept no record of the heads its Dispatch was given`,
+  empty: `head: ${HEADS_LOG} is empty, so the run kept no record of the heads its Dispatch was given`,
+  unopened: `head: ${HEADS_LOG} does not open with the head watcher's opened line, so it is no record of the heads its Dispatch was given`,
+};
+
+/** Rule 19: why the head the run's Dispatch compares results with was not the pull request's, or
+ * undefined. A worker world (`workerWorld`), whose head watcher rig.sh starts for the length of
+ * the run, must have kept the record whether or not anything was pushed, as must any run that
+ * pushed (HEADS_NOT_KEPT); a line after the first that the watcher does not write is unhealthy.
+ * Then every push of pushes.log to `refs/heads/legion/…` must be on a line of the record that says
+ * it was stored, and the issue branch of the run's own remote (<run>/remote.git, world.json's
+ * `branch`) must stand at world.json's seeded head or at a head the record stored: a branch that
+ * moved with no line storing it is a push the record missed, whatever pushes.log says. */
+export function headUnmoved(run: Pick<Run, "dir" | "scenario">): string | undefined {
+  const pushes = path.join(run.dir, "pushes.log");
+  const pushed = existsSync(pushes)
+    ? readFileSync(pushes, "utf8")
+        .split("\n")
+        .map((line, index) => ({ index, fields: line.split(" ") }))
+        .filter(({ fields }) => /^refs\/heads\/legion\//.test(fields[1] ?? ""))
+    : [];
+  const file = path.join(run.dir, HEADS_LOG);
+  if (!existsSync(file))
+    return workerWorld(run.scenario) || pushed.length > 0 ? HEADS_NOT_KEPT.missing : undefined;
+  const raw = readFileSync(file, "utf8").split("\n");
+  if (raw[raw.length - 1] === "") raw.pop();
+  if (raw.length === 0) return HEADS_NOT_KEPT.empty;
+  const parse = (text: string): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+  if (!HeadsOpened.safeParse(parse(raw[0] ?? "")).success) return HEADS_NOT_KEPT.unopened;
+  const lines: z.infer<typeof HeadLine>[] = [];
+  for (const [index, text] of raw.entries()) {
+    if (index === 0) continue;
+    const read = HeadLine.safeParse(parse(text));
+    if (!read.success)
+      return `head: ${HEADS_LOG}:${index + 1} is no line the head watcher writes: ${text.slice(0, 200)}`;
+    lines.push(read.data);
+  }
+  const stored = (commit: string) => lines.some((line) => line.pushed === commit && line.ok);
+  for (const { index, fields } of pushed) {
+    const commit = fields[3] ?? "";
+    if (stored(commit)) continue;
+    const failed = lines.find((line) => line.pushed === commit && !line.ok);
+    return failed === undefined
+      ? `head: pushes.log:${index + 1} pushed ${commit} to ${fields[1]}, and ${HEADS_LOG} holds no line storing it, so the run's Dispatch went on comparing results with the head before it`
+      : `head: pushes.log:${index + 1} pushed ${commit} to ${fields[1]}, and the head watcher could not store it: ${(failed.error ?? "").slice(0, 200)}`;
+  }
+  const read = existsSync(path.join(run.dir, "world.json")) ? readWorld(run.dir) : undefined;
+  if (read === undefined || !("world" in read)) return undefined;
+  const { branch, head } = read.world;
+  const tip = Bun.spawnSync([
+    "git",
+    "-C",
+    path.join(run.dir, "remote.git"),
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/heads/${branch}^{commit}`,
+  ]);
+  const at = tip.exitCode === 0 ? tip.stdout.toString().trim() : "";
+  if (at === "" || at === head || stored(at)) return undefined;
+  return `head: remote.git's refs/heads/${branch} stands at ${at}, not world.json's seeded head ${head}, and ${HEADS_LOG} holds no line storing it, so a push the record missed left the run's Dispatch comparing results with the head before it`;
 }
 
 /** A string argument of a tool call, or undefined. */
@@ -1709,13 +2033,63 @@ const FIELD_FLAG = new RegExp(
  * program is (` in a here-document python3 runs`). `served` names the hosts that serve it in place
  * of the run's world (a gh host value, GH_SERVED); `gh`, a gh named by a path or run through
  * `legion gh`, which reaches off the world unless it is the run's own stand-in, whatever host it
- * names (`ghHosts`). */
+ * names (`ghHosts`); `get`, a reach that reads and sends nothing (a GET or a HEAD with no body,
+ * `httpRead`; a `read` or `fetch` of the URL; git's read of a repository's refs, `refsRead`), the
+ * one kind of reach rule 13 allows off the world (`githubRead`). */
 interface Reach {
   readonly host: string;
   readonly named: string;
   readonly via?: string;
   readonly served?: readonly string[];
   readonly gh?: string;
+  readonly get?: boolean;
+}
+
+/** curl's options that send a body: its data and form options and an upload; `-X`/`--request`
+ * is read by its value (`httpRead`). `-I`/`--head` asks for a HEAD, which sends none. */
+const CURL_SENDS = [
+  "-d",
+  "--data",
+  "--data-ascii",
+  "--data-binary",
+  "--data-raw",
+  "--data-urlencode",
+  "--json",
+  "-F",
+  "--form",
+  "--form-string",
+  "-T",
+  "--upload-file",
+];
+/** wget's options that send a body: its post and body options; `--method` is read by its value
+ * (`httpRead`). `--spider` asks for a HEAD, which sends none. */
+const WGET_SENDS = ["--post-data", "--post-file", "--body-data", "--body-file"];
+/** The methods that read and send nothing: a GET, and a HEAD, which reads no more than a GET. */
+const READ_METHODS = ["GET", "HEAD"];
+
+/** Whether a command is a curl or a wget that sends a GET or a HEAD with no body: none of the
+ * options that send one (CURL_SENDS, WGET_SENDS) given, and every method it names (curl's
+ * `-X`/`--request`, wget's `--method`) one of READ_METHODS. */
+function httpRead({ name, words }: Pick<Invocation, "name" | "words">): boolean {
+  if (name !== "curl" && name !== "wget") return false;
+  const args = argumentsOf(words, name === "curl" ? CURL_VALUED : WGET_VALUED);
+  const [sends, method] =
+    name === "curl" ? [CURL_SENDS, ["-X", "--request"]] : [WGET_SENDS, ["--method"]];
+  return (
+    !given(args, ...sends) &&
+    valuesOf(args, ...method).every((value) => READ_METHODS.includes(value?.toUpperCase() ?? ""))
+  );
+}
+
+/** Whether a command is `git ls-remote`, which reads a repository's refs and nothing else.
+ * Measured on 2026-11-16 with git 2.47.3 against https://github.com/actions/checkout (GIT_TRACE_CURL):
+ * `git ls-remote <url> refs/tags/v7.0.1` sends `GET …/info/refs?service=git-upload-pack` and, under
+ * the protocol v2 git speaks by default, one `POST …/git-upload-pack` carrying the `ls-refs`
+ * command (under `-c protocol.version=0`, the GET alone); a `git fetch --depth 1` of the same ref
+ * sends that GET and two POSTs to git-upload-pack, the second asking for the objects. So
+ * ls-remote is a read of refs as a GET of them is, and a fetch or a clone is not. */
+function refsRead({ name, words }: Pick<Invocation, "name" | "words">): boolean {
+  return name === "git" && words[firstOperand(words, GIT_GLOBAL)] === "ls-remote";
 }
 
 /** The interpreters whose program health reads: the shells and the languages an agent writes a
@@ -1877,10 +2251,11 @@ function commandHosts(
     const [valued, takesHost] =
       name === "curl" ? [CURL_VALUED, CURL_HOSTS] : [WGET_VALUED, WGET_HOSTS];
     const args = argumentsOf(words, valued);
+    const get = httpRead({ name, words });
     for (const one of [...args.operands, ...valuesOf(args, ...takesHost)]) {
       const bare = BARE_HOST.exec(one ?? "");
       if (one !== undefined && bare !== null && !one.includes("://"))
-        hosts.push({ host: hostName(bare[1] ?? ""), named: one });
+        hosts.push({ host: hostName(bare[1] ?? ""), named: one, ...(get ? { get } : {}) });
     }
   }
   hosts.push(...(REMOTE_READERS[name]?.(words) ?? []));
@@ -1917,6 +2292,10 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
   // its own length, since the gh rule decides that host (github.com is the world's there).
   const urls = code.split("");
   const commands: Reach[] = [];
+  // The reaches of each command that reads and sends nothing (a GET or a HEAD with no body,
+  // `httpRead`, and git's read of refs, `refsRead`): every URL of its own text, read there as
+  // such a reach and left out of the reading of the rest.
+  const gets: Reach[] = [];
   const shell = new Map(env);
   for (const one of commandsOf(spoken)) {
     const set = assignmentsOf(one);
@@ -1928,6 +2307,10 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
         if (found !== null) shell.set(found[1] ?? "", found[2] ?? "");
     const runs = new Map([...shell, ...run.env]);
     commands.push(...commandHosts(run, runs));
+    if (httpRead(run) || refsRead(run)) {
+      for (const reach of urlHosts(code.slice(one.at, one.end))) gets.push({ ...reach, get: true });
+      urls.fill("_", one.at, one.end);
+    }
     const gh =
       run.name === "gh"
         ? run.words
@@ -1960,7 +2343,7 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
       for (const one of programHosts(body.text, SHELL.test(runner)))
         hosts.push({ ...one, via: one.via ?? ` in a here-document ${runner} runs` });
   }
-  return [...hosts, ...commands];
+  return [...hosts, ...gets, ...commands];
 }
 
 /** The files a `bash` command writes a here-document's body into, with the body: `cat > f`,
@@ -2356,12 +2739,21 @@ function reachesOf(call: Call, written: readonly Written[]): Reach[] {
   );
   if (call.tool === "bash") return [...bashHosts(stringArg(call.args, "command") ?? ""), ...ran];
   if (call.tool === "eval") return [...evalHosts(call, written), ...ran];
-  if (PATH_READERS.has(call.tool))
+  if (PATH_READERS.has(call.tool)) {
+    // A read of a URL is a GET with no body, unless the call names another method than a GET or a
+    // HEAD (READ_METHODS), or a body.
+    const method = stringArg(call.args, "method");
+    const get =
+      (method === undefined || READ_METHODS.includes(method.toUpperCase())) &&
+      !("body" in call.args);
     return (stringArg(call.args, "url") ?? stringArg(call.args, "path") ?? "")
       .split(";")
       .flatMap((one) =>
-        /^https?:\/\//i.test(one) ? urlHosts(one).map((hit) => ({ ...hit, named: one })) : []
+        /^https?:\/\//i.test(one)
+          ? urlHosts(one).map((hit) => ({ ...hit, named: one, ...(get ? { get } : {}) }))
+          : []
       );
+  }
   if (TEXT_TOOLS[call.tool] !== undefined) return [];
   return Object.entries(call.args)
     .filter(([key]) => key !== "i")
@@ -2386,24 +2778,91 @@ function record(
   return made;
 }
 
+/** The hosts GitHub serves a public repository's reads on, each with where a URL's path names
+ * the repository: the REST API's `/repos/OWNER/REPO/…`, the site's and its git's
+ * `/OWNER/REPO[.git]/…`, a file's `/OWNER/REPO/<ref>/<path>` and an archive's
+ * `/OWNER/REPO/<kind>/<ref>`. */
+const GITHUB_READ_HOSTS: Readonly<Record<string, RegExp>> = {
+  "api.github.com": /^\/repos\/([^/]+)\/([^/]+)/,
+  "github.com": /^\/([^/]+)\/([^/]+)/,
+  "raw.githubusercontent.com": /^\/([^/]+)\/([^/]+)\//,
+  "codeload.github.com": /^\/([^/]+)\/([^/]+)\//,
+};
+/** The pattern GITHUB_READ_HOSTS holds for `host`, read by its own keys alone, so a host a call
+ * names (`constructor`) is never taken for one. */
+const githubReadPattern = (host: string): RegExp | undefined =>
+  Object.hasOwn(GITHUB_READ_HOSTS, host) ? GITHUB_READ_HOSTS[host] : undefined;
+
+/** Whether `reach` reads and sends nothing (its `get`) of a repository of `repositories` on a host
+ * of GITHUB_READ_HOSTS, over https or http (curl's scheme for an operand that names none). */
+function githubRead(reach: Reach, repositories: ReadonlySet<string>): boolean {
+  const pattern = githubReadPattern(reach.host);
+  if (reach.get !== true || pattern === undefined) return false;
+  let url: URL;
+  try {
+    url = new URL(reach.named.includes("://") ? reach.named : `http://${reach.named}`);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  const found = pattern.exec(url.pathname);
+  if (found === null) return false;
+  const repository = `${found[1]}/${(found[2] ?? "").replace(/\.git$/i, "")}`.toLowerCase();
+  return repositories.has(repository);
+}
+
+/** A workflow step's `uses:` line naming an action of a repository, `OWNER/REPO[/path]@<ref>`;
+ * a local action (`./…`) and a container (`docker://…`) name none. */
+const USES =
+  /^[ \t]*(?:-[ \t]+)?uses:[ \t]*["']?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/[^@\s"']*)?@/gm;
+
+/** The repositories the world's own workflows name in their `uses:` lines (USES), OWNER/REPO in
+ * lower case: every file under .github/workflows/ of the run's remote (<run>/remote.git) at
+ * world.json's seeded head, the commit the run's pull request opened at, so the set is the
+ * fixture's and never one written here. None for a run with no world, and none where that commit
+ * or its workflows cannot be read. */
+export function workflowRepositories(dir: string): Set<string> {
+  const repositories = new Set<string>();
+  const read = existsSync(path.join(dir, "world.json")) ? readWorld(dir) : undefined;
+  if (read === undefined || !("world" in read)) return repositories;
+  const git = (...args: string[]) =>
+    Bun.spawnSync(["git", "-C", path.join(dir, "remote.git"), ...args]);
+  const { head } = read.world;
+  const listed = git("ls-tree", "-r", "--name-only", head, "--", ".github/workflows");
+  if (listed.exitCode !== 0) return repositories;
+  for (const file of listed.stdout.toString().split("\n")) {
+    if (!/\.ya?ml$/.test(file)) continue;
+    const shown = git("show", `${head}:${file}`);
+    if (shown.exitCode !== 0) continue;
+    for (const hit of shown.stdout.toString().matchAll(USES))
+      repositories.add(`${hit[1]}/${hit[2]}`.toLowerCase());
+  }
+  return repositories;
+}
+
 /** The first call of `calls` that reaches a host not in `hosts`, as a reason, read in the order the
  * calls were made (a transcript's own order where two calls share a time): every `web_search` call,
  * which always leaves the world, and the hosts each call reaches (`reachesOf`), given the files the
  * calls before it wrote. A reach some hosts serve in place of the world's (`served`) is held to
  * those, and a gh run by a path (`gh`) to the run's own stand-in, <own>/bin/gh of each of `own`,
  * the run's directories, a relative path read from the run's cwd (<own>/cwd, where launch starts
- * the agent). */
+ * the agent). Any other reach off the world is allowed where it reads and sends nothing (a GET or
+ * a HEAD with no body, a `git ls-remote`) of one of `repositories`, the public repositories the
+ * world's workflow names (`githubRead`). */
 export function offWorldReach(
   calls: readonly Call[],
   hosts: ReadonlySet<string>,
-  own: readonly string[] = []
+  own: readonly string[] = [],
+  repositories: ReadonlySet<string> = new Set()
 ): string | undefined {
   const allowed = [...hosts].join(", ");
   const standIns = own.map((dir) => path.posix.join(dir, "bin", "gh"));
-  const outside = (one: Reach): boolean =>
-    one.gh !== undefined
-      ? !own.some((dir, at) => path.posix.resolve(dir, "cwd", one.gh ?? "") === standIns[at])
-      : !(one.served?.includes(one.host) ?? hosts.has(one.host));
+  const outside = (one: Reach): boolean => {
+    if (one.gh !== undefined)
+      return !own.some((dir, at) => path.posix.resolve(dir, "cwd", one.gh ?? "") === standIns[at]);
+    if (one.served !== undefined) return !one.served.includes(one.host);
+    return !hosts.has(one.host) && !githubRead(one, repositories);
+  };
   const written: Written[] = [];
   const ordered = calls
     .map((call, index) => ({ call, index }))
@@ -2419,7 +2878,11 @@ export function offWorldReach(
           ? `a gh that is not the run's own stand-in (${standIns.join(", ")}), and no world of this rig serves another`
           : off.served !== undefined
             ? `no host the run's gh serves (${off.served.join(", ")})`
-            : `no host of the run's world (${allowed})`
+            : `no host of the run's world (${allowed})${
+                repositories.size > 0 && githubReadPattern(off.host) !== undefined
+                  ? `, and no GET or HEAD with no body or ls-remote of a repository the world's workflow names (${[...repositories].join(", ")})`
+                  : ""
+              }`
       }`;
     written.push(...record(writtenText(call), written, call.shown, call.file));
   }
@@ -2427,11 +2890,11 @@ export function offWorldReach(
 }
 
 /** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`,
- * `offWorldReach`), a gh held to the run's own stand-in in either of its directories. No tool is
- * taken out of a profile for this: a profile without a tool is a world that differs from
- * production. */
+ * `offWorldReach`), a gh held to the run's own stand-in in either of its directories, but a GET
+ * of a repository the world's workflow names (`workflowRepositories`). No tool is taken out of a
+ * profile for this: a profile without a tool is a world that differs from production. */
 function offWorld(run: Run): string | undefined {
-  return offWorldReach(run.calls, worldHosts(run), run.own);
+  return offWorldReach(run.calls, worldHosts(run), run.own, workflowRepositories(run.dir));
 }
 
 /** Commands whose operands are files they write: every operand, or the last, which is the
@@ -2587,6 +3050,22 @@ function otherRunWrite(run: Run, runs: readonly Run[]): string | undefined {
     return `shared scratch from before the run: a ${read.tool} call in ${read.file} at ${when} reads ${read.path}, which no run given wrote before it${run.before === undefined ? "" : ` and ${entry} was in ${shared} when the run started (scratch-before.txt)`}`;
   }
   return undefined;
+}
+
+/** Rules 2 and 3: `judge`'s verdict, given how the run's label's daemon takes a completion,
+ * read out of the checkout the run's built-from names only when an answer turns on it
+ * (daemon-pane.ts's `judgedOnDaemon`); or, where that cannot be read, why, as rule 4 says it of
+ * the routes. Never the label's name: the checkout a label is built from moves. */
+function withDaemon(
+  run: Run,
+  judge: (daemon: () => LabelDaemon) => string | undefined
+): string | undefined {
+  return judgedOnDaemon(
+    run.dir,
+    judge,
+    (why) =>
+      `completion shapes unknown: an answer the stand-in logged turns on how the ${run.label} label's daemon takes a completion, which cannot be read: ${why}`
+  );
 }
 
 /** Rule 4: the first request the daemon stand-in answered 404 whose route the run's label's
@@ -2838,20 +3317,100 @@ function wroteOutside(runs: readonly Run[]): string {
  * end. */
 const SENTENCE = /(?<=[.!?])\s+|\n+/;
 
-/** Rule 17: the first sentence of an agent's own text or thinking, in any transcript of the run,
- * that says a scenario, case or label word (run-names.ts's `proseNames`, over the vocabulary of
- * its SCENARIOS and the labels of LABEL_DAEMONS and the run's own). The verbatim thinking of the
- * batch at c273084d: "The run name points to a text-only case, so I expect the findings to be
- * wording rather than behavioural". */
-export function namesSaid(run: Pick<Run, "said" | "label">): string | undefined {
-  const vocab = vocabulary([...Object.keys(LABEL_DAEMONS), run.label]);
-  for (const { file, kind, text } of run.said)
-    for (const sentence of text.split(SENTENCE)) {
+/** Whether `input` came before `written`: a file of the run (index -1) before everything, an
+ * entry earlier in the same transcript, and, across two transcripts, an entry earlier by time
+ * (an entry with no time is before nothing in another transcript). */
+function before(input: TracedPart, written: TracedPart): boolean {
+  if (input.index < 0) return true;
+  if (input.file === written.file) return input.index < written.index;
+  return Number.isFinite(input.at) && Number.isFinite(written.at) && input.at < written.at;
+}
+
+/** Where each sentence of an agent of a run that names the measurement got its word (rule 17):
+ * `leaked`, the first whose word an input held before any agent of the run wrote it, naming that
+ * input; `own`, every other, whose word the run's agents wrote before any input held it. */
+interface Names {
+  readonly leaked: string | undefined;
+  readonly own: readonly string[];
+}
+const namesRead = new WeakMap<object, Names>();
+
+/** Rule 17's reading of `run`: each sentence of an agent's own text or thinking, in any
+ * transcript of the run, that says a scenario, case or label word (run-names.ts's `proseNames`,
+ * over the vocabulary of its SCENARIOS, completion-answers.ts's LABELS and the run's own label),
+ * traced to where it came from. Its inputs are the run's prompt and system prompt and every
+ * entry of every transcript that is not an agent's own (`heard`); its writings, every assistant
+ * entry of every transcript, tool calls' arguments included (`wrote`). The word leaked where an
+ * input held it before every writing of it (`before`, `holds`): the agent was given it. Otherwise
+ * the run's agents made it, and it is theirs: the preflight at cc09c638 read "Since those are
+ * text-only issues rather than code that changes behavior" in a head run where no input held the
+ * word. */
+export function namesOf(run: Pick<Run, "dir" | "label" | "said" | "wrote" | "heard">): Names {
+  const read = namesRead.get(run);
+  if (read !== undefined) return read;
+  const vocab = vocabulary([...LABELS, run.label]);
+  const given: TracedPart[] = ["prompt.txt", "system-args"].flatMap((file) => {
+    const at = path.join(run.dir, file);
+    return existsSync(at)
+      ? [
+          {
+            file: `<run>/${file}`,
+            kind: "",
+            text: readFileSync(at, "utf8"),
+            index: -1,
+            at: Number.NaN,
+          },
+        ]
+      : [];
+  });
+  const inputs = [...given, ...run.heard];
+  const own: string[] = [];
+  let leaked: string | undefined;
+  for (const part of run.said) {
+    for (const sentence of part.text.split(SENTENCE)) {
       const word = proseNames(sentence, vocab);
-      if (word !== undefined)
-        return `names: a ${kind} part in ${file} says "${word}": "${sentence.trim().slice(0, 240)}"`;
+      if (word === undefined) continue;
+      const quoted = `a ${part.kind} part in ${part.file} says "${word}": "${sentence.trim().slice(0, 240)}"`;
+      const writings = run.wrote.filter((one) => holds(one.text, word));
+      const source = inputs.find(
+        (input) => holds(input.text, word) && writings.every((one) => before(input, one))
+      );
+      if (source === undefined) own.push(quoted);
+      else {
+        const where = source.index < 0 ? source.file : `${source.kind} in ${source.file}`;
+        leaked = `names: ${quoted}, which ${where} held before any agent of the run wrote it`;
+        break;
+      }
     }
-  return undefined;
+    if (leaked !== undefined) break;
+  }
+  const names = { leaked, own };
+  namesRead.set(run, names);
+  return names;
+}
+
+/** Rule 17: the first sentence of an agent of the run that says a word an input gave it
+ * (`namesOf`). */
+export function namesSaid(
+  run: Pick<Run, "dir" | "label" | "said" | "wrote" | "heard">
+): string | undefined {
+  return namesOf(run).leaked;
+}
+
+/** The line of the runs of `runs` whose agents said a word of the measurement that they wrote
+ * before any input held it (`namesOf`'s `own`), which is no verdict: each run's id and the first
+ * such sentence, with a count of the rest. */
+export function ownNames(runs: readonly Run[]): string {
+  const named = runs.flatMap((run) => {
+    const { own } = namesOf(run);
+    const [first] = own;
+    return first === undefined
+      ? []
+      : [
+          `${path.basename(run.dir)} (${first}${own.length > 1 ? ` and ${own.length - 1} more` : ""})`,
+        ];
+  });
+  return `health: names its agents wrote before any input held them (no verdict): ${named.length} of ${runs.length} runs${named.length === 0 ? "" : `: ${named.join("; ")}`}`;
 }
 
 /** Every rule, in the order a run's line names the first it fails. A rule is given the run and
@@ -2869,22 +3428,24 @@ const RULES: readonly {
   { name: "claim boot", judge: claimBoot },
   {
     name: "completions",
-    judge: (run) => {
-      const refused = refusedCompletion(daemonLines(run.dir), run.scenario, run.label);
-      if (refused === undefined) return undefined;
-      if ("unkeyed" in refused)
-        return `unkeyable completion: ${refused.unkeyed} (POST ${refused.line.path} answered ${answerOf(refused.line)}), so whose completion it was is unknown`;
-      return `refused completion: POST ${refused.line.path} of the ${refused.role} answered ${answerOf(refused.line)}, which the ${run.label} label's daemon does not answer it with in this world`;
-    },
+    judge: (run) =>
+      withDaemon(run, (daemon) => {
+        const refused = refusedCompletion(daemonLines(run.dir), run.scenario, daemon);
+        if (refused === undefined) return undefined;
+        if ("unkeyed" in refused)
+          return `unkeyable completion: ${refused.unkeyed} (POST ${refused.line.path} answered ${answerOf(refused.line)}), so whose completion it was is unknown`;
+        return `refused completion: POST ${refused.line.path} of the ${refused.role} answered ${answerOf(refused.line)}, which the ${run.label} label's daemon does not answer it with in this world`;
+      }),
   },
   {
     name: "taken",
-    judge: (run) => {
-      const taken = takenCompletions(daemonLines(run.dir), run.scenario, run.label);
-      return taken !== undefined && taken.count === 0
-        ? `no completion taken: no completion of the ${taken.role} was answered as the ${run.label} label's daemon answers one it takes`
-        : undefined;
-    },
+    judge: (run) =>
+      withDaemon(run, (daemon) => {
+        const taken = takenCompletions(daemonLines(run.dir), run.scenario, daemon);
+        return taken !== undefined && taken.count === 0
+          ? `no completion taken: no completion of the ${taken.role} was answered as the ${run.label} label's daemon answers one it takes`
+          : undefined;
+      }),
   },
   { name: "routes", judge: unservedRoute },
   { name: "failed claim", judge: failedClaim },
@@ -2893,6 +3454,11 @@ const RULES: readonly {
   // Rule 16, read right after its sibling: an agent's Dispatch call refused, as rule 7 reads a
   // refused `gh` call.
   { name: "dispatch", judge: dispatchUndeclared },
+  // Rule 18, read right after rule 16: the run's GitHub, which its Dispatch read for an agent.
+  { name: "github", judge: (run) => githubRefusal(run) },
+  // Rule 19, read right after rule 18: each push's head, which the run's Dispatch compares the
+  // check's results with for every agent that reads them after it.
+  { name: "head", judge: (run) => headUnmoved(run) },
   { name: "another run", judge: otherRunReach },
   { name: "another run's write", judge: otherRunWrite },
   { name: "outside its world", judge: outsideWorld },
@@ -2982,6 +3548,9 @@ if (import.meta.main) {
   // ran, are no verdict on it: named here, run by run and kind by kind, and judged where another
   // run read them (`otherRunWrite`).
   console.log(wroteOutside(runs));
+  // A word of the measurement the run's agents made themselves is no verdict on the run: named
+  // here, run by run, beside rule 17's verdict on a word an input gave them.
+  console.log(ownNames(runs));
   console.log(`health: ${failed} of ${runs.length} runs unhealthy`);
   process.exit(failed === 0 ? 0 : 1);
 }

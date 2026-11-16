@@ -14,6 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { claimBootOpening } from "./boot-refusal";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
@@ -31,13 +32,22 @@ const runs = path.join(work, "runs");
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
-/** This checkout, whose plugin's wording a head run's claim boot sentence is read by. */
+/** This checkout, whose plugin's wording a head run's claim boot sentence is read by, and whose
+ * daemon a run built from it takes a completion as. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
 /** The module, under a checkout, that writes a plugin's claim boot sentence. */
 const CLAIM_CORE = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
 /** A checkout holding main ff2a10ef's claim boot sentence and nothing else, which a base run's
  * built-from names below. */
 const BASE_CLAIM_CHECKOUT = path.join(work, "base-claim-checkout");
+/** A checkout holding an older daemon's engine and completion route alone, as main ff2a10ef
+ * writes them (completion-answers.ts's `refused` and `issue`), which a run of that daemon's
+ * built-from names below: how a run's daemon takes a completion is read out of its checkout
+ * (daemon-pane.ts's `labelDaemon`), never out of its label's name. */
+const OLDER_DAEMON_CHECKOUT = path.join(work, "older-daemon-checkout");
+// A run's daemon is read out of its checkout by `go run` of daemon-completion.go, so a host with
+// no go reads none, and the rows that turn on one skip.
+const withoutGo = skipWithout("go");
 /** The scorer the rows run as rig.sh runs it, a bundle built from score.ts for this suite, so no
  * run of it transpiles score.ts and its imports again (test-programs.ts). Reserved here, above
  * the hook below that runs it, for the same reason as `pushWork`. */
@@ -373,7 +383,7 @@ recordRun("tester-proof-rec-2", {
 // The stand-in accepted a completion that names a version the record does not hold.
 recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // The PR body's check line, read up to its tail and no further (score.ts's TESTER_LINE). lines-1
-// is the base label's line: its tail is the check's own words, as main ff2a10ef's Dispatch prints
+// is an older label's line: its tail is the check's own words, as main ff2a10ef's Dispatch prints
 // it, and its `at` names the run's head, so it passes as rec-1 does. lines-2's `at` names no
 // commit of the run, and its tail, a reading as this checkout's Dispatch prints the line, names
 // the head: a reader of the whole line takes that reading for the line's commit, which only the
@@ -3635,8 +3645,10 @@ reviewRun(
 // refused 400 with no code — its request contract refused the base label's `ready` — beside a
 // round that otherwise passes. Catches: a refused completion scored as the run's own behaviour,
 // which made each base result a world of its own (review 5887659447, finding 1): the run is a rig
-// error naming the path and the status.
+// error naming the path and the status. No daemon of either shape answers a 400, so the run's own
+// is read for it, out of the checkout its built-from names.
 reviewRun("reviewer-text-findings-text-only-head-122", {
+  "built-from": `checkout ${CHECKOUT}\n`,
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
   "daemon.log": calls([{ ...(reviewDaemon[0] ?? {}), status: 400 }]),
@@ -4125,22 +4137,47 @@ reviewRun("reviewer-text-findings-text-only-base-1", {
   "calls.jsonl": calls([submission(approval())]),
 });
 // The reviewer's completion after its round moved the issue, refused 409
-// HANDOFF_NOT_CURRENT_PHASE: the base label's daemon (`ff2a10ef`, no `leftItsPhase`) refuses a
-// late reviewer so, and base-2 is scored; this checkout's daemon takes a late reviewer naming
-// its record and refuses one so only as a repeat after its own taken completion, which a lone
-// refusal is not, so head-126 is a rig error (completion-answers.ts's ANSWERS, which `unscored`
-// and health.ts both read).
-for (const name of [
-  "reviewer-text-findings-text-only-base-2",
-  "reviewer-text-findings-text-only-head-126",
+// HANDOFF_NOT_CURRENT_PHASE: an older daemon (main `ff2a10ef`'s, no `leftItsPhase`) refuses a
+// late reviewer so, and base-2, built from one, is scored; this checkout's daemon takes a late
+// reviewer naming its record and refuses one so only as a repeat after its own taken completion,
+// which a lone refusal is not, so head-126, built from this checkout, is a rig error
+// (completion-answers.ts's ANSWERS, which `unscored` and health.ts both read). Which daemon each
+// ran is read out of the checkout its built-from names, never out of its label's name: base-3 is
+// the base label as it is built now, from main at the head's newest forward merge, whose daemon is
+// this checkout's, and is a rig error with head-126.
+stagings.push(() => {
+  const internal = path.join(OLDER_DAEMON_CHECKOUT, "packages", "daemon", "internal");
+  mkdirSync(path.join(internal, "workflow"), { recursive: true });
+  mkdirSync(path.join(internal, "api"), { recursive: true });
+  writeFileSync(
+    path.join(internal, "workflow", "engine.go"),
+    'package workflow\n\nfunc (e *Engine) handoff(fact intake.HandoffComplete) (intake.Result, error) {\n\tif RoleFor(issue.Phase) != fact.Role {\n\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run %s of %s", fact.Role, issue.Phase, issue.Key)), nil\n\t}\n\treturn intake.Result{}, nil\n}\n'
+  );
+  writeFileSync(
+    path.join(internal, "api", "handoff.go"),
+    "package api\n\nfunc (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {\n\tword, writer, handoffPhase := phase.Handoff(issue.Phase)\n\trecordBacked := handoffPhase && writer == grant.Role\n}\n"
+  );
+});
+for (const [name, checkout] of [
+  ["reviewer-text-findings-text-only-base-2", OLDER_DAEMON_CHECKOUT],
+  ["reviewer-text-findings-text-only-head-126", CHECKOUT],
+  ["reviewer-text-findings-text-only-base-3", CHECKOUT],
 ])
   reviewRun(name, {
+    "built-from": `checkout ${checkout}\n`,
     "case.txt": "text-only\n",
     "calls.jsonl": calls([submission(approval())]),
     "daemon.log": calls([
       { ...(reviewDaemon[0] ?? {}), status: 409, code: "HANDOFF_NOT_CURRENT_PHASE" },
     ]),
   });
+reviewRun("reviewer-text-findings-text-only-head-127", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([submission(approval())]),
+  "daemon.log": calls([
+    { ...(reviewDaemon[0] ?? {}), status: 409, code: "HANDOFF_NOT_CURRENT_PHASE" },
+  ]),
+});
 // defect: the behavioural finding stands, so the round sends the change back, here with
 // `gh pr review --request-changes`. A round that sends the change back opens no fix loop, so its
 // transcript carries no message to the implementer.
@@ -6470,13 +6507,16 @@ fixRun(
 // A completion the stand-in refused in any way but the daemon's own HANDOFF_NOT_CURRENT_PHASE is
 // a rig error (score.ts's `unscored`): head-95's implementer completed with a record on a phase
 // that ends with none, 409 HANDOFF_RECORD_MISMATCH, which its tool never sends; head-96's line is
-// a 409 an older stand-in wrote with no code, which cannot say which refusal it was.
+// a 409 an older stand-in wrote with no code, which cannot say which refusal it was. Each is no
+// answer of either daemon shape, so the run's own daemon, this checkout's, is read for it.
 fixRun("threads-closed-text-fixes-head-95", {
+  "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([{ ...refusedCompletion, code: "HANDOFF_RECORD_MISMATCH" }]),
 });
 fixRun("threads-closed-text-fixes-head-96", {
+  "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([completed, { ...completed, status: 409 }]),
@@ -8688,23 +8728,26 @@ test("threads-closed, text-fixes: the push passes only after a read of reviewing
 // that ends with none is threads-closed's head-95, and a 409 with no code is head-96. The
 // daemon's own HANDOFF_NOT_CURRENT_PHASE, which the implementer of every threads-closed run
 // meets in `reviewing`, stays a reading of the run (head-1, above).
-test("a completion the daemon stand-in refused is a rig error, unless it is the daemon's own refusal of the phase", () => {
-  expect(out).toContain(
-    "reviewer-text-findings-text-only-head-122\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 400 with no code"
-  );
-  expect(out).toContain(
-    "threads-closed-text-fixes-head-95\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_RECORD_MISMATCH"
-  );
-  expect(out).toContain(
-    "threads-closed-text-fixes-head-96\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 with no code"
-  );
-  for (const name of [
-    "reviewer-text-findings-text-only-head-122",
-    "threads-closed-text-fixes-head-95",
-    "threads-closed-text-fixes-head-96",
-  ])
-    expect(out).not.toContain(`${name}\tpass=`);
-});
+test.skipIf(withoutGo)(
+  "a completion the daemon stand-in refused is a rig error, unless it is the daemon's own refusal of the phase",
+  () => {
+    expect(out).toContain(
+      "reviewer-text-findings-text-only-head-122\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 400 with no code"
+    );
+    expect(out).toContain(
+      "threads-closed-text-fixes-head-95\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_RECORD_MISMATCH"
+    );
+    expect(out).toContain(
+      "threads-closed-text-fixes-head-96\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 with no code"
+    );
+    for (const name of [
+      "reviewer-text-findings-text-only-head-122",
+      "threads-closed-text-fixes-head-95",
+      "threads-closed-text-fixes-head-96",
+    ])
+      expect(out).not.toContain(`${name}\tpass=`);
+  }
+);
 
 // Catches: a completion line that names no role scored as the role booted in its place: head-101
 // is head-1's implementer refusal with its role left off, which the positional guess read as the
@@ -8716,15 +8759,35 @@ test("a completion line that names no role is a rig error, never given a role", 
   expect(out).not.toContain("threads-closed-text-fixes-head-101\tpass=");
 });
 
-// Catches: one exemption for a code whatever label and role it answered. The same lone 409
-// HANDOFF_NOT_CURRENT_PHASE to a reviewer is how the base label's daemon takes a late reviewer's
-// completion and a refusal the head label's daemon gives one here only after a 200 of its own
-// (completion-answers.ts's ANSWERS, read through the `refusedCompletion` health.ts reads too).
-test("a reviewer's not-current-phase refusal is scored on the base label and a rig error on head", () => {
-  expect(out).toContain("reviewer-text-findings-text-only-base-2\tpass=");
+// Catches: one exemption for a code whatever daemon and role it answered, and an exemption read
+// off the label's name. The same lone 409 HANDOFF_NOT_CURRENT_PHASE to a reviewer is how an older
+// daemon takes a late reviewer's completion and a refusal this checkout's daemon gives one here
+// only after a 200 of its own (completion-answers.ts's ANSWERS, read through the
+// `refusedCompletion` health.ts reads too), each read out of the checkout the run's built-from
+// names: a base run built from this checkout (base-3) is this checkout's daemon's.
+test.skipIf(withoutGo)(
+  "a reviewer's not-current-phase refusal is scored on an older daemon and a rig error on this checkout's, whatever the label",
+  () => {
+    expect(out).toContain("reviewer-text-findings-text-only-base-2\tpass=");
+    for (const name of [
+      "reviewer-text-findings-text-only-head-126",
+      "reviewer-text-findings-text-only-base-3",
+    ])
+      expect(out).toContain(
+        `${name}\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE to the reviewer`
+      );
+  }
+);
+
+// Catches: an answer that turns on the run's daemon judged by some daemon when the run's own
+// cannot be read. head-127 is head-126 with no built-from, so which checkout its daemon is is
+// unknown: a rig error naming why, never a score read off the label's name.
+test("a refusal that turns on a daemon the run's built-from does not name is a rig error", () => {
   expect(out).toContain(
-    "reviewer-text-findings-text-only-head-126\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE to the reviewer"
+    "reviewer-text-findings-text-only-head-127\trig error: an answer the daemon stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: "
   );
+  expect(out).toContain("built-from names no checkout");
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-127\tpass=");
 });
 
 // Catches: "one thread per call" read as a cap on the ids a call names, which lets a call

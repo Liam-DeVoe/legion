@@ -19,10 +19,13 @@
 // after the await, so nothing it reads of the killed child reaches the output, and no check of
 // that child would either.
 import { beforeAll } from "bun:test";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { BunPlugin, SpawnOptions, SyncSubprocess } from "bun";
+import { DAEMON_MODULE, labelGhSelectors } from "./daemon-pane";
+import { RUN_SELECTORS } from "./gh-selectors";
 
 /** `cmds` short enough for an error: a `bash -c` script is the rig's own functions, hundreds of
  * lines, of which the first is enough to name it. */
@@ -100,4 +103,15 @@ export function bundled(source: string): string {
     if (!built.success) throw new AggregateError(built.logs, `bun build ${source} failed`);
   });
   return path.join(directory, `${name}.js`);
+}
+
+/** This checkout's gh selectors as a run holds them, read once a process. */
+let ownSelectors: string | undefined;
+/** Writes this checkout's gh selectors into the run under `runDir` (gh-selectors.ts's
+ * RUN_SELECTORS), as rig.sh's worker_boot writes its label's before any agent starts: the gh
+ * stand-in refuses an owner outside a world's project by them, and answers no call of a world
+ * that has none. Read through daemon-pane.ts's `labelGhSelectors`, which runs gh-selectors.go. */
+export function writeGhSelectors(runDir: string): void {
+  ownSelectors ??= `${JSON.stringify(labelGhSelectors(path.resolve(DAEMON_MODULE, "..", "..")))}\n`;
+  writeFileSync(path.join(runDir, RUN_SELECTORS), ownSelectors);
 }

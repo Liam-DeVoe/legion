@@ -16,12 +16,14 @@ import {
   claimRefusal,
   countDefault,
   DAEMON_MODULE,
+  labelDaemon,
   labelRoutes,
   RIG_GH_TOKEN,
   runDaemonPane,
   serves,
   workerPane,
 } from "./daemon-pane";
+import { nameWords, vocabulary } from "./run-names";
 import { bundled, spawnChecked } from "./test-programs";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
@@ -381,9 +383,9 @@ test("no file of the rig restates the daemon's refusal", () => {
 // which are the daemon's own for every other caller. Parsed, never compiled or linked: the
 // reading is `parser.ParseFile` of each, so a substitute needs the shape of the daemon's code
 // and nothing it declares. Catches: either shape's branch dropped (this checkout's engine no
-// longer writes the base's, so no other row reaches it), parameters filled in the format's order
-// rather than mapped to the engine's arguments, and a reading that answers a daemon in neither
-// shape with a sentence rather than a refusal to boot.
+// longer writes an older daemon's, so no other row reaches it), parameters filled in the
+// format's order rather than mapped to the engine's arguments, and a reading that answers a
+// daemon in neither shape with a sentence rather than a refusal to boot.
 /** Runs the `refusal` command over `engine`, the engine's body, and over an intake package
  * holding `intake` when given, and answers what it printed. */
 function refusalOver(name: string, engine: string, intake?: string): string {
@@ -418,7 +420,7 @@ test.skipIf(skip)(
   600_000
 );
 test.skipIf(skip)(
-  "the refusal reading fills the base label's refused call",
+  "the refusal reading fills an older daemon's refused call",
   () => {
     expect(
       refusalOver(
@@ -627,6 +629,328 @@ test.skipIf(skip)(
   600_000
 );
 
+// Catches: the facts cache kept under TMPDIR, where no work directory is named, in a directory
+// whose name is the rig's (`skill-scenarios-daemon-facts`): on a Legion pod TMPDIR is the scratch
+// every role of the issue shares, and any of them lists it.
+test.skipIf(skip)(
+  "with no work directory named, a read is kept under TMPDIR in a directory of the world's own name",
+  () => {
+    const keptWork = process.env.SKILL_SCENARIOS_WORK;
+    const keptTmp = process.env.TMPDIR;
+    const tmp = path.join(rig, "facts-tmp");
+    mkdirSync(tmp, { recursive: true });
+    delete process.env.SKILL_SCENARIOS_WORK;
+    process.env.TMPDIR = tmp;
+    try {
+      expect(routesOver("tmp-cached", '\tmux.HandleFunc("POST /one", s.one)')).toEqual([
+        "POST /one",
+      ]);
+      const made = readdirSync(tmp);
+      expect(made).toContain("legion-daemon-cache");
+      expect(made.filter((name) => nameWords(name, vocabulary([])) !== undefined)).toEqual([]);
+    } finally {
+      if (keptWork === undefined) delete process.env.SKILL_SCENARIOS_WORK;
+      else process.env.SKILL_SCENARIOS_WORK = keptWork;
+      if (keptTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = keptTmp;
+    }
+  },
+  600_000
+);
+
+// How a label's daemon takes a completion (daemon-pane.ts's `labelDaemon`, daemon-completion.go),
+// read out of the checkout the label is built from and never by the label's name: the base label
+// was main ff2a10ef and is now main at the commit the head's newest forward merge brought in, so a
+// table keyed by the name answered every base run as a daemon its checkout no longer has. Each
+// file is read in two shapes, this checkout's and an older daemon's (main ff2a10ef's among them),
+// each written here as that daemon writes it, so no row needs a checkout of the older daemon on
+// the host.
+/** An engine of this checkout's shape (`recorded`): `handoff` asks `leftItsPhase`, which reads
+ * `row.Completed()`. */
+const RECORDED_ENGINE = [
+  "func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (bool, error) {",
+  "\trow, err := e.phaseRow(ctx, tx, issue.Key, role)",
+  "\tif err != nil || row.Completed() {",
+  "\t\treturn false, err",
+  "\t}",
+  "\treturn true, nil",
+  "}",
+  "",
+  "func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {",
+  "\treported := phase.Of(fact.Role, issue.Phase)",
+  "\tif reported != issue.Phase {",
+  "\t\tleft, err := e.leftItsPhase(ctx, tx, *issue, fact.Role)",
+  "\t\tif err != nil {",
+  "\t\t\treturn intake.Result{}, err",
+  "\t\t}",
+  "\t\tif !left {",
+  "\t\t\treturn intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil",
+  "\t\t}",
+  "\t}",
+  "\treturn intake.Result{}, nil",
+  "}",
+].join("\n");
+/** The older daemon's gate (`refused`), as main ff2a10ef's `handoff` writes it. */
+const REFUSING_GATE = [
+  "\tif RoleFor(issue.Phase) != fact.Role {",
+  '\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("an older daemon refuses the %s in %s of %s", fact.Role, issue.Phase, issue.Key)), nil',
+  "\t}",
+].join("\n");
+/** An engine of the older shape: `handoff` holds the refusing gate and asks no `leftItsPhase`. */
+const REFUSED_ENGINE = `func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {\n${REFUSING_GATE}\n\treturn intake.Result{}, nil\n}`;
+/** A route of this checkout's shape (`left`), in `answerCompletion` as this checkout writes it,
+ * beside the entry fence's own `recordBacked`, which is no part of either shape. */
+const LEFT_ROUTE = [
+  "func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) {",
+  "\tof := phase.Of(grant.Role, issue.Phase)",
+  '\tif of == "" {',
+  "\t\tof = issue.Phase",
+  "\t}",
+  "\tword, writer, handoffPhase := phase.Handoff(of)",
+  '\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0',
+  "\trecordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)",
+  "}",
+  "",
+  "func entryFence(p phase.Phase) bool {",
+  "\t_, _, recordBacked := phase.Handoff(p)",
+  "\treturn recordBacked",
+  "}",
+].join("\n");
+/** A route of the older shape (`issue`), in `handoffComplete` as main ff2a10ef writes it. */
+const ISSUE_ROUTE = [
+  "func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {",
+  "\tword, writer, handoffPhase := phase.Handoff(issue.Phase)",
+  "\trecordBacked := handoffPhase && writer == grant.Role",
+  "}",
+].join("\n");
+/** A substitute checkout whose daemon's engine.go holds `engine` and whose api/handoff.go holds
+ * `route`, each after its package clause; undefined writes no such file. */
+function completionOver(name: string, engine?: string, route?: string): string {
+  const checkout = path.join(rig, `completion-${name}`);
+  const daemon = path.join(checkout, "packages", "daemon", "internal");
+  for (const [dir, file, body] of [
+    ["workflow", "engine.go", engine],
+    ["api", "handoff.go", route],
+  ] as const) {
+    mkdirSync(path.join(daemon, dir), { recursive: true });
+    if (body !== undefined)
+      writeFileSync(path.join(daemon, dir, file), `package ${dir}\n\n${body}\n`);
+  }
+  return checkout;
+}
+
+// This checkout's own daemon, read out of its own engine.go and handoff.go. Catches: a reading
+// that knows the older shape alone, which reads the head's daemon as no daemon, and a reading
+// that finds the route in one function by name (the route's statements moved out of
+// `handoffComplete` into `answerCompletion`).
+test.skipIf(skip)(
+  "the completion reading takes this checkout's daemon as recorded and left",
+  () => {
+    expect(labelDaemon(path.resolve(DAEMON_MODULE, "../.."))).toEqual({
+      lateRole: "recorded",
+      recordRoute: "left",
+    });
+  },
+  600_000
+);
+
+// Each shape of each file, in a checkout holding it and the other file in either shape, so each
+// file is read for itself. Catches: either shape of either file dropped, which reads a checkout
+// holding it as no daemon, and a reading that takes one file's shape as the other's.
+test.skipIf(skip)(
+  "the completion reading takes each file in either shape, in either pairing",
+  () => {
+    for (const [name, engine, route, read] of [
+      ["recorded-left", RECORDED_ENGINE, LEFT_ROUTE, { lateRole: "recorded", recordRoute: "left" }],
+      ["refused-issue", REFUSED_ENGINE, ISSUE_ROUTE, { lateRole: "refused", recordRoute: "issue" }],
+      [
+        "recorded-issue",
+        RECORDED_ENGINE,
+        ISSUE_ROUTE,
+        { lateRole: "recorded", recordRoute: "issue" },
+      ],
+      ["refused-left", REFUSED_ENGINE, LEFT_ROUTE, { lateRole: "refused", recordRoute: "left" }],
+    ] as const)
+      expect([name, labelDaemon(completionOver(name, engine, route))]).toEqual([name, read]);
+  },
+  600_000
+);
+
+// A source in neither shape, or in both, is refused, naming the file and what was looked for,
+// never read as a shape. Catches: a reading that defaults to one shape where it finds neither or
+// both, one that takes a leftItsPhase reading no row.Completed() as `recorded`, a gate refusing
+// with another code as `refused`, and a route whose record-backed rule is neither shape's.
+test.skipIf(skip)(
+  "the completion reading refuses a file in neither shape or in both, naming it",
+  () => {
+    const engineShapes =
+      'a call of leftItsPhase, a method of the file that reads row.Completed() (recorded), or `if RoleFor(issue.Phase) != fact.Role { return refused("HANDOFF_NOT_CURRENT_PHASE", …) }` (refused)';
+    const routeShapes =
+      "`of := phase.Of(grant.Role, issue.Phase); word, writer, handoffPhase := phase.Handoff(of); recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)` (left) nor `word, writer, handoffPhase := phase.Handoff(issue.Phase); recordBacked := handoffPhase && writer == grant.Role` (issue)";
+    const engine = path.join("workflow", "engine.go");
+    const route = path.join("api", "handoff.go");
+    /** Each substitute: its name, its engine and route sources, the file the reading refuses and
+     * what it says of it. */
+    const refusals: readonly (readonly [string, string | undefined, string, string, string])[] = [
+      [
+        "no-handoff",
+        "func (e *Engine) other() {}",
+        ISSUE_ROUTE,
+        engine,
+        "declares no handoff method",
+      ],
+      [
+        "no-gate",
+        "func (e *Engine) handoff() (intake.Result, error) {\n\treturn intake.Result{}, nil\n}",
+        ISSUE_ROUTE,
+        engine,
+        `holds neither ${engineShapes}`,
+      ],
+      [
+        "unread-row",
+        RECORDED_ENGINE.replace("row.Completed()", "row.Taken()"),
+        LEFT_ROUTE,
+        engine,
+        `holds neither ${engineShapes}`,
+      ],
+      [
+        "other-code",
+        REFUSED_ENGINE.replace('"HANDOFF_NOT_CURRENT_PHASE"', '"HANDOFF_STALE_ENTRY"'),
+        ISSUE_ROUTE,
+        engine,
+        `holds neither ${engineShapes}`,
+      ],
+      [
+        "both-engines",
+        RECORDED_ENGINE.replace("\treported := ", `${REFUSING_GATE}\n\treported := `),
+        LEFT_ROUTE,
+        engine,
+        `holds both ${engineShapes}`,
+      ],
+      ["no-engine", undefined, LEFT_ROUTE, engine, "is not there, so how the daemon of"],
+      [
+        "no-route",
+        RECORDED_ENGINE,
+        LEFT_ROUTE.replace("(of == issue.Phase || namesRecord)", "of == issue.Phase"),
+        route,
+        `holds neither ${routeShapes} in any function`,
+      ],
+      [
+        "both-routes",
+        REFUSED_ENGINE,
+        `${LEFT_ROUTE}\n\n${ISSUE_ROUTE}`,
+        route,
+        "holds more than one shape of the route (left in answerCompletion, issue in handoffComplete)",
+      ],
+    ];
+    for (const [name, engineSource, routeSource, file, says] of refusals) {
+      let thrown = "";
+      try {
+        labelDaemon(completionOver(name, engineSource, routeSource));
+      } catch (error) {
+        thrown = error instanceof Error ? error.message : String(error);
+      }
+      expect(thrown).toContain(
+        path.join(rig, `completion-${name}`, "packages", "daemon", "internal", file)
+      );
+      expect(thrown).toContain(says);
+    }
+  },
+  600_000
+);
+
+// The facts cache keeps no failed read, and health asks for a run's daemon once a rule a run: the
+// tester's fixture (rig.test.ts's "the tester's fixture reads as the tester read it"), whose
+// built-from names checkouts that are not there, paid 15 `go run`s of daemon-completion.go and
+// timed out at 60 s. Each `go` this process starts is a wrapper that records the call and runs the
+// real go. Catches: an absent source handed to the program, which says nothing a missing file
+// needs a compile to say; a refused source run again in the same process; and a refusal kept past
+// a rewrite of its source.
+test.skipIf(skip)(
+  "the completion reading runs no program for an absent source, and one for a refused source",
+  () => {
+    const bin = path.join(rig, "completion-go-wrapper");
+    mkdirSync(bin, { recursive: true });
+    const ran = path.join(bin, "ran");
+    writeFileSync(
+      path.join(bin, "go"),
+      `#!/bin/sh\necho go >>'${ran}'\nexec '${Bun.which("go")}' "$@"\n`,
+      { mode: 0o755 }
+    );
+    const runs = () => (existsSync(ran) ? readFileSync(ran, "utf8").split("\n").length - 1 : 0);
+    const keptPath = process.env.PATH;
+    const keptWork = process.env.SKILL_SCENARIOS_WORK;
+    process.env.PATH = `${bin}:${keptPath ?? ""}`;
+    // A cache of the row's own, so the one read that succeeds is no hit of an earlier row's.
+    process.env.SKILL_SCENARIOS_WORK = path.join(rig, "completion-go-work");
+    try {
+      const absent = completionOver("absent-sources");
+      for (let read = 0; read < 3; read += 1)
+        expect(() => labelDaemon(absent)).toThrow(
+          `${path.join(absent, "packages", "daemon", "internal", "workflow", "engine.go")} is not there`
+        );
+      expect(runs()).toBe(0);
+      const gate =
+        "func (e *Engine) handoff() (intake.Result, error) {\n\treturn intake.Result{}, nil\n}";
+      const refused = completionOver("refused-once", gate, ISSUE_ROUTE);
+      for (let read = 0; read < 3; read += 1)
+        expect(() => labelDaemon(refused)).toThrow("'s handoff holds neither");
+      expect(runs()).toBe(1);
+      completionOver("refused-once", REFUSED_ENGINE, ISSUE_ROUTE);
+      expect(labelDaemon(refused)).toEqual({ lateRole: "refused", recordRoute: "issue" });
+      expect(runs()).toBe(2);
+    } finally {
+      process.env.PATH = keptPath;
+      if (keptWork === undefined) delete process.env.SKILL_SCENARIOS_WORK;
+      else process.env.SKILL_SCENARIOS_WORK = keptWork;
+    }
+  },
+  600_000
+);
+
+// The reading is kept in the facts cache under a key of the two sources' bytes, as the stand-in's
+// boot reads every fact (`cachedRead`), so a label is read once per source and a checkout that
+// moves is read anew. Catches: a key that leaves a source out, under which a label whose engine
+// changed is answered with the shape it had; a hit that runs the program again; a key holding the
+// checkout's path; and a printout that is no late role and record route read as one.
+test.skipIf(skip)(
+  "the completion reading is kept under both sources, and a changed source is read again",
+  () => {
+    const kept = process.env.SKILL_SCENARIOS_WORK;
+    const cacheWork = path.join(rig, "completion-facts-work");
+    process.env.SKILL_SCENARIOS_WORK = cacheWork;
+    try {
+      const cached = () =>
+        readdirSync(path.join(cacheWork, "daemon-facts")).filter((name) => name.endsWith(".out"));
+      const checkout = completionOver("cached", RECORDED_ENGINE, LEFT_ROUTE);
+      expect(labelDaemon(checkout)).toEqual({ lateRole: "recorded", recordRoute: "left" });
+      expect(cached()).toHaveLength(1);
+      completionOver("cached", RECORDED_ENGINE, ISSUE_ROUTE);
+      expect(labelDaemon(checkout)).toEqual({ lateRole: "recorded", recordRoute: "issue" });
+      completionOver("cached", REFUSED_ENGINE, ISSUE_ROUTE);
+      expect(labelDaemon(checkout)).toEqual({ lateRole: "refused", recordRoute: "issue" });
+      const read = cached();
+      expect(read).toHaveLength(3);
+      // The newest answer is the one a hit reads, out of the file and in no other place.
+      const newest = read.find((name) =>
+        readFileSync(path.join(cacheWork, "daemon-facts", name), "utf8").startsWith("refused\n")
+      );
+      writeFileSync(path.join(cacheWork, "daemon-facts", newest ?? ""), "refused\nleft\n");
+      const copy = path.join(rig, "completion-cached-copy");
+      cpSync(checkout, copy, { recursive: true });
+      expect(labelDaemon(copy)).toEqual({ lateRole: "refused", recordRoute: "left" });
+      writeFileSync(path.join(cacheWork, "daemon-facts", newest ?? ""), "refused\nsome route\n");
+      expect(() => labelDaemon(checkout)).toThrow(
+        'printed "refused\\nsome route\\n", which is no late role (recorded or refused) and record route (left or issue)'
+      );
+    } finally {
+      if (kept === undefined) delete process.env.SKILL_SCENARIOS_WORK;
+      else process.env.SKILL_SCENARIOS_WORK = kept;
+    }
+  },
+  600_000
+);
+
 // The claim refusals the stand-in answers a refused caller with, read out of the daemon's claim
 // source. Catches: a sentence this program writes for itself, and a declaration of another shape
 // read as a refusal.
@@ -657,7 +981,7 @@ test.skipIf(skip)(
 
 // The launch failure limit the stand-in fails a claim's refused turns at, read out of the daemon's
 // config package in either of the two shapes the daemon has kept a count's default in: an entry
-// of config.go's table of count keys (main ff2a10ef's, the base label's) and a row of
+// of config.go's table of count keys (an older daemon's, main ff2a10ef's) and a row of
 // keytable.go's key table (this checkout's, which holds no entry, so no reading of this
 // checkout's own reaches the entry's shape). Each shape is read through a substitute checkout of
 // the test's own, and this checkout's through its own package.
@@ -691,7 +1015,7 @@ const ROUND_CAP_ROW =
 // another shape read as a default, or none read as a default rather than refused naming both
 // shapes.
 test.skipIf(skip)(
-  "the count default reading takes the base label's table entry and refuses what it cannot read",
+  "the count default reading takes an older daemon's table entry and refuses what it cannot read",
   () => {
     const checkout = configOver("entry", {
       "config.go": countKeys('{"launch_failure_limit", 7}', '{"prompt_failure_limit", limit}'),
@@ -964,9 +1288,9 @@ describe("the label's build and its facts", () => {
           .filter((line) => line !== "")
           .map((line) => line.split(" ").slice(0, 2).join(" "))
       : [];
-  /** `bun daemon-pane.ts facts` of this checkout for every boot of BOOTS, under `env`. */
-  const facts = (env: Record<string, string>, boots = BOOTS) =>
-    spawnChecked(["bun", FACTS, "facts", CHECKOUT, ...boots], {
+  /** `bun daemon-pane.ts facts` of `checkout` (this one) for every boot of BOOTS, under `env`. */
+  const facts = (env: Record<string, string>, checkout = CHECKOUT) =>
+    spawnChecked(["bun", FACTS, "facts", checkout, ...BOOTS], {
       env: { PATH: process.env.PATH ?? "", HOME: rig, ...env },
     });
 
@@ -1047,6 +1371,48 @@ describe("the label's build and its facts", () => {
       expect(read.exitCode).toBe(1);
       expect(read.stderr.toString()).toContain(
         `daemon-pane facts: the reviewer's stand-in: the daemon fact \`phase reviewer\` of ${CHECKOUT} could not be read: daemon-pane phase reviewer in ${CHECKOUT}/packages/daemon exited 1: daemon-pane phase: refused by the row`
+      );
+    },
+    600_000
+  );
+
+  // The gh selectors facts reads once every boot's facts are read (daemon-pane.ts's
+  // labelGhSelectors), by which the gh stand-in of every run of the label refuses an owner. The
+  // checkout holds what facts reads, copied from this one as gh-standin.test.ts's per-label rows
+  // copy the wrapper: the daemon's API package and engine.go, and the wrapper's package,
+  // internal/ghconfig and saved gh help, with an option kind the world's gh does not model added
+  // to the wrapper's table. Catches: a facts read that passes over the label's gh selectors,
+  // which leaves that form to worker_boot to refuse run by run, after the batch started.
+  test.skipIf(skip)(
+    "a selector form the label's wrapper holds that the world does not model fails the read, naming it",
+    () => {
+      const checkout = path.join(rig, "facts-unmodelled-checkout");
+      const daemon = path.join(checkout, "packages", "daemon");
+      for (const dir of ["internal/api", "cmd/legion", "internal/ghconfig"]) {
+        mkdirSync(path.join(daemon, dir), { recursive: true });
+        for (const name of readdirSync(path.join(DAEMON_MODULE, dir)))
+          if (name.endsWith(".go") && !name.endsWith("_test.go"))
+            cpSync(path.join(DAEMON_MODULE, dir, name), path.join(daemon, dir, name));
+      }
+      for (const file of ["internal/workflow/engine.go", "cmd/legion/testdata/gh-help"]) {
+        mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
+        cpSync(path.join(DAEMON_MODULE, file), path.join(daemon, file), { recursive: true });
+      }
+      const help = path.join(daemon, "cmd", "legion", "gh_help.go");
+      const table = "var ghOptionKinds = map[string]string{\n";
+      const source = readFileSync(help, "utf8");
+      expect(source).toContain(table);
+      writeFileSync(help, source.replace(table, `${table}\t"--mirror string": "mirror",\n`));
+      const read = facts(
+        {
+          SKILL_SCENARIOS_WORK: path.join(rig, "facts-unmodelled"),
+          SKILL_SCENARIOS_DAEMON_PANE: fakeBuild(path.join(rig, "facts-unmodelled-build")),
+        },
+        checkout
+      );
+      expect(read.exitCode).toBe(1);
+      expect(read.stderr.toString()).toContain(
+        `daemon-pane facts: the gh stand-in: the wrapper's table holds the option kind "mirror" (ghOptionKinds --mirror string), which the world's gh does not model (gh-selectors.ts's MODELLED)`
       );
     },
     600_000

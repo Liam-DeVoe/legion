@@ -44,7 +44,9 @@ for a finished retro only.
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
    that line quotes). A pass stands for every `before_merge` check of the issue at the approved
-   head, from the implementer and from the tester alike, and the pull request
+   head, from the implementer and from the tester alike, or is carried to it across one push whose
+   diff changes no code that runs, as the reviewer's approval of that head states and the carry
+   rule in `skill://legion-worker/references/merge-gate.md` says, and the pull request
    body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
    result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
    (`skill://legion-worker/references/ci-checks.md`). In
@@ -54,7 +56,8 @@ for a finished retro only.
    fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
    concluded, and read again where GitHub could not be read. Send a name that no run answers
    (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
-   wait nor that finding moves the issue back. When a check has no pass standing at that head, or
+   wait nor that finding moves the issue back. When a check has neither a pass standing at that
+   head nor one carried to it as above, or
    a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
    `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
    check, or `to: testing` for the tester's result, its `reason` naming the check by its block

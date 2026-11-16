@@ -1,11 +1,12 @@
 // What a run's daemon may answer a completion with, and the one reader of the answers a run got.
-// Three programs read it: the daemon stand-in, which answers each completion as the run's label's
-// daemon answers it (`LABEL_DAEMONS`); score.ts's `unscored`, which makes a completion refused
-// with any other answer a rig error; and health.ts (`rig.sh health`), which calls such a run
-// unhealthy and also holds a run to the completions its world must take (`ANSWERS`). Each reads
-// the run's label (`labelOf`), its log (`daemonLines`) and the refusal (`refusedCompletion`)
-// here, so the three cannot drift. It imports nothing of the scorer: the stand-in loads it at
-// every boot.
+// Three programs read it: the daemon stand-in, which answers each completion as the daemon of the
+// run's label's checkout answers it (`LabelDaemon`); score.ts's `unscored`, which makes a
+// completion refused with any other answer a rig error; and health.ts (`rig.sh health`), which
+// calls such a run unhealthy and also holds a run to the completions its world must take
+// (`ANSWERS`). Each reads the run's label (`labelOf`), its log (`daemonLines`) and the refusal
+// (`refusedCompletion`) here, so the three cannot drift; how the label's daemon takes a completion
+// each reads out of the label's own checkout (daemon-pane.ts's `labelDaemon`). It imports nothing
+// of the scorer: the stand-in loads it at every boot.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -87,25 +88,26 @@ export function finished(runDir: string): boolean {
   return exited(path.join(runDir, "out.txt"));
 }
 
-/** How a label's daemon answers a completion from a role that does not run the issue's current
- * phase (a late role):
- *   - `recorded`: this checkout's engine (packages/daemon/internal/workflow/engine.go, `handoff`
- *     and `leftItsPhase`). It records the completion on the role's own row and moves nothing when
- *     the daemon started the role on the issue and the role's row holds no completion
- *     (`row.Completed()`: no handoff commit and no handoff record a taken completion wrote). It
- *     takes the completion as one of the phase the role left (`phase.Of`), and that phase's
- *     record is required (`phase.Handoff(reported)`, a 409 HANDOFF_RECORD_REQUIRED through
- *     `refused`). Any other late completion is refused 409 HANDOFF_NOT_CURRENT_PHASE, a second
- *     one after the role's first was taken among them.
- *   - `refused`: main `ff2a10ef`'s engine (`handoff`'s
+/** How a daemon answers a completion from a role that does not run the issue's current phase (a
+ * late role), in the two shapes an engine (packages/daemon/internal/workflow/engine.go) has had:
+ *   - `recorded`: an engine whose `handoff` asks `leftItsPhase`, this checkout's. It records the
+ *     completion on the role's own row and moves nothing when the daemon started the role on the
+ *     issue and the role's row holds no completion (`row.Completed()`: no handoff commit and no
+ *     handoff record a taken completion wrote). It takes the completion as one of the phase the
+ *     role left (`phase.Of`), and that phase's record is required (`phase.Handoff(reported)`, a
+ *     409 HANDOFF_RECORD_REQUIRED through `refused`). Any other late completion is refused 409
+ *     HANDOFF_NOT_CURRENT_PHASE, a second one after the role's first was taken among them.
+ *   - `refused`: an older daemon's engine, main `ff2a10ef`'s among them (`handoff`'s
  *     `if RoleFor(issue.Phase) != fact.Role { return refused("HANDOFF_NOT_CURRENT_PHASE", …) }`).
  *     It refuses every late completion 409 HANDOFF_NOT_CURRENT_PHASE, because it has no
  *     `leftItsPhase`.
  * Both write the late refusal through the same `refused()`. */
-export type LateRole = "recorded" | "refused";
+export const LATE_ROLES = ["recorded", "refused"] as const;
+export type LateRole = (typeof LATE_ROLES)[number];
 
-/** Which phase a label's completion route (packages/daemon/internal/api/handoff.go) holds a
- * completion's handoff record to, before the engine reads the completion:
+/** Which phase a daemon's completion route (packages/daemon/internal/api/handoff.go) holds a
+ * completion's handoff record to, before the engine reads the completion, in the two shapes a
+ * route has had:
  *   - `left`: this checkout's route (`of := phase.Of(grant.Role, issue.Phase)`), the phase the
  *     completion is of: the issue's when the role works it, and otherwise the phase the role
  *     left. A completion is record-backed when that phase ends with a record this role writes and
@@ -113,43 +115,51 @@ export type LateRole = "recorded" | "refused";
  *     naming the record of the phase it left is read back, and one naming none goes on to the
  *     engine. A completion naming a record of a phase that writes none is refused 409
  *     HANDOFF_RECORD_MISMATCH;
- *   - `issue`: main `ff2a10ef`'s route (`phase.Handoff(issue.Phase)`, `recordBacked :=
- *     handoffPhase && writer == grant.Role`), which holds a completion to the record of the
- *     phase the issue stands in: record-backed only in the role's own phase, and a completion
- *     naming a record while the issue stands in a phase that writes none is refused 409
- *     HANDOFF_RECORD_MISMATCH, a late reviewer's in `accepting` among them. */
-export type RecordRoute = "left" | "issue";
+ *   - `issue`: an older daemon's route, main `ff2a10ef`'s among them (`phase.Handoff(issue.Phase)`,
+ *     `recordBacked := handoffPhase && writer == grant.Role`), which holds a completion to the
+ *     record of the phase the issue stands in: record-backed only in the role's own phase, and a
+ *     completion naming a record while the issue stands in a phase that writes none is refused
+ *     409 HANDOFF_RECORD_MISMATCH, a late reviewer's in `accepting` among them. */
+export const RECORD_ROUTES = ["left", "issue"] as const;
+export type RecordRoute = (typeof RECORD_ROUTES)[number];
 
-/** The labels the rig builds and the daemon each one runs, keyed by the label's name as
- * `rig.sh profile <label> <checkout>` names it. A label not here has no daemon this rig can model:
- * the stand-in refuses to boot for it, and health and the scorer refuse to read its runs. A new
- * label whose daemon answers some other way states that here. */
-export const LABEL_DAEMONS: Readonly<
-  Record<string, { readonly lateRole: LateRole; readonly recordRoute: RecordRoute }>
-> = {
-  /** This checkout. */
-  head: { lateRole: "recorded", recordRoute: "left" },
-  /** Built from main `ff2a10ef` (its `built-from`). */
-  base: { lateRole: "refused", recordRoute: "issue" },
-};
+/** How the daemon of a label takes a completion: its engine's `LateRole` and its route's
+ * `RecordRoute`, read out of the checkout `rig.sh profile <label> <checkout>` built the label from
+ * (the run's built-from; daemon-pane.ts's `labelDaemon`, daemon-completion.go), never from the
+ * label's name. What a label is built from moves: the base label was main `ff2a10ef`, and is main
+ * at the commit the head's newest forward merge brought in, which moves with every later forward
+ * merge, so a table keyed by the name models a daemon its checkout may not have. */
+export interface LabelDaemon {
+  readonly lateRole: LateRole;
+  readonly recordRoute: RecordRoute;
+}
+
+/** A daemon's `LabelDaemon` as one word pair, the key of `ANSWERS`' `byShape`. */
+export type DaemonShape = `${LateRole} ${RecordRoute}`;
+
+/** The labels a run with no record is named by: rig.sh's cmd_run named a run
+ * `<scenario>[-<case>]-<label>-<n>` before the names left the world, and the rig's comparison
+ * labels were these two (`rig.sh batch <scenario> <n> head base`). Names alone, which `labelOf`
+ * reads such a name by and health.ts counts among the words of the rig's vocabulary: what each
+ * label's daemon answers is read out of its checkout (`LabelDaemon`), never out of this list. */
+export const LABELS: readonly string[] = ["head", "base"];
 
 /** The label of the run under `runDir`: the label its record names (run-names.ts's
- * `runIdentity`), which must be a label of `LABEL_DAEMONS`. A run recorded before the names left
- * the world has no record, and its label is the label of `LABEL_DAEMONS` its directory's name
- * ends with before its number, which is how cmd_run named a run then
- * (`<scenario>[-<case>]-<label>-<n>`). The stand-in, health and the scorer read it here. Throws
- * for a record that is no run's, and for a label this rig models no daemon for. */
+ * `runIdentity`). A run recorded before the names left the world has no record, and its label is
+ * the one of `LABELS` its directory's name ends with before its number, which is how cmd_run
+ * named a run then (`<scenario>[-<case>]-<label>-<n>`). Health and the scorer read it here, to
+ * name the label; how its daemon takes a completion they read out of its checkout. Throws for a
+ * record that is no run's, and for a name that ends with no label of `LABELS`. */
 export function labelOf(runDir: string): string {
   const identity = existsSync(recordFile(runDir)) ? identityOf(runDir) : undefined;
-  const name = identity?.name ?? path.basename(runDir);
-  const label =
-    identity?.label ??
-    Object.keys(LABEL_DAEMONS)
-      .filter((named) => new RegExp(`-${named}-\\d+$`).test(name))
-      .sort((a, b) => b.length - a.length)[0];
-  if (label === undefined || LABEL_DAEMONS[label] === undefined)
+  if (identity !== undefined) return identity.label;
+  const name = path.basename(runDir);
+  const label = LABELS.filter((named) => new RegExp(`-${named}-\\d+$`).test(name)).sort(
+    (a, b) => b.length - a.length
+  )[0];
+  if (label === undefined)
     throw new Error(
-      `${name} names no label this rig models a daemon for (completion-answers.ts's LABEL_DAEMONS: ${Object.keys(LABEL_DAEMONS).join(", ")})`
+      `${name} names no label a run with no record is named by (completion-answers.ts's LABELS: ${LABELS.join(", ")})`
     );
   return label;
 }
@@ -176,82 +186,87 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
   return false;
 }
 
-/** What one scenario's world takes, for each label and each role the scenario boots:
+/** What one scenario's world takes, for each role the scenario boots:
  *   - `boots`, the roles rig.sh boots, in the order it boots them: the roles a completion line of
  *     the scenario's log can name. A line naming another role, or none, is unkeyable (`unkeyed`);
- *   - `answers`, for each label and role, every answer that label's daemon may give that role's
- *     completion in this world: `<status> <code>`, or `<status> <code> after 200` (`AFTER_TAKEN`)
- *     for an answer the daemon gives a repeat alone, held to the run's log: a completion of the
- *     same role was answered 200 on an earlier line (`allows`). A 4xx answer not in the entry is
- *     a refusal the world should not have given (`refusedCompletion`);
- *   - `takes`, the role whose completion the world must take, at least once, with an answer in
- *     its entry (health's third rule). A scenario with no `takes` requires no completion.
+ *   - `answers`, for each role, every answer a daemon of either shape (`LabelDaemon`) may give
+ *     that role's completion in this world, and `byShape`, for each `DaemonShape` and role, the
+ *     answers a daemon of that shape may give it beyond those: `<status> <code>`, or `<status>
+ *     <code> after 200` (`AFTER_TAKEN`) for an answer the daemon gives a repeat alone, held to
+ *     the run's log: a completion of the same role was answered 200 on an earlier line
+ *     (`allows`). A 4xx answer in neither is a refusal the world should not have given
+ *     (`refusedCompletion`). The run's daemon is read out of its label's checkout only for an
+ *     answer outside `answers`, the one place its shape decides anything;
+ *   - `takes`, the role whose completion the world must take, at least once, with an answer its
+ *     entries allow (health's third rule). A scenario with no `takes` requires no completion.
  * Health judges what the world can accept, never what an agent should do: no entry counts the
  * completions an agent makes or forbids one.
  *
  * reviewer-text-findings boots the reviewer in `reviewing`, where its completion is of its own
  * phase and is taken 200. Its review moves the issue (the stand-in's `roundOutcome`), and a
- * completion after that is a late one: `ff2a10ef` refuses it 409 HANDOFF_NOT_CURRENT_PHASE, which
- * is the base daemon taking the completion as it takes every late one. This checkout's route
- * reads back the reviewing record a late reviewer names, which the head label's plugin names for
- * a late role: the record of the phase the role left (packages/pi-shared/src/handoff-record.ts,
- * `findHandoffReport`). Its engine then records that completion 200 when the reviewer's row
- * holds no completion, and refuses it 409 HANDOFF_NOT_CURRENT_PHASE when it does: a completion
- * of the reviewer's was taken before it, since every taken completion writes the row
- * (`row.Completed()`). So the head reviewer's 409 HANDOFF_NOT_CURRENT_PHASE is the head daemon's
- * own answer after an earlier 200 alone; with none before it, the world refused the reviewer's
- * first completion, which no world of this rig should. A head reviewer refused
- * HANDOFF_RECORD_REQUIRED (a plugin that names no record once the issue has left `reviewing`) is
- * a refusal this table does not allow either. The review reaches `implementing` and never
- * `accepting`: GitHub reports the world's head `BLOCKED` (rig.sh's review_world), so only a
- * reviewer that pushes a head of its own, which is the world's own failure, and approves it could
- * move the issue there.
+ * completion after that is a late one: a daemon of the `refused` engine refuses it 409
+ * HANDOFF_NOT_CURRENT_PHASE, as it refuses every late one, its route having let it through, since
+ * that older checkout's plugin names no record for a phase the issue has left. A `left` route
+ * reads back the reviewing record a late reviewer names, which this checkout's plugin names for a
+ * late role: the record of the phase the role left (packages/pi-shared/src/handoff-record.ts,
+ * `findHandoffReport`). A `recorded` engine then records that completion 200 when the reviewer's
+ * row holds no completion, and refuses it 409 HANDOFF_NOT_CURRENT_PHASE when it does: a
+ * completion of the reviewer's was taken before it, since every taken completion writes the row
+ * (`row.Completed()`). So that daemon's 409 HANDOFF_NOT_CURRENT_PHASE to the reviewer is its own
+ * answer after an earlier 200 alone; with none before it, the world refused the reviewer's first
+ * completion, which no world of this rig should. A reviewer refused HANDOFF_RECORD_REQUIRED (a
+ * plugin that names no record once the issue has left `reviewing`) is a refusal this table does
+ * not allow either. The review reaches `implementing` and never `accepting`: GitHub reports the
+ * world's head `BLOCKED` (rig.sh's review_world), so only a reviewer that pushes a head of its
+ * own, which is the world's own failure, and approves it could move the issue there.
  *
  * threads-closed boots the implementer, then the reviewer, in `reviewing` (text-fixes) or
  * `accepting` (code-defect) (rig.sh's run_threads_closed). The implementer's implementing round
- * already stands on its row, so either daemon refuses its completion there 409
+ * already stands on its row, so a daemon of either shape refuses its completion there 409
  * HANDOFF_NOT_CURRENT_PHASE, the one deliberate refusal of the implementer. The reviewer's
  * completion is of its own phase in `reviewing` and is taken 200. Once the round has moved it is
- * late, which the base daemon refuses 409 HANDOFF_NOT_CURRENT_PHASE. A late head reviewer stands
- * in `accepting`: one that completes after its approval of the fix head moved text-fixes there, or
- * a code-defect reviewer, which is booted there. Its completion names its review record, which
- * this checkout's route reads back (`LABEL_DAEMONS`' `left`) and its engine answers as in
- * reviewer-text-findings: 200, or 409 HANDOFF_NOT_CURRENT_PHASE after an earlier 200 of the
- * reviewer's. The head route refuses no reviewer 409 HANDOFF_RECORD_MISMATCH in this rig: the
+ * late, which a `refused` engine refuses 409 HANDOFF_NOT_CURRENT_PHASE. A late reviewer of a
+ * `recorded left` daemon stands in `accepting`: one that completes after its approval of the fix
+ * head moved text-fixes there, or a code-defect reviewer, which is booted there. Its completion
+ * names its review record, which the `left` route reads back and the `recorded` engine answers as
+ * in reviewer-text-findings: 200, or 409 HANDOFF_NOT_CURRENT_PHASE after an earlier 200 of the
+ * reviewer's. The `left` route refuses no reviewer 409 HANDOFF_RECORD_MISMATCH in this rig: the
  * phase a reviewer's completion is of is `reviewing`, which writes a record, and the record of
  * another issue, phase or version that the route also refuses so (`handoffRecord`) is one no
  * world of this rig gives. So that code is a broken world in any phase. HANDOFF_STALE_ASSIGNMENT,
  * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW are left out: the stand-in models no assignment,
- * no duplicate key and no earlier record of a role, so no run of this rig can get them. */
+ * no duplicate key and no earlier record of a role, so no run of this rig can get them. A daemon
+ * of either shape pairs this checkout's two (`recorded left`) or an older daemon's two (`refused
+ * issue`); one that pairs either with the other's has no answers here, and a run of it is read
+ * as no world this rig knows (`answered`). */
 export const ANSWERS: Readonly<
   Record<
     string,
     {
       readonly boots: readonly string[];
-      readonly answers: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
+      readonly answers: Readonly<Record<string, readonly string[]>>;
+      readonly byShape: Readonly<
+        Partial<Record<DaemonShape, Readonly<Record<string, readonly string[]>>>>
+      >;
       readonly takes?: string;
     }
   >
 > = {
   "reviewer-text-findings": {
     boots: ["reviewer"],
-    answers: {
-      head: { reviewer: ["200", `409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`] },
-      base: { reviewer: ["200", `409 ${NOT_CURRENT_PHASE}`] },
+    answers: { reviewer: ["200"] },
+    byShape: {
+      "recorded left": { reviewer: [`409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`] },
+      "refused issue": { reviewer: [`409 ${NOT_CURRENT_PHASE}`] },
     },
     takes: "reviewer",
   },
   "threads-closed": {
     boots: ["implementer", "reviewer"],
-    answers: {
-      head: {
-        implementer: [`409 ${NOT_CURRENT_PHASE}`],
-        reviewer: ["200", `409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`],
-      },
-      base: {
-        implementer: [`409 ${NOT_CURRENT_PHASE}`],
-        reviewer: ["200", `409 ${NOT_CURRENT_PHASE}`],
-      },
+    answers: { implementer: [`409 ${NOT_CURRENT_PHASE}`], reviewer: ["200"] },
+    byShape: {
+      "recorded left": { reviewer: [`409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`] },
+      "refused issue": { reviewer: [`409 ${NOT_CURRENT_PHASE}`] },
     },
   },
 };
@@ -307,57 +322,82 @@ function keyOf(
   return { role: line.role };
 }
 
-/** Every answer `label`'s daemon may give `role`'s completion in `scenario`'s world. A scenario
- * `ANSWERS` does not name boots one role in that role's own phase, which either daemon answers
- * 200. Throws for a label `ANSWERS` gives no entry in a scenario it names. */
-export function allowedAnswers(scenario: string, label: string, role: string): readonly string[] {
+/** Whether `scenario`'s world may answer `lines[index]`, a completion of `role`, as the line says
+ * it was answered: with an answer a daemon of either shape gives it there (`ANSWERS`' `answers`),
+ * or else with one the run's own daemon gives it (`byShape`), `daemon` (how the run's label's
+ * daemon takes a completion) read only then. A scenario `ANSWERS` does not name boots one role in
+ * that role's own phase, which a daemon of either shape answers 200. Throws what reading `daemon`
+ * threw, and for a daemon of a shape `ANSWERS` gives no answers in a scenario it names. */
+function answered(
+  scenario: string,
+  role: string,
+  lines: readonly DaemonLine[],
+  index: number,
+  daemon: () => LabelDaemon
+): boolean {
   const entry = ANSWERS[scenario];
-  if (entry === undefined) return ["200"];
-  const byRole = entry.answers[label];
+  if (entry === undefined) return allows(["200"], lines, index);
+  if (allows(entry.answers[role] ?? [], lines, index)) return true;
+  const { lateRole, recordRoute } = daemon();
+  const shape: DaemonShape = `${lateRole} ${recordRoute}`;
+  const byRole = entry.byShape[shape];
   if (byRole === undefined)
     throw new Error(
-      `the ${label} label has no answers for ${scenario}'s completions (completion-answers.ts's ANSWERS)`
+      `a daemon of the shape \`${shape}\` (its engine's late role, then its route's record) has no answers for ${scenario}'s completions (completion-answers.ts's ANSWERS)`
     );
-  return byRole[role] ?? [];
+  return allows(byRole[role] ?? [], lines, index);
+}
+
+/** `read`, run at its first call alone, and its answer kept for every later one. */
+function once<T>(read: () => T): () => T {
+  let kept: { readonly value: T } | undefined;
+  return () => {
+    kept ??= { value: read() };
+    return kept.value;
+  };
 }
 
 /** The first completion of the run that cannot be keyed to a role (`keyOf`), whatever it was
- * answered, with why; or the first refused 4xx with an answer its world's entry does not allow
- * the role it names after the lines before it, with that role. `lines` is the run's log in the
- * order it was written. This one reader serves the scorer's refused-completion rule (score.ts's
- * `unscored`) and health's second rule (health.ts). */
+ * answered, with why; or the first refused 4xx with an answer its world does not allow the role it
+ * names after the lines before it (`answered`), with that role. `lines` is the run's log in the
+ * order it was written, and `daemon` how the run's label's daemon takes a completion, read once
+ * and only for an answer that turns on it. This one reader serves the scorer's refused-completion
+ * rule (score.ts's `unscored`) and health's second rule (health.ts). */
 export function refusedCompletion(
   lines: readonly DaemonLine[],
   scenario: string,
-  label: string
+  daemon: () => LabelDaemon
 ):
   | { readonly line: DaemonLine; readonly unkeyed: string }
   | { readonly line: DaemonLine; readonly role: string }
   | undefined {
+  const shaped = once(daemon);
   for (const [index, line] of lines.entries()) {
     if (line.path !== COMPLETE_PATH) continue;
     const key = keyOf(line, scenario);
     if ("unkeyed" in key) return { line, unkeyed: key.unkeyed };
     if (line.status < 400 || line.status >= 500) continue;
-    if (!allows(allowedAnswers(scenario, label, key.role), lines, index))
-      return { line, role: key.role };
+    if (!answered(scenario, key.role, lines, index, shaped)) return { line, role: key.role };
   }
   return undefined;
 }
 
 /** The completions of the role the scenario's world must take (`takes`) that were answered with
- * an answer its entry allows; undefined for a scenario that requires none. */
+ * an answer its world allows (`answered`, `daemon` read as `refusedCompletion` reads it);
+ * undefined for a scenario that requires none. */
 export function takenCompletions(
   lines: readonly DaemonLine[],
   scenario: string,
-  label: string
+  daemon: () => LabelDaemon
 ): { readonly role: string; readonly count: number } | undefined {
   const role = ANSWERS[scenario]?.takes;
   if (role === undefined) return undefined;
-  const allowed = allowedAnswers(scenario, label, role);
+  const shaped = once(daemon);
   const count = lines.filter(
     (line, index) =>
-      line.path === COMPLETE_PATH && line.role === role && allows(allowed, lines, index)
+      line.path === COMPLETE_PATH &&
+      line.role === role &&
+      answered(scenario, role, lines, index, shaped)
   ).length;
   return { role, count };
 }

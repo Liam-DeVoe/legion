@@ -6,27 +6,47 @@
 // runs them.
 //
 //   seed.ts project                        project WORLD_PROJECT (run-names.ts), which each run's own
-//                                          issue is filed in; the world of every scenario but
-//                                          brainstorm
-//   seed.ts tester-proof <file>            one run's own issue, the greet() issue the tester's world
-//                                          implements; writes {issue} to <file>
+//                                          issue is filed in, with WORLD_REPO (world-issue.ts) as its
+//                                          default repository, so every issue of it resolves to the
+//                                          repository the world is on; the world of every scenario
+//                                          but brainstorm
+//   seed.ts tester-proof <file> [no-name]  one run's own issue, the greet() issue a phase worker's
+//                                          world implements (world-issue.ts's words), handed to
+//                                          Legion as production hands it: `todo` by the person,
+//                                          then `in_progress` and the `legion` label by the daemon;
+//                                          writes {issue, covers} to <file>. `no-name` gives its
+//                                          check the words that miss R2's blank name (the world
+//                                          whose CLI dropped the blank-name guard); without it the
+//                                          check covers R2
+//   seed.ts plan <file> <implement body file> <base commit>
+//                                          the issue's plan.md, its plan review's approval of
+//                                          version 1 and its plan handoff at <base commit>, all
+//                                          under the session PLANNER; plan: {id, version} in <file>
+//   seed.ts pull-request <file> <gh answers file> <remote>
+//                                          the pull request the world's gh answers name, at the
+//                                          commit its branch is at on <remote>, as Dispatch's
+//                                          intake stores its head, attributed to the issue <file>
+//                                          names, written to the database $SEED_DATABASE_URL
+//                                          names (seed-handoffs.ts says why); a later call after a
+//                                          push moves it, as the push's own event does
 //   seed.ts implement-handoff <file> <body file> <commit>
 //                                          records <body file>, one JSON object, as the implement
 //                                          handoff of the issue <file> names, under the session
 //                                          IMPLEMENTER (never the run's), records its passing
-//                                          result on check k1 at <commit>, and writes {issue,
-//                                          implement: {id, version}} to <file>
+//                                          result on check k1 at <commit>, writes `testing` as the
+//                                          daemon, and writes {issue, implement: {id, version}} to
+//                                          <file>
 //   seed.ts tester-result <file> <body file> <commit>
 //                                          the same for the tester: <body file> as the issue's
-//                                          test handoff under the session TESTER, and the
-//                                          tester's own passing result on check k1 at <commit>,
-//                                          which a reviewer's approval gate reads, since a
-//                                          reviewer refuses an approval while a `before_merge`
-//                                          check of the issue has no passing result current at
-//                                          the head it reads (test: {id, version} in <file>).
-//                                          reviewer-text-findings and threads-closed seed it
-//                                          beside the implementer's, so that no agent of theirs
-//                                          reads a gate of its own as open;
+//                                          test handoff under the session TESTER, the tester's own
+//                                          passing result on check k1 at <commit>, which a
+//                                          reviewer's approval gate reads, since a reviewer
+//                                          refuses an approval while a `before_merge` check of the
+//                                          issue has no passing result current at the head it
+//                                          reads, and `needs_review` as the daemon (test: {id,
+//                                          version} in <file>). reviewer-text-findings and
+//                                          threads-closed seed it beside the implementer's, so
+//                                          that no agent of theirs reads a gate of its own as open;
 //                                          tester-proof seeds neither, since its tester records
 //                                          both itself
 //   seed.ts review-handoff <file> <body file>
@@ -121,12 +141,28 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
+  patchIssue,
+  putRepoProject,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
 import { WORLD_PROJECT } from "./run-names";
-import { captureHandoffs, phaseHandoff, type TesterFixture } from "./seed-handoffs";
+import {
+  captureHandoffs,
+  daemonStatus,
+  phaseHandoff,
+  planSeed,
+  pullRequestHead,
+  type TesterFixture,
+} from "./seed-handoffs";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
+import {
+  type CheckCovers,
+  WORLD_REPO,
+  WORLD_SPEC,
+  WORLD_TITLE,
+  worldVerification,
+} from "./world-issue";
 
 /** What `ask-on-message` writes and `capture` reads. */
 const Fixture = z.object({ issue: z.string(), message: z.string() });
@@ -595,61 +631,37 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   );
 }
 
-async function seedProject(): Promise<void> {
+/** `project`: the world's project, with the repository the world is on as its default, as a
+ * person maps it on the Settings page. Every issue of the project then resolves to that
+ * repository, as an issue of a project with one repository does in production: the issue read
+ * names it (`Repository:`), and a check's results are read against it. */
+export async function seedProject(): Promise<void> {
   await createProject({ key: WORLD_PROJECT, name: "Widgets" });
-  console.log(`seeded ${WORLD_PROJECT}`);
+  await putRepoProject(WORLD_REPO, { project: WORLD_PROJECT, default: true }, PERSON);
+  console.log(`seeded ${WORLD_PROJECT} on ${WORLD_REPO}`);
 }
 
-/** `tester-proof <file>`: the run's own greet() issue, whose spec marks what rig.sh's
- * worker_fixture meets as `requirement` blocks, and whose Verification document holds the one
- * `check` block the implementer's result and the tester's own run are recorded against. The check
- * names no `serves`, since a pointer must name a block of a document this seed has not read back;
- * the pointer rules are the Dispatch suites' to prove, not this fixture's. Each run's records go
+/** `tester-proof <file> [no-name]`: the run's own greet() issue (world-issue.ts), whose spec
+ * marks what rig.sh's worker_fixture meets as `requirement` blocks, and whose Verification
+ * document holds the one `check` block the implementer's result and every role's own run are
+ * recorded against, serving those requirements, in the words `covers` names. Then the issue is
+ * handed to Legion as production hands it: the person moves it to `todo`, and the daemon writes
+ * `in_progress` with the `legion` label, which hands it the issue's status. Each run's records go
  * on its own issue alone, and `force` passes Dispatch's duplicate check should the issue be filed
  * again. */
-export async function testerProofIssue(file: string): Promise<void> {
+export async function testerProofIssue(file: string, covers: CheckCovers = "r2"): Promise<void> {
   const issue = await createIssue(
-    {
-      project: WORLD_PROJECT,
-      force: true,
-      title: "greet(): a greeting helper for the widgets CLI",
-      spec: [
-        "## Goal",
-        "",
-        "`greet(name)` returns `Hello, <name>!`, and `bun greet.ts <name>` prints it.",
-        "",
-        "## Requirements",
-        "",
-        ":::requirement{#r1}",
-        "**R1.** `bun greet.ts Ada` prints `Hello, Ada!` and exits 0. From: the issue.",
-        ":::",
-        "",
-        ":::requirement{#r2}",
-        "**R2.** `bun greet.ts` with no name, or a blank one, exits 2 and prints `usage: greet.ts <name>` to stderr. From: the issue.",
-        ":::",
-        "",
-        ":::requirement{#r3}",
-        "**R3.** Surrounding whitespace in the name is trimmed. From: the issue.",
-        ":::",
-      ].join("\n"),
-    },
+    { project: WORLD_PROJECT, force: true, title: WORLD_TITLE, spec: WORLD_SPEC },
     FILER
   );
   await createIssueArtifact(
     issue.key,
-    {
-      name: "verification.md",
-      content: [
-        "# Verification",
-        "",
-        ':::check{#k1 surface="cli" run="bun greet.ts Ada" when="before_merge" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}',
-        "`bun greet.ts <name>` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.",
-        ":::",
-      ].join("\n"),
-    },
+    { name: "verification.md", content: worldVerification(issue.key, covers) },
     FILER
   );
-  const fixture: z.infer<typeof TesterFixture> = { issue: issue.key };
+  await patchIssue(issue.key, { status: "todo" }, { login: PERSON });
+  await daemonStatus(issue.key, "in_progress", ["legion"]);
+  const fixture: z.input<typeof TesterFixture> = { issue: issue.key, covers };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   console.log(`seeded ${issue.key}`);
 }
@@ -851,7 +863,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | capture-handoffs <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -884,6 +896,24 @@ async function main(argv: string[]): Promise<boolean> {
     await captureAskgate(file, second);
   else if (command === "tester-proof" && file !== undefined && n === 2)
     await testerProofIssue(file);
+  else if (command === "tester-proof" && file !== undefined && second === "no-name" && n === 3)
+    await testerProofIssue(file, "no-name");
+  else if (
+    command === "plan" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await planSeed(file, second, third);
+  else if (
+    command === "pull-request" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await pullRequestHead(file, second, third);
   else if (
     command === "implement-handoff" &&
     file !== undefined &&

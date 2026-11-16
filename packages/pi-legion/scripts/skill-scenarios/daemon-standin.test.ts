@@ -6,16 +6,16 @@ import { LegionActivityRequest, LegionStateResponse } from "@legion/contracts/le
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import { claimRefusal, countDefault, notCurrentPhase, refusalIn } from "./daemon-pane";
-import { bundled, spawnChecked } from "./test-programs";
+import { claimRefusal, countDefault, labelDaemon, notCurrentPhase, refusalIn } from "./daemon-pane";
+import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
 
 /** The daemon stand-in and the gh stand-in the rows start, each a bundle built from its source
  * for this suite, so no start transpiles it again (test-programs.ts). */
 const DAEMON_STANDIN = bundled(path.join(import.meta.dir, "daemon-standin.ts"));
 const GH_STANDIN = bundled(path.join(import.meta.dir, "gh-standin.ts"));
 
-/** This checkout, the one the head label is built from, whose daemon's routes a stand-in reads
- * out of the run's built-from by default. */
+/** This checkout, the one the head label is built from, whose daemon a stand-in reads out of the
+ * run's built-from by default. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
 
 // The stand-in asks the daemon's own functions for the phase its role works, which `go run`
@@ -40,24 +40,23 @@ const SECRET = "M4QZ7KWT2HXR5NBJ6YCPVD3LGE";
 
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on a
  * run directory holding `world`, which defaults to the world rig.sh builds, and in `phase` when
- * the caller names one. The run directory is named as rig.sh's cmd_run names a run of `label`,
- * which is how the stand-in reads the label whose daemon it answers as (completion-answers.ts's
- * `labelOf`); `completed` is the roles the run's world says completed their phase with a commit
- * (rig.sh's worker_boot COMPLETED); `checkout` is the checkout the run's built-from names, whose
- * daemon's routes the stand-in answers, this one by default and none at all for "". It prints
- * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits
- * for. */
+ * the caller names one. `completed` is the roles the run's world says completed their phase with
+ * a commit (rig.sh's worker_boot COMPLETED); `checkout` is the checkout the run's built-from
+ * names, whose daemon the stand-in answers as, its routes and how it takes a completion among
+ * the rest, this one by default and none at all for "". Nothing of the run directory's name is
+ * read: the daemon a run's label runs is its checkout's, never the label's. It prints `listening
+ * on http://127.0.0.1:<port>` once the socket is open, which is what this waits for. */
 let started = 0;
 async function standin(
   role: string,
   startIn = "",
   world = { repo: WORLD_REPO, base: WORLD_BASE },
-  { label = "head", completed = "", checkout = CHECKOUT } = {}
+  { completed = "", checkout = CHECKOUT } = {}
 ) {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
   // that reads the log reads its own run's lines and no earlier run's.
   started += 1;
-  const dir = path.join(work, `${role}-${label}-${started}`);
+  const dir = path.join(work, `${role}-${started}`);
   mkdirSync(dir, { recursive: true });
   const token = path.join(dir, "boot-token");
   writeFileSync(token, "rig-boot-token\n");
@@ -155,7 +154,8 @@ function git(dir: string, ...args: string[]): string {
  * bare remote whose issue branch is at the head, no review on it, the create route every world
  * answers a review with, and the merge state GitHub reports while the pull request is at that
  * head, `state` (`CLEAN` unless the row names another), every other head being `CLEAN`
- * (gh-call.ts's `mergeStateOn`). `push` puts a commit above the tip and returns it;
+ * (gh-call.ts's `mergeStateOn`), with the gh selectors worker_boot writes beside them
+ * (`writeGhSelectors`). `push` puts a commit above the tip and returns it;
  * `approve` and `requestChanges` submit a review of a head through the gh stand-in itself, so the
  * review the daemon stand-in reads is the one the world answered the call with. */
 function pullRequest(dir: string, state = "CLEAN") {
@@ -184,6 +184,7 @@ function pullRequest(dir: string, state = "CLEAN") {
       ],
     })
   );
+  writeGhSelectors(dir);
   const review = (event: string, commit: string) => {
     const body = path.join(dir, `review-${event}.json`);
     writeFileSync(body, JSON.stringify({ commit_id: commit, event, body: "the round's review" }));
@@ -398,13 +399,13 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a stand-in that takes the request keys of this checkout's contract alone. The base
-// label, built from main `ff2a10ef`, sends `ready` on every completion, and #2539 took it out of
-// this checkout's strict request, so every base completion of 2026-11-12 was answered 400
-// `unrecognized_keys` and that arm measured a world of its own (review 5887659447, finding 1).
-// A key no label sends is still refused, as the daemon refuses an undecodable body.
+// Catches: a stand-in that takes the request keys of this checkout's contract alone. An older
+// label, main `ff2a10ef` (the base label of 2026-11-12), sends `ready` on every completion, and
+// #2539 took it out of this checkout's strict request, so every base completion of 2026-11-12 was
+// answered 400 `unrecognized_keys` and that arm measured a world of its own (review 5887659447,
+// finding 1). A key no label sends is still refused, as the daemon refuses an undecodable body.
 test.skipIf(skip)(
-  "a completion carrying the base label's ready is answered as that label's daemon answered it",
+  "a completion carrying an older label's ready is answered as that label's daemon answered it",
   async () => {
     const daemon = await standin("reviewer");
     try {
@@ -613,28 +614,28 @@ function lateRefusal(role: string, phase: string, checkout = CHECKOUT) {
 
 // Catches: a stand-in that takes a completion from threads-closed's implementer, whose
 // implementing round the run's world says already stands (rig.sh's run_threads_closed passes
-// COMPLETED), and one that refuses it with an answer the daemon does not give. Either label's
-// engine refuses a late role whose row holds a completion 409 HANDOFF_NOT_CURRENT_PHASE
-// (engine.go's `leftItsPhase`, `row.Completed()`; `ff2a10ef`'s `RoleFor(issue.Phase) !=
-// fact.Role`), with the daemon's own sentence for the phase the issue stands in, which the skill
-// has the worker quote to its architect. The route's earlier HANDOFF_NO_RUN fence is not what a
-// rig half meets: each half is a live registered worker serving generation 1.
+// COMPLETED), and one that refuses it with an answer the daemon does not give. Either engine
+// refuses a late role whose row holds a completion 409 HANDOFF_NOT_CURRENT_PHASE (this checkout's
+// `leftItsPhase`, `row.Completed()`; an older daemon's `RoleFor(issue.Phase) != fact.Role`, as
+// `olderCheckout` holds it), with that daemon's own sentence for the phase the issue stands in,
+// which the skill has the worker quote to its architect. The route's earlier HANDOFF_NO_RUN fence
+// is not what a rig half meets: each half is a live registered worker serving generation 1.
 test.skipIf(skip)(
   "threads-closed's implementer, whose round stands, is refused as the daemon refuses it",
   async () => {
-    for (const [label, phase] of [
-      ["head", "accepting"],
-      ["head", "reviewing"],
-      ["base", "accepting"],
+    for (const [checkout, phase] of [
+      [CHECKOUT, "accepting"],
+      [CHECKOUT, "reviewing"],
+      [olderCheckout(), "accepting"],
     ] as const) {
       const daemon = await standin("implementer", phase, undefined, {
-        label,
+        checkout,
         completed: "implementer",
       });
       try {
         const refused = await daemon.complete(false, { commit: "0".repeat(40) });
-        expect([label, phase, refused.status]).toEqual([label, phase, 409]);
-        expect(await refused.json()).toEqual(lateRefusal("implementer", phase));
+        expect([checkout, phase, refused.status]).toEqual([checkout, phase, 409]);
+        expect(await refused.json()).toEqual(lateRefusal("implementer", phase, checkout));
         // Nothing moved: the issue stands where it stood, as the refusal says.
         expect(await daemon.phase()).toBe(phase);
       } finally {
@@ -793,33 +794,37 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a base-label stand-in answered as this checkout's daemon answers. Main `ff2a10ef`
-// has no `leftItsPhase`: its `handoff` refuses every completion from a role that does not run
-// the issue's phase 409 HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once its route has
-// let it through. That route holds a completion to the record of the phase the issue stands in,
-// so in `accepting` it refuses a named record 409 HANDOFF_RECORD_MISMATCH first.
+// Catches: a stand-in of an older daemon answered as this checkout's daemon answers, which a
+// table keyed by the label's name did once the base label moved to this checkout's daemon. An
+// older engine (main `ff2a10ef`'s, as `olderCheckout` holds it) has no `leftItsPhase`: its
+// `handoff` refuses every completion from a role that does not run the issue's phase 409
+// HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once its route has let it through. That
+// route holds a completion to the record of the phase the issue stands in, so in `accepting` it
+// refuses a named record 409 HANDOFF_RECORD_MISMATCH first. Both are read out of the checkout the
+// run's built-from names (daemon-pane.ts's `labelDaemon`).
 test.skipIf(skip)(
-  "on the base label, a reviewer's late completion is refused HANDOFF_NOT_CURRENT_PHASE",
+  "on an older daemon, a reviewer's late completion is refused HANDOFF_NOT_CURRENT_PHASE",
   async () => {
-    const rejected = await standin("reviewer", "", undefined, { label: "base" });
+    const checkout = olderCheckout();
+    const rejected = await standin("reviewer", "", undefined, { checkout });
     try {
       pullRequest(rejected.dir).requestChanges();
       expect(await rejected.phase()).toBe("implementing");
       for (const handoff of [false, true]) {
         const refused = await rejected.complete(handoff);
         expect([handoff, refused.status]).toEqual([handoff, 409]);
-        expect(await refused.json()).toEqual(lateRefusal("reviewer", "implementing"));
+        expect(await refused.json()).toEqual(lateRefusal("reviewer", "implementing", checkout));
       }
     } finally {
       rejected.stop();
     }
-    const approved = await standin("reviewer", "", undefined, { label: "base" });
+    const approved = await standin("reviewer", "", undefined, { checkout });
     try {
       pullRequest(approved.dir).approve();
       expect(await approved.phase()).toBe("accepting");
       const unnamed = await approved.complete(false);
       expect(unnamed.status).toBe(409);
-      expect(await unnamed.json()).toEqual(lateRefusal("reviewer", "accepting"));
+      expect(await unnamed.json()).toEqual(lateRefusal("reviewer", "accepting", checkout));
       const named = await approved.complete(true);
       expect(named.status).toBe(409);
       expect(await named.json()).toMatchObject({ code: "HANDOFF_RECORD_MISMATCH" });
@@ -874,51 +879,80 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a stand-in that answers a run of a label the rig models no daemon for as some other
-// label's daemon would. It reads the label from the run directory's name
-// (completion-answers.ts's `labelOf`) and refuses to boot for one `LABEL_DAEMONS` does not name.
-test("a run of a label the rig models no daemon for fails the boot", () => {
-  const dir = path.join(work, "reviewer-ablate-1");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
-  writeFileSync(
-    path.join(dir, "world.json"),
-    JSON.stringify({
-      key: "LWEVAL-1",
-      branch: "legion/LWEVAL-1",
-      pr: 1001,
-      head: "0".repeat(40),
-      repo: WORLD_REPO,
-      base: WORLD_BASE,
-    })
-  );
-  const boot = spawnChecked([
-    "bun",
-    DAEMON_STANDIN,
-    "0",
-    path.join(dir, "daemon.log"),
-    path.join(dir, "boot-token"),
-    "skills1",
-    "LWEVAL-1",
-    dir,
-    "reviewer",
-  ]);
-  expect(boot.exitCode).toBe(2);
-  expect(boot.stderr.toString()).toContain(
-    "reviewer-ablate-1 names no label this rig models a daemon for"
-  );
-});
+// Catches: a stand-in that answers a run whose daemon's completion shapes it cannot read as some
+// other daemon would. How the run's daemon takes a completion is read out of the checkout its
+// built-from names (daemon-pane.ts's `labelDaemon`), never out of the label's name, and a checkout
+// whose route is in neither shape fails the boot, naming the file. The checkout holds a daemon's
+// API source and engine alone, which is all the boot reads before it.
+test.skipIf(skip)(
+  "a run whose daemon takes a completion in neither shape fails the boot, naming the file",
+  () => {
+    const dir = path.join(work, "reviewer-neither-shape");
+    const internal = path.join(work, "neither-shape", "packages", "daemon", "internal");
+    mkdirSync(path.join(internal, "api"), { recursive: true });
+    mkdirSync(path.join(internal, "workflow"), { recursive: true });
+    writeFileSync(
+      path.join(internal, "api", "server.go"),
+      'package api\n\nfunc routes() {\n\tmux.HandleFunc("GET /legion/v1/state", s.state)\n}\n'
+    );
+    writeFileSync(
+      path.join(internal, "api", "handoff.go"),
+      "package api\n\nfunc (s *server) handoffComplete() {\n\trecordBacked := writer == grant.Role\n}\n"
+    );
+    writeFileSync(
+      path.join(internal, "workflow", "engine.go"),
+      'package workflow\n\nfunc (e *Engine) handoff() {\n\tif RoleFor(issue.Phase) != fact.Role {\n\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", "no")\n\t}\n}\n'
+    );
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "built-from"), `checkout ${path.join(work, "neither-shape")}\n`);
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        branch: "legion/LWEVAL-1",
+        pr: 1001,
+        head: "0".repeat(40),
+        repo: WORLD_REPO,
+        base: WORLD_BASE,
+      })
+    );
+    const boot = spawnChecked([
+      "bun",
+      DAEMON_STANDIN,
+      "0",
+      path.join(dir, "daemon.log"),
+      path.join(dir, "boot-token"),
+      "skills1",
+      "LWEVAL-1",
+      dir,
+      "reviewer",
+    ]);
+    expect(boot.exitCode).toBe(2);
+    expect(boot.stderr.toString()).toContain(
+      `daemon-standin: the daemon fact \`completion\` of ${path.join(work, "neither-shape")} could not be read`
+    );
+    expect(boot.stderr.toString()).toContain(
+      `${path.join(internal, "api", "handoff.go")} holds neither`
+    );
+  },
+  600_000
+);
 
 /** The sentence the older daemon (`olderCheckout`) refuses a late completion with: words of its
  * own, so a stand-in that read this checkout's daemon for that label answers with another. */
 const OLDER_SENTENCE =
   "an older daemon says the %s may not finish phase %s of %s; this completion changed nothing";
 let older: string | undefined;
-/** A second checkout of this one's daemon module, standing in for an older daemon such as the base
- * label's: a copy, so the daemon-pane.go reads that compile the daemon's own functions run in it
- * as they do in any label's checkout, and changed where an older daemon differs: it registers no
- * `claims/turn-outcome` and no `claims/activity`, and its intake writes the not-current-phase
- * refusal in `OLDER_SENTENCE`. Made once for the file. */
+/** A second checkout of this one's daemon module, standing in for an older daemon, main
+ * `ff2a10ef`'s among them: a copy, so the daemon-pane.go reads that compile the daemon's own
+ * functions run in it as they do in any label's checkout, and changed where an older daemon
+ * differs: it registers no `claims/turn-outcome` and no `claims/activity`; its engine's `handoff`
+ * refuses every late role with `if RoleFor(issue.Phase) != fact.Role { return
+ * refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(OLDER_SENTENCE, …)) }` and asks no
+ * `leftItsPhase` (the `refused` shape); and its completion route holds a completion's record to
+ * the phase the issue stands in (`phase.Handoff(issue.Phase)`, the `issue` shape). Made once for
+ * the file. */
 function olderCheckout(): string {
   if (older !== undefined) return older;
   const checkout = path.join(work, "older-checkout");
@@ -938,15 +972,24 @@ function olderCheckout(): string {
     .join("\n");
   expect(registered.length - fewer.length).toBeGreaterThan(0);
   writeFileSync(server, fewer);
-  const facts = path.join(daemon, "internal", "intake", "facts.go");
-  const written = readFileSync(facts, "utf8");
-  const reworded = written.replace(
-    /(Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt\.Sprintf\(")((?:[^"\\]|\\.)*)(")/,
-    (_whole, before: string, _sentence: string, after: string) =>
-      `${before}${OLDER_SENTENCE}${after}`
+  const engine = path.join(daemon, "internal", "workflow", "engine.go");
+  const taking = readFileSync(engine, "utf8");
+  const refusing = taking.replace(
+    /\treported := phase\.Of\(fact\.Role, issue\.Phase\)\n\tcurrent := reported == issue\.Phase\n\tif !current \{\n[\s\S]*?\n\t\}\n/,
+    (block) =>
+      `\tif RoleFor(issue.Phase) != fact.Role {\n\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("${OLDER_SENTENCE}", fact.Role, issue.Phase, issue.Key)), nil\n\t}\n${block.slice(0, block.indexOf("\tif !current {"))}`
   );
-  expect(reworded).not.toBe(written);
-  writeFileSync(facts, reworded);
+  expect(refusing).not.toBe(taking);
+  writeFileSync(engine, refusing);
+  const route = path.join(daemon, "internal", "api", "handoff.go");
+  const left = readFileSync(route, "utf8");
+  const ofIssue = left.replace(
+    '\tof := phase.Of(grant.Role, issue.Phase)\n\tif of == "" {\n\t\tof = issue.Phase\n\t}\n\tword, writer, handoffPhase := phase.Handoff(of)\n\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0\n\trecordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)\n',
+    '\tof := issue.Phase\n\tword, writer, handoffPhase := phase.Handoff(issue.Phase)\n\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0\n\trecordBacked := handoffPhase && writer == grant.Role\n'
+  );
+  expect(ofIssue).not.toBe(left);
+  writeFileSync(route, ofIssue);
+  expect(labelDaemon(checkout)).toEqual({ lateRole: "refused", recordRoute: "issue" });
   older = checkout;
   return checkout;
 }
@@ -1049,17 +1092,14 @@ test.skipIf(skip)(
 );
 
 // Catches: a stand-in that answers a route because it has a case for it rather than because the
-// run's label's daemon registers it. The base label's daemon, `ff2a10ef`, registers no
+// run's label's daemon registers it. An older daemon, main `ff2a10ef`, registers no
 // `claims/turn-outcome`, so its runs' plugin never posts one and a daemon of its would answer one
 // 404; a daemon registering no such route, read out of its own source, gets that 404 here, and
 // the routes it does register are answered.
 test.skipIf(skip)(
   "a route the label's daemon does not register is answered 404, whatever the stand-in has a case for",
   async () => {
-    const daemon = await standin("reviewer", "", undefined, {
-      label: "base",
-      checkout: olderCheckout(),
-    });
+    const daemon = await standin("reviewer", "", undefined, { checkout: olderCheckout() });
     try {
       expect(
         (await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", 1, "clean"))).status
@@ -1134,15 +1174,15 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a base-label stand-in that answers a late completion with this checkout's daemon's
-// sentence rather than its own label's. The sentence, and the phase table the boot reads, come
-// out of the checkout the run's built-from names, here a daemon that words the refusal in
-// `OLDER_SENTENCE`.
+// Catches: a stand-in of an older daemon that answers a late completion with this checkout's
+// daemon's sentence rather than its own. The sentence, the phase table the boot reads and how the
+// daemon takes a completion come out of the checkout the run's built-from names, here a daemon
+// that words the refusal in `OLDER_SENTENCE`.
 test.skipIf(skip)(
   "a late completion is refused in the sentence of the label's own daemon",
   async () => {
     const checkout = olderCheckout();
-    const daemon = await standin("reviewer", "", undefined, { label: "base", checkout });
+    const daemon = await standin("reviewer", "", undefined, { checkout });
     try {
       pullRequest(daemon.dir).requestChanges();
       expect(await daemon.phase()).toBe("implementing");
@@ -1162,14 +1202,24 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches the same against the base label's own daemon, main `ff2a10ef`, where a checkout of it
-// is on the host (SKILL_SCENARIOS_BASE_CHECKOUT, as the contract row above reads it): its engine
-// writes the refusal as `refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(<format>, fact.Role,
-// issue.Phase, issue.Key))`, and the stand-in answers in that format filled.
-test.skipIf(skip || baseCheckout === undefined)(
-  "a base-label late completion is refused in the base daemon's own sentence",
+// Catches the same against an older daemon's own source, main `ff2a10ef`'s (2026-11-07), where a
+// checkout of it is on the host (SKILL_SCENARIOS_OLDER_CHECKOUT names it; the base label was once
+// built from it, and is built from main at the head's newest forward merge now, so the base
+// label's checkout is no checkout of it): its engine writes the refusal as
+// `refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(<format>, fact.Role, issue.Phase,
+// issue.Key))`, its own source reads as the older shapes, and the stand-in answers in that
+// format filled.
+const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
+if (olderHost === undefined)
+  console.warn(
+    `Skipped the older daemon's own-sentence row in ${import.meta.path}. ` +
+      "SKILL_SCENARIOS_OLDER_CHECKOUT names no checkout of main ff2a10ef to read its " +
+      "packages/daemon from. Name one and run the tests again."
+  );
+test.skipIf(skip || olderHost === undefined)(
+  "an older daemon's late completion is refused in that daemon's own sentence",
   async () => {
-    const checkout = baseCheckout ?? "";
+    const checkout = olderHost ?? "";
     const engine = readFileSync(
       path.join(checkout, "packages", "daemon", "internal", "workflow", "engine.go"),
       "utf8"
@@ -1179,7 +1229,8 @@ test.skipIf(skip || baseCheckout === undefined)(
         engine
       ) ?? [];
     expect(format).not.toBe("");
-    const daemon = await standin("reviewer", "", undefined, { label: "base", checkout });
+    expect(labelDaemon(checkout)).toEqual({ lateRole: "refused", recordRoute: "issue" });
+    const daemon = await standin("reviewer", "", undefined, { checkout });
     try {
       pullRequest(daemon.dir).requestChanges();
       const refused = await daemon.complete(true);

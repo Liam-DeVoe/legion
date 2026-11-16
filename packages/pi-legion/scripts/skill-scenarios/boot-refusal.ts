@@ -20,11 +20,12 @@ import { type SessionEntry, transcriptEntries } from "./transcript";
 const USAGE = "usage: boot-refusal.ts <run dir> <role> <since> <sessions dir>";
 
 /** The words the sentence every label's plugin prints for a claim boot that registered and could
- * not finish starts with: main ff2a10ef's `claim boot failed after claims/register registered
- * <claim token>; …` (packages/pi-shared/src/legion-claim-core.ts:97 there) and this checkout's
- * `claim boot failed at <step> after claims/register registered <role> with the daemon at …; …`
- * (`stopAfterRegistration`). Only an output that holds them is read for the label's own
- * opening (`claimBootOpening`), so a run that met no such failure needs no checkout to read. */
+ * not finish starts with: an older plugin's, main ff2a10ef's, `claim boot failed after
+ * claims/register registered <claim token>; …` (packages/pi-shared/src/legion-claim-core.ts:97
+ * there) and this checkout's `claim boot failed at <step> after claims/register registered <role>
+ * with the daemon at …; …` (`stopAfterRegistration`). Only an output that holds them is read for
+ * the label's own opening (`claimBootOpening`), so a run that met no such failure needs no
+ * checkout to read. */
 const CLAIM_BOOT_WORDS = "claim boot failed ";
 /** The module, under a checkout, that writes that sentence. */
 const CLAIM_CORE = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
@@ -34,10 +35,11 @@ const claimBootOpenings = new Map<string, string>();
  * and could not finish, read out of that checkout's own CLAIM_CORE, as the daemon facts a run's
  * stand-in answers by are read out of its checkout: the value of the module's
  * CLAIM_BOOT_FAILED_OPENING where it names one (this checkout's, `claim boot failed at `), and
- * otherwise the text of the template that writes the sentence up to its first substitution
- * (main ff2a10ef's, `claim boot failed after claims/register registered `). The labels word it
- * apart, so one label's opening read for another's runs never finds the other's sentence. Throws
- * for a checkout whose module writes no such sentence: what its plugin prints is unknown. */
+ * otherwise the text of the template that writes the sentence up to its first substitution (an
+ * older plugin's, main ff2a10ef's, `claim boot failed after claims/register registered `). The two
+ * word it apart, so one checkout's opening read for another's runs never finds the other's
+ * sentence. Throws for a checkout whose module writes no such sentence: what its plugin prints is
+ * unknown. */
 export function claimBootOpening(checkout: string): string {
   const known = claimBootOpenings.get(checkout);
   if (known !== undefined) return known;

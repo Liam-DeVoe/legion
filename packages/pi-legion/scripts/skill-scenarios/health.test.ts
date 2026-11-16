@@ -6,8 +6,10 @@ import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
 import {
   loadRun,
   mounted,
+  namesOf,
   namesSaid,
   offWorldReach,
+  ownNames,
   serviceProvenance,
   unfinished,
   writtenBy,
@@ -1304,78 +1306,193 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
   });
 });
 
-// Rule 17, names: an agent's own sentence that says a scenario, case or label word, by the
-// vocabulary run-names.ts derives from the rig's scenario table and the labels, never typed
-// here. Catches: the batch at c273084d, 16 of whose 36 runs reasoned from the run's name, read
-// healthy; and the work's own plain words read as the measurement's.
-describe("health: rule 17, names, in what an agent says", () => {
-  const FILE = "sessions/2026-11-16T00-00-00-000Z_s1.jsonl";
-  const said = (kind: string, text: string) => ({
-    said: [{ file: FILE, kind, text }],
-    label: "head",
+// Rule 17, names: a scenario, case or label word an agent says, by the vocabulary run-names.ts
+// derives from the rig's scenario table and the labels (never typed here), is a leak only where
+// an input of the run held it before any agent of the run wrote it. Catches: the batch at
+// c273084d, 16 of whose 36 runs reasoned from the run's name, read healthy; and the preflight at
+// cc09c638, three of whose head runs were called unhealthy for "text-only", a word their agents
+// made: no skill file, user message or tool result held it before they wrote it.
+describe("health: rule 17, names, traced to where an agent got them", () => {
+  const runs = temporaryDirectories("health-names");
+  const header = { type: "session", id: "s1" };
+  const at = (minute: number) => `2026-11-16T01:${String(minute).padStart(2, "0")}:00.000Z`;
+  const user = (text: string, minute = 0) => ({
+    type: "message",
+    timestamp: at(minute),
+    message: { role: "user", content: [{ type: "text", text }] },
   });
+  const result = (tool: string, text: string, minute = 0) => ({
+    type: "message",
+    timestamp: at(minute),
+    message: {
+      role: "toolResult",
+      toolName: tool,
+      toolCallId: "c1",
+      content: [{ type: "text", text }],
+    },
+  });
+  const says = (kind: "text" | "thinking", text: string, minute = 0) => ({
+    type: "message",
+    timestamp: at(minute),
+    message: {
+      role: "assistant",
+      content: [kind === "text" ? { type: "text", text } : { type: "thinking", thinking: text }],
+    },
+  });
+  const call = (tool: string, args: object, minute = 0) => ({
+    type: "message",
+    timestamp: at(minute),
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c1", name: tool, arguments: args }],
+    },
+  });
+  const delivered = (text: string, minute = 0) => ({
+    type: "custom_message",
+    customType: "envoy-message",
+    timestamp: at(minute),
+    content: text,
+  });
+  /** A run holding `transcripts` (each a path under the run and its entries, after a header) and
+   * `files` (each a path under the run and its text), read as `rig.sh health` reads it. */
+  function runWith(transcripts: Record<string, object[]>, files: Record<string, string> = {}) {
+    const dir = path.join(runs(), "0123456789ab");
+    for (const [file, entries] of Object.entries(transcripts)) {
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(
+        path.join(dir, file),
+        [header, ...entries].map((entry) => `${JSON.stringify(entry)}\n`).join("")
+      );
+    }
+    for (const [file, text] of Object.entries(files)) writeFileSync(path.join(dir, file), text);
+    return loadRun(dir, "threads-closed", "head");
+  }
+  const FILE = "sessions/s1.jsonl";
 
-  test("a scenario, case or label word an agent says or thinks makes the run unhealthy, naming the sentence", () => {
-    // The batch's own thinking, verbatim.
+  test("a word a tool result held before the agent wrote it makes the run unhealthy, naming the result", () => {
+    const thought =
+      "The run name points to a text-only case, so I expect the findings to be wording rather than behavioural.";
+    const run = runWith({
+      [FILE]: [
+        user("Review the pull request."),
+        call("read", { path: "docs/cli.md" }),
+        result("read", "These are the text-only findings."),
+        says("thinking", `Let me look again. ${thought} Next.`),
+      ],
+    });
+    expect(namesSaid(run)).toBe(
+      `names: a thinking part in ${FILE} says "text-only": "${thought}", which the result of read in ${FILE} held before any agent of the run wrote it`
+    );
+    // A case word beside a label word, as a run's name puts them, that a message held.
     expect(
       namesSaid(
-        said(
-          "thinking",
-          "Let me look again. The run name points to a text-only case, so I expect the findings to be wording rather than behavioural. Next."
-        )
+        runWith({
+          [FILE]: [
+            delivered("The defect head world is yours."),
+            says("text", "This is the defect head run, so the verdict is CHANGES."),
+          ],
+        })
       )
     ).toBe(
-      `names: a thinking part in ${FILE} says "text-only": "The run name points to a text-only case, so I expect the findings to be wording rather than behavioural."`
+      `names: a text part in ${FILE} says "defect head": "This is the defect head run, so the verdict is CHANGES.", which the envoy-message message in ${FILE} held before any agent of the run wrote it`
     );
-    // A case word beside a label word, as a run's name puts them, in the agent's text.
-    expect(namesSaid(said("text", "This is the defect head run, so the verdict is CHANGES."))).toBe(
-      `names: a text part in ${FILE} says "defect head": "This is the defect head run, so the verdict is CHANGES."`
-    );
-    // Every distinctive word of the derived vocabulary, planted alone.
+    // Every distinctive word of the derived vocabulary, a tool result's before the agent's.
     const missed = vocabulary(["head", "base"]).distinctive.filter(
-      (word) => namesSaid(said("text", `I think this is the ${word} one.`)) === undefined
+      (word) =>
+        namesSaid(
+          runWith({
+            [FILE]: [
+              result("bash", `ls: ${word}`),
+              says("text", `I think this is the ${word} one.`),
+            ],
+          })
+        ) === undefined
     );
     expect(missed).toEqual([]);
   });
 
-  test("a run whose agents say the work's own plain words stays healthy", () => {
+  test("a scenario name the prompt or a path in a tool result held makes the run unhealthy", () => {
     expect(
       namesSaid(
-        said(
-          "text",
-          "The head SHA is a0ce49e. The base branch is main, and its protection requires `test`. This is not a defect: the link is fine."
+        runWith(
+          { [FILE]: [says("text", "This is the threads-closed world.")] },
+          { "prompt.txt": "Review the threads-closed world's pull request.\n" }
         )
       )
-    ).toBe(undefined);
+    ).toBe(
+      `names: a text part in ${FILE} says "threads-closed": "This is the threads-closed world.", which <run>/prompt.txt held before any agent of the run wrote it`
+    );
+    // A later agent's own transcript: the run's path, named in a listing, holds the word.
     expect(
-      namesSaid(said("thinking", "Compare the base and the head, then upload the facts."))
+      namesSaid(
+        runWith({
+          [FILE]: [says("text", "Fixed both threads.")],
+          "sessions/reviewer/s2.jsonl": [
+            result("bash", "/work/runs/threads-closed-text-fixes-head-1/cwd"),
+            says("thinking", "The scenario label points to the threads-closed case. So CHANGES."),
+          ],
+        })
+      )
+    ).toBe(
+      `names: a thinking part in sessions/reviewer/s2.jsonl says "threads-closed": "The scenario label points to the threads-closed case.", which the result of bash in sessions/reviewer/s2.jsonl held before any agent of the run wrote it`
+    );
+  });
+
+  test("the same word written by the run's agents before any input held it is healthy, and reported as theirs", () => {
+    const coined =
+      "Since those are text-only issues rather than code that changes behavior, I approve.";
+    const alone = runWith({ [FILE]: [user("Review the pull request."), says("thinking", coined)] });
+    expect(namesSaid(alone)).toBe(undefined);
+    expect(namesOf(alone).own).toEqual([
+      `a thinking part in ${FILE} says "text-only": "${coined}"`,
+    ]);
+    expect(ownNames([alone])).toBe(
+      `health: names its agents wrote before any input held them (no verdict): 1 of 1 runs: 0123456789ab (a thinking part in ${FILE} says "text-only": "${coined}")`
+    );
+    // Written first in a tool call's arguments, then echoed by its result: the agent's own.
+    expect(
+      namesSaid(
+        runWith({
+          [FILE]: [
+            call("bash", { command: "echo 'a text-only fix' >notes.md" }, 1),
+            result("bash", "a text-only fix", 2),
+            says("text", "The text-only fix is in.", 3),
+          ],
+        })
+      )
+    ).toBe(undefined);
+    // Sent by one agent of the run to the next: the message the reviewer was given holds what
+    // the implementer wrote a minute before.
+    expect(
+      namesSaid(
+        runWith({
+          [FILE]: [call("envoy_publish", { message: "text-only fixes pushed" }, 44)],
+          "sessions/reviewer/s2.jsonl": [
+            delivered("implementer: text-only fixes pushed", 45),
+            says("text", "The text-only fixes are in.", 46),
+          ],
+        })
+      )
     ).toBe(undefined);
   });
 
-  // Catches: a reader of the run that leaves the agent's thinking, or a later agent's
-  // transcript, out of what it says: each part is read from the run's own transcripts.
-  const runs = temporaryDirectories("health-names");
-  test("a word in a later agent's thinking, read from its transcript, names the run", () => {
-    const dir = path.join(runs(), "0123456789ab");
-    const turn = (part: object) =>
-      `${JSON.stringify({ type: "session", id: "s1" })}\n${JSON.stringify({
-        type: "message",
-        message: { role: "assistant", content: [part] },
-      })}\n`;
-    mkdirSync(path.join(dir, "sessions", "reviewer"), { recursive: true });
-    writeFileSync(
-      path.join(dir, "sessions", "s1.jsonl"),
-      turn({ type: "text", text: "Fixed both threads." })
-    );
-    writeFileSync(
-      path.join(dir, "sessions", "reviewer", "s2.jsonl"),
-      turn({
-        type: "thinking",
-        thinking: "The scenario label points to the code-defect case. So CHANGES.",
-      })
-    );
-    expect(namesSaid(loadRun(dir, "threads-closed", "head"))).toBe(
-      `names: a thinking part in sessions/reviewer/s2.jsonl says "code-defect": "The scenario label points to the code-defect case."`
-    );
+  test("the brief's control sentences stay healthy, whatever the inputs held of their plain words", () => {
+    const run = runWith({
+      [FILE]: [
+        result("bash", "head 0a1b2c3 on base main"),
+        says(
+          "text",
+          "The head SHA is a0ce49e. The base branch is main, and its protection requires `test`. This is not a defect: the link is fine."
+        ),
+        says(
+          "thinking",
+          "Compare the base and the head, then upload the facts. These are text-only."
+        ),
+      ],
+    });
+    expect(namesSaid(run)).toBe(undefined);
+    expect(namesOf(run).own).toEqual([
+      `a thinking part in ${FILE} says "text-only": "These are text-only."`,
+    ]);
   });
 });

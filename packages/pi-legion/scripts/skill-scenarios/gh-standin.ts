@@ -83,6 +83,15 @@ import {
   isObject,
   type Operation,
 } from "./gh-routes";
+// The Legion gh wrapper's reading of the owners a call names, by its own selector table: one
+// reading for this stand-in's refusal and health's judgement of it.
+import {
+  type GhSelectors,
+  ghTargetOf,
+  ownerRefusal,
+  RUN_SELECTORS,
+  runSelectors,
+} from "./gh-selectors";
 // The pull request's review threads as the run has left them, and the merge state they leave it
 // in: one replay of the record for this stand-in and the daemon stand-in.
 import {
@@ -312,6 +321,40 @@ function exit(status: number): never {
     `${JSON.stringify({ at, as, by, argv: args, files, stdin, route: route?.match ?? null, body: kept, review: answered, exit: status })}\n`
   );
   process.exit(status);
+}
+/** The Legion gh wrapper's refusal of a call naming an owner outside the world's project, which
+ * production's gh never reaches GitHub for: read by the wrapper's own selector table of the run's
+ * label (gh-selectors.ts's `ghTargetOf`, over the selectors rig.sh's worker_boot wrote into the
+ * run) and refused with the line the wrapper prints for that form of naming it (`ownerRefusal`),
+ * exit 2, for every role, whatever the route behind it. The pane's GH_REPO is read where the
+ * wrapper reads it. A pane that names no LEGION_GH_OWNERS_DIR is given the wrapper's refusal of
+ * that, its first line, exit 2 too. A run with no world names no project; a world whose
+ * selectors cannot be read is the rig's fault, and the call ends with 2, naming the file, as a
+ * world.json that is no world ends it. */
+if (as === "gh" && world !== undefined) {
+  let selectors: GhSelectors | undefined;
+  try {
+    selectors = runSelectors(run);
+  } catch (error) {
+    process.stderr.write(`gh: ${error instanceof Error ? error.message : String(error)}\n`);
+    exit(2);
+  }
+  if (selectors === undefined) {
+    process.stderr.write(
+      `gh: ${run}/${RUN_SELECTORS} is not there, so no owner of this world's project is known (rig.sh's worker_boot writes it)\n`
+    );
+    exit(2);
+  }
+  const owners = process.env.LEGION_GH_OWNERS_DIR;
+  const refusal = ownerRefusal(ghTargetOf(args, selectors, process.env), world.repo, owners ?? "");
+  if (refusal !== undefined) {
+    process.stderr.write(
+      owners
+        ? refusal
+        : "legion gh: LEGION_GH_OWNERS_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh\n"
+    );
+    exit(2);
+  }
 }
 /** What `git -C <run>/remote.git <args...>` prints, or undefined when the command fails: the
  * run's own bare remote, read at the call. A run with no remote of its own fails every call. */

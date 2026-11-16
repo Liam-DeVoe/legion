@@ -26,22 +26,32 @@ import { z } from "zod";
 
 /** Every scenario rig.sh runs, by the name `rig.sh batch` and `rig.sh run` take: the variable
  * that names its case (rig.sh's scenario_case reads it through `caseOf`), the cases it takes, in
- * the order a refusal lists them, and the case an unset variable gives, where unset is a case.
+ * the order a refusal lists them, the case an unset variable gives, where unset is a case, and
+ * `world: "worker"` where rig.sh builds it a worker world (worker_run_world): a Legion issue whose
+ * seeds record results at the world's pull request, which the run's Dispatch checks against its
+ * GitHub at the seed (github-routes.ts, measured), and whose head watcher it starts (start_heads).
  * A scenario with no cases takes none. It is the rig's one scenario table: the cases a run may be
- * built for, the cases score.ts and health read back, and the words the vocabulary holds
- * (`vocabulary`) are all this table. */
+ * built for, the cases score.ts and health read back, the worlds health holds to the GitHub and
+ * head records (rules 18 and 19), and the words the vocabulary holds (`vocabulary`) are all this
+ * table. */
 export const SCENARIOS: Readonly<
   Record<
     string,
-    { readonly variable?: string; readonly cases: readonly string[]; readonly unset?: string }
+    {
+      readonly variable?: string;
+      readonly cases: readonly string[];
+      readonly unset?: string;
+      readonly world?: "worker";
+    }
   >
 > = {
   "ask-on-message": { cases: [] },
   "measure-before-ask": { cases: [] },
-  "tester-proof": { cases: [] },
+  "tester-proof": { cases: [], world: "worker" },
   "reviewer-text-findings": {
     variable: "SKILL_SCENARIOS_REVIEWER_CASE",
     cases: ["text-only", "defect"],
+    world: "worker",
   },
   // Unset is text-fixes, the scenario's measured arm, which the check that runs it names no
   // variable for.
@@ -49,6 +59,7 @@ export const SCENARIOS: Readonly<
     variable: "SKILL_SCENARIOS_THREADS_CASE",
     cases: ["text-fixes", "code-defect"],
     unset: "text-fixes",
+    world: "worker",
   },
   brainstorm: { cases: [] },
   askgate: {
@@ -71,6 +82,11 @@ export const SCENARIOS: Readonly<
 /** The cases of `scenario`, none for a scenario that takes none or that SCENARIOS does not name. */
 export function casesOf(scenario: string): readonly string[] {
   return SCENARIOS[scenario]?.cases ?? [];
+}
+
+/** Whether rig.sh builds `scenario` a worker world (SCENARIOS' `world`). */
+export function workerWorld(scenario: string): boolean {
+  return SCENARIOS[scenario]?.world === "worker";
 }
 
 /** The case `env` names for `scenario` through the scenario's own variable, "" for a scenario
@@ -317,6 +333,16 @@ export function proseNames(sentence: string, vocab: Vocabulary): string | undefi
   return pair?.[0];
 }
 
+/** Whether `text`, an input an agent was given or a thing it wrote, holds `word`, a word
+ * `proseNames` read in a sentence: where a word starts and ends (no letter or digit beside it, an
+ * underscore read as a hyphen), so a path that names a run (`runs/threads-closed-text-fixes-
+ * head-1/`) holds its scenario word, and a space in a pair (`defect head`) is a space or a
+ * hyphen. */
+export function holds(text: string, word: string): boolean {
+  const pattern = literal(word).replaceAll(" ", "[ -]");
+  return new RegExp(`(?<![a-z0-9])${pattern}(?![a-z0-9])`).test(folded(text));
+}
+
 /** The labels the work directory `work` holds a profile for (`rig.sh profile`), by the names
  * under <work>/profiles. */
 export function workLabels(work: string): string[] {
@@ -402,98 +428,42 @@ export function mountedPaths(runDir: string): string[] {
   return mounted;
 }
 
-/** The largest file the guard reads: a file an agent reads at a glance is far smaller, and a
- * larger one in a run's world is a repository's pack or a build. */
-const FILE_BOUND = 1 << 20;
+/** The files of a run the rig composes for each launch of an agent, beside its pane file (read
+ * as its variables), its prompt and its system prompt (`worldNames`), each written afresh before
+ * the launch the guard reads it for: the stand-ins on its PATH (rig.sh's standins: <run>/bin/gh,
+ * <run>/bin/bun and the gh bundle <run>/lib/gh.js) and the jj configuration its JJ_CONFIG names
+ * (worker_boot's <run>/jj.toml). Each is small and read whole.
+ *
+ * Nothing else the world shows is read, for three reasons:
+ *   - the label's install (<work>/installs/<id>: its packed plugins, HOME and model route) is a
+ *     checkout's production artifact, which a production agent reads too, and a scenario's word
+ *     is often this product's own (`SPEC_WRITING_POINTER` in pi-legion's dist/legion.js, from
+ *     packages/contracts/src/dispatch-tools.ts): every base agent of the preflight at cc09c638 was
+ *     refused on it, and the head's passed only because its legion.js was over a size bound;
+ *   - what a run has written (its sessions/, out*.txt, cwd/, ws/, calls.jsonl, a HOME an agent
+ *     used), which holds its agents' own words: read before a run's second agent, the first
+ *     agent's transcript refused it (threads-closed-text-fixes-head-1 at cc09c638);
+ *   - the world's repositories and gh answers (world.json, fixtures.json, src/, ws/,
+ *     remote.git), written before the first agent and written into by the run after, which
+ *     rig.test.ts's "what the rig writes into a run's world" holds to the same words for every
+ *     world rig.sh builds; and the rig's records (built-from, services-from, namespace.txt and the
+ *     rest), which name the rig's own paths in every run and which a gVisor pod cannot hide
+ *     (rig.sh's world_paths). */
+export const COMPOSED = ["bin/gh", "bin/bun", "lib/gh.js", "jj.toml"];
 
-/** The text of `file` where it is text an agent reads: at most FILE_BOUND bytes, with no NUL byte
- * in its first 8 KiB (a binary file or a git object is passed over). */
-function textOf(file: string): string | undefined {
-  if (statSync(file).size > FILE_BOUND) return undefined;
-  const bytes = readFileSync(file);
-  return bytes.subarray(0, 8192).includes(0) ? undefined : bytes.toString("utf8");
-}
-
-/** The rig's records of a run that are files at the top of its directory: they name the rig's
- * own paths (built-from, services-from), the world's layout (namespace.txt, launch.sh, the pane
- * and its prompts) or the batch's (scratch-before.txt, dispatch.json, the seed's fixture). No
- * process of the run reads them, and a gVisor pod refuses the mount onto a file that would hide
- * them (rig.sh's world_paths), so an agent can read them; `shownFiles` passes them over, since
- * services-from names the rig's own directory in every run. The pane and its prompts are read
- * as the agent's environment and command line instead (`worldNames`). */
-export const RECORDS = [
-  "built-from",
-  "services-from",
-  "namespace.txt",
-  "launch.sh",
-  "scratch-before.txt",
-  "scratch-created.txt",
-  "system-args",
-  "prompt.txt",
-  "pane.env",
-  "worker.env",
-  "dispatch.json",
-  "fixture.json",
-  "fixture.log",
-  "booted",
-];
-
-/** Every regular file the run's world shows under the work directory `work`, which is the rig's
- * own: the run's directory, its label's install and the batch's tokens (<run>/namespace.txt's rw
- * and ro paths there), less each path the world hides there (`hide`, rig.sh's world_paths) and the
- * rig's records (RECORDS), walked without following a link. The tool directories the world shows
- * are the operator's own, and are not read. */
-export function shownFiles(runDir: string, work: string): string[] {
-  const file = path.join(runDir, "namespace.txt");
-  if (!existsSync(file)) return [];
-  const lines = readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => ({
-      kind: line.slice(0, line.indexOf(" ")),
-      at: line.slice(line.indexOf(" ") + 1),
-    }));
-  const hidden = new Set([
-    ...lines.filter(({ kind }) => kind === "hide").map(({ at }) => at),
-    ...RECORDS.map((record) => path.join(runDir, record)),
-  ]);
-  const seen = new Set<string>();
-  const found: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const at = path.join(dir, entry.name);
-      if (hidden.has(at) || seen.has(at)) continue;
-      seen.add(at);
-      if (entry.isDirectory()) walk(at);
-      else if (entry.isFile()) found.push(at);
-    }
-  };
-  for (const { kind, at } of lines)
-    if (
-      (kind === "rw" || kind === "ro") &&
-      (at === work || at.startsWith(`${work}/`)) &&
-      !hidden.has(at) &&
-      existsSync(at) &&
-      statSync(at).isDirectory()
-    )
-      walk(at);
-  return found;
-}
-
-/** The first word of the vocabulary (`vocabulary` of `labels`) in what the agent about to start
- * in `runDir` can read, as rig.sh's launch has written it: every variable of its pane file, its
- * name and its value (a value with a `/`, and a NAMED_VARS value, read as a name: `nameWords`;
- * any other as text: `textWords`), which holds its profile, its Legion project, issue and tree
- * (so the Envoy topics they make), its HOME and TMPDIR; every path its namespace mounts
- * (`mountedPaths`); its working directory and session directory; its prompt and its system
- * prompt, which its command line, /proc/1's, carries; and every file its world shows under the
- * work directory `work` (`shownFiles`), its stand-ins in <run>/bin and the gh bundle in <run>/lib
- * among them, which a `cat` shows, each named with the text around the word. */
+/** The first word of the vocabulary (`vocabulary` of `labels`) in what the rig composes for the
+ * agent about to start in `runDir`, as rig.sh's launch has written it: every variable of its pane
+ * file, its name and its value (a value with a `/`, and a NAMED_VARS value, read as a name:
+ * `nameWords`; any other as text: `textWords`), which holds its profile, its Legion project,
+ * issue and tree (so the Envoy topics they make), its HOME and TMPDIR; every path its namespace
+ * mounts (`mountedPaths`: each a mount point and the host source /proc/self/mountinfo names);
+ * its working directory and session directory; its prompt and its system prompt, which its
+ * command line, /proc/1's, carries; and the files of COMPOSED, each named with the text around
+ * the word. */
 export function worldNames(
   runDir: string,
   sessionsDir: string,
-  labels: readonly string[],
-  work: string
+  labels: readonly string[]
 ): Named | undefined {
   const vocab = vocabulary(labels);
   const checks: { place: string; value: string; name: boolean }[] = [];
@@ -509,22 +479,16 @@ export function worldNames(
     checks.push({ place: "a mount of its namespace", value: mounted, name: true });
   checks.push({ place: "its working directory", value: path.join(runDir, "cwd"), name: true });
   checks.push({ place: "its session directory", value: sessionsDir, name: true });
-  for (const file of ["prompt.txt", "system-args"]) {
+  for (const file of ["prompt.txt", "system-args", ...COMPOSED]) {
     const at = path.join(runDir, file);
-    if (existsSync(at))
+    if (existsSync(at) && statSync(at).isFile())
       checks.push({ place: `<run>/${file}`, value: readFileSync(at, "utf8"), name: false });
   }
   for (const { place, value, name } of checks) {
     const word = name ? nameWords(value, vocab) : textWords(value, vocab);
-    if (word !== undefined) return { place, word, value };
-  }
-  for (const file of shownFiles(runDir, work)) {
-    const text = textOf(file);
-    const word = text === undefined ? undefined : textWords(text, vocab);
-    if (text === undefined || word === undefined) continue;
-    const at = Math.max(0, folded(text).search(literal(word)));
-    const place = file.startsWith(`${runDir}/`) ? `<run>/${path.relative(runDir, file)}` : file;
-    return { place, word, value: text.slice(Math.max(0, at - 60), at + 140) };
+    if (word === undefined) continue;
+    const at = Math.max(0, folded(value).search(literal(word)));
+    return { place, word, value: value.slice(Math.max(0, at - 60), at + 140) };
   }
   return undefined;
 }
@@ -546,7 +510,7 @@ if (import.meta.main) {
     }
   } else if (command === "guard" && rest.length === 3) {
     const [runDir = "", sessionsDir = "", work = ""] = rest;
-    const named = worldNames(runDir, sessionsDir, workLabels(work), work);
+    const named = worldNames(runDir, sessionsDir, workLabels(work));
     if (named !== undefined) {
       console.error(
         `the world of ${path.basename(runDir)} names "${named.word}" in ${named.place}: ${named.value.slice(0, 200)}`

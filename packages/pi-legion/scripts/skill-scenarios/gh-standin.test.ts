@@ -1,6 +1,8 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import {
+  appendFileSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -12,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { DAEMON_MODULE, labelGhSelectors, labelGhTable } from "./daemon-pane";
 import { readWorld, sentBody } from "./gh-call";
 import {
   commandsIn,
@@ -21,8 +24,10 @@ import {
   WORLD_ROUTES,
   worldRouteOf,
 } from "./gh-routes";
+import { type GhSelectors, type GhTable, MODELLED } from "./gh-selectors";
+import { ghUndeclared, guardRefusal, loadRun, offWorldReach, workflowRepositories } from "./health";
 import { REMOVED_NAMES } from "./run-names";
-import { bundled, spawnChecked } from "./test-programs";
+import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
 // has every pushing role read that head after its own push and stop when it is not its commit. A
@@ -62,26 +67,44 @@ function git(dir: string, ...args: string[]): string {
   return result.stdout.toString().trim();
 }
 
+/** The gh owners directory a worker pane names (daemon-pane.ts's `LEGION_GH_OWNERS_DIR`, the
+ * claim's gh bundle under the run's state directory), which the Legion gh wrapper's refusal of an
+ * owner outside the project names. */
+const PANE_OWNERS = "/run/state/secrets/LWEVAL-1-reviewer-gh";
 /** The environment the stand-in answers a call under in the run whose directory is `dir`
  * (GH_DATA_DIR), as the pane of the role `by` names (LEGION_ROLE): this process's own without
- * the role a Legion pod's environment carries, so a call records `by` and no other role. */
-function callEnv(dir: string, by?: string): Record<string, string | undefined> {
+ * the role and the GH_REPO a Legion pod's environment may carry, so a call records `by` and no
+ * other role and reads no repository of the pod's, with the pane's gh owners directory
+ * (PANE_OWNERS) in place of the pod's, and `vars` over it (the GH_REPO a pane names). */
+function callEnv(
+  dir: string,
+  by?: string,
+  vars: Record<string, string> = {}
+): Record<string, string | undefined> {
   const own = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => name !== "LEGION_ROLE")
+    Object.entries(process.env).filter(([name]) => name !== "LEGION_ROLE" && name !== "GH_REPO")
   );
-  return { ...own, GH_DATA_DIR: dir, ...(by === undefined ? {} : { LEGION_ROLE: by }) };
+  return {
+    ...own,
+    GH_DATA_DIR: dir,
+    LEGION_GH_OWNERS_DIR: PANE_OWNERS,
+    ...(by === undefined ? {} : { LEGION_ROLE: by }),
+    ...vars,
+  };
 }
 
 /** The run directory every `runDir` is a copy of: the routes rig.sh's fixture_write writes for
  * every world, run here against a pull request whose head is the first of two commits and whose
- * body is "a body", the world.json it writes, and a bare remote of its own whose issue branch
- * holds those two commits. Nothing fixture_write writes names the directory, so a copy is the
- * run it would have written there. It is built once, in the hook below, because building it is a
- * dozen git and bash processes, which a row that built its own spent before its first call of
- * the stand-in: measured on 2026-11-15 on a 2-CPU pod running two suites of this directory at
- * once, a build took a median of 471 ms (933 ms at most) and a copy 130 ms (154 ms). Each row
- * copies it, so no row reads what another wrote; the property each row checks is the one it
- * checked on a directory of its own. */
+ * body is "a body", the world.json it writes, a bare remote of its own whose issue branch holds
+ * those two commits, and the gh selectors of this checkout worker_boot writes into a run
+ * (`writeGhSelectors`).
+ * Nothing fixture_write writes names the directory, so a copy is the run it would have written
+ * there. It is built once, in the hook below, because building it is a dozen git and bash
+ * processes, which a row that built its own spent before its first call of the stand-in:
+ * measured on 2026-11-15 on a 2-CPU pod running two suites of this directory at once, a build
+ * took a median of 471 ms (933 ms at most) and a copy 130 ms (154 ms). Each row copies it, so no
+ * row reads what another wrote; the property each row checks is the one it checked on a
+ * directory of its own. */
 const template = temporaryDirectory("gh-standin-template");
 const heads = { first: "", second: "" };
 beforeAll(() => {
@@ -118,7 +141,9 @@ beforeAll(() => {
   if (written.exitCode !== 0) throw new Error(`fixture_write: ${written.stderr.toString()}`);
   git(template, "clone", "-q", "--bare", work, path.join(template, "remote.git"));
   git(path.join(template, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", heads.first);
-});
+  writeGhSelectors(template);
+  // Reading the selectors runs gh-selectors.go once, a compile of a few standard packages.
+}, 60_000);
 
 /** A run directory of its own, a copy of `template`. With `fixture` it is the run of a scenario
  * that builds a worker world: the world.json fixture_write writes and the bare remote. Without
@@ -852,17 +877,16 @@ test("a submit whose --jq failed submitted the review all the same", () => {
 // The review endpoints are the run's own repository's, as the score's readers are. Catches: a
 // stand-in that reads a create of `other/widgets` as this run's pending review, which would
 // answer the submit of a review this world never got with a review object and 200, and one that
-// answers a submit on another repository's pull request from this run's record.
+// answers a submit on another repository's pull request from this run's record. Production's gh
+// never reaches GitHub for either: the Legion gh wrapper refuses an owner outside the project,
+// exit 2, and so does the world's.
 test("a create and a submit on another repository's pull request are no review of this run", () => {
   const { dir, first } = runDir({ fixture: true });
   const other = "repos/other/widgets/pulls/1001/reviews";
-  expect(apiPost(dir, other, "-f", `commit_id=${first}`).exitCode).toBe(0);
+  expect(apiPost(dir, other, "-f", `commit_id=${first}`).exitCode).toBe(2);
   const elsewhere = apiPost(dir, `${other}/6001/events`, "-f", "event=APPROVE");
-  expect(elsewhere.exitCode).toBe(0);
-  expect(JSON.parse(elsewhere.stdout.toString())).toEqual({
-    id: 6001,
-    html_url: "https://example.invalid/pull/1001#issuecomment-6001",
-  });
+  expect([elsewhere.exitCode, elsewhere.stdout.toString()]).toEqual([2, ""]);
+  expect(elsewhere.stderr.toString()).toContain('"other" is not an owner of this project');
   const ours = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(ours.exitCode).toBe(1);
   expect(ours.stderr.toString()).toContain("Can not submit a review that is not pending.");
@@ -1088,6 +1112,615 @@ const recordedCalls = (dir: string) =>
     .filter((line) => line !== "")
     .map((line) => JSON.parse(line) as Record<string, unknown>)
     .filter((line) => !("opened" in line));
+
+/** The Legion gh wrapper's refusal of a call naming one repository of an owner outside the
+ * project, `repository`, and no other, under PANE_OWNERS: the leak guard's setup error over the
+ * wrapper's refusal of the guard's read of that repository's visibility (gh-selectors.ts's
+ * `ownerRefusal`), as it printed it on a Legion pod on 2026-11-16. */
+const repositoryRefused = (repository: string) =>
+  `legion gh: LEAK CHECK SETUP ERROR: the gh call: the visibility of ${repository} could not be read: gh api repos/${repository} exited 2: ${ownerAloneRefused(repository.split("/")[0] ?? "")}`;
+/** The wrapper's refusal of a call naming `owner`, outside the project, alone: its own lookup of
+ * the owner's gh directory, which the guard leaves it with no repository to read, as it printed it
+ * on a Legion pod on 2026-11-16, under PANE_OWNERS. */
+function ownerAloneRefused(owner: string): string {
+  return `legion gh: "${owner}" is not an owner of this project: ${PANE_OWNERS} holds no gh directory for it\n`;
+}
+/** The read a reviewer of the rehearsal of 2026-11-16 made to check the commit the world's
+ * workflow pins actions/checkout to, which the world answered `Not Found (HTTP 404)` from no
+ * route and production's wrapper refuses, exit 2. */
+const TAG_READ = ["api", "repos/actions/checkout/git/refs/tags/v7.0.1"];
+/** The four calls the tester measured through the real wrapper on this pod at 18:59Z on
+ * 2026-11-16, which the world answered GitHub's 404 where production exits 2, each with the line
+ * production printed: one repository named by its `<repository>` argument and by `-R`, and the
+ * owner alone, by `--owner` (the refusal before any visibility read, so no LEAK CHECK prefix) and
+ * by the `<owner>` argument. */
+const MEASURED: readonly (readonly [argv: string[], line: string])[] = [
+  [["repo", "view", "actions/checkout", "--json", "name"], repositoryRefused("actions/checkout")],
+  [["release", "view", "v7.0.1", "-R", "actions/checkout"], repositoryRefused("actions/checkout")],
+  [
+    ["search", "repos", "checkout", "--owner", "actions", "--limit", "1"],
+    ownerAloneRefused("actions"),
+  ],
+  [["repo", "list", "actions"], ownerAloneRefused("actions")],
+];
+
+/** Which of the wrapper's two lines each kind of form of naming an owner gets, and the value that
+ * names `actions` through it: a form naming one of its repositories gets the guard's line
+ * (`repositoryRefused`), one naming the owner alone the wrapper's own lookup's
+ * (`ownerAloneRefused`); a kind naming no owner (an argument of no selector's kind, a host, an
+ * option naming nothing) gets none. A query names either by its qualifier. Every kind
+ * gh-selectors.ts models has a row, and a kind with none fails the pin. */
+const LINES_OF: Readonly<
+  Record<"slot" | "option", Readonly<Record<string, readonly (readonly [string, string])[]>>>
+> = {
+  slot: {
+    "": [],
+    repository: [["actions/checkout", repositoryRefused("actions/checkout")]],
+    "second-repository": [["actions/checkout", repositoryRefused("actions/checkout")]],
+    owner: [["actions", ownerAloneRefused("actions")]],
+    url: [["https://github.com/actions/checkout/pull/1", repositoryRefused("actions/checkout")]],
+    query: [
+      ["repo:actions/checkout", repositoryRefused("actions/checkout")],
+      ["owner:actions", ownerAloneRefused("actions")],
+    ],
+    number: [["actions/checkout#1", repositoryRefused("actions/checkout")]],
+    "new-repository": [["actions/checkout", repositoryRefused("actions/checkout")]],
+  },
+  option: {
+    repository: [["actions/checkout", repositoryRefused("actions/checkout")]],
+    "org-repositories": [["actions/checkout", repositoryRefused("actions/checkout")]],
+    owner: [["actions", ownerAloneRefused("actions")]],
+    "owner/name": [["actions/core", ownerAloneRefused("actions")]],
+    url: [["https://github.com/actions/checkout/issues/1", repositoryRefused("actions/checkout")]],
+    host: [],
+    nothing: [],
+  },
+};
+
+/** One form of the pin: the table's entry, the call naming `actions` through it, and the line. */
+interface PinCase {
+  readonly form: string;
+  readonly argv: readonly string[];
+  readonly line: string;
+}
+
+/** The pin's calls of a label, generated from its wrapper's own `table` rather than listed here:
+ * for each entry (an argument name of ghSlotKinds or a leaf's own, an option of ghOptionKinds)
+ * whose kind names an owner (LINES_OF), the first leaf of the label's gh (`selectors`, by path)
+ * whose help spells it in that kind, called with the value naming `actions` through it and
+ * nothing else — an argument after neutral ones (`1`) where the usage places it later — and the
+ * line that kind gets. A number names a repository only where the leaf reads OWNER/REPO#N. An
+ * entry no leaf of the label's help spells (a spelling of an older gh's the table holds too) is
+ * `unreached`: no call of the label's gh can name it. */
+function pinCases(
+  table: GhTable,
+  selectors: GhSelectors
+): { cases: PinCase[]; unreached: string[] } {
+  const cases: PinCase[] = [];
+  const unreached: string[] = [];
+  const leaves = Object.entries(selectors.leaves).sort(([a], [b]) => (a < b ? -1 : 1));
+  const slotForm = (form: string, name: string, kind: string, only?: string) => {
+    const lines = LINES_OF.slot[kind];
+    if (lines === undefined) throw new Error(`the pin has no line for the argument kind ${kind}`);
+    if (lines.length === 0) return;
+    for (const [leaf, { slots, readsRepositoryNumber }] of leaves) {
+      if (only !== undefined && leaf !== only) continue;
+      const at = slots.findIndex(
+        (slot) =>
+          slot.names.includes(name) &&
+          slot.unknown === "" &&
+          (kind === "number" ? readsRepositoryNumber : slot.kind === kind)
+      );
+      const neutral = slots
+        .slice(0, Math.max(at, 0))
+        .every(
+          (slot) => !slot.many && slot.unknown === "" && ["", "number", "url"].includes(slot.kind)
+        );
+      if (at < 0 || !neutral) continue;
+      for (const [value, line] of lines)
+        cases.push({ form, argv: [...leaf.split(" "), ...Array(at).fill("1"), value], line });
+      return;
+    }
+    unreached.push(form);
+  };
+  for (const [name, { kind }] of Object.entries(table.slots))
+    slotForm(`ghSlotKinds ${name} (${kind || "none"})`, name, kind);
+  for (const [leaf, quirk] of Object.entries(table.quirks))
+    for (const [name, { kind }] of Object.entries(quirk.slots))
+      slotForm(`ghLeafQuirks ${leaf} ${name} (${kind})`, name, kind, leaf);
+  for (const [key, kind] of Object.entries(table.options)) {
+    const lines = LINES_OF.option[kind];
+    if (lines === undefined) throw new Error(`the pin has no line for the option kind ${kind}`);
+    if (lines.length === 0) continue;
+    const words = key.split(" ");
+    const at = words.findIndex((word) => word.startsWith("--"));
+    const only = words.slice(0, at).join(" ");
+    const name = (words[at] ?? "").slice(2);
+    const placeholder = words.slice(at + 1).join(" ");
+    const found = leaves.find(
+      ([leaf, { flags }]) =>
+        (only === "" ? table.options[`${leaf} ${key}`] === undefined : leaf === only) &&
+        flags[name]?.placeholder === placeholder &&
+        flags[name]?.selects === kind &&
+        flags[name]?.uncertain === false
+    );
+    if (found === undefined) unreached.push(`ghOptionKinds ${key} (${kind})`);
+    else
+      for (const [value, line] of lines)
+        cases.push({
+          form: `ghOptionKinds ${key} (${kind})`,
+          argv: [...found[0].split(" "), `--${name}`, value],
+          line,
+        });
+  }
+  return { cases, unreached };
+}
+
+/** `gh <args...>` asked of the stand-in in the run under `dir` as the role `by`, under `vars`: its
+ * status, its stdout and its stderr. */
+function asked(
+  dir: string,
+  by: string | undefined,
+  args: readonly string[],
+  vars: Record<string, string> = {}
+) {
+  const ran = spawnChecked(["bun", STANDIN, "gh", ...args], { env: callEnv(dir, by, vars) });
+  return [ran.exitCode, ran.stdout.toString(), ran.stderr.toString()];
+}
+
+// Catches: a world that answers a call naming another owner from its routes (the 404 of no route,
+// measured in the rehearsal and again by the tester at 18:59Z on 2026-11-16) where production's
+// Legion gh wrapper refuses it before gh runs, exit 2, naming the owner; one that does so for a
+// form of naming it the wrapper's selector table holds and the world does not read (the
+// `<repository>` and `<owner>` arguments and `--owner` the tester met); one that answers a form
+// with the other of the wrapper's two lines; and one whose forms are a copy here rather than the
+// label's own table, which a form the wrapper learns later would leave behind. The pin runs every
+// form the table of this checkout's wrapper holds, and the four measured calls among them.
+test("every form the wrapper's selector table holds, naming an owner outside the project, is refused exit 2 with the wrapper's line for it", () => {
+  const table = labelGhTable(CHECKOUT);
+  const selectors = labelGhSelectors(CHECKOUT);
+  expect(Object.keys(LINES_OF.slot).sort()).toEqual([...MODELLED.slot].sort());
+  expect(Object.keys(LINES_OF.option).sort()).toEqual([...MODELLED.option].sort());
+  const { cases, unreached } = pinCases(table, selectors);
+  // Each kind naming an owner is a form some leaf of this checkout's gh spells.
+  const named = (type: "slot" | "option") =>
+    Object.entries(LINES_OF[type])
+      .filter(([, lines]) => lines.length > 0)
+      .map(([kind]) => kind)
+      .sort();
+  const reached = (type: "slot" | "option") =>
+    [
+      ...new Set(
+        cases
+          .filter((one) => one.form.startsWith("ghOption") === (type === "option"))
+          .map((one) => /\(([^)]*)\)$/.exec(one.form)?.[1] ?? "")
+      ),
+    ].sort();
+  expect(reached("slot")).toEqual(named("slot"));
+  expect(reached("option")).toEqual(named("option"));
+  expect(cases.length).toBeGreaterThanOrEqual(30);
+  // A leaf's own argument kind is always one its own help spells.
+  expect(unreached.filter((form) => form.startsWith("ghLeafQuirks"))).toEqual([]);
+  const { dir } = runDir({ fixture: true });
+  const all = [...cases, ...MEASURED.map(([argv, line]) => ({ form: "measured", argv, line }))];
+  expect(all.map(({ form, argv }) => [form, argv.join(" "), asked(dir, "reviewer", argv)])).toEqual(
+    all.map(({ form, argv, line }) => [form, argv.join(" "), [2, "", line]])
+  );
+}, 180_000);
+
+// Catches: a refusal for one role and not another; a refusal read from text a call sends (a body
+// naming another owner's URL); one of the world's own owner in another case; a pane naming no
+// owners directory answered as one that names it; and a world refusing for a run with no world.
+test("a call naming an owner outside the world's project is refused as the Legion gh wrapper refuses it, exit 2, for every role", () => {
+  const { dir } = runDir({ fixture: true });
+  for (const by of ["reviewer", "implementer", "tester", "planner", "merger", undefined])
+    expect(asked(dir, by, TAG_READ)).toEqual([2, "", repositoryRefused("actions/checkout")]);
+  for (const args of [
+    ["api", "/repos/Actions/Checkout/contents/README.md"],
+    ["api", "https://api.github.com/repos/actions/checkout/tags"],
+    ["pr", "view", "1", "-R", "actions/checkout"],
+    ["pr", "view", "1", "--repo=github.com/actions/checkout"],
+    ["pr", "view", "https://github.com/actions/checkout/pull/1"],
+  ])
+    expect(asked(dir, "reviewer", args)).toEqual([2, "", repositoryRefused("actions/checkout")]);
+  expect(asked(dir, "reviewer", ["api", "repos/oven-sh/setup-bun/git/refs/tags/v2.2.0"])).toEqual([
+    2,
+    "",
+    repositoryRefused("oven-sh/setup-bun"),
+  ]);
+  expect(asked(dir, "reviewer", ["api", "orgs/actions/repos"])).toEqual([
+    2,
+    "",
+    ownerAloneRefused("actions"),
+  ]);
+  expect(
+    recordedCalls(dir)
+      .slice(0, 6)
+      .map((call) => [call.by, call.exit])
+  ).toEqual([
+    ["reviewer", 2],
+    ["implementer", 2],
+    ["tester", 2],
+    ["planner", 2],
+    ["merger", 2],
+    [undefined, 2],
+  ]);
+  const unset = spawnChecked(["bun", STANDIN, "gh", ...TAG_READ], {
+    env: Object.fromEntries(
+      Object.entries(callEnv(dir, "reviewer")).filter(([name]) => name !== "LEGION_GH_OWNERS_DIR")
+    ),
+  });
+  expect([unset.exitCode, unset.stderr.toString()]).toEqual([
+    2,
+    "legion gh: LEGION_GH_OWNERS_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh\n",
+  ]);
+  // The world's own owner in another case, and an owner's URL in the text a call sends, are no
+  // such call.
+  for (const args of [
+    ["api", "repos/EXAMPLE/widgets/pulls/1001", "--jq", ".number"],
+    ["pr", "view", "1001", "-R", "Example/Widgets", "--json", "number", "--jq", ".number"],
+    ["pr", "comment", "1001", "--body", "https://github.com/actions/checkout"],
+  ]) {
+    const [status, , err] = asked(dir, "reviewer", args);
+    expect([args.join(" "), status === 2 || String(err).includes("is not an owner")]).toEqual([
+      args.join(" "),
+      false,
+    ]);
+  }
+  // A run with no world names no project, and its calls are answered from the routes.
+  const bare = runDir({ fixture: false }).dir;
+  expect(asked(bare, undefined, TAG_READ)[0]).toBe(1);
+}, 60_000);
+
+// Catches: a world that reads no GH_REPO where the wrapper reads it, so a call naming another owner
+// beside the repository gh resolves from the pane's GH_REPO (the world's) gets the one-owner line
+// where production names both owners; and one reading it where the wrapper does not, which would
+// give the measured `--owner` call the two-owner line.
+test("a call naming an owner outside the project beside the pane's GH_REPO is refused naming both, where the wrapper reads GH_REPO", () => {
+  const { dir } = runDir({ fixture: true });
+  const pane = { GH_REPO: "example/widgets" };
+  expect(asked(dir, "reviewer", ["issue", "transfer", "3", "actions/checkout"], pane)).toEqual([
+    2,
+    "",
+    "legion gh: the command names more than one owner, actions (the repository actions/checkout) and example (GH_REPO example/widgets), so it sends no token; name one repository\n",
+  ]);
+  expect(
+    asked(
+      dir,
+      "reviewer",
+      ["issue", "edit", "5", "--add-blocked-by", "https://github.com/actions/checkout/issues/9"],
+      pane
+    )
+  ).toEqual([
+    2,
+    "",
+    "legion gh: the command names more than one owner, actions (--add-blocked-by https://github.com/actions/checkout/issues/9) and example (GH_REPO example/widgets), so it sends no token; name one repository\n",
+  ]);
+  for (const [argv, line] of MEASURED)
+    expect(asked(dir, "reviewer", argv, pane)).toEqual([2, "", line]);
+}, 60_000);
+
+// Catches: a world that answers a call of a world whose gh selectors are not there as though it
+// named no other owner, which is the rig having lost the label's table.
+test("a world whose gh selectors are not there answers no call, naming the file", () => {
+  const { dir } = runDir({ fixture: true });
+  rmSync(path.join(dir, "gh-selectors.json"));
+  const [status, , err] = asked(dir, "reviewer", ["pr", "view", "1001"]);
+  expect([status, err]).toEqual([
+    2,
+    `gh: ${dir}/gh-selectors.json is not there, so no owner of this world's project is known (rig.sh's worker_boot writes it)\n`,
+  ]);
+  writeFileSync(path.join(dir, "gh-selectors.json"), "{not json");
+  const [refused, , why] = asked(dir, "reviewer", ["pr", "view", "1001"]);
+  expect([
+    refused,
+    String(why).startsWith(`gh: ${dir}/gh-selectors.json cannot be read: `),
+  ]).toEqual([2, true]);
+});
+
+/** A checkout holding only what a label's gh selectors are read from — the wrapper's package,
+ * internal/ghconfig and the wrapper's saved gh help — copied from this one, with `edit` applied to
+ * the wrapper's gh_help.go: a later wrapper's own source. */
+function substituteCheckout(edit: (source: string) => string): string {
+  const checkout = mkdtempSync(path.join(tmpdir(), "gh-selectors-label-"));
+  made.push(checkout);
+  for (const dir of ["cmd/legion", "internal/ghconfig"]) {
+    const from = path.join(DAEMON_MODULE, dir);
+    const to = path.join(checkout, "packages", "daemon", dir);
+    mkdirSync(to, { recursive: true });
+    for (const name of readdirSync(from))
+      if (name.endsWith(".go") && !name.endsWith("_test.go"))
+        cpSync(path.join(from, name), path.join(to, name));
+  }
+  const legion = path.join(checkout, "packages", "daemon", "cmd", "legion");
+  cpSync(path.join(DAEMON_MODULE, "cmd", "legion", "testdata"), path.join(legion, "testdata"), {
+    recursive: true,
+  });
+  const help = path.join(legion, "gh_help.go");
+  writeFileSync(help, edit(readFileSync(help, "utf8")));
+  return checkout;
+}
+
+/** `source` with `entry` added as the first entry of its map literal `name`. */
+function withEntry(source: string, name: string, entry: string): string {
+  const opening = new RegExp(`^var ${name} = map\\[string\\][A-Za-z]+\\{\\n`, "m");
+  if (!opening.test(source)) throw new Error(`gh_help.go declares no ${name} map literal`);
+  return source.replace(opening, (found) => `${found}\t${entry}\n`);
+}
+
+// Catches: a world that reads a later wrapper's selector form it does not model as no form, which
+// answers a call through it otherwise than production with nothing saying so; and one that reads
+// a label's forms out of any checkout but that label's own. Each label's table is read from its
+// own checkout, so a later wrapper's new kind of option, of argument or of quirk fails that label's
+// read, by which services_up fails the batch (label_facts) and worker_boot the run, naming it, and
+// the pin of that label with it, while a new entry of a kind the world models is read with no
+// edit and is a case of that label's pin.
+test("a selector form a label's wrapper holds that the world does not model fails that label's read and its pin, naming it", () => {
+  const same = substituteCheckout((source) => source);
+  expect(labelGhSelectors(same)).toEqual(labelGhSelectors(CHECKOUT));
+  for (const [edit, refusal] of [
+    [
+      (source: string) => withEntry(source, "ghOptionKinds", '"--mirror string": "mirror",'),
+      `the wrapper's table holds the option kind "mirror" (ghOptionKinds --mirror string), which the world's gh does not model (gh-selectors.ts's MODELLED)`,
+    ],
+    [
+      (source: string) => withEntry(source, "ghSlotKinds", '"mirror": {kind: "mirror"},'),
+      `the wrapper's table holds the argument kind "mirror" (ghSlotKinds mirror), which the world's gh does not model (gh-selectors.ts's MODELLED)`,
+    ],
+    [
+      (source: string) => withEntry(source, "ghLeafQuirks", '"pr view": {readsMirror: true},'),
+      `the wrapper's table holds the quirk "readsMirror" (ghLeafQuirks pr view), which the world's gh does not model (gh-selectors.ts's MODELLED)`,
+    ],
+    [
+      (source: string) =>
+        source.replace(
+          "var ghKindRank = map[string]int{",
+          'var ghKindRank = map[string]int{"mirror": 8, '
+        ),
+      `the wrapper's table holds the argument kind "mirror" (ghKindRank), which the world's gh does not model (gh-selectors.ts's MODELLED)`,
+    ],
+  ] as const) {
+    const later = substituteCheckout(edit);
+    expect(() => labelGhSelectors(later)).toThrow(refusal);
+    const file = path.join(later, "gh-selectors.json");
+    const written = spawnChecked(
+      ["bun", path.join(import.meta.dir, "daemon-pane.ts"), "gh-selectors", later, file],
+      { env: { ...process.env } }
+    );
+    expect([written.exitCode, written.stderr.toString().includes(refusal)]).toEqual([1, true]);
+    expect(existsSync(file)).toBe(false);
+  }
+  // A new entry of a kind the world models is a form of that label's pin, and of no other's.
+  const learned = substituteCheckout((source) =>
+    withEntry(source, "ghOptionKinds", '"repo view --branch string": "repository",')
+  );
+  const form = "ghOptionKinds repo view --branch string (repository)";
+  const ofLabel = (checkout: string) =>
+    pinCases(labelGhTable(checkout), labelGhSelectors(checkout)).cases.filter(
+      (one) => one.form === form
+    );
+  expect(ofLabel(learned)).toEqual([
+    {
+      form,
+      argv: ["repo", "view", "--branch", "actions/checkout"],
+      line: repositoryRefused("actions/checkout"),
+    },
+  ]);
+  expect(ofLabel(CHECKOUT)).toEqual([]);
+}, 120_000);
+
+// Catches: a health that reads the wrapper's refusal of an owner outside the project as a refusal
+// the scenario does not declare, for any role of any worker world and any form the table holds, so
+// every reviewer that checks an action's pin is unhealthy; one that takes that call answered with
+// any other status (the world's old 404) as production's answer; one that reads the owners of a
+// call otherwise than the world refused it by; and one that judges a refused call of a run whose
+// label's table cannot be read as any refusal at all. The refusal is judged by its exit status,
+// whichever of the wrapper's lines it was, as the tester's reader judges it.
+test("health declares the wrapper's refusal of an owner outside the project for every role, by its exit 2", () => {
+  const { dir } = runDir({ fixture: true });
+  for (const by of ["reviewer", "implementer", "tester"])
+    for (const [argv] of MEASURED) asked(dir, by, argv);
+  expect(recordedCalls(dir).map((call) => [call.by, call.exit])).toEqual(
+    ["reviewer", "implementer", "tester"].flatMap((by) => MEASURED.map(() => [by, 2]))
+  );
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect(ghUndeclared({ dir, scenario })).toBeUndefined();
+  appendFileSync(
+    path.join(dir, "calls.jsonl"),
+    `${JSON.stringify({ at: "t", as: "gh", by: "implementer", argv: ["repo", "list", "actions"], files: {}, route: null, exit: 1 })}\n`
+  );
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    "gh refusal: calls.jsonl:14, `gh repo list actions` of the implementer, exited 1: the refusal of an owner outside the project with another status than the Legion gh wrapper's 2, which threads-closed does not declare for that role"
+  );
+  // Selectors that cannot be read leave which refusal each was unknown; a run holding none was
+  // answered by a world that refused no owner by them, and its calls are judged by their routes.
+  writeFileSync(path.join(dir, "gh-selectors.json"), "{not json");
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toStartWith(
+    `gh refusal unknown: calls.jsonl:2, \`gh repo view actions/checkout --json name\` of the reviewer, exited 2, and the selectors its world refused an owner outside the project by cannot be read: ${dir}/gh-selectors.json cannot be read: `
+  );
+  rmSync(path.join(dir, "gh-selectors.json"));
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    "gh refusal: calls.jsonl:2, `gh repo view actions/checkout --json name` of the reviewer, exited 2: gh: Not Found (HTTP 404) (no route of the world answers it), which threads-closed does not declare for that role"
+  );
+}, 60_000);
+
+/** A run directory whose remote holds, at world.json's seeded head, the world's workflow as rig.sh
+ * writes it (fixture_round_files), so the repositories its `uses:` lines name are the fixture's. */
+function workflowRun(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-workflow-"));
+  made.push(dir);
+  const src = path.join(dir, "src");
+  mkdirSync(path.join(src, "docs"), { recursive: true });
+  git(src, "init", "-q", "-b", "legion/LWEVAL-1");
+  const wrote = spawnChecked([
+    "bash",
+    "-c",
+    [fn("fixture_round_files"), 'src=$1 fixture_round_files "A line." ""'].join("\n"),
+    "-",
+    src,
+  ]);
+  if (wrote.exitCode !== 0) throw new Error(`fixture_round_files: ${wrote.stderr.toString()}`);
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "the seeded head");
+  const head = git(src, "rev-parse", "HEAD");
+  git(dir, "clone", "-q", "--bare", src, "remote.git");
+  writeFileSync(
+    path.join(dir, "world.json"),
+    JSON.stringify({
+      key: "LWEVAL-1",
+      repo: "example/widgets",
+      pr: 1001,
+      branch: "legion/LWEVAL-1",
+      base: "main",
+      head,
+    })
+  );
+  return dir;
+}
+
+// Catches: a health that holds a GET of a repository the world's own workflow names to the
+// world's hosts, where production reaches GitHub for it (the rehearsal's `curl` read of the tag
+// actions/checkout is pinned to), and a HEAD of it, which reads no more; and one that allows
+// wider: another repository, another host, a method other than GET or HEAD, a body, or a git
+// that fetches, clones or pushes. The set is the workflow's, read from the run's remote at the
+// seeded head.
+test("rule 13 allows a GET or a HEAD with no body of a repository the world's workflow names on GitHub's hosts, and nothing wider", () => {
+  const dir = workflowRun();
+  const repositories = workflowRepositories(dir);
+  expect([...repositories]).toEqual(["actions/checkout", "oven-sh/setup-bun"]);
+  const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
+  const reach = (tool: string, args: Record<string, unknown>) =>
+    offWorldReach(
+      [{ file: "sessions/reviewer/a.jsonl", tool, args, at: 1 }],
+      loopback,
+      [dir],
+      repositories
+    );
+  const bash = (command: string) => reach("bash", { command });
+  for (const command of [
+    "curl -sS https://api.github.com/repos/actions/checkout/git/refs/tags/v7.0.1",
+    "curl -sSL -X GET 'https://api.github.com/repos/oven-sh/setup-bun/git/refs/tags/v2.2.0' | jq -r .object.sha",
+    "curl -fsSL https://github.com/actions/checkout/releases/tag/v7.0.1",
+    "curl -fsSL https://raw.githubusercontent.com/actions/checkout/v7.0.1/action.yml",
+    "wget -qO- https://codeload.github.com/oven-sh/setup-bun/tar.gz/refs/tags/v2.2.0",
+    "curl -s api.github.com/repos/Actions/Checkout/tags",
+    "curl -sSI https://api.github.com/repos/actions/checkout/git/refs/tags/v7.0.1",
+    "curl --head https://github.com/oven-sh/setup-bun/releases/tag/v2.2.0",
+    "curl -s -X HEAD https://api.github.com/repos/actions/checkout",
+    "wget --spider https://github.com/actions/checkout/releases/tag/v7.0.1",
+  ])
+    expect([command, bash(command)]).toEqual([command, undefined]);
+  for (const method of [undefined, "GET", "HEAD"])
+    expect(
+      reach("fetch", {
+        url: "https://api.github.com/repos/actions/checkout/git/refs/tags/v7.0.1",
+        ...(method === undefined ? {} : { method }),
+      })
+    ).toBeUndefined();
+  const named = "actions/checkout, oven-sh/setup-bun";
+  const off = (host: string, url: string) =>
+    `off-world network: a bash call in sessions/reviewer/a.jsonl reaches ${host} (${url}), no host of the run's world (127.0.0.1, localhost, ::1)${
+      host === "example.com"
+        ? ""
+        : `, and no GET or HEAD with no body or ls-remote of a repository the world's workflow names (${named})`
+    }`;
+  const tag = "https://api.github.com/repos/actions/checkout/git/refs/tags/v7.0.1";
+  for (const command of [
+    `curl -X POST ${tag}`,
+    `curl -sS --request=PATCH ${tag}`,
+    `curl -sS -d '{}' ${tag}`,
+    `curl -sSI -d x ${tag}`,
+    `curl -X DELETE ${tag}`,
+    `wget --post-data=x ${tag}`,
+  ])
+    expect([command, bash(command)]).toEqual([command, off("api.github.com", tag)]);
+  const cache = "https://api.github.com/repos/actions/cache/git/refs/tags/v4";
+  expect(bash(`curl -sS ${cache}`)).toBe(off("api.github.com", cache));
+  const elsewhere = "https://example.com/repos/actions/checkout/git/refs/tags/v7.0.1";
+  expect(bash(`curl -sS ${elsewhere}`)).toBe(off("example.com", elsewhere));
+  expect(
+    reach("fetch", { url: tag, method: "POST" })?.startsWith(
+      "off-world network: a fetch call in sessions/reviewer/a.jsonl reaches api.github.com"
+    )
+  ).toBe(true);
+  // git's read of a repository's refs is allowed and its fetch, clone and push are not: measured
+  // on 2026-11-16, `git ls-remote` sends the GET of info/refs and one `ls-refs` POST, while a
+  // fetch posts again for the objects (health.ts's `refsRead`).
+  const repository = "https://github.com/actions/checkout.git";
+  expect(bash(`git ls-remote ${repository} refs/tags/v7.0.1`)).toBeUndefined();
+  expect(bash("git -c protocol.version=0 ls-remote https://github.com/actions/checkout")).toBe(
+    undefined
+  );
+  for (const command of [
+    `git fetch --depth 1 ${repository} refs/tags/v7.0.1`,
+    `git clone ${repository}`,
+    `git push ${repository} main`,
+  ])
+    expect([command, bash(command)]).toEqual([command, off("github.com", repository)]);
+  expect(bash("git ls-remote https://github.com/actions/cache.git")).toBe(
+    off("github.com", "https://github.com/actions/cache.git")
+  );
+  // A run whose world holds no workflow allows none.
+  expect(workflowRepositories(runDir({ fixture: true }).dir).size).toBe(0);
+});
+
+// Catches: a health whose push-guard rule takes the Legion gh wrapper's refusal of an owner
+// outside the project for the push guard's own, since production's line carries `LEAK CHECK
+// SETUP ERROR` after its `legion gh: ` prefix: every reviewer that read an action's tag would be
+// unhealthy for a refusal it met as production gives it. The line is the stand-in's own, shown to
+// the agent as its tool's result, and its call is in the record; the push-guard rule stays silent
+// on it, rule 7 declares it, and the guard's own line at the start of a line still fires.
+test("the wrapper's owner refusal a tool result shows is no push-guard refusal, and rule 7 declares it", () => {
+  const { dir } = runDir({ fixture: true });
+  const refused = spawnChecked(["bun", STANDIN, "gh", ...TAG_READ], {
+    env: callEnv(dir, "reviewer"),
+  });
+  const line = refused.stderr.toString();
+  expect([refused.exitCode, line]).toEqual([2, repositoryRefused("actions/checkout")]);
+  const transcript = (result: string) => {
+    mkdirSync(path.join(dir, "sessions", "reviewer"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "sessions", "reviewer", "session.jsonl"),
+      [
+        {
+          type: "message",
+          timestamp: "2026-11-16T18:00:00.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                name: "bash",
+                arguments: { command: `gh ${TAG_READ.join(" ")}` },
+              },
+            ],
+          },
+        },
+        {
+          type: "message",
+          timestamp: "2026-11-16T18:00:01.000Z",
+          message: {
+            role: "toolResult",
+            toolName: "bash",
+            content: [{ type: "text", text: result }],
+          },
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join("")
+    );
+    return loadRun(dir, "reviewer-text-findings", "head");
+  };
+  const shown = transcript(`${line}\n[exit 2]`);
+  expect(shown.results.map((result) => result.text)).toEqual([`${line}\n[exit 2]`]);
+  expect(guardRefusal(shown)).toBeUndefined();
+  expect(ghUndeclared(shown)).toBeUndefined();
+  const guard =
+    "LEAK CHECK SETUP ERROR: the gh call: the visibility of actions/checkout could not be read";
+  expect(guardRefusal(transcript(guard))).toBe(
+    `push guard: sessions/reviewer/session.jsonl holds the guard's refusal "${guard}"`
+  );
+}, 60_000);
 
 // Catches: a record that leaves the daemon stand-in to read the run's reviews a second way. It
 // moves the issue on a review of the head (daemon-standin.ts's `roundOutcome`),
@@ -1561,8 +2194,9 @@ const WORLD_VALUES = [
  * functions, as rig.test.ts builds its worlds, with `fixture_cli` stubbed, whose heredoc holds a
  * line that is `}` alone, which `scriptFunctions` reads as the end of the function (the stub
  * writes the two files that step writes), and `fixture_workspace`, which clones the issue
- * workspace with jj and which no gh answer reads, stubbed unless `workspace` asks for it. `env`
- * is the operator's own environment the build runs in, over this process's. */
+ * workspace with jj and which no gh answer reads, stubbed unless `workspace` asks for it, and
+ * this checkout's gh selectors written in as worker_boot writes a label's (`writeGhSelectors`).
+ * `env` is the operator's own environment the build runs in, over this process's. */
 function worldDir(
   world: string,
   guard = "",
@@ -1612,6 +2246,7 @@ function worldDir(
     }
   );
   if (built.exitCode !== 0) throw new Error(`${world}: ${built.stderr.toString()}`);
+  writeGhSelectors(dir);
   return dir;
 }
 /** The pull request's head the world under `dir` was built at, read by the one schema of its
@@ -2260,12 +2895,14 @@ test("a pane's commit carries its role's App as author and committer, and two ro
         ...["role_identity", "role_env", "adopt_workspace"].map(fn),
         ...WORLD_VALUES.map(assignment),
         "R=$1",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own array expansion
         'as_role() { local identity; mapfile -t identity < <(role_env "$1"); shift; (cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$R/jj.toml" "$@"); }',
         `show() { as_role "$1" jj log --no-graph -r "$2" -T '${shown} ++ "\\n"'; }`,
         'commit() { adopt_workspace "$1" && printf "%s\\n" "$1" >"$R/ws/$1.md" && as_role "$1" jj commit -m "docs: $1" >/dev/null 2>&1 && show "$1" @-; }',
         "commit implementer && commit reviewer",
         'as_role reviewer jj describe -m "wip" >/dev/null 2>&1 && adopt_workspace implementer && show implementer @- && show implementer @',
         'git clone -q "$R/remote.git" "$R/git-pane" && mapfile -t identity < <(role_env tester)',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own array expansion
         'env "${identity[@]}" git -C "$R/git-pane" commit --allow-empty -qm "a tester note" && git -C "$R/git-pane" log -1 --format="%an <%ae>|%cn <%ce>"',
       ].join("\n"),
       "-",

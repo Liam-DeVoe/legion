@@ -81,23 +81,25 @@ function put(file: string, text: string, mode = 0o644) {
 }
 
 // The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins, and
-// the programs of the rig's directory a run runs itself: run-names.ts, which reads a run's case
-// and guards its world before its agent starts, and the gh stand-in and its modules, which a
-// run bundles into its own directory (rig.sh's standins), with the root's node_modules for zod.
+// every program of the rig's directory, with the root's node_modules for zod. The programs are
+// read off the directory itself (RIG_PROGRAMS), never named here: a run runs what rig.sh finds
+// beside itself ($here) — run-names.ts's guard, the gh stand-in and the modules its bundle takes
+// in, the GitHub stand-in and its routes, the head watcher, the seeds — and three times a list
+// kept here was short by the one program the rig had newly started to run (gh-threads.ts, then
+// github-standin.ts with four more), so every run of the rows died. The rig's provenance list
+// (services_from) is no list of them either: it names what a run starts, not the modules those
+// import. Left out: the directory's tests (`*.test.ts`), which no run runs, and its
+// subdirectories (health-fixture/, the tester's recorded runs, which only a test reads). seed.ts is
+// copied and then replaced by the stand-in below.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
+const RIG_PROGRAMS = readdirSync(import.meta.dir, { withFileTypes: true })
+  .filter((entry) => entry.isFile() && !entry.name.endsWith(".test.ts"))
+  .map((entry) => entry.name);
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
-  copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
-  for (const program of [
-    "run-names.ts",
-    "gh-standin.ts",
-    "gh-call.ts",
-    "gh-threads.ts",
-    "gh-routes.ts",
-    "run-records.ts",
-  ])
+  for (const program of RIG_PROGRAMS)
     copyFileSync(path.join(import.meta.dir, program), path.join(path.dirname(rig), program));
   symlinkSync(path.join(root, "node_modules"), path.join(co, "node_modules"));
   for (const lib of [

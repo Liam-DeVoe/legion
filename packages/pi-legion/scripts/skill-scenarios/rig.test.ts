@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   cpSync,
   existsSync,
@@ -21,8 +21,10 @@ import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { ANSWERS, BOOTED, SKIPS, scenarioOf } from "./completion-answers";
 import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
+import { headUnmoved } from "./health";
 import { nameWords, runIdentity, textWords, vocabulary, WORLD_PROJECT } from "./run-names";
-import { bundled, spawnChecked } from "./test-programs";
+import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
+import { WORLD_REPO, WORLD_SPEC } from "./world-issue";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
@@ -63,6 +65,22 @@ function servicesFrom(checkout: string): string {
  * logs/dispatch.log, and its only line while no request has reached the server. */
 const LISTENING =
   'time=2026-11-13T17:40:00.000Z level=INFO msg="dispatch: listening" addr=127.0.0.1:43101';
+/** The record a run's own GitHub stand-in keeps (github-standin.ts, which start_dispatch starts
+ * before the run's Dispatch), its logs/github.log: its listening line, then what a worker world's
+ * seeds make its Dispatch ask GitHub, as measured on 2026-11-16 (github-routes.ts): the
+ * repository's installation, the token's mint and the read of a result's commit, each at GitHub's
+ * own status. A run with its Dispatch's record has this one too, as every run rig.sh starts has. */
+const GITHUB_RECORD = [
+  '{"at":"2026-11-13T17:39:59.000Z","listening":"127.0.0.1:43100"}',
+  '{"at":"2026-11-13T17:40:01.000Z","method":"GET","path":"/repos/fernbrook/widgets/installation","accept":"application/vnd.github+json","status":200,"route":"GET /repos/{owner}/{repo}/installation"}',
+  '{"at":"2026-11-13T17:40:01.000Z","method":"POST","path":"/app/installations/1/access_tokens","accept":"application/vnd.github+json","status":201,"route":"POST /app/installations/{id}/access_tokens"}',
+  `{"at":"2026-11-13T17:40:01.000Z","method":"GET","path":"/repos/fernbrook/widgets/commits/${"c".repeat(40)}","accept":"application/vnd.github.sha","status":200,"route":"GET /repos/{owner}/{repo}/commits/{sha}"}`,
+]
+  .map((line) => `${line}\n`)
+  .join("");
+/** The first line of a run's head watcher's record (head-watcher.ts, which start_heads starts for
+ * every worker world), its logs/heads.log, and its only line while nothing was pushed. */
+const HEADS_OPENED = '{"at":"2026-11-13T17:39:59.000Z","opened":"heads.log"}\n';
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
@@ -719,6 +737,29 @@ describe("omp_ancestor", () => {
     expect(result.stderr.toString()).toContain(`${top}/.omp`);
     expect(existsSync(work)).toBe(false);
   });
+});
+
+// `rig.sh score` and `rig.sh health` read each run's daemon contract out of the facts cache
+// services_up's label_facts fills under the work directory (daemon-pane.ts's `labelDaemon`).
+// Catches: a scorer handed no SKILL_SCENARIOS_WORK where the caller named none and the work
+// directory is the default, which kept its own cache under TMPDIR, read nothing label_facts read,
+// and ran the reader again. The `bun` on PATH records what it was given.
+test("rig.sh score and rig.sh health are given the work directory whose facts cache they read", () => {
+  const bin = freshDir("bun-recorder");
+  const seen = path.join(bin, "seen");
+  writeFileSync(
+    path.join(bin, "bun"),
+    `#!/bin/sh\nprintf '%s %s\\n' "$SKILL_SCENARIOS_WORK" "$(basename "$1")" >>'${seen}'\n`,
+    { mode: 0o755 }
+  );
+  const tmp = freshDir("default-work-tmp");
+  for (const command of ["score", "health"]) {
+    const result = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), command], {
+      env: { ...childEnv, PATH: `${bin}:${childEnv.PATH}`, TMPDIR: tmp },
+    });
+    expect([command, result.exitCode]).toEqual([command, 0]);
+  }
+  expect(readFileSync(seen, "utf8")).toBe(`${tmp}/work score.ts\n${tmp}/work health.ts\n`);
 });
 
 // Every batch numbers each label's runs from one above the label's highest run, live or archived,
@@ -1714,7 +1755,7 @@ describe("worker_boot", () => {
    * no stand-in must leave behind. `before` is the role of an
    * agent the run booted and ran before this one, whose output is the run's out.txt. Each process
    * started keeps the run's boot record as it stood then (booted-at-<process>), and each `bun`
-   * the build of daemon-pane.go it was given (bun-builds). */
+   * the build of daemon-pane.go it was given (bun-builds) and its work directory (bun-works). */
   function bootResult(
     role: string,
     phase: string,
@@ -1763,7 +1804,7 @@ describe("worker_boot", () => {
         "base_env() { :; }",
         "standins() { :; }",
         'boot_agent() { printf "%s\\n" "$*" >"$R/boot-agent-args"; }',
-        `bun() { printf "%s\\n" "$*" >>"$R/bun-args"; printf "%s\\n" "\${SKILL_SCENARIOS_DAEMON_PANE:-}" >>"$R/bun-builds"; }`,
+        `bun() { printf "%s\\n" "$*" >>"$R/bun-args"; printf "%s\\n" "\${SKILL_SCENARIOS_DAEMON_PANE:-}" >>"$R/bun-builds"; printf "%s\\n" "\${SKILL_SCENARIOS_WORK:-}" >>"$R/bun-works"; }`,
         `R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='${before}' daemon_pid=''`,
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
@@ -2035,6 +2076,21 @@ describe("worker_boot", () => {
       expect(pane).toBeGreaterThanOrEqual(0);
       expect(builds[pane]).toBe(paneBuild(dir));
     });
+
+    // Catches: a run whose gh refuses an owner outside its world's project by no table, or by a
+    // table read anew at the boot rather than the one services_up read into the work directory's
+    // facts cache, or by any checkout's but the label's; the agent's namespace shows neither the
+    // checkout nor the cache, so the table is written into the run before the agent starts.
+    test("the run's gh is given its label's gh selectors, out of the work directory's facts cache", () => {
+      const { dir, bunArgs } = boot("reviewer", "reviewing");
+      const works = readFileSync(path.join(dir, "bun-works"), "utf8").split("\n");
+      const at = bunArgs.indexOf(
+        `${import.meta.dir}/daemon-pane.ts gh-selectors ${dir}/c ${dir}/gh-selectors.json`
+      );
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(works[at]).toBe(`${dir}/work`);
+      expect(at).toBeLessThan(bunArgs.findIndex((line) => line.includes("worker-pane.ts")));
+    });
   });
 });
 
@@ -2087,6 +2143,7 @@ describe("run_threads_closed", () => {
         "start_recorder() { :; }",
         "worker_run_world() { pr=1001; head=0123456789ab; }",
         "seed_ts() { :; }",
+        "await_start() { :; }",
         'reviewer_wake() { cat "$R/wake.json"; }',
         'worker_boot() { printf "%s\\n" "$*" >>"$R/boots"; printf "boot %s\\n" "$3" >>"$R/booted"; }',
         "R=$1 here=$3 worker_key=LWEVAL-1 worker_repo=example/widgets",
@@ -2217,6 +2274,7 @@ describe("worker_boots", () => {
         "start_recorder() { :; }",
         "worker_run_world() { pr=1001; head=0123456789ab; }",
         "seed_ts() { :; }",
+        "await_start() { :; }",
         'reviewer_wake() { cat "$R/wake.json"; }',
         `worker_boot() { printf "%s%s\\n" "$3" "\${4:+:$4}" >>"$R/boots"; }`,
         "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=example/widgets",
@@ -2338,6 +2396,8 @@ describe("health", () => {
         path.join(dir, "logs", "dispatch.log"),
         [LISTENING, ...dispatch].map((line) => `${line}\n`).join("")
       );
+      writeFileSync(path.join(dir, "logs", "github.log"), GITHUB_RECORD);
+      writeFileSync(path.join(dir, "logs", "heads.log"), HEADS_OPENED);
     }
     return dir;
   }
@@ -2380,25 +2440,118 @@ describe("health", () => {
   /** The verdict line health printed for the run directory `dir`. */
   const verdict = (stdout: string, dir: string) =>
     stdout.split("\n").find((line) => line.startsWith(`${path.basename(dir)}  `));
+  let olderMade: string | undefined;
+  /** A checkout holding an older daemon's engine and completion route alone, as main ff2a10ef
+   * writes them (completion-answers.ts's `refused` and `issue`): the daemon health reads a run's
+   * completions by where an answer turns on it, out of the checkout its built-from names
+   * (daemon-pane.ts's `labelDaemon`), never out of the label's name. Made once for the rows. */
+  function olderDaemon(): string {
+    if (olderMade !== undefined) return olderMade;
+    const older = path.join(freshDir("health"), "older-daemon");
+    const internal = path.join(older, "packages", "daemon", "internal");
+    mkdirSync(path.join(internal, "workflow"), { recursive: true });
+    mkdirSync(path.join(internal, "api"), { recursive: true });
+    writeFileSync(
+      path.join(internal, "workflow", "engine.go"),
+      'package workflow\n\nfunc (e *Engine) handoff(fact intake.HandoffComplete) (intake.Result, error) {\n\tif RoleFor(issue.Phase) != fact.Role {\n\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run %s of %s", fact.Role, issue.Phase, issue.Key)), nil\n\t}\n\treturn intake.Result{}, nil\n}\n'
+    );
+    writeFileSync(
+      path.join(internal, "api", "handoff.go"),
+      "package api\n\nfunc (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {\n\tword, writer, handoffPhase := phase.Handoff(issue.Phase)\n\trecordBacked := handoffPhase && writer == grant.Role\n}\n"
+    );
+    olderMade = older;
+    return older;
+  }
 
   // Catches: a refusal the world should not have given, read as a healthy run, and a reason
-  // that does not say which refusal it was.
-  test("a run with a refused completion is unhealthy, named with its status and code", () => {
-    const dir = run("reviewer-text-findings-defect-head-1", [
-      [complete(400, "HANDOFF_RECORD_REQUIRED", "reviewer"), complete(200, undefined, "reviewer")],
+  // that does not say which refusal it was. The answer is no daemon's of either shape, so the run's
+  // own daemon is read for it, this checkout's.
+  test.skipIf(withoutGo)(
+    "a run with a refused completion is unhealthy, named with its status and code",
+    () => {
+      const dir = run(
+        "reviewer-text-findings-defect-head-1",
+        [
+          [
+            complete(400, "HANDOFF_RECORD_REQUIRED", "reviewer"),
+            complete(200, undefined, "reviewer"),
+          ],
+        ],
+        { checkout: CHECKOUT }
+      );
+      const { code, stdout } = health(dir);
+      expect(code).toBe(1);
+      expect(verdict(stdout, dir)).toBe(
+        "reviewer-text-findings-defect-head-1  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 400 HANDOFF_RECORD_REQUIRED, which the head label's daemon does not answer it with in this world"
+      );
+      expect(stdout).toEndWith("health: 1 of 1 runs unhealthy\n");
+    }
+  );
+
+  // Catches: a run's daemon read where no answer turns on it, or an answer that turns on it
+  // judged by some daemon when the run's own cannot be read. The run's built-from names a checkout
+  // holding no daemon (RUN_CHECKOUT): a reviewer refused 409 HANDOFF_NOT_CURRENT_PHASE with no
+  // earlier 200 is an answer one shape gives and the other does not, so whose world the run met is
+  // unknown, while the implementer's refusal and the reviewer's 200 are every daemon's answers.
+  // A checkout that is not there is refused with no Go run: the `go` on health's PATH here records
+  // a call and refuses it, so a health that compiled the reader to say a file is missing, which
+  // cost the tester's fixture below a minute, fails this row on any host.
+  test("a run whose answer turns on a daemon that cannot be read is unhealthy, naming why", () => {
+    const bin = freshDir("no-go");
+    const ran = path.join(bin, "ran");
+    writeFileSync(path.join(bin, "go"), `#!/bin/sh\necho "$*" >>'${ran}'\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const dir = run("reviewer-text-findings-text-only-head-2", [
+      [complete(409, NOT_CURRENT, "reviewer")],
     ]);
-    const { code, stdout } = health(dir);
+    const { code, stdout } = healthIn({ PATH: `${bin}:${childEnv.PATH}` }, dir);
     expect(code).toBe(1);
     expect(verdict(stdout, dir)).toBe(
-      "reviewer-text-findings-defect-head-1  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 400 HANDOFF_RECORD_REQUIRED, which the head label's daemon does not answer it with in this world"
+      `reviewer-text-findings-text-only-head-2  unhealthy: completion shapes unknown: an answer the stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: ${RUN_CHECKOUT}/packages/daemon/internal/workflow/engine.go is not there, so how the daemon of ${RUN_CHECKOUT} takes a completion is unknown (daemon-completion.go reads it)`
     );
-    expect(stdout).toEndWith("health: 1 of 1 runs unhealthy\n");
+    expect(stdout).toContain("health: completions: 1 of 1 runs\n");
+    expect(stdout).toContain("health: taken: 1 of 1 runs\n");
+    expect(existsSync(ran)).toBe(false);
   });
 
+  // Catches: a daemon of a shape pair ANSWERS gives no answers judged by some other pair's. This
+  // checkout's engine beside an older daemon's route is a daemon no checkout the rig has read pairs
+  // them in, so what its world answers a late reviewer is unknown, and health says so, naming the
+  // pair, rather than reading it as either daemon.
+  test.skipIf(withoutGo)(
+    "a run whose daemon pairs one shape's engine with the other's route is unhealthy, naming the pair",
+    () => {
+      const mixed = path.join(freshDir("health"), "mixed-daemon");
+      const internal = path.join(mixed, "packages", "daemon", "internal");
+      mkdirSync(path.join(internal, "workflow"), { recursive: true });
+      mkdirSync(path.join(internal, "api"), { recursive: true });
+      writeFileSync(
+        path.join(internal, "workflow", "engine.go"),
+        "package workflow\n\nfunc (e *Engine) leftItsPhase(row record.PhaseRow) bool {\n\treturn !row.Completed()\n}\n\nfunc (e *Engine) handoff() {\n\te.leftItsPhase(row)\n}\n"
+      );
+      cpSync(
+        path.join(olderDaemon(), "packages", "daemon", "internal", "api", "handoff.go"),
+        path.join(internal, "api", "handoff.go")
+      );
+      const dir = run(
+        "reviewer-text-findings-text-only-head-4",
+        [[complete(409, NOT_CURRENT, "reviewer")]],
+        { checkout: mixed }
+      );
+      const { code, stdout } = health(dir);
+      expect(code).toBe(1);
+      expect(verdict(stdout, dir)).toContain(
+        "a daemon of the shape `recorded issue` (its engine's late role, then its route's record) has no answers for reviewer-text-findings's completions (completion-answers.ts's ANSWERS)"
+      );
+    }
+  );
+
   // Catches: a health that calls the daemon's own deliberate refusal unhealthy. threads-closed's
-  // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by either label's
-  // daemon: the head run's and the base run's (the fixture's threads-closed-text-fixes-base-1,
-  // which its boot record now reads unfinished, pinned that label's alone).
+  // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by a daemon of either
+  // shape: the head run's and the base run's (the fixture's threads-closed-text-fixes-base-1,
+  // which its boot record now reads unfinished, pinned that label's alone). No daemon is read for
+  // it: their built-from names a checkout holding none (RUN_CHECKOUT).
   test("a threads-closed run whose only refusal is the implementer's not-current-phase is healthy", () => {
     const named = run("threads-closed-text-fixes-head-1", [
       [complete(409, NOT_CURRENT, "implementer")],
@@ -2440,98 +2593,148 @@ describe("health", () => {
     expect(stdout).toEndWith("health: 3 of 3 runs unhealthy\n");
   });
 
-  // Catches: the same code read as allowed whatever role it answered. The head daemon refuses a
-  // reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its row holds a completion, which no
-  // threads-closed world gives it before the run, so a head reviewer refused so with no earlier
-  // 200 of its own is a world the daemon would not have served.
-  test("a head threads-closed reviewer refused not-current-phase is unhealthy", () => {
-    const named = run("threads-closed-text-fixes-head-2", [
-      [complete(409, NOT_CURRENT, "implementer")],
-      [complete(409, NOT_CURRENT, "reviewer")],
-    ]);
-    const { code, stdout } = health(named);
-    expect(code).toBe(1);
-    expect(verdict(stdout, named)).toContain(
-      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
-    );
-  });
+  // Catches: the same code read as allowed whatever role it answered. This checkout's daemon,
+  // which the run is built from, refuses a reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its
+  // row holds a completion, which no threads-closed world gives it before the run, so a reviewer
+  // refused so with no earlier 200 of its own is a world the daemon would not have served.
+  test.skipIf(withoutGo)(
+    "a head threads-closed reviewer refused not-current-phase is unhealthy",
+    () => {
+      const named = run(
+        "threads-closed-text-fixes-head-2",
+        [[complete(409, NOT_CURRENT, "implementer")], [complete(409, NOT_CURRENT, "reviewer")]],
+        { checkout: CHECKOUT }
+      );
+      const { code, stdout } = health(named);
+      expect(code).toBe(1);
+      expect(verdict(stdout, named)).toContain(
+        "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
+      );
+    }
+  );
 
-  // Catches: one exemption for every label. Main `ff2a10ef` refuses a reviewer whose round has
-  // moved the issue 409 HANDOFF_NOT_CURRENT_PHASE, which is how the base daemon takes that
-  // completion; this checkout records it, so the same answer on the head label, with no earlier
-  // 200 of the reviewer's, is a refusal the head daemon never gives a reviewer here.
-  test("a reviewer-text-findings reviewer refused not-current-phase is healthy on base and not on head", () => {
-    const base = run("reviewer-text-findings-text-only-base-1", [
-      [complete(409, NOT_CURRENT, "reviewer")],
-    ]);
-    const head = run("reviewer-text-findings-text-only-head-1", [
-      [complete(409, NOT_CURRENT, "reviewer")],
-    ]);
-    const { code, stdout } = health(base, head);
-    expect(code).toBe(1);
-    expect(verdict(stdout, base)).toBe("reviewer-text-findings-text-only-base-1  healthy");
-    expect(verdict(stdout, head)).toContain(
-      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the head label's daemon"
-    );
-    expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
-  });
+  // Catches: one exemption for every label, and an exemption keyed by the label's name. An older
+  // engine (main `ff2a10ef`'s) refuses a reviewer whose round has moved the issue 409
+  // HANDOFF_NOT_CURRENT_PHASE, which is how that daemon takes the completion; this checkout's
+  // records it, so the same answer with no earlier 200 of the reviewer's is a refusal this
+  // checkout's daemon never gives a reviewer here. Which of the two a run met is its built-from's
+  // checkout's, whatever the label is called: the base label is built from main at the head's
+  // newest forward merge, whose daemon is this checkout's, and a head built from an older checkout
+  // has that checkout's daemon.
+  test.skipIf(withoutGo)(
+    "a reviewer-text-findings reviewer refused not-current-phase is healthy on an older daemon and not on this checkout's, whatever the label",
+    () => {
+      const refusal = [[complete(409, NOT_CURRENT, "reviewer")]];
+      const baseOnOlder = run("reviewer-text-findings-text-only-base-1", refusal, {
+        checkout: olderDaemon(),
+      });
+      const base = run("reviewer-text-findings-text-only-base-2", refusal, { checkout: CHECKOUT });
+      const head = run("reviewer-text-findings-text-only-head-1", refusal, { checkout: CHECKOUT });
+      const headOnOlder = run("reviewer-text-findings-text-only-head-2", refusal, {
+        checkout: olderDaemon(),
+      });
+      const { code, stdout } = health(baseOnOlder, base, head, headOnOlder);
+      expect(code).toBe(1);
+      expect(verdict(stdout, baseOnOlder)).toBe("reviewer-text-findings-text-only-base-1  healthy");
+      expect(verdict(stdout, headOnOlder)).toBe("reviewer-text-findings-text-only-head-2  healthy");
+      for (const [dir, label] of [
+        [base, "base"],
+        [head, "head"],
+      ] as const)
+        expect(verdict(stdout, dir)).toContain(
+          `unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the ${label} label's daemon`
+        );
+      expect(stdout).toEndWith("health: 2 of 4 runs unhealthy\n");
+    }
+  );
 
-  // Catches: a head reviewer's late refusal read by its code alone. This checkout's route reads
-  // back the review record a late reviewer names, and its engine records that completion 200
-  // unless the reviewer's row already holds one: a completion of its own taken earlier in the
-  // run, after which the engine refuses a repeat 409 HANDOFF_NOT_CURRENT_PHASE
-  // (completion-answers.ts's `ANSWERS`, `AFTER_TAKEN`). So that refusal is the head daemon's
-  // answer after an earlier 200 of the same reviewer on the run's log alone: not with none, not
-  // with the 200 after it, and not after another role's 200. The head route refuses no reviewer
-  // 409 HANDOFF_RECORD_MISMATCH in this rig, `accepting` included, since the phase its completion
-  // is of is `reviewing`, which writes a record.
-  test("a head reviewer refused not-current-phase is healthy only as a repeat of its own earlier 200", () => {
-    const fixes = run("threads-closed-text-fixes-head-4", [
-      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
-      [
-        complete(200, undefined, "reviewer", "reviewing"),
-        complete(409, NOT_CURRENT, "reviewer", "accepting"),
-      ],
-    ]);
-    const review = run("reviewer-text-findings-text-only-head-3", [
-      [
-        complete(200, undefined, "reviewer", "reviewing"),
-        complete(409, NOT_CURRENT, "reviewer", "implementing"),
-      ],
-    ]);
-    const alone = run("threads-closed-code-defect-head-1", [
-      [complete(409, NOT_CURRENT, "implementer", "accepting")],
-      [complete(409, NOT_CURRENT, "reviewer", "accepting")],
-    ]);
-    const before = run("threads-closed-text-fixes-head-8", [
-      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
-      [
-        complete(409, NOT_CURRENT, "reviewer", "accepting"),
-        complete(200, undefined, "reviewer", "accepting"),
-      ],
-    ]);
-    const another = run("threads-closed-code-defect-head-6", [
-      [complete(200, undefined, "implementer", "accepting")],
-      [complete(409, NOT_CURRENT, "reviewer", "accepting")],
-    ]);
-    const MISMATCH = "HANDOFF_RECORD_MISMATCH";
-    const accepting = run("threads-closed-code-defect-head-2", [
-      [complete(409, NOT_CURRENT, "implementer", "accepting")],
-      [complete(409, MISMATCH, "reviewer", "accepting")],
-    ]);
-    const { code, stdout } = health(fixes, review, alone, before, another, accepting);
-    expect(code).toBe(1);
-    expect(verdict(stdout, fixes)).toBe("threads-closed-text-fixes-head-4  healthy");
-    expect(verdict(stdout, review)).toBe("reviewer-text-findings-text-only-head-3  healthy");
-    const refused = (answer: string) =>
-      `unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered ${answer}, which the head label's daemon does not answer it with in this world`;
-    for (const dir of [alone, before, another])
-      expect(verdict(stdout, dir)).toBe(`${path.basename(dir)}  ${refused(`409 ${NOT_CURRENT}`)}`);
-    expect(verdict(stdout, accepting)).toBe(
-      `threads-closed-code-defect-head-2  ${refused(`409 ${MISMATCH}`)}`
-    );
-    expect(stdout).toEndWith("health: 4 of 6 runs unhealthy\n");
-  });
+  // Catches: a reviewer's late refusal by this checkout's daemon read by its code alone. This
+  // checkout's route reads back the review record a late reviewer names, and its engine records
+  // that completion 200 unless the reviewer's row already holds one: a completion of its own taken
+  // earlier in the run, after which the engine refuses a repeat 409 HANDOFF_NOT_CURRENT_PHASE
+  // (completion-answers.ts's `ANSWERS`, `AFTER_TAKEN`). So that refusal is this daemon's answer
+  // after an earlier 200 of the same reviewer on the run's log alone: not with none, not with the
+  // 200 after it, and not after another role's 200. This route refuses no reviewer 409
+  // HANDOFF_RECORD_MISMATCH in this rig, `accepting` included, since the phase its completion is
+  // of is `reviewing`, which writes a record. Each run is built from this checkout, whose daemon
+  // health reads for those answers.
+  test.skipIf(withoutGo)(
+    "a head reviewer refused not-current-phase is healthy only as a repeat of its own earlier 200",
+    () => {
+      const built = { checkout: CHECKOUT };
+      const fixes = run(
+        "threads-closed-text-fixes-head-4",
+        [
+          [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+          [
+            complete(200, undefined, "reviewer", "reviewing"),
+            complete(409, NOT_CURRENT, "reviewer", "accepting"),
+          ],
+        ],
+        built
+      );
+      const review = run(
+        "reviewer-text-findings-text-only-head-3",
+        [
+          [
+            complete(200, undefined, "reviewer", "reviewing"),
+            complete(409, NOT_CURRENT, "reviewer", "implementing"),
+          ],
+        ],
+        built
+      );
+      const alone = run(
+        "threads-closed-code-defect-head-1",
+        [
+          [complete(409, NOT_CURRENT, "implementer", "accepting")],
+          [complete(409, NOT_CURRENT, "reviewer", "accepting")],
+        ],
+        built
+      );
+      const before = run(
+        "threads-closed-text-fixes-head-8",
+        [
+          [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+          [
+            complete(409, NOT_CURRENT, "reviewer", "accepting"),
+            complete(200, undefined, "reviewer", "accepting"),
+          ],
+        ],
+        built
+      );
+      const another = run(
+        "threads-closed-code-defect-head-6",
+        [
+          [complete(200, undefined, "implementer", "accepting")],
+          [complete(409, NOT_CURRENT, "reviewer", "accepting")],
+        ],
+        built
+      );
+      const MISMATCH = "HANDOFF_RECORD_MISMATCH";
+      const accepting = run(
+        "threads-closed-code-defect-head-2",
+        [
+          [complete(409, NOT_CURRENT, "implementer", "accepting")],
+          [complete(409, MISMATCH, "reviewer", "accepting")],
+        ],
+        built
+      );
+      const { code, stdout } = health(fixes, review, alone, before, another, accepting);
+      expect(code).toBe(1);
+      expect(verdict(stdout, fixes)).toBe("threads-closed-text-fixes-head-4  healthy");
+      expect(verdict(stdout, review)).toBe("reviewer-text-findings-text-only-head-3  healthy");
+      const refused = (answer: string) =>
+        `unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered ${answer}, which the head label's daemon does not answer it with in this world`;
+      for (const dir of [alone, before, another])
+        expect(verdict(stdout, dir)).toBe(
+          `${path.basename(dir)}  ${refused(`409 ${NOT_CURRENT}`)}`
+        );
+      expect(verdict(stdout, accepting)).toBe(
+        `threads-closed-code-defect-head-2  ${refused(`409 ${MISMATCH}`)}`
+      );
+      expect(stdout).toEndWith("health: 4 of 6 runs unhealthy\n");
+    }
+  );
 
   // Catches: a run whose stand-in answered 404 a route its label's daemon registers read as
   // healthy, which read every head run of the kept batch healthy though each logged the plugin's
@@ -2664,11 +2867,14 @@ describe("health", () => {
     expect(stdout).toContain("health: failed claim: 1 of 2 runs\n");
   });
 
-  // Catches: a code outside the run's own entry read as allowed because some entry allows it.
-  test("a refusal whose code is outside the run's entry is unhealthy", () => {
-    const dir = run("threads-closed-code-defect-base-2", [
-      [complete(409, "HANDOFF_RECORD_MISMATCH", "implementer")],
-    ]);
+  // Catches: a code outside the run's own entry read as allowed because some entry allows it. The
+  // run is built from an older daemon, whose answers are read for it.
+  test.skipIf(withoutGo)("a refusal whose code is outside the run's entry is unhealthy", () => {
+    const dir = run(
+      "threads-closed-code-defect-base-2",
+      [[complete(409, "HANDOFF_RECORD_MISMATCH", "implementer")]],
+      { checkout: olderDaemon() }
+    );
     const { code, stdout } = health(dir);
     expect(code).toBe(1);
     expect(verdict(stdout, dir)).toContain(
@@ -3080,15 +3286,15 @@ describe("health", () => {
       [[complete(200, undefined, "reviewer")]],
       {
         dispatch: [
-          handoffRead("2026-11-13T17:50:20.000Z", "plan", 404),
+          handoffRead("2026-11-13T17:50:20.000Z", "plan", 200),
           handoffRead("2026-11-13T17:50:30.000Z", "implement", 404),
         ],
       }
     );
     const later = run("threads-closed-text-fixes-head-12", [[], []], {
       dispatch: [
-        handoffRead("2026-11-13T17:50:30.000Z", "plan", 404),
-        handoffRead("2026-11-13T17:51:30.000Z", "plan", 404),
+        handoffRead("2026-11-13T17:50:30.000Z", "plan", 200),
+        handoffRead("2026-11-13T17:51:30.000Z", "plan", 200),
         handoffRead("2026-11-13T17:51:40.000Z", "review", 404),
       ],
     });
@@ -3137,7 +3343,23 @@ describe("health", () => {
         ],
       }
     );
-    const runs = [lost, later, overlapping, failing, seeding, past, unauthorized, unrouted];
+    // The plan every world records (seed.ts plan) read back as not found: a world that lost it.
+    const planless = run(
+      "reviewer-text-findings-text-only-head-9",
+      [[complete(200, undefined, "reviewer")]],
+      { dispatch: [handoffRead("2026-11-13T17:50:30.000Z", "plan", 404)] }
+    );
+    const runs = [
+      lost,
+      later,
+      overlapping,
+      failing,
+      seeding,
+      past,
+      unauthorized,
+      unrouted,
+      planless,
+    ];
     const { code, stdout } = health(...runs);
     const read = (phase: string) => `GET /api/v1/issues/LWEVAL-1/handoffs/${phase}/latest`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
@@ -3149,17 +3371,18 @@ describe("health", () => {
       `reviewer-text-findings-defect-base-7  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")}, made after boot 2 of the run, past the roles its boot record boots, answered 404, which no role's declaration takes`,
       `reviewer-text-findings-text-only-head-7  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")} of the reviewer, answered 401, which reviewer-text-findings does not declare for that role`,
       `reviewer-text-findings-text-only-head-8  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")}/body of the reviewer, answered 404, which reviewer-text-findings does not declare for that role`,
+      `reviewer-text-findings-text-only-head-9  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")} of the reviewer, answered 404, which reviewer-text-findings does not declare for that role`,
     ]);
-    expect(stdout).toContain("health: dispatch: 8 of 8 runs\n");
+    expect(stdout).toContain("health: dispatch: 9 of 9 runs\n");
     expect(code).toBe(1);
   });
 
   // Catches: an answer production gives a correct agent read as a broken world: HANDOFF_NOT_FOUND
-  // for the `plan` handoff, which no world records and the worker skill has every role read first,
-  // and for the reviewer-text-findings reviewer's `review`, which its world holds none of before
-  // the reviewer writes it; and a run whose Dispatch refused nothing read as unhealthy, on its
-  // answers of 2xx and 101 or on a line of the server's that is no request's though its message
-  // starts with the same words.
+  // for the reviewer-text-findings reviewer's `review`, which its world holds none of before the
+  // reviewer writes it; and a run whose Dispatch refused nothing read as unhealthy, on its answers
+  // of 2xx and 101 or on a line of the server's that is no request's though its message starts
+  // with the same words. Every world records the `plan` handoff (seed.ts plan), so a correct
+  // agent's read of it is answered 200 here.
   test("a Dispatch error answer the scenario declares for the agent's role, and a Dispatch that refused nothing, are healthy", () => {
     const reviewing = run(
       "reviewer-text-findings-text-only-head-6",
@@ -3173,7 +3396,7 @@ describe("health", () => {
             "/api/v1/issues/LWEVAL-1/handoffs/implement",
             201
           ),
-          handoffRead("2026-11-13T17:50:10.000Z", "plan", 404),
+          handoffRead("2026-11-13T17:50:10.000Z", "plan", 200),
           handoffRead("2026-11-13T17:50:11.000Z", "implement", 200),
           handoffRead("2026-11-13T17:50:12.000Z", "test", 200),
           handoffRead("2026-11-13T17:50:13.000Z", "review", 404),
@@ -3182,9 +3405,9 @@ describe("health", () => {
     );
     const looping = run("threads-closed-text-fixes-head-13", [[], []], {
       dispatch: [
-        handoffRead("2026-11-13T17:50:10.000Z", "plan", 404),
+        handoffRead("2026-11-13T17:50:10.000Z", "plan", 200),
         handoffRead("2026-11-13T17:50:11.000Z", "review", 200),
-        handoffRead("2026-11-13T17:51:10.000Z", "plan", 404),
+        handoffRead("2026-11-13T17:51:10.000Z", "plan", 200),
       ],
     });
     const quiet = run("threads-closed-code-defect-head-17", [[]], {
@@ -3969,13 +4192,20 @@ describe("health", () => {
   // reading its own file, another run's path named only in a subagent's transcript, and a push
   // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
   // `tmp-snapshot` the /tmp entries before the batch. The runs were recorded before a run carried
-  // its service provenance and its boot record, and without their Dispatch server's log, so each
-  // is read from a copy given the built-from and services-from cmd_run now copies into a run,
-  // every service of its label's own from that label's checkout, a Dispatch log that holds the
-  // server's listening line alone, and the boot record of what the run booted: its scenario's
+  // its service provenance and its boot record, and without their Dispatch server's log, their
+  // GitHub stand-in's or their head watcher's, so each is read from a copy given the built-from and
+  // services-from cmd_run now copies into a run, every service of its label's own from that
+  // label's checkout, a Dispatch log that holds the server's listening line alone, the GitHub
+  // record a worker world's seeds make (GITHUB_RECORD), a head record that holds its opened line
+  // alone, and the boot record of what the run booted: its scenario's
   // first role, whose output and session directory every run of it holds, and each later role whose
   // session directory it holds (rig.sh's worker_boot makes it before it starts that role's
   // stand-in), or the skip its scenario and case declare of a role it holds none of.
+  // The checkouts the copies' built-from names are not there, so health reads neither label's
+  // daemon: each answer that turns on how the daemon takes a completion reads `completion shapes
+  // unknown` (health.ts's `withDaemon`), refused with no Go run. Health is run with a `go` that
+  // records a call and refuses it, so the row reads no host's compile speed: it read one `go run`
+  // of daemon-completion.go for each such answer, 15 of them across 11 runs, and timed out at 60 s.
   // Catches: a health that disagrees with that independent reading on any run of it.
   test("the tester's fixture reads as the tester read it, run for run", () => {
     const fixture = path.join(import.meta.dir, "health-fixture");
@@ -3989,6 +4219,8 @@ describe("health", () => {
       writeFileSync(path.join(copy, "services-from"), servicesFrom(checkout));
       mkdirSync(path.join(copy, "logs"));
       writeFileSync(path.join(copy, "logs", "dispatch.log"), `${LISTENING}\n`);
+      writeFileSync(path.join(copy, "logs", "github.log"), GITHUB_RECORD);
+      writeFileSync(path.join(copy, "logs", "heads.log"), HEADS_OPENED);
       const scenario = scenarioOf(name) ?? "";
       const runCase = name.slice(scenario.length + 1).replace(/-(?:head|base)-\d+$/, "");
       const [first, ...later] = ANSWERS[scenario]?.boots ?? [];
@@ -4000,11 +4232,18 @@ describe("health", () => {
       }
       writeFileSync(path.join(copy, BOOTED), lines.map((line) => `${line}\n`).join(""));
     }
-    const { stdout } = health(
+    const bin = freshDir("no-go");
+    const ran = path.join(bin, "ran");
+    writeFileSync(path.join(bin, "go"), `#!/bin/sh\necho "$*" >>'${ran}'\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const { stdout } = healthIn(
+      { PATH: `${bin}:${childEnv.PATH}` },
       "--tmp-snapshot",
       path.join(fixture, "tmp-snapshot"),
       ...names.map((name) => path.join(copies, name))
     );
+    expect(existsSync(ran) ? readFileSync(ran, "utf8") : "").toBe("");
     const expected = Object.fromEntries(
       readFileSync(path.join(fixture, "expected"), "utf8")
         .split("\n")
@@ -4072,6 +4311,7 @@ describe("fixture_write", () => {
       [dir]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    writeGhSelectors(dir);
     return (...args: string[]) =>
       spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
         env: { ...childEnv, GH_DATA_DIR: dir },
@@ -4229,6 +4469,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       [dir, guard]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    writeGhSelectors(dir);
     return dir;
   }
   /** What the gh stand-in answers for `gh <args…>` in the world under `dir`: its status, its
@@ -4425,10 +4666,10 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       "utf8"
     );
     expect(workflow).toContain("uses: oven-sh/setup-bun@");
-    expect(workflow).toContain("run: bun test greet.test.ts");
+    expect(workflow).toContain("run: bun test\n");
     expect(workflow).toContain("THE-TRIGGER");
     expect(workflow.indexOf("uses: oven-sh/setup-bun@")).toBeLessThan(
-      workflow.indexOf("run: bun test greet.test.ts")
+      workflow.indexOf("run: bun test\n")
     );
   });
 
@@ -4886,6 +5127,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       [dir, guard]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    writeGhSelectors(dir);
     return dir;
   }
   const worlds = new Map<WorldName, string>();
@@ -5645,6 +5887,7 @@ describe("the world answers every gh call the census found refused", () => {
       [dir, guard]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    writeGhSelectors(dir);
     return dir;
   }
   function gh(dir: string, args: string[]) {
@@ -6899,6 +7142,8 @@ sleep() { command sleep 0.05; }`;
     writeFileSync(path.join(run, "booted"), "boot reviewer\n");
     mkdirSync(path.join(run, "logs"));
     writeFileSync(path.join(run, "logs", "dispatch.log"), `${LISTENING}\n`);
+    writeFileSync(path.join(run, "logs", "github.log"), GITHUB_RECORD);
+    writeFileSync(path.join(run, "logs", "heads.log"), HEADS_OPENED);
     const { result } = launched(work, name, BOOTING, [], { boot: "reviewer" });
     const health = spawnChecked(["bash", path.join(RIG, "rig.sh"), "health", run], {
       env: { ...childEnv, SKILL_SCENARIOS_WORK: freshDir("boot-health") },
@@ -7708,15 +7953,10 @@ sleep() { command sleep 0.05; }`;
         options: () => ({ files: { "lib/gh.js": 'process.env.SKILL_SCENARIO_RUN = "/x";\n' } }),
       },
       {
-        what: "a file of the label's install",
-        word: "threads-closed",
-        place: "{install}/pi-legion/README.md",
-        options: (work) => {
-          const at = path.join(installOf(work, "head"), "pi-legion");
-          mkdirSync(at, { recursive: true });
-          writeFileSync(path.join(at, "README.md"), "Run the threads-closed scenario.\n");
-          return {};
-        },
+        what: "the jj configuration",
+        word: "rig-",
+        place: "<run>/jj.toml",
+        options: () => ({ files: { "jj.toml": '[user]\nname = "rig-worker"\n' } }),
       },
     ];
     const missed: string[] = [];
@@ -7724,12 +7964,75 @@ sleep() { command sleep 0.05; }`;
       const work = freshDir(plant.work ?? "launch-planted");
       const ran = path.join(runDirOf(work, name), "agent-ran");
       const { run, result } = launched(work, name, `: >${ran}`, [], plant.options?.(work) ?? {});
-      const place = plant.place.replace("{install}", installOf(work, "head"));
-      const refused = `the world of ${path.basename(run)} names "${plant.word}" in ${place}`;
+      const refused = `the world of ${path.basename(run)} names "${plant.word}" in ${plant.place}`;
       if (result.code !== 1 || !result.stderr.includes(refused) || existsSync(ran))
         missed.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
     }
     expect(missed).toEqual([]);
+  });
+
+  // Catches: a guard that reads what the rig did not compose, and refuses a run on it. The
+  // label's install ships a checkout's own words: every base agent of the preflight at cc09c638
+  // was refused on `var SPEC_WRITING_POINTER` in pi-legion's dist/legion.js, a production name,
+  // and the head's passed only because its legion.js was over a size bound, so the plant here is
+  // small. And what the run has written before a later agent's launch holds the agents' own
+  // words: the first agent's transcript refused threads-closed-text-fixes-head-1's reviewer. Each
+  // row plants a word in one such file, and the agent starts.
+  test("a word in the label's install or in what the run wrote does not refuse the launch", () => {
+    const name = "threads-closed-text-fixes-head-1";
+    const plants: { what: string; options: (work: string) => Launch }[] = [
+      {
+        what: "the label's packed plugin",
+        options: (work) => {
+          const dist = path.join(installOf(work, "head"), "pi-legion", "dist");
+          mkdirSync(dist, { recursive: true });
+          writeFileSync(
+            path.join(dist, "legion.js"),
+            'var SPEC_WRITING_POINTER = "dispatch://WID/artifact/spec";\n'
+          );
+          return {};
+        },
+      },
+      {
+        what: "the first agent's transcript",
+        options: () => ({
+          files: {
+            "sessions/2026-11-16T00-00-00-000Z_s1.jsonl": `${JSON.stringify({
+              type: "message",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "These are text-only threads." }],
+              },
+            })}\n`,
+          },
+        }),
+      },
+      {
+        what: "the first agent's output",
+        options: () => ({
+          files: { "out-implementer.txt": "The code-defect is fixed.\nexit=0\n" },
+        }),
+      },
+      {
+        what: "a file an agent wrote in the working directory",
+        options: () => ({ files: { "cwd/notes.md": "text-fixes, both threads\n" } }),
+      },
+      {
+        what: "the gh answers a body edit rewrote",
+        options: () => ({
+          files: { "fixtures.json": '{"routes":[{"stdout":"threads-closed"}]}\n' },
+        }),
+      },
+    ];
+    const refused: string[] = [];
+    for (const plant of plants) {
+      const work = freshDir("launch-unread");
+      const ran = path.join(runDirOf(work, name), "agent-ran");
+      const { result } = launched(work, name, `: >${ran}`, [], plant.options(work));
+      if (result.code !== 0 || !existsSync(ran))
+        refused.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
+    }
+    expect(refused).toEqual([]);
   });
 
   // Catches: a probe that reads a refusal as a namespace, or reports none of the host's words:
@@ -8056,9 +8359,11 @@ docker() {
 
   // Catches: a program this directory runs inside every run left off the run's provenance, so a
   // change to it changes a run unseen by any digest a batch records: boot-refusal.ts, which
-  // boot_agent now runs itself inside every boot to decide a relaunch, and run-names.ts, which
-  // launch runs before every agent to refuse a world that names the measurement; and a digest
-  // that is not the file's own.
+  // boot_agent now runs itself inside every boot to decide a relaunch, run-names.ts, which
+  // launch runs before every agent to refuse a world that names the measurement,
+  // daemon-completion.go, which reads how the label's daemon takes a completion at every stand-in's
+  // boot, and gh-selectors.go, which reads the selector table the run's gh refuses an owner by;
+  // and a digest that is not the file's own.
   test("services_from names every program a run runs from this directory, by its own digest", () => {
     const here = import.meta.dir;
     const result = bash(
@@ -8075,7 +8380,14 @@ docker() {
     expect(result).toMatchObject({ code: 0, stderr: "" });
     const digest = (file: string) =>
       `sha256:${new Bun.CryptoHasher("sha256").update(readFileSync(path.join(here, file))).digest("hex")}`;
-    for (const program of ["boot-refusal.ts", "run-names.ts", "gh-standin.ts", "daemon-standin.ts"])
+    for (const program of [
+      "boot-refusal.ts",
+      "run-names.ts",
+      "gh-standin.ts",
+      "daemon-standin.ts",
+      "daemon-completion.go",
+      "gh-selectors.go",
+    ])
       expect(result.stdout).toContain(`\n${program} shared ${here} ${digest(program)}\n`);
   });
 
@@ -8293,5 +8605,534 @@ describe("the e2e drives that compose a pane through this rig", () => {
     const tsc = spawnChecked(["bunx", "tsc", "-p", config], { cwd: root, env: childEnv });
     expect(`${tsc.stdout.toString()}${tsc.stderr.toString()}`).toBe("");
     expect(tsc.exitCode).toBe(0);
+  });
+});
+
+// Each worker world as the rig builds and seeds it, read back through its own Dispatch and out of
+// its own repository, against the issue state a Legion issue holds at that point of its life and
+// against every concern a reviewer of round 24 and the rehearsal put on record about the fixture
+// (dispatch://INFRA-764/artifact/infra-764-reviewer-concerns-txt: 46 reviews, 8 concerns). Each
+// world runs rig.sh's own worker_run_world against a real Dispatch server on a Postgres of the
+// caller's (LEGION_TEST_PG_DSN), as `rig.sh run` does — own_dispatch, seed.ts tester-proof, the
+// fixture, plan, pull-request and implement-handoff — and then the seeds its runner adds
+// (tester-result for a review round, review-handoff after an approval); only the issue workspace's
+// jj clone, which nothing here reads, is left out.
+//
+// What a row asserts is named, so a world that drifts fails naming the row. In every world the
+// issue resolves to the world's repository, has left triage for the status its phase shows, holds
+// its approved plan.md, and `dispatch results` compares the check with the head of the world's pull
+// request and says a pass stands there (concern 7, the defect this row was written for: the
+// reviewer was handed a `before_merge` check with no current pass, which the merge gate counts as a
+// behavioural finding). Of the eight concerns each is false in every world but one: the check that
+// misses the blank name (6) is true in the two worlds whose CLI greets a blank name, where it is
+// part of their one intended defect, with the blank-name test their code's author also left out.
+const testPostgres = process.env.LEGION_TEST_PG_DSN;
+describe.skipIf(testPostgres === undefined || withoutGo)(
+  "each worker world, as the rig builds and seeds it",
+  () => {
+    /** The Dispatch server of this checkout, built once for every world here, as services_up
+     * builds a label's (go_binary). */
+    let server = "";
+    beforeAll(() => {
+      server = path.join(freshDir("world-dispatch-build"), "dispatch-e2e");
+      const built = spawnChecked(["go", "build", "-o", server, "./cmd/dispatch"], {
+        cwd: path.join(root, "packages", "envoy"),
+        env: process.env,
+      });
+      expect({ code: built.exitCode, err: built.stderr.toString() }).toEqual({ code: 0, err: "" });
+    }, 900_000);
+    // The databases this block makes, each named with a prefix of its own and never rig.sh's
+    // `run_`: in CI LEGION_TEST_PG_DSN names the shared test Postgres, and the acceptance batch's
+    // runner refuses to start while that server holds a `run_` database its own work directory
+    // does not name, so a world row's database left there would stop it. own_dispatch is rig.sh's
+    // own but for that one word. Each is dropped by the world's own exit trap and again here,
+    // whatever the rows did, so a row killed before its trap ran leaves nothing behind.
+    const WORLD_DATABASE_PREFIX = "worldrow_";
+    const worldDatabases = new Set<string>();
+    afterAll(async () => {
+      const sql = new Bun.SQL({ url: testPostgres ?? "", max: 1 });
+      try {
+        for (const name of worldDatabases)
+          await sql.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      } finally {
+        await sql.close();
+      }
+    });
+    const ownDispatch = fn("own_dispatch");
+
+    /** One world built and seeded: its run directory, the issue, the pull request's number and
+     * head, and what its Dispatch answered (seededWorld). */
+    interface SeededWorld {
+      run: string;
+      issue: string;
+      pr: string;
+      head: string;
+      issueRead: string;
+      planRead: string;
+      verification: string;
+      results: string;
+    }
+
+    /** The world CASE names (worker_fixture's), built and seeded by rig.sh's own functions, and
+     * what its Dispatch answers about its issue: `dispatch read` of the issue and of its plan.md,
+     * `dispatch doc-read` of its Verification document and `dispatch results`, each through the
+     * real `dispatch` entry an agent runs. With `pushed`, the implementer's one commit of text
+     * fixes is pushed to the pull request's branch first and the head moved as run_threads_closed
+     * moves it between its halves (seed.ts pull-request), which is the state the reviewer reads.
+     * The server is stopped and the run's database dropped before this returns. */
+    function seededWorld(caseName: string, pushed = false): SeededWorld {
+      const dir = freshDir("seeded-world");
+      const run = path.join(dir, `${Date.now().toString(16)}${dirs.toString(16).padStart(2, "0")}`);
+      worldDatabases.add(`${WORLD_DATABASE_PREFIX}${path.basename(run)}`);
+      expect(ownDispatch).toContain("database=run_");
+      const script = [
+        "set -euo pipefail",
+        "R=$1 work=$2 co=$3 server=$4 case_name=$5 pushed=$6 root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios",
+        `. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}`,
+        ...[
+          "fail",
+          "note",
+          "build_dir",
+          "start_dispatch",
+          ...(rigScript.includes("\ndispatch_whoami() {") ? ["dispatch_whoami"] : []),
+          "pg_sql",
+          "pg_database_url",
+          "safe_url",
+          "seed_ts",
+          "start_heads",
+          "heads_stored",
+          "worker_run_world",
+          "case_guard",
+          "worker_fixture",
+          "tester_proof_world",
+          "review_world",
+          "approved_world",
+          "round_world",
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "role_identity",
+          "role_env",
+        ].map(fn),
+        ownDispatch.replace("database=run_", `database=${WORLD_DATABASE_PREFIX}`),
+        definition("fixture_cli"),
+        "fixture_workspace() { :; }",
+        ...[
+          "worker_repo",
+          "worker_base",
+          "world_author_name",
+          "world_author_email",
+          "world_login",
+          ...WORLD_APPS,
+        ].map(assignment),
+        quotedAssignment("text_finding_doc_line"),
+        quotedAssignment("text_finding_trigger"),
+        'evidence=$R tokens=$work/tokens services_postgres=$work/postgres worker_key=""',
+        'mkdir -p "$R/logs" "$R/cli" "$tokens" "$(build_dir "$co")"',
+        "printf 'e2e-token\\n' >\"$tokens/dispatch-token\"",
+        'printf "%s\\n" "$TEST_POSTGRES" >"$services_postgres"',
+        'ln -s "$server" "$(build_dir "$co")/dispatch-e2e"',
+        `database=${WORLD_DATABASE_PREFIX}$(basename "$R")`,
+        'trap \'stop_pid "$watcher_pid"; stop_pid "$dispatch_pid"; stop_pid "$github_pid"; pg_sql "$TEST_POSTGRES" "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1 || true\' EXIT',
+        "dispatch_pid='' github_pid='' watcher_pid=''",
+        'worker_run_world 1 1700000000 "$case_name"',
+        'case $case_name in text-only | defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head" ;; esac',
+        'case $case_name in text-fixes | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
+        'if [ "$pushed" = 1 ]; then',
+        '  src=$R/src when="@1700000101 +0000"',
+        "  printf 'It trims the spaces around the name.\\n' >>\"$src/docs/cli.md\"",
+        '  fixture_by=implementer fixture_git commit -qam "docs: say that the name is trimmed"',
+        '  fixture_git push -q "$R/remote.git" "legion/$worker_key"',
+        '  head=$(git -C "$R/remote.git" rev-parse "legion/$worker_key")',
+        '  await_start watcher "$watcher_pid" 30 "the head watcher to store the push" heads_stored',
+        '  cp "$R/logs/heads.log" "$R/heads.txt"',
+        "fi",
+        'cli() { env -i PATH="$PATH" HOME="$R/cli" DISPATCH_STATE_DIR="$R/cli" DISPATCH_HOST=omp DISPATCH_SESSION_ID=world-reader DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN=e2e-token bun "$root/packages/envoy-client/bin/dispatch.ts" "$@"; }',
+        'cli read --issue "$worker_key" >"$R/read.txt"',
+        'cli read --issue "$worker_key" --artifact plan-md >"$R/plan.txt"',
+        'cli doc-read --issue "$worker_key" --artifact verification-md >"$R/verification.txt"',
+        'cli results --issue "$worker_key" >"$R/results.txt"',
+        'printf "%s %s %s\\n" "$worker_key" "$pr" "$head" >"$R/seeded.txt"',
+      ].join("\n");
+      const seeded = spawnChecked(
+        ["bash", "-c", script, "-", run, dir, root, server, caseName, pushed ? "1" : ""],
+        { env: { ...childEnv, TEST_POSTGRES: testPostgres ?? "" } }
+      );
+      const read = (name: string) =>
+        existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
+      expect({
+        code: seeded.exitCode,
+        err: seeded.stderr.toString(),
+        fixture: read("fixture.log").slice(-4000),
+      }).toMatchObject({ code: 0 });
+      writeGhSelectors(run);
+      const [issue = "", pr = "", head = ""] = read("seeded.txt").trim().split(" ");
+      return {
+        run,
+        issue,
+        pr,
+        head,
+        issueRead: read("read.txt"),
+        planRead: read("plan.txt"),
+        verification: read("verification.txt"),
+        results: read("results.txt"),
+      };
+    }
+
+    /** The issue as its Dispatch answers for it, in the facts a Legion issue under review holds:
+     * the repository it resolves to, its status and labels, its approved plan, the coverage of its
+     * requirements, and the k1 line of `dispatch results`, which names the pull request it
+     * compares with and whether a pass stands at that head. */
+    function issueState(world: SeededWorld) {
+      const line = (text: string, prefix: string) =>
+        text.split("\n").find((candidate) => candidate.startsWith(prefix)) ?? `no ${prefix} line`;
+      const k1 = line(world.results, "- k1 (before_merge). ");
+      return {
+        repository: line(world.issueRead, "Repository: "),
+        status: line(world.issueRead, "Status: "),
+        labels: line(world.issueRead, "Labels: "),
+        planDocument: world.issueRead.split("\n").some((text) => /^- .*plan\.md/.test(text)),
+        planApproval: /^Approval: (approved v\d+) by /m.exec(world.planRead)?.[1],
+        coverageGaps: world.issueRead.split("\n").filter((text) => text.startsWith("Coverage: ")),
+        comparedWith: /Compared with (the head of pull request #\d+ at [0-9a-f]{40})/.exec(k1)?.[1],
+        passStands: / A pass stands: ([^.]*)\.$/.exec(k1)?.[1],
+      };
+    }
+
+    /** What `bun test` in a copy of the world's repository answers with greet.ts's guard
+     * replaced by GUARD (left as the world wrote it when GUARD is undefined): whether the suite
+     * passed. A guard whose loss the suite does not notice is a requirement no test pins. */
+    function suitePasses(world: SeededWorld, guard?: string): boolean {
+      const copy = freshDir("world-suite");
+      cpSync(path.join(world.run, "src"), copy, { recursive: true });
+      rmSync(path.join(copy, ".git"), { recursive: true, force: true });
+      if (guard !== undefined) {
+        const file = path.join(copy, "greet.ts");
+        const code = readFileSync(file, "utf8");
+        const usage = /if \(name === undefined[^)]*\) \{/;
+        expect(code).toMatch(usage);
+        const mutated = code.replace(usage, `if (${guard}) {`);
+        writeFileSync(file, mutated);
+      }
+      return spawnChecked(["bun", "test"], { cwd: copy, env: childEnv }).exitCode === 0;
+    }
+
+    /** `bun greet.ts ARGS…` in the world's repository: its exit code and what it printed. */
+    function greet(world: SeededWorld, ...args: string[]) {
+      const made = spawnChecked(["bun", "greet.ts", ...args], {
+        cwd: path.join(world.run, "src"),
+        env: childEnv,
+      });
+      return { code: made.exitCode, out: made.stdout.toString(), err: made.stderr.toString() };
+    }
+
+    /** Each concern of the sweep, true where the world gives a reviewer that concern to raise,
+     * and the world's intended findings beside them. A key names its concern, so a fixture that
+     * drifts fails naming the row. */
+    function concerns(world: SeededWorld) {
+      const src = (file: string) =>
+        existsSync(path.join(world.run, "src", file))
+          ? readFileSync(path.join(world.run, "src", file), "utf8")
+          : "";
+      const workflow = src(".github/workflows/greet.yml");
+      const docs = src("docs/cli.md");
+      const greetTs = src("greet.ts");
+      const uses = [...workflow.matchAll(/^\s*- uses: (\S+)/gm)].map((match) => match[1] ?? "");
+      const runs = [...workflow.matchAll(/^\s*- run: (.*)$/gm)].map((match) => match[1] ?? "");
+      const named = [...docs.matchAll(/`bun ([\w.-]+\.ts)\b/g)].map((match) => match[1] ?? "");
+      const check = /:::check\{#k1 [^\n]*\}\n[^\n]*/.exec(world.verification)?.[0] ?? "";
+      const required = spawnChecked(
+        [
+          "bun",
+          GH_STANDIN,
+          "gh",
+          "api",
+          "repos/fernbrook/widgets/branches/main",
+          "--jq",
+          ".protection.required_status_checks.checks[].context",
+        ],
+        { env: { ...childEnv, GH_DATA_DIR: world.run } }
+      );
+      const blank = greet(world, "   ");
+      const trimmed = greet(world, "  Ada  ");
+      const onKeys = /^on:\n((?: {2}\S[^\n]*\n)+)/m
+        .exec(workflow)?.[1]
+        ?.split("\n")
+        .filter(Boolean)
+        .map((key) => key.trim());
+      return {
+        "1 an action pinned by tag, or no permissions block":
+          workflow !== "" &&
+          (uses.some((use) => !/@[0-9a-f]{40}$/.test(use)) ||
+            !/^permissions:\n {2}contents: read$/m.test(workflow)),
+        "2 R2 has no test (the suite passes with the usage guard gone)": suitePasses(
+          world,
+          "false"
+        ),
+        "2 R2 has no test of the no-name case (the suite passes when no name greets)": suitePasses(
+          world,
+          'name === ""'
+        ),
+        "3 the name is trimmed in two places": (greetTs.match(/\.trim\(/g) ?? []).length > 1,
+        "4 the workflow runs one named test file": runs.some((run) => /^bun test \S/.test(run)),
+        "5 docs/cli.md names a command the repository has not got": named.some(
+          (file) => src(file) === ""
+        ),
+        "6 check k1 covers the no-name case only, not R2's blank name":
+          check !== "" && !/blank|spaces/.test(check),
+        "7 Dispatch says no pass stands for k1":
+          issueState(world).passStands?.startsWith("yes") !== true,
+        "8 the base branch requires no status check":
+          required.exitCode !== 0 || required.stdout.toString().trim() === "",
+        "the suite passes at the head, as the head's checks report": suitePasses(world),
+        "intended defect: the CLI greets a blank name": blank.code === 0,
+        "intended defect: no test holds the blank name (the suite passes without its guard)":
+          suitePasses(world, "name === undefined"),
+        "intended text finding: docs/cli.md's sentence on spaces contradicts R3, which the CLI meets":
+          docs.includes("It prints the name exactly as it was given, spaces and all.") &&
+          WORLD_SPEC.includes("**R3.** Surrounding whitespace in the name is trimmed") &&
+          trimmed.out === "Hello, Ada!\n",
+        "intended text finding: the workflow's comment names a push trigger the spec's Context rules out, which `on:` meets":
+          /^# Runs the greet tests on every pull request and on every push to main\.$/m.test(
+            workflow
+          ) &&
+          WORLD_SPEC.includes("no workflow of the repository runs on a push to `main`") &&
+          JSON.stringify(onKeys) === JSON.stringify(["pull_request:"]),
+        "intended code defect: docs/cli.md says a blank name exits 2, false only because the CLI greets it":
+          docs.includes(
+            "A blank name, like no name at all, prints the usage line on stderr and exits 2."
+          ) && blank.code === 0,
+      };
+    }
+
+    /** What every world gives: its issue past triage on the world's repository and plan, and k1's
+     * pass standing at the head of the world's own pull request. */
+    function expectedState(world: SeededWorld, status: string, passStands: string) {
+      return {
+        repository: `Repository: ${WORLD_REPO} (inherited or project default)`,
+        status: `Status: ${status}`,
+        labels: "Labels: legion",
+        planDocument: true,
+        planApproval: "approved v1",
+        coverageGaps: [],
+        comparedWith: `the head of pull request #${world.pr} at ${world.head}`,
+        passStands,
+      };
+    }
+    /** The concerns of a world that intends none of them, with its intended findings as given. */
+    function noConcern(intended: {
+      defect: boolean;
+      textFindings: boolean;
+      codeDefectSentence: boolean;
+    }) {
+      return {
+        "1 an action pinned by tag, or no permissions block": false,
+        "2 R2 has no test (the suite passes with the usage guard gone)": false,
+        "2 R2 has no test of the no-name case (the suite passes when no name greets)": false,
+        "3 the name is trimmed in two places": false,
+        "4 the workflow runs one named test file": false,
+        "5 docs/cli.md names a command the repository has not got": false,
+        "6 check k1 covers the no-name case only, not R2's blank name": intended.defect,
+        "7 Dispatch says no pass stands for k1": false,
+        "8 the base branch requires no status check": false,
+        "the suite passes at the head, as the head's checks report": true,
+        "intended defect: the CLI greets a blank name": intended.defect,
+        "intended defect: no test holds the blank name (the suite passes without its guard)":
+          intended.defect,
+        "intended text finding: docs/cli.md's sentence on spaces contradicts R3, which the CLI meets":
+          intended.textFindings,
+        "intended text finding: the workflow's comment names a push trigger the spec's Context rules out, which `on:` meets":
+          intended.textFindings,
+        "intended code defect: docs/cli.md says a blank name exits 2, false only because the CLI greets it":
+          intended.codeDefectSentence,
+      };
+    }
+
+    test("the tester's world: its issue is in testing with the implementer's pass standing, and no concern is true", () => {
+      const world = seededWorld("");
+      expect(issueState(world)).toEqual(expectedState(world, "testing", "yes, from implementer"));
+      expect(concerns(world)).toEqual(
+        noConcern({ defect: false, textFindings: false, codeDefectSentence: false })
+      );
+    }, 300_000);
+
+    test("text-only: the review round's issue is in needs_review with both passes standing, and only its two text findings are true", () => {
+      const world = seededWorld("text-only");
+      expect(issueState(world)).toEqual(
+        expectedState(world, "needs_review", "yes, from tester, implementer")
+      );
+      expect(concerns(world)).toEqual(
+        noConcern({ defect: false, textFindings: true, codeDefectSentence: false })
+      );
+    }, 300_000);
+
+    test("defect: the check that missed the blank name and the defect are true, beside the two text findings, and nothing else", () => {
+      const world = seededWorld("defect");
+      expect(issueState(world)).toEqual(
+        expectedState(world, "needs_review", "yes, from tester, implementer")
+      );
+      expect(concerns(world)).toEqual(
+        noConcern({ defect: true, textFindings: true, codeDefectSentence: false })
+      );
+    }, 300_000);
+
+    test("text-fixes: the approved round's issue is in needs_review with both passes standing, and only its two text findings are true", () => {
+      const world = seededWorld("text-fixes");
+      expect(issueState(world)).toEqual(
+        expectedState(world, "needs_review", "yes, from tester, implementer")
+      );
+      expect(concerns(world)).toEqual(
+        noConcern({ defect: false, textFindings: true, codeDefectSentence: false })
+      );
+    }, 300_000);
+
+    test("code-defect: the check that missed the blank name, the defect and the sentence it makes false are true, and nothing else", () => {
+      const world = seededWorld("code-defect");
+      expect(issueState(world)).toEqual(
+        expectedState(world, "needs_review", "yes, from tester, implementer")
+      );
+      expect(concerns(world)).toEqual(
+        noConcern({ defect: true, textFindings: false, codeDefectSentence: true })
+      );
+    }, 300_000);
+
+    // After the implementer's push, the first `dispatch results` an agent can run reads what
+    // production gives it: the pushed commit is the head k1 compares with, and no pass stands
+    // there, since each pass's commit is another commit (results_comparison.go, commitStands,
+    // through nothingReason, which takes the repository as readable once GitHub answered its
+    // default branch: delivery/branch.go, branchOf), so merge-gate.md's carry rule reads the
+    // push's own diff. Nothing of the rig's seeds the head here: the run's head watcher stores it
+    // on the push (rig.sh's start_heads, head-watcher.ts), and the row waits only for its record
+    // to answer the push, as an agent's next call does. Without the watcher the read compares
+    // with the approved head and says a pass stands (measured 2026-11-16), which 3 of 20 recorded
+    // text-fixes implementers read.
+    test("text-fixes after the implementer's push: k1 compares with the pushed head the watcher stored, and no pass stands there, as production answers", () => {
+      const world = seededWorld("text-fixes", true);
+      expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
+      expect(readFileSync(path.join(world.run, "heads.txt"), "utf8")).toContain(
+        `"pushed":"${world.head}","ok":true`
+      );
+    }, 300_000);
+  }
+);
+
+// Health's "head" rule (rule 19) over a run's push log, its head watcher's record and its own
+// remote. Catches: a push whose head the run's Dispatch was never given read as healthy, whether
+// the watcher wrote no line for it or wrote that the write failed; a worker world whose record is
+// missing, empty or not opened read as healthy because nothing was pushed; a line the watcher does
+// not write passed over; a branch of the run's own remote that moved with no line storing it read
+// as healthy because pushes.log missed the push; and a world rig.sh starts no watcher for held to
+// a record.
+describe("health's head rule", () => {
+  const push = (commit: string) =>
+    `2026-11-16T10:00:00.000Z refs/heads/legion/WID-1 ${"a".repeat(40)} ${commit}\n`;
+  const opened = '{"at":"2026-11-16T09:59:00.000Z","opened":"heads.log"}\n';
+  /** A run of `scenario` holding PUSHES as its push log unless undefined and, unless undefined,
+   * HEADS as its record. */
+  function pushed(
+    pushes: string | undefined,
+    heads?: string,
+    scenario = "reviewer-text-findings"
+  ): { dir: string; scenario: string } {
+    const dir = freshDir("head-rule");
+    mkdirSync(path.join(dir, "logs"));
+    if (pushes !== undefined) writeFileSync(path.join(dir, "pushes.log"), pushes);
+    if (heads !== undefined) writeFileSync(path.join(dir, "logs", "heads.log"), heads);
+    return { dir, scenario };
+  }
+  const b = "b".repeat(40);
+  const line = (ok: boolean, error?: string, commit = b) =>
+    `${JSON.stringify({ at: "2026-11-16T10:00:01.000Z", ref: "refs/heads/legion/WID-1", pushed: commit, ok, ...(error === undefined ? {} : { error }) })}\n`;
+
+  test("a push the watcher stored is healthy, and a world with no watcher that pushed nothing needs no record", () => {
+    expect(headUnmoved(pushed(push(b), opened + line(true)))).toBeUndefined();
+    expect(headUnmoved(pushed(undefined, opened))).toBeUndefined();
+    for (const scenario of ["ask-on-message", "brainstorm", "askgate"])
+      expect(headUnmoved(pushed("", undefined, scenario))).toBeUndefined();
+  });
+
+  test("a push with no line or a failed line is unhealthy, naming the push", () => {
+    expect(headUnmoved(pushed(push(b), opened))).toBe(
+      `head: pushes.log:1 pushed ${b} to refs/heads/legion/WID-1, and logs/heads.log holds no line storing it, so the run's Dispatch went on comparing results with the head before it`
+    );
+    expect(headUnmoved(pushed(push(b), opened + line(false, "POST refused")))).toBe(
+      `head: pushes.log:1 pushed ${b} to refs/heads/legion/WID-1, and the head watcher could not store it: POST refused`
+    );
+  });
+
+  test("a worker world's record missing, empty or not opened is unhealthy with no push, as any pushing run's is", () => {
+    const missing =
+      "head: logs/heads.log is missing, so the run kept no record of the heads its Dispatch was given";
+    for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+      expect(headUnmoved(pushed(undefined, undefined, scenario))).toBe(missing);
+    expect(headUnmoved(pushed(push(b), undefined, "ask-on-message"))).toBe(missing);
+    expect(headUnmoved(pushed("", ""))).toBe(
+      "head: logs/heads.log is empty, so the run kept no record of the heads its Dispatch was given"
+    );
+    expect(headUnmoved(pushed("", line(true)))).toBe(
+      "head: logs/heads.log does not open with the head watcher's opened line, so it is no record of the heads its Dispatch was given"
+    );
+  });
+
+  test("a line of the record the watcher does not write is unhealthy", () => {
+    expect(headUnmoved(pushed(push(b), `${opened + line(true)}garbage\n`))).toBe(
+      "head: logs/heads.log:3 is no line the head watcher writes: garbage"
+    );
+  });
+
+  test("the run's own remote moved off the seeded head with no line storing it is unhealthy, whatever pushes.log holds", () => {
+    const run = pushed("", opened);
+    const src = path.join(run.dir, "src");
+    const git = (...args: string[]) => {
+      const ran = spawnChecked(
+        [
+          "git",
+          "-c",
+          "user.name=t",
+          "-c",
+          "user.email=t@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      );
+      if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`);
+      return ran.stdout.toString().trim();
+    };
+    git("init", "-q", "-b", "legion/WID-1", src);
+    git("-C", src, "commit", "-q", "--allow-empty", "-m", "seeded");
+    const seeded = git("-C", src, "rev-parse", "HEAD");
+    git("clone", "-q", "--bare", src, path.join(run.dir, "remote.git"));
+    writeFileSync(
+      path.join(run.dir, "world.json"),
+      JSON.stringify({
+        key: "WID-1",
+        repo: "fernbrook/widgets",
+        pr: 1001,
+        branch: "legion/WID-1",
+        base: "main",
+        head: seeded,
+      })
+    );
+    expect(headUnmoved(run)).toBeUndefined();
+    git("-C", src, "commit", "-q", "--allow-empty", "-m", "pushed");
+    const moved = git("-C", src, "rev-parse", "HEAD");
+    git("-C", src, "push", "-q", path.join(run.dir, "remote.git"), "legion/WID-1");
+    expect(headUnmoved(run)).toBe(
+      `head: remote.git's refs/heads/legion/WID-1 stands at ${moved}, not world.json's seeded head ${seeded}, and logs/heads.log holds no line storing it, so a push the record missed left the run's Dispatch comparing results with the head before it`
+    );
+    writeFileSync(path.join(run.dir, "logs", "heads.log"), opened + line(true, undefined, moved));
+    expect(headUnmoved(run)).toBeUndefined();
   });
 });

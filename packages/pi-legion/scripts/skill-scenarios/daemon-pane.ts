@@ -1,20 +1,25 @@
 /**
  * The rig's reading of the Legion daemon: `daemon-pane.go`, run as a main inside a checkout's
  * daemon module, which is how it reaches the daemon's internal packages (a build of it there,
- * `SKILL_SCENARIOS_DAEMON_PANE`, or `go run -overlay`), and `daemon-routes.go`, run with `go run`
- * outside every module, since reading the routes needs only the daemon's files. The rig asks them
- * rather than restating the daemon: a change to the daemon reaches the rig by construction. The
- * one exception is `daemon-pane.go`'s own table of the handoff words, which the program carries
- * because one program runs against both checkouts of a comparison and the daemon's table has not
- * always had the same name; its comment says so. `workerPane` builds a phase worker's whole pane
- * environment over it, and `standinFacts` reads every fact the daemon stand-in answers by.
+ * `SKILL_SCENARIOS_DAEMON_PANE`, or `go run -overlay`), and `daemon-routes.go`,
+ * `daemon-completion.go` and `gh-selectors.go`, run with `go run` outside every module, since
+ * reading the routes, how the daemon takes a completion and the selector table of its gh wrapper
+ * needs only the daemon's files. The rig asks them rather than restating the daemon: a change to
+ * the daemon reaches the rig by construction. The one exception is `daemon-pane.go`'s own table
+ * of the handoff words, which the program carries because one program runs against both checkouts
+ * of a comparison and the daemon's table has not always had the same name; its comment says so.
+ * `workerPane` builds a phase worker's whole pane environment over it, `standinFacts` reads every
+ * fact the daemon stand-in answers by, and `labelGhSelectors` what the gh stand-in refuses an
+ * owner by.
  *
  * Usage: `bun daemon-pane.ts facts <checkout> <role>[:<phase>]...` reads, through the build
  * `SKILL_SCENARIOS_DAEMON_PANE` names, the facts `standinFacts` reads for a stand-in of each role
- * booted in each phase (none: the role's own) into the facts cache under `SKILL_SCENARIOS_WORK`,
- * so a stand-in's boot after it reads each out of a file (rig.sh's label_facts). It exits 1,
- * naming the fact, when one cannot be read, and 2 on a usage error or with no build or no work
- * directory named.
+ * booted in each phase (none: the role's own), and the checkout's gh selectors
+ * (`labelGhSelectors`), into the facts cache under `SKILL_SCENARIOS_WORK`, so a stand-in's boot
+ * after it reads each out of a file (rig.sh's label_facts). It exits 1, naming the fact, when one
+ * cannot be read, and 2 on a usage error or with no build or no work directory named. `bun
+ * daemon-pane.ts gh-selectors <checkout> <file>` writes the checkout's gh selectors to `file`
+ * (gh-selectors.ts's RUN_SELECTORS, rig.sh's worker_boot), exiting 1 when they cannot be read.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -32,13 +37,21 @@ import path from "node:path";
 import { isLegionRole, type LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
-import { NOT_CURRENT_PHASE } from "./completion-answers";
+import {
+  LATE_ROLES,
+  type LabelDaemon,
+  NOT_CURRENT_PHASE,
+  RECORD_ROUTES,
+} from "./completion-answers";
+import { type GhSelectors, type GhTable, selectorsOf, tableOf } from "./gh-selectors";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 const ROUTES_PROGRAM = path.join(import.meta.dir, "daemon-routes.go");
+const COMPLETION_PROGRAM = path.join(import.meta.dir, "daemon-completion.go");
+const GH_SELECTORS_PROGRAM = path.join(import.meta.dir, "gh-selectors.go");
 
 /** Runs `command` in `cwd` under the caller's environment and `env` over it, `input` on its stdin
  * (the caller's own stdin when there is none), and returns its stdout. Throws naming `what`, with
@@ -106,17 +119,20 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
   }
 }
 
-/** daemon-routes.go's printout of the routes the API package at `api` registers. The program
- * imports the standard library alone and runs from its own directory with go.work off, where no
- * go.mod above it makes it part of a module: building it compiles a few standard packages and
- * downloads nothing, so a Go cache that holds nothing yet costs seconds rather than the daemon
- * module's whole build. `api` is resolved against the caller's directory first, as `goSources`
- * reads it, since the program runs in another. */
-function runRoutes(api: string): string {
-  const dir = path.resolve(api);
-  return runProgram(`daemon-routes ${dir}`, ["go", "run", ROUTES_PROGRAM, dir], import.meta.dir, {
-    GOWORK: "off",
-  });
+/** The printout of `program`, daemon-routes.go, daemon-completion.go or gh-selectors.go, over the
+ * directory `dir` of a daemon's source. Each imports the standard library alone and runs from its
+ * own directory with go.work off, where no go.mod above it makes it part of a module: building it
+ * compiles a few standard packages and downloads nothing, so a Go cache that holds nothing yet
+ * costs seconds rather than the daemon module's whole build. `dir` is resolved against the
+ * caller's directory first, as `goSources` reads it, since the program runs in another. */
+function runStandalone(program: string, dir: string): string {
+  const resolved = path.resolve(dir);
+  return runProgram(
+    `${path.basename(program, ".go")} ${resolved}`,
+    ["go", "run", program, resolved],
+    import.meta.dir,
+    { GOWORK: "off" }
+  );
 }
 
 /** The daemon's refusal of a completion of a phase the completing role does not run: its code
@@ -153,13 +169,15 @@ function goSources(dir: string): string[] {
 }
 
 /** Where daemon-pane.go's answers are kept between processes (`cachedRead`): under the rig's work
- * directory (`SKILL_SCENARIOS_WORK`, which rig.sh exports), else under `TMPDIR`; never under HOME
- * or a `/tmp` nobody named. With neither set nothing is kept, and every read runs the program. */
+ * directory (`SKILL_SCENARIOS_WORK`, which rig.sh exports), else under `TMPDIR`, in a directory of
+ * a name that holds no word of the rig's vocabulary (`legion-daemon-cache`: `facts` is an askgate
+ * case); never under HOME or a `/tmp` nobody named.
+ * With neither set nothing is kept, and every read runs the program. */
 function factsCache(): string | undefined {
   const work = process.env.SKILL_SCENARIOS_WORK;
   if (work !== undefined && work !== "") return path.join(work, "daemon-facts");
   const tmp = process.env.TMPDIR;
-  if (tmp !== undefined && tmp !== "") return path.join(tmp, "skill-scenarios-daemon-facts");
+  if (tmp !== undefined && tmp !== "") return path.join(tmp, "legion-daemon-cache");
   return undefined;
 }
 
@@ -242,8 +260,8 @@ export function labelPhase(checkout: string, role: string): { phase: string; wor
 
 /** The checkout the run under `runDir` was built from: the `checkout` line of its built-from,
  * which rig.sh's cmd_profile writes for the label and cmd_run copies into the run before any
- * agent boots. Its daemon is the one the label's runs stand in for (`labelRoutes`). Throws for a
- * run with no such line: what that run's daemon serves is unknown. */
+ * agent boots. Its daemon is the one the label's runs stand in for (`labelRoutes`,
+ * `labelDaemon`). Throws for a run with no such line: what that run's daemon serves is unknown. */
 export function labelCheckout(runDir: string): string {
   const file = path.join(runDir, "built-from");
   const line = existsSync(file)
@@ -260,16 +278,151 @@ export function labelCheckout(runDir: string): string {
 }
 
 /** Every route the daemon of `checkout` registers, `<METHOD> <path>` each, read out of that
- * checkout's API source by daemon-routes.go (`runRoutes`), which parses the checkout's files and
- * compiles nothing of them or of any daemon module, so a substitute checkout holding the source
- * alone is read the same way. The stand-in answers by this set and health holds every 404 to it,
- * so both read one set by one reading. Throws what the reading refused. */
+ * checkout's API source by daemon-routes.go (`runStandalone`), which parses the checkout's files
+ * and compiles nothing of them or of any daemon module, so a substitute checkout holding the
+ * source alone is read the same way. The stand-in answers by this set and health holds every 404
+ * to it, so both read one set by one reading. Throws what the reading refused. */
 export function labelRoutes(checkout: string): readonly string[] {
   const daemon = daemonOf(checkout);
   const api = path.join(daemon, "internal", "api");
-  return cachedRead(ROUTES_PROGRAM, () => runRoutes(api), ["routes"], daemon, goSources(api))
+  return cachedRead(
+    ROUTES_PROGRAM,
+    () => runStandalone(ROUTES_PROGRAM, api),
+    ["routes"],
+    daemon,
+    goSources(api)
+  )
     .split("\n")
     .filter((line) => line !== "");
+}
+
+/** The selector table of the Legion gh wrapper of `checkout` (gh-selectors.ts's `GhTable`), read
+ * out of that checkout's cmd/legion and internal/ghconfig by gh-selectors.go (`runStandalone`),
+ * which parses their files and compiles none of them, and kept in the facts cache keyed by those
+ * packages' bytes, as the routes are. So each label's is read from its own checkout, and a
+ * selector form its wrapper learns is read with no edit, or refused, naming it, where this rig
+ * does not model it (gh-selectors.ts's `tableOf`). Throws what the reading refused. */
+export function labelGhTable(checkout: string): GhTable {
+  const daemon = daemonOf(checkout);
+  return tableOf(
+    cachedRead(
+      GH_SELECTORS_PROGRAM,
+      () => runStandalone(GH_SELECTORS_PROGRAM, daemon),
+      ["gh-selectors"],
+      daemon,
+      [
+        ...goSources(path.join(daemon, "cmd", "legion")),
+        ...goSources(path.join(daemon, "internal", "ghconfig")),
+      ]
+    )
+  );
+}
+
+/** The gh selectors of the daemon of `checkout` (gh-selectors.ts's `GhSelectors`): its gh
+ * wrapper's table (`labelGhTable`) joined with the gh help that checkout saves for the wrapper's
+ * own tests (cmd/legion/testdata/gh-help), which is what the wrapper's table is held to there.
+ * rig.sh's label_facts reads them at services_up and its worker_boot writes them into each run,
+ * which the gh stand-in reads them from; health reads the run's label's here. Throws what the
+ * reading refused. */
+export function labelGhSelectors(checkout: string): GhSelectors {
+  const table = labelGhTable(checkout);
+  const helps = path.join(daemonOf(checkout), "cmd", "legion", "testdata", "gh-help");
+  if (!existsSync(path.join(helps, "reference.txt")))
+    throw new Error(
+      `${helps}/reference.txt is not there, so which commands the gh wrapper of ${checkout} reads, and how, is unknown`
+    );
+  const saved = Object.fromEntries(
+    readdirSync(helps)
+      .filter((name) => name.endsWith(".txt") && name !== "reference.txt")
+      .map((name) => [name, readFileSync(path.join(helps, name), "utf8")])
+  );
+  return selectorsOf(table, saved, readFileSync(path.join(helps, "reference.txt"), "utf8"));
+}
+
+/** Each refusal `labelDaemon` met in this process, by the daemon module and the bytes of the two
+ * sources it read. The facts cache keeps no failed read (`cachedRead`), so without this a source
+ * that cannot be read was run again for each answer that asked for it: health asks once a rule a
+ * run, and the tester's fixture of 21 runs, whose built-from names checkouts that are not there,
+ * paid 15 `go run`s of daemon-completion.go and timed out at 60 s. Keyed by the bytes too, so a
+ * source rewritten in place is read again. */
+const daemonRefusals = new Map<string, Error>();
+
+/** How the daemon of `checkout` takes a completion (completion-answers.ts's `LabelDaemon`): its
+ * engine's late role and its route's record, read out of that checkout's
+ * internal/workflow/engine.go and internal/api/handoff.go by daemon-completion.go
+ * (`runStandalone`), which parses the two files and compiles nothing of them, so a substitute
+ * checkout holding the two alone is read the same way. A label's contract is so read once per
+ * label source: the stand-in reads it at its boot (`standinFacts`) out of the facts cache, which
+ * rig.sh's label_facts fills for each label before any run starts, and health and the scorer read
+ * the run's own label's through the same cache (rig.sh gives both the work directory), keyed by the
+ * two files' bytes (`cachedRead`), so a label whose checkout moves is read anew and never by its
+ * name. A source that is not there is refused here, naming it, with no program run: what a
+ * checkout lacks needs no compile to say, and a run whose built-from names a checkout that is
+ * gone costs health nothing a slow host could stretch. A refusal is kept for the process
+ * (`daemonRefusals`). Throws what the reading refused, naming the file and the shapes it looked
+ * for, and for a printout that is no late role and record route. */
+export function labelDaemon(checkout: string): LabelDaemon {
+  const daemon = daemonOf(checkout);
+  const sources = [
+    path.join(daemon, "internal", "workflow", "engine.go"),
+    path.join(daemon, "internal", "api", "handoff.go"),
+  ];
+  const absent = sources.find((source) => !existsSync(source));
+  if (absent !== undefined)
+    throw new Error(
+      `${absent} is not there, so how the daemon of ${checkout} takes a completion is unknown (daemon-completion.go reads it)`
+    );
+  const key = [daemon, ...sources.map((source) => readFileSync(source, "utf8"))].join("\0");
+  const refused = daemonRefusals.get(key);
+  if (refused !== undefined) throw refused;
+  try {
+    const printed = cachedRead(
+      COMPLETION_PROGRAM,
+      () => runStandalone(COMPLETION_PROGRAM, daemon),
+      ["completion"],
+      daemon,
+      sources
+    );
+    const [late, route, ...rest] = printed.split("\n");
+    const lateRole = LATE_ROLES.find((shape) => shape === late);
+    const recordRoute = RECORD_ROUTES.find((shape) => shape === route);
+    if (lateRole === undefined || recordRoute === undefined || rest.join("") !== "")
+      throw new Error(
+        `daemon-completion ${daemon} printed ${JSON.stringify(printed)}, which is no late role (${LATE_ROLES.join(" or ")}) and record route (${RECORD_ROUTES.join(" or ")})`
+      );
+    return { lateRole, recordRoute };
+  } catch (error) {
+    const kept = error instanceof Error ? error : new Error(String(error));
+    daemonRefusals.set(key, kept);
+    throw kept;
+  }
+}
+
+/** `judge`'s verdict on the run under `runDir`, `judge` given how that run's label's daemon
+ * takes a completion (`labelDaemon` of the run's `labelCheckout`) to read where an answer turns
+ * on it (completion-answers.ts's `refusedCompletion` and `takenCompletions`), or `unread`'s, with
+ * why, where `judge` asked for it and it could not be read. health.ts's completion rules and
+ * score.ts's `unscored` read a run's daemon so, never by the label's name; any other error
+ * `judge` throws is thrown on. */
+export function judgedOnDaemon<T>(
+  runDir: string,
+  judge: (daemon: () => LabelDaemon) => T,
+  unread: (why: string) => T
+): T {
+  let why: string | undefined;
+  try {
+    return judge(() => {
+      try {
+        return labelDaemon(labelCheckout(runDir));
+      } catch (error) {
+        why = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (why === undefined) throw error;
+    return unread(why);
+  }
 }
 
 /** Whether `routes` (`labelRoutes`) serves a request of `method` to `asked`; `method` undefined
@@ -368,6 +521,10 @@ export interface StandinFacts {
   /** The routes the daemon registers (`labelRoutes`): the one answer to "does this daemon serve
    * that route", which the stand-in asks of every request and health asks of every 404. */
   readonly routes: readonly string[];
+  /** How the daemon takes a completion: its engine's answer to a late role and the phase its
+   * route holds a completion's record to (`labelDaemon`), which the stand-in answers every
+   * completion by. */
+  readonly daemon: LabelDaemon;
   /** The run of refused turns at which the daemon fails the claim: the launch failure limit
    * (supervise's `turnOutcome`, `run < m.deps.Limits.LaunchFailures`), which the daemon is given
    * as `launch_failure_limit` and the rig, having no legion.yaml, runs at its default
@@ -415,6 +572,7 @@ function readFact<T>(checkout: string, fact: string, read: () => T): T {
  * this rig cannot answer by. */
 export function standinFacts(checkout: string, role: string, phase: string): StandinFacts {
   const routes = readFact(checkout, "routes", () => labelRoutes(checkout));
+  const daemon = readFact(checkout, "completion", () => labelDaemon(checkout));
   const turnOutcomeLimit = serves(routes, "POST", "/legion/v1/claims/turn-outcome")
     ? readFact(checkout, "count-default launch_failure_limit", () =>
         countDefault(checkout, "launch_failure_limit")
@@ -444,6 +602,7 @@ export function standinFacts(checkout: string, role: string, phase: string): Sta
     );
   return {
     routes,
+    daemon,
     turnOutcomeLimit,
     invalidSecret,
     invalidBootToken,
@@ -608,9 +767,21 @@ export function workerPane(
 }
 
 if (import.meta.main) {
-  const [command, checkout, ...boots] = Bun.argv.slice(2);
-  if (command !== "facts" || checkout === undefined || boots.length === 0) {
-    console.error("usage: bun daemon-pane.ts facts <checkout> <role>[:<phase>]...");
+  const [command, checkout, ...rest] = Bun.argv.slice(2);
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  if (command === "gh-selectors" && checkout !== undefined && rest.length === 1) {
+    try {
+      writeFileSync(rest[0] ?? "", `${JSON.stringify(labelGhSelectors(checkout))}\n`);
+    } catch (error) {
+      console.error(`daemon-pane gh-selectors: ${message(error)}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+  if (command !== "facts" || checkout === undefined || rest.length === 0) {
+    console.error(
+      "usage: bun daemon-pane.ts facts <checkout> <role>[:<phase>]... | gh-selectors <checkout> <file>"
+    );
     process.exit(2);
   }
   // Without a build each fact is a `go run`, which is the cost this read is made to take off a
@@ -624,7 +795,7 @@ if (import.meta.main) {
       process.exit(2);
     }
   }
-  for (const boot of boots) {
+  for (const boot of rest) {
     const [role = "", phase = ""] = boot.split(":");
     if (!isLegionRole(role)) {
       console.error(`daemon-pane facts: ${boot} names no Legion role`);
@@ -634,9 +805,18 @@ if (import.meta.main) {
       standinFacts(checkout, role, phase);
     } catch (error) {
       console.error(
-        `daemon-pane facts: the ${role}'s stand-in${phase === "" ? "" : ` in ${phase}`}: ${error instanceof Error ? error.message : String(error)}`
+        `daemon-pane facts: the ${role}'s stand-in${phase === "" ? "" : ` in ${phase}`}: ${message(error)}`
       );
       process.exit(1);
     }
+  }
+  // The gh stand-in of every run of the label refuses an owner by these (worker_boot writes them
+  // into the run), so a wrapper whose table holds a form this rig does not model fails the batch
+  // here, naming it, before any run starts.
+  try {
+    labelGhSelectors(checkout);
+  } catch (error) {
+    console.error(`daemon-pane facts: the gh stand-in: ${message(error)}`);
+    process.exit(1);
   }
 }

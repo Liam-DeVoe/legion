@@ -26,7 +26,9 @@ documents in one request (step 4 below), and every later role reads the checks: 
 and the tester record a result against each check with no `ci_check`, and the
 reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
 check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
-pass recorded under an older wording of the check or a retracted one.
+pass recorded under an older wording of the check or a retracted one, except a pass carried to the
+head across one push whose diff changes no code that runs, as the carry rule in
+`skill://legion-worker/references/merge-gate.md` says.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's

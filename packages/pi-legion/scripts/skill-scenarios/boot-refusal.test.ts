@@ -54,6 +54,7 @@ test("boot-refusal.ts loads neither health.ts nor score.ts, only the leaf module
     "boot-refusal.ts",
     "completion-answers.ts",
     "daemon-pane.ts",
+    "gh-selectors.ts",
     "run-names.ts",
     "run-records.ts",
     "transcript.ts",

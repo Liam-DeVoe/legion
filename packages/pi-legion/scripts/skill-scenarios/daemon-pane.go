@@ -2,10 +2,11 @@
 // phase-worker pane, computed by the daemon's own functions, for worker-pane.ts and
 // daemon-standin.ts to run Oh My Pi and the stand-in daemon under. It belongs to no module:
 // daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
-// one place the daemon's internal packages can be imported from. The daemon's routes are read by
-// daemon-routes.go instead, a program of the standard library alone, since that reading needs
-// nothing of the daemon but its files and building this one first builds the daemon module's
-// whole dependency graph (daemon-routes.go says what that cost).
+// one place the daemon's internal packages can be imported from. The daemon's routes, and how it
+// takes a completion, are read by daemon-routes.go and daemon-completion.go instead, programs of
+// the standard library alone, since those readings need nothing of the daemon but its files and
+// building this one first builds the daemon module's whole dependency graph (daemon-routes.go
+// says what that cost).
 //
 //	phase <role>             prints the phase the role's worker runs in, then on a second line the
 //	                         word of the handoff record that phase ends with (handoffWords), empty
@@ -70,7 +71,7 @@ func main() {
 		// shared refusals are built in: the daemon's own, and the ones a caller names otherwise.
 		// A caller names them so that a test can hold this reading to substitutes of its own and
 		// watch each shape and each guard below fire — the guards answer a daemon that writes
-		// the refusal in some other shape, which today's daemon does not, and the base label's
+		// the refusal in some other shape, which today's daemon does not, and an older daemon's
 		// shape is one today's daemon no longer writes, so without sources of its own not one of
 		// them can be reached (daemon-pane.test.ts). The rig itself names none and reads the
 		// daemon's files.
@@ -211,8 +212,8 @@ func countDefault(key, dir string) (int, error) {
 
 // countEntry is the expression `entry` gives the count setting `key` as its default, in either
 // shape the daemon has kept count defaults in, and false for a literal that gives `key` none:
-//   - `{"<key>", <default>, …}`, an entry of the table of count keys in config.go, main
-//     `ff2a10ef`'s, the base label's;
+//   - `{"<key>", <default>, …}`, an entry of the table of count keys in config.go, an older
+//     daemon's (main `ff2a10ef`'s);
 //   - `{Name: "<key>", …, Positive: &positiveKey{Value: <default>, …}}`, a row of the loader's
 //     key table in keytable.go, this checkout's.
 func countEntry(entry *ast.CompositeLit, key string) (ast.Expr, bool) {
@@ -310,8 +311,8 @@ func notCurrentPhase(role, issuePhase, issue, engineFile, intakeDir string) (str
 // refusalMessage is the format string of the engine's refusal `code` and the argument
 // expressions the engine fills it with, as the daemon writes them, in one of the two shapes the
 // engine has built that refusal in:
-//   - `refused(code, fmt.Sprintf(<format>, <arguments>...))` in the engine itself, main
-//     `ff2a10ef`'s, the base label's;
+//   - `refused(code, fmt.Sprintf(<format>, <arguments>...))` in the engine itself, an older
+//     daemon's (main `ff2a10ef`'s);
 //   - `intake.NotCurrentPhase(<arguments>...)` in the engine, this checkout's, whose sentence the
 //     intake package builds, shared with the completion route: its `func NotCurrentPhase` returns
 //     a refusal of `code` whose `Message` is `fmt.Sprintf(<format>, <parameters>...)`, and each

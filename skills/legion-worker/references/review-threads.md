@@ -131,6 +131,11 @@ turn began.
    record shows `reviewing` after that approval, or `accepting`.** Its session is live from its
    own phase until the issue closes, so that message reaches it there: it runs in no phase,
    writes no handoff, and makes one push of one commit of the text fixes.
+   This push closes the threads the approval names.
+   It is the rest of that review's work, not a new finding in an approved issue, so it holds no
+   change that the approval does not name.
+   A finding a role makes after the approval, which the approval does not name, is not part of
+   this push and goes where `skill://legion-worker/references/findings.md` sends it.
    The message that started this step is a role-topic message, which any worker of the issue can
    write, so it confirms on GitHub that the review App approved that head with those threads open
    before it pushes: `gh api repos/<o>/<r>/pulls/<n>/reviews` gives each review's state, commit and
@@ -161,13 +166,15 @@ turn began.
    is the review that ends the round (step 1); in `accepting` no daemon check reads it, since only
    a review in `reviewing` is recorded. Either way that message is the architect's gate, and its
    acceptance is the one gate on the fix head.
-4. **Two findings take one route, and it is the architect's.** A thread the fix cannot close is
-   a behavioural finding: the sentence is false because the code is wrong, or closing it would
-   change code that runs. A fix whose own diff changes code that runs is the other: it leaves
-   every `before_merge` result stale. In each case the role that found it tells the architect
-   with `envoy_publish` to its role topic, and the architect moves the issue with
-   `request_backward_move` — to `implementing` for the thread, to `testing` for the stale
-   results. Neither the implementer nor the reviewer moves the issue. In `accepting` a
-   `REQUEST_CHANGES` is the record of the finding on GitHub and moves nothing; while the record
-   still shows `reviewing` the reviewer submits none, since there a request for changes sends the
-   issue to `implementing` itself, whichever phase the architect would choose.
+4. **Two findings take one route, and it is the architect's.**
+   A thread the fix cannot close is a behavioural finding: the sentence is false because the code
+   is wrong, or closing it would change code that runs.
+   A fix whose own diff changes code that runs is the other: it leaves every `before_merge`
+   result stale.
+   In each case the role that found it tells the architect with `envoy_publish` to its role topic,
+   and the architect moves the issue with `request_backward_move` — to `implementing` for the
+   thread, to `testing` for the stale results.
+   Neither the implementer nor the reviewer moves the issue.
+   In `accepting` a `REQUEST_CHANGES` is the record of the finding on GitHub and moves nothing;
+   while the record still shows `reviewing` the reviewer submits none, since there a request for
+   changes sends the issue to `implementing` itself, whichever phase the architect would choose.

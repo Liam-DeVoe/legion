@@ -25,34 +25,37 @@
  * tool's grant request, its completion, and the state document. The grant rule mirrors the real
  * daemon's: a grant lives for 60 seconds and redeems any number of times while it lives; an
  * unknown or expired grant id answers 403 `{"error":"Invalid or expired grant"}`. Nothing is
- * single-use. A completion is answered as the run's label's daemon answers it
- * (completion-answers.ts's `LABEL_DAEMONS`, read by the label the run directory's name ends with,
- * `labelOf`), on the phase the issue stands in now (`served()`), never on the phase the role was
- * booted in. First the label's route (`packages/daemon/internal/api/handoff.go`, `RecordRoute`),
- * which decides whether the completion is record-backed. This checkout's (`left`): `of :=
+ * single-use. A completion is answered as the daemon of the run's label's checkout answers it
+ * (`LATE_ROLE` and `RECORD_ROUTE`, read at boot out of the checkout the run's built-from names:
+ * daemon-pane.ts's `labelDaemon`, never by the label's name), on the phase the issue stands in
+ * now (`served()`), never on the phase the role was booted in. First the label's route
+ * (`packages/daemon/internal/api/handoff.go`, completion-answers.ts's `RecordRoute`), which
+ * decides whether the completion is record-backed. This checkout's shape (`left`): `of :=
  * phase.Of(grant.Role, issue.Phase); word, writer, handoffPhase := phase.Handoff(of);
  * recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)`.
- * Main `ff2a10ef`'s (`issue`): `phase.Handoff(issue.Phase)` and `recordBacked := handoffPhase &&
- * writer == grant.Role`. A record-backed completion naming no record (`handoffId` and a positive
- * `handoffVersion`) is refused 400 HANDOFF_RECORD_REQUIRED, and one naming a record is read back
- * from Dispatch, which the stand-in takes as found (below); a completion naming one of a phase
- * that ends with none is refused 409 HANDOFF_RECORD_MISMATCH. Then the workflow
- * (`packages/daemon/internal/workflow/engine.go`, `handoff`): a completion from
+ * An older daemon's (`issue`, main `ff2a10ef`'s among them): `phase.Handoff(issue.Phase)` and
+ * `recordBacked := handoffPhase && writer == grant.Role`. A record-backed completion naming no
+ * record (`handoffId` and a positive `handoffVersion`) is refused 400 HANDOFF_RECORD_REQUIRED,
+ * and one naming a record is read back from Dispatch, which the stand-in takes as found (below);
+ * a completion naming one of a phase that ends with none is refused 409 HANDOFF_RECORD_MISMATCH.
+ * Then the workflow (`packages/daemon/internal/workflow/engine.go`, `handoff`): a completion from
  * the role whose phase the issue stands in is taken `{}` and moves nothing, since the record
  * moves on the review, as main's engine moves it (`servedPhase`). A completion from any other
- * role (a late role) is answered by the label's engine (`LateRole`):
- *   - this checkout's `leftItsPhase` takes it, `{}` and moving nothing, when the daemon started
- *     the role on the issue and the role's row holds no completion (`row.Completed()`). The
- *     completion is then one of the phase the role left (`phase.Of`), whose record it must name,
- *     or it is refused 409 HANDOFF_RECORD_REQUIRED (`phase.Handoff(reported)`, through
- *     `refused`). A role whose row holds a completion is refused 409 HANDOFF_NOT_CURRENT_PHASE.
- *     That holds for the roles the run's world says have completed (the [completed] argument:
- *     threads-closed's implementer, whose implementing round stands) and for a role whose
- *     completion was taken here, since the engine writes the completion's commit and record on
- *     the row (`row.HandoffCommit`, `row.HandoffRecord`). Every rig half is a worker the daemon
- *     started, so the refusal of a role the daemon never started is not modelled;
- *   - main `ff2a10ef` has no `leftItsPhase` and refuses every late completion 409
- *     HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) != fact.Role`).
+ * role (a late role) is answered by the label's engine (completion-answers.ts's `LateRole`):
+ *   - this checkout's `leftItsPhase` (`recorded`) takes it, `{}` and moving nothing, when the
+ *     daemon started the role on the issue and the role's row holds no completion
+ *     (`row.Completed()`). The completion is then one of the phase the role left (`phase.Of`),
+ *     whose record it must name, or it is refused 409 HANDOFF_RECORD_REQUIRED
+ *     (`phase.Handoff(reported)`, through `refused`). A role whose row holds a completion is
+ *     refused 409 HANDOFF_NOT_CURRENT_PHASE. That holds for the roles the run's world says have
+ *     completed (the [completed] argument: threads-closed's implementer, whose implementing round
+ *     stands) and for a role whose completion was taken here, since the engine writes the
+ *     completion's commit and record on the row (`row.HandoffCommit`, `row.HandoffRecord`).
+ *     Every rig half is a worker the daemon started, so the refusal of a role the daemon never
+ *     started is not modelled;
+ *   - an older engine (`refused`, main `ff2a10ef`'s among them) has no `leftItsPhase` and refuses
+ *     every late completion 409 HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) !=
+ *     fact.Role`).
  * The phase a completion is of (`phase.Of`) is the served phase when the role works it and
  * otherwise the role's own, its first (below): the implementer's would be retro once the issue
  * stands in merging, where no run of this rig stands. The route's entry fence (`entryFence`:
@@ -124,7 +127,7 @@ import {
   LegionTurnOutcomeRequest,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
-import { COMPLETE_PATH, LABEL_DAEMONS, labelOf } from "./completion-answers";
+import { COMPLETE_PATH } from "./completion-answers";
 import {
   ISSUE_SLOT,
   labelCheckout,
@@ -167,22 +170,7 @@ if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
   process.exit(2);
 }
-/** How the run's label's daemon answers a late role and which phase its route holds a record to
- * (completion-answers.ts's `LateRole` and `RecordRoute`), read by the label the run directory's
- * name ends with. A run of a label the rig models no daemon for fails the boot rather than being
- * answered as some other label's daemon would answer it. */
-const { lateRole: LATE_ROLE, recordRoute: RECORD_ROUTE } = (() => {
-  try {
-    const label = labelOf(runDir);
-    const daemon = LABEL_DAEMONS[label];
-    if (daemon === undefined) throw new Error(`no daemon is declared for the ${label} label`);
-    return daemon;
-  } catch (error) {
-    console.error(`daemon-standin: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(2);
-  }
-})();
-/** The roles whose phase row holds a completion, which this checkout's engine refuses a late
+/** The roles whose phase row holds a completion, which a `recorded` engine refuses a late
  * completion from (`leftItsPhase`'s `row.Completed()`, a handoff commit or a handoff record on
  * the row): the roles the run's world says completed their phase with a commit before the run
  * began, and a role whose completion was taken here naming a commit or a record (`handle`'s
@@ -231,15 +219,20 @@ function bootRead<T>(read: () => T): T {
 const CHECKOUT = bootRead(() => labelCheckout(runDir));
 /** Every fact of the run's label's daemon this answers by, read at boot by daemon-pane.ts's
  * `standinFacts`, which says what each is: its routes (`ROUTES`, the one answer to "does this
- * daemon serve that route", which `fetch` asks of every request), its launch failure limit, its
- * claim refusals, the phase the role's own worker is started in and that phase's handoff word,
- * the phase the issue stands in for this run (`PHASE`: the caller's, or the role's own when it
- * names none), and, for a run whose role can be late, the daemon's own refusal of a late
- * completion (`NOT_CURRENT_PHASE`), whose phase and issue are filled in when it is sent. Each is
- * read through daemon-pane.ts's facts cache, which rig.sh's label_facts fills for every stand-in
- * of a batch before any run starts, so a boot reads each out of a file. */
+ * daemon serve that route", which `fetch` asks of every request), how it takes a completion
+ * (`LATE_ROLE`, its engine's answer to a late role, and `RECORD_ROUTE`, the phase its route holds
+ * a completion's record to, read out of the checkout's own source: completion-answers.ts's
+ * `LabelDaemon`), its launch failure limit, its claim refusals, the phase the role's own worker is
+ * started in and that phase's handoff word, the phase the issue stands in for this run (`PHASE`:
+ * the caller's, or the role's own when it names none), and, for a run whose role can be late, the
+ * daemon's own refusal of a late completion (`NOT_CURRENT_PHASE`), whose phase and issue are
+ * filled in when it is sent. Each is read through daemon-pane.ts's facts cache, which rig.sh's
+ * label_facts fills for every stand-in of a batch before any run starts, so a boot reads each out
+ * of a file. A daemon whose completion shapes cannot be read fails the boot, rather than being
+ * answered as some other daemon would answer it. */
 const {
   routes: ROUTES,
+  daemon: { lateRole: LATE_ROLE, recordRoute: RECORD_ROUTE },
   turnOutcomeLimit: TURN_OUTCOME_LIMIT,
   invalidSecret: INVALID_SECRET,
   invalidBootToken: INVALID_BOOT_TOKEN,
@@ -317,12 +310,13 @@ const stateIn = (phase: string) =>
     // Every key any label's contract requires, not this checkout's alone: a label's agents load
     // the plugin of their own checkout, and `legionSettings` is a loose object in each, so a body
     // carrying both keys is described by both contracts while one carrying either alone is
-    // refused by the other. Measured on 2026-11-10: the base label, built from main `ff2a10ef`,
-    // whose contract requires `settings.max_fix_attempts`, had every state read of all 30 of its
-    // runs refused `a body the daemon API contract does not describe`, so its agents spent turns
-    // on the daemon and no reviewer of that label could reach the `read_record` the rule asks
-    // for — the negative control of k1 and k2 measured in a world of its own. A key a later
-    // contract drops stays here for as long as a label the rig builds still requires it.
+    // refused by the other. Measured on 2026-11-10: the base label, then built from main
+    // `ff2a10ef`, whose contract requires `settings.max_fix_attempts`, had every state read of
+    // all 30 of its runs refused `a body the daemon API contract does not describe`, so its
+    // agents spent turns on the daemon and no reviewer of that label could reach the
+    // `read_record` the rule asks for — the negative control of k1 and k2 measured in a world of
+    // its own. A key a later contract drops stays here for as long as a label the rig builds
+    // still requires it.
     settings: { max_fix_attempts: 3, review_round_cap: 3, worker_boot_timeout_seconds: 120 },
     consumers: [],
   });
@@ -463,8 +457,8 @@ const grants = new Map<string, { readonly expiresAt: number }>();
 
 /** `POST /legion/v1/handoff/complete`'s body: every key any label's contract sends, not this
  * checkout's alone, for the reason the state body carries every settings key (`stateIn`): a
- * label's agents load the plugin of their own checkout. The base label, built from main
- * `ff2a10ef`, sends `ready`, a boolean its contract requires on every completion; #2539 took it
+ * label's agents load the plugin of their own checkout. The base label, then built from main
+ * `ff2a10ef`, sent `ready`, a boolean its contract requires on every completion; #2539 took it
  * out of this checkout's request, a strict object, so a stand-in parsing with this checkout's
  * alone answered every base completion 400 with zod's `unrecognized_keys`. Measured on
  * 2026-11-12: all 20 base runs of k1 and k2 logged `handoff/complete` 400 and nothing else, and
@@ -663,13 +657,13 @@ function handle(
       const { handoffId, handoffVersion, commit } = parsed.data;
       const namesRecord = handoffId !== undefined || handoffVersion !== undefined;
       // The route (packages/daemon/internal/api/handoff.go), as the label's daemon has it
-      // (`RECORD_ROUTE`). A phase's writer is the role the workflow starts on it. This
-      // checkout's holds the completion to the phase it is of (`phase.Of`): the served phase
-      // when this role works it, and otherwise the one it left, its own; the completion is
+      // (`RECORD_ROUTE`). A phase's writer is the role the workflow starts on it. A `left` route
+      // (this checkout's) holds the completion to the phase it is of (`phase.Of`): the served
+      // phase when this role works it, and otherwise the one it left, its own; the completion is
       // record-backed when that phase ends with a record and it is the served phase or the
-      // completion names a record. `ff2a10ef`'s holds it to the served phase, and it is
-      // record-backed exactly when the issue stands in this role's own phase and that phase ends
-      // with a record.
+      // completion names a record. An `issue` route (an older daemon's) holds it to the served
+      // phase, and it is record-backed exactly when the issue stands in this role's own phase and
+      // that phase ends with a record.
       const of = RECORD_ROUTE === "left" ? ROLE_PHASE : phase;
       const recordBacked =
         RECORD_ROUTE === "left"

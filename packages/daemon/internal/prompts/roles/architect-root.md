@@ -182,7 +182,10 @@ Then
 `implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
+`dispatch results --issue <issue>` shows, or a pass carried to that head across one push whose
+diff changes no code that runs, as the reviewer's approval of that head states and the carry rule
+in `skill://legion-worker/references/merge-gate.md` says.
+A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
 requirement, which clears the root's coverage flag for it. The root's own checks are proven at
