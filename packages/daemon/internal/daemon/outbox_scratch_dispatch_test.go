@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -320,8 +319,8 @@ type scratchDispatchOptions struct {
 // the port it serves on (kept across a restart, since whatever the test pointed at the server
 // names it), the socket the test holds on that port, and the running process. stop and start take
 // it down and bring it back on the same port, which the test holds between them, and the same
-// database; stopRefusing also lets the port go, so it refuses connections until the next start.
-// The test's end stops it and drops the database.
+// database; stopWithStandIn also serves the port with a stand-in that closes each connection at
+// once until the next start. The test's end stops it and drops the database.
 type scratchDispatch struct {
 	t        *testing.T
 	binary   string
@@ -335,9 +334,11 @@ type scratchDispatch struct {
 	port     int
 	// socket is the listening socket on port that every start hands Dispatch (DISPATCH_LISTEN_FD).
 	// The test holds it from the choice of the port until the test ends, so no other program can
-	// take the port before Dispatch serves it or while it is stopped. It is nil only from
-	// stopRefusing until the next start.
-	socket  *os.File
+	// take the port before Dispatch serves it or while it is stopped.
+	socket *os.File
+	// standIn serves socket from stopWithStandIn until the next start, closing each connection at
+	// once; nil at any other time.
+	standIn *closingStandIn
 	base    string
 	command *exec.Cmd
 	exited  chan error
@@ -368,6 +369,13 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 	}
 	t.Cleanup(d.stop)
 	d.start()
+	// Registered after start's hold of the socket, so it runs before the socket is closed: a test's
+	// cleanups run last registered first.
+	t.Cleanup(func() {
+		if err := d.endStandIn(); err != nil {
+			t.Errorf("end the stand-in on scratch Dispatch's port %d: %v", d.port, err)
+		}
+	})
 	return d
 }
 
@@ -385,15 +393,14 @@ func (d *scratchDispatch) start() {
 	}
 	// Dispatch serves on a socket the test holds (DISPATCH_LISTEN_FD), so no other process can take
 	// the port before Dispatch serves it: the first start holds a port the kernel chose
-	// (heldSocket), and a restart is handed the same socket again. Only a restart after
-	// stopRefusing takes the port again (holdPortAgain).
+	// (heldSocket), and a restart is handed the same socket again, once the stand-in
+	// stopWithStandIn put on it has ended (endStandIn).
 	if d.socket == nil {
-		if d.port == 0 {
-			d.socket, d.port = heldSocket(t)
-			d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
-		} else {
-			d.socket = d.holdPortAgain(deadline)
-		}
+		d.socket, d.port = heldSocket(t)
+		d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
+	}
+	if err := d.endStandIn(); err != nil {
+		t.Fatalf("end the stand-in on scratch Dispatch's port %d: %v", d.port, err)
 	}
 	command := exec.Command(d.binary)
 	command.Dir = d.dir
@@ -460,36 +467,6 @@ func (d *scratchDispatch) start() {
 	}
 }
 
-// holdPortAgain takes the socket of the port the server served on before stopRefusing let it go
-// (takeSocket), as heldSocket takes one of a port the kernel chooses, and closes it when the test
-// ends. From stopRefusing until here the port has no listener, so any process may have bound it:
-// a run that finds it held by another process (EADDRINUSE) binds it again until deadline. Every
-// other failure of takeSocket, such as the descriptor the listener could not give, is this run's
-// own and fails the test at once: binding again would never clear it.
-func (d *scratchDispatch) holdPortAgain(deadline time.Time) *os.File {
-	d.t.Helper()
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(d.port))
-	var held *os.File
-	var last error
-	if !testwait.Holds(time.Until(deadline), 500*time.Millisecond, func() bool {
-		file, _, err := takeSocket(address)
-		switch {
-		case err == nil:
-			held = file
-			return true
-		case !errors.Is(err, syscall.EADDRINUSE):
-			d.t.Fatalf("hold scratch Dispatch's port %d again: %v", d.port, err)
-		}
-		last = err
-		d.t.Logf("scratch Dispatch's port %d is still taken (%v); binding it again", d.port, err)
-		return false
-	}) {
-		d.t.Fatalf("scratch Dispatch's port %d was still taken at the deadline: %v", d.port, last)
-	}
-	d.t.Cleanup(func() { _ = held.Close() })
-	return held
-}
-
 // stop interrupts the running server and waits for it to exit, killing it after ten seconds. A
 // server that is not running is left as it is.
 func (d *scratchDispatch) stop() {
@@ -511,17 +488,120 @@ func (d *scratchDispatch) stop() {
 	}
 }
 
-// stopRefusing is stop, and then closes the socket the test holds, so the port refuses every
-// connection, as a stopped Dispatch's port does outside a test. A10 of handoff_records_live_test.go
-// proves what a client sees then: a refused connection. A port that refuses has no listener, so any
-// program can bind it until the next start takes it again (holdPortAgain). That is the one window
-// in which the scratch Dispatch's port is not held, and only this stop opens it.
-func (d *scratchDispatch) stopRefusing() {
+// stopWithStandIn is stop, and then serves the socket the test holds with a stand-in that accepts
+// each connection and closes it at once (closingStandIn), until the next start. A client of the
+// stopped Dispatch is so told at once that its connection failed, as it is outside a test, where
+// a held socket with no server would leave it waiting unanswered. A10 of
+// handoff_records_live_test.go proves what a client sees then: a connection closed before any
+// answer. The test holds the port all the while, so no other program can bind it.
+func (d *scratchDispatch) stopWithStandIn() {
+	d.t.Helper()
 	d.stop()
-	if d.socket != nil {
-		_ = d.socket.Close()
-		d.socket = nil
+	if d.standIn != nil {
+		return
 	}
+	standIn, err := closeEachConnection(d.socket)
+	if err != nil {
+		d.t.Fatalf("stand in for the stopped scratch Dispatch on port %d: %v", d.port, err)
+	}
+	d.standIn = standIn
+}
+
+// endStandIn ends the stand-in stopWithStandIn started, if one runs (closingStandIn.end).
+func (d *scratchDispatch) endStandIn() error {
+	if d.standIn == nil {
+		return nil
+	}
+	standIn := d.standIn
+	d.standIn = nil
+	return standIn.end()
+}
+
+// closingStandIn stands in for a stopped server on a socket the test holds: it accepts each
+// connection and closes it at once, reading nothing of it. It serves the socket through a
+// descriptor of its own (net.FileListener), so ending it closes only that descriptor, and the
+// test's still holds the port.
+type closingStandIn struct {
+	socket   *os.File
+	listener net.Listener
+	// ended is closed once the accept loop has ended; failed is why it ended, when it ended before
+	// end closed its listener.
+	ended  chan struct{}
+	failed error
+}
+
+// closeEachConnection starts a closingStandIn on socket.
+func closeEachConnection(socket *os.File) (*closingStandIn, error) {
+	listener, err := net.FileListener(socket)
+	if err != nil {
+		return nil, fmt.Errorf("listen on the held socket: %w", err)
+	}
+	s := &closingStandIn{socket: socket, listener: listener, ended: make(chan struct{})}
+	go func() {
+		defer close(s.ended)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if !errors.Is(err, net.ErrClosed) {
+					s.failed = err
+				}
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	return s, nil
+}
+
+// end stops the stand-in and closes its own descriptor, then closes each connection still queued
+// on the socket (closeQueued), so no connection made while the server was down reaches the server
+// the socket is handed to next. It fails when the stand-in stopped accepting before end stopped
+// it, since connections then waited unanswered.
+func (s *closingStandIn) end() error {
+	_ = s.listener.Close()
+	<-s.ended
+	if s.failed != nil {
+		return fmt.Errorf("the stand-in stopped accepting connections: %w", s.failed)
+	}
+	return closeQueued(s.socket)
+}
+
+// closeQueued accepts each connection queued on the listening socket and closes it at once. It
+// never waits: it stops at the first accept that finds the queue empty (EAGAIN).
+func closeQueued(socket *os.File) error {
+	raw, err := socket.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("read the held socket's descriptor: %w", err)
+	}
+	var failed error
+	if err := raw.Control(func(fd uintptr) {
+		// Non-blocking, so an empty queue is EAGAIN rather than a wait for the next connection.
+		if err := syscall.SetNonblock(int(fd), true); err != nil {
+			failed = fmt.Errorf("make the held socket non-blocking: %w", err)
+			return
+		}
+		for {
+			// An accepted descriptor is not close-on-exec until it is closed: ForkLock keeps a
+			// process started meanwhile from inheriting it, and with it the connection.
+			syscall.ForkLock.RLock()
+			conn, _, err := syscall.Accept(int(fd))
+			if err == nil {
+				_ = syscall.Close(conn)
+			}
+			syscall.ForkLock.RUnlock()
+			switch err {
+			case nil, syscall.EINTR, syscall.ECONNABORTED:
+			case syscall.EAGAIN:
+				return
+			default:
+				failed = fmt.Errorf("accept a queued connection: %w", err)
+				return
+			}
+		}
+	}); err != nil {
+		return fmt.Errorf("read the held socket's descriptor: %w", err)
+	}
+	return failed
 }
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {

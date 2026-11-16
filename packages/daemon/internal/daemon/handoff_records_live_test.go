@@ -8,11 +8,12 @@
 // Nothing of the record path is stood in for. Dispatch is the real server: this driver builds
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
-// and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
-// booted with dispatch_url at that server, so every Dispatch read and write it makes - the
-// repository mapping, the issue list, its status writes and messages, and the read of the record a
-// completion names - goes to the real routes. The worker side is the real `dispatch` CLI
+// and the CLI present; it stops it for A10, leaving on its port a stand-in that closes each
+// connection at once, and starts it again on the same database and port. The daemon is the whole
+// daemon (run, the function `legion start` calls, through startDaemonWithin), booted with
+// dispatch_url at that server, so every Dispatch read and write it makes - the repository mapping,
+// the issue list, its status writes and messages, and the read of the record a completion names -
+// goes to the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
 // the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
 // side a completion's commit comes from is the real `findHandoffReport`
@@ -543,14 +544,15 @@ func (r *handoffRecordsLive) a10Up() {
 	r.note("handoff-write as %s with Dispatch up: %s", planner.session, r.a10Existing.line)
 }
 
-// Step A10. With the Dispatch process stopped, `dispatch handoff-write` exits non-zero naming the
-// connection failure, and the planner's completion naming the record that exists is refused 502
-// DISPATCH_READ_FAILED; the issue stays in planning.
+// Step A10. With the Dispatch process stopped and its port held by a stand-in that closes each
+// connection at once, `dispatch handoff-write` exits non-zero naming the connection failure, and
+// the planner's completion naming the record that exists is refused 502 DISPATCH_READ_FAILED; the
+// issue stays in planning.
 func (r *handoffRecordsLive) a10Down() {
 	t := r.t
 	planner := r.claimants[r.token(r.a10, claim.RolePlanner)]
-	r.dispatch.stopRefusing()
-	r.note("stopped the Dispatch process (SIGINT); %s refuses connections", r.dispatch.base)
+	r.dispatch.stopWithStandIn()
+	r.note("stopped the Dispatch process (SIGINT); %s closes each connection at once", r.dispatch.base)
 	file := r.bodyFile("a10-retry", r.smallBody(r.a10, "plan", "written once Dispatch answers"))
 	out, code := r.cli(planner.session, "handoff-write", "--issue", r.a10, "--phase", "plan", "--body-file", file)
 	lower := strings.ToLower(out)
