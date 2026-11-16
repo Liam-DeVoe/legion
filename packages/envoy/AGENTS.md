@@ -3207,7 +3207,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   For each `pass`, `fail` and `could_not_run` it runs `<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -`, with the test's output on standard input, so a `--- FAIL` line never reads as a flag;
   a skip, a test that did not run and a test that ran twice get no call.
   It prints one JSON line on stdout for each check of the job, `{"check","test","outcome","exit","result_id","why"}`, `exit` being `null` for a check with no call and `-1` for a command that could not start.
-  Of the command's output it reads only the stored row's `id`, since the row's `predicate.recorder.person` is the address of a person, and `why` carries the command's stderr when a call failed.
+  Of the output of a call that stored its result it reads only the row's `id`, since the row's `predicate.recorder.person` is the address of a person.
+  A call that failed stored nothing, and `why` carries what it printed on both streams: the command prints a refusal of Dispatch or of the broker on stdout and its warnings on stderr.
   It exits 0 when each call stored its result, 1 when a call failed, and 2, with no call, for a tree with any problem, a report that holds anything but events, a commit it cannot read and arguments it does not take.
   Its tests run it with a stub `dispatch` command of their own, and `ci.yaml`'s `envoy-go-checks` runs them with the spec-file ones.
 

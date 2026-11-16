@@ -18,8 +18,9 @@ import (
 // --dispatch-cli. It is this test's own program, not the real command. Each call writes its
 // arguments, NUL-separated, to <n>.args, its standard input to <n>.stdin and the value of
 // AGENT_SECRETS_MACHINE_IDENTITY to <n>.identity, in the directory CI_REPORT_STUB_DIR names, n
-// counting from 0. With CI_REPORT_STUB_MODE=refuse it writes the broker's refusal of an exchange
-// on standard error and exits 1, as the real command does when the broker refuses the job's token.
+// counting from 0. With CI_REPORT_STUB_MODE=refuse it prints the broker's refusal of an exchange
+// on standard output and exits 1, as the real command prints every refusal of Dispatch or of the
+// broker (packages/envoy-client/src/dispatch-cli.ts, `print`, which writes to standard output).
 // Otherwise it prints a stored row as the real command prints it, whole and over many lines, with
 // the id row-<check> and the address of a person in predicate.recorder.person, and exits 0.
 const stubDispatch = `#!/bin/sh
@@ -35,7 +36,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ "$CI_REPORT_STUB_MODE" = refuse ]; then
-  echo "` + brokerRefusal + `" >&2
+  echo "` + brokerRefusal + `"
   exit 1
 fi
 cat <<EOF
@@ -59,7 +60,7 @@ cat <<EOF
 EOF
 `
 
-// brokerRefusal is what the stub writes on standard error in refuse mode: the broker's refusal of
+// brokerRefusal is what the stub prints in refuse mode: the broker's refusal of
 // an exchange for a ref that no result entry admits.
 const brokerRefusal = "BROKER_EXCHANGE_REFUSED: the broker refused the exchange of the job's token: invalid_request: no result entry admits ref refs/heads/a/b/c/d"
 

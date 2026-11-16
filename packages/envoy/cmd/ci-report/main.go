@@ -23,12 +23,13 @@
 // It prints one JSON line on standard output for each check of the job, in the tree's order:
 // {"check","test","outcome","exit","result_id","why"}. exit is the command's exit status, -1 when
 // it could not start or a signal ended it, and null for a check with no call. result_id is the id
-// of the stored result, the one part of the command's output that it reads and prints: the stored
-// row also holds predicate.recorder.person, the address of a person. why says why a check got no
-// call, and holds the command's standard error when a call failed. The line holds no raw line
-// break, as encoding/json escapes each control character, and the "[" of each "##[" in it is
-// written as \u005b, which a JSON reader reads back as "[", so the line starts no workflow command
-// of a runner's log. Every other line goes to standard error through runnerlog.Say with the prefix
+// of the stored result, the one part of a stored call's output that it reads and prints: the
+// stored row also holds predicate.recorder.person, the address of a person. why says why a check
+// got no call, and holds what the command printed on both streams when a call failed, which stored
+// nothing: the command prints a refusal on standard output. The line holds no raw line break, as
+// encoding/json escapes each control character, and the "[" of each "##[" in it is written as
+// \u005b, which a JSON reader reads back as "[", so the line starts no workflow command of a
+// runner's log. Every other line goes to standard error through runnerlog.Say with the prefix
 // "ci-report: ", ending with "<n> checks of <dir> at <sha> name job <job>; <n> results written,
 // <n> calls failed".
 //
@@ -255,8 +256,11 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 }
 
 // record runs the dispatch command cli once for the check of p, and answers its exit status, the
-// id of the stored result, and why the call failed, "" when it stored the result. Of the command's
-// standard output it reads only the stored row's id, and it never prints the rest.
+// id of the stored result, and why the call failed, "" when it stored the result. A call that
+// failed stored nothing, and its words are what it wrote on both streams: the command prints a
+// refusal of Dispatch or of the broker on standard output (`print` in
+// packages/envoy-client/src/dispatch-cli.ts), and its warnings on standard error. Of a call that
+// stored its result it reads only the stored row's id, and it never prints the rest.
 func record(cli []string, project, commit string, p Planned) (code int, id, why string) {
 	args := append(slices.Clone(cli[1:]), "result", "--project", project, "--check", p.Check, "--verdict", p.Outcome,
 		"--commit", commit, "--observed-file", "-")
@@ -270,9 +274,9 @@ func record(cli []string, project, commit string, p Planned) (code int, id, why 
 	case err != nil && !errors.As(err, &exitError):
 		return -1, "", err.Error()
 	case cmd.ProcessState.ExitCode() != 0:
-		words := strings.TrimSpace(stderr.String())
+		words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
 		if words == "" {
-			words = fmt.Sprintf("the dispatch command ended with %s and wrote nothing on standard error", cmd.ProcessState)
+			words = fmt.Sprintf("the dispatch command ended with %s and printed nothing", cmd.ProcessState)
 		}
 		return cmd.ProcessState.ExitCode(), "", words
 	}
