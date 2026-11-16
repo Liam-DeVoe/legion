@@ -73,42 +73,62 @@ type settlementReconciliation struct {
 	// for its ask.opened (causeOpenedAskTies).
 	opened     map[string]string
 	openedTies map[string]graphstore.Uncaused
+	// sources is who introduced each credited block of the tree this settlement reconciled: the
+	// room's record and the durable one this settlement read (askBlockSources), which the typed
+	// nodes of the version it writes take their authors from (typedSources).
+	sources askBlockSources
 }
 
 // writeOpenedAskTies writes, in the settlement's transaction that opened them, the shaped ties of
-// each ask block whose ask this settlement opened (refs.IndexAskTies): their block_refs rows now,
-// and their tuples held for the ask.opened that records each ask (causeOpenedAskTies). The targets
-// whose counts each ask's rows moved are named on that ask.opened, beside what its question and
-// parts moved, as a version event names what its block index moved (refs.CountedChanges), so a
-// page reading backlink counts off the event refreshes them. tree is the tree the settlement
-// settled, rendered as offsets, of version `version` of document artifactID. It runs before the
-// events are appended, since an appended event is never rewritten. A settlement that writes a
-// version needs none of this: that version's block index runs after the rows exist and states
-// the ties with every other link of the document.
+// the ask blocks whose asks this settlement opened, in one reconcile over all of them
+// (refs.IndexOpenedAskTies): their block_refs rows now, and their tuples held for the ask.opened
+// that records each ask (causeOpenedAskTies). The targets whose counts each ask's rows moved are
+// named on that ask.opened, beside what its question and parts moved, as a version event names
+// what its block index moved (refs.CountedChanges, read once for every opened ask), so a page
+// reading backlink counts off the event refreshes them. tree is the tree the settlement settled,
+// rendered as offsets, of version `version` of document artifactID. It runs before the events are
+// appended, since an appended event is never rewritten. A settlement that writes a version needs
+// none of this: that version's block index runs after the rows exist and states the ties with
+// every other link of the document.
 func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
 	if len(r.opened) == 0 {
 		return nil
 	}
 	blocks := offsetBlocks(offsets)
-	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, tree, blockPointers(blocks, tree))
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, tree, blockPointers(blocks, tree),
+		typedSources(ctx, tx, artifactID, tree, &r.sources))
 	if err != nil {
 		return err
 	}
-	at := time.Now().UTC()
+	moved, ties, err := refs.IndexOpenedAskTies(ctx, tx, artifactID, version, time.Now().UTC(), facts, slices.Sorted(maps.Keys(r.opened)))
+	if err != nil {
+		return fmt.Errorf("write the ties of the ask blocks settlement opened: %w", err)
+	}
+	// Each tuple hangs on its ask's node, so it is the ask's to cause.
 	r.openedTies = make(map[string]graphstore.Uncaused, len(r.opened))
-	for _, block := range slices.Sorted(maps.Keys(r.opened)) {
+	for _, tie := range ties.Tuples {
+		held := r.openedTies[tie.FromID]
+		held.Tuples = append(held.Tuples, tie)
+		r.openedTies[tie.FromID] = held
+	}
+	var all []refs.Target
+	for _, targets := range moved {
+		all = append(all, targets...)
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	counted, err := refs.CountedChanges(ctx, tx, all)
+	if err != nil {
+		return fmt.Errorf("count the targets the ties of the ask blocks settlement opened moved: %w", err)
+	}
+	for block, targets := range moved {
 		ask := r.opened[block]
-		moved, ties, err := refs.IndexAskTies(ctx, tx, artifactID, version, at, facts, block)
-		if err != nil {
-			return fmt.Errorf("write the ties of the ask block %s settlement opened: %w", block, err)
-		}
-		r.openedTies[ask] = ties
-		if len(moved) == 0 {
-			continue
-		}
-		counted, err := refs.CountedChanges(ctx, tx, moved)
-		if err != nil {
-			return fmt.Errorf("count the targets the ties of ask block %s moved: %w", block, err)
+		own := model.ReferenceChanges{TruncatedKinds: counted.TruncatedKinds}
+		for _, changed := range counted.Targets {
+			if slices.Contains(targets, refs.Target{Kind: changed.Kind, ID: changed.ID}) {
+				own.Targets = append(own.Targets, changed)
+			}
 		}
 		for index, event := range r.events {
 			payload, isAsk := event.Payload.(model.AskEventPayload)
@@ -116,7 +136,7 @@ func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pg
 				continue
 			}
 			named := model.ReferenceChanges{Targets: payload.ReferencesChanged, TruncatedKinds: payload.ReferencesChangedTruncatedKinds}
-			payload.ReferenceChangesPayload = model.NewReferenceChangesPayload(refs.MergeChanges(named, counted))
+			payload.ReferenceChangesPayload = model.NewReferenceChangesPayload(refs.MergeChanges(named, own))
 			r.events[index].Payload = payload
 		}
 	}
@@ -529,7 +549,9 @@ func (s *Service) reconcileAskBlocks(
 	}
 
 	actor := credit.actor
-	var reconciled settlementReconciliation
+	// The sources, with the durable record read above, are what the version this settlement writes
+	// reads the authors of its decisions and readings from (typedSources).
+	reconciled := settlementReconciliation{sources: credit.askSources}
 	for _, invalid := range invalidBlocks {
 		delete(rows, invalid.id)
 		if reconciled.repair(invalid.node, invalid.id, askInvalidAttribute(invalid.reason.Error())) {
@@ -816,22 +838,37 @@ func askFingerprints(tree *pmdoc.Node, fingerprint func(*pmdoc.Node) (string, er
 	return held, err
 }
 
-// addedAskBlockIDs is the id of every readable ask block in after that before does not hold: one
-// an edit inserted, retyped another block into, or repaired after a browser left it unreadable,
-// wherever it lands - a blockquote, a list item - as the parser reads it, so an opener quoted in
-// code adds none. One the edit moved, reworded or left alone keeps its id and is not among them. A
-// nil before - a write with no readable starting tree, a repair - holds nothing, so every readable
-// ask in after counts.
+// addedAskBlockIDs is the id of every credited block in after that before does not hold as the
+// same type: a readable ask block one an edit inserted, retyped another block into, or repaired
+// after a browser left it unreadable, wherever it lands - a blockquote, a list item - as the parser
+// reads it, so an opener quoted in code adds none; and a decision or a reading the edit inserted or
+// retyped another block into, whose node a version's index gives this write's author
+// (refs.DecisionFacts). One the edit moved, reworded or left alone keeps its id and is not among
+// them. A nil before - a write with no readable starting tree, a repair - holds nothing, so every
+// readable ask and every decision and reading in after counts.
 func addedAskBlockIDs(before, after *pmdoc.Node) map[string]struct{} {
 	held := readableAskBlockIDs(before)
+	typed := map[string]string{}
+	pmdoc.Walk(before, func(node *pmdoc.Node) bool {
+		if node.Type == "decision" || node.Type == "reading" {
+			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+			typed[id] = node.Type
+		}
+		return true
+	})
 	added := map[string]struct{}{}
 	pmdoc.Walk(after, func(node *pmdoc.Node) bool {
-		if node.Type == "ask" {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		switch node.Type {
+		case "ask":
 			if _, err := parseAskBlock(node); err == nil {
-				id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 				if _, kept := held[id]; !kept {
 					added[id] = struct{}{}
 				}
+			}
+		case "decision", "reading":
+			if id != "" && typed[id] != node.Type {
+				added[id] = struct{}{}
 			}
 		}
 		return true

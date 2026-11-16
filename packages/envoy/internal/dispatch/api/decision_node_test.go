@@ -4,10 +4,13 @@ import (
 	"context"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -79,17 +82,46 @@ func currentTies(t *testing.T, database *store.Store, address, kind string) []gr
 // login, printing the stored tuple and the login it holds.
 func requireDecidedBy(t *testing.T, database *store.Store, what, address, login string) graphstore.Tuple {
 	t.Helper()
+	return requireDecidedByNode(t, database, what, address, graphstore.KindPerson, login)
+}
+
+// requireDecidedByNode fails unless the decision's node holds exactly one decided_by, to the node
+// kind/id - a person or the session of an agent - printing the stored tuple and what it holds.
+func requireDecidedByNode(t *testing.T, database *store.Store, what, address, kind, id string) graphstore.Tuple {
+	t.Helper()
 	held := currentTies(t, database, address, graphstore.TupleDecidedBy)
-	if len(held) != 1 || held[0].ToKind != graphstore.KindPerson || held[0].ToID != login {
+	if len(held) != 1 || held[0].ToKind != kind || held[0].ToID != id {
 		var logins []string
 		for _, tuple := range held {
 			logins = append(logins, tuple.ToKind+":"+tuple.ToID)
 		}
-		t.Errorf("%s: the stored decided_by of %s is %+v, holding the login %v; want the writer %q, whose credential the write proved",
-			what, address, held, logins, login)
+		t.Errorf("%s: the stored decided_by of %s is %+v, holding the login %v; want the writer %s:%s, whose credential the write proved",
+			what, address, held, logins, kind, id)
 		return graphstore.Tuple{}
 	}
 	return held[0]
+}
+
+// requireValueCaused fails unless the newest tuple of the node's attribute carries the writer who
+// and the event the write appended.
+func requireValueCaused(t *testing.T, database *store.Store, address, attribute, who string, event int64) {
+	t.Helper()
+	history, err := graphstore.History(context.Background(), database.Pool, refs.BlockNodeKind, address, attribute)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("read the history of %s of %s: %v (%d tuples)", attribute, address, err, len(history))
+	}
+	requireCaused(t, attribute+" of "+address, history[len(history)-1], who, event)
+}
+
+// decidingSession is the session sessionActor names, whose node an agent's decision is decided by.
+const decidingSession = "session-0123456789abcdef"
+
+// requireAgentWrite fails unless response is the success status want of an agent's write.
+func requireAgentWrite(t *testing.T, what string, response *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if response.Code != want {
+		t.Fatalf("%s: status=%d body=%s, want %d", what, response.Code, response.Body.String(), want)
+	}
 }
 
 // requireCaused fails unless tuple carries who as its writer and event as its cause.
@@ -309,6 +341,8 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	requireCaused(t, "d1's decided_by", requireDecidedBy(t, database, "the upload", d1, "alice"), "alice", uploaded)
 	requireValue(t, database, d1, refs.ValueUncertainty, "low")
 	requireValue(t, database, d1, refs.ValueUncertaintyReason, "A client that needs streaming would change it.")
+	requireValueCaused(t, database, d1, refs.ValueUncertainty, "alice", uploaded)
+	requireValueCaused(t, database, d1, refs.ValueUncertaintyReason, "alice", uploaded)
 	if parents := currentTies(t, database, decisions.address("g1"), graphstore.TuplePartOf); len(parents) != 1 || parents[0].ToID != d1 {
 		t.Errorf("the reading g1 states the part_of %+v, want d1, the decision it reads", parents)
 	}
@@ -318,6 +352,16 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	requireDecidedBy(t, database, "the upload", decisions.address("u1"), "alice")
 	requireValue(t, database, decisions.address("u1"), refs.ValueUncertainty, "")
 	requireValue(t, database, decisions.address("u1"), refs.ValueUncertaintyReason, "")
+
+	// An agent's upload of a decision claiming a person, with no uncertainty at all - the write a
+	// forged author needs: the stored author is the agent's session, which its credential proved.
+	requireAgentWrite(t, "an agent's upload", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+		"name": "agent.md", "content": ":::decision{#s1 decided_by=\"alice\"}\nThe agent decides.\n:::\n", "actor": sessionActor(),
+	}), http.StatusCreated)
+	agent := readDecisionDocument(t, database, issue.Key, "agent-md")
+	requireDecidedByNode(t, database, "an agent's upload claiming alice", agent.address("s1"), graphstore.KindSession, decidingSession)
+	requireValue(t, database, agent.address("s1"), refs.ValueUncertainty, "")
+	requireValue(t, database, agent.address("s1"), refs.ValueUncertaintyReason, "")
 
 	// The markdown read back renders shaped as serves is rendered, and no decided_by; the same
 	// markdown uploaded again retracts no shaped tuple.
@@ -366,6 +410,17 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	})
 	requireDecidedBy(t, database, "the first document's decision after a claim of carol", spec.address("f1"), "alice")
 
+	// An agent's issue: its first document holds a decision claiming alice, with no uncertainty,
+	// and the stored author is the agent's session.
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Quarterly hiring forecast", "actor": sessionActor(),
+		"spec": ":::decision{#s3 decided_by=\"alice\"}\nThe agent's first document decides.\n:::\n",
+	})
+	requireAgentWrite(t, "an agent's issue", created, http.StatusCreated)
+	agentSpec := readDecisionDocument(t, database, decodeBody[model.Issue](t, created).Key, "spec")
+	requireDecidedByNode(t, database, "an agent's first document claiming alice", agentSpec.address("s3"), graphstore.KindSession, decidingSession)
+	requireValue(t, database, agentSpec.address("s3"), refs.ValueUncertainty, "")
+
 	// The editor operation: a paragraph retyped into a decision claiming bob, then a retype
 	// claiming carol, then an edit by another writer.
 	uploadAs(t, handler, issue.Key, "editor.md", "The editor decides.\n", "alice")
@@ -379,8 +434,19 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 		{"op": "insert", "after": "end", "markdown": "More.\n"},
 	})
 	requireDecidedBy(t, database, "an editor operation claiming carol", editor.address(paragraph), "alice")
-	editIssueDocumentAs(t, handler, issue.Key, "editor-md", "bob", []map[string]any{{"op": "insert", "after": "end", "markdown": "Bob adds a line.\n"}})
-	requireDecidedBy(t, database, "another writer's editor operation", editor.address(paragraph), "alice")
+	editIssueDocumentAs(t, handler, issue.Key, "editor-md", "bob", []map[string]any{{"op": "replace", "find": "The editor decides.", "with": "Bob rewords the editor's decision."}})
+	if markdown := documentMarkdown(t, handler, editor.id); !strings.Contains(markdown, "Bob rewords the editor's decision.") {
+		t.Fatalf("bob's edit of the decision's own words left editor.md as\n%s", markdown)
+	}
+	requireDecidedBy(t, database, "another writer's edit of the decision's words", editor.address(paragraph), "alice")
+
+	// An agent's editor operation: a decision it inserts claiming alice, with no uncertainty.
+	requireAgentWrite(t, "an agent's editor operation", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts/editor-md/edits", map[string]any{
+		"ops":   []map[string]any{{"op": "insert", "after": "end", "markdown": ":::decision{#s2 decided_by=\"alice\"}\nThe agent's edit decides.\n:::\n"}},
+		"actor": sessionActor(),
+	}), http.StatusOK)
+	requireDecidedByNode(t, database, "an agent's editor operation claiming alice", editor.address("s2"), graphstore.KindSession, decidingSession)
+	requireValue(t, database, editor.address("s2"), refs.ValueUncertainty, "")
 
 	// The browser's settlement: alice's editor writes a decision claiming bob and a Keep nobody
 	// made, then sets carol on it; settlement stores each version, moves nothing of the author,
@@ -540,4 +606,138 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 		t.Errorf("the browser's decision holds %d block_refs rows into %s, want none", rows, other.Key)
 	}
 	requireDecidedBy(t, database, "the browser's tied decision", address, "alice")
+}
+
+// connectPeerAs connects login's browser to artifactID's room, as connectBrowserPeer connects
+// alice's.
+func connectPeerAs(t *testing.T, documentService *docs.Service, artifactID, login string) *syncedPeer {
+	t.Helper()
+	sockets := &servedSockets{finished: make(map[string]chan struct{})}
+	server := httptest.NewServer(sockets.serve(documentService.ServeHTTP))
+	t.Cleanup(server.Close)
+	peer := &syncedPeer{
+		wsURL: "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID, sockets: sockets,
+		headers: http.Header{"X-Dispatch-User": []string{login}}, artifactID: artifactID, doc: crdt.New(),
+	}
+	peer.connect(t)
+	return peer
+}
+
+// requireTypedNode fails unless the block's node has the supertag want and states one part_of,
+// to toKind/toID.
+func requireTypedNode(t *testing.T, database *store.Store, what, address, want, toKind, toID string) {
+	t.Helper()
+	requireSupertag(t, database, address, want)
+	if parents := currentTies(t, database, address, graphstore.TuplePartOf); len(parents) != 1 || parents[0].ToKind != toKind || parents[0].ToID != toID {
+		t.Errorf("%s: %s states the part_of %+v, want one, to %s/%s", what, address, parents, toKind, toID)
+	}
+}
+
+// A settlement's version lists every person who edited the document since the version before,
+// and that list names nobody's decision: alice and bob both edit before one settlement - alice an
+// unrelated paragraph while both are connected, bob, once alone, a decision holding a reading -
+// and the decision's decided_by and the reading's authored_by name bob, who introduced the block,
+// never alice, whom the version lists first. The author is the one the room's update observer
+// recorded for the update that introduced the block (docs' askBlockSources.author).
+func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
+	browser := readDecisionDocument(t, database, issue.Key, "browser-md")
+
+	bob := connectPeerAs(t, documents, browser.id, "bob")
+	t.Cleanup(bob.close)
+	alice := connectPeerAs(t, documents, browser.id, "alice")
+	alice.appendParagraph(t, "Alice adds an unrelated line.")
+	alice.barrier(t)
+	alice.closeAndWait(t)
+	bob.barrier(t)
+	decision := decisionNode("b1", "Bob decides.", nil)
+	decision.Children = append(decision.Children, &pmdoc.Node{Type: "reading", Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: "g1"}, Children: []*pmdoc.Node{
+		{Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: "Bob reads his own decision."}}},
+	}})
+	bob.edit(t, func(tree *pmdoc.Node) error {
+		tree.Children = append(tree.Children, decision)
+		return nil
+	})
+	bob.barrier(t)
+	settleIssue(t, documents, issue.Key)
+
+	settled := latestVersion(t, database, browser.id)
+	var authors []string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(array_agg(a->>'id' order by a->>'id'), '{}') from artifact_versions v, jsonb_array_elements(v.authors) a
+		where v.artifact_id = $1 and v.number = $2
+	`, browser.id, settled.Number).Scan(&authors); err != nil {
+		t.Fatalf("read the settled version's authors: %v", err)
+	}
+	if !slices.Equal(authors, []string{"alice", "bob"}) {
+		t.Fatalf("the settled version %d lists the authors %v, want alice and bob: the settlement of several writers this case needs", settled.Number, authors)
+	}
+	requireDecidedBy(t, database, "a settlement alice and bob both wrote", browser.address("b1"), "bob")
+	if held := currentTies(t, database, browser.address("g1"), graphstore.TupleAuthoredBy); len(held) != 1 || held[0].ToKind != graphstore.KindPerson || held[0].ToID != "bob" {
+		t.Errorf("the reading g1 states the authored_by %+v, want bob, who wrote it; the version lists alice first", held)
+	}
+}
+
+// A reading inside an ask stands under the ask the block shows (R2: the parent of a reading inside
+// an ask is the ask node). A copy of an answered ask, on another document of the issue, opens no
+// row of its own and shows its source's answer, so a reading in it is a reading node whose part_of
+// is the source ask's node, its document_blocks row still naming the copy's block. A browser's new
+// ask block holding a reading shows no ask at all - no row, no source - and settlement flags it
+// invalid, so the reading in it is a block like any other: supertag block, placed in the ask block.
+func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	const ask = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
+	uploadAs(t, handler, issue.Key, "asks.md", ask, "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
+
+	t.Run("a copy of an answered ask", func(t *testing.T) {
+		uploadAs(t, handler, issue.Key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n\n"+
+			":::reading{#g1}\nThe agent reads the copied answer as REST.\n:::\n::::\n", "alice")
+		copied := readDecisionDocument(t, database, issue.Key, "copy-md")
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1`, copied.id).Scan(&rows); err != nil {
+			t.Fatalf("count the copy's asks: %v", err)
+		}
+		if rows != 0 {
+			t.Fatalf("the copy opened %d asks of its own, want none: it shows its source's", rows)
+		}
+		requireTypedNode(t, database, "a reading in a copy of an answered ask", copied.address("g1"), "reading", graphstore.KindAsk, askID)
+		var parent *string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select parent_block_id from document_blocks where artifact_id = $1 and block_id = 'g1'
+		`, copied.id).Scan(&parent); err != nil {
+			t.Fatalf("read the reading's row: %v", err)
+		}
+		if parent == nil || *parent != "a1" {
+			t.Errorf("the reading's row names the parent %v, want the copy's ask block a1, the projection of its part_of", parent)
+		}
+	})
+
+	t.Run("a browser's new ask block", func(t *testing.T) {
+		uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
+		browser := readDecisionDocument(t, database, issue.Key, "browser-md")
+		writeBrowserDocument(t, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
+			":::reading{#g9}\nThe agent reads it as shipping.\n:::\n::::\n")
+		settleIssue(t, documents, issue.Key)
+		if latestVersion(t, database, browser.id).Number < 2 {
+			t.Fatalf("settlement wrote no version of the browser's ask block")
+		}
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1`, browser.id).Scan(&rows); err != nil {
+			t.Fatalf("count the browser document's asks: %v", err)
+		}
+		if rows != 0 {
+			t.Fatalf("the browser's ask block holding a reading opened %d asks, want none: settlement flags it", rows)
+		}
+		requireTypedNode(t, database, "a reading in a new ask block that shows no ask", browser.address("g9"), refs.BlockSupertag, refs.BlockNodeKind, browser.address("a9"))
+	})
 }

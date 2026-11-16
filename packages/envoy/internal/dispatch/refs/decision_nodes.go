@@ -3,13 +3,13 @@ package refs
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -79,7 +79,9 @@ type TypedFacts struct {
 	decisions []decisionFact
 	readings  []string
 	// askParents is each reading standing in an answered ask whose row names its node, with that
-	// ask's id: the reading's part_of is the ask's node (reconcileBlockParents).
+	// ask's id: the reading's part_of is the ask's node (reconcileBlockParents). The ask is the one
+	// its ask block shows (TypedSources.Shown): the block's own row's, or for a copy of another
+	// document's ask, the source's.
 	askParents map[string]string
 	// askBlocks is every ask block of the version, by id, with the id of the ask whose row names
 	// its node, "" for a block no such row holds yet: the shaped of a block with none waits for
@@ -94,15 +96,47 @@ type TypedFacts struct {
 	foreign map[tieKey]struct{}
 	// serverDecided is whether the schema marks a decision's decided_by `server`, the server's to
 	// derive. decidedBy is then each decision's author: the far end of the newest decided_by tuple
-	// its node holds, or for a node holding none, which is the node's first write as a decision,
-	// the person or session the version's writer proved (graphstore.AuthorOf). firstDecided says
-	// the second.
+	// its node holds, or for a node holding none, the person or session who introduced the block
+	// (TypedSources.Authors). authored is each decision and reading whose author this pass states,
+	// with that author: a decision's decided_by and a reading's authored_by.
 	serverDecided bool
 	decidedBy     map[string]Target
-	firstDecided  map[string]bool
+	authored      map[string]model.Actor
 	// held is what the store holds now of each typed node, by address and then tuple kind: the
-	// newest tuple of each of its values, its decided_by and its authored_by.
-	held map[string]map[string]heldTie
+	// newest tuple of each of its values, its decided_by and its authored_by. nodes is the
+	// supertag and state of each typed node the store holds, by address, which tells the pass
+	// which node it has to write (IndexDecisionNodes).
+	held      map[string]map[string]heldTie
+	heldNodes map[string]heldNode
+}
+
+// TypedSources is what the typed-node pass reads of a version from the document service, which
+// holds what no row of the store does: who introduced each block, and which ask an ask block shows.
+type TypedSources struct {
+	// Authors is, of the blocks ids names, each one's author: the actor of the write that
+	// introduced the block - a joined write's own for the blocks it added, the one browser an
+	// update came from for one a browser introduced - as the document service records it for a
+	// settlement to read (docs' askBlockSources.author). A block no write is recorded as
+	// introducing, or one several browsers' update did, is absent, and its node takes no author:
+	// a decision's author is never guessed from who else wrote the version.
+	Authors func(ids []string) (map[string]model.Actor, error)
+	// Shown is, of the ask blocks ids names, each holding a reading, the ask each one shows: its
+	// own row's, or for a copy of an ask of another document of its owner, that source's (docs'
+	// readingAnswers). A block that shows none - a new block no row holds yet, an unreadable one -
+	// is absent, and a reading in it is a block like any other.
+	Shown func(ids []string) (map[string]ShownAsk, error)
+}
+
+// ShownAsk is the ask an ask block shows: its id, whether its row names its node, and whether
+// that node holds an answer.
+type ShownAsk struct {
+	ID              string
+	Named, Answered bool
+}
+
+// heldNode is what the store holds of one node: its supertag and its state.
+type heldNode struct {
+	supertag, state string
 }
 
 // decisionFact is one decision block of the version: its id, and the values its attributes hold
@@ -127,25 +161,31 @@ type heldTie struct {
 
 // DecisionFacts reads version `version` of document artifactID for the typed-node pass, in the
 // caller's transaction, which holds the document's owner row: blocks are the version's rendered
-// blocks, tree the tree they were rendered from, and pointers the version's `block[]` values
-// (pmdoc.BlockPointers), of which it keeps the decisions' and the ask blocks' shaped. A version
-// holding no decision, reading or ask block, and one with no tree, reads nothing and answers the
-// zero facts.
+// blocks, tree the tree they were rendered from, pointers the version's `block[]` values
+// (pmdoc.BlockPointers), of which it keeps the decisions' and the ask blocks' shaped, and sources
+// what the document service says of the version's blocks. A version holding no decision, reading
+// or ask block, and one with no tree, reads nothing and answers the zero facts.
 //
 // It reads the version's writer and its document's issue (indexedVersionRecord), the ask row of
-// each ask block - the ask's id, whether the row names the ask's node, and whether that node
-// holds an answer (its newest answer_state value, which asks.Settle appends) - and, of each
-// decision and reading node, the newest tuple of each value it holds and of its decided_by and
-// its authored_by.
+// each ask block, the ask each ask block holding a reading shows (TypedSources.Shown), and, of
+// each decision and reading node, its supertag and state and the newest tuple of each value it
+// holds and of its decided_by and its authored_by.
+//
+// A reading in an ask block stands under the ask the block shows, a person's decision once that
+// ask holds an answer: its node is a reading's, its part_of that ask's node. A reading in an ask
+// block that shows no ask, or one whose ask holds no answer, which settlement flags (docs'
+// flagReadingsWithoutAnswers), is a block like any other until the ask holds an answer.
 //
 // Whose a decision's tie is, the schema says (pmdoc.BlockTypeAttributes): a relation attribute
 // its writer writes - from_ask, of kind `ask` - is read off the tree, and decided_by, an `actor`
 // the schema marks `server`, is the server's and never a value from the tree, which a browser
 // can put anything in. Its author is read off its node, because markdown never carries it (the
 // attribute is never rendered, `markdown: false`): the stored tuple is the one record of who
-// decided, and the credential the version proved names the author only at the node's first
-// write, so a later write by another writer, the browser's included, moves nothing of it.
-func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version int, blocks []model.ArtifactBlock, tree *pmdoc.Node, pointers []Pointer) (TypedFacts, error) {
+// decided. A node that holds none takes the author of the write that introduced its block
+// (TypedSources.Authors), and only that one, so a later write by another writer, the browser's
+// included, moves nothing of it, and a version several people wrote names nobody it cannot tell
+// introduced the block. A reading's authored_by follows the same rule.
+func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version int, blocks []model.ArtifactBlock, tree *pmdoc.Node, pointers []Pointer, sources TypedSources) (TypedFacts, error) {
 	if tree == nil || !HoldsTypedBlocks(blocks) {
 		return TypedFacts{}, nil
 	}
@@ -165,10 +205,11 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 	}
 	decisionAttributes, _ := pmdoc.BlockTypeAttributes(decisionType)
 	facts.serverDecided = decisionAttributes.Get(graphstore.TupleDecidedBy).Server
-	// The readings of each holder, in document order, before the ask rows say which of them
-	// stand in an answered ask.
+	// The readings of each holder, in document order, before the asks say which of them stand in
+	// an answered ask.
 	type heldReading struct{ id, holder, holderType string }
 	var readings []heldReading
+	var readingAsks []string
 	seen := map[string]struct{}{}
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if node.Type != decisionType && node.Type != askType {
@@ -186,6 +227,7 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 			facts.askBlocks[id] = ""
 		}
 		_, admitted := pmdoc.TypedContent(node)
+		holds := false
 		for _, child := range admitted {
 			reading := typedBlockID(child)
 			if _, repeated := seen[reading]; child.Type != readingType || repeated || reading == "" || types[reading] != readingType {
@@ -193,6 +235,10 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 			}
 			seen[reading] = struct{}{}
 			readings = append(readings, heldReading{id: reading, holder: id, holderType: node.Type})
+			holds = true
+		}
+		if holds && node.Type == askType {
+			readingAsks = append(readingAsks, id)
 		}
 		return true
 	})
@@ -202,13 +248,15 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 		}
 		facts.shaped = append(facts.shaped, pointer)
 	}
-	asked, err := readAskBlocks(ctx, tx, artifactID, facts.askBlocks)
+	named, err := namedAskRows(ctx, tx, artifactID, facts.askBlocks)
 	if err != nil {
 		return TypedFacts{}, err
 	}
-	for id, ask := range asked {
-		if ask.named {
-			facts.askBlocks[id] = ask.id
+	maps.Copy(facts.askBlocks, named)
+	var shown map[string]ShownAsk
+	if len(readingAsks) > 0 && sources.Shown != nil {
+		if shown, err = sources.Shown(readingAsks); err != nil {
+			return TypedFacts{}, err
 		}
 	}
 	for _, decision := range facts.decisions {
@@ -216,15 +264,15 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 	}
 	for _, reading := range readings {
 		if reading.holderType == askType {
-			ask, opened := asked[reading.holder]
-			if opened && !ask.answered {
+			ask, shows := shown[reading.holder]
+			if !shows || !ask.Answered {
 				continue
 			}
-			if opened && ask.named {
+			if ask.Named {
 				if facts.askParents == nil {
 					facts.askParents = map[string]string{}
 				}
-				facts.askParents[reading.id] = ask.id
+				facts.askParents[reading.id] = ask.ID
 			}
 		}
 		facts.supertags[reading.id] = readingType
@@ -236,7 +284,7 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 		}
 	}
 	facts.foreign = foreignTies(document.issue, facts.shaped, facts.ties)
-	if err := facts.readHeld(ctx, tx); err != nil {
+	if err := facts.readHeld(ctx, tx, sources); err != nil {
 		return TypedFacts{}, err
 	}
 	return facts, nil
@@ -335,18 +383,10 @@ func foreignTies(issue string, ties ...[]Pointer) map[tieKey]struct{} {
 	return foreign
 }
 
-// askBlockRow is what an ask block's row says of its ask: the ask's id, whether the row names the
-// ask's node, and whether that node holds an answer.
-type askBlockRow struct {
-	id              string
-	named, answered bool
-}
-
-// readAskBlocks reads the row of each of blocks, ask blocks of document artifactID, by block id,
-// in one statement: a block no row holds is absent. An ask holds an answer where its node's
-// newest answer_state value is answered, the value asks.Settle appends; a node holding none, an
-// ask a process of the release before wrote, reads as open (docs' askAnswers).
-func readAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blocks map[string]string) (map[string]askBlockRow, error) {
+// namedAskRows is, of blocks, ask blocks of document artifactID, each whose row names the ask's
+// node, with that ask's id, read in one statement: the node an ask block's shaped hangs on
+// (TypedFacts.pairs). A block no row holds, or whose row names no node yet, is absent.
+func namedAskRows(ctx context.Context, tx pgx.Tx, artifactID string, blocks map[string]string) (map[string]string, error) {
 	if len(blocks) == 0 {
 		return nil, nil
 	}
@@ -355,36 +395,30 @@ func readAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blocks map
 		ids = append(ids, id)
 	}
 	rows, err := tx.Query(ctx, `
-		select k.block_id, k.id::text, k.node_kind is not null and k.node_address is not null,
-		       coalesce(answer.to_id = $3, false)
-		from asks k
-		left join lateral (
-			select t.to_id, t.asserted from graph_tuples t
-			where t.from_kind = $4 and t.from_id = k.id::text and t.kind = $5 and t.to_kind = $6
-			order by t.seq desc
-			limit 1
-		) answer on answer.asserted
+		select k.block_id, k.id::text from asks k
 		where k.block_artifact_id = $1 and k.block_id = any($2::text[])
-	`, artifactID, ids, asks.StateAnswered, graphstore.KindAsk, graphstore.TupleAnswerState, graphstore.KindValue)
+		  and k.node_kind is not null and k.node_address is not null
+	`, artifactID, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read the asks of the ask blocks of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
-	found := make(map[string]askBlockRow, len(ids))
+	found := make(map[string]string, len(ids))
 	for rows.Next() {
-		var block string
-		var row askBlockRow
-		if err := rows.Scan(&block, &row.id, &row.named, &row.answered); err != nil {
+		var block, ask string
+		if err := rows.Scan(&block, &ask); err != nil {
 			return nil, fmt.Errorf("scan the ask of an ask block of %s: %w", artifactID, err)
 		}
-		found[block] = row
+		found[block] = ask
 	}
 	return found, rows.Err()
 }
 
-// readHeld reads what the store holds of each typed node that fits its key (held), in one
-// statement, and decides each decision's author from it (decidedBy).
-func (f *TypedFacts) readHeld(ctx context.Context, tx pgx.Tx) error {
+// readHeld reads what the store holds of each typed node that fits its key, in one statement:
+// the node's supertag and state (heldNodes), and the newest tuple of each value it holds and of
+// its decided_by and its authored_by (held). It then names the author of each decision and
+// reading that holds none from sources (authored), and each decision's decided_by (decidedBy).
+func (f *TypedFacts) readHeld(ctx context.Context, tx pgx.Tx, sources TypedSources) error {
 	refKey := f.document.refKey
 	addresses := make([]string, 0, len(f.typed))
 	for _, id := range f.typed {
@@ -393,56 +427,96 @@ func (f *TypedFacts) readHeld(ctx context.Context, tx pgx.Tx) error {
 		}
 	}
 	f.held = make(map[string]map[string]heldTie, len(addresses))
+	f.heldNodes = make(map[string]heldNode, len(addresses))
 	if len(addresses) > 0 {
 		kinds := append([]string{graphstore.TupleDecidedBy, graphstore.TupleAuthoredBy}, decisionValues[:]...)
 		rows, err := tx.Query(ctx, `
-			select distinct on (t.from_id, t.kind) t.from_id, t.kind, t.to_kind, t.to_id, t.asserted
-			from graph_tuples t
-			where t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = any($3::text[])
-			order by t.from_id, t.kind, t.seq desc
+			select typed.address, n.supertag, n.state, t.kind, t.to_kind, t.to_id, t.asserted
+			from unnest($2::text[]) as typed (address)
+			left join graph_nodes n on n.kind = $1 and n.id = typed.address
+			left join lateral (
+				select distinct on (h.kind) h.kind, h.to_kind, h.to_id, h.asserted
+				from graph_tuples h
+				where h.from_kind = $1 and h.from_id = typed.address and h.kind = any($3::text[])
+				order by h.kind, h.seq desc
+			) t on true
 		`, BlockNodeKind, addresses, kinds)
 		if err != nil {
 			return fmt.Errorf("read what the store holds of the decisions and readings of %s: %w", refKey, err)
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var address, kind string
-			var tie heldTie
-			if err := rows.Scan(&address, &kind, &tie.toKind, &tie.toID, &tie.asserted); err != nil {
+			var address string
+			var supertag, state, kind, toKind, toID *string
+			var asserted *bool
+			if err := rows.Scan(&address, &supertag, &state, &kind, &toKind, &toID, &asserted); err != nil {
 				return fmt.Errorf("scan what the store holds of a decision or a reading of %s: %w", refKey, err)
+			}
+			if supertag != nil && state != nil {
+				f.heldNodes[address] = heldNode{supertag: *supertag, state: *state}
+			}
+			if kind == nil {
+				continue
 			}
 			if f.held[address] == nil {
 				f.held[address] = map[string]heldTie{}
 			}
-			f.held[address][kind] = tie
+			f.held[address][*kind] = heldTie{toKind: *toKind, toID: *toID, asserted: *asserted}
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read what the store holds of the decisions and readings of %s: %w", refKey, err)
 		}
 	}
-	if !f.serverDecided {
-		return nil
-	}
-	writerKind, writerID, proved := graphstore.AuthorOf(f.document.writer)
-	proved = proved && graphstore.AddressFits(writerID)
+	// A node holding its author keeps it: the author a block takes is the one of the write that
+	// introduced it, and only a node that holds none yet is given one.
+	var unauthored []string
 	for _, decision := range f.decisions {
-		if !blockIDFits(refKey, decision.id) {
+		if !f.serverDecided || !blockIDFits(refKey, decision.id) {
 			continue
 		}
 		if held, stated := f.held[blockNodeAddress(refKey, decision.id)][graphstore.TupleDecidedBy]; stated {
-			f.setDecidedBy(decision.id, Target{Kind: held.toKind, ID: held.toID}, false)
-		} else if proved {
-			f.setDecidedBy(decision.id, Target{Kind: writerKind, ID: writerID}, true)
+			f.setDecidedBy(decision.id, Target{Kind: held.toKind, ID: held.toID})
+		} else {
+			unauthored = append(unauthored, decision.id)
+		}
+	}
+	for _, reading := range f.readings {
+		if !blockIDFits(refKey, reading) {
+			continue
+		}
+		if _, stated := f.held[blockNodeAddress(refKey, reading)][graphstore.TupleAuthoredBy]; !stated {
+			unauthored = append(unauthored, reading)
+		}
+	}
+	if len(unauthored) == 0 || sources.Authors == nil {
+		return nil
+	}
+	authors, err := sources.Authors(unauthored)
+	if err != nil {
+		return fmt.Errorf("read who introduced the decisions and readings of %s: %w", refKey, err)
+	}
+	for _, id := range unauthored {
+		actor, named := authors[id]
+		kind, authorID, proved := graphstore.AuthorOf(actor)
+		if !named || !proved || !graphstore.AddressFits(authorID) {
+			continue
+		}
+		if f.authored == nil {
+			f.authored = map[string]model.Actor{}
+		}
+		f.authored[id] = actor
+		if f.supertags[id] == decisionType {
+			f.setDecidedBy(id, Target{Kind: kind, ID: authorID})
 		}
 	}
 	return nil
 }
 
-func (f *TypedFacts) setDecidedBy(id string, author Target, first bool) {
+func (f *TypedFacts) setDecidedBy(id string, author Target) {
 	if f.decidedBy == nil {
-		f.decidedBy, f.firstDecided = map[string]Target{}, map[string]bool{}
+		f.decidedBy = map[string]Target{}
 	}
-	f.decidedBy[id], f.firstDecided[id] = author, first
+	f.decidedBy[id] = author
 }
 
 // supertag is the supertag of the node of block id, of type typ: its own type's for a decision
@@ -534,52 +608,65 @@ func (f TypedFacts) typedScope() *pairScope {
 // the event that records the version (graphstore.Uncaused), which the caller appends with the
 // block index's.
 //
-// For each decision and reading of the version it writes the block's node with its type's
-// supertag, the same node refs.IndexBlocks writes (blockNode), so whichever of the two writes it
-// second moves nothing. Of a decision it appends uncertainty, uncertainty_reason and replaced as
-// values where they moved, and retracts one the decision no longer holds, so a decision whose
-// author recorded neither level nor reason holds neither. At a decision's first write it writes
-// the node of the person or session the version's writer proved (graphstore.AuthorFacts), the
-// far end of its decided_by; the tie itself is its block_refs row's, stated by the reconcile that
-// writes the row (replaceBlockRefs) from the author DecisionFacts read, so a later write by
-// another writer, which reads the stored tuple, moves nothing of it. Of a reading it appends
-// authored_by once, at the first write that finds it holding none, through graphstore.AuthorFacts,
-// from the credential and never from the body.
+// It writes the node of a decision or a reading only where the store does not hold it as the
+// version leaves it - a node it holds under another supertag (a block retyped into a decision, a
+// reading whose ask now holds an answer) or gone, and above the deferral bound a node it does not
+// hold at all - with its type's supertag, the same node refs.IndexBlocks writes (blockNode). So a
+// version that moves one word of a document of many decisions writes no node of its own, and the
+// block index writes the nodes of the blocks whose text moved, as it does for any block. Of a
+// decision it appends uncertainty, uncertainty_reason and replaced as values where they moved,
+// and retracts one the decision no longer holds, so a decision whose author recorded neither
+// level nor reason holds neither. Of a decision or a reading that holds no author it writes the
+// node of the person or session who introduced the block (TypedFacts.authored, through
+// graphstore.AuthorFacts), the far end of a decision's decided_by and a reading's authored_by;
+// a decision's tie itself is its block_refs row's, stated by the reconcile that writes the row
+// (replaceBlockRefs), and a reading's authored_by is appended here, both once.
 //
 // indexed says refs.IndexBlocks indexed this version in the same transaction: that pass then
-// stated each typed node's part_of and reconciled every block_refs row of the document with the
-// facts' ties among them. Above the deferral bound (docs.IndexDocumentReferences) no block index
-// runs in the request, and this pass does both for its own blocks alone: it states the part_of
-// of each decision and reading where the store places it elsewhere (reconcileBlockParents), and
-// reconciles the rows of its own kinds held by its own blocks (typedScope), deleting no other row
-// of the document. The block-index reconciliation indexes the document later with the same
-// facts, and its pairs hold these same ties, so it moves none of them
-// (TestTheReconcilerMovesNoRowTheTypedPassWrote).
+// wrote the node of every block whose text the version moved, stated each typed node's part_of
+// and reconciled every block_refs row of the document with the facts' ties among them. Above the
+// deferral bound (docs.IndexDocumentReferences) no block index runs in the request, and this pass
+// does both for its own blocks alone: it states the part_of of each decision and reading where
+// the store places it elsewhere (reconcileBlockParents), and reconciles the rows of its own kinds
+// held by its own blocks (typedScope), deleting no other row of the document. The block-index
+// reconciliation indexes the document later with the same facts, and its pairs hold these same
+// ties, so it moves none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote).
 func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, facts TypedFacts, indexed bool) ([]Target, graphstore.Uncaused, error) {
 	if !facts.read {
 		return nil, graphstore.Uncaused{}, nil
 	}
 	document := facts.document
 	refKey, writer := document.refKey, document.writer
-	nodes := make([]graphstore.Node, 0, len(facts.typed)+2)
+	var nodes []graphstore.Node
 	for _, id := range facts.typed {
-		if blockIDFits(refKey, id) {
-			nodes = append(nodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive, facts.supertags[id]))
+		if !blockIDFits(refKey, id) {
+			continue
 		}
+		address := blockNodeAddress(refKey, id)
+		held, holds := facts.heldNodes[address]
+		if holds && held.supertag == facts.supertags[id] && held.state == graphstore.StateLive {
+			continue
+		}
+		if !holds && indexed {
+			// A block the store holds no node of is one whose text this version wrote, and the
+			// block index wrote its node.
+			continue
+		}
+		nodes = append(nodes, blockNode(address, document, versionAt, graphstore.StateLive, facts.supertags[id]))
 	}
 	var tuples []graphstore.Tuple
-	// The writer's node and the aliases the server proved of it are stated once however many
-	// nodes name it, since one write of the store takes each node once.
-	authorWritten := false
-	author := func(address string) []graphstore.Tuple {
-		authorNodes, stated, named := graphstore.AuthorFacts(BlockNodeKind, address, writer, versionAt, graphstore.NoEvent)
+	// Each author's node and the aliases the server proved of it are stated once however many
+	// blocks name it, since one write of the store takes each node once.
+	authors := map[string]struct{}{}
+	author := func(address string, actor model.Actor) []graphstore.Tuple {
+		authorNodes, stated, named := graphstore.AuthorFacts(BlockNodeKind, address, actor, versionAt, graphstore.NoEvent)
 		if !named {
 			return nil
 		}
-		if !authorWritten {
+		if key := authorNodes[0].Kind + ":" + authorNodes[0].ID; !mapHas(authors, key) {
+			authors[key] = struct{}{}
 			nodes = append(nodes, authorNodes...)
 			tuples = append(tuples, stated[1:]...)
-			authorWritten = true
 		}
 		return stated[:1]
 	}
@@ -588,8 +675,8 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 			continue
 		}
 		address := blockNodeAddress(refKey, decision.id)
-		if facts.firstDecided[decision.id] {
-			author(address)
+		if actor, authored := facts.authored[decision.id]; authored {
+			author(address, actor)
 		}
 		held := facts.held[address]
 		for index, kind := range decisionValues {
@@ -603,12 +690,8 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 		}
 	}
 	for _, reading := range facts.readings {
-		if !blockIDFits(refKey, reading) {
-			continue
-		}
-		address := blockNodeAddress(refKey, reading)
-		if _, stated := facts.held[address][graphstore.TupleAuthoredBy]; !stated {
-			tuples = append(tuples, author(address)...)
+		if actor, authored := facts.authored[reading]; authored && blockIDFits(refKey, reading) {
+			tuples = append(tuples, author(blockNodeAddress(refKey, reading), actor)...)
 		}
 	}
 	write, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
@@ -635,32 +718,59 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	return moved, write, nil
 }
 
-// IndexAskTies states the shaped ties of block, an ask block of version `version` of document
-// artifactID, in the transaction that opened the block's ask, which holds the document's owner
-// row: facts are what DecisionFacts read of the version once that ask's row and node exist. An
-// ask block's shaped hangs on the ask's node (TypedFacts.pairs), so a block whose ask no row held
-// when its version was indexed had none of its ties written then; the settlement that opens the
-// ask writes them here, beside the ask's row, when it writes no version of its own to index
-// (docs' writeOpenedAskTies). It reconciles the block's shaped rows alone, from the same pairs the
-// block index hands replaceBlockRefs, so the document's next index moves none of them, and
-// answers the targets whose counts those rows moved, which the ask.opened that records the ask
-// names (CountedChanges), and what it states, held for that event.
-func IndexAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, at time.Time, facts TypedFacts, block string) ([]Target, graphstore.Uncaused, error) {
-	if _, onAsk := facts.askBlocks[block]; !facts.read || !onAsk {
+// mapHas reports whether set holds key.
+func mapHas(set map[string]struct{}, key string) bool {
+	_, held := set[key]
+	return held
+}
+
+// IndexOpenedAskTies states the shaped ties of blocks, ask blocks of version `version` of document
+// artifactID whose asks the calling transaction opened, which holds the document's owner row:
+// facts are what DecisionFacts read of the version once those asks' rows and nodes exist. An ask
+// block's shaped hangs on the ask's node (TypedFacts.pairs), so a block whose ask no row held when
+// its version was indexed had none of its ties written then; the settlement that opens the asks
+// writes them here, beside their rows, when it writes no version of its own to index (docs'
+// writeOpenedAskTies). It reconciles the shaped rows of those blocks alone, in one reconcile, from
+// the same pairs the block index hands replaceBlockRefs, so the document's next index moves none
+// of them. It answers, by block, the targets whose counts that block's rows moved, which the
+// ask.opened that records its ask names: an opened block held no shaped row before, since its
+// pairs had no ask's node to hang on, so each moved target is one its own pairs reach. And it
+// answers what it states, held for those events.
+func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, at time.Time, facts TypedFacts, blocks []string) (map[string][]Target, graphstore.Uncaused, error) {
+	if !facts.read || len(blocks) == 0 {
 		return nil, graphstore.Uncaused{}, nil
+	}
+	opened := make(map[string]struct{}, len(blocks))
+	for _, block := range blocks {
+		if _, onAsk := facts.askBlocks[block]; onAsk {
+			opened[block] = struct{}{}
+		}
 	}
 	var pairs []blockPair
 	for _, pair := range facts.typedPairs() {
-		if pair.blockID == block && pair.kind == TupleShaped {
+		if _, own := opened[pair.blockID]; own && pair.kind == TupleShaped {
 			pairs = append(pairs, pair)
 		}
 	}
-	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, version, at, facts.document.writer, false, pairs,
-		&pairScope{kinds: []string{TupleShaped}, blocks: []string{block}})
+	scope := &pairScope{kinds: []string{TupleShaped}, blocks: slices.Sorted(maps.Keys(opened))}
+	if len(scope.blocks) == 0 {
+		return nil, graphstore.Uncaused{}, nil
+	}
+	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, version, at, facts.document.writer, false, pairs, scope)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
-	return moved, graphstore.Uncaused{Tuples: tuples}, nil
+	reached := make(map[Target]struct{}, len(moved))
+	for _, target := range moved {
+		reached[target] = struct{}{}
+	}
+	byBlock := map[string][]Target{}
+	for _, pair := range pairs {
+		if _, movedIt := reached[pair.target]; movedIt && !slices.Contains(byBlock[pair.blockID], pair.target) {
+			byBlock[pair.blockID] = append(byBlock[pair.blockID], pair.target)
+		}
+	}
+	return byBlock, graphstore.Uncaused{Tuples: tuples}, nil
 }
 
 // valueTuple is one value of a decision's node: asserted where the decision holds it, and a

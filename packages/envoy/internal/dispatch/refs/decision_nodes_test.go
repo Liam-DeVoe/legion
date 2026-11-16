@@ -29,8 +29,7 @@ type typedVersion struct {
 }
 
 // renderTypedVersion renders markdown as a version write renders it, every block holding an id
-// (pmdoc.EnsureBlockIDs, pmdoc.RenderWithBlockOffsets), and reads its pointers off the tree, as
-// docs.blockPointers does.
+// (pmdoc.EnsureBlockIDs, renderTypedTree).
 func renderTypedVersion(t *testing.T, markdown string) typedVersion {
 	t.Helper()
 	tree, err := pmdoc.Parse(markdown)
@@ -38,6 +37,13 @@ func renderTypedVersion(t *testing.T, markdown string) typedVersion {
 		t.Fatalf("parse the version: %v", err)
 	}
 	pmdoc.EnsureBlockIDs(tree)
+	return renderTypedTree(t, tree)
+}
+
+// renderTypedTree renders tree as a version write renders it (pmdoc.RenderWithBlockOffsets), and
+// reads its pointers off the tree, as docs.blockPointers does.
+func renderTypedTree(t *testing.T, tree *pmdoc.Node) typedVersion {
+	t.Helper()
 	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
 	if err != nil {
 		t.Fatalf("render the version: %v", err)
@@ -123,6 +129,45 @@ func answeredAsk(t *testing.T, d parentDocument, blockID string, at time.Time) s
 	return id
 }
 
+// writerSources are the sources of a version one writer wrote whole, as a write that seeds a
+// document or adds every block it holds gives them (docs' typedSources): every block is author's,
+// and an ask block shows its own row's ask, answered where its node's newest answer_state is.
+func writerSources(tx pgx.Tx, artifactID string, author model.Actor) TypedSources {
+	ctx := context.Background()
+	return TypedSources{
+		Authors: func(ids []string) (map[string]model.Actor, error) {
+			authors := make(map[string]model.Actor, len(ids))
+			for _, id := range ids {
+				authors[id] = author
+			}
+			return authors, nil
+		},
+		Shown: func(ids []string) (map[string]ShownAsk, error) {
+			rows, err := tx.Query(ctx, `
+				select k.block_id, k.id::text, k.node_kind is not null,
+				       coalesce((select t.to_id = $3 from graph_tuples t
+				                 where t.from_kind = $4 and t.from_id = k.id::text and t.kind = $5
+				                 order by t.seq desc limit 1), false)
+				from asks k where k.block_artifact_id = $1 and k.block_id = any($2)
+			`, artifactID, ids, asks.StateAnswered, graphstore.KindAsk, graphstore.TupleAnswerState)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			shown := map[string]ShownAsk{}
+			for rows.Next() {
+				var block string
+				var ask ShownAsk
+				if err := rows.Scan(&block, &ask.ID, &ask.Named, &ask.Answered); err != nil {
+					return nil, err
+				}
+				shown[block] = ask
+			}
+			return shown, rows.Err()
+		},
+	}
+}
+
 // pairKeys is pairs as comparable keys, sorted, so two lists are equal exactly when they write the
 // same rows from the same nodes.
 func pairKeys(pairs []blockPair) []string {
@@ -151,7 +196,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	first := renderTypedVersion(t, ":::requirement{#r1}\nA requirement.\n:::\n\nSee dispatch://"+document.issue+".\n")
 	firstRecord := document.writeVersion(t, 1, first.markdown, alice)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := DecisionFacts(ctx, tx, document.artifact, 1, first.blocks, first.tree, first.pointers)
+		facts, err := DecisionFacts(ctx, tx, document.artifact, 1, first.blocks, first.tree, first.pointers, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -176,7 +221,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	// The typed pass alone, as a write above the deferral bound runs it.
 	before := document.highestTuple(t)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := DecisionFacts(ctx, tx, document.artifact, 2, second.blocks, second.tree, second.pointers)
+		facts, err := DecisionFacts(ctx, tx, document.artifact, 2, second.blocks, second.tree, second.pointers, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -218,7 +263,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	// The reconciler over the same version, as the block-index tick runs it.
 	before = document.highestTuple(t)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := DecisionFacts(ctx, tx, document.artifact, 2, second.blocks, second.tree, second.pointers)
+		facts, err := DecisionFacts(ctx, tx, document.artifact, 2, second.blocks, second.tree, second.pointers, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -260,6 +305,77 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	if left := mentionRows(t, database.Pool, document.artifact); left != 0 {
 		t.Fatalf("the reconciler left %d mention rows, want the one version 2 dropped deleted", left)
 	}
+}
+
+// A version that moves one word of one decision, in a document of several decisions each holding
+// a reading, writes the nodes of the blocks whose text it moved and no other: the block index
+// writes that decision's node and its paragraph's, and the typed-node pass writes no node of its
+// own, since every other decision and reading the store holds already stands as the version
+// leaves it - live, under its type's supertag. A pass that wrote every typed node of every
+// version would lock each of their rows on every one-word edit.
+func TestAOneWordEditWritesOnlyTheNodesOfTheBlocksItMoved(t *testing.T) {
+	database := parentDatabase(t)
+	ctx := context.Background()
+	document := newParentDocument(t, database, "ONE", "decisions-md")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	first := renderTypedVersion(t, "::::decision{#d1}\nWe chose REST.\n\n:::reading{#g1}\nThe agent reads it as REST.\n:::\n::::\n\n"+
+		"::::decision{#d2}\nWe chose Postgres.\n\n:::reading{#g2}\nThe agent reads it as Postgres.\n:::\n::::\n\n"+
+		"::::decision{#d3}\nWe chose Go.\n\n:::reading{#g3}\nThe agent reads it as Go.\n:::\n::::\n")
+	firstRecord := document.writeVersion(t, 1, first.markdown, alice)
+	index := func(version typedVersion, number int, record versionRecord) (blocks, typed []string) {
+		commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
+			facts, err := DecisionFacts(ctx, tx, document.artifact, number, version.blocks, version.tree, version.pointers, writerSources(tx, document.artifact, alice))
+			if err != nil {
+				return graphstore.Uncaused{}, err
+			}
+			_, won, write, err := IndexBlocks(ctx, tx, document.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, facts)
+			if err == nil && !won {
+				err = fmt.Errorf("version %d lost the revision fence", number)
+			}
+			if err != nil {
+				return graphstore.Uncaused{}, err
+			}
+			_, own, err := IndexDecisionNodes(ctx, tx, document.artifact, number, record.at, facts, true)
+			for _, node := range write.Nodes {
+				blocks = append(blocks, node.ID)
+			}
+			for _, node := range own.Nodes {
+				typed = append(typed, node.ID)
+			}
+			write.Nodes, write.Tuples = append(write.Nodes, own.Nodes...), append(write.Tuples, own.Tuples...)
+			return write, err
+		}, record.event)
+		return blocks, typed
+	}
+	index(first, 1, firstRecord)
+
+	// One word of d2's own paragraph, edited in the tree the first version was rendered from, so
+	// every block keeps its id.
+	var paragraph string
+	pmdoc.Walk(first.tree, func(node *pmdoc.Node) bool {
+		if node.Type == "decision" && node.Attrs[pmdoc.BlockIDAttr] == "d2" {
+			paragraph, _ = node.Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+			node.Children[0].Children[0].Text = "We chose SQLite."
+		}
+		return true
+	})
+	second := renderTypedTree(t, first.tree)
+	secondRecord := document.writeVersion(t, 2, second.markdown, alice)
+	blocks, typed := index(second, 2, secondRecord)
+	slices.Sort(blocks)
+	if want := []string{document.address("d2"), document.address(paragraph)}; !slices.Equal(blocks, sorted(want)) {
+		t.Errorf("the block index of the one-word edit wrote the nodes %v, want %v: the decision whose text moved and its paragraph", blocks, sorted(want))
+	}
+	if len(typed) != 0 {
+		t.Errorf("the typed-node pass of the one-word edit wrote the nodes %v, want none: every decision and reading already stands as the version leaves it", typed)
+	}
+	t.Logf("the one-word edit wrote the block nodes %v and no typed node of its own", blocks)
+}
+
+// sorted is ids in order.
+func sorted(ids []string) []string {
+	slices.Sort(ids)
+	return ids
 }
 
 // commitIndex runs one index pass in a transaction of its own, appends what it stated under

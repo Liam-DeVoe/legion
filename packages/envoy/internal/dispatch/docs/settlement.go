@@ -742,6 +742,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
+			settled:          &st.reconciliation.sources,
 		})
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version

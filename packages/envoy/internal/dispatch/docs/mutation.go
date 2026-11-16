@@ -33,6 +33,10 @@ type versionWrite struct {
 	authors          []model.Actor
 	capture          *authorCapture
 	docUpdateVersion *int64
+	// settled is who introduced each credited block of the document as the settlement writing the
+	// version read it (askBlockSources), which the version's typed nodes take their authors from
+	// (typedSources); nil for a version no settlement writes.
+	settled *askBlockSources
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -956,7 +960,7 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 	if err != nil {
 		return err
 	}
-	for id := range askBlockIDs(target) {
+	for id := range openAskBlockIDs(target) {
 		delete(open, id)
 	}
 	return refuseLostAskBlocks(open)
@@ -1036,7 +1040,7 @@ func refuseLostAskBlocks(lost map[string]struct{}) error {
 // batch that drops none answers from memory and sends no statement. An ask block carrying no id is
 // passed over, as the open asks are read by block id and no row can point at none.
 func droppedAskBlocks(before, after *pmdoc.Node) map[string]struct{} {
-	kept := askBlockIDs(after)
+	kept := openAskBlockIDs(after)
 	var dropped map[string]struct{}
 	pmdoc.WalkAskBlocks(before, func(id string) {
 		if id == "" {
@@ -2365,7 +2369,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// The version's references, its mentions' excerpts and its blocks are indexed from the render
 	// this version's markdown came from, in its own transaction, so GET /api/v1/references serves
 	// them without rendering the document.
-	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
+	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered, write.settled)
 	if err != nil {
 		return versionWriteResult{}, err
 	}
