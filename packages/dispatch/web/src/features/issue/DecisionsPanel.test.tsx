@@ -455,10 +455,8 @@ test("a decision's references are read from its own markdown, not from the words
 // An answer with no reading of its text comes from a pod of the build before this one during a
 // rolling deploy. The panel draws it the way every other view does: it splits the markdown
 // itself and parses each block, so the decision keeps its body, its doubt and its Change.
-// A decision with no reading of its text offers no Change: an anchor quote is the document's
-// flattened words, never its markdown (the reading list's `anchor-quote`), and with no reading
-// there are no words to quote, so a Change would send a quote the server cannot match.
-test("a decision whose answer carried no reading is still drawn and marked unsure, and offers no Change", async () => {
+test("a decision whose answer carried no reading is still drawn, quoted and marked unsure", async () => {
+  const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
     waitingView({
       heading: "Keep a log",
@@ -475,8 +473,8 @@ test("a decision whose answer carried no reading is still drawn and marked unsur
         "the index may be slow."
       )
     );
-    expect(within(waiting).getByRole("button", { name: "Keep" })).toBeDefined();
-    expect(within(waiting).queryByRole("button", { name: "Change" })).toBeNull();
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    expect(within(waiting).getByTestId("decision-quote").textContent).toBe("A log is enough.");
   } finally {
     read.mockRestore();
   }

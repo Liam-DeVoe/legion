@@ -800,7 +800,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     ],
     reach: "/projects/<PROJECT>/documents/<SLUG>, the quote over a thread card's comment",
     reason:
-      "An anchor's quote is the document's own words at the place a comment or an ask was left, not a text anyone wrote for this surface: the server matches and stores it as the document's flattened text, never its markdown (`pmdoc.FindQuote`), so a mention in the document is already the words it reads as there, and nothing in the quote is markdown to render. It is shown as the characters it is.",
+      "An anchor's quote is the document's own words at the place a comment or an ask was left, not a text anyone wrote for this surface: the server matches and stores it as the document's flattened text, never its markdown (`pmdoc.FindQuote`), so a mention in the document is already the words it reads as there, and nothing in the quote is markdown to render. It is shown as the characters it is. One quote is not those words: a decision the Decisions panel draws from an answer that carried no reading of its text, during a rolling deploy, quotes its first block's markdown, which the server finds only where that block holds no markup, and a Change sent with a quote it cannot find is refused and stores nothing.",
     record: false,
     rendered: false,
     surface: "anchor-quote",
@@ -923,6 +923,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "body-reference-cards",
   },
+  // A card's title, and a hover card's below, is cut from its target's own text and is that
+  // target's name. R8 is the rule for a stored record drawn on a surface; inside a title an
+  // address reads as its short form, never as another node's name (`TITLE_NAMING`,
+  // `refs/reference-target.ts`).
   {
     files: ["packages/dispatch/web/src/features/refs/Unfurl.tsx"],
     reach: "A Dispatch reference card under a body, its two rendered lines",
@@ -951,7 +955,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "github-reference-card",
   },
-  // The hover card over a reference, portaled once for the whole app.
+  // The hover card over a reference, portaled once for the whole app. Its title reads every
+  // address in it as its short form, as a card's does (above).
   {
     files: [
       "packages/dispatch/web/src/app.tsx",

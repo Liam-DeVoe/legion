@@ -118,12 +118,14 @@ function markdownBlocks(text: string): DecisionBlock[] {
     .map((block) => block.trim())
     .filter((block) => block !== "" && !block.startsWith("#"))
     .map((markdown) => ({
-      // The block's own markdown is what draws it here, and what its references are read from,
-      // because it is what the browser parsed to draw this block: a reference some other block
-      // of the decision cites is no reference of this one. It is no quote: an anchor quote is
-      // the document's flattened words, never its markdown (the reading list's `anchor-quote`),
-      // and with no reading there are no words to quote, so a decision drawn this way offers no
-      // Change (`WaitingDecision`).
+      // The block's own markdown is its text here, the Change quote included: with no reading
+      // there is nothing to flatten, and parsing the markdown in the browser to build a quote
+      // is the reading a stored text's tree exists to spare every view. It is what the
+      // references are read from as well, because it is what the browser parsed to draw this
+      // block: a reference some other block of the decision cites is no reference of this one.
+      // The server finds a quote in the document's flattened words alone (`pmdoc.FindQuote`), so
+      // this quote anchors where the block holds no markup, and a Change sent with one that does
+      // is refused and stores nothing (the reading list's `anchor-quote`).
       text: markdown,
       references: markdown,
       tree: undefined,
@@ -408,10 +410,9 @@ function WaitingDecision({
   const [changing, setChanging] = useState(false);
   // A change anchors on the decision's first block below its heading, by the words that block
   // holds: an anchor quote names the document's own text, which is what the server matches it
-  // against (`pmdoc.FindQuote`). A block drawn from its markdown, with no reading, holds no such
-  // words (`markdownBlocks`), so that decision offers no Change.
-  const first = blocks[0];
-  const quote = first?.tree === undefined ? undefined : first.text;
+  // against (`pmdoc.FindQuote`). A block drawn from its markdown, with no reading, quotes that
+  // markdown (`markdownBlocks`).
+  const quote = blocks[0]?.text;
   const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   // The heading as plain words, which the Keep and the Change are named after: a write's label
   // and a form's name hold no markup. Until the engine has answered, the heading as written,

@@ -43,9 +43,12 @@ import * as ts from "typescript";
  * tree from its own props (`ReplyQuote`'s `excerpt` and `excerptTree`, `ReplyTurn`'s `quote`),
  * however many components hand it on. The one excuse is a row whose text reaches the page with
  * no tree (`UNTREED_ROWS`), named by its id: a live turn and its reasoning, a write the server
- * has not stored (a held message, a broadcast's send row), a GitHub body, and a suggestion's
- * two sides, which `margin/ThreadCard.tsx` - main's own mounts - draws inside a diff, where the
- * renderer writes characters and parses nothing.
+ * has not stored (a held message, and the draft a broadcast's send row draws until Dispatch has
+ * made the broadcast), a GitHub body, and a suggestion's two sides, which
+ * `margin/ThreadCard.tsx` - main's own mounts - draws inside a diff, where the renderer writes
+ * characters and parses nothing. A row that names its text (`UntreedRow.text`) excuses that text
+ * alone, so a made broadcast's row, drawn from the body Dispatch stored, is held to that body's
+ * tree.
  *
  * The stored texts are the contract's: a field with a tree beside it (`<field>_tree`) is one.
  * A stored text with no such tree in the generated contract is named by hand (`HAND_NAMED_TEXTS`),
@@ -1745,39 +1748,49 @@ const TREE_TAKERS: ReadonlySet<string> = new Set([
   "usePlainHeadline",
 ]);
 
+/** A row of the reading list whose text reaches the page with no tree the server read of it,
+ *  and why. `text`, where it is given, is the one text the row excuses, as its mounts write it: a
+ *  mount on the row handing any other stored text with no tree of it fails, as a mount on no row
+ *  of this list does. */
+interface UntreedRow {
+  readonly surface: DispatchReadingSurface;
+  readonly text?: string;
+  readonly why: string;
+}
+
 /**
  * The rows of the reading list whose text reaches the page with no tree the server read of it,
  * so a mount on one hands its construct none and the page reads the text itself: the one excuse
  * the tree check takes, by the row's id. A row here whose every mount hands a tree fails, so the
  * list cannot outlive the mounts it speaks for.
  */
-const UNTREED_ROWS: readonly { readonly surface: DispatchReadingSurface; readonly why: string }[] =
-  [
-    {
-      surface: "agent-turn-text",
-      why: "A session's live transcript, which Dispatch stores nothing of, so the server has no text to read a tree of.",
-    },
-    {
-      surface: "agent-turn-reasoning",
-      why: "The reasoning beside a live turn, which is that same transcript.",
-    },
-    {
-      surface: "agent-held-send",
-      why: "A message the server has not stored yet: the page parses it, as it parses every write the server has not stored.",
-    },
-    {
-      surface: "github-reference-card",
-      why: "A GitHub issue's or pull request's body, read from GitHub's API, which Dispatch does not store.",
-    },
-    {
-      surface: "broadcast-send-row",
-      why: "A send's own words, from the write the page holds (`row.send.input.body`) while it is queued, out, refused or just made: the server has not stored it, or the row does not read what it stored, so the page parses it, as it parses every write it holds.",
-    },
-    {
-      surface: "margin-suggestion-diff",
-      why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
-    },
-  ];
+const UNTREED_ROWS: readonly UntreedRow[] = [
+  {
+    surface: "agent-turn-text",
+    why: "A session's live transcript, which Dispatch stores nothing of, so the server has no text to read a tree of.",
+  },
+  {
+    surface: "agent-turn-reasoning",
+    why: "The reasoning beside a live turn, which is that same transcript.",
+  },
+  {
+    surface: "agent-held-send",
+    why: "A message the server has not stored yet: the page parses it, as it parses every write the server has not stored.",
+  },
+  {
+    surface: "github-reference-card",
+    why: "A GitHub issue's or pull request's body, read from GitHub's API, which Dispatch does not store.",
+  },
+  {
+    surface: "broadcast-send-row",
+    text: "row.send.input.body",
+    why: "A send not made yet - queued, on the wire, late or failed - has no stored text the page holds: Dispatch has stored nothing of it, or its answer is a refusal or never came. Its row draws the draft it holds (`row.send.input.body`), which the page parses, as it parses every write the server has not stored. A made broadcast's row draws the body Dispatch stored, from the answer the write landed with, beside that answer's tree (`row.created.body`, `row.created.body_tree`), and this row does not excuse it.",
+  },
+  {
+    surface: "margin-suggestion-diff",
+    why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
+  },
+];
 
 /** Where a text or a tree a mount hands on comes from, where it is the props of the component the
  *  mount is in: the prop, and the member of it for a prop that is an object holding the text
@@ -1796,11 +1809,12 @@ interface TreePair {
 }
 
 /** One mount the tree check reads: where it is, the row its `surface` names for a construct's
- *  own mount, whether it hands a stored text and no tree of it, and the complaint that makes
- *  where no row of `UNTREED_ROWS` excuses it. */
+ *  own mount, whether it hands a stored text and no tree of it, the row of `UNTREED_ROWS` that
+ *  excuses that (`excusedBy`), and the complaint that makes where no row excuses it. */
 interface TreeMount {
   readonly at: string;
   readonly complaint: string | undefined;
+  readonly excusedBy: DispatchReadingSurface | undefined;
   readonly surface: string | undefined;
   readonly untreed: boolean;
 }
@@ -2004,29 +2018,40 @@ function handedPairs(
   return texts.map((text) => ({ text, trees }));
 }
 
-/** Whether a mount hands a stored text and no tree of it. */
-function handsNoTree(pairs: readonly HandedPair[]): boolean {
-  return pairs.some(
-    (pair) => pair.text.kind === "value" && pair.trees.every((tree) => tree.kind === "none")
+/** Each stored text a mount hands with no tree of it, as the mount writes it. */
+function textsWithNoTree(pairs: readonly HandedPair[]): string[] {
+  return pairs.flatMap((pair) =>
+    pair.text.kind === "value" && pair.trees.every((tree) => tree.kind === "none")
+      ? [pair.text.value.getText()]
+      : []
   );
 }
 
 /** One mount as the tree check reads it, by `what`'s own words in its complaint: excused where
- *  its `surface` names a row of `UNTREED_ROWS`. */
+ *  its `surface` names a row of `UNTREED_ROWS` and that row names no text, or names the one text
+ *  the mount hands with no tree. */
 function treeMount(
   at: string,
   what: string,
   pairs: readonly HandedPair[],
   surface: string | undefined
 ): TreeMount {
-  const untreed = handsNoTree(pairs);
-  const excused = UNTREED_ROWS.some((row) => row.surface === surface);
+  const texts = textsWithNoTree(pairs);
+  const untreed = texts.length > 0;
+  const excuse = untreed
+    ? UNTREED_ROWS.find(
+        (row) =>
+          row.surface === surface &&
+          (row.text === undefined || texts.every((text) => text === row.text))
+      )
+    : undefined;
   return {
     at,
     complaint:
-      untreed && !excused
+      untreed && excuse === undefined
         ? `${at}: ${what} is handed a stored text and no tree of it, so the page parses that text on its own thread`
         : undefined,
+    excusedBy: excuse?.surface,
     surface,
     untreed,
   };
@@ -2036,10 +2061,11 @@ function treeMount(
  * Every mount `trees` hold of a construct that draws from a tree (`TREE_TAKERS`), and of a
  * component that hands one a text and its tree from its own props, each with its complaint where
  * it hands a stored text and no tree of it. A text written out as a string is no stored text, and
- * a mount on a row of `UNTREED_ROWS` is excused by that row. A component is found to hand a tree
- * on where its mount's tree is read from its own props (`propsHanded`), and is then held to it
- * wherever it is mounted, by its name, in any of the files; the walk runs until no component is
- * added, so a component that hands its tree to another one that hands it on is held too.
+ * a mount on a row of `UNTREED_ROWS` is excused by that row, for the text the row names where it
+ * names one (`treeMount`). A component is found to hand a tree on where its mount's tree is read
+ * from its own props (`propsHanded`), and is then held to it wherever it is mounted, by its name,
+ * in any of the files; the walk runs until no component is added, so a component that hands its
+ * tree to another one that hands it on is held too.
  */
 function treeMountsOf(trees: readonly ts.SourceFile[]): TreeMount[] {
   const pairs = new Map<string, TreePair[]>();
@@ -2151,12 +2177,12 @@ function treeMountsOf(trees: readonly ts.SourceFile[]): TreeMount[] {
 const TREE_MOUNTS = treeMountsOf(DRAWING_TREES);
 
 /** Each row of `UNTREED_ROWS`, or what is wrong with it: a row the reading list does not hold, or
- *  one with no mount left that hands its construct no tree. */
+ *  one with no mount left that it excuses, one that hands its construct no tree. */
 function untreedRowComplaint(surface: DispatchReadingSurface): string {
   if (!DISPATCH_READING_SURFACES.some((row) => row.surface === surface)) {
     return `${surface} is no row of DISPATCH_READING_SURFACES`;
   }
-  return TREE_MOUNTS.some((mount) => mount.surface === surface && mount.untreed)
+  return TREE_MOUNTS.some((mount) => mount.excusedBy === surface)
     ? surface
     : `${surface} has no mount left that hands its construct no tree`;
 }
@@ -2839,6 +2865,33 @@ describe("a mount's tree is read from its own attributes and followed through a 
     expect(mounts.map((mount) => [mount.untreed, mount.complaint === undefined])).toEqual([
       [true, true],
       [true, false],
+    ]);
+  });
+
+  // A broadcast's send row draws two texts: the draft of a send Dispatch has not made, which has
+  // no tree, and the body Dispatch stored for a made one, whose answer carries its tree. The row
+  // excuses the draft alone (`UntreedRow.text`), so the made row is held to its tree.
+  test("a row that names its text excuses that text alone", () => {
+    const mounts = treeMountsOf([
+      parseSource(
+        "fixture.tsx",
+        [
+          "export const Row = ({ row }: Props) => (",
+          "  <>",
+          '    <MarkdownPreview lines={1} markdown={row.send.input.body} surface="broadcast-send-row" />',
+          '    <MarkdownPreview lines={1} markdown={row.created.body} surface="broadcast-send-row" />',
+          '    <MarkdownPreview lines={1} markdown={row.created.body} surface="broadcast-send-row" tree={row.created.body_tree} />',
+          "  </>",
+          ");",
+        ].join("\n")
+      ),
+    ]);
+    expect(
+      mounts.map((mount) => [mount.untreed, mount.complaint === undefined, mount.excusedBy])
+    ).toEqual([
+      [true, true, "broadcast-send-row"],
+      [true, false, undefined],
+      [false, true, undefined],
     ]);
   });
 });

@@ -106,10 +106,13 @@ type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
 const TITLE_HEADLINE_MAX = 60;
 
-/** How a title reads the references in the text it is cut from: it reads none of them, since a
- *  name inside a name resolves nothing, so a `dispatch://` one reads as its short form for good
- *  (`ReferenceNaming.readsNone`). One shared value, so the projection keeps one identity across
- *  renders. */
+/** How a title reads the references in the text it is cut from: it reads none of them, so a
+ *  `dispatch://` one reads as its short form for good (`ReferenceNaming.readsNone`), never as a
+ *  name. R8 is the rule for a stored record drawn on a surface; a title cut from a target's own
+ *  text is that target's name, and inside it an address reads as its short form. A name inside
+ *  a name resolves nothing, would put another node's whole title inside this one's, and would
+ *  change the title's words when a background read lands. One shared value, so the projection
+ *  keeps one identity across renders. */
 const TITLE_NAMING: ReferenceNaming = { names: new Map(), readsNone: true };
 
 /** Whether a read stands on anything but Dispatch's answer that its target does not exist: what

@@ -225,7 +225,11 @@ test("a known person reads as their login with no link, an unknown one as writte
         "Ask dana@example.test, @dana@example.test, dispatch://person/nobody@example.test and reviewer."
       )
     );
-    expect(within(view.container).getAllByRole("link")).toEqual([role]);
+    // A count and an identity check, never a comparison of elements, which on a failure would
+    // format the whole document.
+    const links = within(view.container).getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0] === role).toBe(true);
   } finally {
     view.unmount();
   }
@@ -250,7 +254,11 @@ test("a role no session holds reads as the words written, and one an unresponsiv
     expect(words(view.container)).toBe(
       "Ask dispatch://role/release-captain, @captain, reviewer and watcher."
     );
-    expect(within(view.container).getAllByRole("link")).toEqual([role, unresponsive]);
+    // A count and an identity check, as above, so a failure formats no element.
+    const links = within(view.container).getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(links[0] === role).toBe(true);
+    expect(links[1] === unresponsive).toBe(true);
   } finally {
     view.unmount();
   }
@@ -976,8 +984,9 @@ test("a party's link with code anywhere in its words keeps them, painted and pro
   try {
     await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(written));
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
-    // The session's title is in the cache: no link draws it.
-    expect(within(view.getByTestId("painted")).queryByText(/Planner now/)).toBeNull();
+    // The session's title is in the cache: no link draws it. A count, so a failure formats no
+    // element.
+    expect(within(view.getByTestId("painted")).queryAllByText(/Planner now/)).toHaveLength(0);
   } finally {
     view.unmount();
   }
@@ -1014,7 +1023,7 @@ test("a party's link whose words are formatted in part keeps them, painted and p
   try {
     await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(written));
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
-    expect(within(view.getByTestId("painted")).queryByText(/Planner now/)).toBeNull();
+    expect(within(view.getByTestId("painted")).queryAllByText(/Planner now/)).toHaveLength(0);
   } finally {
     view.unmount();
   }
