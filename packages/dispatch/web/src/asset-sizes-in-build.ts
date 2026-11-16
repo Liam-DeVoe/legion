@@ -20,12 +20,12 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * the entry was 781,007 bytes beside that line and measured 1,014,930 on 2026-11-11, and nothing
  * in the tree refused the 233,923 bytes between them (R12 of dispatch://INFRA-1109/spec).
  *
- * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
- * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
+ * THIS BUDGET REFUSED PULL REQUEST #3513'S OWN BUILD when it was written, on purpose: the entry
+ * was 1,028,690 bytes then, and a budget written only once the number already fits is a budget
  * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
- * `bun run build:web` at this head writes an entry of 485,622 bytes (the one
+ * `bun run build:web` at `61e5c402` writes an entry of 485,658 bytes (the one
  * `web/dist/assets/index-*.js` that `dist/index.html` names, measured 2026-11-16), which leaves
- * 14,378 bytes of room under this budget. The split itself wrote 491,264; the 5,909 bytes after
+ * 14,342 bytes of room under this budget. The split itself wrote 491,264; the 5,909 bytes after
  * it are what lets an issue page wait for its document rather than fetch beside it: the loaders
  * of the issue page's tab chunks (`features/issue/tab-chunks.ts`), the shell's hold on its
  * extras (`features/shell/content-drawn.ts`), and the chunk component that draws a chunk already
@@ -35,7 +35,7 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * engine, whose one importer in the entry was the warm every page starts at boot: fetched there
  * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out,
  * and the commits and forward merges after it moved the entry by about a thousand bytes, most
- * of it down (the landing seed's query factories, measured at 485,622 bytes on 2026-11-16).
+ * of it down (the landing seed's query factories; 485,658 bytes at `61e5c402` on 2026-11-16).
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character
@@ -50,9 +50,10 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * `MAX_ASSET_BYTES` above is what holds the whole build to what the server will keep.
  *
  * Read it again: `bun run build:web && bun run check:asset-sizes` in `packages/dispatch`. The
- * three sizes of this head were measured that way on 2026-11-15; the two older entry sizes are
- * the readings of 2026-10-29 and 2026-11-11 named above, which `web/vite.config.ts` no longer
- * records: its own numbers are this head's.
+ * three sizes of `61e5c402` above - the entry, the Mermaid worker and the ECharts chunk - were
+ * measured that way on 2026-11-16; the two older entry sizes are the readings of 2026-10-29 and
+ * 2026-11-11 named above, which `web/vite.config.ts` no longer records: its own numbers are
+ * those of `61e5c402` too.
  */
 export const MAX_ENTRY_BYTES = 500_000;
 

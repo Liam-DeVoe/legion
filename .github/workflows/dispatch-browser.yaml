@@ -1232,7 +1232,7 @@ jobs:
     # Since those runs the job lost two steps without a budget, actions/setup-go and the Go
     # cache restore, which read at most 11 s (job 131262996021, run 43240954914) and 20 s (job
     # 131300609277, run 43251567200) there: the dev OIDC issuer they served is the binaries
-    # job's build now. Those are the 31 s the sum above takes off. This branch's eighteen
+    # job's build now. Those are the 31 s the sum above takes off. Pull request #3513's eighteen
     # full-lane runs of 2026-11-15 read this job's steps without a budget at 33 s, each at its
     # maximum and summed (the checkout 9 s, job 132926233684, the largest), with the dashboard
     # step at most 99 s and the sign-in step 13 s (both job 132904452893), so the 12 minutes

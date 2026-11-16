@@ -173,9 +173,9 @@ A check nobody has run yet reads no result.
 // measured on this row: a fresh Chromium context (0.25 s), the cold parse of the dashboard
 // bundle a fresh context cannot cache (0.40 s) and the dashboard's own boot reads before the
 // first check draws, which were fifteen reads costing 0.80 s when that reading was taken. One
-// read answers a landing now, so the last part is smaller than 0.80 s at this head and nothing
-// has measured how much smaller. The row's own assertions are 0.26 s of it, measured when the
-// row made seven of the eight it makes now; nothing in the row is removable.
+// read answers a landing since dispatch://INFRA-1109, so the last part is smaller than 0.80 s,
+// and nothing has measured how much smaller. The row's own assertions are 0.26 s of it,
+// measured when the row made seven of the eight it makes now; nothing in the row is removable.
 test("a result the pull request has moved past stands at no commit the check compared with", async ({
   browser,
 }) => {

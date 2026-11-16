@@ -133,12 +133,12 @@ test(
 
     // Every project of the configuration owns at least one row of those listings. The question
     // is asked of the rows and never of `listedProjects(report)`: Playwright reports every
-    // project of the resolved configuration whatever the command selected - this head's
-    // wall-clock listing names three projects and reports all fifteen - so an assertion over
+    // project of the resolved configuration whatever the command selected - the wall-clock
+    // listing of `61e5c402` names three projects and reports all fifteen - so an assertion over
     // the project list could not fail, and would pass with the wall-clock listing missing
-    // altogether. Measured at this head, the two listings hold 1,502 rows (1,451 and 51) and
-    // every project owns some: the smallest is `firefox-download-navigation` with one, and the
-    // wall-clock three hold 22, 13 and 16.
+    // altogether. Measured at `61e5c402` on 2026-11-16, the two listings hold 1,503 rows (1,452
+    // and 51) and every project owns some: the smallest is `firefox-download-navigation` with
+    // one, and the wall-clock three hold 22, 13 and 16.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)

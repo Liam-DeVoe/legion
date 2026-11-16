@@ -389,7 +389,7 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
  *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,451 rows in 202 files at this head, where `--list --output /tmp/o
+ *  selection, 1,452 rows in 202 files at `61e5c402` (2026-11-16), where `--list --output /tmp/o
  *  e2e/claim.e2e.ts` lists 1 - the filter is dropped although `--output` swallowed the `--`,
  *  which `--list --output -- --not-a-flag` shows it did, that line exiting 1 with
  *  `error: unknown option '--not-a-flag'`
