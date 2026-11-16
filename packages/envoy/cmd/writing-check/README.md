@@ -1243,25 +1243,57 @@ they send the same model, system prompt and schema, and the same first blocks of
   `other_shape` in its call and in the model table.
 - The user turn starts with the case's parts that the judgement's input mode gives, each a block of
   its own, in this order: the question, the record, the writer's answer, the session part. The
-  last of them carries the one cache mark. Then come the judgement's own prompt, word for word as
-  its `grade-*.md` holds it, and its subject: the reader's answer, the two texts, the text with the
-  owner's own words, or the definition. The judgements of a case that read the same parts send
-  the same prefix. The grader makes the first call of each prefix alone, and the others wait for
-  its reply, since the provider serves a cached prefix only once a call that wrote it has begun to
-  answer.
-- `phrases` sends its own prompt as its marked prefix and its candidate sentences after it, so
-  each phrases call of a run after the first reads the prompt from the cache.
-- The writer sends Dispatch's record and its session part first, the session part marked, then its
-  text and Dispatch's message, so change 3's next round reads the record and the session from the
-  cache.
+  last of them carries the one cache mark, where the call is marked. Then come the judgement's own
+  prompt, word for word as its `grade-*.md` holds it, and its subject: the reader's answer, the two
+  texts, the text with the owner's own words, or the definition. The judgements of a case that
+  read the same parts send the same prefix.
+- `phrases` sends its own prompt as its prefix and its candidate sentences after it. The prompt
+  is the same for every text.
+- The writer sends Dispatch's record and its session part first, then its text and Dispatch's
+  message. The session part carries the mark, where the call is marked.
 - The fresh reader's call carries no mark: its prompt is small.
+
+A call is marked only where at least two calls of the run are known, before the first is sent, to
+send its prefix. A prefix that one call alone sends goes unmarked: it pays the input price, not
+the cache write at 1.25 times that price. The blocks a call sends, and their order, are the same
+whether it is marked or not.
+
+- The grader counts its calls before it sends them (`Grader.Plan`). `score` counts the calls of a
+  case's judgements before the case's first grading call. `grader-test` and `phrases-labels`
+  count the calls of every input before their first call. A judgement counts one call, and
+  `phrases` one call for each 30 candidate sentences. A judgement whose grade the run takes from
+  `--grades-from` counts none. A judgement of the fresh reader's answer counts one call while
+  the reader has not answered yet.
+- The counts add up over the run. A grading call is marked where its prefix counts two or more
+  calls. Under the final input modes, an answer case's `answered` and `first_paragraph` read the
+  same parts, so both calls are marked. Under change 1, `undefined` is the only judgement that
+  reads the session part, so its call is unmarked. Where a change made the text new, `lost`,
+  `added` and `undefined` read the same parts, so the three calls are marked.
+- Every text's `phrases` calls send the same prefix, so a `phrases` call is marked once the run
+  has counted two or more of them. In `score`, a case counts its calls only when it starts. So
+  the first texts' `phrases` calls can go unmarked when no other case has counted its calls yet.
+- The grader makes the first marked call of each prefix alone, and the others wait for its
+  reply, since the provider serves a cached prefix only once a call that wrote it has begun to
+  answer. An unmarked call waits for none.
+- A fallback grader's call is unmarked: no count knows that it will be made.
+- The writer marks the calls of a prompt where the change can call the writer with that prompt
+  two or more times for one case. Change 3 calls it once in each round of review, up to
+  `--rounds` (default 2). So change 3 marks its writer calls where `--rounds` is 2 or more.
+  Changes 2, 5, 6 and 7a call the writer once for a case, and change 4 does not call it. Their
+  calls are unmarked.
+
+The mark is not one of a grade's inputs. `input_sha256` (see "Grades of another run") is the same
+for a marked call and an unmarked one, so `--grades-from` takes grades across the two.
 
 The mark has a life of five minutes (agentloop's `HistoryMarkOnly`), and only the prefix's end is
 marked, so no call pays a cache write on its own part. The gateway gives a mark that names no life
 one hour, at twice the input price; the five-minute write costs 1.25 times the input price.
 `prices.yaml` prices the cache tokens, and each call records them as `cache_write_tokens` and
 `cache_read_tokens` beside `input_tokens`, which counts only the prompt tokens read at the input
-price.
+price. Each call records `marked_calls` or `unmarked_calls`: the model calls it holds that the
+harness sent with the mark and with none. `scores.md`'s model table counts them in its Marked
+and Unmarked columns, and `grader-test.md` gives them in its cost line. A candidate call is in
+neither: the local Dispatch, the reviewer component or the detector's reader sets its marks.
 
 The gateway serves each Claude model from more than one deployment and sends each call to one of
 them. A deployment reads only the prefixes that it wrote, so a prefix is written once on each
@@ -1283,10 +1315,10 @@ component (see "The changes").
 
 - Before each attempt, the pacer charges the attempt's estimate: the bytes of its system prompt,
   schema, shared blocks and user message, at four bytes a token. The pacer leaves the prefix out
-  of the estimate only when an earlier attempt sent the same prefix (the model and its effort,
-  the system prompt, the schema and the shared blocks), its reply reported the prefix written to
-  the cache or read from it, and that attempt began less than five minutes before. Else the whole
-  prompt is charged.
+  of the estimate only when the attempt is marked (see "The prompt cache"), an earlier marked
+  attempt sent the same prefix (the model and its effort, the system prompt, the schema and the
+  shared blocks), its reply reported the prefix written to the cache or read from it, and that
+  attempt began less than five minutes before. Else the whole prompt is charged.
 - An attempt waits while the charges of the last minute leave no room for its charge. The
   attempts go through in the order they came.
 - After the reply, the charge becomes the reply's input tokens plus its cache write tokens. A
@@ -1417,8 +1449,9 @@ changes"). `cases.jsonl` holds Dispatch text, so the run's directory stays under
 whose line holds an error is scored again by the next run. `scores.json` and `scores.md` hold the
 figures: for the whole part and for the cases with a session (plan Decision 18), and for each
 case group and all groups, the cases by kind and by conversation, each score, the wait, the
-change's own model cost per text, and each model's calls, attempts, replies in another shape,
-prompt tokens at the input price, cache write and cache read tokens, reply tokens and cost.
+change's own model cost per text, and each model's calls, the calls marked for the prompt cache
+and those not (see "The prompt cache"), attempts, replies in another shape, prompt tokens at the
+input price, cache write and cache read tokens, reply tokens and cost.
 `scores.md` also gives the uncached input of the run's own calls and its busiest minute (see
 "Pacing").
 
@@ -1486,13 +1519,14 @@ grader fails a wrong answer or definition, passes a right one, finds a harder te
 an item that holds the marker for a wrong list output and nothing for a right one, and finds the
 answer within 5 words of `words_before`. It writes `grader-test.json` and `grader-test.md`: for
 each judgement, the wrong and the right outputs it marked correctly, then the cost of every call,
-refused calls included, with its prompt, cache write and cache read tokens. The planted outputs are
-written by hand from development cases and hold Dispatch text, so they are kept under `$TMPDIR`
-and never in the repository. `--grader-inputs` sets the grader's input modes, as `score` takes
-them. `--grader` names the grading model, as `score` takes it, except that a candidate may grade
-here: no candidate wrote a planted output. The report then says the grader is a candidate, and
-`grader-test.json` records the grader and `grader_is_candidate`. `--uncached-input-per-minute`
-paces the test's calls as it paces `score`'s (see "Pacing").
+refused calls included, with its prompt, cache write and cache read tokens and its calls marked
+for the prompt cache and not. The planted outputs are written by hand from development cases and
+hold Dispatch text, so they are kept under `$TMPDIR` and never in the repository.
+`--grader-inputs` sets the grader's input modes, as `score` takes them. `--grader` names the
+grading model, as `score` takes it, except that a candidate may grade here: no candidate wrote a
+planted output. The report then says the grader is a candidate, and `grader-test.json` records
+the grader and `grader_is_candidate`. `--uncached-input-per-minute` paces the test's calls as it
+paces `score`'s (see "Pacing").
 
 ### compare and repeatability
 

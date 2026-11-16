@@ -57,12 +57,15 @@ type Request struct {
 	System string
 	// Shared is the start of the user's turn, each element a text block of its own: the part
 	// that other calls send the same, such as a case's record and session part. It goes as the
-	// call's history, and only its end carries a cache mark, of five minutes (agentloop's
-	// HistoryMarkOnly), so a later call within those minutes that sends the same model, system
-	// prompt, schema and Shared reads them from the provider's cache, and no call pays the cache
-	// write on its own part. A call with no Shared carries no cache mark. User is the rest of
-	// the user's turn, which goes after Shared.
+	// call's history. Mark puts a cache mark of five minutes at its end, and nowhere else
+	// (agentloop's HistoryMarkOnly), so a later call within those minutes that sends the same
+	// model, system prompt, schema and Shared, also marked, reads them from the provider's cache,
+	// and no call pays the cache write on its own part. A call that sets no Mark, or sends no
+	// Shared, carries no mark: it pays the input price on all of its prompt, and reads nothing
+	// from the cache. Mark changes nothing else that the call sends. User is the rest of the
+	// user's turn, which goes after Shared.
 	Shared []string
+	Mark   bool
 	User   string
 	// Schema is the JSON schema the reply must be one object of; nil asks for free text.
 	Schema json.RawMessage
@@ -89,6 +92,8 @@ type Response struct {
 	Elapsed  time.Duration
 	// OtherShape is how many replies the request's Shape refused.
 	OtherShape int
+	// Marked says the call carried the cache mark: it set Mark and sent Shared.
+	Marked bool
 }
 
 // Client is one model a run calls. Only package claude's client also takes a writer session's
@@ -269,6 +274,7 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 	if len(shared) > 0 {
 		history = []agentloop.Message{{Role: agentloop.User, Blocks: shared}}
 	}
+	resp.Marked = req.Mark && history != nil
 	input := []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: req.User}}}}
 	var est estimate
 	if r.Pacer != nil {
@@ -289,7 +295,7 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 			System:          req.System,
 			History:         history,
 			Input:           input,
-			NoCache:         history == nil,
+			NoCache:         !resp.Marked,
 			HistoryMarkOnly: true,
 			Bounds:          agentloop.Bounds{Time: timeout, Calls: 1, OutputTokens: maxTokens},
 			Final:           req.Schema,

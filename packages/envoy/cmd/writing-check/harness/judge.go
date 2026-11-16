@@ -345,7 +345,8 @@ func (in GradeInput) parts(c contextParts) contextParts {
 // block of its own and in the order a call has always read them: the question, the record and
 // the writer's answer. The session part, where the call reads one, comes after them
 // (claude.Client.CallWithSession). The judgements of a case that read the same parts send the
-// same blocks, so each call after the first reads them from the provider's cache.
+// same blocks, so where two or more of them do (Grader.Plan), each call after the first reads
+// them from the provider's cache.
 func (in GradeInput) shared(p contextParts) []string {
 	var out []string
 	if p.Question {
@@ -385,7 +386,10 @@ func (in GradeInput) subject() string {
 // Call is one model call as the outputs record it: its prompt tokens read at the input price
 // (input_tokens), written to the provider's cache and read from it, priced at the model's
 // prices in prices.yaml (cost_usd). OtherShape counts the replies in another judgement's shape
-// that the call asked again (llm.Request's Shape).
+// that the call asked again (llm.Request's Shape). Marked and Unmarked count the model calls
+// it holds that the harness sent with the cache mark and with none (llm.Request's Mark): one
+// for most calls, one for each chunk of a phrases judgement. A candidate call, whose marks the
+// local Dispatch, the reviewer component or the detector's reader set, is in neither.
 type Call struct {
 	Model      string  `json:"model"`
 	Served     string  `json:"served,omitempty"`
@@ -396,15 +400,23 @@ type Call struct {
 	CostUSD    float64 `json:"cost_usd"`
 	Attempts   int     `json:"attempts"`
 	OtherShape int     `json:"other_shape,omitempty"`
+	Marked     int     `json:"marked_calls,omitempty"`
+	Unmarked   int     `json:"unmarked_calls,omitempty"`
 	Seconds    float64 `json:"seconds"`
 }
 
 func callOf(r llm.Response) Call {
-	return Call{
+	c := Call{
 		Model: r.Requested, Served: r.Served, Input: r.Usage.Input, Output: r.Usage.Output,
 		CacheWrite: r.Usage.CacheWrite, CacheRead: r.Usage.CacheRead, CostUSD: r.Usage.CostUSD,
 		Attempts: r.Attempts, OtherShape: r.OtherShape, Seconds: r.Elapsed.Seconds(),
 	}
+	if r.Marked {
+		c.Marked = 1
+	} else {
+		c.Unmarked = 1
+	}
+	return c
 }
 
 // Item is one item of a list judgement: its quote (a fact's words, a phrase, an undefined word)
@@ -473,51 +485,128 @@ type Grader struct {
 	Fallbacks []*claude.Client
 	Inputs    GraderInputs
 	phrases   string
-	// prefixes holds, for each prefix a call of Model sent (prefixKey), a channel that closes
-	// when the first call that sent it ends.
+	// planned counts, for each prefix (prefixKey), the calls of Model that the run's plans
+	// hold that send it (Plan). mu guards it.
+	mu      sync.Mutex
+	planned map[string]int
+	// prefixes holds, for each marked prefix a call of Model sent, a channel that closes when
+	// the first call that sent it ends.
 	prefixes sync.Map
 }
 
 // NewGrader is the grader of model and its fallbacks, reading the context inputs gives each
 // judgement.
 func NewGrader(model *claude.Client, fallbacks []*claude.Client, inputs GraderInputs) *Grader {
-	return &Grader{Model: model, Fallbacks: fallbacks, Inputs: inputs, phrases: stoppedPhrases()}
+	return &Grader{Model: model, Fallbacks: fallbacks, Inputs: inputs, phrases: stoppedPhrases(), planned: map[string]int{}}
 }
 
 // Grade gives one judgement. A call that fails is a Grade with its Error.
 func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade { return g.GradeOrReuse(ctx, in, nil) }
 
-// GradeOrReuse gives one judgement, or, where one of done is a grade with no error whose inputs
-// were the ones this grade reads (InputSHA256), that grade again, marked Reused, with no call.
-func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade) Grade {
+// gradeCall is a judgement's call as the grader makes it: the judgement's spec, its request, the
+// context parts it reads, and the session part where it reads one.
+type gradeCall struct {
+	spec    judgementSpec
+	req     llm.Request
+	parts   contextParts
+	session claude.SessionText
+}
+
+// prepare is the call of the judgement in.
+func (g *Grader) prepare(in GradeInput) (gradeCall, error) {
 	spec, ok := judgementSpecs[in.Judgement]
 	if !ok {
-		return Grade{Error: fmt.Sprintf("no judgement %q", in.Judgement)}
+		return gradeCall{}, fmt.Errorf("no judgement %q", in.Judgement)
 	}
 	req, p, err := g.request(spec, in)
 	if err != nil {
-		return Grade{Error: err.Error()}
+		return gradeCall{}, err
 	}
-	var session claude.SessionText
+	c := gradeCall{spec: spec, req: req, parts: p}
 	if p.Session {
-		session = in.Session
+		c.session = in.Session
 	}
-	digest := requestDigest(append([]*claude.Client{g.Model}, g.Fallbacks...), req, session)
+	return c, nil
+}
+
+// digest is the SHA-256 of what the call reads (requestDigest), with Model and its fallbacks.
+func (g *Grader) digest(c gradeCall) string {
+	return requestDigest(append([]*claude.Client{g.Model}, g.Fallbacks...), c.req, c.session)
+}
+
+// reuse is the grade of done with no error whose inputs were the ones of digest (InputSHA256),
+// marked Reused; nil where done holds none.
+func reuse(done []*Grade, digest string) *Grade {
 	for _, d := range done {
 		if d != nil && d.Error == "" && d.InputSHA256 == digest {
 			again := *d
 			again.Reused = true
-			return again
+			return &again
 		}
 	}
+	return nil
+}
+
+// GradeOrReuse gives one judgement, or, where one of done is a grade with no error whose inputs
+// were the ones this grade reads (InputSHA256), that grade again, marked Reused, with no call.
+func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade) Grade {
+	c, err := g.prepare(in)
+	if err != nil {
+		return Grade{Error: err.Error()}
+	}
+	digest := g.digest(c)
+	if again := reuse(done, digest); again != nil {
+		return *again
+	}
 	var grade Grade
-	if spec.sentences {
-		grade = g.gradeSentences(ctx, spec, in, req)
+	if c.spec.sentences {
+		grade = g.gradeSentences(ctx, c.spec, in, c.req)
 	} else {
-		grade = g.gradeOnce(ctx, spec, in, req, p)
+		grade = g.gradeOnce(ctx, c, in)
 	}
 	grade.InputSHA256 = digest
 	return grade
+}
+
+// Plan adds to the run's plan the calls of Model that the judgements ins will make: one for each
+// judgement, one for each chunk of a phrases judgement's candidates (phraseCalls), and none for
+// a judgement whose grade one of done gives again (GradeOrReuse). A judgement of a fresh
+// reader's answer whose Answer is "", since the reader answers later in the run, counts as one
+// call: only that answer could match a grade of done. A caller plans the judgements it knows of
+// before the first of them is sent: score each case's, grader-test and phrases-labels all of
+// theirs. A call of Model carries the cache mark only where the plan holds two or more calls of
+// its prefix when it is sent (mark), so a prefix that one call alone sends pays the input price
+// and not the cache write.
+func (g *Grader) Plan(ins []GradeInput, done map[Judgement][]*Grade) {
+	type count struct {
+		key   string
+		calls int
+	}
+	var counts []count
+	for _, in := range ins {
+		c, err := g.prepare(in)
+		if err != nil {
+			continue
+		}
+		// A grade of done is taken again only for the same digest, which a judgement of an
+		// answer still to come cannot have, and which needs no hashing where done holds none.
+		answerLater := in.Answer == "" && (in.Judgement == JAnswered || in.Judgement == JFirstParagraph)
+		if prior := done[in.Judgement]; !answerLater && len(prior) > 0 && reuse(prior, g.digest(c)) != nil {
+			continue
+		}
+		calls := 1
+		if c.spec.sentences {
+			calls = phraseCalls(len(phraseCandidates(in.Text)))
+		}
+		if key := prefixKey(g.Model, c.req, c.session); key != "" && calls > 0 {
+			counts = append(counts, count{key, calls})
+		}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, c := range counts {
+		g.planned[c.key] += c.calls
+	}
 }
 
 // request is the judgement's request and the context parts it reads. Every judgement's system
@@ -550,7 +639,8 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (llm.Request, contex
 
 // requestDigest is the SHA-256 of what a call reads: each model it may call, in order, with its
 // effort; the request's system prompt, Shared blocks, user message, schema and bound; and the
-// session part, where the call reads one.
+// session part, where the call reads one. The request's Mark is not in it: the mark changes
+// whether the provider caches the prefix, and not what the model reads.
 func requestDigest(models []*claude.Client, req llm.Request, session claude.SessionText) string {
 	h := sha256.New()
 	write := func(s string) { fmt.Fprintf(h, "%d:%s\n", len(s), s) }
@@ -575,7 +665,7 @@ func requestDigest(models []*claude.Client, req llm.Request, session claude.Sess
 // prefixKey is the SHA-256 of the part of model's request that the provider caches: the model
 // with its effort, the system prompt, the schema (the provider puts it before the messages), the
 // Shared blocks and the session part. It is "" for a call that sends neither Shared nor a
-// session part, which carries no cache mark.
+// session part, which has no prefix to mark.
 func prefixKey(model *claude.Client, req llm.Request, session claude.SessionText) string {
 	if len(req.Shared) == 0 && session.Empty() {
 		return ""
@@ -595,13 +685,21 @@ func prefixKey(model *claude.Client, req llm.Request, session claude.SessionText
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// first orders the calls of Model that send one prefix (prefixKey): the first goes at once, and
-// each other waits until it has ended, so it reads the prefix from the provider's cache instead
-// of writing it again. The provider can serve a cached prefix only once a call that wrote it has
-// begun its reply, so calls that start together would each write it. first answers the function
-// that a call calls when it has ended. A call with no prefix ("") waits for none.
-func (g *Grader) first(ctx context.Context, key string) (done func()) {
+// mark sets the cache mark of req, a call of Model with the prefix key, where the run's plan
+// holds two or more calls of that prefix (Plan). It orders the marked calls of one prefix: the
+// first goes at once, and each other waits until it has ended, so it reads the prefix from the
+// provider's cache instead of writing it again. The provider can serve a cached prefix only once
+// a call that wrote it has begun its reply, so calls that start together would each write it.
+// mark answers the function that the call calls when it has ended. An unmarked call waits for
+// none: it writes nothing to the cache and reads nothing from it.
+func (g *Grader) mark(ctx context.Context, req *llm.Request, key string) (done func()) {
 	if key == "" {
+		return func() {}
+	}
+	g.mu.Lock()
+	req.Mark = g.planned[key] >= 2
+	g.mu.Unlock()
+	if !req.Mark {
 		return func() {}
 	}
 	mine := make(chan struct{})
@@ -616,37 +714,35 @@ func (g *Grader) first(ctx context.Context, key string) (done func()) {
 	return func() {}
 }
 
-// gradeOnce makes the judgement's call, then a fallback's while each model before it refuses.
-func (g *Grader) gradeOnce(ctx context.Context, spec judgementSpec, in GradeInput, req llm.Request, p contextParts) Grade {
-	call := func(model *claude.Client) (llm.Response, error) {
-		if p.Session {
+// gradeOnce makes the judgement's call, then a fallback's while each model before it refuses. A
+// fallback's call carries no cache mark: no plan counts it.
+func (g *Grader) gradeOnce(ctx context.Context, c gradeCall, in GradeInput) Grade {
+	call := func(model *claude.Client, req llm.Request) (llm.Response, error) {
+		if c.parts.Session {
 			return model.CallWithSession(ctx, req, in.Session)
 		}
 		return model.Call(ctx, req)
 	}
-	var session claude.SessionText
-	if p.Session {
-		session = in.Session
-	}
-	done := g.first(ctx, prefixKey(g.Model, req, session))
-	resp, err := call(g.Model)
+	req := c.req
+	done := g.mark(ctx, &req, prefixKey(g.Model, c.req, c.session))
+	resp, err := call(g.Model, req)
 	done()
-	grade := Grade{Inputs: cmp.Or(g.Inputs[in.Judgement], InputsTrimmed), Session: p.Session}
+	grade := Grade{Inputs: cmp.Or(g.Inputs[in.Judgement], InputsTrimmed), Session: c.parts.Session}
 	for _, fallback := range g.Fallbacks {
 		var callErr *llm.CallError
 		if !errors.As(err, &callErr) || callErr.Fault != agentloop.FaultRefusal {
 			break
 		}
 		grade.Refused = append(grade.Refused, callOf(resp))
-		resp, err = call(fallback)
+		resp, err = call(fallback, c.req)
 	}
-	c := callOf(resp)
-	grade.Call, grade.Reply = &c, resp.Value
+	made := callOf(resp)
+	grade.Call, grade.Reply = &made, resp.Value
 	if err != nil {
 		grade.Error = err.Error()
 		return grade
 	}
-	if err := spec.read(resp.Value, &grade, in.Text); err != nil {
+	if err := c.spec.read(resp.Value, &grade, in.Text); err != nil {
 		grade.Error = fmt.Sprintf("the %s reply: %v", in.Judgement, err)
 		return grade
 	}
@@ -771,30 +867,54 @@ type Answer struct {
 	Reused      bool   `json:"reused,omitempty"`
 }
 
-// Read answers question from text alone. reply says text is the agent's reply to the question,
-// and firstParagraph that text is only that reply's first paragraph. Where one of done is an
-// answer with no error to the same inputs (InputSHA256), Read gives that answer again, marked
-// Reused, with no call.
-func (r *Reader) Read(ctx context.Context, text, question string, reply, firstParagraph bool, done []*Answer) Answer {
+// readerCall is one call of the fresh reader, ready to make: its request, and the SHA-256 of what
+// it reads (requestDigest), which its answer records as InputSHA256. err is a prompt that did
+// not fill.
+type readerCall struct {
+	model  *claude.Client
+	req    llm.Request
+	digest string
+	err    error
+}
+
+// call is the call that answers question from text alone. reply says text is the agent's reply
+// to the question, and firstParagraph that text is only that reply's first paragraph.
+func (r *Reader) call(text, question string, reply, firstParagraph bool) readerCall {
 	system, err := render("reader", promptData{Reply: reply || firstParagraph, FirstParagraph: firstParagraph})
 	if err != nil {
-		return Answer{Error: err.Error()}
+		return readerCall{err: err}
 	}
 	purpose := "reader"
 	if firstParagraph {
 		purpose = "reader:first_paragraph"
 	}
 	req := llm.Request{Purpose: purpose, System: system, User: tag("text", text) + tag("question", question), MaxTokens: 1024}
-	digest := requestDigest([]*claude.Client{r.Model}, req, claude.SessionText{})
+	return readerCall{model: r.Model, req: req, digest: requestDigest([]*claude.Client{r.Model}, req, claude.SessionText{})}
+}
+
+// reused is the answer of done with no error to the call's same inputs (InputSHA256), marked
+// Reused, which a case takes in place of the call; nil where done holds none.
+func (c readerCall) reused(done []*Answer) *Answer {
+	if c.err != nil {
+		return nil
+	}
 	for _, d := range done {
-		if d != nil && d.Error == "" && d.InputSHA256 == digest {
+		if d != nil && d.Error == "" && d.InputSHA256 == c.digest {
 			again := *d
 			again.Reused = true
-			return again
+			return &again
 		}
 	}
-	resp, err := r.Model.Call(ctx, req)
-	a := Answer{Text: strings.TrimSpace(resp.Text), Call: callOf(resp), InputSHA256: digest}
+	return nil
+}
+
+// answer makes the call.
+func (c readerCall) answer(ctx context.Context) Answer {
+	if c.err != nil {
+		return Answer{Error: c.err.Error()}
+	}
+	resp, err := c.model.Call(ctx, c.req)
+	a := Answer{Text: strings.TrimSpace(resp.Text), Call: callOf(resp), InputSHA256: c.digest}
 	if err != nil {
 		a.Error = err.Error()
 	} else if a.Text == "" {

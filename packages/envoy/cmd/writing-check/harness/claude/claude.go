@@ -102,8 +102,8 @@ func (c *Client) Call(ctx context.Context, req llm.Request) (llm.Response, error
 const SessionTag = "writer_session"
 
 // CallWithSession makes one call whose Shared ends with the session part in its tag, so the
-// session part is in the prefix the call marks for the provider's cache and that the other calls
-// of its case send the same. An empty session part adds nothing.
+// session part is in the prefix that the other calls of its case send the same, and that the
+// request's Mark marks for the provider's cache. An empty session part adds nothing.
 func (c *Client) CallWithSession(ctx context.Context, req llm.Request, session SessionText) (llm.Response, error) {
 	if !session.Empty() {
 		req.Shared = append(slices.Clip(req.Shared), "<"+SessionTag+">\n"+session.text+"\n</"+SessionTag+">\n")

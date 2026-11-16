@@ -98,11 +98,16 @@ func phraseCandidates(text string) []phraseCandidate {
 // phraseChunk bounds the candidates one call judges.
 const phraseChunk = 30
 
+// phraseCalls is how many calls the phrases judgement makes for n candidates: one for each
+// phraseChunk of them, and none for no candidate.
+func phraseCalls(n int) int { return (n + phraseChunk - 1) / phraseChunk }
+
 // gradeSentences gives the phrases judgement sentence by sentence: the candidates of in.Text,
 // each judged by the spec's prompt, which base holds as its Shared with the reply's schema; the
 // sentences the grader finds vacuous are the findings, each quoted whole. The calls of the
-// chunks are summed into one Call. Every call of the judgement sends the same prompt, which the
-// first call of the run writes to the provider's cache and the others read.
+// chunks are summed into one Call. Every call of the judgement sends the same prompt, whatever
+// its text, so where the run's plan holds two or more phrases calls (Plan), the first marked
+// call of the run writes the prompt to the provider's cache and the others read it.
 // A sentence judgement reads only its candidates, so its input mode is always trimmed.
 func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in GradeInput, base llm.Request) Grade {
 	grade := Grade{Inputs: InputsTrimmed}
@@ -119,8 +124,9 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 		list, _ := json.MarshalIndent(chunk, "", " ")
 		req := base
 		req.User = tag("candidates", string(list))
-		done := g.first(ctx, key)
-		resp, err := g.Model.Call(ctx, req)
+		marked := req
+		done := g.mark(ctx, &marked, key)
+		resp, err := g.Model.Call(ctx, marked)
 		done()
 		for _, fallback := range g.Fallbacks {
 			var callErr *llm.CallError
@@ -164,8 +170,8 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 	return grade
 }
 
-// addCall is the sum of two calls' tokens, cost, attempts, replies in another shape and time,
-// with b's model.
+// addCall is the sum of two calls' tokens, cost, attempts, replies in another shape, marked and
+// unmarked calls and time, with b's model.
 func addCall(a, b Call) Call {
 	b.Input += a.Input
 	b.Output += a.Output
@@ -174,6 +180,8 @@ func addCall(a, b Call) Call {
 	b.CostUSD += a.CostUSD
 	b.Attempts += a.Attempts
 	b.OtherShape += a.OtherShape
+	b.Marked += a.Marked
+	b.Unmarked += a.Unmarked
 	b.Seconds += a.Seconds
 	return b
 }

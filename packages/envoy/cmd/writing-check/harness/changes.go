@@ -124,6 +124,38 @@ func (p changePlan) writer() bool {
 	return slices.ContainsFunc(p.steps, func(s string) bool { return s != changeReviewRewrite })
 }
 
+// stepPrompts are the writer's prompts of the steps that play the writer: changes 2 and 7a have
+// it write its text again, 3 act on a review's findings, 5 and 6 answer a side question.
+var stepPrompts = map[string]string{
+	changeRules: promptRewrite, changeCheck: promptRewrite, changeFindings: promptFindings,
+	changeRewrite: promptAnswer, changeDefine: promptAnswer,
+}
+
+// writerMarks are the writer's prompts whose calls the plan marks for the provider's cache: each
+// prompt the plan can call two or more times for one case. Those calls send the same prefix: the
+// prompt, its schema, and the case's record and session part. Change 3 calls the writer once in
+// each round of review, up to rounds; each other step calls it at most once.
+func (p changePlan) writerMarks(rounds int) map[string]bool {
+	calls := map[string]int{}
+	for _, s := range p.steps {
+		prompt, ok := stepPrompts[s]
+		switch {
+		case !ok:
+		case s == changeFindings:
+			calls[prompt] += rounds
+		default:
+			calls[prompt]++
+		}
+	}
+	marks := map[string]bool{}
+	for prompt, n := range calls {
+		if n >= 2 {
+			marks[prompt] = true
+		}
+	}
+	return marks
+}
+
 // changes are the changes the plan holds, for the exposure log.
 func (p changePlan) changes() []string {
 	out := slices.Clone(p.steps)

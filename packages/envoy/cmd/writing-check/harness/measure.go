@@ -345,6 +345,11 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 		if err != nil {
 			return fail(2, err)
 		}
+		ins := make([]GradeInput, len(todo))
+		for i, w := range todo {
+			ins[i] = GradeInput{Judgement: JPhrases, Text: w.Text}
+		}
+		grader.Plan(ins, nil)
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return fail(1, err)

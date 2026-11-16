@@ -214,63 +214,69 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 			earlier[j] = append(earlier[j], g)
 		}
 	}
-	grade := func(j Judgement, answer string) {
-		in := base
-		in.Judgement, in.Answer = j, answer
-		set(j, s.grader.GradeOrReuse(ctx, in, earlier[j]))
-	}
 	prior := s.readersFrom[c.ID]
 	if prior.TextSHA256 != res.TextSHA256 {
 		prior = CaseResult{}
 	}
-	// read is the fresh reader's answer, or the answer a run named by --readers-from gave to
-	// this case's same text, so two runs that compare graders grade the same answers; else one
-	// of same, the answers of the runs --grades-from names, that read the same inputs.
-	read := func(done *Answer, same []*Answer, text string, firstParagraph bool) Answer {
+	// readings are the fresh readers' reads of the case: of its text (answered), and of the
+	// first paragraph of an answer case's text (first_paragraph). taken is the answer the case
+	// takes in place of the reader's call, nil where the reader answers in this run: the answer
+	// a run named by --readers-from gave to this case's same text, so two runs that compare
+	// graders grade the same answers; else one of the answers of the runs --grades-from names
+	// that read the same inputs.
+	type reading struct {
+		j     Judgement
+		to    **Answer
+		call  readerCall
+		taken *Answer
+	}
+	var readings []reading
+	read := func(j Judgement, to **Answer, done *Answer, same []*Answer, text string, firstParagraph bool) {
+		r := reading{j: j, to: to}
 		if done != nil && done.Error == "" {
 			a := *done
 			a.Reused = true
-			return a
+			r.taken = &a
+		} else {
+			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph)
+			r.taken = r.call.reused(same)
 		}
-		return s.reader.Read(ctx, text, question, reply || firstParagraph, firstParagraph, same)
+		readings = append(readings, r)
 	}
 	if question != "" && s.wants(JAnswered) {
-		run(func() {
-			a := read(prior.Reader, earlierReaders, text, false)
-			mu.Lock()
-			res.Reader = &a
-			mu.Unlock()
-			if a.Error == "" {
-				grade(JAnswered, a.Text)
-			}
-		})
+		read(JAnswered, &res.Reader, prior.Reader, earlierReaders, text, false)
 	}
-	if reply && question != "" {
-		if s.wants(JFirstParagraph) {
-			run(func() {
-				first := FirstParagraph(text)
-				if first == "" {
-					first = text
-				}
-				a := read(prior.FirstParagraphReader, earlierFirstReaders, first, true)
-				mu.Lock()
-				res.FirstParagraphReader = &a
-				mu.Unlock()
-				if a.Error == "" {
-					grade(JFirstParagraph, a.Text)
-				}
-			})
+	if reply && question != "" && s.wants(JFirstParagraph) {
+		first := FirstParagraph(text)
+		if first == "" {
+			first = text
 		}
-		if s.wants(JAnswerStart) {
-			run(func() { grade(JAnswerStart, "") })
+		read(JFirstParagraph, &res.FirstParagraphReader, prior.FirstParagraphReader, earlierFirstReaders, first, true)
+	}
+	// planned are the judgements the case gets, the readings' first, each with the reader's
+	// answer where the case takes it. The grader plans their calls before the first is sent.
+	var planned []GradeInput
+	give := func(j Judgement, answer string) {
+		in := base
+		in.Judgement, in.Answer = j, answer
+		planned = append(planned, in)
+	}
+	for _, r := range readings {
+		answer := ""
+		if r.taken != nil {
+			answer = r.taken.Text
 		}
+		give(r.j, answer)
+	}
+	if reply && question != "" && s.wants(JAnswerStart) {
+		give(JAnswerStart, "")
 	}
 	if c.Group == GroupPlain && s.wants(JHarder) {
-		run(func() { grade(JHarder, "") })
+		give(JHarder, "")
 	}
 	for _, j := range []Judgement{JPhrases, JUndefined} {
 		if s.wants(j) {
-			run(func() { grade(j, "") })
+			give(j, "")
 		}
 	}
 	for _, j := range []Judgement{JLost, JAdded} {
@@ -279,11 +285,35 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 		case applied.Same:
 			set(j, Grade{ByConstruction: true})
 		default:
-			run(func() { grade(j, "") })
+			give(j, "")
 		}
 	}
 	if applied.Definition != "" && s.wants(JDefine) {
-		run(func() { grade(JDefine, "") })
+		give(JDefine, "")
+	}
+	if len(planned) > 0 {
+		s.grader.Plan(planned, earlier)
+	}
+	grade := func(in GradeInput) { set(in.Judgement, s.grader.GradeOrReuse(ctx, in, earlier[in.Judgement])) }
+	for i, r := range readings {
+		run(func() {
+			a := r.taken
+			if a == nil {
+				answer := r.call.answer(ctx)
+				a = &answer
+			}
+			mu.Lock()
+			*r.to = a
+			mu.Unlock()
+			if a.Error == "" {
+				in := planned[i]
+				in.Answer = a.Text
+				grade(in)
+			}
+		})
+	}
+	for _, in := range planned[len(readings):] {
+		run(func() { grade(in) })
 	}
 	wg.Wait()
 

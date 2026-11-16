@@ -363,7 +363,7 @@ func changeRig(t *testing.T, steps []string, fake *fakeDispatch) (*changeRun, *m
 	}
 	run := &changeRun{
 		plan: plan, ds: ds, cfg: cfg, candidate: candidateID, candModel: candidate.Model(), runner: runner,
-		writer: &Writer{Model: writer}, rules: []reviewer.RuleSet{reviewer.RuleNoslop}, rounds: 2, unedited: uneditedRewrite,
+		writer: &Writer{Model: writer, Marked: plan.writerMarks(2)}, rules: []reviewer.RuleSet{reviewer.RuleNoslop}, rounds: 2, unedited: uneditedRewrite,
 		sessions: changeSessions(t), tries: 2, backoff: time.Millisecond, poll: 10 * time.Millisecond, loaded: loaded,
 	}
 	if fake != nil {

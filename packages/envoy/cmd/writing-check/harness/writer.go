@@ -50,12 +50,22 @@ type writerData struct {
 // the bound for a reply cut at it.
 const writerMaxTokens = 16000
 
+// The writer's prompts (writer/writer.md): its text written again, its action on a review's
+// findings, its answer to a side question.
+const (
+	promptRewrite  = "writer-rewrite"
+	promptFindings = "writer-findings"
+	promptAnswer   = "writer-answer"
+)
+
 // Writer is the writer agent the harness plays (plan Decision 20): the Claude model of
 // candidates.yaml's writer role, given Dispatch's record of the case, its own text, the message
 // Dispatch sent it, and its session up to the text where the case has one. Only a claude.Client
-// takes the session (claude.SessionText).
+// takes the session (claude.SessionText). Marked are the prompts whose calls carry the cache
+// mark: those the change can call two or more times for one case (changePlan.writerMarks).
 type Writer struct {
-	Model *claude.Client
+	Model  *claude.Client
+	Marked map[string]bool
 }
 
 // writerTurn is one message Dispatch sends the writer about a case's text.
@@ -69,9 +79,9 @@ type writerTurn struct {
 
 // call makes the writer's call for prompt with the turn's inputs and its session, if any. The
 // record and the session part, which every turn of a case sends the same, go first as Shared,
-// so a later turn of the case with the same prompt (change 3's next round) reads them from the
-// provider's cache; the writer's text and Dispatch's message, which change from turn to turn,
-// go after them.
+// and the writer's text and Dispatch's message, which change from turn to turn, go after them.
+// A call of a Marked prompt marks the record and the session part, so a later call of the case
+// with the same prompt (change 3's next round) reads them from the provider's cache.
 func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTurn, schema json.RawMessage) (llm.Response, error) {
 	var b strings.Builder
 	if err := writerPrompts.ExecuteTemplate(&b, prompt, writerData{
@@ -81,7 +91,8 @@ func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTu
 	}
 	req := llm.Request{
 		Purpose: purpose, System: strings.TrimSpace(b.String()) + "\n",
-		Shared: []string{strings.TrimSpace(turn.record) + "\n"}, User: tag("your_text", turn.text) + tag("dispatch_message", turn.message),
+		Shared: []string{strings.TrimSpace(turn.record) + "\n"}, Mark: w.Marked[prompt],
+		User:   tag("your_text", turn.text) + tag("dispatch_message", turn.message),
 		Schema: schema, MaxTokens: writerMaxTokens,
 	}
 	return w.Model.CallWithSession(ctx, req, turn.session)
@@ -93,7 +104,7 @@ var rewriteSchema = json.RawMessage(object(property{"text", stringSchema}))
 // Rewrite is the writer's text written again after message: the written rules' refusal (change
 // 2) or the writing check's refusal (change 7a).
 func (w *Writer) Rewrite(ctx context.Context, purpose string, turn writerTurn) (string, Call, error) {
-	resp, err := w.call(ctx, "writer-rewrite", purpose, turn, rewriteSchema)
+	resp, err := w.call(ctx, promptRewrite, purpose, turn, rewriteSchema)
 	call := callOf(resp)
 	if err != nil {
 		return "", call, err
@@ -130,7 +141,7 @@ type FindingsAction struct {
 
 // ActOnFindings is the writer's action on the frame of a review's findings (reviewer.FindingsFrame).
 func (w *Writer) ActOnFindings(ctx context.Context, turn writerTurn) (FindingsAction, Call, error) {
-	resp, err := w.call(ctx, "writer-findings", "writer:findings", turn, findingsSchema)
+	resp, err := w.call(ctx, promptFindings, "writer:findings", turn, findingsSchema)
 	call := callOf(resp)
 	if err != nil {
 		return FindingsAction{}, call, err
@@ -152,7 +163,7 @@ func (w *Writer) ActOnFindings(ctx context.Context, turn writerTurn) (FindingsAc
 // Answer is the writer's answer to Dispatch's side question about its text (changes 5 and 6):
 // text the agent writes for the reader, which a model of any family may then read.
 func (w *Writer) Answer(ctx context.Context, turn writerTurn) (string, Call, error) {
-	resp, err := w.call(ctx, "writer-answer", "writer:answer", turn, nil)
+	resp, err := w.call(ctx, promptAnswer, "writer:answer", turn, nil)
 	call := callOf(resp)
 	if err != nil {
 		return "", call, err

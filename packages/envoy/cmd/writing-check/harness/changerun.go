@@ -152,7 +152,7 @@ func (r *changeRun) connect(ctx context.Context, m *modelFlags, inst LocalInstan
 		if err != nil {
 			return err
 		}
-		r.writer = &Writer{Model: model}
+		r.writer = &Writer{Model: model, Marked: r.plan.writerMarks(r.rounds)}
 	}
 	if r.candidate != "" {
 		c, f, err := m.candidateModel(r.cfg, r.candidate, runner)

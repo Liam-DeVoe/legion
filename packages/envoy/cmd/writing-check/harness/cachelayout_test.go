@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // wireBlock is one text block of an Anthropic request, with its cache mark.
@@ -83,8 +85,8 @@ func request(t *testing.T, stand *modeltest.Model, texts ...string) modeltest.Re
 // unmarked. The provider caches the system prompt and those parts as one prefix. Two judgements
 // of a case that read the same parts send that prefix byte for byte, with the one schema every
 // judgement shares, so the second reads it from the cache. The phrases judgement sends its own
-// prompt as its marked prefix and its candidates after it; the fresh reader's call carries no
-// mark.
+// prompt as its prefix and its candidates after it; the fixture's one phrases call carries no
+// mark, since no other call of the run sends that prompt. The fresh reader's call carries no mark.
 func TestAGradingCallSendsTheCasesPartsFirstMarkedForTheCache(t *testing.T) {
 	build, sessions := writeFixture(t)
 	stand := modeltest.New(t, graderRules(t)...)
@@ -133,9 +135,9 @@ func TestAGradingCallSendsTheCasesPartsFirstMarkedForTheCache(t *testing.T) {
 	}
 
 	phrases := decodeTurn(t, request(t, stand, markPhrases, "This names the problem."))
-	if b := phrases.blocks(t); len(b) != 2 || !strings.Contains(b[0].Text, markPhrases) || !reflect.DeepEqual(b[0].CacheControl, fiveMinuteMark) ||
-		!strings.HasPrefix(b[1].Text, "<candidates>") || b[1].CacheControl != nil || phrases.marks != 1 {
-		t.Errorf("the phrases call's blocks are %+v, want its prompt marked, then its candidates", b)
+	if b := phrases.blocks(t); len(b) != 2 || !strings.Contains(b[0].Text, markPhrases) || b[0].CacheControl != nil ||
+		!strings.HasPrefix(b[1].Text, "<candidates>") || b[1].CacheControl != nil || phrases.marks != 0 {
+		t.Errorf("the phrases call's blocks are %+v, want its prompt, then its candidates, with no mark", b)
 	}
 	for _, r := range stand.Requests() {
 		if strings.Contains(r.Text, markReader) && strings.Contains(string(r.Body), "cache_control") {
@@ -144,21 +146,76 @@ func TestAGradingCallSendsTheCasesPartsFirstMarkedForTheCache(t *testing.T) {
 	}
 }
 
-// The writer's call sends Dispatch's record and its session part first, the session part with
-// the one cache mark, then its own text and Dispatch's message, unmarked: change 3's next round
-// with the same prompt reads the record and the session from the cache.
-func TestTheWritersCallSendsTheRecordAndSessionFirstMarkedForTheCache(t *testing.T) {
-	fake := newFakeDispatch(t)
-	run, stand := changeRig(t, []string{changeRules}, fake)
+// The writer's call sends Dispatch's record and its session part first, then its own text and
+// Dispatch's message. Change 2 calls the writer once for a case, so its call carries no mark.
+// Change 3 calls it once in each round of review: each of its calls marks the session part, so
+// the next round reads the record and the session from the cache.
+func TestTheWriterMarksTheRecordAndSessionWhereItCallsAgain(t *testing.T) {
+	layout := func(t *testing.T, w wireTurn) []wireBlock {
+		t.Helper()
+		b := w.blocks(t)
+		if len(b) != 3 || !strings.HasPrefix(b[0].Text, "<record>") || !strings.HasPrefix(b[1].Text, "<writer_session>") ||
+			!strings.Contains(b[2].Text, "<your_text>") || !strings.Contains(b[2].Text, "<dispatch_message>") {
+			t.Fatalf("the writer's blocks are %+v, want the record, the session part, then its text and the message", b)
+		}
+		return b
+	}
+	run, stand := changeRig(t, []string{changeRules}, newFakeDispatch(t))
 	apply(t, run, "question/comment:c2@20")
 	w := decodeTurn(t, stand.Requests()[0])
-	b := w.blocks(t)
-	if len(b) != 3 || !strings.HasPrefix(b[0].Text, "<record>") || !strings.HasPrefix(b[1].Text, "<writer_session>") ||
-		!strings.Contains(b[2].Text, "<your_text>") || !strings.Contains(b[2].Text, "<dispatch_message>") {
-		t.Fatalf("the writer's blocks are %+v, want the record, the session part, then its text and the message", b)
+	if b := layout(t, w); b[0].CacheControl != nil || b[1].CacheControl != nil || b[2].CacheControl != nil || w.marks != 0 {
+		t.Errorf("change 2's writer marks: %v, %v, %v (%d in all), want none", b[0].CacheControl, b[1].CacheControl, b[2].CacheControl, w.marks)
 	}
-	if b[0].CacheControl != nil || !reflect.DeepEqual(b[1].CacheControl, fiveMinuteMark) || b[2].CacheControl != nil || w.marks != 1 {
-		t.Errorf("the writer's marks: %v, %v, %v (%d in all), want the session part's alone", b[0].CacheControl, b[1].CacheControl, b[2].CacheControl, w.marks)
+
+	finding := []reviewer.Finding{{RuleSet: reviewer.RuleNoslop, Quote: "spin up", Why: "A phrasal verb.", Fix: "start"}}
+	found := draftAnswer{Findings: finding, Rewrite: &wording{Body: "We start the node."}}
+	run, stand = changeRig(t, []string{changeFindings}, newFakeDispatch(t, found, found))
+	apply(t, run, "question/comment:c2@20")
+	if len(stand.Requests()) != 2 {
+		t.Fatalf("change 3 made %d writer calls, want one in each of its two rounds", len(stand.Requests()))
+	}
+	for i, r := range stand.Requests() {
+		w := decodeTurn(t, r)
+		if b := layout(t, w); b[0].CacheControl != nil || !reflect.DeepEqual(b[1].CacheControl, fiveMinuteMark) || b[2].CacheControl != nil || w.marks != 1 {
+			t.Errorf("change 3's writer call %d marks: %v, %v, %v (%d in all), want the session part's alone", i, b[0].CacheControl, b[1].CacheControl, b[2].CacheControl, w.marks)
+		}
+	}
+}
+
+// The writer marks the calls of a prompt where the change can call it two or more times for one
+// case: change 3, once in each round of review, with two rounds or more. Changes 2, 5, 6 and
+// 7a, change 4 (which plays no writer) and change 3 with one round call each prompt at most once.
+func TestOnlyAChangeThatCallsTheWriterAgainMarksItsCalls(t *testing.T) {
+	for _, c := range []struct {
+		changes []string
+		rounds  int
+		want    []string
+	}{
+		{[]string{changeRules}, 2, nil},
+		{[]string{changeFindings}, 2, []string{promptFindings}},
+		{[]string{changeFindings}, 3, []string{promptFindings}},
+		{[]string{changeFindings}, 1, nil},
+		{[]string{changeReviewRewrite}, 2, nil},
+		{[]string{changeRewrite}, 2, nil},
+		{[]string{changeDefine}, 2, nil},
+		{[]string{changeCheck}, 2, nil},
+		{[]string{changeRules, changeFindings, changeRewrite}, 2, []string{promptFindings}},
+		{[]string{changeRules, changeCheck}, 2, []string{promptRewrite}},
+	} {
+		plan, err := planOf(strings.Join(c.changes, "+"), c.changes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marks := plan.writerMarks(c.rounds)
+		var got []string
+		for _, p := range []string{promptRewrite, promptFindings, promptAnswer} {
+			if marks[p] {
+				got = append(got, p)
+			}
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("changes %v with %d rounds mark %v, want %v", c.changes, c.rounds, got, c.want)
+		}
 	}
 }
 
@@ -195,8 +252,11 @@ func TestAReplyInAnotherJudgementsShapeIsAskedAgain(t *testing.T) {
 	}
 }
 
-// Two judgements of a case that send the same prefix do not start together: the second waits
-// until the first has its reply, so it reads the prefix the first wrote to the cache.
+// The grader marks a prefix only where the run's plan holds two or more calls of it. Two
+// judgements of a case that send the same prefix, planned together, both carry the mark, and
+// the second waits until the first has its reply, so it reads the prefix the first wrote to the
+// cache. Graded with no plan, each call sends its prefix alone: neither carries a mark, and
+// neither waits for the other.
 func TestTheJudgementsOfOnePrefixFollowTheFirst(t *testing.T) {
 	const delay = 300 * time.Millisecond
 	var mu sync.Mutex
@@ -211,6 +271,68 @@ func TestTheJudgementsOfOnePrefixFollowTheFirst(t *testing.T) {
 		modeltest.Rule{Contains: markLost, Match: at, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"lost": []any{}}), Delay: delay}},
 		modeltest.Rule{Contains: markAdded, Match: at, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"added": []any{}}), Delay: delay}},
 	)
+	grader := standInGrader(t, stand, "full")
+	base := GradeInput{Question: "What is the zork train?", Original: "The zork train is ready.", Text: "It is ready.", Record: "<record>\nThe zork train is the queue.\n</record>\n"}
+	var ins []GradeInput
+	for _, j := range []Judgement{JLost, JAdded} {
+		in := base
+		in.Judgement = j
+		ins = append(ins, in)
+	}
+	gradeAll := func(g *Grader) {
+		t.Helper()
+		var wg sync.WaitGroup
+		grades := make([]Grade, len(ins))
+		for i, in := range ins {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				grades[i] = g.Grade(context.Background(), in)
+			}()
+		}
+		wg.Wait()
+		for i, g := range grades {
+			if g.Error != "" {
+				t.Fatalf("grade %d: %s", i, g.Error)
+			}
+		}
+	}
+	grader.Plan(ins, nil)
+	gradeAll(grader)
+	if len(arrived) != 2 {
+		t.Fatalf("%d calls, want 2", len(arrived))
+	}
+	if gap := arrived[1].Sub(arrived[0]); gap < delay {
+		t.Errorf("the second call came %s after the first, want after the first's reply (%s)", gap, delay)
+	}
+	for i, r := range stand.Requests() {
+		if w := decodeTurn(t, r); w.marks != 1 {
+			t.Errorf("planned call %d carries %d cache marks, want 1", i, w.marks)
+		}
+	}
+
+	mu.Lock()
+	arrived = nil
+	mu.Unlock()
+	before := len(stand.Requests())
+	gradeAll(standInGrader(t, stand, "full"))
+	if len(arrived) != 2 {
+		t.Fatalf("%d calls, want 2", len(arrived))
+	}
+	if gap := arrived[1].Sub(arrived[0]); gap >= delay {
+		t.Errorf("an unplanned call came %s after the other, want at once: an unmarked call waits for none", gap)
+	}
+	for i, r := range stand.Requests()[before:] {
+		if w := decodeTurn(t, r); w.marks != 0 {
+			t.Errorf("unplanned call %d carries %d cache marks, want none", i, w.marks)
+		}
+	}
+}
+
+// standInGrader is the grader of candidates.yaml at the stand-in, with no fallback, reading the
+// context the input modes give.
+func standInGrader(t *testing.T, stand *modeltest.Model, inputs string) *Grader {
+	t.Helper()
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -220,33 +342,153 @@ func TestTheJudgementsOfOnePrefixFollowTheFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs, err := ParseGraderInputs("full")
+	modes, err := ParseGraderInputs(inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grader := NewGrader(model, nil, inputs)
-	base := GradeInput{Question: "What is the zork train?", Original: "The zork train is ready.", Text: "It is ready.", Record: "<record>\nThe zork train is the queue.\n</record>\n"}
-	var wg sync.WaitGroup
-	grades := make([]Grade, 2)
-	for i, j := range []Judgement{JLost, JAdded} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			in := base
-			in.Judgement = j
-			grades[i] = grader.Grade(context.Background(), in)
-		}()
+	return NewGrader(model, nil, modes)
+}
+
+// Under the final input modes, each judgement of the question case sends a prefix of its own,
+// and so does the answer case's answer_start and undefined: those calls carry no mark. The
+// answer case's answered and first_paragraph read the same parts (the question and the record):
+// both carry the mark. Every call sends the same blocks in the same order either way, and the
+// figures count the grader's marked and unmarked calls.
+func TestAPrefixThatOneCallSendsGoesUnmarked(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, allJudgementRules(t)...)
+	out := t.TempDir()
+	code, stdout, stderr := runHarness("score", "--cases", build, "--sessions", sessions, "--out", out,
+		"--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50", "--exposure-log", filepath.Join(t.TempDir(), "exposure.log"))
+	if code != 0 {
+		t.Fatalf("score = %d:\n%s", code, stderr)
 	}
-	wg.Wait()
-	for i, g := range grades {
-		if g.Error != "" {
-			t.Fatalf("grade %d: %s", i, g.Error)
+	const firstParagraph = "read only the first paragraph of the text"
+	for _, c := range []struct {
+		name   string
+		texts  []string
+		blocks []string
+		marked bool
+	}{
+		{"the question case's answered", []string{markAnswered, "What is the zork train?"}, []string{"<question>", "<record>"}, false},
+		{"the question case's undefined", []string{markUndefined, "What is the zork train?"}, []string{"<question>", "<record>", "<writer_session>"}, false},
+		{"the answer case's answer_start", []string{markStart}, []string{"<question>"}, false},
+		{"the answer case's undefined", []string{markUndefined, "What is the blocker?"}, []string{"<question>", "<record>", "<writer_session>"}, false},
+		{"the answer case's answered", []string{markAnswered, "What is the blocker?", "from the text alone"}, []string{"<question>", "<record>"}, true},
+		{"the answer case's first_paragraph", []string{markAnswered, "What is the blocker?", firstParagraph}, []string{"<question>", "<record>"}, true},
+	} {
+		w := decodeTurn(t, request(t, stand, c.texts...))
+		b := w.blocks(t)
+		if len(b) != len(c.blocks)+1 {
+			t.Fatalf("%s: the user turn's blocks are %+v, want %v and the judgement", c.name, b, c.blocks)
+		}
+		for i, start := range c.blocks {
+			if !strings.HasPrefix(b[i].Text, start) {
+				t.Errorf("%s: block %d starts %.20q, want %s", c.name, i, b[i].Text, start)
+			}
+			want := map[string]any(nil)
+			if c.marked && i == len(c.blocks)-1 {
+				want = fiveMinuteMark
+			}
+			if !reflect.DeepEqual(b[i].CacheControl, want) {
+				t.Errorf("%s: block %d carries the mark %v, want %v", c.name, i, b[i].CacheControl, want)
+			}
+		}
+		wantMarks := 0
+		if c.marked {
+			wantMarks = 1
+		}
+		if w.marks != wantMarks {
+			t.Errorf("%s: the request carries %d cache marks, want %d", c.name, w.marks, wantMarks)
 		}
 	}
-	if len(arrived) != 2 {
-		t.Fatalf("%d calls, want 2", len(arrived))
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if gap := arrived[1].Sub(arrived[0]); gap < delay {
-		t.Errorf("the second call came %s after the first, want after the first's reply (%s)", gap, delay)
+	results, err := readResults(filepath.Join(out, "cases.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The plain and the phrase cases send one record in their undefined calls, and the run counts
+	// a prefix over every case that plans it, so whether those two go marked depends on the
+	// order the cases plan in. The question and the answer cases share no prefix with another.
+	for id, want := range map[string][]Judgement{"question/comment:q1@11": nil, "answer/comment:a2@20": {JAnswered, JFirstParagraph}} {
+		for j, g := range results[id].Grades {
+			if g.Call == nil {
+				continue
+			}
+			wantMarked, wantUnmarked := 0, 1
+			if slices.Contains(want, j) {
+				wantMarked, wantUnmarked = 1, 0
+			}
+			if g.Call.Marked != wantMarked || g.Call.Unmarked != wantUnmarked {
+				t.Errorf("%s's %s grade holds %d marked and %d unmarked calls, want %d and %d", id, j, g.Call.Marked, g.Call.Unmarked, wantMarked, wantUnmarked)
+			}
+		}
+	}
+	marked, unmarked := 0, 0
+	for _, r := range results {
+		for _, g := range r.Grades {
+			if g.Call != nil {
+				marked += g.Call.Marked
+				unmarked += g.Call.Unmarked
+			}
+		}
+	}
+	for _, u := range readFigures(t, out).Models {
+		if u.Model == cfg.Models.Roles.Grader.ID && (u.Marked != marked || u.Unmarked != unmarked) {
+			t.Errorf("the figures count %d marked and %d unmarked grader calls, want %d and %d", u.Marked, u.Unmarked, marked, unmarked)
+		}
+		if u.Model == cfg.Models.Roles.Reader.ID && (u.Marked != 0 || u.Unmarked != u.Calls) {
+			t.Errorf("the figures count %d marked and %d unmarked reader calls of %d, want every one unmarked", u.Marked, u.Unmarked, u.Calls)
+		}
+	}
+	if !strings.Contains(stdout, "| Calls | Marked | Unmarked |") {
+		t.Errorf("scores.md's model table has no marked and unmarked columns:\n%s", stdout)
+	}
+}
+
+// The phrases prompt is the same for every text, so its count spans the run: with two texts
+// that have candidates planned, each text's call carries the mark; with one, its call carries
+// none.
+func TestThePhrasesPromptIsMarkedWhereTheRunSendsItAgain(t *testing.T) {
+	stand := modeltest.New(t, modeltest.Rule{Contains: markPhrases, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"candidates": []any{}})}})
+	texts := []string{"This names the problem.", "The test shows the fault."}
+	var ins []GradeInput
+	for _, text := range texts {
+		ins = append(ins, GradeInput{Judgement: JPhrases, Text: text})
+	}
+	grader := standInGrader(t, stand, "final")
+	grader.Plan(ins, nil)
+	for _, in := range ins {
+		if g := grader.Grade(context.Background(), in); g.Error != "" || g.Call == nil || g.Call.Marked != 1 || g.Call.Unmarked != 0 {
+			t.Errorf("%q with two texts planned: %+v, want one marked call", in.Text, g)
+		}
+	}
+	alone := standInGrader(t, stand, "final")
+	alone.Plan(ins[:1], nil)
+	before := len(stand.Requests())
+	if g := alone.Grade(context.Background(), ins[0]); g.Error != "" || g.Call == nil || g.Call.Marked != 0 || g.Call.Unmarked != 1 {
+		t.Errorf("%q alone: %+v, want one unmarked call", ins[0].Text, g)
+	}
+	if w := decodeTurn(t, stand.Requests()[before]); w.marks != 0 {
+		t.Errorf("the phrases call of a text alone carries %d cache marks, want none", w.marks)
+	}
+}
+
+// A grade's inputs do not hold the cache mark: the request digest, which a grade records as its
+// input_sha256 and which --grades-from matches, is the same with the mark set and unset.
+func TestTheRequestDigestDoesNotHoldTheMark(t *testing.T) {
+	stand := modeltest.New(t)
+	grader := standInGrader(t, stand, "full")
+	c, err := grader.prepare(GradeInput{Judgement: JUndefined, Question: "What is the zork train?", Text: "It is ready.", Record: "<record>\nThe zork train is the queue.\n</record>\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unmarked := grader.digest(c)
+	c.req.Mark = true
+	if marked := grader.digest(c); marked != unmarked {
+		t.Errorf("the digest is %s with the mark and %s without it, want one digest", marked, unmarked)
 	}
 }

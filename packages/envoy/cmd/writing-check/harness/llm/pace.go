@@ -80,14 +80,15 @@ func tokensOf(n int) int { return (n + bytesPerToken - 1) / bytesPerToken }
 
 // estimateOf is the estimate of req on model, whose Shared goes as the blocks shared. The prefix
 // is what the provider caches up to the mark at Shared's end: the model with its effort, the
-// system prompt, the schema and the Shared blocks.
+// system prompt, the schema and the Shared blocks. A call that sets no Mark caches nothing, so
+// its estimate is not marked.
 func estimateOf(model agentloop.Model, req Request, shared []agentloop.Block) estimate {
 	prefix := len(req.System) + len(req.Schema)
 	for _, b := range shared {
 		prefix += len(b.Text)
 	}
 	e := estimate{whole: tokensOf(prefix + len(req.User)), prefix: tokensOf(prefix)}
-	if len(shared) == 0 {
+	if !req.Mark || len(shared) == 0 {
 		return e
 	}
 	// Each field goes after its length, so no two prefixes hash the same bytes.
