@@ -87,6 +87,12 @@ type NatsServiceArgs struct {
 type AuthorizationArgs struct {
 	Users      []UserArgs `pulumi:"users"`
 	NoAuthUser string     `pulumi:"noAuthUser,optional"` // the name of a keyed user without a seed
+	// The auth service's callout, which admits every client that is not one of users; unset, the
+	// server renders exactly what it rendered before callouts existed.
+	Callout *nats.AuthCalloutArgs `pulumi:"callout,optional"`
+	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
+	// callout, and no user but callout.serviceUser.
+	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }
 
 // Annotate names the type aws:Authorization in the schema: generated SDKs append Args to an object
@@ -112,7 +118,7 @@ func (a *AuthorizationArgs) core() *core.Authorization {
 	for i, u := range a.Users {
 		users[i] = core.User{Name: u.Name, NKey: u.NKey, Publish: u.Publish.Core(), Subscribe: u.Subscribe.Core(), HasSeed: u.HasSeed}
 	}
-	return &core.Authorization{Users: users, NoAuthUser: a.NoAuthUser}
+	return &core.Authorization{Users: users, NoAuthUser: a.NoAuthUser, Callout: a.Callout.Core(), PrivateProjects: a.PrivateProjects}
 }
 
 // NatsService is Envoy's NATS server on ECS Fargate: JetStream on one EFS file system, a Tailscale

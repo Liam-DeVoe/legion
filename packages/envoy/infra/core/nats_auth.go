@@ -40,21 +40,29 @@ type Rules struct {
 	Deny  []string `json:"deny"`
 }
 
-// Authorization is a NATS server's static nkey authorization.
+// Authorization is a NATS server's static nkey authorization, and the callout that admits every
+// other client when it has one.
 type Authorization struct {
 	Users      []User `json:"users"`
 	NoAuthUser string `json:"noAuthUser"` // "" for none; else the Name of a keyed user without a seed
+	// Callout is nil for a server with no auth service, which renders exactly today's text.
+	Callout *AuthCallout `json:"callout"`
+	// PrivateProjects says the deployment may make a project private (R12 of
+	// dispatch://INFRA-3862): it needs Callout and no user but the auth service's.
+	PrivateProjects bool `json:"privateProjects"`
 }
 
 var userName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`)
 
-// Validate refuses an authorization nats-server would read otherwise than its fields say. Every
-// refusal names the user, by index and name, and the field.
+// Validate refuses an authorization nats-server would read otherwise than its fields say, and one
+// that could admit a client past the auth service while a project is private (validateCallout).
+// Every refusal names the field, and a user by its index and name.
 //
 // First it refuses a user's name, a rule entry (allow or deny, publish or subscribe, a queue group
-// included) or noAuthUser that holds an nkey seed (bus.HoldsSeed), naming its path and never the
-// value, since a refusal quotes each and the rendered block writes them (seedField). The nkey
-// field needs no such check: one that is not a user public key is refused without being quoted.
+// included), noAuthUser or a callout's issuer, xkey or serviceUser that holds an nkey seed
+// (bus.HoldsSeed), naming its path and never the value, since a refusal quotes each and the
+// rendered block writes them (seedField). The nkey field needs no such check: one that is not a
+// user public key is refused without being quoted.
 //
 // A pending user (no NKey) stands for a seed the consumer stores before the server knows its key:
 // it must have HasSeed, since without one it stands for nothing, and it is never rendered, so rules
@@ -90,6 +98,14 @@ func (a Authorization) Validate() error {
 			}
 		}
 	}
+	if err := a.validateFallback(); err != nil {
+		return err
+	}
+	return a.validateCallout()
+}
+
+// validateFallback refuses a noAuthUser that names no user, a pending user or a user with a seed.
+func (a Authorization) validateFallback() error {
 	if a.NoAuthUser == "" {
 		return nil
 	}
@@ -114,9 +130,9 @@ func (a Authorization) user(name string) (User, bool) {
 	return User{}, false
 }
 
-// seedField names, by its path, the first name, rule entry or noAuthUser that holds an nkey user
-// seed, or returns "". Every name is checked before any entry, so an entry's path quotes its user's
-// name only once that name is known to hold none.
+// seedField names, by its path, the first name, rule entry, noAuthUser or callout field that holds
+// an nkey user seed, or returns "". Every name is checked before any entry, so an entry's path
+// quotes its user's name only once that name is known to hold none.
 func (a Authorization) seedField() string {
 	for i, u := range a.Users {
 		if bus.HoldsSeed(u.Name) {
@@ -143,6 +159,9 @@ func (a Authorization) seedField() string {
 	}
 	if bus.HoldsSeed(a.NoAuthUser) {
 		return "noAuthUser"
+	}
+	if a.Callout != nil {
+		return a.Callout.seedField()
 	}
 	return ""
 }
@@ -245,8 +264,10 @@ func isSubjectPattern(s string) bool {
 // Render returns the authorization block nats-server reads: the header lines, each as
 // "# <line>", then the block. Each keyed user is a comment naming it and one JSON object (keys
 // sorted, non-ASCII raw: nats-server's config strings take no \u escape); a pending user is not
-// rendered. no_auth_user is a top-level option, so it follows the block, naming the fallback
-// user's key. The text ends with one newline.
+// rendered. With a callout, its timeout and auth_callout lines follow the users inside the block
+// (AuthCallout.render); without one the text is exactly what it was before callouts existed.
+// no_auth_user is a top-level option, so it follows the block, naming the fallback user's key. The
+// text ends with one newline.
 func (a Authorization) Render(header []string) (string, error) {
 	if err := a.Validate(); err != nil {
 		return "", err
@@ -291,7 +312,11 @@ func (a Authorization) render(header []string) string {
 		b.WriteString("    # " + u.Name + "\n")
 		b.WriteString("    " + PyJSON(user, PyJSONOptions{SortKeys: true}) + "\n")
 	}
-	b.WriteString("  ]\n}\n")
+	b.WriteString("  ]\n")
+	if a.Callout != nil {
+		a.Callout.render(&b, a.Users)
+	}
+	b.WriteString("}\n")
 	if a.NoAuthUser != "" {
 		fallback, _ := a.user(a.NoAuthUser) // Validate has checked it names a keyed user
 		b.WriteString("# " + a.NoAuthUser + ": a client presenting no credential becomes this user\n")

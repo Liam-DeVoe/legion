@@ -1,0 +1,130 @@
+package aws_test
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	envoyaws "github.com/sjawhar/envoy/infra/aws"
+	"github.com/sjawhar/envoy/infra/core"
+	envoynats "github.com/sjawhar/envoy/infra/nats"
+)
+
+// The callout keys of these tests: the auth service's user, the account whose seed signs its
+// answers, and the curve key its requests are sealed to. Public keys only; their seeds were
+// discarded when they were made.
+const (
+	keyAuth       = "UDOLL5K64CAO7IWO3XJTHILQNTX2L4MQ7IWIAATEEPU42KK2I4QTPOT4"
+	calloutIssuer = "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"
+	calloutXKey   = "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
+)
+
+// authServiceUser is the user the auth service connects as.
+func authServiceUser() envoyaws.UserArgs {
+	return envoyaws.UserArgs{
+		Name:      "example-auth",
+		NKey:      keyAuth,
+		Publish:   &envoynats.RulesArgs{Allow: []string{"$SYS._INBOX.>"}},
+		Subscribe: &envoynats.RulesArgs{Allow: []string{"$SYS.REQ.USER.AUTH"}},
+		HasSeed:   true,
+	}
+}
+
+// privateNatsService is the one aws:NatsService R12 lets hold a private project: the auth
+// service's user alone behind the callout, and no noAuthUser.
+func privateNatsService() *envoyaws.NatsServiceArgs {
+	args := exampleArgs()
+	args.Authorization = &envoyaws.AuthorizationArgs{
+		Users:           []envoyaws.UserArgs{authServiceUser()},
+		Callout:         &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: "example-auth"},
+		PrivateProjects: true,
+	}
+	return args
+}
+
+// natsCommand is the NATS container's command the run registered: the script its entry point,
+// /bin/sh -c, runs.
+func natsCommand(t *testing.T, args *envoyaws.NatsServiceArgs) []any {
+	t.Helper()
+	m, _, err := run(t, args, true)
+	require.NoError(t, err)
+	var containers []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(m.One(t, taskDefinitionType).Inputs["containerDefinitions"].StringValue()), &containers))
+	for _, c := range containers {
+		if c["name"] == "nats" {
+			return c["command"].([]any)
+		}
+	}
+	require.Fail(t, "the task definition has no nats container")
+	return nil
+}
+
+// TestPrivateProjectsNeedTheAuthService (c-private-needs-callout, R12), for aws:NatsService, whose
+// authorization input mirrors core.Authorization: privateProjects beside a noAuthUser, whom a
+// client presenting no credential becomes, beside a client user with a seed, and without a callout
+// is each refused as a core.InputError naming authorization, with the user or the missing callout
+// in its message; with the callout and the service's user alone, it registers. The hub
+// components' rows are in gcp/private_projects_test.go, under the same name, and its comment names
+// the negative controls.
+func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
+	for _, row := range []struct {
+		name, who string
+		edit      func(a *envoyaws.AuthorizationArgs)
+		want      string
+	}{
+		{
+			name: "beside a session user", who: `the session user "example-fallback"`,
+			edit: func(a *envoyaws.AuthorizationArgs) {
+				a.Users = append(a.Users, exampleAuthorization().Users[2])
+				a.NoAuthUser = "example-fallback"
+			},
+			want: `privateProjects: noAuthUser "example-fallback": a client presenting no credential would become a user while a project is private`,
+		},
+		{
+			name: "beside a client user with a seed", who: `the user "example-listener", whose seed its host stores`,
+			edit: func(a *envoyaws.AuthorizationArgs) { a.Users = append(a.Users, exampleAuthorization().Users[0]) },
+			want: `privateProjects: users[1] "example-listener": a stored client seed while a project is private`,
+		},
+		{
+			name: "without a callout", who: "no callout",
+			edit: func(a *envoyaws.AuthorizationArgs) { a.Callout = nil },
+			want: "privateProjects: a project can be private only while the server admits each client through the auth service, and the authorization has no callout",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := privateNatsService()
+			row.edit(args.Authorization)
+			err := args.Validate()
+			require.ErrorContains(t, err, row.want, "privateProjects was taken beside %s", row.who)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "authorization", input.Input, "%v", err)
+			m, _, err := run(t, args, true)
+			require.ErrorContains(t, err, row.want)
+			require.Equal(t, []string{awsProviderType}, m.Types(), "nothing but the provider is registered")
+		})
+	}
+	t.Run("with the callout and the service's user alone, it registers", func(t *testing.T) {
+		require.NoError(t, privateNatsService().Validate())
+		m, _, err := run(t, privateNatsService(), true)
+		require.NoError(t, err)
+		require.Contains(t, m.Types(), taskDefinitionType)
+	})
+}
+
+// The callout reaches the NATS container's start script as core renders it, and without one the
+// script is the golden's (TestNatsServiceRegistersTheReferenceChildren holds the rest unchanged).
+func TestNatsServiceRendersTheCallout(t *testing.T) {
+	args := privateNatsService()
+	authorization := core.Authorization{
+		Users: []core.User{{Name: "example-auth", NKey: keyAuth, Publish: &core.Rules{Allow: []string{"$SYS._INBOX.>"}},
+			Subscribe: &core.Rules{Allow: []string{"$SYS.REQ.USER.AUTH"}}, HasSeed: true}},
+		Callout:         &core.AuthCallout{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: "example-auth"},
+		PrivateProjects: true,
+	}
+	script, err := authorization.StartScript(args.ConfigHeader, args.ServerArgs, *args.ConfigPath)
+	require.NoError(t, err)
+	require.Contains(t, script, "  timeout: 5\n  auth_callout {\n")
+	require.Equal(t, []any{script}, natsCommand(t, args))
+}
