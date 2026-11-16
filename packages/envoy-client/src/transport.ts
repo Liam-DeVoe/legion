@@ -12,7 +12,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor } from "./errors";
+import { messageFor, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -238,9 +238,10 @@ export type EnvoyClientConfig = {
   readonly retry?: boolean;
   /**
    * What every call presents (`EnabledEnvoySettings.credential`): the listener's bearer, as it
-   * always was; or this machine's identity traded at the secrets broker, presented under the
-   * `DPoP` scheme with a proof of this process's key on each request; or none at all, which
-   * sends no `Authorization` header, for a loopback listener that asks for none.
+   * always was; or an access token the secrets broker traded this machine's identity for, or the
+   * identity of a person signed in on it, presented under the `DPoP` scheme with a proof of the
+   * token's key on each request; or none at all, which sends no `Authorization` header, for a
+   * loopback listener that asks for none.
    */
   readonly credential?: RequestCredential | undefined;
 };
@@ -705,6 +706,7 @@ export class EnvoyApiError extends Error {
   constructor(
     readonly details: {
       readonly method: string;
+      /** The request's URL as text names it: without the user and password it may carry. */
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;
@@ -902,7 +904,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // come back — and the error names both halves.
       return {
         unanswered: new Error(
-          `${init.method ?? "GET"} ${url} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
+          `${init.method ?? "GET"} ${withoutUserinfo(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
           { cause: unminted }
         ),
       };
@@ -946,7 +948,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       const error = new EnvoyApiError({
         method: init.method ?? "GET",
-        url,
+        url: withoutUserinfo(url),
         status: response.status,
         responseBody: body,
       });
