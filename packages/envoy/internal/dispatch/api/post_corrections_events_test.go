@@ -151,12 +151,18 @@ func requireDeletedMark(t *testing.T, eventType string, payload map[string]any, 
 // Every event of a deleted comment reads with the mark and no part of its body, however many
 // events it has. The one copy of the text that stays is the reply's own frozen preview of the
 // block it answers, which is part of the event of the reply and not of the deleted comment.
+//
+// The comment is a suggestion whose body is too long for one event, so while it stands its
+// events carry each thing requireNoBody looks for: a body, the body_truncated a cut body earns,
+// and the suggestion. The test reads that before the delete, so each of those checks can fail.
 func TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted comment's events", "A spec")
 	const phrase = "the withdrawn claim no reader may meet again"
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
-		"body": phrase, "anchor": map[string]any{"artifact": "spec", "quote": "A spec"},
+		"body":       phrase + "\n\n" + paragraphBody(3, 15_000),
+		"anchor":     map[string]any{"artifact": "spec", "quote": "A spec"},
+		"suggestion": map[string]string{"replace_with": "the withdrawn replacement"},
 	}, "alice")
 	// A second event of the same comment, so the read is proven over more than its creation.
 	resolved := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve", nil, "alice")
@@ -168,6 +174,24 @@ func TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 	}, "bob")
 	if reply.ReplyBlock == nil || reply.ReplyBlock.Text != phrase {
 		t.Fatalf("the reply's block preview = %#v, want the deleted comment's own text frozen into it", reply.ReplyBlock)
+	}
+	carried := map[string]bool{}
+	for _, event := range decodedIssueEvents(t, handler, issue.Key) {
+		if event.Payload["id"] != comment.ID {
+			continue
+		}
+		if body, _ := event.Payload["body"].(string); body != "" {
+			carried["body"] = true
+		}
+		if event.Payload["body_truncated"] == true {
+			carried["body_truncated"] = true
+		}
+		if event.Payload["suggestion"] != nil {
+			carried["suggestion"] = true
+		}
+	}
+	if !carried["body"] || !carried["body_truncated"] || !carried["suggestion"] {
+		t.Fatalf("the standing comment's events carry %v, want a body, body_truncated and a suggestion", carried)
 	}
 
 	deleteThreadComment(t, handler, comment.ID, "alice")

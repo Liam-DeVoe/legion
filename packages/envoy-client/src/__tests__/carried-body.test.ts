@@ -236,11 +236,18 @@ describe("renderInbound and a body an event did not carry whole", () => {
     };
     const mark = "Deleted by user alice at 2026-09-10T00:00:00Z";
     const deleted = dispatch(false, { body: "", ...deletion }, { body: "", ...deletion }).client;
+    // The event's carried part embeds the picture, so the card lists it until the body read whole
+    // replaces that part: the deleted line is the only body the card may draw from.
+    const cutWithPicture = {
+      ...cutEvent,
+      payload: { ...comment, body: STORED_BODY, body_truncated: true, artifact_name: "" },
+    };
+    expect(renderInbound(envelopeOf(cutWithPicture), SESSION).pictures).toEqual([PICTURE]);
 
     // The delete cleared the body, which the card would otherwise print empty.
     const body = await wholeCarriedBody(deleted, ITEM, SESSION);
     expect(body).toBe(mark);
-    const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
+    const whole = renderInbound(envelopeOf(cutWithPicture), SESSION, undefined, body);
     expect(whole.content).toContain(mark);
     expect(whole.content).not.toContain(CARRIED_BODY);
     expect(whole.content).not.toContain("first part only");

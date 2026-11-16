@@ -49,10 +49,19 @@ func TestEveryWriteThatAddsToADeletedPostIsRefused(t *testing.T) {
 	message := createSessionIssueMessage(t, handler, issue.Key, "the withdrawn message")
 	// The retry route answers for a message nobody targeted before it reads the delete, so the
 	// message this one refuses is a targeted one; the target is written here because an
-	// ordinary send needs a live agent listener, which this refusal has nothing to do with.
+	// ordinary send needs a live agent listener, which this refusal has nothing to do with. The
+	// attempt the session's reply answers is written for the same reason: without it a reply to
+	// the message standing is refused 404 MESSAGE_NOT_FOUND too, so the count of replies below
+	// would be none whether or not the delete refused the reply.
 	if _, err := database.Pool.Exec(context.Background(),
 		`update messages set target = 'session:s1' where id = $1`, message.ID); err != nil {
 		t.Fatalf("target the message: %v", err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+		values ($1, 1, 'steer', $2, 'pending')
+	`, message.ID, sessionActor()["id"]); err != nil {
+		t.Fatalf("seed the attempt the session answers: %v", err)
 	}
 	deleteIssueMessage(t, handler, message.ID, "")
 

@@ -14,6 +14,7 @@ import type {
   MyAnswerRow,
   MyAnswersResponse,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AnswersPage } from "./AnswersPage";
 
 let whoAmI: Mock<typeof api.whoAmI>;
@@ -391,6 +392,9 @@ test("a row's Change answer opens the seeded form; after Save the row and the ca
 });
 
 test("a reply row whose comment was deleted reads as deleted and gives no part of its body", async () => {
+  // With the engine loaded a body paints in the same pass as the deleted line, so a body the row
+  // drew would be on the page when the check below first passes.
+  await warmMarkdownRenderer();
   const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
     page([
       {
@@ -404,8 +408,10 @@ test("a reply row whose comment was deleted reads as deleted and gives no part o
         owner: { issue: { key: "CORE-1", title: "Release train" } },
         question: "Which colour?",
         ref: "/issues/CORE-1/asks/ask-2",
+        // The body stays beside the marks, so only the row's own reading of the marks keeps
+        // it off the page.
         reply: {
-          body: "",
+          body: "Does blue count?",
           deleted_at: "2026-10-08T02:30:00Z",
           deleted_by: { id: "alice", kind: "user" },
           id: "comment-1",

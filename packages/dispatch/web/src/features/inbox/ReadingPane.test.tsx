@@ -1270,9 +1270,12 @@ test("a thread's subject line reads as deleted for a deleted root and marks an e
   try {
     expect(await subject({ edited_at: "2026-10-12T00:20:00Z" })).toBe("The retry budget · edited");
     expect(await subject({})).toBe("The retry budget");
+    // The deleted root was edited first, so ` · edited` can be drawn, and only the column's own
+    // reading of the delete keeps it off.
     const deleted = await subject({
       deleted_at: "2026-10-12T00:40:00Z",
       deleted_by: { id: "alice", kind: "user" },
+      edited_at: "2026-10-12T00:20:00Z",
       subject: "",
     });
     expect(deleted).toContain("Deleted by alice");

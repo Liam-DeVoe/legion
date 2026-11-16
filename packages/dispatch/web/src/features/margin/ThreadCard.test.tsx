@@ -770,7 +770,10 @@ test("a comment of several references shows a card for each of them", async () =
 });
 
 test("a deleted comment reads as deleted where its body was, and its reply keeps its own text", async () => {
-  const deletedRoot = comment("root-1", "", "2026-09-10T00:00:00Z", {
+  // The deleted root keeps its body, "Root comment", beside the marks, so only the card's own
+  // reading of the marks keeps it off the page. The card draws a body after its first paint, so
+  // the body's absence is read once the reply's body is on the page.
+  const deletedRoot = comment("root-1", root.body, "2026-09-10T00:00:00Z", {
     deleted_at: "2026-09-10T00:05:00Z",
     deleted_by: { id: "alice", kind: "user" },
   });
@@ -779,10 +782,10 @@ test("a deleted comment reads as deleted where its body was, and its reply keeps
   try {
     const card = screen.getByTestId(`margin-comment-${root.id}`);
     expect(card).toHaveTextContent("Deleted by alice");
-    expect(card).not.toHaveTextContent("Root comment");
     // The thread keeps its shape: the reply below the deleted root still reads as its author
     // wrote it.
     expect(await screen.findByText("First reply")).not.toBeNull();
+    expect(card).not.toHaveTextContent("Root comment");
   } finally {
     view.unmount();
   }

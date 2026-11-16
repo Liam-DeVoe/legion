@@ -2455,8 +2455,9 @@ test("a Conversation turn links the `#q2` the question map of its message names"
 
 test("the Conversation marks an edited message and reads a deleted one as deleted", async () => {
   const root = message("message-1", { edited_at: "2026-09-09T01:00:00Z" });
+  // The deleted reply keeps its body, "Body of message-2", beside the marks, so only the
+  // Conversation's own reading of the marks keeps it off the page.
   const deletedReply = message("message-2", {
-    body: "",
     created_at: "2026-09-09T02:00:00Z",
     deleted_at: "2026-09-09T03:00:00Z",
     deleted_by: { id: "alice", kind: "user" },

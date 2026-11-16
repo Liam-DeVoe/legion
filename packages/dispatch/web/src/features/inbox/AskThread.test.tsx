@@ -143,9 +143,10 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
 });
 
 test("a deleted reply in an ask thread reads as deleted and gives no part of its body", async () => {
+  // The reply keeps its body beside the marks, so only the thread's own reading of the marks
+  // keeps "Holding on #q2 for now." off the page.
   const deleted: Comment = {
     ...reply,
-    body: "",
     deleted_at: "2026-09-09T03:00:00Z",
     deleted_by: { id: "alice", kind: "user" },
   };

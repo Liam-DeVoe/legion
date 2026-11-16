@@ -329,9 +329,12 @@ test.each([
   try {
     renderInbox(
       seeded([
+        // The deleted root was edited first, so ` · edited` can be drawn, and only the row's own
+        // reading of the delete keeps it off.
         replyRow("c1", {
           deleted_at: "2026-10-12T00:40:00Z",
           deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-10-12T00:10:00Z",
           subject: "",
         }),
         replyRow("c2", { edited_at: "2026-10-12T00:20:00Z", subject: "Edited root" }),

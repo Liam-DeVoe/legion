@@ -672,8 +672,8 @@ test("Unfurl marks an edited comment, and a deleted one's title is the deleted l
     },
     replies: [],
   });
-  const card = async (overrides: Partial<CommentRead["comment"]>, settled: string) => {
-    const getComment = spyOn(api, "getComment").mockResolvedValue(read(overrides));
+  const card = async (answer: CommentRead, settled: string) => {
+    const getComment = spyOn(api, "getComment").mockResolvedValue(answer);
     const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
     try {
       const link = await waitFor(() => {
@@ -687,13 +687,29 @@ test("Unfurl marks an edited comment, and a deleted one's title is the deleted l
       getComment.mockRestore();
     }
   };
+  /** The read with no `body` key: the one answer whose card has no title, so it falls back to
+   *  the reference the body wrote. */
+  const bodiless = (overrides: Partial<CommentRead["comment"]>): CommentRead => {
+    const { body: _body, ...comment } = read(overrides).comment;
+    return { comment, replies: [] } as unknown as CommentRead;
+  };
 
-  expect(await card({ edited_at: "2026-09-09T01:00:00Z" }, "Looks good.")).toBe(
+  expect(await card(read({ edited_at: "2026-09-09T01:00:00Z" }), "Looks good.")).toBe(
     "Looks good. · edited"
   );
-  expect(await card({}, "Looks good.")).toBe("Looks good.");
+  expect(await card(read({}), "Looks good.")).toBe("Looks good.");
+  // The positive control of the last two lines: that answer of a comment that stands, with no
+  // body and an edit, settles on the reference the body wrote and ` · edited`.
+  const edit = { edited_at: "2026-09-09T01:00:00Z" };
+  expect(await card(bodiless(edit), "· edited")).toBe(
+    "dispatch://CORE-1/comment/comment-1 · edited"
+  );
   const deleted = await card(
-    { body: "", deleted_at: "2026-09-09T02:00:00Z", deleted_by: { id: "alice", kind: "user" } },
+    bodiless({
+      ...edit,
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
     "Deleted by alice"
   );
   expect(deleted).not.toContain("dispatch://");

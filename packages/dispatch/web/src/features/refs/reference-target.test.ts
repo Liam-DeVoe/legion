@@ -402,19 +402,26 @@ test.each([
 // delete marks, reads no post when it is gone.
 test("a reference answers the edit and the deletion of the post it names, or whose block it names", async () => {
   const reads = spyReads();
+  const deletion = {
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  // The deleted post `m-1` was edited first, so its reading could carry the edit, and only the
+  // hook's own reading of the delete keeps the edit off. Every read a part of the ask `a-1` could
+  // make answers a deleted post too, so a hook that read a post for that part would carry the
+  // deletion: only its rule that no delete marks an ask keeps that part's mark off.
   reads.getMessage.mockImplementation((_key, id) =>
     Promise.resolve(
-      (id === "m-1"
-        ? {
-            message: {
-              body: "",
-              deleted_at: "2026-09-09T03:00:00Z",
-              deleted_by: { id: "alice", kind: "user" },
-            },
-          }
+      (id === "m-1" || id === "a-1"
+        ? { message: { body: "", edited_at: "2026-09-09T02:30:00Z", ...deletion } }
         : { message: { body: "Still here.", deleted_at: null, deleted_by: null } }) as never
     )
   );
+  reads.getAsk.mockResolvedValue({ ask: { id: "a-1", ...deletion } } as never);
+  reads.getComment.mockResolvedValue({
+    comment: { body: "", id: "a-1", ...deletion },
+    replies: [],
+  } as never);
   const standing = blockRead("Beta as written.");
   // The words of the refusal decide nothing, either way: the block of the deleted post `m-1` is
   // refused in words that say nothing of a delete, and the block of the standing post `m-2` is

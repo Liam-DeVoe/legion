@@ -2543,9 +2543,12 @@ test("IssuePage lists a deleted match as deleted and marks an edited one", async
   const getReferences = spyOn(api, "getReferences").mockRejectedValue(
     new ApiError(409, {
       candidates: [
+        // The deleted match was edited first, so ` · edited` can be drawn, and only the list's
+        // own reading of the delete keeps it off.
         {
           deleted_at: "2026-09-09T03:00:00Z",
           deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-09-09T01:00:00Z",
           id: WHOLE_ID,
           issue_key: "CORE-1",
           kind: "comment",

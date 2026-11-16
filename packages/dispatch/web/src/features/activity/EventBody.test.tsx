@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { AskAnswer, DispatchEvent } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { EventBody } from "./EventBody";
 
 const markdownMessage: DispatchEvent = {
@@ -436,8 +437,17 @@ test("EventBody links a cut comment on a project document through that document"
 
 test("the event of a deleted post reads as deleted, with no body and no whole-post link", async () => {
   // The read of the event takes `body` and `body_truncated` out of the payload and stamps the
-  // two marks in their place (`api/events.go`), which is the payload this row carries.
-  const { body: _gone, ...payload } = markdownMessage.payload as unknown as Record<string, unknown>;
+  // two marks in their place (`api/events.go`). This payload keeps both beside the marks, so the
+  // heading and the whole-post link below can be drawn, and only the card's own reading of the
+  // marks keeps them off: the same body renders its heading (the first row of this file), and
+  // the same flag on a post that stands draws the link (the next row).
+  const payload = {
+    ...(markdownMessage.payload as unknown as Record<string, unknown>),
+    body_truncated: true,
+  };
+  // With the engine loaded a body paints in the same pass as the deleted line, so a heading the
+  // card drew would be on the page when the check below reads it.
+  await warmMarkdownRenderer();
   const view = render(
     <MemoryRouter>
       <EventBody
@@ -459,6 +469,30 @@ test("the event of a deleted post reads as deleted, with no body and no whole-po
     await waitFor(() => expect(screen.getByText(/Deleted by/)).toBeDefined());
     expect(screen.queryByRole("heading", { name: "Status" })).toBeNull();
     expect(screen.queryByRole("link", { name: /Read the whole/ })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The positive control of the row above: the same payload with no delete marks, a post that
+// stands, draws the heading of its body and the link to the whole post that row says are absent.
+test("the event of a standing post whose body was cut draws its body and the whole-post link", async () => {
+  const view = render(
+    <MemoryRouter>
+      <EventBody
+        event={
+          {
+            ...markdownMessage,
+            payload: { ...markdownMessage.payload, body_truncated: true },
+          } as DispatchEvent
+        }
+      />
+    </MemoryRouter>
+  );
+
+  try {
+    expect(await screen.findByRole("heading", { name: "Status" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Read the whole message" })).toBeDefined();
   } finally {
     view.unmount();
   }

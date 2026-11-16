@@ -366,9 +366,12 @@ test("a row of a deleted citing post reads as deleted, an edited one says so, an
   });
   const { getReferences, view } = renderPanel({
     edges: [
+      // The deleted post was edited first, so ` · edited` can be drawn, and only the row's own
+      // reading of the delete keeps it off.
       postEdge("comment", "11111111-1111-4111-8111-111111111111", {
         deleted_at: "2026-10-20T11:00:00Z",
         deleted_by: { id: "alice", kind: "user" },
+        edited_at: "2026-10-20T10:00:00Z",
       }),
       postEdge(
         "message",

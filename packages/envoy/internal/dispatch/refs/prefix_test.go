@@ -428,6 +428,12 @@ func markPrefixPost(t *testing.T, tx pgx.Tx, table, id string, edited, deleted *
 // the time an edit was made, and the mark of a delete beside the empty first line the cleared
 // body leaves, so the list a person chooses from says which match is corrected or withdrawn. A
 // post that stands unedited carries neither, in the one match and in a refusal's list alike.
+//
+// The first line is read from the post's stored body, which the delete route clears; the reads
+// before the marks show each deleted post's first line while it stands, so the empty first line
+// after them is the cleared body's and not a candidate that never had one. The deleted comment
+// was edited before its delete, at a time no other candidate carries, so its edit is read from
+// its own row.
 func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 	tx := prefixFixture(t)
 	const edited = "7a110000-0000-4000-8000-000000000001"
@@ -439,13 +445,25 @@ func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 	insertPrefixComment(t, tx, deleted, "CORE-1", "Withdrawn later.")
 	insertPrefixComment(t, tx, standing, "CORE-1", "Never touched.")
 	insertPrefixMessage(t, tx, message, &issueKey, `{"kind":"user","id":"alice"}`, "Status?", nil, nil)
-	editedAt := time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
-	deletedAt := time.Date(2026, 11, 2, 10, 45, 0, 0, time.UTC)
-	markPrefixPost(t, tx, "comments", edited, &editedAt, nil)
-	markPrefixPost(t, tx, "comments", deleted, nil, &deletedAt)
-	markPrefixPost(t, tx, "messages", message, &editedAt, &deletedAt)
 
 	_, err := ResolvePrefix(context.Background(), tx, "comment", Scope{}, "7a110000", Viewer{Human: true})
+	var before *ErrPrefixAmbiguous
+	if !errors.As(err, &before) || len(before.Candidates) != 2 || before.Candidates[1].ID != deleted ||
+		before.Candidates[1].FirstLine != "Withdrawn later." {
+		t.Fatalf("the two comments under one prefix before the marks = %v, want the second's first line", err)
+	}
+	if got := resolvedPrefix(t, tx, "message", Scope{}, "7c330000", Viewer{Human: true}); got.FirstLine != "Status?" {
+		t.Fatalf("the message before the marks = %#v, want its first line", got)
+	}
+
+	editedAt := time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
+	withdrawnEditedAt := time.Date(2026, 11, 2, 8, 15, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 11, 2, 10, 45, 0, 0, time.UTC)
+	markPrefixPost(t, tx, "comments", edited, &editedAt, nil)
+	markPrefixPost(t, tx, "comments", deleted, &withdrawnEditedAt, &deletedAt)
+	markPrefixPost(t, tx, "messages", message, &editedAt, &deletedAt)
+
+	_, err = ResolvePrefix(context.Background(), tx, "comment", Scope{}, "7a110000", Viewer{Human: true})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("two comments under one prefix = %v, want both listed", err)
@@ -455,9 +473,11 @@ func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 		t.Fatalf("the edited comment = %#v, want its first line and the edit at %s alone", got, editedAt)
 	}
 	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
-	if got := ambiguous.Candidates[1]; got.ID != deleted || got.FirstLine != "" || got.EditedAt != nil ||
+	if got := ambiguous.Candidates[1]; got.ID != deleted || got.FirstLine != "" ||
+		got.EditedAt == nil || !got.EditedAt.Equal(withdrawnEditedAt) ||
 		got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
-		t.Fatalf("the deleted comment = %#v, want no first line and alice's delete at %s", got, deletedAt)
+		t.Fatalf("the edited and deleted comment = %#v, want no first line, the edit at %s and alice's delete at %s",
+			got, withdrawnEditedAt, deletedAt)
 	}
 
 	if got := resolvedPrefix(t, tx, "comment", Scope{}, "7b220000", Viewer{Human: true}); got.EditedAt != nil || got.DeletedAt != nil || got.DeletedBy != nil {

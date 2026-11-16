@@ -16432,8 +16432,9 @@ test("an edit an older build takes does not say Dispatch keeps the body it repla
     }
   );
 
-  expect(result.text).toContain(`Edited comment ${correctedComment} on DSP-42.`);
-  expect(result.text).not.toContain("Dispatch keeps the body it replaced");
+  // The whole text the command prints: no code path writes a sentence about the body the edit
+  // replaced, so a check that such a sentence is absent could never fail.
+  expect(result.text).toBe(`Edited comment ${correctedComment} on DSP-42.`);
 });
 
 // An empty comment id puts the request at /api/v1/comments/, and a Dispatch of this release
@@ -16483,10 +16484,11 @@ for (const [tool, args] of [
 // eight hex characters - and anything else is refused before a request is sent.
 //
 // The fixture answers every request as a router with no such route does, in the words
-// `isNoRoute` reads, so it can produce the older-server sentence: the positive control below
-// drives an id of the right shape through the same fixture and meets that sentence. Without it,
-// the claim that the refusal says nothing of the server's age would hold whatever the command
-// did, since no answer of the fixture could say it (dispatch://INFRA-1523).
+// `isNoRoute` reads, so it can produce the sentence each command says of a server without the
+// route: the positive controls below drive an id of the right shape through the same fixture
+// and meet it. Without them, the claim that the refusal says nothing of the server's age would
+// hold whatever the command did, since no answer of the fixture could say it
+// (dispatch://INFRA-1523).
 const noRouteFixture = () => {
   const requests: string[] = [];
   const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -16522,6 +16524,15 @@ const runWithFixture = async (
 const commentIdArgs = (tool: string, comment: string): Record<string, unknown> =>
   tool === "dispatch_edit_comment" ? { comment, body: "x" } : { comment };
 
+/** What the fixture's no-route answer makes each command say: the two corrections say that the
+ *  server predates post corrections, and `dispatch resolve-comment`, which no older-server
+ *  wrapper covers, says the client's own rolling-release sentence. */
+const noRouteSentence = {
+  dispatch_edit_comment: "predates post corrections",
+  dispatch_delete_comment: "predates post corrections",
+  dispatch_resolve_comment: "a new release of Dispatch is in progress",
+} as const;
+
 for (const value of [".", "..", "../..", "not-a-uuid", "1234"]) {
   for (const tool of [
     "dispatch_edit_comment",
@@ -16534,42 +16545,83 @@ for (const value of [".", "..", "../..", "not-a-uuid", "1234"]) {
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("comment must be a bare comment id");
-      expect((error as Error).message).not.toContain("predates post corrections");
+      expect((error as Error).message).not.toContain(noRouteSentence[tool]);
       expect(requests).toEqual([]);
     });
   }
 }
 
-// The positive control of the five rows above: an id of the right shape reaches that same
-// fixture, whose no-route answer is what a server without the correction routes gives, and the
-// command then says exactly the sentence those rows say is absent.
-test("an id of the right shape reaches the fixture, which answers as a server without the routes", async () => {
-  const { requests, fetchImpl } = noRouteFixture();
-  const error = await runWithFixture(
-    "dispatch_edit_comment",
-    commentIdArgs("dispatch_edit_comment", "11111111-2222-4333-8444-555555555555"),
-    fetchImpl
-  );
+// The positive control of the five rows above, for each of the three commands: an id of the
+// right shape reaches that same fixture, whose no-route answer is what a server without the
+// route gives, and the command then says exactly the sentence those rows say is absent.
+for (const tool of [
+  "dispatch_edit_comment",
+  "dispatch_delete_comment",
+  "dispatch_resolve_comment",
+] as const) {
+  test(`${tool} with an id of the right shape reaches the fixture, which answers as a server without the route`, async () => {
+    const { requests, fetchImpl } = noRouteFixture();
+    const error = await runWithFixture(
+      tool,
+      commentIdArgs(tool, "11111111-2222-4333-8444-555555555555"),
+      fetchImpl
+    );
 
-  expect(error).toBeInstanceOf(Error);
-  expect((error as Error).message).toContain("predates post corrections");
-  expect(requests).not.toEqual([]);
-});
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(noRouteSentence[tool]);
+    expect(requests).not.toEqual([]);
+  });
+}
+
+/** A Dispatch where issue CORE-1 stands and the read of every comment is answered `commentRead`:
+ *  the router's no-route 404, or Dispatch's own `not found` of a comment it does not hold.
+ *  Every other request gets the no-route 404. */
+const commentReadFixture =
+  (commentRead: "no route" | "not found") =>
+  async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? "GET";
+    const { pathname } = new URL(String(url));
+    if (pathname === "/api/v1/issues/CORE-1") {
+      return response({ issue: { key: "CORE-1", title: "An issue", status: "todo" } });
+    }
+    if (
+      commentRead === "not found" &&
+      method === "GET" &&
+      pathname.startsWith("/api/v1/comments/")
+    ) {
+      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+    }
+    return response({ code: "NOT_FOUND", error: `no route for ${method} ${pathname}` }, 404);
+  };
 
 // A router's no-route 404 is no answer about the post, so it is never rewritten as a post this
-// Dispatch does not hold: `dispatch resolve-comment`, which no older-server wrapper covers,
-// meets the client's own rolling-release sentence instead.
+// Dispatch does not hold: `dispatch resolve-comment` of a reference, whose read of the comment
+// earns that 404, meets the client's own rolling-release sentence instead.
 test("a no-route answer is not read as a comment the Dispatch does not hold", async () => {
-  const { fetchImpl } = noRouteFixture();
   const error = await runWithFixture(
     "dispatch_resolve_comment",
-    { comment: "11111111-2222-4333-8444-555555555555" },
-    fetchImpl
+    { comment: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555" },
+    commentReadFixture("no route")
   );
 
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).message).not.toContain("holds no comment");
   expect((error as Error).message).toContain("a new release of Dispatch is in progress");
+});
+
+// The positive control of the row above: the same reference, and the same fixture answering the
+// comment read with Dispatch's own `not found`, which the command does rewrite to name the comment.
+test("Dispatch's own not found of a referenced comment is read as a comment it does not hold", async () => {
+  const error = await runWithFixture(
+    "dispatch_resolve_comment",
+    { comment: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555" },
+    commentReadFixture("not found")
+  );
+
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain(
+    "CORE-1 holds no comment 11111111-2222-4333-8444-555555555555"
+  );
 });
 
 // A reference naming a project document is read the same way as one naming an issue: the
@@ -16645,12 +16697,21 @@ for (const [tool, args, named] of [
     expect((error as Error).message).toContain(`this Dispatch holds no ${named}`);
     expect((error as Error).message).not.toContain("predates post corrections");
   });
+
+  // The positive control of the row above: the same call, answered as a server without the
+  // route answers it, says the sentence that row says is absent.
+  test(`${tool} answered no route says the server predates post corrections`, async () => {
+    const error = await runWithFixture(tool, args, noRouteFixture().fetchImpl);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("predates post corrections");
+  });
 }
 
 // A reference names the post's issue as well, and the same `not found` comes back for a post
 // that is gone and for an issue that was never there. So the refusal of a reference says which
 // of the two Dispatch does not hold, reading the issue once on this failing path.
-for (const [name, tool, args, issueStands, named] of [
+for (const [name, tool, args, issueKey, issueStands, named] of [
   [
     "a comment of an issue that stands",
     "dispatch_edit_comment",
@@ -16658,6 +16719,7 @@ for (const [name, tool, args, issueStands, named] of [
       comment: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555",
       body: "corrected text",
     },
+    "CORE-1",
     true,
     "CORE-1 holds no comment 11111111-2222-4333-8444-555555555555",
   ],
@@ -16665,6 +16727,7 @@ for (const [name, tool, args, issueStands, named] of [
     "a comment of an issue Dispatch does not hold",
     "dispatch_delete_comment",
     { comment: "dispatch://NOPE-9/comment/11111111-2222-4333-8444-555555555555" },
+    "NOPE-9",
     false,
     "this Dispatch holds no issue NOPE-9",
   ],
@@ -16672,6 +16735,7 @@ for (const [name, tool, args, issueStands, named] of [
     "a message of an issue Dispatch does not hold",
     "dispatch_delete_message",
     { message: "dispatch://NOPE-9/message/11111111-2222-4333-8444-555555555555" },
+    "NOPE-9",
     false,
     "this Dispatch holds no issue NOPE-9",
   ],
@@ -16705,6 +16769,28 @@ for (const [name, tool, args, issueStands, named] of [
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(named);
     expect((error as Error).message).not.toContain("predates post corrections");
+  });
+
+  // The positive control of the row above: the same reference, where Dispatch answers the read
+  // of the post on that issue and answers the write as a server without the route does, says the
+  // sentence that row says is absent.
+  test(`${tool} for ${name}, answered no route for the write, says the server predates post corrections`, async () => {
+    const post = "11111111-2222-4333-8444-555555555555";
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? "GET";
+      const { pathname } = new URL(String(url));
+      if (method === "GET" && pathname === `/api/v1/comments/${post}`) {
+        return response({ comment: commentRow({ id: post, issue_key: issueKey }), replies: [] });
+      }
+      if (method === "GET" && pathname === `/api/v1/messages/${post}`) {
+        return response({ message: messageRow({ id: post, issue_key: issueKey }), replies: [] });
+      }
+      return response({ code: "NOT_FOUND", error: `no route for ${method} ${pathname}` }, 404);
+    };
+    const error = await runWithFixture(tool, args, fetchImpl);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("predates post corrections");
   });
 }
 
