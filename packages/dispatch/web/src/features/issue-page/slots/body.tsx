@@ -3,9 +3,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { buildIssuePath } from "../../refs/routes";
+import { useAddressTarget } from "../address-target";
 import { IssuePresetPanels } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
-import { type AddressTarget, issueAddress, pathToTarget } from "../issue-address";
+import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
@@ -27,25 +28,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const address = issueAddress(route, search, hash, specSlug);
   const { root } = useIssueTree(issue);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
-  // address that names a node the words filter would not have matched still draws it. The
-  // target is read by what it says rather than by the value `issueAddress` built, which is a new
-  // one on every render: the tree is walked again only when the address or the tree changes.
-  const targetKind = address.target?.kind;
-  const targetId = address.target?.id;
-  // Which document a block target belongs to, where its address names one: a block id alone
-  // names a block of any document of the issue (`pathToTarget`).
-  const targetDocument = address.target?.kind === "block" ? address.target.document : undefined;
-  const target = useMemo<AddressTarget | undefined>(() => {
-    if (targetKind === undefined || targetId === undefined) return undefined;
-    if (targetKind === "block") return { document: targetDocument, id: targetId, kind: "block" };
-    return { id: targetId, kind: targetKind } as AddressTarget;
-  }, [targetDocument, targetId, targetKind]);
-  // Every target the address names, `/children` among them, is unfolded and focused (R6, R20).
-  const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
-  const named = useMemo(() => {
-    const node = reveal?.at(-1);
-    return new Set(node === undefined ? [] : [node.id]);
-  }, [reveal]);
+  // address that names a node the words filter would not have matched still draws it.
+  const { named, reveal } = useAddressTarget(root, address);
   const memo = useMemo(() => specSummary(root, specSlug ?? "")?.id, [root, specSlug]);
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, named, memo),

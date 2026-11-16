@@ -13,6 +13,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -28,7 +29,7 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
-import { CONTROL_LABELS, type NodeType } from "./page-words";
+import { CONTROL_LABELS, NODE_TYPE_NAMES, type NodeType } from "./page-words";
 
 /**
  * What a reader does to the tree with the keyboard alone (dispatch://INFRA-1196 R6, R9, R23).
@@ -129,9 +130,15 @@ function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
   return null;
 }
 
-/** The tree alone, under the page's keymap. `reveal` is the chain down to the node an address
- *  names, which the tree is then to put the focus on (`slots/body.tsx`); `redraw` draws the
- *  same tree again, as a read answering does. */
+/** What the page's panel would draw the facts of: the node the tree last set as focused. */
+function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode {
+  seen.node = useFocusedNode();
+  return null;
+}
+
+/** The tree alone, under the page's keymap and the focused node it sets. `reveal` is the chain
+ *  down to the node an address names, which the tree is then to put the focus on
+ *  (`slots/body.tsx`); `redraw` draws the same tree again, as a read answering does. */
 function renderTree(
   root: TreeNode,
   {
@@ -146,33 +153,43 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const seen: { path?: string } = {};
+  const focused: { node?: FocusedNode } = {};
   const draw = () => (
     <MemoryRouter>
       <AddressProbe seen={seen} />
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <IssueScope />
-            <IssueTree
-              artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
-              context={new Set()}
-              emptyLine="Nothing here."
-              filtering={false}
-              focusReveal={reveal !== undefined}
-              holdsEscape={false}
-              isClosed={false}
-              onEditing={(artifactId) => edited.push(artifactId)}
-              reveal={reveal}
-              root={root}
-              rootRow
-            />
+            <FocusedNodeProvider>
+              <IssueScope />
+              <FocusedNodeProbe seen={focused} />
+              <IssueTree
+                artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
+                context={new Set()}
+                emptyLine="Nothing here."
+                filtering={false}
+                focusReveal={reveal !== undefined}
+                holdsEscape={false}
+                isClosed={false}
+                onEditing={(artifactId) => edited.push(artifactId)}
+                reveal={reveal}
+                root={root}
+                rootRow
+              />
+            </FocusedNodeProvider>
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
   const view = render(draw());
-  return { address: () => seen.path, edited, redraw: () => view.rerender(draw()), ...view };
+  return {
+    address: () => seen.path,
+    edited,
+    focusedNode: () => focused.node,
+    redraw: () => view.rerender(draw()),
+    ...view,
+  };
 }
 
 /** What the page-body harness hands back from inside the providers: the Contents list's ask and
@@ -497,6 +514,58 @@ test("a Change the reader typed in comes back with its decision's body", async (
   await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
   const back = await view.findByRole("textbox", { name: "Your change" });
   expect((back as HTMLTextAreaElement).value).toBe("Say more about the flag.");
+});
+
+// R7 under a press: a press focuses what it lands on as it goes down, and the row taking the
+// focus opens its body and draws its acts. Drawn while the press is held, that grows the row
+// under the pointer and lets Chromium's scroll anchoring move the page with it, and the press
+// ends on something else: part G's picture in a comment, pressed near the foot of the page, rose
+// 46 px before the mouseup and never opened (c-row-layout, `issue-page-g.e2e.ts`). happy-dom lays
+// nothing out and anchors nothing, so the browser row reads the picture; this reads the rule
+// that keeps the page still: the tree draws nothing new until the press is over, the body the
+// focus left included, and then the pressed row opens.
+test("a press on a row draws nothing new until it ends, and then the row opens", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  // Each comment has its own address, so a focused row draws its acts (Copy reference).
+  const comment = (id: string, text: string) =>
+    node({
+      id,
+      reference: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+      text,
+      type: "comment",
+    });
+  const root = node({
+    children: [
+      comment("comment-1", "The first words."),
+      comment("comment-2", "The words pressed on."),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  // No question waits, so the page opens on the first row, its body open.
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const [first] = rowsFor(view.container, "comment-1");
+  const [pressed] = rowsFor(view.container, "comment-2");
+  const words = pressed?.querySelector<HTMLElement>("[data-node-words]");
+  if (first === undefined || pressed === undefined || words == null) {
+    throw new Error("the rows are not drawn");
+  }
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+
+  await user.pointer({ keys: "[MouseLeft>]", target: words });
+  expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
+    "comment-2"
+  );
+  expect(pressed.querySelector("[data-node-body]"), "the held press opened a body").toBeNull();
+  expect(pressed.querySelector("[data-row-acts]"), "the held press drew the row's acts").toBeNull();
+  expect(first.querySelector("[data-node-body]"), "the held press closed a body").not.toBeNull();
+
+  await user.pointer({ keys: "[/MouseLeft]" });
+  await waitFor(() => expect(pressed.querySelector("[data-node-body]")).not.toBeNull());
+  expect(pressed.querySelector("[data-row-acts]")).not.toBeNull();
+  expect(first.querySelector("[data-node-body]")).toBeNull();
 });
 
 // R9, WCAG 2.1.1, decision 69: every control of a row is out of the tab order, so `f` steps
@@ -852,6 +921,30 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
   expect(rows.map((row) => row.getAttribute("aria-level"))).toEqual(["1", "1"]);
   // The open question waits on somebody else, so the first row is where the page opens.
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+});
+
+// R7, and R12's panel: the focused node is named by its own first line, and a node with no words
+// - a plan task whose block holds none - by the page's word for its kind, never by its id, which
+// is no name a reader reads (part G's decision 66 on the same rule for a parent line).
+test("a focused row whose node has no words names it by its kind, not its id", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words. And more.", type: "comment" }),
+      node({ id: "plan#b-t1", text: "", type: "plan_task" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  expect(view.focusedNode()?.title).toBe("The first words.");
+
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("plan#b-t1"));
+  expect(view.focusedNode()?.id).toBe("plan#b-t1");
+  expect(view.focusedNode()?.title).toBe("plan task");
 });
 
 // R7: the page opens with the focus on the first open question that waits on the reader, in the
@@ -1452,4 +1545,38 @@ test("a crumb is its node's first line cut at a word, and the issue's is its key
   expect(long.startsWith(crumb.slice(0, -1))).toBe(true);
   expect(long.charAt(crumb.length - 1)).toBe(" ");
   expect(crumbs[1]?.className).not.toContain("truncate");
+});
+
+// The root spec's R7: no node is named by its id. A crumb of a node with no words of its own, a
+// plan task drawn with no text, names it by its kind's word.
+test("a crumb of a node with no words is its kind's word, not its id", async () => {
+  setViewport(1000);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "comment-2", text: "Under it.", type: "comment" })],
+        held: 1,
+        id: "plan#b-t1",
+        text: "",
+        type: "plan_task",
+      }),
+    ],
+    id: KEY,
+    text: `${KEY} The issue's own title`,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("plan#b-t1"));
+  await user.keyboard(".");
+  await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  await user.keyboard(".");
+  const crumbs = await waitFor(() => {
+    const found = [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")];
+    if (found.length < 2) throw new Error("the breadcrumb holds no crumb of the plan task");
+    return found;
+  });
+  expect(crumbs[1]?.textContent).toBe(NODE_TYPE_NAMES.plan_task);
 });

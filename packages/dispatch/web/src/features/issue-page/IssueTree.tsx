@@ -9,7 +9,7 @@ import { isViewer } from "../refs/actor";
 import { buildIssuePath } from "../refs/routes";
 import { useMediaQuery } from "../shell/useDialog";
 import { ChangeDraftsProvider } from "./DecisionActions";
-import { useSetFocusedNode } from "./focused-node";
+import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
@@ -18,7 +18,7 @@ import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import {
   DRAWN_LEVELS,
@@ -52,8 +52,9 @@ import { useTreeKeymap } from "./useTreeKeymap";
  * The tree answers the WAI-ARIA tree pattern's roles and properties and keeps one tab stop: the
  * focused row is the only row that takes the focus. The keys that move it are
  * `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s, so a reader uses the pointer until they land.
- * A key that has nowhere to go says so at the row it was pressed on, until the reader's next
- * key or move.
+ * A press on a row opens its body once the press is over, so nothing moves under the pointer
+ * while it is held. A key that has nowhere to go says so at the row it was pressed on, until the
+ * reader's next key or move.
  *
  * The page opens with the focus on the first open question that waits on the reader, its path
  * unfolded and its row in the viewport, and on the outline's first row where none does (R7). A
@@ -275,16 +276,7 @@ export function IssueTree({
       setUnplaced(row === openingRow.current ? row : undefined);
       // A move to a row is the reader going on from what a key reported.
       setReport(undefined);
-      const item = conversationItem(node);
-      setFocusedNode({
-        ...(node.author === undefined ? {} : { author: node.author }),
-        id: node.id,
-        ...(item === undefined ? {} : { item }),
-        ...(node.reference === undefined ? {} : { reference: node.reference }),
-        ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
-        title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
-        type: node.type,
-      });
+      setFocusedNode(focusedNodeOf(node));
       if (holdOnFocus.current === node.id) {
         holdOnFocus.current = undefined;
         const element = body.current?.querySelector<HTMLElement>(
@@ -295,25 +287,64 @@ export function IssueTree({
     },
     [holdRow, setFocusedNode]
   );
-  // The focus leaving the tree closes the body it opened: nothing is open while the reader is
-  // somewhere else, and the panel goes back to the issue's own facts (R2, R12). A row the
-  // reader is editing in keeps its body: the document's editor moves into it, which drops the
-  // focus for a frame as it leaves the page, and that is no reader leaving the tree. The focus
-  // moving to Details, or to the control that opens it, keeps the node's facts in the panel,
-  // since Details is where a reader reads them (R14); the next row focused replaces them.
-  const releaseFocus = useCallback(
-    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
-      const to = event.relatedTarget;
-      if (editing !== undefined) return;
-      if (to instanceof Node && event.currentTarget.contains(to)) return;
-      setFocused(undefined);
-      setUnplaced(undefined);
-      setReport(undefined);
-      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
-      setFocusedNode(undefined);
+  // R7 under a press. A press focuses what it lands on as it goes down, before it ends, so the
+  // row taking the focus would open its body and draw its acts, and the row the focus left would
+  // close its own, while the press is held: the tree would grow and shrink under the pointer.
+  // `NodeRow.tsx`'s `useRowOnScreen` holds its own placing for a press, but Chromium's scroll
+  // anchoring holds nothing, and moves the page as the tree changes. Measured at 1440 by 900 on
+  // part G's c-row-layout: a body closing with the page scrolled to its foot clamped the scroll
+  // 46 px up, and the pressed row's body opening gave the page the room to go back, which the
+  // anchoring took between the press's mousedown and its mouseup - the picture in the pressed
+  // comment rose 46 px, the click went to the words around it, and no picture opened. So the
+  // focus a press gives a row is taken once the press is over - after its mouseup and the click
+  // that follows it, in a task of its own - and only while that row still holds the focus; a
+  // key's move takes it at once. A tap on a phone sends the same mousedown, mouseup and click.
+  const press = useRef<{
+    ending?: number;
+    focus?: { readonly node: TreeNode; readonly row: string };
+    held: boolean;
+  }>({ held: false });
+  const focusRow = useCallback(
+    (row: string, node: TreeNode) => {
+      if (press.current.held) press.current.focus = { node, row };
+      else takeFocus(row, node);
     },
-    [editing, setFocusedNode]
+    [takeFocus]
   );
+  useEffect(() => {
+    const held = press.current;
+    const end = () => {
+      held.held = false;
+      const pending = held.focus;
+      held.focus = undefined;
+      if (pending === undefined) return;
+      const row = body.current?.querySelector(
+        `[data-node-row][data-row-key="${CSS.escape(pending.row)}"]`
+      );
+      if (row?.contains(document.activeElement) === true) takeFocus(pending.row, pending.node);
+    };
+    const ended = () => {
+      if (!held.held) return;
+      window.clearTimeout(held.ending);
+      held.ending = window.setTimeout(end, 0);
+    };
+    const listening = new AbortController();
+    for (const type of PRESS_ENDS) {
+      window.addEventListener(type, ended, { capture: true, signal: listening.signal });
+    }
+    return () => {
+      listening.abort();
+      window.clearTimeout(held.ending);
+    };
+  }, [takeFocus]);
+  // The focus leaving the tree closes the body it opened, and lets go of the opening's row and
+  // of what a key reported (`useReleaseFocus`, which keeps them while a row is being edited).
+  const leave = useCallback(() => {
+    setFocused(undefined);
+    setUnplaced(undefined);
+    setReport(undefined);
+  }, []);
+  const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
   // What the twisty and the arrow keys do to one branch. Folding a branch is held as its own
   // set and not as the absence of an opened one: the fold draws the reasoning and the path to
   // an open question of its own accord, so a reader folding one of those shut has nothing to
@@ -666,7 +697,8 @@ export function IssueTree({
               // open question needs on a phone (R6). Its hit box grows by padding instead.
               // It draws one line for a node, so it is R1's first line, cut at a word, and it
               // wraps rather than being cut again mid-word by its box; the issue is named by
-              // its key, since the header above draws its title.
+              // its key, since the header above draws its title, and a node with no words by
+              // its kind's word, never its id (the root spec's R7).
               className="dispatch-inline-link max-w-full text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
@@ -675,9 +707,11 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {above.id === root.id || above.text === ""
+              {above.id === root.id
                 ? above.id
-                : drawnLine(firstLineOf(nodeWords(above)))}
+                : firstLineOf(nodeWords(above)).line === ""
+                  ? NODE_TYPE_NAMES[above.type]
+                  : drawnLine(firstLineOf(nodeWords(above)))}
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -687,6 +721,11 @@ export function IssueTree({
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onBlur={releaseFocus}
+        // A press in the tree, whose focus the row takes once the press is over (`focusRow`).
+        onMouseDown={() => {
+          window.clearTimeout(press.current.ending);
+          press.current.held = true;
+        }}
         ref={body}
         role="tree"
       >
@@ -701,7 +740,7 @@ export function IssueTree({
             editing={editing}
             focused={focused}
             isClosed={isClosed}
-            onFocus={takeFocus}
+            onFocus={focusRow}
             onOpenDeeper={openDeeper}
             onPin={pin}
             // A branch opens where it is at every width (R16): below 1024 px the outline draws
@@ -732,6 +771,12 @@ export function IssueTree({
 /** A reader's own acts, any of which ends the page's own placing of the focus: a key, a press,
  *  a wheel and a touch. */
 const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+
+/** What ends a press in the tree: its mouseup, which the click follows in the same task; the
+ *  drag a press on a picture or a link starts instead, which sends no mouseup; a pointer the
+ *  browser cancelled; and a key, since a press released outside the window sends no mouseup,
+ *  and a key's move must never wait on a press that is over. */
+const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to
  *  their newest node where it looked, in milliseconds: the line's send has landed and its read
@@ -778,6 +823,56 @@ function landingParent(
   under: { readonly id: string; readonly kind: string } | undefined
 ): TreeNode | undefined {
   return under === undefined ? root : pathToTarget(root, { id: under.id, kind: "item" })?.at(-1);
+}
+
+/** The facts of `node` the panel draws while its row has the focus (R12): who wrote it, the
+ *  item it is, its own address and its state, and its own first line as its title. A node with
+ *  no words is named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its id,
+ *  which is no name a reader reads (R7). */
+export function focusedNodeOf(node: TreeNode): FocusedNode {
+  const item = conversationItem(node);
+  const line = firstLineOf(nodeWords(node)).line;
+  return {
+    ...(node.author === undefined ? {} : { author: node.author }),
+    id: node.id,
+    ...(item === undefined ? {} : { item }),
+    ...(node.reference === undefined ? {} : { reference: node.reference }),
+    ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
+    title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
+    type: node.type,
+  };
+}
+
+/**
+ * The handler for a tree's `onBlur`, by the outline's rule for the focus leaving it. The focus
+ * leaving the tree closes the body it opened (`onLeave`): nothing is open while the reader is
+ * somewhere else, and the panel goes back to the issue's own facts (R2, R12). A row the reader
+ * is editing in keeps its body (`editing`): the document's editor moves into it, which drops the
+ * focus for a frame as it leaves the page, and that is no reader leaving the tree. The focus
+ * moving to Details, or to the control that opens it, keeps the node's facts in the panel, since
+ * Details is where a reader reads them (R14); the next row focused replaces them.
+ */
+export function useReleaseFocus({
+  editing,
+  onLeave,
+}: {
+  /** Whether a row of the tree is being edited. */
+  readonly editing: boolean;
+  /** Closes the body the tree opened for the row the focus left. */
+  readonly onLeave: () => void;
+}): (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => void {
+  const setFocusedNode = useSetFocusedNode();
+  return useCallback(
+    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
+      const to = event.relatedTarget;
+      if (editing) return;
+      if (to instanceof Node && event.currentTarget.contains(to)) return;
+      onLeave();
+      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
+      setFocusedNode(undefined);
+    },
+    [editing, onLeave, setFocusedNode]
+  );
 }
 
 /** The widths the tree is read one node at a time at, one level below the node it is on: below
