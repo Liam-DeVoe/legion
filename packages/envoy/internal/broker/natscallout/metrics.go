@@ -10,7 +10,7 @@ import (
 // outcome and reason, which is the production census of the services the hub admits (its
 // kind="service" series); broker_nats_callout_seconds, how long each decision took from the
 // request's arrival; and broker_nats_callout_shared_lanes_dropped_total, the repositories withheld
-// from a held daemon's grant because another project maps their lane (scopeGrant).
+// from a held daemon's grant because a project its entry does not name maps their lane (scopeGrant).
 type Metrics struct {
 	decisions   *metrics.Counter
 	seconds     *metrics.Histogram
@@ -27,7 +27,7 @@ func NewMetrics(registry *metrics.Registry) *Metrics {
 				"straddle the decision's 1.5 s budget and the two seconds a client's connect allows.",
 			[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2}),
 		sharedLanes: registry.NewCounter("broker_nats_callout_shared_lanes_dropped_total",
-			"Repositories the auth service withheld from a daemon's grant held to its exchange projects, because another project's mapping in Dispatch names the same GitHub lane."),
+			"Repositories the auth service withheld from a daemon's grant held to its exchange projects, because a project its entry does not name maps the same GitHub lane in Dispatch."),
 	}
 }
 

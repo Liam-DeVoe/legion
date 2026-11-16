@@ -8,12 +8,13 @@ body: |-
   in passes, at its start and every 20 seconds after, each asking about every such project and
   reading Dispatch's whole repository mapping, and builds a held grant from the newest complete
   pass alone, however old, never from two passes mixed; a pass any question of which fails
-  replaces nothing. A repository whose GitHub lane another project's mapping also names, by a
-  `renamed_to` or by a second spelling of one lane, is withheld from the grant, counted in
-  `broker_nats_callout_shared_lanes_dropped_total` and logged at error with the lane and its
-  projects once a pass. It refuses, naming the reason and counting it under a label of its own,
-  an account no exchange entry lists (`no_exchange_entry`), an entry naming no project
-  (`no_exchange_projects`), no complete pass held yet (`shared_lane`, which the client retries),
+  replaces nothing. A repository whose GitHub lane a project the daemon's entry does not name also
+  maps, by a `renamed_to` or by a second spelling of one lane, is withheld from the grant, counted
+  in `broker_nats_callout_shared_lanes_dropped_total` and logged at error with the lane and its
+  projects once a pass; a lane shared only among the entry's own projects is served. It refuses,
+  naming the reason and counting it under a label of its own, an account no exchange entry lists
+  (`no_exchange_entry`), an entry naming no project (`no_exchange_projects`), no complete pass
+  held yet (`shared_lane`, which the client retries),
   Dispatch refusing the broker's own account token (a 401 or 403) in that pass
   (`project_access_refused`, logged at error once a pass, as the token exchange refuses every
   trade then), a project Dispatch does not hold (`project_not_found`), one the entry's person

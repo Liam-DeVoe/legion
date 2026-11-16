@@ -33,10 +33,11 @@ import (
 // token exchange holds that token to: the person its exchange entry acts for must see each
 // project, as projectaccess.Visible requires before a mint. So a connection and that account's
 // token cannot disagree. The grant is held to the repositories Dispatch maps the projects to
-// (Deps.Access), but for each repository whose GitHub lane (natsgrant.GitHubPrefix) another
-// project's mapping also names, by a rename or by a second spelling of the lane (Deps.RepoProjects):
-// such a repository is withheld, and counted, since serving it would hand one project's daemon
-// another's events. WithinProjects writes that same reply prefix in place of _INBOX.>. Every
+// (Deps.Access), but for each repository whose GitHub lane (natsgrant.GitHubPrefix) a project the
+// entry does not name also maps, by a rename or by a second spelling of the lane
+// (Deps.RepoProjects): such a repository is withheld, and counted, since serving it would hand one
+// project's daemon another's events; a lane shared only among the entry's own projects is served.
+// WithinProjects writes that same reply prefix in place of _INBOX.>. Every
 // answer and the mapping the grant is built from come from one complete pass (heldAccess), never
 // two mixed. It is refused, naming why: an account no exchange entry lists, or whose entry names
 // no project; no complete pass held yet; Dispatch refusing the broker's own account token in that
@@ -107,7 +108,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
 		}
 		for _, repository := range held.answer.Repositories {
-			if pass.sharedWith(repository, project) {
+			if pass.sharedWith(repository, projects) {
 				withheld++
 				continue
 			}
@@ -118,7 +119,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: repositories, Identity: entry.Account})
 	switch {
 	case err != nil && withheld > 0:
-		return natsgrant.Permissions{}, refuse(labelSharedLane, "grant cannot be held to its projects once the repositories whose lane another project maps are withheld: service "+entry.name()+": "+err.Error())
+		return natsgrant.Permissions{}, refuse(labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service "+entry.name()+": "+err.Error())
 	case err != nil:
 		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 	}
@@ -154,7 +155,7 @@ type heldAccess struct {
 	access       func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	repoProjects func(ctx context.Context) ([]projectaccess.RepoProject, error)
 	asks         []heldKey
-	projects     map[string]bool // every project asks names
+	entries      [][]string // each held entry's projects
 	now          func() time.Time
 	log          *slog.Logger
 
@@ -188,10 +189,15 @@ type heldPass struct {
 	mappingRefused bool
 }
 
-// sharedWith reports whether a project other than project maps a repository to repository's
-// lane in p's mapping.
-func (p *heldPass) sharedWith(repository, project string) bool {
-	return slices.ContainsFunc(p.lanes[natsgrant.GitHubPrefix(repository)], func(other string) bool { return other != project })
+// sharedWith reports whether a project entry does not name maps a repository to repository's lane
+// in p's mapping.
+func (p *heldPass) sharedWith(repository string, entry []string) bool {
+	return outside(p.lanes[natsgrant.GitHubPrefix(repository)], entry)
+}
+
+// outside reports whether a project of projects is not one of entry's.
+func outside(projects, entry []string) bool {
+	return slices.ContainsFunc(projects, func(project string) bool { return !slices.Contains(entry, project) })
 }
 
 // lanesOf is each lane rows name, by a row's repository and by the repository it was renamed to,
@@ -224,6 +230,7 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 		return nil
 	}
 	var asks []heldKey
+	var entries [][]string
 	for _, entry := range services {
 		if entry.AllProjects {
 			continue
@@ -232,6 +239,7 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 		for _, project := range projects {
 			asks = append(asks, heldKey{project: project, person: person})
 		}
+		entries = append(entries, projects)
 	}
 	slices.SortFunc(asks, func(a, b heldKey) int {
 		return cmp.Or(cmp.Compare(a.project, b.project), cmp.Compare(a.person, b.person))
@@ -240,15 +248,11 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 	if len(asks) == 0 {
 		return nil
 	}
-	projects := map[string]bool{}
-	for _, ask := range asks {
-		projects[ask.project] = true
-	}
 	log := deps.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &heldAccess{access: deps.Access, repoProjects: deps.RepoProjects, asks: asks, projects: projects, now: deps.now, log: log}
+	return &heldAccess{access: deps.Access, repoProjects: deps.RepoProjects, asks: asks, entries: entries, now: deps.now, log: log}
 }
 
 // run makes a pass now and every accessRefresh after, until ctx ends.
@@ -329,8 +333,8 @@ func (h *heldAccess) refresh(ctx context.Context) {
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must
-// not replace, and logs at error each lane pass's mapping names for two or more projects one of
-// which a held entry names, since no held daemon is served that lane.
+// not replace, and logs at error each lane pass's mapping names for a project of a held entry and
+// a project outside that entry, since that entry's daemon is not served the lane.
 func (h *heldAccess) hold(pass *heldPass) {
 	h.mu.Lock()
 	later := h.pass == nil || !pass.began.Before(h.pass.began)
@@ -343,8 +347,11 @@ func (h *heldAccess) hold(pass *heldPass) {
 	}
 	for _, lane := range slices.Sorted(maps.Keys(pass.lanes)) {
 		projects := pass.lanes[lane]
-		if len(projects) > 1 && slices.ContainsFunc(projects, func(project string) bool { return h.projects[project] }) {
-			h.log.Error("natscallout: more than one project maps a repository to one GitHub lane, so no held daemon is served it", "lane", lane, "projects", projects)
+		withheld := func(entry []string) bool {
+			return outside(projects, entry) && slices.ContainsFunc(projects, func(project string) bool { return slices.Contains(entry, project) })
+		}
+		if slices.ContainsFunc(h.entries, withheld) {
+			h.log.Error("natscallout: a project outside a held entry maps a repository to one of that entry's GitHub lanes, so its daemon is not served the lane", "lane", lane, "projects", projects)
 		}
 	}
 }
