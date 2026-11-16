@@ -1709,6 +1709,23 @@ Such a pod is bounded by the kernel's stop of the whole container alone, as ever
 This release adds no store migration.
 The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a kind the release before it already decodes, so a note still queued at the rollback is delivered as any other role message.
 
+#### Rolling back below the release that adds the project release
+
+The release that added `legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3583`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A rollback below it has one step of its own.
+
+**Let this release boot once after a project release, before the earlier image is pinned.**
+A project release stores each claim it stopped as suspended by `project_release`, and only this release's boot starts those claims again.
+An earlier daemon reads `project_release` as a source it does not know.
+Its boot starts no such claim, and the first event its machine handles for one retires the task the release kept for it.
+A workflow start, the controller keeper or an operator's `legion claims resume` still brings such a claim back, without that task.
+So where `legion claims list` shows a claim `suspended:project_release`, boot this release once and let it start the claims, and roll back after that.
+
+**Nothing in the database needs a statement.**
+This release's migration adds the `project_releases` table and lets the claims' suspension source hold `project_release`.
+An earlier daemon applies only the migrations it embeds, reads neither, and boots on that database as it is.
+
 ### Cutting over to the pod-owned disk
 
 This section is for a deployment already running issue pods of the release before this one (`legion-v10.1.0` to `legion-v10.2.x`), where each issue's Sandbox owned an `issue` volume claim that outlived its pods.
@@ -5435,9 +5452,10 @@ Before the release, the other cluster and the daemon need these:
   The pods of the other cluster enroll with their own cluster's tokens, since a `BROKER_SERVICES` entry names no issuer.
   The daemon keeps logging in with its own cluster's token: its `BROKER_SERVICE_LOGINS` entry names its own cluster's issuer, or names none while that issuer is the list's first.
   The broker reads each issuer in the background, so it serves while the other cluster's issuer cannot be read, and answers that cluster's tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can.
-  The one exception is the issuer of the broker's token exchange, which takes the tokens of one cluster alone.
-  Where the broker sets `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_EXCHANGE_K8S_ISSUER` names that issuer by its name in the list, and with two issuers named the broker refuses to boot without it.
-  The broker reads that issuer at boot, and refuses to boot while it cannot read it.
+  The broker's token exchange takes the tokens of each cluster that `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in the list and separated by commas.
+  Where the broker sets `BROKER_EXCHANGE_K8S_AUDIENCE` and the list names two or more issuers, the broker refuses to boot without that setting.
+  Each `BROKER_EXCHANGE_ACCOUNTS` entry takes its account's token only from the issuers it names after its last `=`, and an entry that names none takes the list's first issuer alone, so the entry of an account whose pods move names both clusters.
+  The exchange reads its issuers in the background with the rest of the list, so it answers the tokens of a cluster whose issuer it cannot read `503 OIDC_ISSUER_UNAVAILABLE` and stops no boot.
 
 - **Every service that checks a pod's token accepts the other cluster's tokens.**
   A pod's projected ServiceAccount token is signed by its own cluster's issuer, so each service that checks one must accept the other cluster's issuer before the pods move.
@@ -5472,8 +5490,10 @@ users:
 ```sh
 BROKER_K8S_OIDC_ISSUER=home=https://<the daemon's cluster's issuer>,other=https://<the other cluster's issuer>
 BROKER_SERVICE_LOGINS=legion-daemon=system:serviceaccount:<the daemon's namespace>:<the daemon's account>=home
-# Where the broker sets BROKER_EXCHANGE_K8S_AUDIENCE: the one issuer its token exchange takes, read at boot.
-BROKER_EXCHANGE_K8S_ISSUER=home
+# Where the broker sets BROKER_EXCHANGE_K8S_AUDIENCE: the issuers its token exchange takes,
+# and each exchanging account's entry, which names its issuers after the session field.
+BROKER_EXCHANGE_K8S_ISSUER=home,other
+BROKER_EXCHANGE_ACCOUNTS=system:serviceaccount:<the pods' namespace>:<the pods' account>=<project>=<person>=<session, or empty>=home,other
 ```
 
 Then move the pods in this order:
