@@ -207,6 +207,15 @@ test("a node draws its kind at the right of its row and every node starts at one
     await expect(rawChip).toHaveCount(1);
     await expect(rawChip).toHaveText(ONE_LINE_WORDS);
 
+    // A chip in a node's words names its target in plain words, as the chip at the end of the
+    // words does: the unsure decision cites t1, whose words are bold and open on "1\." (R4, F18).
+    const cited = rowWords(nodeRow(page, seeded.unsure).first()).locator("a[data-row-chip]");
+    await expect(cited).toHaveCount(1);
+    await expect(cited).toHaveText(/^1\. Stand/u);
+    await expect(cited, "a chip in a decision's words draws a mark of markdown").not.toHaveText(
+      /[*\\]/u
+    );
+
     // An agent's link and a word that only looks like a key (R4).
     const linked = nodeRow(page, seeded.linked).first();
     await expect(linked.locator("a", { hasText: "UTF-16" })).toHaveCount(0);
@@ -359,6 +368,7 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
       [seeded.longComment, reader],
       [seeded.pictured, reader],
       [seeded.change, reader],
+      ...seeded.replies.map((reply): [string, DrawnAuthor] => [reply, reader]),
       [seeded.linked, plannerAuthor],
       [seeded.longMessage, plannerAuthor],
       [seeded.answered, plannerAuthor],

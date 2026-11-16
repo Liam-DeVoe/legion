@@ -438,9 +438,10 @@ export const NODE_ROW_LAYOUT = {
   /** The bullet's column: 18 px, and 16 px on a phone, its dot at the column's middle. */
   bullet: `${BULLET_BOX} max-[761px]:w-4`,
   /** The bullet of a node that holds others, which is its fold control: on a phone 24 px
-   *  square, the least target WCAG 2.5.8 allows, reaching into the 8 px before the words with
-   *  its dot kept at the column's middle, where the guide of the level under it hangs. */
-  foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[4.5px]`,
+   *  square, the least target WCAG 2.5.8 allows, reaching 4 px left of the column and 4 px into
+   *  the 6 px before the words, as the prototype's does, so it covers none of them, with its dot
+   *  kept at the column's middle, where the guide of the level under it hangs. */
+  foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:-ml-1 max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[8.5px]`,
   /** The box the row's parts stand in (the prototype's `.card`). Below 768 px the words stand
    *  6 px past the bullet's column, as the prototype's do (the architect's ruling on this part's
    *  pull request). Not named `card`: `text-on-background.test.ts` reads that name as

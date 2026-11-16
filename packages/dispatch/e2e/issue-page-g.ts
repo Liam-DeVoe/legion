@@ -250,6 +250,7 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
     seeded.unsure,
     seeded.raw,
     seeded.result,
+    ...seeded.replies,
     blockNode(seeded.slugs.spec, "r-one"),
     blockNode(seeded.slugs.spec, "r-cites"),
     blockNode(seeded.slugs.spec, "r-ties"),
@@ -450,7 +451,9 @@ export interface RowLayout {
   readonly byline: { readonly left: number; readonly top: number } | null;
   /** The time's computed colour. */
   readonly bylineColor: string | null;
-  /** The bullet's left, its dot's computed fill, and the fill its kind's token resolves to. */
+  /** The left of the bullet's dot, its computed fill, and the fill its kind's token resolves to.
+   *  The dot, not its box: on a phone a fold control's box reaches past the bullet's column on
+   *  both sides (`NODE_ROW_LAYOUT.foldControl`), and its dot stands where every bullet's does. */
   readonly bullet: { readonly fill: string; readonly kindFill: string; readonly left: number };
   /** The row's own box: its height, which a one-line row holds to 29 px at 1440 px. */
   readonly height: number;
@@ -551,7 +554,7 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
           bullet: {
             fill: dot === null ? "" : getComputedStyle(dot).backgroundColor,
             kindFill: computed("backgroundColor", kindToken),
-            left: bullet?.getBoundingClientRect().left ?? -1,
+            left: (dot ?? bullet)?.getBoundingClientRect().left ?? -1,
           },
           byline: bylineBox === undefined ? null : { left: bylineBox.left, top: bylineBox.top },
           bylineColor: time === null ? null : getComputedStyle(time).color,
@@ -932,6 +935,8 @@ export interface RowSeed {
   /** The reader's own short comment, and the agent's message with a link and "UTF-16". */
   readonly comment: string;
   readonly linked: string;
+  /** The reader's two replies "Read.", one to each of the planner's two messages. */
+  readonly replies: readonly string[];
   /** The picture's comment, and the picture's own slug. */
   readonly pictured: string;
   readonly picture: string;
@@ -949,8 +954,8 @@ export interface RowSeed {
   readonly shaping: string;
   readonly changed: string;
   readonly change: string;
-  /** The decision the seed marks unsure, and the one that quotes a typed block and cites
-   *  `r-one` by its address. */
+  /** The decision the seed marks unsure, whose words cite `t1` by its address, and the one that
+   *  quotes a typed block and cites `r-one` by its address. */
   readonly unsure: string;
   readonly raw: string;
   /** The result the untitled session recorded against `c1`. */
@@ -983,10 +988,10 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * `blocks.json`); a one-line statement `r-one`; the statement `r-ties`, whose words cite `r-one`'s
  * block by its address (a requirement takes no attribute, so the citation is the tie);
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
- * recorded; a decision that shaped a statement, one opening "Unsure:", one holding
- * `:::requirement{#r1}` and a block's address, and one a person asked to change; a picture; an
- * open question with two options waiting on the reader, an answered one, and the long texts
- * c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * recorded; a decision that shaped a statement, one opening "Unsure:" that cites `t1`, one
+ * holding `:::requirement{#r1}` and a block's address, and one a person asked to change; a
+ * picture; an open question with two options waiting on the reader, an answered one, and the
+ * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
  */
 export async function seedRows(): Promise<RowSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1097,7 +1102,8 @@ export async function seedRows(): Promise<RowSeed> {
     content: [
       `## ${headings.shaping}\n\nShapes ${spec("r-one")}.`,
       `## ${headings.changed}\n\n${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
-      `## ${headings.unsure}\n\nUnsure: a reader who never finds the newest question would change this.`,
+      `## ${headings.unsure}\n\nUnsure: a reader who never finds the newest question would change this. ` +
+        `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
       `## ${headings.raw}\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::`,
     ].join("\n\n"),
     name: "decisions.md",
@@ -1121,8 +1127,9 @@ export async function seedRows(): Promise<RowSeed> {
   );
   // The outline draws a message thread only once a person wrote in it (`agents-only.ts`), so the
   // reader answers each of the planner's two messages.
+  const replies: string[] = [];
   for (const message of [longMessage, linked]) {
-    await createMessage(key, { body: "Read.", in_reply_to: message.id });
+    replies.push((await createMessage(key, { body: "Read.", in_reply_to: message.id })).id);
   }
   const picture = await uploadPicture(key, "layout.png");
   const pictured = await createComment(key, {
@@ -1151,6 +1158,7 @@ export async function seedRows(): Promise<RowSeed> {
     picture,
     pictured: pictured.id,
     raw: await decision(headings.raw),
+    replies,
     result: recorded.result.id,
     shaping: await decision(headings.shaping),
     slugs: {

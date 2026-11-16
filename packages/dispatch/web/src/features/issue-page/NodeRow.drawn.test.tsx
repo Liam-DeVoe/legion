@@ -24,6 +24,8 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
+import { PlainReferenceNamesProvider, RowText } from "./RowText";
+import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 
 /**
  * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
@@ -642,6 +644,51 @@ test("a chip draws its target's words with no mark of markdown", () => {
   try {
     const chips = [...view.container.querySelectorAll("[data-node-chip]")];
     expect(chips.map((chip) => chip.textContent)).toEqual(["Needs 1. Stand the harness up and…"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The names the page's one batched read brought, published as the page publishes them. */
+function Named({
+  children,
+  names,
+}: {
+  children: ReactNode;
+  names: ReadonlyMap<string, string>;
+}): ReactNode {
+  usePublishReferenceNames(names);
+  return children;
+}
+
+// F18 in a node's words: a chip in place is named from the batched read, whose name for a block
+// is its stored excerpt, which is markdown; it draws the words alone, as the chip at the end of
+// the words does.
+test("a chip in a node's words draws its target's words with no mark of markdown", async () => {
+  const target = "dispatch://CORE-1/artifact/plan-md#b-t1";
+  const text = `It follows ${target}.`;
+  const names = new Map([
+    [target, ":::plan_task{#t1}\n**1\\. Stand the harness up and read the rows**\n:::"],
+  ]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <Named names={names}>
+            <PlainReferenceNamesProvider>
+              <RowText markdown={text} tree={displayTree(text)} />
+            </PlainReferenceNamesProvider>
+          </Named>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => {
+      const chip = view.container.querySelector(`a[data-row-reference="${target}"]`);
+      expect(chip?.textContent).toBe("1. Stand the harness up and…");
+    });
   } finally {
     view.unmount();
   }
