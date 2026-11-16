@@ -44,9 +44,11 @@ type Result struct {
 	// program check counts only when both are named and FaultAuthor is none of TestAuthors.
 	FaultAuthor string
 	TestAuthors []string
-	// TestCommit is the commit of the test that ran on the failing example of a program check
-	// whose subject is production or the graph, "" when the result does not name it (R9: "its
-	// test, as it is now").
+	// TestCommit is the commit of the test that ran, for a run or a failing example of a program
+	// check whose subject is production or the graph, "" when the result does not name it. Such a
+	// result counts only while no file of the check's tie differs between TestCommit and the
+	// subject's commit (R7: the procedure is "the code that runs it" too; R9: "its test, as it is
+	// now").
 	TestCommit string
 }
 

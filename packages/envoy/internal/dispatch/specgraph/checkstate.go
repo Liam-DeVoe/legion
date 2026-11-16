@@ -99,16 +99,23 @@ const (
 //  4. The runs that count at S. For a code check, a run at S.Commit, or at a commit whose tree
 //     differs from S.Commit's in no file of C's tie (R8), every such commit, and with a tie that is
 //     not known only runs at S.Commit. For a production check, the runs under S.Deploy; for a graph
-//     check, the runs of the newest transaction. No run counts: unknown, ci_fault when a run of C's
-//     job ended at S.Commit (R9), else subject_moved when C has a run, else no_result. A code check
-//     whose job ended at S.Commit in a leg with no run that counts: unknown, ci_fault (R7: "silence
-//     is not a pass"; R12: "Each leg of a matrix reports its own result").
-//  5. For a code check: a pass and a failure that count at one commit, a pass that counts recorded
-//     after a failure that counts (both read the same code of C's tie), or newest runs of two legs
-//     that disagree: unknown, disagree (R7: "A pass and a failure on one such subject and one
-//     procedure make the state unknown", "a later pass does not end the report"). A production or
-//     graph check skips this step: its newest run decides (R7: "A pass, then a failure, then a pass
-//     across deploys is ordinary"). Then a newest run that could not run: unknown, could_not_run.
+//     check, the runs of the newest transaction. For a program check of production or the graph,
+//     only a run whose TestCommit differs from S.Commit in no file of C's tie, as for its failing
+//     example (R7: "The procedure is the text of the check and the code that runs it, so a change
+//     to either ends the standing of earlier results"); a run that names no TestCommit counts
+//     nowhere. No run counts: unknown, ci_fault when a run of C's job ended at S.Commit (R9), else
+//     subject_moved when C has a run, else no_result. A code check, or a program check of
+//     production or the graph, whose job ended at S.Commit in a leg with no run that counts:
+//     unknown, ci_fault (R7: "silence is not a pass"; R12: "Each leg of a matrix reports its own
+//     result, and no leg replaces the result of another").
+//  5. For a code check, at one commit, and for a graph check, at its one transaction (R13: a query
+//     "reads the graph at one transaction"): a pass and a failure that count, or a pass recorded
+//     after a failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
+//     pass and a failure on one such subject and one procedure make the state unknown", "a later
+//     pass does not end the report"). For each check, newest runs of two legs that disagree:
+//     unknown, disagree. A production check skips the first test: in each leg its newest run under
+//     S.Deploy decides (R7: "A pass, then a failure, then a pass across deploys is ordinary"). Then
+//     a newest run that could not run: unknown, could_not_run.
 //  6. C has a time limit and its newest run that counts is older: unknown, expired.
 //  7. The newest failing example that counts: for a code check, one that counts at S as a run does
 //     (R8: it counts "only while no file that the test reads changed"); for a program check of
@@ -318,16 +325,16 @@ func (j *checkJudge) state(c Check) CheckState {
 	}
 	latest, _ := newestResult(counting)
 	newest := map[string]Result{latest.Leg: latest}
-	if !readsProduction(c) {
+	if c.Subject == SubjectCode || c.Procedure == ProcedureProgram { // the checks that a job's matrix runs
 		newest = newestOfEachLeg(counting)
 		if leg, silent := j.silentLeg(job, newest); job != "" && silent {
 			return unknownCheck(reasonCIFault, leg)
 		}
-		if runsDisagree(counting, newest) {
-			state := unknownCheck(reasonDisagree, "")
-			state.Disagree = true
-			return state
-		}
+	}
+	if c.Subject != SubjectProduction && answersDisagree(counting) || legsDisagree(newest) {
+		state := unknownCheck(reasonDisagree, "")
+		state.Disagree = true
+		return state
 	}
 	for _, r := range newest {
 		if r.Outcome != OutcomePass && r.Outcome != OutcomeFail {
@@ -394,6 +401,9 @@ func (j *checkJudge) newestApproval(statement string) (string, time.Time) {
 
 // countingRuns is the runs of c that count at the subject (step 4).
 func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
+	if readsProduction(c) && c.Procedure == ProcedureProgram {
+		runs = resultsWhere(runs, func(r Result) bool { return j.carries(c.ID, r.TestCommit) })
+	}
 	switch c.Subject {
 	case SubjectProduction:
 		return resultsWhere(runs, func(r Result) bool { return r.Deploy == j.in.Subject.Deploy })
@@ -458,16 +468,18 @@ func (j *checkJudge) silentLeg(job string, newest map[string]Result) (string, bo
 	return slices.Min(silent), true
 }
 
-// runsDisagree is whether the runs that count give two answers (step 5): a pass and a failure at
-// one commit, a pass recorded after a failure, or newest runs of two legs of which one passed and
-// one failed. All of them count at the subject, so they read the same code of the check's tie, and
-// only a failure recorded after every pass is a later answer, which cancels them (R7).
-func runsDisagree(counting []Result, newest map[string]Result) bool {
+// answersDisagree is whether the runs that count, which read subjects that cannot change (commits
+// of the same code of the check's tie, or one transaction of the graph), give two answers (step 5):
+// a pass and a failure at one commit or one transaction, or a pass recorded after a failure. Only a
+// failure recorded after every pass is a later answer, which cancels them (R7).
+func answersDisagree(counting []Result) bool {
+	type subject struct{ commit, graphTx string }
 	type answers struct{ passed, failed bool }
-	byCommit := map[string]answers{}
+	bySubject := map[subject]answers{}
 	failed := false
 	for _, r := range slices.SortedFunc(slices.Values(counting), byRecord) {
-		a := byCommit[r.Commit]
+		at := subject{r.Commit, r.GraphTx}
+		a := bySubject[at]
 		switch r.Outcome {
 		case OutcomePass:
 			if failed {
@@ -481,14 +493,20 @@ func runsDisagree(counting []Result, newest map[string]Result) bool {
 		if a.passed && a.failed {
 			return true
 		}
-		byCommit[r.Commit] = a
+		bySubject[at] = a
 	}
-	var legs answers
+	return false
+}
+
+// legsDisagree is whether the newest runs of two legs, one passed and one failed (step 5): no leg
+// replaces the result of another (R12).
+func legsDisagree(newest map[string]Result) bool {
+	passed, failed := false, false
 	for _, r := range newest {
-		legs.passed = legs.passed || r.Outcome == OutcomePass
-		legs.failed = legs.failed || r.Outcome == OutcomeFail
+		passed = passed || r.Outcome == OutcomePass
+		failed = failed || r.Outcome == OutcomeFail
 	}
-	return legs.passed && legs.failed
+	return passed && failed
 }
 
 // readsProduction is whether c reads production or the graph rather than the code.
