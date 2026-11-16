@@ -92,9 +92,19 @@ type Loaded struct {
 	// Skipped are the documents of the record the local instance refused, with its reason.
 	Skipped []LoadedDocument `json:"skipped,omitempty"`
 	// Thread is the local ids of the thread's texts, oldest first, and ReplyTo the text the
-	// case's own text replies to.
+	// case's own text replies to: on an issue, the thread's first comment; on no issue, the
+	// person's latest message, the one a session's text answers.
 	Thread  []string `json:"thread,omitempty"`
 	ReplyTo string   `json:"reply_to,omitempty"`
+	// Opened is the message by the reader that opens a conversation on no issue whose thread
+	// starts with the writer session's text: a session writes there only in reply to a person's
+	// message, and the record holds none before the session's text (a session opened the thread
+	// in production, as an ask on a project document).
+	Opened string `json:"opened,omitempty"`
+	// LeftOut are the keys of the thread's texts that no route lets their author write in the
+	// local record: on no issue, a text of a session other than the writer's, which has no
+	// message to answer in the writer session's conversation.
+	LeftOut []string `json:"left_out,omitempty"`
 	// ReaderWords is the word records written for the reader.
 	ReaderWords int    `json:"reader_words"`
 	Error       string `json:"error,omitempty"`
@@ -371,22 +381,8 @@ func (ld *loader) load(ctx context.Context, c *Case) Loaded {
 			out.Thread = append(out.Thread, id)
 		}
 		out.ReplyTo = root
-	} else {
-		// A text on no issue is a message in the writer session's conversation with a person.
-		previous := ""
-		for _, t := range c.Record.Thread {
-			body := map[string]any{"body": t.Text, "delivery": "aside"}
-			if previous != "" {
-				body["in_reply_to"] = previous
-			}
-			var made map[string]any
-			if err := ld.client.send(ctx, ld.authorOf(c, t), http.MethodPost, "/api/v1/agents/"+url.PathEscape(writer.session)+"/messages", body, &made); err != nil {
-				return fail(fmt.Errorf("thread text %s: %w", t.Key, err))
-			}
-			previous, _ = made["id"].(string)
-			out.Thread = append(out.Thread, previous)
-		}
-		out.ReplyTo = previous
+	} else if err := ld.loadConversation(ctx, c, writer.session, &out); err != nil {
+		return fail(err)
 	}
 	n, err := ld.writeWords(ctx, c, out.Reader)
 	if err != nil {
@@ -395,6 +391,68 @@ func (ld *loader) load(ctx context.Context, c *Case) Loaded {
 	out.ReaderWords = n
 	out.Time = time.Now().UTC().Format(time.RFC3339)
 	return out
+}
+
+// openingText is the body of the message Loaded.Opened names.
+const openingText = "This message is not in the record. It opens the conversation so that the session can reply."
+
+// loadConversation writes the thread of a case on no issue as messages in the writer session's
+// conversation with a person, oldest first, each by the route Dispatch gives its author. A
+// person's text is a send to the session (POST /api/v1/agents/{session_id}/messages), which only
+// a person may make. The session's text is its reply to the person's latest message
+// (POST /api/v1/messages/{id}/reply). Its next text before the person writes again is a
+// follow-up, which Dispatch threads under its first reply.
+func (ld *loader) loadConversation(ctx context.Context, c *Case, session string, out *Loaded) error {
+	// asked is the person's latest message, answered whether the session replied to it, and
+	// previous the latest message of the conversation, which a person's text replies to.
+	asked, answered, previous := "", false, ""
+	toSession := func(a actor, text string) error {
+		body := map[string]any{"body": text, "delivery": "aside"}
+		if previous != "" {
+			body["in_reply_to"] = previous
+		}
+		var made map[string]any
+		if err := ld.client.send(ctx, a, http.MethodPost, "/api/v1/agents/"+url.PathEscape(session)+"/messages", body, &made); err != nil {
+			return err
+		}
+		asked, _ = made["id"].(string)
+		answered, previous = false, asked
+		return nil
+	}
+	for _, t := range c.Record.Thread {
+		author := ld.authorOf(c, t)
+		switch {
+		case author.session == "":
+			if err := toSession(author, t.Text); err != nil {
+				return fmt.Errorf("thread text %s: %w", t.Key, err)
+			}
+			out.Thread = append(out.Thread, asked)
+			continue
+		case author.session != session:
+			out.LeftOut = append(out.LeftOut, t.Key)
+			continue
+		case asked == "":
+			if err := toSession(actor{person: out.Reader}, openingText); err != nil {
+				return fmt.Errorf("the message that opens the conversation: %w", err)
+			}
+			out.Opened = asked
+		}
+		path := "/api/v1/messages/" + url.PathEscape(asked) + "/reply"
+		if answered {
+			path += "?follow_up=true"
+		}
+		// The reply names the message's first delivery attempt, which Dispatch writes with the
+		// message.
+		var made map[string]any
+		if err := ld.client.send(ctx, author, http.MethodPost, path, map[string]any{"body": t.Text, "attempt": 1}, &made); err != nil {
+			return fmt.Errorf("thread text %s: %w", t.Key, err)
+		}
+		previous, _ = made["id"].(string)
+		answered = true
+		out.Thread = append(out.Thread, previous)
+	}
+	out.ReplyTo = asked
+	return nil
 }
 
 // writeWords writes the reader's word records written before the case's text as the rows the

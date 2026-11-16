@@ -335,6 +335,18 @@ type dsText struct {
 	// sessions a message's whole body is read through.
 	needBody     string
 	bodySessions []string
+	// copyOf is, for a copy of a broadcast after the first, the first copy: the one write the
+	// broadcast counts as. Such a copy stands in its own recipient's thread and nowhere else.
+	copyOf *dsText
+}
+
+// written is the text that counts as the write: a broadcast's first copy for any of its copies,
+// else the text itself.
+func (t *dsText) written() *dsText {
+	if t.copyOf != nil {
+		return t.copyOf
+	}
+	return t
 }
 
 // tid is the text's id across its versions: its key and the event that wrote it.
@@ -456,7 +468,8 @@ type dsIndex struct {
 	artifacts      map[string]*dsArtifact
 	issueArtifacts map[string][]string
 	askApproval    map[string]string
-	broadcasts     map[string]bool
+	broadcasts     map[string]*dsText // the first copy of each broadcast, by its id
+	copies         []*dsText          // every later copy of a broadcast
 	acts           []dsAct
 	labels         []snapLine
 
@@ -472,7 +485,7 @@ func newDSIndex(owner, namingIssue string) *dsIndex {
 		texts: map[string][]*dsText{}, byEvent: map[int64][]*dsText{}, children: map[string][]*dsText{},
 		threadTexts: map[string][]*dsText{}, threadAgents: map[string][]*dsText{}, issueAgents: map[string][]*dsText{},
 		convAgents: map[string][]*dsText{}, issues: map[string]*dsIssue{}, artifacts: map[string]*dsArtifact{},
-		issueArtifacts: map[string][]string{}, askApproval: map[string]string{}, broadcasts: map[string]bool{},
+		issueArtifacts: map[string][]string{}, askApproval: map[string]string{}, broadcasts: map[string]*dsText{},
 		bodies: map[string]snapLine{}, versionsIn: map[dsVerKey]bool{}, versionSHA: map[dsVerKey]string{},
 		versionText: map[dsVerKey]string{},
 	}
@@ -524,6 +537,15 @@ func (ix *dsIndex) add(t *dsText) {
 	}
 }
 
+// addCopy indexes a broadcast's later copy in its own recipient's thread alone: its key and the
+// replies to it find it, and its thread's records hold it. It is no write of its own, so no list
+// of texts, of agent texts or of the owner's texts holds it.
+func (ix *dsIndex) addCopy(t *dsText) {
+	ix.texts[t.Key] = append(ix.texts[t.Key], t)
+	ix.threadTexts[t.Thread] = append(ix.threadTexts[t.Thread], t)
+	ix.copies = append(ix.copies, t)
+}
+
 // threadOf is the thread of the text key names, the key itself when no text holds it.
 func (ix *dsIndex) threadOf(key string) string {
 	if ts := ix.texts[key]; len(ts) > 0 && ts[0].Thread != "" {
@@ -532,7 +554,8 @@ func (ix *dsIndex) threadOf(key string) string {
 	return key
 }
 
-// at is the version of the text key names in force just before event, nil when none is.
+// at is the version of the text key names in force just before event, nil when none is. A
+// broadcast's later copy answers its first copy, the one write.
 func (ix *dsIndex) at(key string, event int64) *dsText {
 	var found *dsText
 	for _, t := range ix.texts[key] {
@@ -541,7 +564,10 @@ func (ix *dsIndex) at(key string, event int64) *dsText {
 		}
 		found = t
 	}
-	return found
+	if found == nil {
+		return nil
+	}
+	return found.written()
 }
 
 func (ix *dsIndex) issue(key string) *dsIssue {
@@ -832,17 +858,14 @@ func (ix *dsIndex) addMessage(ev event) error {
 	}
 	target, broadcast := deref(p.Target), deref(p.BroadcastID)
 	family, source := "message", p.ID
+	var first *dsText
 	switch {
 	case ev.Type == "message.answered":
 		family = "delivery_reply"
 	case broadcast != "":
 		// A broadcast stores one message for each recipient, all with the one body: the first
-		// copy is the write.
-		if ix.broadcasts[broadcast] {
-			return nil
-		}
-		ix.broadcasts[broadcast] = true
-		family, source = "broadcast", broadcast
+		// copy is the write, and each later copy is that write in its own recipient's thread.
+		family, source, first = "broadcast", broadcast, ix.broadcasts[broadcast]
 	case target != "":
 		family = "send_to_agent"
 	}
@@ -863,6 +886,14 @@ func (ix *dsIndex) addMessage(ev event) error {
 		} else if session, ok := strings.CutPrefix(target, "session:"); ok {
 			t.Conv = "session:" + session
 		}
+	}
+	if first != nil {
+		t.copyOf = first
+		ix.addCopy(t)
+		return nil
+	}
+	if family == "broadcast" {
+		ix.broadcasts[broadcast] = t
 	}
 	ix.add(t)
 	return nil
@@ -1022,7 +1053,8 @@ func (ix *dsIndex) addReview(ev event) error {
 	return nil
 }
 
-// applyBodies puts the whole bodies the snapshot holds in place of the parts events carried.
+// applyBodies puts the whole bodies the snapshot holds in place of the parts events carried. A
+// broadcast's later copy holds its first copy's text, the broadcast's one body.
 func (ix *dsIndex) applyBodies() {
 	for _, t := range ix.all {
 		if t.needBody == "" {
@@ -1031,6 +1063,9 @@ func (ix *dsIndex) applyBodies() {
 		if b, ok := ix.bodies[t.needBody+":"+t.SourceID]; ok && b.Text != nil {
 			t.Text, t.Cut = *b.Text, false
 		}
+	}
+	for _, t := range ix.copies {
+		t.Text, t.Cut = t.copyOf.Text, t.copyOf.Cut
 	}
 }
 
@@ -1159,7 +1194,7 @@ func (ix *dsIndex) named() []dsNamed {
 			seen[key] = true
 			n := dsNamed{key: key}
 			if ts := ix.texts[key]; len(ts) > 0 {
-				n.text = cmp.Or(ix.at(key, o.EventID), ts[0])
+				n.text = cmp.Or(ix.at(key, o.EventID), ts[0].written())
 			}
 			out = append(out, n)
 		}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -496,6 +497,71 @@ func TestDatasetRecordNamesEachDocumentAsItWasNamedThen(t *testing.T) {
 		if len(names) != 2 || names["art-DOC-1"] != "spec.md" || names["art-notes"] != want {
 			t.Errorf("the record of %s names its documents %v, want spec.md and %q", key, names, want)
 		}
+	}
+}
+
+// Each copy of a broadcast stands in its own recipient's conversation, so a record there holds it
+// as the thread's first text. The broadcast is still one write of the owner: his texts and the
+// people's texts hold its first copy alone, a later copy reached by its key answers the first
+// copy, and the build reads no verdict for a later copy.
+func TestDatasetBroadcastCopyIsItsConversationsRoot(t *testing.T) {
+	t.Parallel()
+	f := newDSFixture()
+	message := func(typ, id string, actor map[string]any, session, body, reply, broadcast string) {
+		payload := map[string]any{"id": id, "body": body, "target": "session:" + session, "author": actor}
+		if reply != "" {
+			payload["in_reply_to"] = reply
+		}
+		if broadcast != "" {
+			payload["broadcast_id"] = broadcast
+		}
+		f.event(typ, actor, "", payload)
+	}
+	first, second := fixtureAgent["id"].(string), fixtureOther["id"].(string)
+	const body = "Stop the deploys until the window opens."
+	message("message.created", "copy-1", fixturePerson, first, body, "", "bc-1")
+	f.verdicts["message:copy-1@"+strconv.FormatInt(f.next, 10)] = wordrecords.None
+	message("message.created", "copy-2", fixturePerson, second, body, "", "bc-1")
+	message("message.answered", "reply-2", fixtureOther, second, "The deploys wait for the window.", "copy-2", "")
+	message("message.answered", "owner-2", fixturePerson, second, "What is the window?", "reply-2", "")
+	f.verdicts["message:owner-2@"+strconv.FormatInt(f.next, 10)] = wordrecords.WordMeaning
+	dir := t.TempDir()
+	snapshot, verdicts := f.write(t, dir)
+	ix, err := loadIndex(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owners []string
+	for _, o := range ix.ownerTexts() {
+		owners = append(owners, o.Key)
+	}
+	if !slices.Equal(owners, []string{"message:copy-1", "message:owner-2"}) || len(ix.personTexts()) != 2 {
+		t.Errorf("the owner's texts are %v of %d people's texts, want the broadcast once and his question", owners, len(ix.personTexts()))
+	}
+	if got := ix.at("message:copy-2", f.next+1); got == nil || got.Key != "message:copy-1" {
+		t.Errorf("the later copy's key answers %v, want the first copy", got)
+	}
+
+	out := filepath.Join(dir, "out")
+	res, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.counts.OwnerTexts != 2 || res.counts.PersonTexts != 2 {
+		t.Errorf("counts hold %d owner texts of %d people's texts, want 2 of 2", res.counts.OwnerTexts, res.counts.PersonTexts)
+	}
+	var question *dsCase
+	for _, c := range readDatasetCases(t, out) {
+		if c.Agent.Key == "message:reply-2" && c.Group == dsGroupQuestion {
+			question = &c
+		}
+	}
+	if question == nil {
+		t.Fatal("no question case on the second recipient's reply")
+	}
+	thread := question.Record.Thread
+	if len(thread) != 1 || thread[0].Key != "message:copy-2" || thread[0].Text != body || thread[0].ActorKind != "user" || thread[0].Actor != fixtureOwner {
+		t.Errorf("the second recipient's record holds %+v, want the owner's copy of the broadcast", thread)
 	}
 }
 
