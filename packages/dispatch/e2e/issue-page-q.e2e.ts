@@ -33,6 +33,7 @@ import {
   decisionsFoot,
   decisionsPart,
   decisionsPartRows,
+  decisionsPartsDrawn,
   decisionsRows,
   decisionsWordsWithSource,
   reviewFlag,
