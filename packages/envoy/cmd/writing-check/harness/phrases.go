@@ -98,27 +98,24 @@ func phraseCandidates(text string) []phraseCandidate {
 const phraseChunk = 30
 
 // gradeSentences gives the phrases judgement sentence by sentence: the candidates of in.Text,
-// each judged by the spec's prompt; the sentences the grader finds vacuous are the findings,
-// each quoted whole. The calls of the chunks are summed into one Call.
+// each judged by the spec's prompt, which base holds with the reply's schema; the sentences the
+// grader finds vacuous are the findings, each quoted whole. The calls of the chunks are summed
+// into one Call.
 // A sentence judgement reads only its candidates, so its input mode is always trimmed.
-func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in GradeInput) Grade {
+func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in GradeInput, base llm.Request) Grade {
 	grade := Grade{Inputs: InputsTrimmed}
 	cands := phraseCandidates(in.Text)
 	grade.Candidates = len(cands)
 	if len(cands) == 0 {
 		return grade
 	}
-	system, err := render(spec.prompt, promptData{Phrases: g.phrases})
-	if err != nil {
-		return Grade{Error: err.Error()}
-	}
 	var total Call
 	var replies []json.RawMessage
 	for start := 0; start < len(cands); start += phraseChunk {
 		chunk := cands[start:min(start+phraseChunk, len(cands))]
 		list, _ := json.MarshalIndent(chunk, "", " ")
-		req := llm.Request{Purpose: "grade:" + string(in.Judgement), System: system, User: tag("candidates", string(list)),
-			Schema: phraseSchema(spec.verdicts), MaxTokens: graderMaxTokens}
+		req := base
+		req.User = tag("candidates", string(list))
 		resp, err := g.Model.Call(ctx, req)
 		for _, fallback := range g.Fallbacks {
 			var callErr *llm.CallError

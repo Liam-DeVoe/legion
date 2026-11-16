@@ -25,6 +25,7 @@
 //	writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
 //	writing-check dataset build (--snapshot <file> --verdicts <file> --seed N | --from <bundle>) --out <dir>
 //	writing-check dataset pack --snapshot <file> --verdicts <file> --seed N --out <bundle.tar.gz>
+//	writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 //	writing-check harness probe|score|grader-test|local|load [flags]
 //
 // probe-model measures the latency of the model reader's calls, fetch reads the prose agents
@@ -78,7 +79,7 @@ subcommands:
   regress            run the reader on the regression cases and bound its disagreement
   reading            take the outcome reading over a window of agent writes
   validate           check a description file (scanner.yaml) against the method's rules
-  dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack
+  dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack, owner-texts
   harness            score the changes of INFRA-3231 on the dataset: probe, score, grader-test, local, load
 
 writing-check <subcommand> -h lists its flags.

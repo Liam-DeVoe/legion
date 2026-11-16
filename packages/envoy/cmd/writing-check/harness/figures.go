@@ -34,6 +34,11 @@ type FigureRun struct {
 	CallSeconds   float64   `json:"call_seconds_all_results"`
 	ScoredThisRun int       `json:"scored_this_run"`
 	FailedThisRun int       `json:"failed_this_run"`
+	// ReusedAnswers and ReusedGrades are the readers' answers and the grades that the results
+	// took from other runs (score --readers-from, --grades-from): no call and no cost of them is
+	// among Models.
+	ReusedAnswers int `json:"reused_answers,omitempty"`
+	ReusedGrades  int `json:"reused_grades,omitempty"`
 }
 
 // The populations every change is scored on (plan Decision 18): the whole part first.
@@ -137,6 +142,16 @@ func computeFigures(params RunParams, results []CaseResult, selected int, seed u
 		change, measure := r.calls()
 		for _, c := range append(change, measure...) {
 			f.Run.CallSeconds += c.Seconds
+		}
+		for _, a := range []*Answer{r.Reader, r.FirstParagraphReader} {
+			if a != nil && a.Reused {
+				f.Run.ReusedAnswers++
+			}
+		}
+		for _, g := range r.Grades {
+			if g != nil && g.Reused {
+				f.Run.ReusedGrades++
+			}
 		}
 	}
 	return f
@@ -355,6 +370,12 @@ func (f Figures) markdown() string {
 	fmt.Fprintf(&b, "Every interval is 95%%: a cluster bootstrap over the split groups (%d draws, seed %d), or the exact bound over the groups where no failure or no success is seen.\n",
 		f.Run.Draws, f.Run.Seed)
 	fmt.Fprintf(&b, "Grader inputs: %s.\n", p.GraderInputs)
+	if p.VocabularySHA256 != "" {
+		fmt.Fprintf(&b, "The undefined judgement read the words of each text that the owner wrote himself before it (owner texts SHA-256 %s).\n", p.VocabularySHA256)
+	}
+	if f.Run.ReusedAnswers+f.Run.ReusedGrades > 0 {
+		fmt.Fprintf(&b, "Taken from other runs, with no call and no cost in this run: %d readers' answers and %d grades.\n", f.Run.ReusedAnswers, f.Run.ReusedGrades)
+	}
 	if r := f.Repeatability; r != nil {
 		fmt.Fprintf(&b, "Repeatability: the share of %d cases on which two runs of the grader (%s and %s) agree: the same verdict; for a count, both counts within %d (\"texts with any\": both find some, or neither); for the answer's start, both find it within %d words, or neither.\n",
 			r.Cases, r.A.Dir, r.B.Dir, listSlack, answerStartSlack)

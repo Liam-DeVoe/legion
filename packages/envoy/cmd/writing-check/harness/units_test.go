@@ -139,3 +139,45 @@ func TestAReplysOwnChecksDecide(t *testing.T) {
 		t.Errorf("the answered schema: %s", schema)
 	}
 }
+
+// The lost judgement drops an item its own checks rule out: one whose words state no fact, and
+// one whose fact the new text states. The prompt and the schema ask for both checks.
+func TestALostItemWithEitherCheckTrueIsDropped(t *testing.T) {
+	item := func(quote string, noFact, inNewText bool) string {
+		return fmt.Sprintf(`{"1_quote":%q,"2_states_no_fact":%t,"3_in_new_text":%t,"4_fact":"f"}`, quote, noFact, inNewText)
+	}
+	reply := `{"lost":[` + strings.Join([]string{item("**The choice:**", true, false), item("The run took 40 s.", false, true),
+		item("Agreed.", true, true), item("The test fails on node 7.", false, false)}, ",") + `]}`
+	var g Grade
+	if err := judgementSpecs[JLost].read([]byte(reply), &g, "The new text."); err != nil {
+		t.Fatal(err)
+	}
+	if g.Count != 1 || len(g.Items) != 1 || g.Items[0] != (Item{Quote: "The test fails on node 7.", Note: "f"}) || g.Dropped != 3 || g.NotInText != 0 {
+		t.Errorf("the lost facts: %+v, want the one item with both checks false, and 3 dropped", g)
+	}
+	// A lost fact's quote is of the original text, so no item is dropped for words the new
+	// text does not hold.
+	if judgementSpecs[JLost].inText {
+		t.Error("the lost judgement looks its quotes up in the new text")
+	}
+	schema := string(judgementSpecs[JLost].schema())
+	for _, want := range []string{`"1_quote":{"type":"string"}`, `"2_states_no_fact":{"type":"boolean"}`, `"3_in_new_text":{"type":"boolean"}`, `"4_fact":{"type":"string"}`} {
+		if !strings.Contains(schema, want) {
+			t.Errorf("the lost schema does not hold %s: %s", want, schema)
+		}
+	}
+	prompt, err := render("grade-lost", promptData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"2_states_no_fact"`, `"3_in_new_text"`, "- A heading", "- A label", "- A word of agreement", "says again what another sentence", "The reader's own words, quoted back"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the lost prompt does not hold %q", want)
+		}
+	}
+	// The added judgement has no such check: each of its items is a finding.
+	g = Grade{}
+	if err := judgementSpecs[JAdded].read([]byte(`{"added":[{"1_quote":"at noon","2_fact":"f"}]}`), &g, ""); err != nil || g.Count != 1 || g.Dropped != 0 {
+		t.Errorf("the added facts: %+v, %v", g, err)
+	}
+}

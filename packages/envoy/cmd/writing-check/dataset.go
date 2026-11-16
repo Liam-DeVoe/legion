@@ -153,11 +153,12 @@ const dsCarriedForward = "Carried forward from the approval"
 const dsUsage = `usage: writing-check dataset <step> [flags]
 
 steps:
-  fetch     read the event log up to an end time, every body an event cut and the document versions the cases read, into one snapshot
-  classify  give each text a person wrote one verdict of the selection prompt (internal/dispatch/wordrecords/select.md)
-  build     build the cases, their documents, the session list and the counts from a snapshot, its verdicts and a seed
-  pack      put the snapshot, the verdicts and the seed into one bundle that build --from reads
-  sessions  check the session export's parts and give each case its place in its writer session
+  fetch        read the event log up to an end time, every body an event cut and the document versions the cases read, into one snapshot
+  classify     give each text a person wrote one verdict of the selection prompt (internal/dispatch/wordrecords/select.md)
+  build        build the cases, their documents, the session list and the counts from a snapshot, its verdicts and a seed
+  pack         put the snapshot, the verdicts and the seed into one bundle that build --from reads
+  sessions     check the session export's parts and give each case its place in its writer session
+  owner-texts  write each text the owner wrote himself, with its time, from the snapshot build reads
 
 writing-check dataset <step> -h lists its flags.
 `
@@ -178,6 +179,8 @@ func runDataset(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runDatasetPack(args[1:], stdout, stderr)
 	case "sessions":
 		return runDatasetSessions(args[1:], stdout, stderr)
+	case "owner-texts":
+		return runDatasetOwnerTexts(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, dsUsage)
 		return 0
@@ -3225,6 +3228,72 @@ func (ix *dsIndex) writeDocuments(snapshotPath, path string, keep map[dsVerKey]b
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ---------------------------------------------------------------------------------------------
+// owner-texts
+
+// dsOwnerTextsFile is the file owner-texts writes: the owner's own texts, each with its time.
+const dsOwnerTextsFile = "owner-texts.jsonl.gz"
+
+func runDatasetOwnerTexts(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("writing-check dataset owner-texts", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	snapshot := flags.String("snapshot", "", "the snapshot fetch wrote, which build reads")
+	from := flags.String("from", "", "a bundle pack wrote, in place of --snapshot: the tarball, its manifest, or a directory holding one")
+	out := flags.String("out", "", "the directory for owner-texts.jsonl.gz (required; keep it under $TMPDIR)")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() > 0 || *out == "" || (*snapshot == "") == (*from == "") {
+		fmt.Fprintln(stderr, "writing-check dataset owner-texts: give --snapshot or --from, and --out, and nothing else")
+		return 2
+	}
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return fail(err)
+	}
+	path := *snapshot
+	if *from != "" {
+		dir, err := os.MkdirTemp(*out, ".bundle-")
+		if err != nil {
+			return fail(err)
+		}
+		defer os.RemoveAll(dir)
+		in, err := openBundle(*from, dir)
+		if err != nil {
+			return fail(err)
+		}
+		path = in.Snapshot
+	}
+	sum, texts, err := writeOwnerTexts(path, filepath.Join(*out, dsOwnerTextsFile))
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Fprintf(stdout, "owner texts: %d\n%s sha256: %s\n", texts, dsOwnerTextsFile, sum)
+	return 0
+}
+
+// writeOwnerTexts writes the owner's own texts of a snapshot to path, in event order, each as a
+// case holds a text, with its time, and answers the file's SHA-256 and how many texts it holds.
+// They are the texts build reads as his (ownerTexts): his comments, messages, asks, answers,
+// notes on asks and review reasons, and no document version or issue title. It reads nothing but
+// the snapshot, so the same snapshot writes the same bytes.
+func writeOwnerTexts(snapshot, path string) (string, int, error) {
+	ix, err := loadIndex(snapshot)
+	if err != nil {
+		return "", 0, err
+	}
+	owners := ix.ownerTexts()
+	texts := make([]dsCaseText, len(owners))
+	for i, t := range owners {
+		texts[i] = ix.caseText(t)
+	}
+	sum, err := dsWriteGzipJSONL(path, texts)
+	return sum, len(texts), err
 }
 
 // ---------------------------------------------------------------------------------------------

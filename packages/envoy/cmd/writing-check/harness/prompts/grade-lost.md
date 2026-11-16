@@ -21,9 +21,21 @@ Find each fact of the original text that the new text lost.
 - Do not list a phrase of the original text that states no fact.
 - List each lost fact one time.
 
+These words of the original text state no fact:
+
+- A heading, such as a bold line of a few words over a part of the text.
+- A label alone on its line, such as "The choice:". A label with a fact after it, such as "State: done.", states that fact.
+- A word of agreement or thanks, such as "OK.", "Agreed." or "Thanks."
+- A line that says again what another sentence of the original text says.
+- The reader's own words, quoted back to him.
+
 ## Your answer
 
 Give one JSON object with the field "lost": the list of the lost facts. The list is empty if the new text lost no fact. Each item has these fields, in this order:
 
 - "1_quote": the words of the original text that state the fact. Copy them exactly.
-- "2_fact": the fact, in one sentence.{{end}}
+- "2_states_no_fact": true if the words are a heading, a label, a word of agreement, a line that says again what another sentence says, or the reader's own words quoted back, else false.
+- "3_in_new_text": true if the new text states the fact, in other words, in a link, a reference or a list, else false.
+- "4_fact": the fact, in one sentence.
+
+Do not list a fact for which "2_states_no_fact" or "3_in_new_text" is true.{{end}}

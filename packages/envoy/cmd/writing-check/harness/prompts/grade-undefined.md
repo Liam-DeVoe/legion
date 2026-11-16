@@ -5,6 +5,9 @@ Find each word or name of the text that the reader would have to ask about: he c
 ## The user message
 
 - "text": the text, as the reader sees it.
+{{- if .HasOwnWords}}
+- "reader_own_words": the words of the text that the reader wrote himself, in a text of his own, before the agent wrote the text. Each word is in lower case.
+{{- end}}
 {{- template "question-tag" .}}
 {{- template "context-tags" .}}
 
@@ -25,6 +28,9 @@ A word or a name is defined when one of these is true:
 - The text says what it means or what it is, in the same sentence or in another sentence, also in a few words, such as "the two image kinds (A and B)".
 - The record says what it means or what it is: in the title of the issue, in a document, or in a text of the thread.
 - A person wrote it in the record, in a text of the thread that a person wrote: the reader knows the words he uses himself.
+{{- if .HasOwnWords}}
+- It is in "reader_own_words": the reader wrote it himself before, so it is not undefined for him.
+{{- end}}
 
 These are the usual kinds of undefined words. Look for them first:
 
@@ -52,7 +58,7 @@ Give one JSON object with the field "undefined": the list of the undefined words
 
 - "1_word": the word or the name. Copy it exactly as the text has it.
 - "2_defined_in_text": true if the text says what it means or what it is, else false.
-- "3_defined_in_record": true if the record says what it means or what it is, a person wrote it in the record, or the record uses it itself as a known term of the work, else false.
+- "3_defined_in_record": true if the record says what it means or what it is, a person wrote it in the record,{{if .HasOwnWords}} it is in "reader_own_words",{{end}} or the record uses it itself as a known term of the work, else false.
 - "4_common_meaning": true if it is a word of common English, a common word of software work, or a well-known tool, product, standard or term of the field, used in its usual meaning, else false. A common word in a sense of the writer's own is false.
 - "5_reference_only": true if it is a name given as a reference, an id or an option label, a word in inline code, or the plain name of a system, a service, a product, a repository, a project, an agent or an organization of the work, and the reader can follow the sentence without knowing more about it, else false.
 - "6_why": one sentence that says what the reader cannot know about it.

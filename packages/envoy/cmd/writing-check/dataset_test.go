@@ -457,6 +457,84 @@ func TestDatasetReplyChainFindsTheAgentText(t *testing.T) {
 	}
 }
 
+// owner-texts writes each text the owner wrote himself, in event order, with its time: no
+// agent's text, no other person's, and no text a session wrote for him. The snapshot of a bundle
+// writes the same bytes.
+func TestDatasetOwnerTextsAreHisOwnWithTheirTimes(t *testing.T) {
+	t.Parallel()
+	f := newDSFixture()
+	f.issue("OWN-1", "", "Own", "Spec.")
+	f.comment("agent-1", "OWN-1", fixtureAgent, "The relay drains the queue before each window.", "")
+	f.comment("owner-1", "OWN-1", fixturePerson, "What is the relay?", "agent-1")
+	asked := f.next
+	f.comment("other-1", "OWN-1", map[string]any{"kind": "user", "id": "other@example.com"}, "I ask the same.", "agent-1")
+	f.comment("acted-1", "OWN-1", map[string]any{"kind": "user", "id": fixtureOwner, "act": map[string]any{"session": fixtureAgent["id"]}},
+		"A session wrote this for him.", "")
+	f.event("ask.opened", fixtureAgent, "OWN-1", map[string]any{"id": "ask-7", "question": "Ship it?"})
+	f.event("ask.answered", fixturePerson, "OWN-1", map[string]any{"id": "ask-7", "answer": map[string]any{"text": "Ship it after the window."}})
+	answered := f.next
+	dir := t.TempDir()
+	snapshot, verdicts := f.write(t, dir)
+
+	var stdout, stderr bytes.Buffer
+	out := filepath.Join(dir, "out")
+	if code := run(t.Context(), []string{"dataset", "owner-texts", "--snapshot", snapshot, "--out", out}, &stdout, &stderr); code != 0 {
+		t.Fatalf("owner-texts: exit %d: %s", code, stderr.String())
+	}
+	path := filepath.Join(out, dsOwnerTextsFile)
+	var texts []dsCaseText
+	if err := eachGzipLine(path, func(line []byte) error {
+		var text dsCaseText
+		if err := json.Unmarshal(line, &text); err != nil {
+			return err
+		}
+		texts = append(texts, text)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at := func(event int64) string {
+		return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC).Add(time.Duration(event) * time.Minute).Format(time.RFC3339Nano)
+	}
+	want := []dsCaseText{{Text: "What is the relay?", Time: at(asked)}, {Text: "Ship it after the window.", Time: at(answered)}}
+	if len(texts) != len(want) {
+		t.Fatalf("owner texts = %+v, want his comment and his answer", texts)
+	}
+	for i, text := range texts {
+		if text.Text != want[i].Text || text.Time != want[i].Time || text.Actor != fixtureOwner || text.ActorKind != "user" || text.Session != "" {
+			t.Errorf("owner text %d = %+v, want %q at %s by %s", i, text, want[i].Text, want[i].Time, fixtureOwner)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if printed := "owner texts: 2\n" + dsOwnerTextsFile + " sha256: " + sha256Hex(data) + "\n"; stdout.String() != printed {
+		t.Errorf("owner-texts printed %q, want %q", stdout.String(), printed)
+	}
+
+	bundle := filepath.Join(dir, "bundle.tar.gz")
+	if _, _, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, bundle, dsPartSize); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	fromBundle := filepath.Join(dir, "from-bundle")
+	if code := run(t.Context(), []string{"dataset", "owner-texts", "--from", bundle, "--out", fromBundle}, &stdout, &stderr); code != 0 {
+		t.Fatalf("owner-texts --from: exit %d: %s", code, stderr.String())
+	}
+	if again, err := os.ReadFile(filepath.Join(fromBundle, dsOwnerTextsFile)); err != nil || !bytes.Equal(again, data) {
+		t.Errorf("owner-texts --from the bundle wrote other bytes (%v)", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(fromBundle, ".bundle-*")); len(left) != 0 {
+		t.Errorf("owner-texts --from left %v", left)
+	}
+	for _, args := range [][]string{{"--out", out}, {"--snapshot", snapshot, "--from", bundle, "--out", out}, {"--snapshot", snapshot}} {
+		if code := run(t.Context(), append([]string{"dataset", "owner-texts"}, args...), &stdout, &stderr); code != 2 {
+			t.Errorf("owner-texts %v: exit %d, want 2", args, code)
+		}
+	}
+}
+
 // build --from the bundle pack wrote, whole or as parts, prints the digest the direct build
 // prints, and its counts carry the confirmation read the bundle holds. The read leaves the cases
 // as they were, and one that names a case that is not a question case is refused.

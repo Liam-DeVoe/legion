@@ -28,9 +28,10 @@ go run ./cmd/writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out
 go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
 go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
+go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
 go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader-inputs ...] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
@@ -783,6 +784,8 @@ text. The work has these steps:
 5. `export-sessions.sh` writes the writer sessions out of the transcript store, on a machine that
    can read it, from the session list `build` writes.
 6. `sessions` checks that export and gives each case its place in its writer session.
+7. `owner-texts` writes each text that the owner wrote himself, with its time, from the snapshot.
+   `harness score --vocabulary` reads it.
 
 The dataset is a file artifact of INFRA-3231. It is never a file of this repository.
 `dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
@@ -1073,6 +1076,30 @@ the cases whose session is missing or left out.
 `sessions` over its output. Its negative control changes one byte of a part, and `sessions`
 refuses it.
 
+### owner-texts
+
+| Flag | Meaning |
+| --- | --- |
+| `--snapshot` | The snapshot that `fetch` wrote, which `build` reads. |
+| `--from` | A bundle that `pack` wrote, in place of `--snapshot`: the tarball, its manifest, or a directory that holds one of them. `owner-texts` reads the bundle's snapshot. |
+| `--out` | The directory for `owner-texts.jsonl.gz`. |
+
+`owner-texts` writes each text that the owner wrote himself to `owner-texts.jsonl.gz`, in event
+order. The owner is the person the dataset is about. The snapshot's header gives his login.
+
+It reads the snapshot, which is an input of `build`, and not the build's output. The cases hold
+only the owner's texts that answer a case, and the snapshot holds all of them. It reads no verdict
+and no seed, so one snapshot writes the same bytes.
+
+The file holds the texts that `build` reads as his: his comments, messages, asks, answers to asks,
+notes on asks and the reasons of his reviews. It holds no text that a session wrote for him. It
+holds no issue title and no document version, because the snapshot holds only the document
+versions that the cases read.
+
+Each line holds one text as a case holds a text: `key`, `event_id`, `event_type`, `time` (the
+time of the event that wrote it), `kind`, `actor_kind`, `actor`, `text` and `sha256`.
+`owner-texts` prints the count of texts and the file's SHA-256.
+
 ## harness
 
 `harness` (package `cmd/writing-check/harness`) scores the changes of INFRA-3231's R3 on the
@@ -1160,6 +1187,8 @@ writes the rows as JSON.
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
 | `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
 | `--readers-from` | A run directory whose fresh readers' answers this run grades again, for each case whose text is the same: two runs that compare graders grade the same answers. A reused answer's call is that run's and is not counted again. |
+| `--grades-from` | Run directories, comma-separated. For each case whose text is the same, byte for byte, as a text one of those runs graded, this run takes that run's answers and grades that read the same inputs, and calls no model for them (see "Grades of another run"). |
+| `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
 | `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
 | `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
 
@@ -1190,9 +1219,13 @@ answer gives, four checks (the answer only says the question again, says only wh
 is, answers another question, or is wrong by the record), its reason, and its verdict. A check
 that is true makes the verdict false. An undefined word that the grader marks defined in the
 text or the record, of common meaning, or a name given only as a reference, is no finding; so is
-an item whose quote the text does not hold, and a second item of one quote. The provider writes a
-reply's fields in the order of their names, so each name starts with its place (`1_asked`, ...,
-`8_answers`). Each grade keeps the grader's reply as it came.
+an item whose quote the text does not hold, and a second item of one quote. A lost fact has two
+checks: its words state no fact (`states_no_fact`), and the new text states the fact
+(`in_new_text`). A lost fact with either check true is no finding. The prompt lists the words
+that state no fact: a heading, a label, a word of agreement, a line that says again what another
+sentence says, and the reader's own words quoted back. The provider writes a reply's fields in the
+order of their names, so each name starts with its place (`1_asked`, ..., `8_answers`). Each grade
+keeps the grader's reply as it came.
 
 `phrases` follows the measured definition of a vacuous verb phrase (the rule of `label`'s
 rubric), sentence by sentence (`phrases.go`). The candidates are the sentences of the text, its
@@ -1304,6 +1337,62 @@ seed 3231), each run on the same reader answers:
 
 `lost`, `added` and `define` make no call under change 1, so no agreement was measured, and they
 take full inputs. `phrases` reads its candidate sentences alone, in either mode.
+
+### The owner's own words
+
+Without `--vocabulary`, the `undefined` judgement is as it was. It takes a word as known to the
+owner only where a person wrote it in the record's thread.
+
+With `--vocabulary <owner-texts.jsonl.gz>`, the judgement also gets, for each case, the words of
+the text it grades that the owner wrote himself before the case. Its user message holds them in
+the tag `reader_own_words`. Its prompt (`prompts/grade-undefined.md`) says that such a word is not
+undefined for him.
+
+- **The time cut.** A word counts when the owner wrote it in a text dated before the case's
+  `write_time`, the time the agent wrote the case's text. Where a case has no `write_time`, the
+  cut is the time of its agent text. A text of his at that time or after it does not count. So
+  his later question about a word of the case does not make the word one he knows. A case with no
+  time gets no words.
+- **The words.** A word is a run of letters and digits, in lower case, with `-`, `_` and `.` kept
+  inside it (`tokens`, which `asked-words` also matches by). A word of one character and a word
+  with no letter are left out. So `Train's` matches `train`, and `zork-7` does not match `zork`.
+- **The text.** The words are those of the text the person sees after the change, which is the
+  text the judgement grades.
+
+`run.json` records the file's SHA-256 as `vocabulary_sha256`. A run that continues in a
+directory must read the same file.
+
+### Grades of another run
+
+A change leaves many texts as the agent wrote them, and an earlier run, such as the change-1
+baseline, graded those texts. `--grades-from <run dir>[,<run dir>...]` takes those grades and
+pays for none of them again.
+
+For each case, the run reads each run of the flag, in the flag's order, for a result whose text
+is the same as its own, byte for byte (`text_sha256`). From such a result it takes:
+
+- a fresh reader's answer, when that reader read the same inputs;
+- a grade, when the grader read the same inputs.
+
+Each answer and each grade records the SHA-256 of its inputs as `input_sha256`. Two of them read
+the same inputs when that SHA-256 is the same. For a grade, it covers the grader and its
+fallbacks with their effort, the system prompt, the user message, the reply's schema and bound,
+and the session part where the call reads one. The user message holds what the input mode gives
+the judgement: the texts, the reader's answer, the question, the record, the writer's answer, the
+definition and the owner's own words. So the run takes no grade that was made with another input
+mode, another prompt, another vocabulary or another grader. It gives that judgement itself.
+
+An answer or a grade that the run takes is marked `reused` and keeps the call of the run that
+made it. The figures count no call and no cost for it: the model table and the cost in
+`scores.md` hold only the calls this run made. The change's own calls are always this run's.
+`scores.md` gives the number of answers and grades the run took (`reused_answers` and
+`reused_grades` in `scores.json`).
+
+`--grades-from` refuses a directory that holds no result. `run.json` records the directories as
+`grades_from`.
+
+`--readers-from` differs. It takes the readers' answers alone, and it does not compare their
+inputs, so that another grader grades the same answers.
 
 ### phrases-labels and asked-words
 

@@ -92,7 +92,8 @@ type CaseResult struct {
 	Time                 string               `json:"time"`
 }
 
-// calls is every model call the result records: the change's, the readers' and the grader's.
+// calls is every model call the result records as this run's: the change's, the readers' and the
+// grader's. An answer or a grade the run took from another run is that run's call, not this one's.
 func (r *CaseResult) calls() (change, measure []Call) {
 	change = r.ChangeCalls
 	for _, a := range []*Answer{r.Reader, r.FirstParagraphReader} {
@@ -102,7 +103,7 @@ func (r *CaseResult) calls() (change, measure []Call) {
 	}
 	for _, j := range Judgements {
 		g := r.Grades[j]
-		if g == nil {
+		if g == nil || g.Reused {
 			continue
 		}
 		measure = append(measure, g.Refused...)
@@ -124,6 +125,11 @@ type scorer struct {
 	// readersFrom are the results of the run --readers-from names, whose readers' answers
 	// this run grades again.
 	readersFrom map[string]CaseResult
+	// gradesFrom are the results of each run --grades-from names, in the flag's order, whose
+	// answers and grades this run takes for a case's same text and inputs.
+	gradesFrom []map[string]CaseResult
+	// vocabulary is the owner's own words (--vocabulary), nil for none.
+	vocabulary *Vocabulary
 	// only are the judgements the run gives; empty, it gives every one.
 	only []Judgement
 }
@@ -185,28 +191,53 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	// call reads of it.
 	base := GradeInput{Reply: reply, Question: question, Original: c.Agent.Text, Text: text, Definition: applied.Definition,
 		WriterAnswer: applied.WriterAnswer, Record: record, Session: session}
+	if s.vocabulary != nil && s.wants(JUndefined) {
+		// A case with no time gets no words: none can be placed before it.
+		if at, ok := c.writtenAt(); ok {
+			base.OwnWords = s.vocabulary.Known(text, at)
+		}
+	}
+	// earlier are what the runs --grades-from names hold for this case's same text: the readers'
+	// answers and each judgement's grades. The reader and the grader take one of them where its
+	// inputs were theirs, and call no model.
+	var earlierReaders, earlierFirstReaders []*Answer
+	var earlier map[Judgement][]*Grade
+	for _, results := range s.gradesFrom {
+		r, ok := results[c.ID]
+		if !ok || r.TextSHA256 != res.TextSHA256 {
+			continue
+		}
+		earlierReaders, earlierFirstReaders = append(earlierReaders, r.Reader), append(earlierFirstReaders, r.FirstParagraphReader)
+		if earlier == nil {
+			earlier = map[Judgement][]*Grade{}
+		}
+		for j, g := range r.Grades {
+			earlier[j] = append(earlier[j], g)
+		}
+	}
 	grade := func(j Judgement, answer string) {
 		in := base
 		in.Judgement, in.Answer = j, answer
-		set(j, s.grader.Grade(ctx, in))
+		set(j, s.grader.GradeOrReuse(ctx, in, earlier[j]))
 	}
 	prior := s.readersFrom[c.ID]
 	if prior.TextSHA256 != res.TextSHA256 {
 		prior = CaseResult{}
 	}
 	// read is the fresh reader's answer, or the answer a run named by --readers-from gave to
-	// this case's same text, so two runs that compare graders grade the same answers.
-	read := func(done *Answer, text string, firstParagraph bool) Answer {
+	// this case's same text, so two runs that compare graders grade the same answers; else one
+	// of same, the answers of the runs --grades-from names, that read the same inputs.
+	read := func(done *Answer, same []*Answer, text string, firstParagraph bool) Answer {
 		if done != nil && done.Error == "" {
 			a := *done
 			a.Reused = true
 			return a
 		}
-		return s.reader.Read(ctx, text, question, reply || firstParagraph, firstParagraph)
+		return s.reader.Read(ctx, text, question, reply || firstParagraph, firstParagraph, same)
 	}
 	if question != "" && s.wants(JAnswered) {
 		run(func() {
-			a := read(prior.Reader, text, false)
+			a := read(prior.Reader, earlierReaders, text, false)
 			mu.Lock()
 			res.Reader = &a
 			mu.Unlock()
@@ -222,7 +253,7 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 				if first == "" {
 					first = text
 				}
-				a := read(prior.FirstParagraphReader, first, true)
+				a := read(prior.FirstParagraphReader, earlierFirstReaders, first, true)
 				mu.Lock()
 				res.FirstParagraphReader = &a
 				mu.Unlock()
@@ -290,9 +321,14 @@ type RunParams struct {
 	Models map[string]string `json:"models"`
 	// GraderInputs are the grader's input modes (--grader-inputs, every judgement named), and
 	// ReadersFrom the run whose readers' answers this run grades again.
-	GraderInputs  string `json:"grader_inputs"`
-	ReadersFrom   string `json:"readers_from,omitempty"`
-	PromptsSHA256 string `json:"prompts_sha256"`
+	GraderInputs string `json:"grader_inputs"`
+	ReadersFrom  string `json:"readers_from,omitempty"`
+	// GradesFrom are the runs whose answers and grades this run takes for the same text and
+	// inputs, and VocabularySHA256 the SHA-256 of the owner's texts the undefined judgement
+	// reads his own words from.
+	GradesFrom       []string `json:"grades_from,omitempty"`
+	VocabularySHA256 string   `json:"vocabulary_sha256,omitempty"`
+	PromptsSHA256    string   `json:"prompts_sha256"`
 	// WriterSHA256 is the writer's prompts' digest, for a change that plays the writer.
 	WriterSHA256 string `json:"writer_sha256,omitempty"`
 	CasesSHA256  string `json:"cases_sha256"`
@@ -427,6 +463,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	figuresOnly := fs.Bool("figures-only", false, "compute the figures from the results the output directory holds, calling no model")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	readersFrom := fs.String("readers-from", "", "a run directory whose readers' answers this run grades again, for the cases whose text is the same")
+	gradesFrom := fs.String("grades-from", "", "run directories, comma-separated, whose answers and grades this run takes, calling no model, for each case whose text and whose reader's and grader's inputs are the same")
+	vocabulary := fs.String("vocabulary", "", "the owner-texts.jsonl.gz that writing-check dataset owner-texts wrote: the undefined judgement reads the words of each text that the owner wrote himself before the case")
 	repeatability := fs.String("repeatability", "", "a repeatability.json (harness compare) whose agreement scores.md gives beside each score")
 	judgementsFlag := fs.String("judgements", "", "the judgements to give, comma-separated (default: every one), for a measurement of a few")
 	mf := addModelFlags(fs)
@@ -486,6 +524,28 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if *readersFrom != "" {
 		if priorReaders, err = readResults(filepath.Join(*readersFrom, "cases.jsonl")); err != nil || len(priorReaders) == 0 {
 			return usage(fmt.Sprintf("--readers-from %s holds no results (%v)", *readersFrom, err))
+		}
+	}
+	var priorGrades []map[string]CaseResult
+	var gradesDirs []string
+	for _, dir := range strings.Split(*gradesFrom, ",") {
+		if dir = strings.TrimSpace(dir); dir == "" {
+			continue
+		}
+		results, err := readResults(filepath.Join(dir, "cases.jsonl"))
+		if err != nil || len(results) == 0 {
+			return usage(fmt.Sprintf("--grades-from %s holds no results (%v)", dir, err))
+		}
+		priorGrades, gradesDirs = append(priorGrades, results), append(gradesDirs, dir)
+	}
+	var ownWords *Vocabulary
+	var vocabularySHA string
+	if *vocabulary != "" {
+		if ownWords, err = ReadVocabulary(*vocabulary); err != nil {
+			return usage(fmt.Sprintf("--vocabulary: %v", err))
+		}
+		if vocabularySHA, err = fileSHA256(*vocabulary); err != nil {
+			return fail(err)
 		}
 	}
 	var agreement *Repeatability
@@ -567,6 +627,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	selected := selectCases(ds.Cases, groups, 0, 0)
 	params := RunParams{
 		Change: change.Name(), Part: *part, Groups: groups, Models: models, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
+		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
 	}
 	if plan != nil {
@@ -646,7 +707,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			}
 		}
 		s := &scorer{ds: ds, change: change, reader: &Reader{Model: readerModel}, grader: grader,
-			sessions: sessions, places: places, readersFrom: priorReaders, only: only}
+			sessions: sessions, places: places, readersFrom: priorReaders, gradesFrom: priorGrades, vocabulary: ownWords, only: only}
 		scored, failed, err = scoreAll(ctx, s, todo, resultsPath, mf.concurrency, stderr, started)
 		if err != nil {
 			return fail(err)

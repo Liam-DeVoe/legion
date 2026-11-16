@@ -39,8 +39,9 @@ type promptData struct {
 	// (as context, where the judgement is not of an answer to it), Dispatch's record, and, at its
 	// end, the writer's session part.
 	HasQuestion, HasRecord, HasSession bool
-	// WriterAnswer says the user message holds the writer's answer to a side question.
-	WriterAnswer bool
+	// WriterAnswer says the user message holds the writer's answer to a side question, and
+	// HasOwnWords the words of the text that the reader wrote himself before it.
+	WriterAnswer, HasOwnWords bool
 	// Phrases is the table of the phrases the owner asked agents to stop.
 	Phrases string
 }
@@ -147,8 +148,9 @@ var answerChecks = []string{"restates_question", "points_elsewhere", "other_ques
 var judgementSpecs = map[Judgement]judgementSpec{
 	JAnswered:       {prompt: "grade-answered", verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
 	JFirstParagraph: {prompt: "grade-first-paragraph", verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
-	JLost:           {prompt: "grade-lost", list: "lost", itemQuote: "quote", itemNote: "fact"},
-	JAdded:          {prompt: "grade-added", list: "added", itemQuote: "quote", itemNote: "fact"},
+	JLost: {prompt: "grade-lost", list: "lost", itemQuote: "quote", itemNote: "fact",
+		itemChecks: []string{"states_no_fact", "in_new_text"}},
+	JAdded: {prompt: "grade-added", list: "added", itemQuote: "quote", itemNote: "fact"},
 	JPhrases: {prompt: "grade-phrases", list: "phrases", itemQuote: "quote", itemNote: "rewrite", sentences: true,
 		verdicts: []string{"vacuous", "not_vacuous", "unresolved"}},
 	JUndefined: {prompt: "grade-undefined", list: "undefined", itemQuote: "word", itemNote: "why", inText: true,
@@ -267,7 +269,13 @@ type GradeInput struct {
 	Record string
 	// Session is the writer's session part, where the case has one.
 	Session claude.SessionText
+	// OwnWords are the words of Text that the person wrote himself before the case's text
+	// (score --vocabulary), which undefined reads in any input mode.
+	OwnWords []string
 }
+
+// ownWords says the judgement reads the person's own words: undefined, where it has some.
+func (in GradeInput) ownWords() bool { return in.Judgement == JUndefined && len(in.OwnWords) > 0 }
 
 // tag is text in a tag of its own.
 func tag(name, text string) string {
@@ -299,6 +307,9 @@ func (in GradeInput) user(p contextParts) string {
 		b.WriteString(tag("new_text", in.Text))
 	case JPhrases, JUndefined, JAnswerStart:
 		b.WriteString(tag("text", in.Text))
+		if in.ownWords() {
+			b.WriteString(tag("reader_own_words", "- "+strings.Join(in.OwnWords, "\n- ")))
+		}
 	case JDefine:
 		b.WriteString(tag("definition", in.Definition))
 	}
@@ -380,6 +391,11 @@ type Grade struct {
 	Error   string `json:"error,omitempty"`
 	// Reply is the grader's reply as it came, for an audit of the fields above.
 	Reply json.RawMessage `json:"reply,omitempty"`
+	// InputSHA256 is the SHA-256 of what the grade read (requestDigest): two grades of one
+	// digest had the same inputs. Reused says the grade is another run's of the same inputs
+	// (score --grades-from): its calls are that run's, and this run does not count them.
+	InputSHA256 string `json:"input_sha256,omitempty"`
+	Reused      bool   `json:"reused,omitempty"`
 }
 
 // graderMaxTokens bounds one grading reply, the grader's reasoning included.
@@ -402,25 +418,83 @@ func NewGrader(model *claude.Client, fallbacks []*claude.Client, inputs GraderIn
 }
 
 // Grade gives one judgement. A call that fails is a Grade with its Error.
-func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade {
+func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade { return g.GradeOrReuse(ctx, in, nil) }
+
+// GradeOrReuse gives one judgement, or, where one of done is a grade with no error whose inputs
+// were the ones this grade reads (InputSHA256), that grade again, marked Reused, with no call.
+func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade) Grade {
 	spec, ok := judgementSpecs[in.Judgement]
 	if !ok {
 		return Grade{Error: fmt.Sprintf("no judgement %q", in.Judgement)}
 	}
-	mode := cmp.Or(g.Inputs[in.Judgement], InputsTrimmed)
-	if spec.sentences {
-		return g.gradeSentences(ctx, spec, in)
-	}
-	p := in.parts(g.Inputs.context(in.Judgement))
-	data := promptData{
-		HasQuestion: p.Question, HasRecord: p.Record, HasSession: p.Session, WriterAnswer: p.WriterAnswer,
-		Reply: in.Reply, Phrases: g.phrases,
-	}
-	system, err := render(spec.prompt, data)
+	req, p, err := g.request(spec, in)
 	if err != nil {
 		return Grade{Error: err.Error()}
 	}
-	req := llm.Request{Purpose: "grade:" + string(in.Judgement), System: system, User: in.user(p), Schema: spec.schema(), MaxTokens: graderMaxTokens}
+	var session claude.SessionText
+	if p.Session {
+		session = in.Session
+	}
+	digest := requestDigest(append([]*claude.Client{g.Model}, g.Fallbacks...), req, session)
+	for _, d := range done {
+		if d != nil && d.Error == "" && d.InputSHA256 == digest {
+			again := *d
+			again.Reused = true
+			return again
+		}
+	}
+	var grade Grade
+	if spec.sentences {
+		grade = g.gradeSentences(ctx, spec, in, req)
+	} else {
+		grade = g.gradeOnce(ctx, spec, in, req, p)
+	}
+	grade.InputSHA256 = digest
+	return grade
+}
+
+// request is the judgement's request and the context parts it reads. A sentence judgement's
+// User is the text, whose candidate sentences its calls read (gradeSentences).
+func (g *Grader) request(spec judgementSpec, in GradeInput) (llm.Request, contextParts, error) {
+	req := llm.Request{Purpose: "grade:" + string(in.Judgement), MaxTokens: graderMaxTokens}
+	var p contextParts
+	var err error
+	if spec.sentences {
+		req.User, req.Schema = in.Text, phraseSchema(spec.verdicts)
+		req.System, err = render(spec.prompt, promptData{Phrases: g.phrases})
+		return req, p, err
+	}
+	p = in.parts(g.Inputs.context(in.Judgement))
+	data := promptData{
+		HasQuestion: p.Question, HasRecord: p.Record, HasSession: p.Session, WriterAnswer: p.WriterAnswer,
+		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases,
+	}
+	req.System, err = render(spec.prompt, data)
+	req.User, req.Schema = in.user(p), spec.schema()
+	return req, p, err
+}
+
+// requestDigest is the SHA-256 of what a call reads: each model it may call, in order, with its
+// effort; the request's system prompt, user message, schema and bound; and the session part, where
+// the call reads one.
+func requestDigest(models []*claude.Client, req llm.Request, session claude.SessionText) string {
+	h := sha256.New()
+	write := func(s string) { fmt.Fprintf(h, "%d:%s\n", len(s), s) }
+	for _, m := range models {
+		write(m.Name() + " " + m.Model().Effort)
+	}
+	for _, s := range []string{req.System, req.User, string(req.Schema), strconv.Itoa(req.MaxTokens)} {
+		write(s)
+	}
+	if !session.Empty() {
+		d := session.Digest()
+		h.Write(d[:])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// gradeOnce makes the judgement's call, then a fallback's while each model before it refuses.
+func (g *Grader) gradeOnce(ctx context.Context, spec judgementSpec, in GradeInput, req llm.Request, p contextParts) Grade {
 	call := func(model *claude.Client) (llm.Response, error) {
 		if p.Session {
 			return model.CallWithSession(ctx, req, in.Session)
@@ -428,7 +502,7 @@ func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade {
 		return model.Call(ctx, req)
 	}
 	resp, err := call(g.Model)
-	grade := Grade{Inputs: mode, Session: p.Session}
+	grade := Grade{Inputs: cmp.Or(g.Inputs[in.Judgement], InputsTrimmed), Session: p.Session}
 	for _, fallback := range g.Fallbacks {
 		var callErr *llm.CallError
 		if !errors.As(err, &callErr) || callErr.Fault != agentloop.FaultRefusal {
@@ -561,14 +635,18 @@ type Answer struct {
 	Text  string `json:"text"`
 	Call  Call   `json:"call"`
 	Error string `json:"error,omitempty"`
-	// Reused says the answer is another run's, graded again (score --readers-from); its call
-	// is that run's, not this one's.
-	Reused bool `json:"reused,omitempty"`
+	// InputSHA256 is the SHA-256 of what the reader read (requestDigest). Reused says the
+	// answer is another run's (score --readers-from, or --grades-from for the same inputs): its
+	// call is that run's, and this run does not count it.
+	InputSHA256 string `json:"input_sha256,omitempty"`
+	Reused      bool   `json:"reused,omitempty"`
 }
 
 // Read answers question from text alone. reply says text is the agent's reply to the question,
-// and firstParagraph that text is only that reply's first paragraph.
-func (r *Reader) Read(ctx context.Context, text, question string, reply, firstParagraph bool) Answer {
+// and firstParagraph that text is only that reply's first paragraph. Where one of done is an
+// answer with no error to the same inputs (InputSHA256), Read gives that answer again, marked
+// Reused, with no call.
+func (r *Reader) Read(ctx context.Context, text, question string, reply, firstParagraph bool, done []*Answer) Answer {
 	system, err := render("reader", promptData{Reply: reply || firstParagraph, FirstParagraph: firstParagraph})
 	if err != nil {
 		return Answer{Error: err.Error()}
@@ -577,8 +655,17 @@ func (r *Reader) Read(ctx context.Context, text, question string, reply, firstPa
 	if firstParagraph {
 		purpose = "reader:first_paragraph"
 	}
-	resp, err := r.Model.Call(ctx, llm.Request{Purpose: purpose, System: system, User: tag("text", text) + tag("question", question), MaxTokens: 1024})
-	a := Answer{Text: strings.TrimSpace(resp.Text), Call: callOf(resp)}
+	req := llm.Request{Purpose: purpose, System: system, User: tag("text", text) + tag("question", question), MaxTokens: 1024}
+	digest := requestDigest([]*claude.Client{r.Model}, req, claude.SessionText{})
+	for _, d := range done {
+		if d != nil && d.Error == "" && d.InputSHA256 == digest {
+			again := *d
+			again.Reused = true
+			return again
+		}
+	}
+	resp, err := r.Model.Call(ctx, req)
+	a := Answer{Text: strings.TrimSpace(resp.Text), Call: callOf(resp), InputSHA256: digest}
 	if err != nil {
 		a.Error = err.Error()
 	} else if a.Text == "" {
