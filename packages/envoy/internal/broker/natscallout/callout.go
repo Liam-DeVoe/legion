@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/broker/config"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -152,9 +153,6 @@ type Service struct {
 	// whose goroutine the scheduler has not run yet: counted any later, a bound would not bound
 	// the goroutines, which are what it holds.
 	waiting, refusing atomic.Int64
-	// dropped counts the requests deliver dropped past both bounds since they were last reported
-	// (reportDropped).
-	dropped atomic.Int64
 	// delivered is closed once the subscription's delivery goroutine has returned from its last
 	// callback and ended (Subscription.SetClosedHandler, which nats.go runs on that goroutine as
 	// it ends, nats.go:3778-3784), after which deliver adds nothing more to wait.
@@ -202,16 +200,6 @@ func (s *Service) beatWhileTurning() {
 		case <-s.done:
 			return
 		}
-	}
-}
-
-// reportDropped logs how many requests deliver has dropped past both bounds since the last report,
-// when it has dropped any. The heartbeat runs it every tick and Close once more at the end, so a
-// flood of drops is a line a tick, where a line a request would be a flood of its own.
-func (s *Service) reportDropped() {
-	if dropped := s.dropped.Swap(0); dropped > 0 {
-		s.answer.log("natscallout: dropped authorization requests unanswered, past both bounds of this replica; the hub refuses each client at its authorization timeout",
-			"dropped", dropped, "waiting_bound", maxWaiting, "refusing_bound", maxRefusing)
 	}
 }
 
@@ -281,8 +269,9 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
 	s := &Service{
-		conn:      conn,
-		answer:    &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide},
+		conn: conn,
+		answer: &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide,
+			drops: &drops{}, hub: newHubClock()},
 		slots:     make(chan struct{}, concurrentDecisions),
 		delivered: make(chan struct{}),
 		done:      make(chan struct{}),
@@ -358,9 +347,10 @@ func (s *Service) deliver(msg *nats.Msg) {
 		return
 	}
 	s.refusing.Add(-1)
-	// Dropped: the hub refuses its client at its authorization timeout. Not logged here, since a
-	// log line is a write, which can block, and past both bounds it would be a line a request.
-	s.dropped.Add(1)
+	// Dropped: the hub refuses its client at its authorization timeout. Counted, and logged by the
+	// heartbeat (reportDropped), not here: a log line is a write, which can block, and past both
+	// bounds it would be a line a request.
+	s.answer.drops.add(dropPastBounds, &pastBoundsDetail)
 }
 
 // Close stops answering.
@@ -463,6 +453,10 @@ type answerer struct {
 	deps         Deps
 	services     []ServiceEntry
 	decide       decideFunc
+	// drops counts what the service drops unanswered, and hub reads each hub server's clock for
+	// the requests it has given up on.
+	drops *drops
+	hub   *hubClock
 }
 
 // settle is how answer reaches the verdict on a request it has opened and read: the decision it
@@ -496,41 +490,60 @@ func refuseWith(refused *Refusal) settle {
 	return func(Request) (Decision, *Refusal) { return Decision{}, refused }
 }
 
+// issuelessAllowance is how far past its expiry, on this broker's clock, a request that carries no
+// issue time must be before it is dropped as one the hub has given up on. Such a request gives no
+// reading of the hub's clock (hubClock), so its expiry is read against this broker's own, which
+// can be off the hub's: the allowance is the skew the broker already allows any clock it compares
+// with its own, a connection proof's (brokertoken.ProofClockSkew, a minute). A hub writes an issue
+// time on every request it sends (jwt/v2 claims.go:190), so this is a request from no hub of this
+// fleet, and is answered under its budget like any other until then.
+const issuelessAllowance = brokertoken.ProofClockSkew
+
+// hubGaveUp reports whether the hub that sent claims, which reached the subscription at received,
+// has certainly given up on it. A request that names no expiry is not one it can have.
+func (a *answerer) hubGaveUp(claims *jwt.AuthorizationRequestClaims, received time.Time) bool {
+	switch {
+	case claims.Expires <= 0:
+		return false
+	case claims.IssuedAt <= 0:
+		return a.deps.now().After(time.Unix(claims.Expires, 0).Add(issuelessAllowance))
+	default:
+		return a.hub.gaveUp(claims.Server.ID, claims.IssuedAt, claims.Expires, received, time.Now())
+	}
+}
+
 // answer opens msg, settles it and answers it, sealed to the server's key; received is when the
 // request reached the subscription, from which the answer is timed. A request it cannot open or
-// read is not answered: the server refuses that connection at its authorization timeout, and the
-// broker's log says why.
+// read is dropped unanswered: the server refuses that connection at its authorization timeout, and
+// the drop is counted and logged (drops).
 //
-// Nor is a request the server has already given up on, which is dropped without a decision or a
-// broker call: nobody waits for its answer. The server writes a request's expiry as the moment it
-// sent it plus its authorization timeout, truncated to whole seconds (nats-server
-// server/auth_callout.go:386-387), and gives up at that timeout itself (:462-463). The drop's test
-// is jwt's own for an expired claim (jwt/v2 claims.go:287, the Unix second now later than the
-// expiry), which holds from a second past the expiry on, and the truncation puts that after the
-// moment the server gave up. So on one clock the drop discards no request the server still waits
-// for; with this broker's clock ahead of the hub's by a skew, it can discard one with less than
-// the skew of the server's timeout left, too little to decide it in. The same truncation is why
-// the expiry does not set the budget: it can name a moment up to a second before the server gives
-// up, and would cut a budget of 1.5 s by as much.
+// So is a request the server has already given up on, without a decision or a broker call: nobody
+// waits for its answer. Whether it has is read from the server's own clock (hubClock), so no skew
+// between the server's clock and this broker's drops a request the server still waits for. The
+// expiry does not set the budget either: written in whole seconds, it can name a moment up to a
+// second before the server gives up, and would cut a budget of 1.5 s by as much.
 func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
 	if serverXKey != "" {
 		opened, err := a.xkey.Open(data, serverXKey)
 		if err != nil {
-			a.log("natscallout: an authorization request did not open with the service's curve key", "error", err.Error())
+			detail := "did not open with the service's curve key: " + err.Error()
+			a.drops.add(dropUnopened, &detail)
 			return
 		}
 		data = opened
 	}
 	claims, err := jwt.DecodeAuthorizationRequestClaims(string(data))
 	if err != nil {
-		a.log("natscallout: an authorization request is no authorization request JWT", "error", err.Error())
+		detail := "no authorization request JWT: " + err.Error()
+		a.drops.add(dropUnreadable, &detail)
 		return
 	}
-	if claims.Expires > 0 && a.deps.now().Unix() > claims.Expires {
-		a.log("natscallout: dropped an authorization request unanswered: the hub had already given up on it",
-			"host", claims.ClientInformation.Host, "expired", time.Unix(claims.Expires, 0).UTC(), "waited_here", time.Since(received))
+	if a.hubGaveUp(claims, received) {
+		detail := fmt.Sprintf("the hub %s had given up on a request from %s, expiring at %s on its clock",
+			claims.Server.ID, claims.ClientInformation.Host, time.Unix(claims.Expires, 0).UTC().Format(time.RFC3339))
+		a.drops.add(dropHubGaveUp, &detail)
 		return
 	}
 	req := Request{

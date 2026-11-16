@@ -1,0 +1,86 @@
+package natscallout
+
+import (
+	"sync/atomic"
+	"time"
+)
+
+// The reasons a request is dropped unanswered, the reason label of
+// broker_nats_callout_dropped_total. The hub refuses the client of each at its own authorization
+// timeout.
+const (
+	// dropPastBounds: the request reached a replica already holding maxWaiting requests waiting
+	// for a decision slot and maxRefusing being refused (deliver).
+	dropPastBounds = iota
+	// dropHubGaveUp: the hub had already given up on the request when the replica read it, by the
+	// hub's own clock (hubClock).
+	dropHubGaveUp
+	// dropUnopened: the request did not open with the service's curve key.
+	dropUnopened
+	// dropUnreadable: the opened request is no authorization request JWT.
+	dropUnreadable
+	dropReasons
+)
+
+// dropLabels are the reason labels, by reason.
+var dropLabels = [dropReasons]string{"past_bounds", "hub_gave_up", "unopened", "not_a_request"}
+
+// dropLogInterval is the least time between two log lines of drops: the first drop after a quiet
+// interval is logged at the heartbeat's next tick, and the drops that follow it inside the interval
+// are counted and wait for the next line.
+const dropLogInterval = time.Minute
+
+// pastBoundsDetail is the first-drop detail of a drop past both bounds, which deliver records
+// without building a string.
+var pastBoundsDetail = "past both bounds of this replica"
+
+// drops counts the requests the service dropped unanswered. Each drop is an atomic add, and the
+// first detail since the last log line a compare-and-swap, so deliver can record one without
+// blocking (deliver); the heartbeat (reportDropped) moves the counts into the metric and writes the
+// log line, so neither a counter's lock nor a write is taken where a request is dropped.
+type drops struct {
+	// pending counts each reason's drops since the last report.
+	pending [dropReasons]atomic.Int64
+	// first is the detail of the first drop since the last log line.
+	first atomic.Pointer[string]
+	// unlogged counts each reason's drops since the last log line, and logged is when that line was
+	// written; only reportDropped reads or writes them, from the heartbeat and then from Close
+	// once the heartbeat has ended, so never two at once.
+	unlogged [dropReasons]int64
+	logged   time.Time
+}
+
+// add counts one drop for reason, and keeps detail when it is the first since the last log line.
+func (d *drops) add(reason int, detail *string) {
+	d.pending[reason].Add(1)
+	d.first.CompareAndSwap(nil, detail)
+}
+
+// reportDropped moves the drops counted since the last report into broker_nats_callout_dropped_total
+// and, when any wait to be logged and dropLogInterval has passed since the last line, logs them by
+// reason with the first one's detail. The heartbeat runs it every tick and Close once more at the
+// end.
+func (s *Service) reportDropped() {
+	d := s.answer.drops
+	total := int64(0)
+	for reason := range dropReasons {
+		n := d.pending[reason].Swap(0)
+		s.answer.deps.Metrics.dropped(dropLabels[reason], n)
+		d.unlogged[reason] += n
+		total += d.unlogged[reason]
+	}
+	if total == 0 || time.Since(d.logged) < dropLogInterval {
+		return
+	}
+	fields := []any{"dropped", total}
+	for reason := range dropReasons {
+		fields = append(fields, dropLabels[reason], d.unlogged[reason])
+		d.unlogged[reason] = 0
+	}
+	if first := d.first.Swap(nil); first != nil {
+		fields = append(fields, "first", *first)
+	}
+	fields = append(fields, "waiting_bound", maxWaiting, "refusing_bound", maxRefusing)
+	d.logged = time.Now()
+	s.answer.log("natscallout: dropped authorization requests unanswered; the hub refuses each client at its authorization timeout", fields...)
+}
