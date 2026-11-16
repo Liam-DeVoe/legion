@@ -54,9 +54,9 @@ import {
  * question and options rather than a second card to answer it in (`TextAskCard`). Whatever the
  * reading draws that takes the focus - a link, a reference, a picture's control - is out of the
  * tab order, as every other control inside a row is: the tree is one tab stop, and a key
- * reaches a row's links instead (R9, `useTreeKeymap.ts`'s `rowLinks`). A view that no tree's
- * keys reach passes `tabStops`, which keeps them in the tab order, the links a later pass makes
- * included.
+ * reaches a row's links instead (R9, `useTreeKeymap.ts`'s `rowStops`). A view that no tree's
+ * keys reach - part V's Verification view and part J's Spec view - passes `tabStops`, which
+ * keeps them in the tab order, the links a later pass makes included.
  */
 export function RowText({
   markdown,
