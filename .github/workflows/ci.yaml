@@ -334,7 +334,7 @@ jobs:
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
-      worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.worker_image }}
+      worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.worker_image }}
       # The browser image's build. No `full-ci` term, and none is wanted: the image is what the
       # jobs below pin, so gating its build behind a label would leave a pull request that edits
       # the Dockerfile writing a row whose digest the package does not hold, which the
@@ -583,6 +583,9 @@ jobs:
               - 'packages/envoy/internal/broker/oauth/*'
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
+              # The token exchange's Dispatch client (internal/broker/oauth imports it), and the
+              # account-token reader it presents with.
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/policy/**'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
@@ -595,6 +598,7 @@ jobs:
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -607,6 +611,7 @@ jobs:
               # text's testdata too: the daemon's race-tested packages compile it, and a compiled
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -618,8 +623,8 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
-              - 'packages/envoy/internal/testpg/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -700,6 +705,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -810,6 +816,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -833,6 +840,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1739,6 +1747,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/*'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -1748,6 +1757,7 @@ jobs:
               - 'packages/envoy/internal/broker/store/migrations/**'
               - 'packages/envoy/internal/broker/wake/*'
               - 'packages/envoy/internal/buildversion/*'
+              - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/ratelimit/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
               # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
@@ -1959,6 +1969,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1989,6 +2000,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -2037,6 +2049,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -2248,6 +2261,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2546,6 +2560,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/**'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -2556,8 +2571,8 @@ jobs:
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
-              - 'packages/envoy/internal/testpg/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
+              - 'packages/envoy/internal/testpg/testdb/*'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
@@ -2581,7 +2596,11 @@ jobs:
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
+              # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
+              # component compiles that package.
+              - 'packages/envoy/internal/weborigin/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
               - '.github/actions/pull-test-images/**'
@@ -3128,6 +3147,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -3173,6 +3193,8 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/**'
+              # The token exchange's Dispatch client and the stand-in cmd/broker's tests serve it.
+              - 'packages/envoy/internal/broker/projectaccess/**'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -3189,7 +3211,12 @@ jobs:
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
+              # oauthwire reads the project-key rule the contracts package generates, and the
+              # package's testdata is read by the job that compiles it.
+              - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
+              - 'packages/envoy/internal/fileowner/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/logging/*'
@@ -3201,8 +3228,8 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/serverwait/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
-              - 'packages/envoy/internal/testpg/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -3218,7 +3245,8 @@ jobs:
             # and the axiom print read the model's own project, and the two fuzz runs compile the
             # airlock package and compare it against the model's program, so a change to either
             # side runs the job. Both sides live under internal/broker/airlock, which one glob
-            # names; the axiom check is a script of its own, which check k15 runs too; the Lean
+            # names, and the Go side also compiles internal/fold, the case fold it compares names
+            # in; the axiom check is a script of its own, which check k15 runs too; the Lean
             # toolchain comes from the elan the job's action installs, and that action reads the
             # `elan` row of the tool manifest through the fetch helper every install goes through.
             airlock_lean:
@@ -3226,6 +3254,7 @@ jobs:
               - '.github/workflows/ci-job-airlock-lean.yaml'
               - *go_workspace
               - 'packages/envoy/internal/broker/airlock/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/scripts/airlock-lean-axioms.sh'
               - '.github/actions/install-elan/**'
               - '.github/ci-tools.yaml'
@@ -3233,6 +3262,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               # END generated
             # Every file packages/envoy/docker/Dockerfile builds from, so envoy-smoke runs whenever
             # the image it smokes changes, every file the held-port image built on top of it reads
@@ -3342,6 +3372,8 @@ jobs:
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fileowner/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
@@ -3367,6 +3399,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3426,89 +3459,6 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
               # END generated
-            # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
-            # job (.github/workflows/worker-image.yaml, which the build reads too): the root
-            # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
-            # install copies; the packages it copies whole (the daemon with the Dockerfile, the two
-            # plugins and the workspace packages they inline, the Claude Code plugin, whose source
-            # the plugin stage builds into the image's dist/ and legion/ with the .bun-version that
-            # build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
-            # binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
-            # top-level directories but infra is named; the scripts that write the image's
-            # third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
-            # pattern for each .dockerignore line that drops part of those packages, of
-            # packages/envoy or of skills/, which the step's some-with-excludes reads as an
-            # exclusion, so a pull request touching only files the build does not read builds no
-            # image.
-            # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
-            # file the image build reads, including a new top-level directory of packages/envoy, or
-            # matches a file it does not read other than the two workflow files; it reads this
-            # filter only as a flat list, so the one anchor it names is ci_router, which stands
-            # for a single glob and leaves the list flat.
-            worker_image:
-              - *ci_router
-              - '.github/workflows/worker-image.yaml'
-              - 'package.json'
-              - 'bun.lock'
-              - 'patches/**'
-              - 'packages/claude-envoy/**'
-              - 'packages/proof-editor/package.json'
-              - 'packages/proof-editor/proof-sdk-*.tgz'
-              - 'packages/dispatch/package.json'
-              - 'packages/test-fixtures/package.json'
-              - 'docs/site/package.json'
-              - 'packages/daemon/**'
-              - 'packages/pi-envoy/**'
-              - 'packages/pi-legion/**'
-              - 'packages/pi-shared/**'
-              - 'packages/envoy-client/**'
-              - 'packages/broker-client/**'
-              - 'packages/contracts/**'
-              - 'skills/**'
-              - 'go.work'
-              - 'go.work.sum'
-              - 'packages/envoy/*'
-              - 'packages/envoy/agentloop/**'
-              - 'packages/envoy/brokerclient/**'
-              - 'packages/envoy/brokertest/**'
-              - 'packages/envoy/cmd/**'
-              - 'packages/envoy/daemonpermissions/**'
-              - 'packages/envoy/deploy/**'
-              - 'packages/envoy/dispatchbody/**'
-              - 'packages/envoy/docker/**'
-              - 'packages/envoy/docs/**'
-              - 'packages/envoy/going/**'
-              - 'packages/envoy/internal/**'
-              - 'packages/envoy/listenfd/**'
-              - 'packages/envoy/loadtest/**'
-              - 'packages/envoy/migrationid/**'
-              - 'packages/envoy/roleholder/**'
-              - 'packages/envoy/scripts/**'
-              - 'packages/envoy/sessiontiming/**'
-              - 'packages/envoy/testnatsimages/**'
-              - '.omp-pin'
-              - '.bun-version'
-              - '.dockerignore'
-              - 'scripts/pi-plugin-prepack.sh'
-              - 'scripts/third-party-notices.ts'
-              - 'scripts/go-third-party-notices.sh'
-              - 'scripts/assemble-third-party-notices.sh'
-              - '!**/node_modules/**'
-              - '!**/dist/**'
-              - '!**/build/**'
-              - '!**/coverage/**'
-              - '!**/docker-data/**'
-              - '!skills/AGENTS.md'
-              - '!packages/envoy/**/*_test.go'
-              - '!packages/envoy/internal/integration/**'
-              - '!packages/envoy/internal/smoke/**'
-              - '!packages/envoy/deploy/**'
-              - '!packages/envoy/infra/**'
-              # Changelog fragments, which the packages above match and no build reads: .dockerignore
-              # leaves them out of the context, so a pull request that only writes a changelog entry
-              # builds no worker image, and a fragment stays where it was written, so no pattern
-              # here matches nothing.
-              - '!packages/*/.changes/**'
             # Every file the browser image's build reads, for the browser-image job
             # (.github/workflows/browser-image.yaml, which the build reads too): that build's
             # context is .github/docker, so every file under it reaches the build, and the
@@ -3521,8 +3471,8 @@ jobs:
             # refuses a path matched by a filter that decides nothing but an image build and
             # that no build reads by that reading: "browser_image matches
             # .github/ci-images.yaml, which no image build reads, so a pull request touching
-            # only that builds an image for nothing; narrow the filter". worker_image above
-            # leaves .github/scripts/repo-paths.sh out for that same reason, though its build
+            # only that builds an image for nothing; narrow the filter". worker_image, in the third
+            # step, leaves .github/scripts/repo-paths.sh out for that same reason, though its build
             # job runs that script. That refusal does not reach this filter today: the steps of
             # browser-image.yaml's build job are in no BUILD_PLUMBING_STEPS entry of that check
             # and its `attest` job is in none either, so the check reads the browser-image job
@@ -3798,6 +3748,92 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
+            # The worker image's job (worker-image). It moved here from the second step when the
+            # graph store's packages grew that step's string past rule 18's margin: it names only
+            # ci_router, which this step writes out.
+            # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
+            # job (.github/workflows/worker-image.yaml, which the build reads too): the root
+            # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
+            # install copies; the packages it copies whole (the daemon with the Dockerfile, the two
+            # plugins and the workspace packages they inline, the Claude Code plugin, whose source
+            # the plugin stage builds into the image's dist/ and legion/ with the .bun-version that
+            # build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
+            # binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
+            # top-level directories but infra is named; the scripts that write the image's
+            # third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
+            # pattern for each .dockerignore line that drops part of those packages, of
+            # packages/envoy or of skills/, which the step's some-with-excludes reads as an
+            # exclusion, so a pull request touching only files the build does not read builds no
+            # image.
+            # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
+            # file the image build reads, including a new top-level directory of packages/envoy, or
+            # matches a file it does not read other than the two workflow files; it reads this
+            # filter only as a flat list, so the one anchor it names is ci_router, which stands
+            # for a single glob and leaves the list flat.
+            worker_image:
+              - *ci_router
+              - '.github/workflows/worker-image.yaml'
+              - 'package.json'
+              - 'bun.lock'
+              - 'patches/**'
+              - 'packages/claude-envoy/**'
+              - 'packages/proof-editor/package.json'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
+              - 'packages/dispatch/package.json'
+              - 'packages/test-fixtures/package.json'
+              - 'docs/site/package.json'
+              - 'packages/daemon/**'
+              - 'packages/pi-envoy/**'
+              - 'packages/pi-legion/**'
+              - 'packages/pi-shared/**'
+              - 'packages/envoy-client/**'
+              - 'packages/broker-client/**'
+              - 'packages/contracts/**'
+              - 'skills/**'
+              - 'go.work'
+              - 'go.work.sum'
+              - 'packages/envoy/*'
+              - 'packages/envoy/agentloop/**'
+              - 'packages/envoy/brokerclient/**'
+              - 'packages/envoy/brokertest/**'
+              - 'packages/envoy/cmd/**'
+              - 'packages/envoy/daemonpermissions/**'
+              - 'packages/envoy/deploy/**'
+              - 'packages/envoy/dispatchbody/**'
+              - 'packages/envoy/docker/**'
+              - 'packages/envoy/docs/**'
+              - 'packages/envoy/going/**'
+              - 'packages/envoy/internal/**'
+              - 'packages/envoy/listenfd/**'
+              - 'packages/envoy/loadtest/**'
+              - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/roleholder/**'
+              - 'packages/envoy/scripts/**'
+              - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/testnatsimages/**'
+              - '.omp-pin'
+              - '.bun-version'
+              - '.dockerignore'
+              - 'scripts/pi-plugin-prepack.sh'
+              - 'scripts/third-party-notices.ts'
+              - 'scripts/go-third-party-notices.sh'
+              - 'scripts/assemble-third-party-notices.sh'
+              - '!**/node_modules/**'
+              - '!**/dist/**'
+              - '!**/build/**'
+              - '!**/coverage/**'
+              - '!**/docker-data/**'
+              - '!skills/AGENTS.md'
+              - '!packages/envoy/**/*_test.go'
+              - '!packages/envoy/internal/integration/**'
+              - '!packages/envoy/internal/smoke/**'
+              - '!packages/envoy/deploy/**'
+              - '!packages/envoy/infra/**'
+              # Changelog fragments, which the packages above match and no build reads: .dockerignore
+              # leaves them out of the context, so a pull request that only writes a changelog entry
+              # builds no worker image, and a fragment stays where it was written, so no pattern
+              # here matches nothing.
+              - '!packages/*/.changes/**'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
@@ -3899,6 +3935,8 @@ jobs:
               - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fileowner/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
@@ -3922,6 +3960,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -3961,6 +4000,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/*'
               - 'packages/envoy/internal/broker/policy/policytest/*'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -4041,6 +4081,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/fixtureenv/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -4059,7 +4100,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
-              - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -4126,6 +4167,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
@@ -4202,6 +4244,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
               - 'packages/envoy/internal/goroutinetest/*'
@@ -4237,6 +4280,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
@@ -4332,6 +4376,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
