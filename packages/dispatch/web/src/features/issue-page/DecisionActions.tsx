@@ -59,9 +59,10 @@ function keepFocusOnRow(control: HTMLElement): void {
 /**
  * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
- * for a Change that is closed. A row's body closes once the focus leaves the rows, and Keep and
- * Change go with it; held here, above the rows, the open form and its words come back as the
- * reader left them when the body opens again, rather than being dropped with no word said.
+ * for a Change that is closed or whose words were sent. A row's body closes once the focus
+ * leaves the rows, and Keep and Change go with it; held here, above the rows, the open form and
+ * its words come back as the reader left them when the body opens again, rather than being
+ * dropped with no word said.
  * Outside a view that holds one, a Change holds its form only while it is drawn.
  */
 const ChangeDrafts = createContext<Map<string, string> | undefined>(undefined);
@@ -289,8 +290,12 @@ function ChangeComposer({
       onSubmit={(event) => {
         event.preventDefault();
         if (body.trim() === "") return;
-        // Send is disabled while the comment is out, and the form goes once it lands.
+        // Send is disabled while the comment is out, and the form goes once it lands. The draft
+        // goes as the send starts: a body that closes while the comment is out comes back with
+        // Change closed, and the shell's pending-writes indicator holds the send, so a second
+        // press cannot write the change twice.
         keepFocusOnRow(event.currentTarget);
+        drafts?.delete(decision.ref);
         send.mutate({ body, quote });
       }}
     >

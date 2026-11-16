@@ -1,16 +1,20 @@
 import {
+  createContext,
   Fragment,
   type ReactNode,
   type RefObject,
   useCallback,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
+import { useMarkdownHeadline } from "../refs/markdown-engine";
 import {
   buildReferencePath,
   type DispatchReferenceRoute,
@@ -43,9 +47,9 @@ import {
  * Either way a reference in the words - a `dispatch://` reference, a dashboard address, the key
  * of an issue that exists - is a link to its target, named from the page's one batched read of
  * what its references point at (`row-references.ts`): an issue by its key and title, and a block
- * or a document as a chip in place, named as a tie's chip is (`chipName`, part G's R4). The row
- * asks the server nothing for it (R21), so the body's own link pass, which reads one target for
- * each reference, is given nothing to link.
+ * or a document as a chip in place, named as a tie's chip is, in plain words (`chipName`,
+ * `PlainReferenceNamesProvider`, part G's R4). The row asks the server nothing for it (R21), so
+ * the body's own link pass, which reads one target for each reference, is given nothing to link.
  *
  * The words are a reading of the text, as it was when it was drawn as stored: an `ask` block in a
  * document is a node of the tree of its own, where a reader answers it, so the text draws its
@@ -124,6 +128,85 @@ function chipNames(
   return named;
 }
 
+/**
+ * The batched read's names, with each name but an issue's read as plain words, as the chip at
+ * the end of a node's words reads its target's name (`NodeRow.tsx`'s `Chip`,
+ * `useMarkdownHeadline`): a block's name is its stored excerpt, which is markdown, so a chip in
+ * a node's words draws no mark its author typed either (part G's R4, the tester's finding F18).
+ * An issue's name is its title, kept as the read sent it. A name is left out until its reading
+ * answers, so the chip in place draws what it draws before the names come, never the marks.
+ * This reading goes once F's `chipOf` names each target from the server's reading of it
+ * (decision 49).
+ */
+const PlainReferenceNames = createContext<ReadonlyMap<string, string> | undefined>(undefined);
+
+/** Whether the batched read's name for `reference` is kept as it was sent: an issue's, and that
+ *  of a reference the grammar cannot read. */
+function keptAsSent(reference: string): boolean {
+  const route = parseNodeReference(reference);
+  return route === undefined || route.kind === "issue";
+}
+
+/** Reads every name the batched read brought as plain words, once for every row under it: the
+ *  page's slots draw it around the views that draw rows (`slots/providers.tsx`). */
+export function PlainReferenceNamesProvider({ children }: { children: ReactNode }): ReactNode {
+  const read = useKnownReferenceNames();
+  const [plain, setPlain] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const take = useCallback((name: string, words: string) => {
+    setPlain((held) => (held.get(name) === words ? held : new Map(held).set(name, words)));
+  }, []);
+  const names = useMemo(() => {
+    const named = new Map<string, string>();
+    for (const [reference, name] of read) {
+      const source = withoutDirectiveLines(name);
+      const words = keptAsSent(reference) ? name : source === "" ? "" : plain.get(source);
+      if (words !== undefined) named.set(reference, words);
+    }
+    return named;
+  }, [plain, read]);
+  // One reading for each name, whichever references share it.
+  const sources = useMemo(() => {
+    const held = new Set<string>();
+    for (const [reference, name] of read) {
+      const source = withoutDirectiveLines(name);
+      if (!keptAsSent(reference) && source !== "") held.add(source);
+    }
+    return [...held];
+  }, [read]);
+  return (
+    <PlainReferenceNames.Provider value={names}>
+      {sources.map((source) => (
+        <PlainName key={source} name={source} onRead={take} />
+      ))}
+      {children}
+    </PlainReferenceNames.Provider>
+  );
+}
+
+/** Reads one name as plain words, as the chip at the end of a node's words does, and hands them
+ *  to `onRead` once the reading answers. It draws nothing. */
+function PlainName({
+  name,
+  onRead,
+}: {
+  name: string;
+  onRead: (name: string, words: string) => void;
+}): null {
+  const plain = useMarkdownHeadline(undefined, name.length, name);
+  useLayoutEffect(() => {
+    if (plain !== undefined) onRead(name, plain.text);
+  }, [name, onRead, plain]);
+  return null;
+}
+
+/** The names a node's words name their references by: read as plain words where the page's
+ *  slots draw `PlainReferenceNamesProvider`, and as the batched read sent them where nothing
+ *  does, as in a test that draws a row alone. */
+function useRowReferenceNames(): ReadonlyMap<string, string> {
+  const known = useKnownReferenceNames();
+  return useContext(PlainReferenceNames) ?? known;
+}
+
 /** The mark a reference in a node's words carries where it is drawn as a chip (`styles.css`). */
 const ROW_CHIP = "data-row-chip";
 
@@ -174,7 +257,7 @@ function StoredText({
   tabStops: boolean;
 }): ReactNode {
   const markdown = useMemo(() => withoutDirectiveLines(stored), [stored]);
-  const read = useKnownReferenceNames();
+  const read = useRowReferenceNames();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   const found = useMemo(() => rowReferences(markdown, knownIssueKeys(names)), [markdown, names]);
   let at = 0;
@@ -251,7 +334,7 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const drawn = useRef<HTMLDivElement>(null);
-  const read = useKnownReferenceNames();
+  const read = useRowReferenceNames();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   // After every paint of the reading, and again when the batched read brings the names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
