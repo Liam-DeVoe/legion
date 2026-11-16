@@ -3255,7 +3255,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   With `units.json`, at the head of main it prints `wait of <unit> on <statement>: ends` or `holds (<own state>)` for each wait (`State.WaitEnds`, R29).
   A wait reads the statement's own checks that read main (R10: "Only the checks that read the subject count"), so an own check of production holds no wait.
   After the last subject it then prints `spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>` or `spec-check: cycle of waits: none` (`specgraph.WaitCycle`).
-  `--json` prints one line of JSON instead: `[]State`, or with `units.json` `{"states":[…],"cycle":[…]}`.
+  `--json` prints one line of JSON instead: `[]State`, or with `units.json` `{"states":[…],"cycle":[…]}`, with the `[` of each `##[` written as `\u005b`, as `checks` writes its JSON.
   A scenario it reads is exit 0 with nothing on stderr.
   A file or a field that the format does not hold, a missing file, or a spec file that does not parse is exit 2 with one line on stderr, `spec-check: <dir>/<file>: <fault>`.
   Every JSON file of the scenario goes through the strict reader that `compare` uses, and the spec files of each commit through `Validate`, as `tree` judges them, with the file and line of the first problem.
@@ -3275,6 +3275,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A problem that names no check and no statement, such as a bad term or a bad component, refuses each check and statement of the tree, whatever file holds it, since a file is no relation of The Spec; the reasons above stay first where they apply.
   A loop of parent and support relations refuses each statement of the loop, whichever id the rule names first, so a wait on each holds.
   A refusal never hides a failure: a refused statement whose own check is false, or under which a statement or a supporter is not met, reads not met, while a check that a problem names itself reads `unknown (refused)` whatever its results.
+  In a loop, a statement under it or a supporter that is in the same loop does not count for that: it counts as unknown (`statement_refused` or `supporter_unknown`), so no state depends on the order of the ids.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.

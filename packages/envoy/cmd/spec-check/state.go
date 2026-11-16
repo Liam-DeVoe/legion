@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -190,10 +189,8 @@ func printLine(w io.Writer, format string, args ...any) {
 	fmt.Fprintln(w, runnerlog.Printable(fmt.Sprintf(format, args...)))
 }
 
-// printStatesJSON writes the states as one line of JSON, []State, or with units
-// {"states":[…],"cycle":[…]}, "cycle" [] when there is none. As in checks, the line does not pass
-// through runnerlog.Say: encoding/json escapes each control character of a value, the line starts
-// with "[" or "{", and the "[" of each "##[" is written as \u005b.
+// printStatesJSON writes the states as one line of JSON with printJSON, []State, or with units
+// {"states":[…],"cycle":[…]}, "cycle" [] when there is none.
 func printStatesJSON(stdout, stderr io.Writer, dir string, states []specgraph.State, units bool, cycle []string) int {
 	var value any = states
 	if units {
@@ -205,11 +202,5 @@ func printStatesJSON(stdout, stderr io.Writer, dir string, states []specgraph.St
 			Cycle  []string          `json:"cycle"`
 		}{states, cycle}
 	}
-	line, err := json.Marshal(value)
-	if err != nil {
-		say(stderr, "%s: %s", dir, err)
-		return 2
-	}
-	fmt.Fprintln(stdout, strings.ReplaceAll(string(line), "##[", `##\u005b`))
-	return 0
+	return printJSON(stdout, stderr, dir, value)
 }

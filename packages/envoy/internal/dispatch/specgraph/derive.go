@@ -30,7 +30,11 @@ type State struct {
 //     at that commit do not hold the approved text of the statement, or of a statement under it").
 //     A supporter that is not built does not make S not built; it makes S unknown (rule 3).
 //  2. An own check is false, or a statement under S or a supporter is not met: not_met,
-//     check_false or supporter_not_met (R10: "Not met: one of them is false").
+//     check_false or supporter_not_met (R10: "Not met: one of them is false"), also when the tree
+//     rules refuse S, since a refusal never hides a failure. In a loop, a statement under S or a
+//     supporter that is in the same loop does not count for that: it counts as unknown
+//     (statement_refused or supporter_unknown, rule 3), so no state depends on the order of the
+//     ids.
 //  3. An own check is unknown, S has no check where the tree rules ask for one (a leaf, or a
 //     statement that other statements serve), the tree rules refuse S, or a statement under S or a
 //     supporter is unknown or not built: unknown, check_unknown, no_check, refused,

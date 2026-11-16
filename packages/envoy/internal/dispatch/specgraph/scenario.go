@@ -258,22 +258,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 // Validate's loop rule writes it, or nil when there is none.
 func approvedLoop(a Approved) []string {
 	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
-	held := make(map[string]bool, len(current.Statements))
-	for _, s := range current.Statements {
-		held[s.ID] = true
-	}
-	edges := map[string][]edge{}
-	for _, s := range current.Statements {
-		if held[s.Parent] {
-			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: "parent"})
-		}
-		for _, id := range s.Serves {
-			if held[id] {
-				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: "serves"})
-			}
-		}
-	}
-	if loops := findLoops(edges); len(loops) > 0 {
+	if loops := findLoops(statementEdges(current.Statements)); len(loops) > 0 {
 		return loops[0]
 	}
 	return nil
