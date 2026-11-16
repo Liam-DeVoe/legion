@@ -1887,6 +1887,8 @@ jobs:
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
+              # internal/bus refuses a nats-server below the floor this package holds.
+              - 'packages/envoy/natsversion/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
