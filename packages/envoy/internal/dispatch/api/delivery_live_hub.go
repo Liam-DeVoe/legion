@@ -509,7 +509,7 @@ func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {
-		if view.spec.classes().project && view.spec.project == project {
+		if view.spec.classes().reads == viewReadsLegion && view.spec.project == project {
 			h.markDirtyLocked(g, view, now, deliveryCauseChange)
 		}
 	}

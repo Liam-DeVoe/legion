@@ -5,8 +5,9 @@ package legion
 // with the rest of their population (PhaseWorkKeys, legion/metrics). The Legion board reads it
 // only for the issues its tree walk can climb onto that the daemon reports nothing of, and only
 // on a board read that meets one (PhaseWorkOf, api/legion_board.go's readPhaseWork). Both come
-// through one read of the same rows under the same title rule (readPhaseWork), so the two place an
-// issue in the same tree.
+// through one read (readPhaseWork), under one title rule, and the board's is that read over the
+// issues it names rather than a second rule, so an issue carries the same phase work whichever
+// asks, and the two place it in the same tree.
 
 import (
 	"context"
@@ -23,16 +24,18 @@ type PhaseWork struct {
 	Keys map[string]struct{}
 }
 
-// PhaseWorkKeys is every issue that carries Legion phase work, over the whole log: the issues a
-// handoff was recorded for, and the issues an event of a session titled `Legion <role> · <that
-// issue's key>` was written on. It is read project-wide, which is what makes the answer a fact of
-// the project rather than of a window (tree.go).
+// PhaseWorkKeys is every issue that carries Legion phase work, over the whole log of every
+// project: the issues a handoff was recorded for, and the issues an event of a session titled
+// `Legion <role> · <that issue's key>` was written on. The metrics read it, once per answer beside
+// the rest of their population (legion/metrics' readPhaseWork). It takes no project, so it answers
+// every project's issues and the metrics look up their own project's among them; and it takes no
+// window, since an issue's tree is a fact of its project rather than of the window a metric
+// measures (tree.go).
 //
 // The title rule is this package's own (WorkerTitle and RoleSessionWorks, session_title.go), and
 // the titles are resolved the one way Dispatch resolves them, each session's newest
-// (delivery.ResolveSessionTitles). Both readers of the fact come through readPhaseWork, so a
-// session renamed after it wrote, or an event that carried no title of its own, moves the board
-// and the metrics together.
+// (delivery.ResolveSessionTitles), so a session renamed after it wrote, or an event that carried
+// no title of its own, counts under the title the session has now.
 func PhaseWorkKeys(ctx context.Context, pool *store.Pool) (PhaseWork, error) {
 	return readPhaseWork(ctx, pool, nil)
 }

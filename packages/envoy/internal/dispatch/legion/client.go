@@ -34,9 +34,7 @@ const StatePath = "/legion/v1/state"
 // room for a daemon under load to project a state of some megabytes and for Dispatch to read it
 // at ResponseLimit, and a bound at all is what keeps a minute's pass from piling up behind a
 // daemon that accepts a connection and never answers.
-//
-// A var rather than a const so a test can shrink it; nothing outside a test writes it.
-var RequestTimeout = 20 * time.Second
+const RequestTimeout = 20 * time.Second
 
 // ResponseLimit is the most of a daemon's answer Dispatch reads: 8 MiB, about nine times the
 // 877,746 bytes the INFRA daemon's state measured at (the plan's D14). A body over it is a failed

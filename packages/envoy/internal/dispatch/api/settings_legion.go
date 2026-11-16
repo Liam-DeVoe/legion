@@ -29,7 +29,7 @@ import (
 
 // getLegionSetting answers GET /api/v1/projects/{key}/legion/daemon with the project's daemon,
 // or null when it names none, as GET /api/v1/settings/delivery answers a setting nobody wrote. An
-// unknown project is 404 NOT_FOUND.
+// unknown project is 404 PROJECT_NOT_FOUND.
 func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -60,8 +60,8 @@ type putLegionSettingInput struct {
 }
 
 // putLegionSetting answers PUT /api/v1/projects/{key}/legion/daemon: name the daemon that
-// project's state is read from. An unknown project is 404 NOT_FOUND, and a state_url that is not
-// an absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
+// project's state is read from. An unknown project is 404 PROJECT_NOT_FOUND, and a state_url that
+// is not an absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	var input putLegionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -97,7 +97,7 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 
 // deleteLegionSetting answers DELETE /api/v1/projects/{key}/legion/daemon: stop reading that
 // project's daemon. What was already read stays; nothing re-reads it. A project with no setting
-// is 404 NOT_FOUND, as an unknown one is.
+// is 404 NOT_FOUND, and an unknown one 404 PROJECT_NOT_FOUND.
 func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireActor(w, r, nil); !ok {
 		return
@@ -123,16 +123,16 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 
 // legionProject is the {key} of the path, once it is a project key and a project of that key
 // exists. Every Legion route of one project is under /api/v1/projects/{key}/legion/, the three
-// daemon routes and the board alike, so each reads its project here and answers a badly spelled
-// key one refusal, 400 LEGION_SETTING_INPUT; an unknown project is the 404 NOT_FOUND every
-// unknown row is.
+// daemon routes and the board alike, so each reads its project here and answers as every project
+// route does: a badly spelled key is 400 INVALID_PROJECT, and an unknown project loadProject's 404
+// PROJECT_NOT_FOUND.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	project := strings.TrimSpace(r.PathValue("key"))
 	if !projectKeyPattern.MatchString(project) {
-		writeError(w, "LEGION_SETTING_INPUT", http.StatusBadRequest, projectKeyProblem("project", project))
+		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select key from projects where key = $1`, project).Scan(new(string)); err != nil {
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
 		s.writeHandlerError(w, err)
 		return "", false
 	}

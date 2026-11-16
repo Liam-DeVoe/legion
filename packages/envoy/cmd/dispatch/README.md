@@ -3785,7 +3785,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
   No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
-  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, and a project that does not exist `404 NOT_FOUND`.
+  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
   `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
 
@@ -3793,7 +3793,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
   Ten columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
-  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `404 NOT_FOUND` for a project that does not exist.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 

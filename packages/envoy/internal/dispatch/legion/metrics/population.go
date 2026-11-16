@@ -143,9 +143,10 @@ type Population struct {
 	// reported is every issue of the project the daemon reports — the issues the sampler
 	// recorded any observation of — against the `tree` the daemon named for it, empty where it
 	// named none (readReported). phaseWork is every issue that carries Legion phase work, over
-	// the whole log (legion.PhaseWorkKeys). Both halves of the one rule that places an issue in
-	// a tree (legion.TreeNode) are read project-wide rather than for the window's keys: an
-	// issue's tree is a fact of the project, not of the window.
+	// the whole log of every project (legion.PhaseWorkKeys). Neither half of the one rule that
+	// places an issue in a tree (legion.TreeNode) is read for the window's keys: the first is the
+	// project's whole and the second every project's, since an issue's tree is a fact of the
+	// project, not of the window.
 	reported  map[string]string
 	phaseWork map[string]struct{}
 
@@ -156,7 +157,8 @@ type Population struct {
 }
 
 // Read is every database and GitHub read one metrics answer makes: the project's issues, the
-// Legion phase work the event log records — for every issue of the project, which is what places
+// Legion phase work the event log records — for every issue the log holds, this project's among
+// them, since the read takes no project and the metrics look up their own, which is what places
 // an issue in a tree, and in the window's scope per role, which is what a metric counts — the
 // handoffs and observations of the window's issues, the issues of the project the daemon
 // reports, the issues Legion sessions created in the window, and the merge time of each finished
@@ -783,20 +785,22 @@ func (p *Population) TreeRoot(key string) string {
 
 // isLegionIssue answers legion.TreeNode's Legion for this population, which states the rule: the
 // daemon reports the issue — it is in the project's reported set (readReported) — or it carries
-// Legion phase work (readPhaseWork). Both sets are read for the whole project, so the answer
-// does not move with the window being computed, which is what makes it the board's: the Legion
-// board reads the same two facts (api/legion_board.go's treeRoot). A fixture states the rule by
-// filling the two sets, as a read does.
+// Legion phase work (readPhaseWork). Neither set is read for the window, the first being the
+// project's whole and the second every project's, so the answer does not move with the window
+// being computed, which is what makes it the board's. The Legion board asks the same two facts
+// its own way (api/legion_board.go's treeNode), reading phase work only for the issues its walk
+// can climb onto (its readPhaseWork). A fixture states the rule by filling the two sets, as a
+// read does.
 func (p *Population) isLegionIssue(issue *Issue) bool {
 	_, reported := p.reported[issue.Key]
 	_, worked := p.phaseWork[issue.Key]
 	return reported || worked
 }
 
-// readPhaseWork reads the issues that carry Legion phase work, over the whole project
-// (legion.PhaseWorkKeys, whose Keys are the whole of what this needs). It places an issue in a
-// tree and nothing else: what a metric counts reads the window's own role events and handoffs
-// (hasPhaseWork).
+// readPhaseWork reads the issues that carry Legion phase work, over the whole log of every project
+// (legion.PhaseWorkKeys, whose Keys are the whole of what this needs); isLegionIssue looks up only
+// this project's issues in it. It places an issue in a tree and nothing else: what a metric counts
+// reads the window's own role events and handoffs (hasPhaseWork).
 func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error {
 	work, err := legion.PhaseWorkKeys(ctx, pool)
 	if err != nil {

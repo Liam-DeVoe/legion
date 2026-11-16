@@ -17,7 +17,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 	if !known {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline or legion")
 	}
-	if view.Project != nil && !classes.project {
+	if view.Project != nil && classes.reads != viewReadsLegion {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
 	}
 	spec := deliveryLiveSpec{kind: view.Kind}
@@ -92,12 +92,11 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	}
 	project := strings.TrimSpace(*view.Project)
 	// A badly spelled key is refused with the code and the words the board route answers it with
-	// (legionProject), so a person who meets the mistake at both doors learns one name for it. It
-	// is no INVALID_QUERY, as a timeline, measures or pipeline view's bad value is: the board's
-	// project is a segment of its path and no query, and every Legion route of a project refuses a
-	// bad key there as LEGION_SETTING_INPUT.
+	// (legionProject), which are every project route's (INVALID_PROJECT, projectKeyProblem), so a
+	// person who meets the mistake at either door learns one name for it. A project that does not
+	// exist is the read's to refuse, as the route's is (readLegionBoardView, loadProject).
 	if !projectKeyPattern.MatchString(project) {
-		return invalidLiveView("LEGION_SETTING_INPUT", projectKeyProblem("project", project))
+		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
 	}
 	spec.project = project
 	spec.key = legionBoardView + "|" + project + "|"

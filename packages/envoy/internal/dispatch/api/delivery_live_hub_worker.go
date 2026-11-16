@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log"
 	"log/slog"
 	"maps"
@@ -146,7 +145,7 @@ type deliveryViewRead struct {
 // takes over every mark made until then (read), so a change committed during the read lands past
 // it and marks the view again; then the GET route's population read, the ancestors of the issues
 // it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
-// a sub with none), or DELIVERY_NOT_CONFIGURED to a sub not yet told.
+// a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
 func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string) {
 	started := time.Now()
 	h.mu.Lock()
@@ -160,14 +159,14 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 
 	now := h.clock.Now()
 	classes := spec.classes()
+	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
 	view.computing, view.readingSeq = false, 0
 	sent := 0
 	switch {
 	case g.views[spec.key] != view:
 		// Every sub left while it read, and the generation stopped if they were the last.
-	case err != nil && errors.Is(err, classes.unconfigured):
-		code, message := classes.unconfiguredCode, classes.unconfiguredMessage
+	case refused:
 		view.body, view.expiry, view.seq = nil, time.Time{}, read.seq
 		for sub := range view.subs {
 			if !sub.told {
@@ -196,7 +195,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
-		if !classes.delivery {
+		if classes.reads != viewReadsDelivery {
 			// A view that reads no delivery row holds no delivery settings, so it judges no
 			// freshness: the verdict stays the one the delivery views' own reads set.
 			break
@@ -264,8 +263,12 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 
 // readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
 // recorded it. It reads no delivery settings — its own are the project's Legion setting, and a
-// deployment that configured one and not the other still shows the board.
+// deployment that configured one and not the other still shows the board. A project that does
+// not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+		return nil, err
+	}
 	board, err := h.server.readLegionBoard(ctx, spec.project)
 	if err != nil {
 		return nil, err

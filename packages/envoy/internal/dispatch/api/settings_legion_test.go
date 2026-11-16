@@ -97,18 +97,31 @@ func TestALegionSettingRoundTripsAndIsRemoved(t *testing.T) {
 }
 
 // TestAnUnknownProjectAndABadStateURLAreRefused: a setting names a project that exists, and a URL
-// every call can be built from.
+// every call can be built from. The project is read as every project route reads its path, so a
+// badly spelled key is 400 INVALID_PROJECT and an unknown project loadProject's 404
+// PROJECT_NOT_FOUND, whichever of the three daemon routes is called.
 func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA")
 
-	unknown := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/NOPE/legion/daemon",
-		map[string]any{"state_url": "https://legion.internal"}, "alice")
-	if unknown.Code != http.StatusNotFound {
-		t.Errorf("a PUT naming an unknown project: status=%d body=%s, want 404", unknown.Code, unknown.Body.String())
-	}
-	if removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/NOPE/legion/daemon", nil, "alice"); removed.Code != http.StatusNotFound {
-		t.Errorf("a DELETE naming an unknown project: status=%d body=%s, want 404", removed.Code, removed.Body.String())
+	for _, refused := range []struct {
+		project, code string
+		status        int
+	}{
+		{"NOPE", "PROJECT_NOT_FOUND", http.StatusNotFound},
+		{"infra", "INVALID_PROJECT", http.StatusBadRequest},
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+			var body any
+			if method == http.MethodPut {
+				body = map[string]any{"state_url": "https://legion.internal"}
+			}
+			response := dispatchRequest(t, handler, method, "/api/v1/projects/"+refused.project+"/legion/daemon", body, "alice")
+			if code, _ := refusalOf(t, response); response.Code != refused.status || code != refused.code {
+				t.Errorf("a %s naming %q: status=%d body=%s, want %d %s",
+					method, refused.project, response.Code, response.Body.String(), refused.status, refused.code)
+			}
+		}
 	}
 
 	for name, value := range map[string]string{

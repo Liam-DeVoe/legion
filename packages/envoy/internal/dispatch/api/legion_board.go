@@ -1,7 +1,7 @@
 // legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
 // what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
-// sends (live_frames.go's legionBoardView). This pull request ships no page that draws it; the
-// board is the data a later tree's Legion view reads.
+// sends (live_frames.go's legionBoardView). No dashboard page draws it: the route and the live
+// view kind are all there is of it.
 //
 // The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
 // daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
@@ -174,7 +174,7 @@ type legionBoardWait struct {
 // (R2, R26: everything of one project under a path). A project that names no daemon is 404
 // LEGION_NOT_CONFIGURED; a project whose daemon has never answered is answered the board with
 // empty columns and the read's failure in its header; a project that does not exist is 404
-// NOT_FOUND, and a malformed key 400 LEGION_SETTING_INPUT.
+// PROJECT_NOT_FOUND, and a malformed key 400 INVALID_PROJECT (legionProject).
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

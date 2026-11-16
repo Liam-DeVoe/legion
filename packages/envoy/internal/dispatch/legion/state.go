@@ -175,9 +175,9 @@ type Observation struct {
 }
 
 // Observations is every observed field of every issue the read carries, by issue key and then by
-// field, so two reads of one state produce one list. The project's own three come first, under
-// AdmissionKey: the admission block, the settings the daemon reports and where each came from,
-// none of which belongs to an issue.
+// field, so two reads of one state produce one list. The project's own two come first, under
+// AdmissionKey: the admission block and the settings the daemon reports, neither of which belongs
+// to an issue.
 //
 // Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
 // slot released or a wait answered is a change like any other; a first `null` writes no row
