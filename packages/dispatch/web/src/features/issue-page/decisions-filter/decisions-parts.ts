@@ -4,13 +4,14 @@ import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import { type ChangeComment, inReviewList } from "../decision-review";
 import {
+  drawnLine,
   firstLineOf,
-  nodeWords,
+  lineWords,
   type ParentLine,
   type TreeAsk,
   type TreeNode,
 } from "../issue-tree";
-import { type DecisionState, isReader } from "../page-words";
+import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
 
 /**
  * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
@@ -398,7 +399,7 @@ function placements(root: TreeNode): ReadonlyMap<string, Placement> {
           : {
               parent: {
                 id: above.id,
-                line: above.text === "" ? above.id : firstLineOf(nodeWords(above)).line,
+                line: lineOf(above),
                 type: above.type,
               },
             }),
@@ -408,6 +409,15 @@ function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   };
   walk(root, undefined);
   return placed;
+}
+
+/** A node's one line, as every one-line drawing of a node is cut (R1, `issue-tree.ts`'s
+ *  `ParentLine.line`): the first line of its first block's words (`lineWords`), drawn as
+ *  `drawnLine` reads it, and the page's word for its kind where those hold none, never its id
+ *  (R22). */
+function lineOf(node: TreeNode): string {
+  const words = lineWords(node);
+  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 
 /** The id of every node `view` holds. */
@@ -474,7 +484,7 @@ function shapesOf(
     const held = shapes.get(node.id);
     shapes.set(node.id, {
       id: node.id,
-      line: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
+      line: lineOf(node),
       ...pathOf(node),
       stale: link.stale || held?.stale === true,
     });
