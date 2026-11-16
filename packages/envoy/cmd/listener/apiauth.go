@@ -133,8 +133,7 @@ func refuseServiceAccountToken(w http.ResponseWriter, logger *logging.Logger, r 
 		slog.String("reason", oidc.Reason(err)),
 		slog.String("path", r.URL.Path))
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "the service-account token issuer cannot be reached; try again shortly")
+		writeUnjudged(w, "the service-account token issuer cannot be reached; try again shortly")
 		return
 	}
 	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
@@ -161,20 +160,24 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 		slog.String("path", r.URL.Path))
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		writeUnjudged(w, "service starting")
 	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again shortly")
+		writeUnjudged(w, "the secrets broker cannot be reached; try again shortly")
 	case errors.Is(err, brokertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))
 		writeJSONError(w, http.StatusTooManyRequests, "too many access tokens checked from this address")
 	case reason == brokerTokenCheckFailed:
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again shortly")
+		writeUnjudged(w, "this access token could not be checked; try again shortly")
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+// writeUnjudged answers a credential the listener could not judge yet, for want of something it
+// depends on: 503 with message and Retry-After: 1, which a client retries where it stops on a 401.
+func writeUnjudged(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "1")
+	writeJSONError(w, http.StatusServiceUnavailable, message)
 }
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:

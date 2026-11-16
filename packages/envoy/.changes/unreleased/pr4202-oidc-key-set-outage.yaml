@@ -9,12 +9,11 @@ body: |-
   held, the next read after a failed one starts 5 seconds later (`oidc.DefaultKeysRetrySpacing`),
   not a minute, so a key rotated in during a short outage is found inside Dispatch's 12-second
   retry window, and an issuer that fails fast is read once per 5 seconds rather than once per
-  token. A stale key set
-  keeps answering the keys it holds for as long as the issuer cannot be read; it has no maximum
-  age. `envoy-listener` waits at most 3 seconds on a key-set read (`listenerKeySetWait`, below
-  Dispatch's 5-second call window) and answers such a token 503, on every call of the outage, not
-  401. The secrets broker and Dispatch's own verifier still wait a read out, up to that 10-second
-  timeout.
+  token. A stale key set keeps answering the keys it holds for as long as the issuer cannot be
+  read; it has no maximum age. `envoy-listener` waits at most 3 seconds on a key-set read
+  (`listenerKeySetWait`, below Dispatch's 5-second call window) and answers such a token 503, on
+  every call of the outage, not 401. The secrets broker and Dispatch's own verifier still wait a
+  read out, up to that 10-second timeout.
 time: 2026-11-16T16:04:42Z
 custom:
     Issue: pr4202
