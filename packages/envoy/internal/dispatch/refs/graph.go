@@ -17,9 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// excerptRunes bounds the head of an item's text shown beside an edge.
-const excerptRunes = 240
-
 // Query selects one node's edges. Direction "in" reads edges pointing at the node (Kind, ID
 // are its to_kind, to_id: ref_key for artifacts); "out" reads edges it writes (from_kind,
 // from_id: the uuid for artifacts). Kinds narrows edge types; Since keeps mentions whose
@@ -250,11 +247,11 @@ func resolveEdges(ctx context.Context, q Queryer, query Query) ([]resolvedEdge, 
 		}
 		switch {
 		case node.BlockID != "":
-			// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
-			// document's mention shows.
+			// A block's stored excerpt is already cut by BlockExcerpt, the excerpt a document's
+			// mention shows.
 			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
 		case node.text != "":
-			edge.Excerpt = &model.GraphExcerpt{Text: text.HeadRunes(node.text, excerptRunes)}
+			edge.Excerpt = &model.GraphExcerpt{Text: itemExcerpt(node.text)}
 		}
 		edges = append(edges, edge)
 	}

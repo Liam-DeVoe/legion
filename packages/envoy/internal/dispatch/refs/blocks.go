@@ -50,8 +50,8 @@ type Pointer struct {
 // A block whose text (markdown[From:To]) is unchanged keeps its changed version; a new, changed
 // or restored block takes this version, and its text is recorded in document_block_texts; a
 // block the version no longer holds is deleted, recorded there with no text, and the edges at it
-// stop resolving until a version holds its id again. A block's stored excerpt is its text cut to
-// BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
+// stop resolving until a version holds its id again. A block's stored excerpt is its text as
+// BlockExcerpt cuts it, the excerpt a document's mention has shown since migration 0092.
 //
 // A pair (block, kind, target) that survives keeps its created version, time and source event,
 // and takes the to_types this version gives it. A new pair takes this version and versionAt, and
@@ -99,7 +99,7 @@ func IndexBlocks(
 			continue
 		}
 		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, hexSum)
-		excerpts = append(excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		excerpts = append(excerpts, BlockExcerpt(body))
 		textIDs, texts = append(textIDs, block.ID), append(texts, &body)
 	}
 	deleted := make([]string, 0, len(stored))

@@ -83,10 +83,10 @@ func ReplaceCountedEdit(
 
 // editedHeadTargets is what an edit of an ask's question or a comment's body from previous to body,
 // which cites found, moves although its edges stay. Every edge such a source writes shows the head
-// of its text as its excerpt (Edges, excerptRunes), so when the edit moves that head, the panel of
+// of its text as its excerpt (Edges, itemExcerpt), so when the edit moves that head, the panel of
 // every target the source still cites changes: each of found is returned then, and none otherwise.
 func editedHeadTargets(previous, body string, found []text.Ref) []Target {
-	if text.HeadRunes(previous, excerptRunes) == text.HeadRunes(body, excerptRunes) {
+	if itemExcerpt(previous) == itemExcerpt(body) {
 		return nil
 	}
 	kinds, ids := refTargets(found)

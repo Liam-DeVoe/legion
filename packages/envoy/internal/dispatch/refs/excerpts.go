@@ -11,9 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// BlockExcerptRunes bounds the containing block a document mention's excerpt shows.
-const BlockExcerptRunes = 480
-
 // Execer is the statement surface shared by a pool and a transaction.
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
@@ -21,8 +18,8 @@ type Execer interface {
 
 // MentionExcerpts is, for each target the mentions located in markdown name, the innermost of
 // blocks holding its first mention that lies inside a block - the block with the tightest byte
-// range - as the references route shows it: the block's id and its markdown cut to
-// BlockExcerptRunes. A target none of whose mentions lies inside a block has none. The block is
+// range - as the references route shows it: the block's id and its markdown as BlockExcerpt cuts
+// it. A target none of whose mentions lies inside a block has none. The block is
 // any of blocks, not only a graph node: IndexBlocks makes no node of a block whose id is past
 // text.MaxBlockIDBytes, empty or unstorable, nor of a later holder of a repeated id
 // (uniqueBlocks), and writes the mention from the innermost node holding it, if any. Such a block
@@ -49,7 +46,7 @@ func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []te
 		block := blocks[holders[i]]
 		excerpts[target] = model.GraphExcerpt{
 			BlockID: block.ID,
-			Text:    text.HeadRunes(markdown[block.From:block.To], BlockExcerptRunes),
+			Text:    BlockExcerpt(markdown[block.From:block.To]),
 		}
 	}
 	return excerpts

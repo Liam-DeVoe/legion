@@ -280,6 +280,55 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 	}
 }
 
+// TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf: a candidate's first line is cut at 160 runes
+// where no reference crosses the cut (refs.FirstLine), so a key the bound falls inside is left out
+// whole rather than listed as `CORE-12`, which a reader would follow to another issue. It holds for
+// each kind of first line a candidate carries: a comment's body, a document's name and a block's
+// text.
+func TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf(t *testing.T) {
+	fixture := newIDPrefixFixture(t)
+	// 152 runes, so a key after it starts before the cut at 159 and ends after it.
+	lead := strings.Repeat("x", 151) + " "
+	for nth := 1; nth <= 2; nth++ {
+		long := fmt.Sprintf("%sCORE-123%d decides it.", lead, nth)
+		seedExec(t, fixture.database, "a comment with a long first line", `
+			insert into comments (id, issue_key, author, body) values ($1::uuid, $2, $3::jsonb, $4)
+		`, chosenID("c0000003", nth), fixture.issue, idPrefixAuthor, long)
+		seedExec(t, fixture.database, "a document with a long name", `
+			insert into artifacts (id, issue_key, project_key, slug, name, kind, created_by)
+			values ($1::uuid, $2, 'PRE', $3, $4, 'doc', $5::jsonb)
+		`, chosenID("f0000003", nth), fixture.issue, fmt.Sprintf("long-%d-md", nth), long, idPrefixAuthor)
+		seedExec(t, fixture.database, "a version of the document with a long name", `
+			insert into artifact_versions (artifact_id, number, markdown) values ($1::uuid, 1, '# Long')
+		`, chosenID("f0000003", nth))
+		seedExec(t, fixture.database, "an indexed block with a long text", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, $2, $1::text || '#' || $2, 'paragraph', '', $3, 1, now())
+		`, chosenID("f0000001", 1), fmt.Sprintf("cd34ab12e%d", nth), long)
+	}
+	want := strings.Repeat("x", 151) + "…"
+	for _, route := range []struct{ kind, path string }{
+		{"comment", "/api/v1/comments/c0000003"},
+		{"artifact", "/api/v1/artifacts/f0000003"},
+		{"block", "/api/v1/artifacts/f0000001/blocks/cd34ab12"},
+	} {
+		shared := dispatchRequest(t, fixture.handler, http.MethodGet, route.path, nil, "alice")
+		if shared.Code != http.StatusConflict {
+			t.Fatalf("read %s: status=%d body=%s, want 409", route.path, shared.Code, shared.Body.String())
+		}
+		candidates := decodeBody[ambiguousIDAnswer](t, shared).Candidates
+		if len(candidates) != 2 {
+			t.Fatalf("candidates of %s = %+v, want the two the prefix names", route.path, candidates)
+		}
+		for nth, candidate := range candidates {
+			if candidate.Kind != route.kind || candidate.FirstLine != want {
+				t.Fatalf("%s candidate %d = %+v, want the first line %q: the key the cut falls inside left out whole",
+					route.kind, nth, candidate, want)
+			}
+		}
+	}
+}
+
 // TestAnAskIsAnsweredByAnIDPrefix: a write route resolves its prefix and writes the item it
 // named, so the ask the prefix shortens is the ask that ends up answered.
 func TestAnAskIsAnsweredByAnIDPrefix(t *testing.T) {

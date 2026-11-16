@@ -313,7 +313,7 @@ func indexItemBlocks(
 	for index, block := range next {
 		row := itemBlockRow{
 			id: ids[index], position: index, nodeType: block.Type, sum: block.Hash,
-			excerpt: text.HeadRunes(block.Text, BlockExcerptRunes), text: block.Text,
+			excerpt: BlockExcerpt(block.Text), text: block.Text,
 		}
 		if index < len(source.madeBy) {
 			row.madeBy = source.madeBy[index]

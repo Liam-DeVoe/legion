@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -35,10 +34,10 @@ var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 // takes its document's owner, and a document candidate of a project sets neither, its own Ref
 // being that document. An item with no owner of either kind - a direct message - sets neither.
 //
-// FirstLine is the head of what a person reads to tell two candidates apart, as
-// contracts.OneLineSummary cuts it: an ask's question, a comment's or a message's body, a
-// document's name, a block's text. A direct message's is left out for a caller that may not read
-// the conversation (Viewer).
+// FirstLine is the head of what a person reads to tell two candidates apart, as the function
+// FirstLine cuts it: an ask's question, a comment's or a message's body, a document's name, a
+// block's text. A direct message's is left out for a caller that may not read the conversation
+// (Viewer).
 type Candidate struct {
 	Kind      string `json:"kind"`
 	ID        string `json:"id"`
@@ -287,7 +286,7 @@ func itemCandidate(kind, id string, issueKey *string, project, slug, body string
 		Kind:      kind,
 		ID:        id,
 		Ref:       itemRef(kind, issueKey, project, slug, id),
-		FirstLine: contracts.OneLineSummary(body),
+		FirstLine: FirstLine(body),
 	}
 	switch {
 	case issueKey != nil:
@@ -325,7 +324,7 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefi
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
 			return nil, fmt.Errorf("scan the documents %q names: %w", prefix, err)
 		}
-		candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
+		candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: FirstLine(name)}
 		if parent := document.parent(); parent != nil {
 			candidate.Ref = parent.Ref
 		}
@@ -380,7 +379,7 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix s
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the blocks of %s %q names: %w", scope.Document, prefix, err)
 		}
-		candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
+		candidate := Candidate{Kind: "block", ID: blockID, FirstLine: FirstLine(body)}
 		if parent := document.parent(); parent != nil {
 			candidate.Ref = BlockRef(parent.Ref, blockID)
 			if document.issueKey != nil {

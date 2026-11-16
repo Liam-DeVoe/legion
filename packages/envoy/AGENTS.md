@@ -1686,7 +1686,7 @@ One sibling may wait on another, but a child cannot wait on its parent and a par
 Artifact targets are addressed by `ref_key`, artifact sources by uuid; each arm has the index its `to`/`from` predicate needs.
 `GET /api/v1/references?to=|from=` reads the view;
 `envoy-dispatch rebuild-refs` reparses every source and reconciles the index (the text is the truth), deleting edges whose source no longer exists, marks every document, comment, message and ask owed a block index (below), and refuses to run without `dispatch.server_url`.
-A document mention's backlink excerpt - the innermost block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to 480 characters - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`, `excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's tree that the write already makes:
+A document mention's backlink excerpt - the innermost block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to 480 runes (`refs.BlockExcerpt`) - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`, `excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's tree that the write already makes:
 every renderer of a version's tree takes the block offsets from its own render (`pmdoc.RenderWithBlockOffsets`;
 `renderTreeWithOffsets`, `documentMarkdownWithOffsets`), and a `docs.renderedTree` carries the tree, the markdown and the offsets together to `docs.indexDocument` (`writeVersionTx`, and an upload's and a seeded spec's `docs.Service.IndexDocumentReferences`, which take the transaction's recorded rendering from the ledger), which indexes the version's references, excerpts and blocks from one `text.ExtractAt` of its markdown, so the route reads no document and no write renders its tree for the excerpts (LEGION-531).
 An edit, a named version, a seed, a rebuild and a settlement render the tree once;
@@ -1708,6 +1708,8 @@ a row owed an excerpt is answered with the document's name, not the payload it s
 One window is left: a version a build that stores no excerpt writes (the binary the deploy that ships 0092 replaces) leaves the previous version's excerpt with its `excerpt_version` still set, and the route serves that excerpt until `refs.MarkStaleExcerpts` marks it owed in the first pass each process runs.
 A `?to=` read lists a mention that one of the citing document's blocks holds from that block, with the block's own excerpt (below), so the excerpt on the `refs` row is what a document mention no block holds is shown with:
 one in a document the block index has not reached.
+Every head of stored text the server sends a reader to draw - that block excerpt, the 240-rune head of the other node's text beside an edge, an Inbox row's subject and an id prefix candidate's first line (`refs.FirstLine`) - is cut where no reference crosses the cut (`text.HeadRefs`, in `refs/heads.go`): a mention, an address, a dashboard URL, a bare key or a `#id` that would straddle the bound is left out whole, and so is one the head would read that the text does not write, such as `CORE-12` of `CORE-12x4` or an address the ellipsis would join.
+`refs/heads_test.go` holds every other cut of Dispatch text to the reason no reader draws it with its references.
 
 Each identified block of a document is a graph node too (and so is each block of a comment or message, below):
 kind `block`, id `<document ref_key>#<block id>` (`text.TargetID`), its reference the document's with `#b-` and the id as `text.EncodeBlockID` writes it (`refs.BlockRef`).
@@ -1720,7 +1722,7 @@ measured end to end on a 2,402-block document, that wait was 34.5 s (sjawhar/leg
 A block whose id is longer than `text.MaxBlockIDBytes` is no node (`uniqueBlocks`):
 a mention inside it starts at the innermost node holding it, or at the document when none does, and `IndexBlocks` logs a warning naming the document, the version, how many such blocks it skipped, the longest one's id bytes and the bound.
 The version is still written.
-Its tables are migration 0121's: `document_blocks` holds each block the latest indexed version holds, with its text's sha256, its text cut to 480 runes as its excerpt, and `changed_version` and `changed_at`, the version its text last changed in, which an unchanged text keeps.
+Its tables are migration 0121's: `document_blocks` holds each block the latest indexed version holds, with its text's sha256, its text cut to 480 runes as its excerpt (`refs.BlockExcerpt`), and `changed_version` and `changed_at`, the version its text last changed in, which an unchanged text keeps.
 `document_block_texts` records a block's whole text in each version that makes it new, changes it, restores it, or deletes it (a null text).
 `document_indexed_versions` names each version a block-aware build indexed, and `document_block_versions` the version a document's blocks stand at, null while the document is owed an index.
 `block_refs` holds each link a block holds, keyed on the block, its target and the link's `kind`.
@@ -1775,7 +1777,7 @@ a body of only whitespace has no blocks.
 Item blocks are top-level only, so the block holding a mention is the top-level block holding its start.
 A block's identity is `itemblocks.Hash`, the SHA-256 of its text with each CR LF read as LF, so an edit that only turns CR LF into LF (as a textarea does) changes no block.
 Its id is `b1`, `b2`, … in the order the item mints them, and no number is minted twice in one item, a removed block's included (`comment_block_state.next_block` and the ids stored).
-`comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at`, and for a comment `changed_revision` and `changed_at`.
+`comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerpt`), `made_at`, and for a comment `changed_revision` and `changed_at`.
 A comment's `comment_block_state.revision` counts its indexed revisions, 1 the first indexing:
 an index raises it when it is the first, when the body differs byte for byte from the one last indexed (`body_sha256`), or when its blocks changed, and otherwise writes no block.
 At the new revision a new, changed or restored block takes the revision as `changed_revision` and the write's time as `changed_at` (a new one that time as `made_at` too, except at the first indexing of a comment edited before blocks were recorded, whose making Dispatch never recorded:

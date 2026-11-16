@@ -2094,7 +2094,7 @@ type MyReplyRow struct {
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
-	// Subject is the thread root's first line, cut by contracts.OneLineSummary: the line the
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
 	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
 	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
 	// through the one renderer every body is drawn with, so without the tree beside it the
@@ -2594,7 +2594,7 @@ type Comment struct {
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 type ReplyBlock struct {
 	Node    string `json:"node"`

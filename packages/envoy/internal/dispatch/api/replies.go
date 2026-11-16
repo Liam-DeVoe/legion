@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // GET /api/v1/me/replies is the Inbox's thread read, of two kinds of row. A Reply row is a thread
@@ -710,7 +710,7 @@ func (s *server) readMyReplyRows(
 		row.Project = &projectKey
 		row.ReadThrough = &readThrough
 		row.Version = &version
-		row.Subject = contracts.OneLineSummary(subject)
+		row.Subject = refs.FirstLine(subject)
 		if replyID != nil {
 			row.Reply.ID = *replyID
 		}
@@ -726,7 +726,7 @@ func (s *server) readMyReplyRows(
 			}
 			row.Anchor = &value
 		}
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
+		row.Reply.FirstLine = refs.FirstLine(body)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {

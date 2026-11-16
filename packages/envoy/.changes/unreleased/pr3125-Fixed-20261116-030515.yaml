@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A cut never splits a reference. An Inbox row''s subject and its reply''s first line, an id prefix candidate''s first line, the 240-rune head beside an edge and the 480-rune excerpt of a block now end before a mention, an address, a dashboard URL, a bare issue key or a `#id` that would cross the bound, instead of keeping half of it: `CORE-1234` cut after `CORE-12` was a working link to another issue, and a mention cut inside drew `[@name](dispatch://agent/` raw. The cut also never leaves a head that reads a reference the text does not write, such as `CORE-12` of `CORE-12x4`, or an address the ellipsis joins. A block excerpt stored before this change keeps its old cut until the block''s text changes.'
+time: 2026-11-16T03:05:15.020463202Z
+custom:
+    Issue: pr3125

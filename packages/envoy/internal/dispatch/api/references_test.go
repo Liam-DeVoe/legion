@@ -399,6 +399,59 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	}
 }
 
+// The heads an edge shows are cut where no reference crosses the cut: the 240-rune head of the
+// ask an outgoing edge reaches (refs.itemExcerpt), and the 480-rune excerpt of the message block
+// and of the document block an incoming edge comes from (refs.BlockExcerpt). A key either bound
+// falls inside is left out whole, rather than shown as `CORE-12`, a working link to another issue.
+func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	// 232 runes, so a key after them starts before the cut at 240 and ends after it.
+	question := strings.Repeat("x", 231)
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": question + " CORE-1234 or not?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	// 472 runes with the space after them, so a key after them crosses the cut at 480.
+	cites := "Decided in " + askRef + " "
+	block := cites + strings.Repeat("y", 471-len(cites))
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": block + " CORE-1234 follows.", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	outgoing := graphEdges(t, handler, url.Values{"from": {messageRef}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef || outgoing.Edges[0].Excerpt == nil {
+		t.Fatalf("outgoing edges = %#v; want one mention of the ask with an excerpt", outgoing.Edges)
+	}
+	if got := outgoing.Edges[0].Excerpt.Text; got != question {
+		t.Fatalf("the ask's excerpt = %q; want %q, the key the cut falls inside left out whole", got, question)
+	}
+
+	incoming := graphEdges(t, handler, url.Values{"to": {askRef}})
+	if len(incoming.Edges) != 1 || incoming.Edges[0].Excerpt == nil {
+		t.Fatalf("incoming edges = %#v; want the message's block with an excerpt", incoming.Edges)
+	}
+	if got := incoming.Edges[0].Excerpt.Text; got != block {
+		t.Fatalf("the message block's excerpt = %q; want %q, the key the cut falls inside left out whole", got, block)
+	}
+
+	design := createProjectDocument(t, handler, "ACME", "Design notes", "# Design\n\n"+block+" CORE-1234 follows.\n")
+	mention := documentMention(t, handler, askRef, design.ID, design.RefKey)
+	if mention.Excerpt == nil || mention.Excerpt.Text != block {
+		t.Fatalf("the document block's excerpt = %#v; want %q, the key the cut falls inside left out whole", mention.Excerpt, block)
+	}
+}
+
 // awaitSinceRead reads again until holds accepts the answer, because a since read answers only
 // the edges at or below the event log's safe horizon, and any transaction holding a transaction
 // id on the Postgres instance holds that horizon back: in this package, storetest's own

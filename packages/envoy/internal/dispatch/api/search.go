@@ -391,7 +391,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
   -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's first refs.BlockExcerptRunes runes.
+  -- ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
