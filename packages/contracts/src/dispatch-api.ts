@@ -1,9 +1,10 @@
 /**
  * The Dispatch HTTP and event-bus contract. This file is the entry every caller imports
- * (`@legion/contracts` re-exports it whole); nothing outside the package names a module of the
+ * (`@legion/contracts` re-exports it whole); nothing outside the package imports a module of the
  * split by path, save the constants module below, which is a subpath of its own and which
  * `scripts/e2e/verification-results.ts` reads by its file path, since the root package does not
- * depend on this one.
+ * depend on this one. Three files name an area module's path without importing it, which
+ * `packages/contracts/AGENTS.md` lists under "Dispatch API shapes".
  *
  * The wire shapes are generated from the Go route table through `schemas/dispatch-openapi.json`:
  * `dispatch-api.generated.ts` is the one definition of every HTTP request and response body of
