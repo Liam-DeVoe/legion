@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,6 +176,87 @@ func TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings(t *testing.T) {
 			t.Errorf("the unowned-p0 row of %s holds %v, want 1", today.Format("2006-01-02"), showValue(count.LastValue))
 		}
 	}
+}
+
+// TestAnEventAboveTheSafeHorizonAsksForAPassOneGapAway: a pass reads the event log up to the safe
+// horizon it took (events.Horizon), and an event that committed while a lower id was still open
+// stands above it. A write holds a lower event id open while EVAL-50 opens as a P0 and its
+// issue.created commits, which moves today's unowned-p0 count: the pass leaves today's row as it
+// was and asks for its next pass RefresherGap away, not at the day's end, since what holds the
+// horizon back may end without a wake. Once the lower write commits, the next pass writes today's
+// row with EVAL-50 counted.
+func TestAnEventAboveTheSafeHorizonAsksForAPassOneGapAway(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.settle(t)
+	// A pass whose Safe answers 0 awaits the horizon instead (SafeOrAwait), which the open write
+	// below would hold for as long as it stands; the settled passes proved the seed's events.
+	if r.horizon.Proven() == 0 {
+		t.Fatal("the settled passes proved no event, so the held pass would await the open write rather than read below it")
+	}
+	evalID := EvalID("EVAL", SlugUnownedP0)
+	if count := r.day(t, evalID, SeriesUnownedP0, "", refresherToday); count.LastValue == nil || *count.LastValue != 0 {
+		t.Fatalf("the unowned-p0 row of today holds %v before EVAL-50 opens, want 0", showValue(count.LastValue))
+	}
+
+	lower, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the lower write: %v", err)
+	}
+	t.Cleanup(func() { _ = lower.Rollback(context.Background()) })
+	// The write takes its transaction id before it draws its event id, as Broker.Append does: the
+	// writer invariant events.Horizon's proof rests on.
+	if _, err := lower.Exec(ctx, `select pg_current_xact_id()`); err != nil {
+		t.Fatalf("take the lower write's transaction id: %v", err)
+	}
+	var held int64
+	if err := lower.QueryRow(ctx, `
+		insert into events (seq, type, actor, payload, notify)
+		values (0, 'refresher.test', '{"kind":"user","id":"alice"}', '{}', false)
+		returning id`).Scan(&held); err != nil {
+		t.Fatalf("draw the lower event id: %v", err)
+	}
+	r.exec(t, "open a P0 issue", `
+		insert into issues (key, project_key, number, title, status, rank, priority, created_by)
+		values ('EVAL-50', 'EVAL', 50, 'Broken', 'triage', '00000050', 0, '{"kind":"user","id":"alice"}')`)
+	r.writeIssueEvent(t, "EVAL-50", "issue.created", `{"key":"EVAL-50","priority":0,"status":"triage","changed":["title","status","priority"]}`)
+	var opened int64
+	if err := r.database.Pool.QueryRow(ctx, `select id from events where issue_key = 'EVAL-50' and type = 'issue.created'`).Scan(&opened); err != nil {
+		t.Fatalf("read EVAL-50's issue.created: %v", err)
+	}
+	if opened <= held {
+		t.Fatalf("EVAL-50's issue.created drew id %d, not above the open write's %d", opened, held)
+	}
+
+	// The pass as the loop runs it: no Await before it, which would wait out the open write.
+	report, next, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds)
+	if err != nil {
+		t.Fatalf("the pass below the open write failed: %v", err)
+	}
+	if proven := r.horizon.Proven(); proven >= held {
+		t.Fatalf("the horizon stands at %d while the write holding %d is open", proven, held)
+	}
+	today := line(SlugUnownedP0, "EVAL", refresherToday)
+	if slices.Contains(report.sorted(), today) {
+		t.Fatalf("the pass below the open write wrote %s, so its pages read past its safe horizon", today)
+	}
+	if want := r.now.Add(RefresherGap); !next.Equal(want) {
+		t.Errorf("the pass that left EVAL-50's issue.created (id %d) above its safe horizon asks for its next pass at %s, want %s, RefresherGap away",
+			opened, next.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+
+	if err := lower.Commit(ctx); err != nil {
+		t.Fatalf("commit the lower write: %v", err)
+	}
+	after, _ := r.pass(t)
+	count := r.day(t, evalID, SeriesUnownedP0, "", refresherToday)
+	if !slices.Contains(after.sorted(), today) || count.LastValue == nil || *count.LastValue != 1 {
+		t.Errorf("the pass after the lower write committed wrote %v, and today's unowned-p0 row holds %v; want %s written, holding 1",
+			after.sorted(), showValue(count.LastValue), today)
+	}
+	t.Logf("the held pass read below id %d, left id %d unread and asked for %s; the next pass wrote %s holding %s",
+		held, opened, next.Format(time.RFC3339), today, showValue(count.LastValue))
 }
 
 // TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan: the read of the pull requests a

@@ -145,10 +145,11 @@ var serverRefresherSchedule = refresherSchedule{
 // RunRefresher keeps every project's day rows true to their inputs (the refresher's rules above)
 // until ctx is done: one pass at start, a pass on each wake, a pass asked for at once after one
 // that left a walk unfinished (which the loop's MinGap, RefresherGap, holds to ten seconds after
-// the last began), and a pass at the earliest of the next UTC midnight, which begins a day every
-// walk builds, and pruneSlack after the oldest delivery change passes delivery.ChangeRetention,
-// which the pass then prunes (delivery.PruneChanges), so the change log keeps its retention where
-// no GitHub App runs the reconcile that prunes it too.
+// the last began), a pass RefresherGap after one that left an event above the safe horizon it
+// read, and a pass at the earliest of the next UTC midnight, which begins a day every walk builds,
+// and pruneSlack after the oldest delivery change passes delivery.ChangeRetention, which the pass
+// then prunes (delivery.PruneChanges), so the change log keeps its retention where no GitHub App
+// runs the reconcile that prunes it too.
 func (s *Store) RunRefresher(ctx context.Context, deps RefresherDeps) {
 	s.runRefresher(ctx, deps, serverRefresherSchedule)
 }
@@ -247,6 +248,22 @@ func (r refreshed) sorted() []string {
 // seed (refresh.load, with seeds, the loop's own), reads page after page of the two feeds until one
 // comes back short and writes the days each names, makes a batch of each walk, prunes the change
 // log, and answers what it wrote and when the loop should run again.
+//
+// A pass that leaves an event id standing above the safe horizon it read has read less than the
+// log holds: an event that committed while a lower id was still open, which its pages stopped
+// below. It asks for a pass sched.gap away, not for nextPass's day's end, because nothing
+// announces the moment the horizon moves past that event: any transaction holding a transaction
+// id on the instance holds the horizon back (events.Horizon), most write no event, and the end of
+// one wakes no pass, so the event, a P0 issue's opening say, would wait for an unrelated wake or
+// the next UTC midnight. A gap rather than at once: the loop's MinGap would hold an at-once pass to
+// the same moment, and at once is what says a walk has days left (RefreshThrough).
+//
+// Two answers say an id stands above what the pass read, and it needs both: Pending, the pass's own
+// observation having seen an id above the horizon, and a horizon now proven past the safe the pass
+// read, which is what Pending reads as settled once another reader of the one Horizon (the event
+// relay, the delivery hub) proves that observation while this pass's pages run. Without the second,
+// a pass whose held-back ids another reader proved meanwhile would ask for nothing, and leave
+// those events to the next wake.
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
 	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
@@ -280,6 +297,11 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	next, err := r.nextPass(ctx, pending)
 	if err != nil {
 		return r.report, time.Time{}, err
+	}
+	if deps.Horizon.Pending() || deps.Horizon.Proven() > safe {
+		if again := r.now.Add(sched.gap); again.Before(next) {
+			next = again
+		}
 	}
 	return r.report, next, nil
 }
