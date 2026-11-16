@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -28,19 +29,20 @@ var (
 	privateReader = model.Actor{Kind: "user", ID: "bob"}
 )
 
-// reserveForAuthor writes the store's node of kind and id reserved for privateAuthor, through the
-// store's own writer and the one rule that answers whether a credential may reserve a node
-// (graphstore.VisibilityFor), as a write that asked for `author` would.
+// reserveForAuthor reserves the store's node of kind and id for privateAuthor, as the rows a
+// write that asked for `author` would store: the credential proves an author
+// (graphstore.VisibilityFor), and the rows are seeded straight into the store
+// (graphstoretest.SeedAuthorOnly), since its writer takes a node reserved for its author of no
+// kind these reads answer (graphstore.ErrVisibilityNotAdmitted). What is under test is the read.
 func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	t.Helper()
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, privateAuthor)
-	if err != nil {
+	if _, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, privateAuthor); err != nil {
 		t.Fatalf("reserve %s %s for its author: %v", kind, id, err)
 	}
-	if err := graphstore.Write(context.Background(), tx, []graphstore.Node{{
-		Kind: kind, ID: id, Supertag: kind, Visibility: visibility, State: graphstore.StateLive,
+	if err := graphstoretest.SeedAuthorOnly(context.Background(), tx, graphstore.Node{
+		Kind: kind, ID: id, Supertag: kind, State: graphstore.StateLive,
 		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), MadeBy: privateAuthor, SourceEvent: graphstore.NoEvent,
-	}}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("write the private %s %s: %v", kind, id, err)
 	}
 }

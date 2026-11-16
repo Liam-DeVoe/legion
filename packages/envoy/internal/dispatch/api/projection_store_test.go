@@ -828,7 +828,8 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 		name:  "the comment write",
 		table: "comments",
 		write: func(ctx context.Context, tx pgx.Tx) error {
-			stored, err := commentStored(ctx, tx, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), nil, &run.projectID, run.project, nil)
+			stored, err := commentStored(ctx, tx, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(),
+				graphstore.VisibilityProject, nil, &run.projectID, run.project, nil)
 			if err != nil {
 				return err
 			}

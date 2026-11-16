@@ -223,7 +223,7 @@ func seedRowsWithoutNodes(t *testing.T, ctx context.Context, database *store.Sto
 	// The comment writer of the build before stored the node with no project, then the row that
 	// names it.
 	node, tuples := graphstore.CommentFacts(nil, seeded.comment, model.Actor{Kind: "user", ID: "alice"}, seeded.at,
-		graphstore.NoEvent, "", "", "", nil)
+		graphstore.NoEvent, graphstore.VisibilityProject, "", "", "", nil)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
 			return err

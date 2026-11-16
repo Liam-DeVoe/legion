@@ -229,7 +229,9 @@ func CheckAttributeValue(attribute, value string) error {
 // checkBaseValues holds a write to CheckAttributeValue before the write's first statement, so a
 // refused write sends none and stores nothing: the state and the visibility of every node it
 // writes, and every value tuple and every claim it states itself, of which a state or a
-// visibility is all that can be refused. The first value refused is the answer.
+// visibility is all that can be refused. A node reserved for its author whose kind takes no such
+// node is refused here too, with a VisibilityNotAdmittedError naming the kind (checkAuthorOnly).
+// The first value refused is the answer.
 func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 	for index := range nodes {
 		node := &nodes[index]
@@ -237,6 +239,9 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 			return err
 		}
 		if err := CheckAttributeValue(AttributeVisibility, node.Visibility); err != nil {
+			return err
+		}
+		if err := checkAuthorOnly(node); err != nil {
 			return err
 		}
 	}
@@ -294,6 +299,13 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 // an InvalidAttributeValueError (checkBaseValues) before the first statement, so it sends none
 // and stores no node and no tuple. That holds for a write with no node too: Write appends what
 // its caller stated whether or not a node came with it.
+//
+// A node reserved for its author is refused the same way, before the first statement, unless its
+// kind - a block's read off its id, so a finding of a lens is a lens_block and a block of a
+// document is a block (AddressKind) - is one the read registry admitted as a kind every read of
+// which binds the visibility predicate (AdmitAuthorOnly): the refusal is a
+// VisibilityNotAdmittedError that names the kind, and nothing of the write is stored. A restating
+// node is held to it too, since the visibility it carries is the one its insert would make.
 //
 // The stored values are read from the row this write updates. The second statement reads them,
 // and under READ COMMITTED it reads a snapshot of its own, taken once the first holds every row

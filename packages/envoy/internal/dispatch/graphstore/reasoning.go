@@ -68,6 +68,25 @@ const (
 	blockTypeCheck       = "check"
 )
 
+// AddressKind is the kind the graph addresses a node of the store's kind and id by: the key the
+// read registry knows the node by, and the kind a node reserved for its author is admitted or
+// refused under (AdmitAuthorOnly). A finding of a lens is a node of kind block whose id names its
+// lens, `lens/<uuid>#<block id>`, and is addressed KindLensBlock, as the registry reads an item's
+// block by its item's block kind; a block of a document, and every other node, is its own kind.
+func AddressKind(kind, id string) string {
+	if kind == blockKind && strings.HasPrefix(id, KindLens+"/") {
+		return KindLensBlock
+	}
+	return kind
+}
+
+// AddressKindSQL is AddressKind over a node whose kind and id are SQL expressions of a read's own
+// query.
+func AddressKindSQL(kindExpr, idExpr string) string {
+	return `(case when ` + kindExpr + ` = '` + blockKind + `' and ` + idExpr + ` like '` + KindLens + `/%' then '` +
+		KindLensBlock + `' else ` + kindExpr + ` end)`
+}
+
 // pointerEnd is one type of node an end of a pointer tuple may be: a kind of node, or a block of
 // one block type.
 type pointerEnd struct{ kind, blockType string }
@@ -354,14 +373,16 @@ func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tupl
 }
 
 // readBlockTypes is the type of each block of ids that a document holds now, read off its
-// document_blocks row through that table's (node_kind, node_address) index. A block no document
-// holds - a finding of a lens, a block a version removed - answers none, and no rule that names a
-// block type lets it through.
+// document_blocks row by node_id, the block's address that every row carries, through that
+// column's hash index (document_blocks_node_id, migration 0121). It is not read by node_kind and
+// node_address: a row written before the store's backfill, one a pod of the previous release
+// writes during a roll, and one past the store's address bound leave both null, and its block is
+// still the requirement or the check it is. A block no document holds - a finding of a lens, a
+// block a version removed - answers none, and no rule that names a block type lets it through.
 func readBlockTypes(ctx context.Context, tx pgx.Tx, ids []string) (map[string]string, error) {
 	rows, err := tx.Query(ctx, `
-		select node_address, type from document_blocks
-		where node_kind = $1 and node_address = any($2::text[])
-	`, blockKind, ids)
+		select node_id, type from document_blocks where node_id = any($1::text[])
+	`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
 	}

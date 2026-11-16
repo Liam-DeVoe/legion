@@ -1542,7 +1542,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -4036,6 +4036,8 @@ export interface components {
         replace_with?: string;
       } | null;
       turn?: null | string;
+      /** @enum {string} */
+      visibility?: "project" | "author";
     };
     CreateDeliveryInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -5607,7 +5609,11 @@ export interface components {
       id: string;
       kind: string;
       relations: string[] | null;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
       title: string;
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     PersonNodes: {
       limit: number;

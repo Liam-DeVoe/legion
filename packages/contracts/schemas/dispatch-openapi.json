@@ -6388,7 +6388,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask.",
+        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate.",
         "operationId": "postApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -16560,6 +16560,13 @@
               "null",
               "string"
             ]
+          },
+          "visibility": {
+            "enum": [
+              "project",
+              "author"
+            ],
+            "type": "string"
           }
         },
         "type": "object"
@@ -23543,7 +23550,24 @@
               "null"
             ]
           },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          },
           "title": {
+            "type": "string"
+          },
+          "visibility": {
+            "enum": [
+              "project",
+              "author"
+            ],
             "type": "string"
           }
         },
@@ -23553,7 +23577,9 @@
           "relations",
           "title",
           "created_at",
-          "href"
+          "href",
+          "state",
+          "visibility"
         ],
         "type": "object"
       },

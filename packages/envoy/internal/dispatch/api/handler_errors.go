@@ -222,6 +222,17 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "AUTHOR_NAMES_NOBODY", http.StatusForbidden, graphstore.ErrAuthorNamesNobody.Error())
 		return
 	}
+	// A node reserved for its author whose kind takes no such node (graphstore's AdmitAuthorOnly):
+	// the refusal's own words name the kind, so a comment asked for `author` reads as one.
+	if errors.Is(err, graphstore.ErrVisibilityNotAdmitted) {
+		message := graphstore.ErrVisibilityNotAdmitted.Error()
+		var notAdmitted *graphstore.VisibilityNotAdmittedError
+		if errors.As(err, &notAdmitted) {
+			message = notAdmitted.Error()
+		}
+		writeError(w, "VISIBILITY_NOT_ADMITTED", http.StatusBadRequest, message)
+		return
+	}
 	// A pointer tuple at a node its type rule does not allow (graphstore's pointerRules): the
 	// refusal's own words name the tuple kind, the far end's kind and the kinds the rule allows.
 	if errors.Is(err, graphstore.ErrInvalidPointer) {

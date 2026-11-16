@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -41,7 +42,7 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 		proved     = "session-proved-carols"
 		claimed    = "session-claimed-on-the-bearer"
 	)
-	finding := graphstore.KindLens + "/" + lens + "#b-first"
+	finding := graphstore.KindLens + "/" + lens + "#first"
 	for _, written := range []struct {
 		kind, id, visibility string
 		madeBy               model.Actor
@@ -64,11 +65,15 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 			madeBy: model.Actor{Kind: "session", ID: claimed}, proves: false,
 			tuples: []graphstore.Tuple{{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"}}},
 	} {
-		nodes := []graphstore.Node{{
+		node := graphstore.Node{
 			Kind: written.kind, ID: written.id, Supertag: written.kind,
 			Visibility: written.visibility, State: graphstore.StateLive, Project: "CORE",
 			MadeAt: at, MadeBy: written.madeBy, SourceEvent: graphstore.NoEvent,
-		}}
+		}
+		var nodes []graphstore.Node
+		if written.visibility != graphstore.VisibilityAuthor {
+			nodes = append(nodes, node)
+		}
 		tuples := make([]graphstore.Tuple, 0, len(written.tuples))
 		for _, tuple := range written.tuples {
 			tuple.FromKind, tuple.FromID = written.kind, written.id
@@ -89,6 +94,16 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the write of %s/%s: %v", written.kind, written.id, err)
+		}
+		// A finding reserved for its author is a node of a kind the store takes no such node of
+		// until its registry entry is flagged (graphstore.ErrVisibilityNotAdmitted), so its row and
+		// its base attributes are seeded as the reasoning write would store them, and the rest of
+		// what that write states goes through the store's writer.
+		if written.visibility == graphstore.VisibilityAuthor {
+			if err := graphstoretest.SeedAuthorOnly(ctx, tx, node); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("seed the author-only %s/%s: %v", written.kind, written.id, err)
+			}
 		}
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			_ = tx.Rollback(ctx)

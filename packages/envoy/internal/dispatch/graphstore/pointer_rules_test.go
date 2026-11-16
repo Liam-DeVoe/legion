@@ -38,12 +38,14 @@ var (
 )
 
 // pointerFixture is the store the rules are tried over: one issue's spec holding a requirement,
-// a check and a paragraph block, each with the document_blocks row its type is read off, the
-// three lens kinds, a lens of each kind (two pre-mortems, one of which nothing hangs under), a
-// lens of no kind, two risks and a constraint.
+// a check and a paragraph block, each with the document_blocks row its type is read off, and a
+// second check whose row names no node (legacyCheck), as a row written before the store's
+// backfill or by a pod of the previous release leaves node_kind and node_address null; the three
+// lens kinds, a lens of each kind (two pre-mortems, one of which nothing hangs under), a lens of
+// no kind, two risks and a constraint.
 type pointerFixture struct {
-	database                      *store.Store
-	requirement, check, paragraph string
+	database                                   *store.Store
+	requirement, check, paragraph, legacyCheck string
 }
 
 func pointerNode(kind, id string) Node {
@@ -85,6 +87,7 @@ func newPointerFixture(t *testing.T) pointerFixture {
 	fixture := pointerFixture{
 		database:    database,
 		requirement: refKey + "#req", check: refKey + "#chk", paragraph: refKey + "#para",
+		legacyCheck: refKey + "#chk-old",
 	}
 
 	var nodes []Node
@@ -122,6 +125,12 @@ func newPointerFixture(t *testing.T) pointerFixture {
 			t.Fatalf("write the row of the %s block: %v", block.blockType, err)
 		}
 	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+		values ($1::uuid, 'chk-old', $2, $3, '', '', 1, now())
+	`, artifact, fixture.legacyCheck, blockTypeCheck); err != nil {
+		t.Fatalf("write the row of the check that names no node: %v", err)
+	}
 	return fixture
 }
 
@@ -130,7 +139,8 @@ func newPointerFixture(t *testing.T) pointerFixture {
 // pointerRules): each rule takes the kinds it allows, and refuses every other far end and near
 // end with ErrInvalidPointer, as an InvalidPointerError naming the tuple kind, its far end's kind
 // and the kinds the rule allows, before the write appends anything - the transaction of a refused
-// write that wrote no node still commits, and the log holds no tuple more than it held. A second
+// write that wrote no node still commits, and the log holds no tuple more than it held. A block's
+// type is read off its document_blocks row whether or not that row names its node yet. A second
 // has_kind of a lens is ErrLensKindAsserted. Write, WriteUncaused and Caused each hold the rule,
 // and WriteArms refuses a ruled tuple it cannot check. A retarget of a lens's kind appends a
 // retraction and an assertion and touches no part_of tuple; a retarget of a pre-mortem's away
@@ -152,6 +162,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 			{"a requirement held to a constraint", pointerTuple(blockKind, fixture.requirement, TupleConstrainedBy, KindConstraint, constraintHeld)},
 			{"a lens kind held to a constraint", pointerTuple(KindLensKind, LensKindPreMortem, TupleConstrainedBy, KindConstraint, constraintHeld)},
 			{"a risk prevented by a check", pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.check)},
+			{"a risk prevented by a check whose row names no node", pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.legacyCheck)},
 		} {
 			writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{accepted.tuple}, accepted.name)
 			requireHolds(t, ctx, database, accepted.tuple)
