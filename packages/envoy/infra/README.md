@@ -975,6 +975,10 @@ naming both: a token for either would be one the NATS auth service admits. Every
 audience is compared and rendered as Dispatch and the listener read theirs, trimmed of surrounding
 whitespace, so two inputs that differ only in padding are one audience, and a padded
 `agentSecretsAudience`, `oidcAudience` or `azureFederationAudience` renders the audience it names.
+A `listenerAudience` that is this cluster's issuer (the `serviceAccountIssuer` output) is refused
+too, once the issuer resolves, naming `listenerAudience`: Kubernetes mints the token every pod
+mounts by default for the API server's audiences, which are the issuer itself unless
+`kube-apiserver --api-audiences` names others, so the listener would admit any pod's own token.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh

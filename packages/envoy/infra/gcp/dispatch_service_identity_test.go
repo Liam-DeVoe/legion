@@ -351,6 +351,24 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 	require.NoError(t, err, "five distinct audiences")
 }
 
+// A listenerAudience that is the cluster's own issuer is the audience of the token every pod
+// mounts by default (kube-apiserver's --api-audiences defaults to the issuer), so the listener
+// would admit any pod's own token: it is refused, naming listenerAudience, inside the apply that
+// resolves the issuer, which is the first place the component knows it. Any other audience renders.
+func TestDispatchRefusesAListenerAudienceThatIsTheClustersIssuer(t *testing.T) {
+	args := dispatchArgs()
+	args.ListenerAudience = azureIssuer
+	_, err := runDispatch(t, args, true)
+	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: listenerAudience is this cluster's issuer, "+azureIssuer+",")
+	var input *core.InputError
+	require.ErrorAs(t, err, &input)
+	require.Equal(t, "listenerAudience", input.Input)
+
+	args.ListenerAudience = azureIssuer + "/other"
+	_, err = runDispatch(t, args, true)
+	require.NoError(t, err, "an audience that only begins with the issuer is another audience")
+}
+
 // Each audience is rendered as its verifier reads it, trimmed: Dispatch's DISPATCH_OIDC_AUDIENCE,
 // and the audiences the kubelet mints the broker's and Entra's projected tokens for, so a padded
 // input names the audience it is compared as (TestDispatchRefusesAnAudienceAnotherAudienceShares).
