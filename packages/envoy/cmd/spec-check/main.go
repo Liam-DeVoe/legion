@@ -31,7 +31,10 @@
 // "spec-check: no statement changed", and exits 0; a statement that only moved to another file is
 // no change. checks prints the program checks that name the job as one line of JSON,
 // [{"id","runner","selector","job","procedure_sha256"}], [] when none, and exits 0. Both exit 2,
-// with the problems on standard error, when a tree they read has any problem.
+// with the problems on standard error, when a tree they read has any problem. Both read a
+// directory that does not exist as the empty tree, with a line on standard error that says so,
+// since git keeps no empty directory: the first change that adds a spec file lists each of its
+// statements as added, and a checkout with no spec file has no program check.
 //
 // compare compares the files of one directory with an approved spec in the form of approved.json
 // (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec
@@ -43,7 +46,10 @@
 // "spec-check: statement <id>: the files hold approved version 1, and version 2 is current". It
 // exits 2, and makes no comparison, for files that do not parse or a directory that holds no spec
 // file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
-// Dispatch makes the comparison at each push.
+// Dispatch makes the comparison at each push. So compare exits 2, before it reads an argument,
+// when GITHUB_ACTIONS or CI is "true", with the one line "spec-check: compare does not run in a CI
+// job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)",
+// whatever route the job took to the command.
 //
 // print writes the current approved block of each node it is named, in the order named, and after
 // a statement the block of each current check that serves it, each block once and the blocks
@@ -52,12 +58,14 @@
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts, and names each line that runs the comparison
-// (specgraph.CIFilesThatCompare) on standard error, "spec-check: <dir>/<path>:<line>: this line
-// runs the comparison of the files with the approved spec, which no CI job does (R2)", with
-// "spec-check: <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It
-// exits 1 with "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file,
-// since an instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>:
-// no line of <k> CI files runs the comparison".
+// (specgraph.CIFilesThatCompare: each line as the shell reads it, and each run: value of a YAML
+// file as YAML reads it) on standard error, "spec-check: <dir>/<path>:<line>: this line runs the
+// comparison of the files with the approved spec, which no CI job does (R2)", with "spec-check:
+// <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It exits 1 with
+// "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
+// instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
+// of <k> CI files runs the comparison". A step can run the comparison from a file it does not
+// read, such as a package script or a make target: compare's refusal covers that route.
 //
 // state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
 // internal/dispatch/specgraph/testdata/scenarios) and derives the state of each check and each
