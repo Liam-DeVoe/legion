@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { AskResolution } from "../../api/types";
 import { issueStatuses, statusText } from "../project/board-model";
-import { ASK_RESOLUTION_WORDS } from "../refs/actor";
+import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
+import * as pageStructure from "./page-structure";
 import {
   HELP_LINES,
   KEY_REPORTS,
@@ -10,6 +12,7 @@ import {
   MARGIN_SECTION_ORDER,
   PROPERTY_LABELS,
 } from "./page-structure";
+import * as pageWords from "./page-words";
 import {
   ANSWER_LINES,
   ANSWER_PHRASES,
@@ -479,4 +482,53 @@ test("DECLARED_WORDS holds every declared word and no other", () => {
   // "The words"), and no longer a word the page holds back.
   expect(DECLARED_WORDS).toContain("verification");
   expect(DECLARED_WORDS).not.toContain("before_merge");
+});
+
+// An internal word is how the model or the code spells a thing, not how a person says it: a
+// snake_case token, a kebab-case slug, a camelCase name, a block's anchor or an address.
+const INTERNAL_WORD = /_|[\p{L}\p{N}]-[\p{L}\p{N}]|\p{Ll}\p{Lu}|#b-|:\/\//u;
+
+// Each table is named by the export of the two modules that is that table, so the test holds
+// no list of its own: a table added to either list is read by its own name, and one no export
+// names fails here until it is exported.
+test("no phrase of the list holds an internal word", () => {
+  const names = new Map<unknown, string>();
+  for (const [name, value] of [...Object.entries(pageWords), ...Object.entries(pageStructure)]) {
+    names.set(value, name);
+  }
+  const offenders: string[] = [];
+  for (const [list, tables] of Object.entries({ UNASKED_SOURCES, ANSWER_SOURCES })) {
+    for (const [index, table] of tables.entries()) {
+      let name = names.get(table);
+      if (name === undefined) {
+        name = `${list}[${index}]`;
+        offenders.push(`an unnamed table stands at index ${index} of ${list}`);
+      }
+      for (const phrase of phrasesOf(table)) {
+        if (INTERNAL_WORD.test(phrase)) offenders.push(`${name}: ${phrase}`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+// The card draws a closed question's badge through `askResolutionBadge`, and the list reads
+// `ASK_RESOLUTION_WORDS` for the row's state, so the two say the one word of each way.
+test("each way a question is closed has one word on its card and in the list", () => {
+  expect(Object.keys(ASK_RESOLUTION_WORDS).sort()).toEqual([
+    "declined",
+    "resolved",
+    "retracted",
+    "withdrawn",
+  ]);
+  for (const [kind, word] of Object.entries(ASK_RESOLUTION_WORDS)) {
+    const resolution: AskResolution = {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-10-25T00:00:00Z",
+      kind,
+      reason: "",
+    };
+    expect(askResolutionBadge(resolution), kind).toBe(word);
+    expect(nodeStateWord(kind as NodeState), kind).toBe(word);
+  }
 });
