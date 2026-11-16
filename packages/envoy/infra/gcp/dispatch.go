@@ -1052,32 +1052,40 @@ func dispatchAudience(input string) string {
 	return strings.TrimSpace(input)
 }
 
-// refuseSharedAudiences refuses a listenerAudience equal to another audience the app presents a
-// token for or verifies one under: natsAudience (the NATS auth service), agentSecretsAudience (the
-// secrets broker), oidcAudience (callers of Dispatch itself) and the keyless Azure sign-in's
-// audience (Entra; azureFederationAudience, or its default). A token minted for that other
-// audience would then be a bearer the listener admits too, so whoever receives it, or holds one
-// for it, could call the listener as the app. Each audience is kept apart, as the secrets broker
+// refuseSharedAudiences keeps each audience a verifier of this deployment admits apart from every
+// other audience the app presents a token for or verifies one under. listenerAudience, which
+// Dispatch's listener admits, is refused equal to natsAudience (the NATS auth service),
+// agentSecretsAudience (the secrets broker), oidcAudience (callers of Dispatch itself) or the
+// keyless Azure sign-in's audience (Entra; azureFederationAudience, or its default); natsAudience,
+// which the NATS auth service admits, equal to oidcAudience or the Azure audience. A token minted
+// for the other audience would then be a bearer that verifier admits too, so whoever receives it,
+// or holds one for it, could present it there. Each audience is kept apart, as the secrets broker
 // keeps its exchange audience apart from its enrollment one (internal/broker/config,
 // BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where another is. It compares the
 // resolved settings, each audience as dispatchAudience reads it, and names both inputs and
 // neither value but the public Azure default.
 func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
-	if s.listenerAudience == "" {
-		return nil
-	}
+	type named struct{ input, audience string }
 	azureInput := "azureFederationAudience"
 	if args.AzureFederationAudience == nil {
 		azureInput += " (unset, so " + defaultAzureFederationAudience + ")"
 	}
-	for _, other := range []struct{ input, audience string }{
-		{"natsAudience", s.natsAudience},
-		{"agentSecretsAudience", s.agentSecretsAudience},
-		{"oidcAudience", s.oidcAudience},
-		{azureInput, s.azure.audience},
+	nats, callers, azure := named{"natsAudience", s.natsAudience}, named{"oidcAudience", s.oidcAudience}, named{azureInput, s.azure.audience}
+	for _, verifier := range []struct {
+		own    named
+		admits string
+		others []named
+	}{
+		{named{"listenerAudience", s.listenerAudience}, "Dispatch's listener", []named{nats, {"agentSecretsAudience", s.agentSecretsAudience}, callers, azure}},
+		{nats, "the NATS auth service", []named{callers, azure}},
 	} {
-		if other.audience == s.listenerAudience {
-			return core.InputErrorf("listenerAudience", "listenerAudience is also %s: a token minted for that audience would be a bearer Dispatch's listener admits, so give the listener an audience of its own", other.input)
+		if verifier.own.audience == "" {
+			continue
+		}
+		for _, other := range verifier.others {
+			if other.audience == verifier.own.audience {
+				return core.InputErrorf(verifier.own.input, "%s is also %s: a token minted for that audience would be a bearer %s admits, so give %s an audience of its own", verifier.own.input, other.input, verifier.admits, verifier.own.input)
+			}
 		}
 	}
 	return nil

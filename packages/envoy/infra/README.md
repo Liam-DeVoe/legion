@@ -969,7 +969,9 @@ character is refused by name before the component registers a resource, and `clu
 refuses both. So is a `listenerAudience` equal to another audience the app presents a token for
 or verifies one under, naming both inputs: `natsAudience`, `agentSecretsAudience`, `oidcAudience`,
 or the keyless Azure sign-in's `azureFederationAudience` (`api://AzureADTokenExchange` when
-unset). A token minted for that other audience would be a bearer the listener admits too. Every
+unset). A token minted for that other audience would be a bearer the listener admits too. For
+the same reason a `natsAudience` equal to `oidcAudience` or to the Azure audience is refused,
+naming both: a token for either would be one the NATS auth service admits. Every
 audience is compared and rendered as Dispatch and the listener read theirs, trimmed of surrounding
 whitespace, so two inputs that differ only in padding are one audience, and a padded
 `agentSecretsAudience`, `oidcAudience` or `azureFederationAudience` renders the audience it names.
@@ -1235,7 +1237,8 @@ seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, a
 `natsSeedSecret` beside `natsAudience` and neither of the two, a `natsAudience` or
 `listenerAudience` holding whitespace or a control character, a `listenerAudience` equal to
-`natsAudience`, `agentSecretsAudience`, `oidcAudience` or the keyless Azure sign-in's audience, an
+`natsAudience`, `agentSecretsAudience`, `oidcAudience` or the keyless Azure sign-in's audience, a
+`natsAudience` equal to `oidcAudience` or the keyless Azure sign-in's audience, an
 `oidcIssuer` with no `oidcAudience`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an

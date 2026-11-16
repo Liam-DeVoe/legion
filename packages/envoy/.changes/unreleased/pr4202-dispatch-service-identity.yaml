@@ -4,11 +4,13 @@ body: |-
   deployment that sets neither renders exactly as before. With `natsAudience` the app and its
   listener connect to NATS through the auth service by a projected token of their ServiceAccount
   for that audience: the component mounts, classes and grants no seed, and refuses
-  `natsSeedSecret` beside it.
+  `natsSeedSecret` beside it, and a `natsAudience` equal to `oidcAudience` or the keyless Azure
+  sign-in's audience.
   With `listenerAudience` the app calls its listener with its own projected token, which the
   listener verifies against the cluster's issuer, and no shared bearer, Secret or generated
   password exists; a `listenerAudience` equal to `natsAudience`, `agentSecretsAudience`,
-  `oidcAudience` or the keyless Azure sign-in's audience is refused, naming both.
+  `oidcAudience` or the keyless Azure sign-in's audience is refused, naming both. Every audience
+  input is compared and rendered trimmed of surrounding whitespace, as its verifier reads it.
   `envoy-dispatch` takes `ENVOY_ACCOUNT_TOKEN_FILE`, the file holding its own projected
   ServiceAccount token, which every listener call presents, read at call time, reused for at most
   30 seconds, and never read at boot; set beside `ENVOY_TOKEN`, it refuses to start, naming both.

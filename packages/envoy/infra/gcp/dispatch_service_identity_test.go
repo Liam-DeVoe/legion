@@ -256,52 +256,77 @@ func TestDispatchRefusesASeedInAnAudienceFirst(t *testing.T) {
 	}
 }
 
-// listenerAudience is the listener's own. Equal to another audience the app presents a token for
-// or verifies one under, a token minted for that one would be a bearer the listener admits too,
-// so each such pair is refused, naming both inputs, before anything registers. The comparison is
-// of the audiences as their verifiers read them, trimmed, so the other one padded with whitespace
-// on either side is refused too; five distinct audiences resolve.
-func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
+// listenerAudience is the listener's own, and natsAudience the auth service's. Equal to another
+// audience the app presents a token for or verifies one under, a token minted for that one would
+// be a bearer that verifier admits too, so each such pair is refused, naming both inputs, before
+// anything registers: listenerAudience beside any of the other four, natsAudience beside
+// oidcAudience or the Azure audience. The comparison is of the audiences as their verifiers read
+// them, trimmed, so the other one padded with whitespace on either side is refused too; five
+// distinct audiences resolve.
+func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 	const brokerAudience = "example-broker-audience"
 	setBroker := func(a *gcp.DispatchArgs) {
 		a.AgentSecretsUrl, a.AgentSecretsAudience = "https://example-broker.internal.example", brokerAudience
 	}
 	for _, row := range []struct {
-		name, other string
-		edit        func(*gcp.DispatchArgs)
+		name, own, other string
+		edit             func(*gcp.DispatchArgs)
 	}{
-		{"natsAudience", "natsAudience", func(a *gcp.DispatchArgs) { setNatsAudience(a); a.ListenerAudience = dispatchNatsAudience }},
-		{"agentSecretsAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { setBroker(a); a.ListenerAudience = brokerAudience }},
-		{"oidcAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, natsAudience", "listenerAudience", "natsAudience", func(a *gcp.DispatchArgs) { setNatsAudience(a); a.ListenerAudience = dispatchNatsAudience }},
+		{"listenerAudience, agentSecretsAudience", "listenerAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { setBroker(a); a.ListenerAudience = brokerAudience }},
+		{"listenerAudience, oidcAudience", "listenerAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
 			a.OidcAudience = dispatchOidcAudience
 			a.ListenerAudience = dispatchOidcAudience
 		}},
-		{"azureFederationAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, azureFederationAudience", "listenerAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://example-audience")
 			a.ListenerAudience = "api://example-audience"
 		}},
-		{"agentSecretsAudience, padded", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, agentSecretsAudience padded", "listenerAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
 			setBroker(a)
 			a.AgentSecretsAudience = "  " + brokerAudience + "  "
 			a.ListenerAudience = brokerAudience
 		}},
-		{"oidcAudience, with leading whitespace", "oidcAudience", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, oidcAudience with leading whitespace", "listenerAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
 			a.OidcAudience = " \t" + dispatchOidcAudience
 			a.ListenerAudience = dispatchOidcAudience
 		}},
-		{"oidcAudience, with trailing whitespace", "oidcAudience", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, oidcAudience with trailing whitespace", "listenerAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
 			a.OidcAudience = dispatchOidcAudience + " \n"
 			a.ListenerAudience = dispatchOidcAudience
 		}},
-		{"azureFederationAudience, padded", "azureFederationAudience", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, azureFederationAudience padded", "listenerAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef(" api://example-audience ")
 			a.ListenerAudience = "api://example-audience"
 		}},
-		{"the keyless Azure sign-in's default audience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
+		{"listenerAudience, the keyless Azure sign-in's default audience", "listenerAudience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.ListenerAudience = "api://AzureADTokenExchange"
+		}},
+		{"natsAudience, oidcAudience", "natsAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
+			setNatsAudience(a)
+			a.OidcAudience = dispatchNatsAudience
+		}},
+		{"natsAudience, oidcAudience padded", "natsAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
+			setNatsAudience(a)
+			a.OidcAudience = " " + dispatchNatsAudience + "\t"
+		}},
+		{"natsAudience, azureFederationAudience", "natsAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
+			setNatsAudience(a)
+			setAzureFederation(a)
+			a.AzureFederationAudience = pulumi.StringRef(dispatchNatsAudience)
+		}},
+		{"natsAudience, azureFederationAudience padded", "natsAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
+			setNatsAudience(a)
+			setAzureFederation(a)
+			a.AzureFederationAudience = pulumi.StringRef("\n" + dispatchNatsAudience + " ")
+		}},
+		{"natsAudience, the keyless Azure sign-in's default audience", "natsAudience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
+			setNatsAudience(a)
+			setAzureFederation(a)
+			a.NatsAudience = "api://AzureADTokenExchange"
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -310,8 +335,8 @@ func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
 			_, err := gcp.ResolveDispatch(args)
 			var input *core.InputError
 			require.ErrorAs(t, err, &input)
-			require.Equal(t, "listenerAudience", input.Input, "%v", err)
-			require.ErrorContains(t, err, "listenerAudience is also "+row.other+":")
+			require.Equal(t, row.own, input.Input, "%v", err)
+			require.ErrorContains(t, err, row.own+" is also "+row.other+":")
 			m, err := runDispatch(t, args, true)
 			require.Error(t, err)
 			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
@@ -328,7 +353,7 @@ func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
 
 // Each audience is rendered as its verifier reads it, trimmed: Dispatch's DISPATCH_OIDC_AUDIENCE,
 // and the audiences the kubelet mints the broker's and Entra's projected tokens for, so a padded
-// input names the audience it is compared as (TestDispatchRefusesAListenerAudienceAnotherAudienceShares).
+// input names the audience it is compared as (TestDispatchRefusesAnAudienceAnotherAudienceShares).
 func TestDispatchRendersEachAudienceTrimmed(t *testing.T) {
 	args := dispatchArgs()
 	args.AgentSecretsUrl, args.AgentSecretsAudience = "https://example-broker.internal.example", " example-broker-audience\t"
