@@ -87,7 +87,7 @@ import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/en
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
-import { nkeys, connect as realConnect } from "nats";
+import { ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
@@ -266,9 +266,10 @@ const natsState = {
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
   failConnects: 0,
-  /** The error a failed connect throws: nats.js's refusal by default, a resolver's for a row that
-   *  sees what a notice carries of it. */
-  failMessage: "CONNECTION_REFUSED",
+  /** The error a failed connect throws, as nats.js throws it: its refusal by default, a
+   *  resolver's (`getaddrinfo`, its text naming the host) for a row that sees what a notice
+   *  carries of it. */
+  failError: (): unknown => NatsError.errorForCode(ErrorCode.ConnectionRefused),
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -324,7 +325,7 @@ const natsStandInConnect = async (options: {
   const { name, servers, authenticator } = options;
   if (natsState.failConnects > 0) {
     natsState.failConnects -= 1;
-    throw new Error(natsState.failMessage);
+    throw natsState.failError();
   }
   natsState.connectedNames.push(name);
   natsState.connects.push({ servers, authenticated: authenticator !== undefined });
@@ -768,7 +769,7 @@ afterEach(async () => {
   relaySeq = 0;
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
-  natsState.failMessage = "CONNECTION_REFUSED";
+  natsState.failError = () => NatsError.errorForCode(ErrorCode.ConnectionRefused);
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
@@ -19225,7 +19226,12 @@ console.log(JSON.stringify(args));
     process.env.ENVOY_NATS_URL = seed;
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
     natsState.failConnects = 1;
-    natsState.failMessage = `getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`;
+    natsState.failError = () =>
+      Object.assign(new Error(`getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`), {
+        name: "DNSException",
+        code: "EAI_AGAIN",
+        syscall: "getaddrinfo",
+      });
     const notifications: string[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
@@ -19240,7 +19246,7 @@ console.log(JSON.stringify(args));
     expect(
       notifications.some((message) =>
         message.includes(
-          "because its NATS connection failed: getaddrinfo EAI_AGAIN <a server address not shown>"
+          "because its NATS connection failed: getaddrinfo EAI_AGAIN); retrying in the background"
         )
       )
     ).toBe(true);

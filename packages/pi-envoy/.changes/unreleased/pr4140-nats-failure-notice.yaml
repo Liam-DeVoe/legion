@@ -1,10 +1,11 @@
 kind: Fixed
 body: |-
   A session whose NATS connection fails now says why in the notice that its registration was
-  refused (`… because its NATS connection failed: <reason>`), as Claude Code's channel server does,
-  and neither that notice nor the inbound-unavailable one carries an address the log would not name
-  or a credential a NATS URL holds: nats.js's resolver errors name the host they looked up, and a
-  pasted nkey seed or token parses as one.
-time: 2026-11-16T12:17:16Z
+  refused (`… because its NATS connection failed: <reason>`), as Claude Code's channel server does.
+  The reason, there and in the inbound-unavailable notice, is nats.js's code, the server's own
+  refusal or the plugin's own message (`natsFailureReason`), never nats.js's or the runtime's text,
+  which quotes what the servers were set to: a resolver's error names the host it looked up, a
+  pasted nkey seed or token parses as one, and a password's digits can be read as the port.
+time: 2026-11-16T19:51:09Z
 custom:
     Issue: pr4140

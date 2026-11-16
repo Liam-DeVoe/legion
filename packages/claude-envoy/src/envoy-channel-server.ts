@@ -43,12 +43,13 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
-import { messageFor } from "@legion/envoy-client/errors"
+import { LoggableError, messageFor } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
 import {
   natsConnectionOptions,
-  natsErrorForLog,
-  natsServerForLog,
+  natsDialFailure,
+  natsFailureReason,
+  natsServersForLog,
 } from "@legion/envoy-client/nats-connection"
 import {
   followNatsCredential,
@@ -184,11 +185,12 @@ const HANDOFF_POLL_MS = 250
 /** How long a handoff waits for NATS to confirm the new direct subject before retrying. */
 const HANDOFF_FLUSH_TIMEOUT_MS = 10_000
 
-/** `promise`, or a rejection naming `what` once `ms` pass. */
+/** `promise`, or a rejection naming `what` once `ms` pass. Its text is this server's own, so a
+ *  NATS failure line prints it whole (`LoggableError`). */
 async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms)
+    timer = setTimeout(() => reject(new LoggableError(`${what} timed out after ${ms} ms`)), ms)
   })
   try {
     return await Promise.race([promise, expired])
@@ -658,10 +660,11 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
  * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`),
  * until `stop` or the connection closing. A dial that fails throws naming the servers and the
- * credential it presented beside nats.js's own reason, with no address it does not name and no
- * credential a URL holds in either (`natsServerForLog`, `natsErrorForLog`; nats.js's resolver
- * errors name the host they looked up). The error keeps no cause: nats.js's own error still
- * carries them. `dial` is nats.js's `connect`, or a test's.
+ * credential it presented beside why it failed, as a log may print both (`natsDialFailure`: a
+ * server is named only where nats.js dials the host and port it reads as, and the reason is
+ * nats.js's code or the server's own text, never text derived from what the servers were set
+ * to). The error keeps no cause: nats.js's own error still carries them. `dial` is nats.js's
+ * `connect`, or a test's.
  *
  * `signal` aborting (the process is stopping) ends the wait for the token and for the dial at once,
  * with `START_STOPPING`; the token trade itself goes on, since it is shared with every caller of
@@ -709,7 +712,11 @@ export async function dialChannelNats(
         throw new Error(START_STOPPING)
       }
       throw new Error(
-        `could not connect to NATS at ${inbound.natsUrls.map(natsServerForLog).join(", ")} presenting ${CREDENTIAL_NAMES[natsCredential.kind]}: ${natsErrorForLog(messageFor(error), inbound.natsUrls)}`,
+        natsDialFailure(
+          natsServersForLog(inbound.natsUrls),
+          error,
+          CREDENTIAL_NAMES[natsCredential.kind],
+        ),
       )
     }
     if (broker === undefined) return { connection, stop: () => {} }
@@ -753,13 +760,14 @@ async function flushThroughRedials(
   }
   const watch = setInterval(check, REDIAL_FLUSH_RETRY_MS)
   signal?.addEventListener("abort", check)
-  // A stop is its own reason; a closed connection is named with the flush error that showed it.
+  // A stop is its own reason; a closed connection is named with the flush error that showed it,
+  // as a log may print it (`natsFailureReason`).
   const failure = (why: "stopping" | "closed", error?: unknown): Error =>
     why === "stopping"
       ? new Error(START_STOPPING)
       : error === undefined
         ? new Error(START_CLOSED)
-        : new Error(`${START_CLOSED}: ${messageFor(error)}`, { cause: error })
+        : new Error(`${START_CLOSED}: ${natsFailureReason(error)}`, { cause: error })
   try {
     for (;;) {
       check()
@@ -1117,7 +1125,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       }
     } catch (error) {
       process.stderr.write(
-        `envoy-channel: the relay subscription of ${owner.sessionID} stopped — ${messageFor(error)}\n`,
+        `envoy-channel: the relay subscription of ${owner.sessionID} stopped — ${natsFailureReason(error)}\n`,
       )
     }
   }
@@ -1260,7 +1268,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         "flushing NATS",
       ).catch((error: unknown) => {
         process.stderr.write(
-          `envoy-channel: could not confirm the relay subscription of ${identity.id} — ${messageFor(error)}\n`,
+          `envoy-channel: could not confirm the relay subscription of ${identity.id} — ${natsFailureReason(error)}\n`,
         )
       })
     }
@@ -1892,7 +1900,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       }
     } catch (error) {
       process.stderr.write(
-        `envoy-channel: the NATS connection's status reader failed — ${messageFor(error)}\n`,
+        `envoy-channel: the NATS connection's status reader failed — ${natsFailureReason(error)}\n`,
       )
     }
   })()

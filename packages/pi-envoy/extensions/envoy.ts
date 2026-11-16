@@ -93,9 +93,9 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings";
-import { messageFor } from "@legion/envoy-client/errors";
+import { LoggableError, messageFor } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
-import { natsConnectionOptions, natsErrorForLog } from "@legion/envoy-client/nats-connection";
+import { natsConnectionOptions, natsFailureReason } from "@legion/envoy-client/nats-connection";
 import {
   type BrokerNatsCredential,
   followNatsCredential,
@@ -1123,7 +1123,7 @@ export default function envoyExtension(pi: PiApi): void {
   const requireInbound = () => {
     const { inbound } = requireEnvoy().settings;
     if ("off" in inbound) {
-      throw new Error(`inbound messages are off for this session: ${inbound.off}`);
+      throw new LoggableError(`inbound messages are off for this session: ${inbound.off}`);
     }
     return inbound;
   };
@@ -1168,7 +1168,7 @@ export default function envoyExtension(pi: PiApi): void {
     if (shuttingDown || connection?.isClosed() === false) {
       await dialled.close().catch(() => {});
       if (!shuttingDown && connection?.isClosed() === false) return connection;
-      throw new Error(
+      throw new LoggableError(
         "the session shut down while its NATS dial was in flight; the connection it opened was closed"
       );
     }
@@ -1199,7 +1199,7 @@ export default function envoyExtension(pi: PiApi): void {
       }
     } catch (error) {
       logger.warn("envoy: the NATS connection's status reader failed", {
-        error: messageFor(error),
+        error: natsFailureReason(error),
       });
     }
   };
@@ -2194,11 +2194,12 @@ export default function envoyExtension(pi: PiApi): void {
   // would hold the session's registration for ten seconds times the subjects it opened.
   const unanswered = new Set<NatsConnection>();
 
-  // `promise`, or a rejection naming `what`, once `ms` pass.
+  // `promise`, or a rejection naming `what`, once `ms` pass. Its text is this plugin's own, so a
+  // NATS failure notice prints it whole (`LoggableError`).
   const within = async <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
     const expired = Promise.withResolvers<never>();
     const timer = setTimeout(
-      () => expired.reject(new Error(`${what} timed out after ${ms} ms`)),
+      () => expired.reject(new LoggableError(`${what} timed out after ${ms} ms`)),
       ms
     );
     try {
@@ -3720,17 +3721,11 @@ export default function envoyExtension(pi: PiApi): void {
     leftSessions.delete(host);
     for (const other of leftSessions) forgetBrokerSession(other);
     leftSessions.clear();
-    // nats.js's own error can name the host it could not resolve, and a pasted seed or token parses
-    // as one: the text a notice carries names no address the log would not (`natsErrorForLog`).
-    const inboundSettings = active?.settings.inbound;
-    const natsUrls =
-      inboundSettings !== undefined && "natsUrls" in inboundSettings
-        ? inboundSettings.natsUrls
-        : [];
+    // nats.js's own error can carry what the servers were set to (a resolver's error names the
+    // host it looked up, a socket's the port, a password's digits included), so a notice carries
+    // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
     const failureText =
-      inboundFailure === undefined
-        ? undefined
-        : natsErrorForLog(messageFor(inboundFailure), natsUrls);
+      inboundFailure === undefined ? undefined : natsFailureReason(inboundFailure);
     if (registration !== undefined) {
       // A registration refused for want of the relay subject the failed dial would have opened
       // names that dial's own failure too: it is the cause a person can act on (a hub with no auth

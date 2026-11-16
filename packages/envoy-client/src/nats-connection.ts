@@ -3,6 +3,7 @@ import type { ConnectionOptions } from "nats";
 // move would fail the typecheck here, and the rows that dial real nats.js (nats-connection-log
 // test) would fail on a change of what it returns.
 import { hostPort } from "nats/lib/nats-base-client/servers";
+import { LoggableError } from "./errors";
 import { natsAuthOptions } from "./nats-auth";
 import type { NatsCredential } from "./nats-credential";
 
@@ -54,8 +55,8 @@ export function natsConnectionOptions(input: {
 /** What a log says in place of a NATS server address it will not name. */
 export const UNNAMED_NATS_SERVER = "a server address that does not read as a host";
 
-/** What stands in, in nats.js's own error text, for a server address a log will not name. */
-export const NATS_ADDRESS_NOT_SHOWN = "<a server address not shown>";
+/** The port nats.js dials where a server names none (servers.js `hostPort`, `DEFAULT_PORT`). */
+const NATS_DEFAULT_PORT = 4222;
 
 /** One label of a host name a log names: letters, digits and inner hyphens, at most 32
  *  characters. A pasted nkey seed (58 characters) or a token's segment is a longer label. */
@@ -63,28 +64,26 @@ const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/i;
 /** A label that is 16 or more hexadecimal characters alone: a token or key (a 128-bit hex token
  *  is 32), never a host name a log should print. */
 const HEX_CREDENTIAL = /^[0-9a-f]{16,}$/i;
-/** A label of 16 or more letters and digits that mixes upper and lower case with a digit: a
- *  pasted token, since a host name is written in one case, never a name a log should print. */
-const MIXED_CREDENTIAL = /^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[A-Za-z0-9]{16,}$/;
 
 /**
- * The host nats.js dials for `server`, as nats.js itself finds it: its own `hostPort`
+ * The host and port nats.js dials for `server`, as nats.js itself finds them: its own `hostPort`
  * (servers.js), the function its server list calls for every entry. It takes what follows the
- * last `://` and reads that as an http: URL, which ends the host at `\`, takes the last of a comma
- * list written in one entry, percent-decodes, writes a Unicode name in punycode and lowercases;
- * so a host a nats: URL parse names can differ from the one dialed, and the dialed one is what
- * nats.js's resolver errors name. Undefined where nats.js cannot read the server either (a port
- * out of range), which it refuses before it dials.
+ * last `://`, takes the port from the first `:` followed by digits anywhere in it (a password's
+ * included), and reads the rest as an http: URL, which ends the host at `\`, takes the last of a
+ * comma list written in one entry, percent-decodes, writes a Unicode name in punycode and
+ * lowercases. So the address a nats: URL parse names can differ from the one dialed. Undefined
+ * where nats.js cannot read the server either, which it refuses before it dials.
  */
-export function natsDialedHost(server: string): string | undefined {
+export function natsDialedAddress(server: string): { host: string; port: number } | undefined {
   try {
-    return hostPort(server).hostname.toLowerCase();
+    const { hostname, port } = hostPort(server);
+    return { host: hostname.toLowerCase(), port };
   } catch {
     return undefined;
   }
 }
 
-/** `server` parsed as nats.js dials it: a value written without a scheme is `nats://`. */
+/** `server` parsed as written: a value written without a scheme is `nats://`. */
 function parsedServer(server: string): URL | undefined {
   try {
     return new URL(server.includes("://") ? server : `nats://${server}`);
@@ -93,17 +92,20 @@ function parsedServer(server: string): URL | undefined {
   }
 }
 
-/** Whether `hostname` (a URL's, so an IPv6 literal keeps its brackets) reads as a host: an IP
- *  literal, or a name whose every label is a `HOST_LABEL` and no `HEX_CREDENTIAL`. */
+/**
+ * Whether `hostname` (a URL's, so an IPv6 literal keeps its brackets, and a nats: URL keeps the
+ * case it was written in) is one a log names: an IP literal, or a name written in one case whose
+ * every label is a `HOST_LABEL` and no `HEX_CREDENTIAL`. A host name is written in one case, and a
+ * pasted token, base64url or not, mixes them; a name the rule refuses is left unnamed, which costs
+ * the log a name and never a secret.
+ */
 function readsAsHost(hostname: string): boolean {
   if (/^\[[0-9a-f:.]+\]$/i.test(hostname) || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname))
     return true;
+  if (hostname !== hostname.toLowerCase() && hostname !== hostname.toUpperCase()) return false;
   return hostname
     .split(".")
-    .every(
-      (label) =>
-        HOST_LABEL.test(label) && !HEX_CREDENTIAL.test(label) && !MIXED_CREDENTIAL.test(label)
-    );
+    .every((label) => HOST_LABEL.test(label) && !HEX_CREDENTIAL.test(label));
 }
 
 /**
@@ -112,8 +114,9 @@ function readsAsHost(hostname: string): boolean {
  * (`nats://token@host:port`), and a value that does not read as a host may be a credential pasted
  * into the wrong setting (an nkey seed parses as a host name), so neither reaches a log: such an
  * address is `UNNAMED_NATS_SERVER`. So is one whose URL holds more than scheme, host and port,
- * which is all nats.js dials: a token or password holding an unencoded `/`, `?` or `#` ends the
- * authority there, and the host is then the credential's first segment.
+ * and one where the host or the port nats.js dials (`natsDialedAddress`) is not the one written:
+ * there the two reads part (a `\`, a comma list, a percent escape, a Unicode name, a password's
+ * digits read as the port), and the dialed address is a credential's part.
  */
 export function natsServerForLog(server: string): string {
   const parsed = parsedServer(server);
@@ -121,108 +124,68 @@ export function natsServerForLog(server: string): string {
   if (!["", "/"].includes(parsed.pathname) || parsed.search !== "" || parsed.hash !== "")
     return UNNAMED_NATS_SERVER;
   if (!readsAsHost(parsed.hostname)) return UNNAMED_NATS_SERVER;
-  // Named only where it is the host nats.js dials: the two reads part at a `\`, a comma list in
-  // one entry, a percent escape and a Unicode name, and there the dialed host is a credential's
-  // first part or a pasted seed.
-  if (natsDialedHost(server) !== parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase())
+  const dialed = natsDialedAddress(server);
+  const port = parsed.port === "" ? NATS_DEFAULT_PORT : Number(parsed.port);
+  if (
+    dialed === undefined ||
+    dialed.host !== parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase() ||
+    dialed.port !== port
+  )
     return UNNAMED_NATS_SERVER;
   return server.includes("://") ? `${parsed.protocol}//${parsed.host}` : parsed.host;
 }
 
-/**
- * The user info `server` is written with: everything between its scheme and its last `@`,
- * whatever its characters, since a credential may hold `/`, `?` or `#` that ends a URL's
- * authority early; and the host after it as written.
- */
-function writtenParts(server: string): { userInfo: string; hostname: string } {
-  const rest = server.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
-  const at = rest.lastIndexOf("@");
-  const hostname = /^[^/?#:]*/.exec(at < 0 ? rest : rest.slice(at + 1))?.[0] ?? "";
-  return { userInfo: at < 0 ? "" : rest.slice(0, at), hostname };
-}
-
-/** The user, password and host `server` holds: its user info as written (whole, and split at
- *  its first `:`), the URL's user and password where it parses, and the host nats.js dials, or
- *  the host as written for a server it cannot parse (a port out of range). */
-function serverParts(server: string): { secrets: string[]; hostname: string } {
-  const parsed = parsedServer(server);
-  const { userInfo, hostname } = writtenParts(server);
-  const colon = userInfo.indexOf(":");
-  const secrets =
-    colon < 0 ? [userInfo] : [userInfo, userInfo.slice(0, colon), userInfo.slice(colon + 1)];
-  if (parsed !== undefined) secrets.push(parsed.username, parsed.password);
-  return { secrets, hostname: parsed?.hostname ?? hostname };
-}
+/** The codes nats.js gives an `-ERR` the server itself sent (core.js `ErrorCode`, protocol.js
+ *  `toError`): its message is the server's own text, which names nothing the client was set with. */
+const SERVER_ERROR_CODES: Record<string, true> = {
+  AUTHORIZATION_VIOLATION: true,
+  AUTHENTICATION_EXPIRED: true,
+  AUTHENTICATION_TIMEOUT: true,
+  ACCOUNT_EXPIRED: true,
+  PERMISSIONS_VIOLATION: true,
+  NATS_PROTOCOL_ERR: true,
+};
+/** A code or a syscall as a runtime or a service sets them: one word (`EAI_AGAIN`,
+ *  `ERR_SOCKET_BAD_PORT`, Bun's `ConnectionRefused`), never text taken from a setting. */
+const ERROR_CODE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const SYSCALL = /^[a-z]+$/;
+const ERROR_NAME = /^[A-Za-z]+$/;
 
 /**
- * Every part of `servers` a log does not name: each address `natsServerForLog` does not name, as
- * written and as its host name, and every user, password or token a URL of them holds, as written
- * and decoded.
+ * Why a NATS call failed, as a log may print it. An allowlist: nothing nats.js or the runtime
+ * derives from the configured servers reaches it, whatever their spelling. nats.js passes the
+ * runtime's own errors on unchanged, and those quote what they were handed (a resolver's error
+ * names the host it looked up, a socket's the port, a URL parser's the whole URL), so their text
+ * is never printed, only their code:
+ *  - a `LoggableError` (this package's or a caller's own message): its message;
+ *  - nats.js's error for the server's own `-ERR` (`'Authorization Violation'`, `Permissions
+ *    Violation for …`): its message, the server's text;
+ *  - any other nats.js error: its code (`CONNECTION_REFUSED`, `TIMEOUT`, `TLS`, …);
+ *  - a runtime error: its syscall and code (`getaddrinfo EAI_AGAIN`, `ERR_SOCKET_BAD_PORT`);
+ *  - anything else: its type, `(message withheld)`.
  */
-export function natsUnnamedParts(servers: readonly string[]): string[] {
-  const parts: string[] = [];
-  for (const server of servers) {
-    const { secrets, hostname } = serverParts(server);
-    for (const secret of secrets) {
-      parts.push(secret);
-      try {
-        parts.push(decodeURIComponent(secret));
-      } catch {
-        // A malformed escape: the part as written is what the text can carry.
-      }
-    }
-    if (natsServerForLog(server) !== UNNAMED_NATS_SERVER) continue;
-    parts.push(server, hostname);
-    // The host nats.js dials, which its resolver errors name: where it differs from the host a
-    // nats: URL parse finds, it is the part a credential or seed leaves in the text.
-    const dialed = natsDialedHost(server);
-    if (dialed !== undefined) parts.push(dialed);
-  }
-  return parts;
+export function natsFailureReason(error: unknown): string {
+  if (error instanceof LoggableError) return error.message;
+  if (!(error instanceof Error)) return `a thrown ${typeof error} (message withheld)`;
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown };
+  if (error.name === "NatsError" && typeof code === "string" && code !== "")
+    return SERVER_ERROR_CODES[code] === true ? error.message : code;
+  if (typeof code === "string" && ERROR_CODE.test(code))
+    return typeof syscall === "string" && SYSCALL.test(syscall) ? `${syscall} ${code}` : code;
+  return `${ERROR_NAME.test(error.name) ? error.name : "Error"} (message withheld)`;
 }
 
 /**
- * `text` with each part of `replacements` replaced by its stand-in, whatever its case, in one pass
- * over `text` as written: a stand-in is never searched again, so a part that is a word of one (a
- * user `a`) does not grow the text, and no replacement can break a longer part's match for
- * another. Longest first: at any one place the longest part that matches is the one replaced, so a
- * part inside another leaves nothing of the longer behind. Each part is searched as written, with
- * Unicode case folding (a part whose lowercasing is not its fold, U+0130 or U+212A, is still
- * found); its lowercasing only chooses the stand-in, and of two entries for one part (whatever
- * its case) the later's stand-in is used.
+ * The line a failed dial is logged with: `could not connect to NATS at <named>[ presenting
+ * <credential>]: <reason>`, `named` being the servers as a log names them (`natsServersForLog`,
+ * or a caller's own name for a server it never names) and the reason `natsFailureReason`'s.
  */
-export function replaceEachOnce(
-  text: string,
-  replacements: Iterable<readonly [part: string, standIn: string]>
-): string {
-  const spellings = new Set<string>();
-  const standIns = new Map<string, string>();
-  for (const [part, standIn] of replacements) {
-    if (part.trim() === "") continue;
-    spellings.add(part);
-    standIns.set(part.toLowerCase(), standIn);
-  }
-  if (spellings.size === 0) return text;
-  const alternatives = [...spellings]
-    .sort((a, b) => b.length - a.length)
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  // A match whose lowercasing is no part's (a case the fold reaches and toLowerCase does not)
-  // still gets a stand-in: the first, which hides it as well as its own would.
-  const fallback = standIns.values().next().value as string;
-  return text.replace(
-    new RegExp(alternatives.join("|"), "giu"),
-    (match) => standIns.get(match.toLowerCase()) ?? fallback
-  );
+export function natsDialFailure(named: string, error: unknown, presenting?: string): string {
+  const credential = presenting === undefined ? "" : ` presenting ${presenting}`;
+  return `could not connect to NATS at ${named}${credential}: ${natsFailureReason(error)}`;
 }
 
-/**
- * `text` (a NATS connect error's, which nats.js's resolver errors fill with the host they looked
- * up, lowercased) with every part of `servers` a log does not name (`natsUnnamedParts`) replaced
- * by `NATS_ADDRESS_NOT_SHOWN`, in one pass (`replaceEachOnce`).
- */
-export function natsErrorForLog(text: string, servers: readonly string[]): string {
-  return replaceEachOnce(
-    text,
-    natsUnnamedParts(servers).map((part) => [part, NATS_ADDRESS_NOT_SHOWN] as const)
-  );
+/** `servers` as a log names them, one by one (`natsServerForLog`), joined by commas. */
+export function natsServersForLog(servers: readonly string[]): string {
+  return servers.map(natsServerForLog).join(", ");
 }

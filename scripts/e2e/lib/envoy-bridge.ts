@@ -5,16 +5,16 @@
 // publishes upstream, and it never touches Dispatch issue subjects — the instance's scratch
 // Dispatch server publishes its own, and two rigs on one issue stream admitted each other's issues
 // (docs/solutions/legion).
-import { connect, type NatsConnection, type Subscription } from "nats";
+import { type ConnectionOptions, connect, type NatsConnection, type Subscription } from "nats";
 import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
 import { githubSubject } from "../../../packages/contracts/src/subject";
+import { LoggableError } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
 import {
-  NATS_ADDRESS_NOT_SHOWN,
-  natsDialedHost,
+  natsDialedAddress,
+  natsDialFailure,
+  natsFailureReason,
   natsServerForLog,
-  natsUnnamedParts,
-  replaceEachOnce,
 } from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
@@ -91,28 +91,14 @@ export function bridgeConfigFromEnvironment(
 const upstreamNatsUrl =
   /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/)?(?:([^@/?#,\s]+)@)?([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)(?::\d+)?\/?$/;
 
-// Whether the host nats.js dials (natsDialedHost, its own hostPort) is the host the pattern
+// Whether the host nats.js dials (natsDialedAddress, its own hostPort) is the host the pattern
 // checked. nats.js reads the URL as an http: one, which ends the host at a `\` in the user info,
-// so `nats://tok\x@<fqdn>` passes the pattern and dials the bare name `tok`.
+// so `nats://tok\x@<fqdn>` passes the pattern and dials the bare name `tok`. The port it dials can
+// differ too (it takes the first `:<digits>`, a password's included); that misroutes nothing, and
+// the failure line names neither.
 function dialsCheckedHost(upstreamUrl: string): boolean {
   const [, , host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
-  return host !== undefined && natsDialedHost(upstreamUrl) === host.toLowerCase();
-}
-
-// The operator's upstream names production infrastructure, so a client error that quotes the
-// value, its user info, its host or the host nats.js dials is printed with the variable's name in
-// their place.
-function upstreamReplacements(upstreamUrl: string): (readonly [string, string])[] {
-  const [, userInfo, host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
-  return [upstreamUrl, userInfo, host, natsDialedHost(upstreamUrl)]
-    .filter((value): value is string => value !== undefined)
-    .map((value) => [value, "SMOKE_UPSTREAM_NATS"] as const);
-}
-
-// One pass over the text as the client wrote it (replaceEachOnce): the variable's name a match
-// puts in is never searched again.
-export function redactUpstream(text: string, upstreamUrl: string): string {
-  return replaceEachOnce(text, upstreamReplacements(upstreamUrl));
+  return host !== undefined && natsDialedAddress(upstreamUrl)?.host === host.toLowerCase();
 }
 
 /** The line the bridge prints once both connections answer. The rig's server is named as a log
@@ -121,17 +107,13 @@ export function bridgeReadyLine(config: BridgeConfig): string {
   return `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${natsServerForLog(config.downstreamUrl)}`;
 }
 
-/** The line the bridge prints when it stops on `error`: the client's own text, with neither
- *  connection's credential in it (natsUnnamedParts for the rig's) and the upstream's host not
- *  named. Both in one pass: replaced one after the other, a rig credential that is a label of
- *  the upstream's host broke the whole-host match, and the rest of the host was printed. A part
- *  of both is the upstream's. */
-export function bridgeFailureLine(error: unknown, config: BridgeConfig): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const rig = natsUnnamedParts([config.downstreamUrl]).map(
-    (part) => [part, NATS_ADDRESS_NOT_SHOWN] as const
-  );
-  return `BRIDGE UNHEALTHY ${replaceEachOnce(message, [...rig, ...upstreamReplacements(config.upstreamUrl)])}`;
+/** The line the bridge prints when it stops on `error`: why, as a log may print it
+ *  (natsFailureReason). The bridge's own refusals and its dial failures are its own lines
+ *  (LoggableError, natsDialFailure), which name the upstream by its variable alone; nats.js's and
+ *  the runtime's errors are printed by their code, so nothing either connection was set to, the
+ *  operator's production host and password included, reaches the line. */
+export function bridgeFailureLine(error: unknown, _config: BridgeConfig): string {
+  return `BRIDGE UNHEALTHY ${natsFailureReason(error)}`;
 }
 
 export function envelopeValidation(data: string | Uint8Array): EnvelopeValidation {
@@ -183,7 +165,7 @@ async function forwardMessages(
   let firstMessage = true;
   for await (const message of subscription) {
     if (!message.subject.startsWith(subjectPrefix)) {
-      throw new Error(`refusing out-of-scope upstream subject ${message.subject}`);
+      throw new LoggableError(`refusing out-of-scope upstream subject ${message.subject}`);
     }
     if (firstMessage) {
       firstMessage = false;
@@ -191,7 +173,7 @@ async function forwardMessages(
       if (!validation.ok) {
         const reason = validationFailure(validation);
         console.error(`BRIDGE UNHEALTHY first-envelope subject=${message.subject} ${reason}`);
-        throw new Error(`first bridged envelope is incompatible: ${reason}`);
+        throw new LoggableError(`first bridged envelope is incompatible: ${reason}`);
       }
       console.log(
         `BRIDGE VALIDATION shape=${validation.shape} subject=${message.subject} bytes=${message.data.byteLength}`
@@ -200,6 +182,16 @@ async function forwardMessages(
     downstream.publishMessage(message);
     await downstream.flush();
     console.log(`BRIDGED subject=${message.subject} bytes=${message.data.byteLength}`);
+  }
+}
+
+/** nats.js's `connect` with `options`, whose failure is the bridge's own line naming the server as
+ *  `named` (natsDialFailure): the upstream by its variable, the rig as a log names it. */
+async function dial(options: ConnectionOptions, named: string): Promise<NatsConnection> {
+  try {
+    return await connect(options);
+  } catch (error) {
+    throw new LoggableError(natsDialFailure(named, error));
   }
 }
 
@@ -212,23 +204,29 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
     process.env,
     process.cwd()
   );
-  const upstream = await connect({
-    servers: config.upstreamUrl,
-    name: `legion-e2e-bridge-upstream-${config.repository}`,
-    ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
-    reconnect: true,
-    maxReconnectAttempts: -1,
-    reconnectTimeWait: 2_000,
-  });
-  let downstream: NatsConnection | undefined;
-  try {
-    downstream = await connect({
-      servers: config.downstreamUrl,
-      name: `legion-e2e-bridge-downstream-${config.repository}`,
+  const upstream = await dial(
+    {
+      servers: config.upstreamUrl,
+      name: `legion-e2e-bridge-upstream-${config.repository}`,
+      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
       reconnect: true,
       maxReconnectAttempts: -1,
       reconnectTimeWait: 2_000,
-    });
+    },
+    "SMOKE_UPSTREAM_NATS"
+  );
+  let downstream: NatsConnection | undefined;
+  try {
+    downstream = await dial(
+      {
+        servers: config.downstreamUrl,
+        name: `legion-e2e-bridge-downstream-${config.repository}`,
+        reconnect: true,
+        maxReconnectAttempts: -1,
+        reconnectTimeWait: 2_000,
+      },
+      natsServerForLog(config.downstreamUrl)
+    );
     const activeDownstream = downstream;
     const subscriptions = config.subjects.map((subject) => upstream.subscribe(subject));
     const stop = () => {

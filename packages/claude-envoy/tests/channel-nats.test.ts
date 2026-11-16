@@ -9,8 +9,23 @@ import {
   type BrokerNatsCredential,
   brokerNatsCredential,
 } from "@legion/envoy-client/nats-credential"
-import { type Authenticator, type ConnectionOptions, type NatsConnection, nkeys } from "nats"
+import {
+  type Authenticator,
+  type ConnectionOptions,
+  ErrorCode,
+  type NatsConnection,
+  NatsError,
+  nkeys,
+} from "nats"
 import { dialChannelNats } from "../src/envoy-channel-server"
+
+/** The resolver's error for `host`, as Bun throws it through nats.js: its text names the host. */
+const unresolved = (host: string): Error =>
+  Object.assign(new Error(`getaddrinfo EAI_AGAIN ${host}`), {
+    name: "DNSException",
+    code: "EAI_AGAIN",
+    syscall: "getaddrinfo",
+  })
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
 afterEach(() => {
@@ -118,7 +133,7 @@ test("dialChannelNats runs no keeper and no follow for a connection with no brok
 
 test("a failed dial names each server by scheme, host and port, never a credential its URL holds", async () => {
   const refused = async (): Promise<NatsConnection> => {
-    throw new Error("CONNECTION_REFUSED")
+    throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
   }
   // Each canary URL is built here from its parts, so no source line reads as a credential-bearing
   // URL to the push leak check.
@@ -153,9 +168,9 @@ test("a credential pasted as a bare server address is never named", async () => 
   const segments = Array.from({ length: 3 }, () =>
     crypto.randomUUID().replaceAll("-", "").repeat(2),
   )
-  // nats.js's own error names the host it could not resolve, lowercased, as getaddrinfo does.
+  // The resolver's error names the host it could not resolve, lowercased, as getaddrinfo does.
   const refused = async (): Promise<NatsConnection> => {
-    throw new Error(`getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`)
+    throw unresolved(seed.toLowerCase())
   }
   const failure = await dialChannelNats(
     {
@@ -172,7 +187,7 @@ test("a credential pasted as a bare server address is never named", async () => 
   expect(failure.toLowerCase()).not.toContain(seed.toLowerCase())
   for (const segment of segments) expect(failure.toLowerCase()).not.toContain(segment.toLowerCase())
   expect(failure).toBe(
-    "could not connect to NATS at a server address that does not read as a host, a server address that does not read as a host, a server address that does not read as a host, nats.example:4222 presenting no credential: getaddrinfo EAI_AGAIN <a server address not shown>",
+    "could not connect to NATS at a server address that does not read as a host, a server address that does not read as a host, a server address that does not read as a host, nats.example:4222 presenting no credential: getaddrinfo EAI_AGAIN",
   )
 })
 
@@ -181,7 +196,7 @@ test("a token holding an unencoded / is named by none of its segments", async ()
   // resolves and names in its error.
   const userinfo = (...parts: string[]) => `${parts.join(":")}@`
   const refused = async (): Promise<NatsConnection> => {
-    throw new Error("getaddrinfo EAI_AGAIN e2sentineltok")
+    throw unresolved("e2sentineltok")
   }
   const failure = await dialChannelNats(
     {
@@ -196,7 +211,7 @@ test("a token holding an unencoded / is named by none of its segments", async ()
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(failure).toBe(
-    "could not connect to NATS at a server address that does not read as a host presenting no credential: getaddrinfo EAI_AGAIN <a server address not shown>",
+    "could not connect to NATS at a server address that does not read as a host presenting no credential: getaddrinfo EAI_AGAIN",
   )
 })
 

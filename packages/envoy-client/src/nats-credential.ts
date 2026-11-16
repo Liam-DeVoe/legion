@@ -14,12 +14,13 @@
 // before then (`keepNatsCredential`).
 
 import type { BrokerEnvironment } from "@legion/broker-client/environment";
+import { BrokerRefusedError, SignInEndedError } from "@legion/broker-client/token-client";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
 import type { Auth, Events, NatsConnection, Status } from "nats";
 import { type BrokerSessionName, brokerTokenFor, type TradedToken } from "./broker-credential";
 import type { NatsSeed } from "./envoy-settings";
-import { messageFor } from "./errors";
+import { LoggableError, messageFor } from "./errors";
 
 /** The variable that names which credential a session's NATS connection presents: `broker` or
  *  `none`. `envoy.natsAuth` names it in the file, and the variable overrides that field. */
@@ -128,22 +129,29 @@ export function brokerNatsCredential(
   };
   return {
     // The trade itself goes on past the deadline, for the keeper and the next `ready`: only this
-    // wait for it ends.
+    // wait for it ends. A refusal the broker or the issuer gave names what was traded and what
+    // it said, which a failure line prints whole (`LoggableError`); any other failure is printed
+    // by its code alone (`natsFailureReason`).
     ready: () => {
       if (live()) return Promise.resolve();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(tradeUnanswered(source, tradeDeadlineMs))),
+          () => reject(new LoggableError(tradeUnanswered(source, tradeDeadlineMs))),
           tradeDeadlineMs
         );
         timer.unref?.();
       });
-      return Promise.race([renew(), deadline]).finally(() => clearTimeout(timer));
+      const traded = renew().catch((error: unknown) => {
+        if (error instanceof BrokerRefusedError || error instanceof SignInEndedError)
+          throw new LoggableError(messageFor(error), { cause: error });
+        throw error;
+      });
+      return Promise.race([traded, deadline]).finally(() => clearTimeout(timer));
     },
     renew,
     authenticator(nonce?: string): Auth {
-      if (nonce === undefined || nonce === "") throw new Error(noAuthService(source));
+      if (nonce === undefined || nonce === "") throw new LoggableError(noAuthService(source));
       const snapshot = held;
       if (snapshot === undefined || !live()) {
         // Nothing live to present: the server refuses this CONNECT, and the trade started here
@@ -304,16 +312,18 @@ export async function followNatsCredential(
       // Back as the old session: a redial that was in flight when the move asked for one.
       connection.reconnect().catch(() => {});
     }
-    throw new Error("the NATS connection's status ended before it came back as the new session");
+    throw new LoggableError(
+      "the NATS connection's status ended before it came back as the new session"
+    );
   })();
   const closed = connection.closed().then(() => {
-    throw new Error("the NATS connection closed before it came back as the new session");
+    throw new LoggableError("the NATS connection closed before it came back as the new session");
   });
   const late = Promise.withResolvers<never>();
   const timer = setTimeout(
     () =>
       late.reject(
-        new Error(
+        new LoggableError(
           `the NATS connection did not come back as the new session within ${FOLLOW_TIMEOUT_MS / 1000} s`
         )
       ),

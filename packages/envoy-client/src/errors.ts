@@ -37,6 +37,16 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
 }
 
 /**
+ * An error whose message its writer composed from nothing a NATS server setting holds, so a log
+ * prints it whole (`natsFailureReason`, `./nats-connection`), where it prints only the code of
+ * nats.js's and the runtime's own errors: this package's own reasons (a hub with no auth service,
+ * a trade unanswered, a switch not followed) and a caller's. Here rather than beside that function,
+ * since `./nats-credential`, which every bundle reading `envoySettings` imports, throws it and
+ * imports nats.js's types alone.
+ */
+export class LoggableError extends Error {}
+
+/**
  * `url` with no user and no password, for any text that names it: an error, a log line, a notice
  * or a link. A configured Dispatch or Envoy URL may carry both, since the config accepts such a
  * URL, and a user alone can be a token, so both go; requests still go to the URL as configured. A
