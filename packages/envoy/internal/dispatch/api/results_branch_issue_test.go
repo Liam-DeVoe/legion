@@ -126,7 +126,7 @@ func TestAStoredRowOfABranchOfNoIssueAddsNoBasis(t *testing.T) {
 	}
 
 	if _, err := rig.database.Pool.Exec(context.Background(),
-		`update check_results set branch = $2 where id = $1::uuid`, recorded.ID, stray); err != nil {
+		`update ci_check_results set branch = $2 where id = $1::uuid`, recorded.ID, stray); err != nil {
 		t.Fatal(err)
 	}
 	check := checkOf(t, readResults(t, rig.handler, rig.issue), "c1")

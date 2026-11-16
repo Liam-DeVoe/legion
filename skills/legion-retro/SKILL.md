@@ -49,9 +49,9 @@ for a finished retro only.
    that head, and its CI job is its evidence (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. A `ci_check` check has no pass standing at that head when no result its CI job
-   recorded is a pass there, and its derived result is a fail, or its run concluded `skipped`,
-   `neutral` or `cancelled`. Wait for a run that has not
+   request. A `ci_check` check has no pass standing at that head when no pass stands at that head
+   (its `A pass stands:` line) because a result from CI there is a fail, a pass and a fail from
+   CI are there, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
    concluded, and read again where GitHub could not be read. Send a name that no run answers
    (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
    wait nor that finding moves the issue back. When a check has no pass standing at that head, or

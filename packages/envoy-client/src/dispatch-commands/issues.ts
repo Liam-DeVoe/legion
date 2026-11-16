@@ -20,6 +20,7 @@ import {
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
+import { printable, printableJson, printableLine, printableStrings } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import { formatCheckResults } from "./check-results";
@@ -678,7 +679,7 @@ export async function specCheckResultCommand(
 
 /** One stored result of a check of the spec files, as `dispatch results --project` lists it:
  *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
- *  the commit. */
+ *  the commit. Its strings are the job's, so the caller passes them through `printableStrings`. */
 function specCheckResultLine(result: SpecCheckResult): string {
   const { predicate, subject } = result.attestation;
   const leg = predicate.leg === "" ? "no leg" : `leg ${predicate.leg}`;
@@ -688,7 +689,8 @@ function specCheckResultLine(result: SpecCheckResult): string {
 
 /** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
  *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
- *  results as JSON with `json`. */
+ *  results as JSON with `json`. Each string a job wrote prints by the runner log's one-line rule
+ *  (runner-log.ts): in a line of this command's own, or inside its JSON string. */
 async function specCheckResultsCommand(
   client: DispatchClient,
   args: Record<string, unknown>
@@ -697,21 +699,24 @@ async function specCheckResultsCommand(
   const commit = stringArg(args, "commit");
   const check = optionalString(args, "check");
   const results = (await client.specCheckResults(project, commit, check)).results ?? [];
-  const what = check === undefined ? project : `check ${check} of ${project}`;
+  const what = printable(check === undefined ? project : `check ${check} of ${project}`);
   const text =
     optionalBoolean(args, "json") === true
-      ? JSON.stringify(results, null, 2)
+      ? printableJson(JSON.stringify(results, null, 2))
       : results.length === 0
-        ? `No result of ${what} is stored at ${commit}.`
+        ? `No result of ${what} is stored at ${printable(commit)}.`
         : [
-            `Results of ${what} at ${commit}, newest first:`,
-            ...results.map(specCheckResultLine),
+            `Results of ${what} at ${printable(commit)}, newest first:`,
+            ...printableStrings(results).map(specCheckResultLine),
           ].join("\n");
   return { text, details: { project, commit, results: results.length } };
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or,
- *  with `project`, a CI job's result of a check of the spec files. */
+ *  with `project`, a CI job's result of a check of the spec files. What it prints back of the
+ *  answer is text a session wrote (a retraction's reason, a check's words in the pull request
+ *  line), so it prints by the runner log's one-line rule (runner-log.ts): no line break of it
+ *  starts a line. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
   if (optionalString(args, "project") !== undefined) {
@@ -723,8 +728,9 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
       actor,
       reason: stringArg(args, "reason"),
     });
+    const shown = printableStrings(retraction);
     return {
-      text: `Retracted result ${retraction.result_id}. ${actorText(retraction.actor)} retracted it at ${retraction.created_at}. The reason: ${retraction.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
+      text: `Retracted result ${shown.result_id}. ${actorText(shown.actor)} retracted it at ${shown.created_at}. The reason: ${shown.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
       details: {
         result: retraction.result_id,
         reason: retraction.reason,
@@ -754,8 +760,9 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     commit: stringArg(args, "commit"),
     ...optional,
   });
+  const shown = printableStrings(recorded.result);
   return {
-    text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,
+    text: `Recorded ${shown.verdict} for check ${shown.check_block_id} of ${shown.check_issue_key} at ${shown.commit_sha}, as ${shown.role}.\n\nPull request body line:\n${printableLine(recorded.line)}`,
     details: {
       issue,
       result: recorded.result.id,
@@ -783,7 +790,7 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   return {
     text:
       optionalBoolean(args, "json") === true
-        ? JSON.stringify(results, null, 2)
+        ? printableJson(JSON.stringify(results, null, 2))
         : formatCheckResults(results, brief),
     details: {
       issue,

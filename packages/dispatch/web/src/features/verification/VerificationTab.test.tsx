@@ -372,6 +372,46 @@ test("a CI job's result names the branch it was pushed on", async () => {
   expect(within(role as HTMLElement).queryByTestId("verification-result-branch")).toBeNull();
 });
 
+// A role's result of a check CI proves counts for nothing, and the server says why in
+// not_counted: the result's entry ends with that reason as served. The derived result and the
+// result the CI job recorded carry no not_counted and show no such line (the control).
+test("a result that counts for nothing says why, and a result that counts says nothing of it", async () => {
+  const reason =
+    "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+  const { getIssueResults, view } = renderTab(verification, [
+    ciCheck(
+      "c-ci",
+      {
+        case: "success",
+        detail: `CI run contracts concluded success at ${commit}, the head of acme/widgets#7.`,
+        line: `- Check c-ci (before_merge): pass at ${commit}, from CI run contracts. Check c-ci`,
+        run: "contracts",
+        state: "pass",
+      },
+      [
+        ciResult(),
+        result({ branch: "legion/CORE-1", id: "result-job", role: "ci" }),
+        result({ id: "result-role", not_counted: reason }),
+      ]
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const [derived, job, role] = await screen.findAllByTestId("verification-result");
+  expect(
+    within(role as HTMLElement).getByTestId("verification-result-not-counted").textContent
+  ).toBe(`It counts for nothing: ${reason}`);
+  for (const counted of [derived, job]) {
+    expect(
+      within(counted as HTMLElement).queryByTestId("verification-result-not-counted")
+    ).toBeNull();
+    expect(counted?.textContent).not.toContain("It counts for nothing");
+  }
+});
+
 // The reading is the record this page exists for, so a result that carries none says so
 // rather than drawing a blank.
 test("a result with no reading says it carries none", async () => {
@@ -457,8 +497,8 @@ test("a check CI proves with no derived result shows why its run proved nothing"
   expect(within(card).queryByTestId("verification-result")).toBeNull();
 });
 
-// A block that carries `ci_check` and also holds a recorded result is no check CI proves, so the
-// server gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
+// A block that carries `ci_check` and breaks one of its rules is no check CI proves, so the server
+// gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
 test("a check the server gives no ci reads as an ordinary check", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c-recorded", [result()], { ci_check: "contracts", run: "" }),

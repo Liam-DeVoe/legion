@@ -1,14 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // What a CI job's `dispatch result --issue` prints goes into its runner's log, which reads a line
 // that starts with `::`, and a `##[` anywhere, as a workflow command. Each line it prints stays one
 // line, by runnerlog.Printable's rule (runner-log.ts), when the check id or Dispatch's refusal holds
-// a line break or `::error`. The lines of a job's log that `dispatch results --issue` prints follow
-// the same rule: each line of the log stays a line of its own, and none is a workflow command. The
-// real entry runs as a child process against stubs of the runner, the broker and Dispatch.
+// a line break or `::error`. A job's log that `dispatch results --issue` prints follows the same
+// rule: the whole log is one line, its line breaks written as `\n`, and no line is a workflow
+// command. The real entry runs as a child process against stubs of the runner, the broker and
+// Dispatch.
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
@@ -38,12 +38,15 @@ afterAll(() => {
   for (const stub of [runner, broker, dispatch]) stub.stop(true);
 });
 
+/** A fresh home for each run, which the fixture removes after the test that made it. */
+const makeHome = temporaryDirectories("ci-job-one-line");
+
 /** The lines the entry prints, run with `env` beside Dispatch's stub and a fresh home. */
 async function run(
   argv: readonly string[],
   env: Readonly<Record<string, string>>
 ): Promise<string[]> {
-  const home = mkdtempSync(join(tmpdir(), "ci-job-one-line-"));
+  const home = makeHome();
   const child = Bun.spawn([process.execPath, entry, ...argv], {
     cwd: home,
     env: {
@@ -130,7 +133,7 @@ describe("dispatch result --issue as a CI job: each printed line stays one line"
   });
 });
 
-describe("dispatch results --issue: each line of a job's log stays a line, and none is a workflow command", () => {
+describe("dispatch results --issue: a job's log prints on one line, and no line is a workflow command", () => {
   /** The read of ACME-1, whose check c1 CI proves holds one result its job recorded. */
   const read = (observed: string) => ({
     issue: "ACME-1",
@@ -201,13 +204,15 @@ describe("dispatch results --issue: each line of a job's log stays a line, and n
       Response.json(read("--- FAIL: TestX\n::error file=a.go,line=1::boom\n##[group]x"));
     const printed = await run(["results", "--issue", "ACME-1"], asSession);
     noWorkflowCommand(printed);
-    expect(printed).toContain("\\x3a:error file=a.go,line=1::boom");
+    expect(printed).toContain(
+      "    Reading: --- FAIL: TestX\\n::error file=a.go,line=1::boom\\n##\\x5bgroup]x"
+    );
   });
 
-  test("the control: a job's log of two plain lines prints both, the second on a line of its own", async () => {
+  test("the control: a job's log of two plain lines prints both on the one line of its reading", async () => {
     answer = () => Response.json(read("--- FAIL: TestX\nsecond line"));
     const printed = await run(["results", "--issue", "ACME-1"], asSession);
-    expect(printed).toContain("    Reading: --- FAIL: TestX");
-    expect(printed).toContain("second line");
+    expect(printed).toContain("    Reading: --- FAIL: TestX\\nsecond line");
+    expect(printed).not.toContain("second line");
   });
 });

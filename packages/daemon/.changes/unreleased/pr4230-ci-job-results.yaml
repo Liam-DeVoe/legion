@@ -1,3 +1,3 @@
 kind: Changed
 body: |-
-  The reviewer's and the tester's role prompts say that a check carrying `ci_check` takes its results from CI: the one `dispatch results` derives from its CI run, and each one its CI job recorded, which stand for both roles.
+  The reviewer's and the tester's role prompts say that a check carrying `ci_check` takes its results from CI: the one `dispatch results` derives from its CI run, and each one its CI job recorded, which stand for both roles. The reviewer's prompt says that a fail recorded after a pass leaves that pass standing until someone retracts it only on a check with no `ci_check`, and that a pass and a fail from CI at one head leave no pass standing there.

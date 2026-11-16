@@ -41,9 +41,10 @@ type retractedResult struct {
 
 // POST /api/v1/results/{id}/retract  (the recording session, the claimant, or a person)
 //
-// Records that one stored result is wrong, with the reason. Nothing about the result changes:
-// the retraction is a row of its own, and both records stay readable. The answer is the
-// retraction.
+// Records that one stored result a role recorded is wrong, with the reason. Nothing about the
+// result changes: the retraction is a row of its own, and both records stay readable. The answer
+// is the retraction. A result a CI job recorded is refused to every caller
+// (refuseCIJobRetraction).
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -184,7 +185,9 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 }
 
 // lockRetractedResult reads the result a retraction names and locks its row for the length of
-// the write, so two retractions of one result are taken one after the other.
+// the write, so two retractions of one result are taken one after the other. A result a CI job
+// recorded is no row of check_results but of ci_check_results, and nobody retracts it, whoever
+// asks (refuseCIJobRetraction).
 func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
@@ -194,12 +197,32 @@ func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedRe
 	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
+		return retractedResult{}, refuseCIJobRetraction(ctx, tx, id)
 	}
 	if err != nil {
 		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
 	}
 	return result, nil
+}
+
+// refuseCIJobRetraction answers a retraction of id, which check_results does not hold: 403
+// RETRACTION_FORBIDDEN where a CI job recorded it, for the session that holds the issue's claim
+// and for a person as for any other caller, and 404 RESULT_NOT_FOUND otherwise. A result is
+// appended and never edited, and a failing run stays a report after a later pass (R7); nobody
+// writes a result for work that it did not do (R12), and a retraction of the job's result would
+// change what reads pass for a check that only the job's runs prove.
+func refuseCIJobRetraction(ctx context.Context, q queryer, id string) error {
+	var recordedByCI bool
+	if err := q.QueryRow(ctx, `select exists(select 1 from ci_check_results where id = $1)`, id).Scan(&recordedByCI); err != nil {
+		return fmt.Errorf("read result %s: %w", id, err)
+	}
+	if !recordedByCI {
+		return errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
+	}
+	return errorf(http.StatusForbidden, "RETRACTION_FORBIDDEN",
+		"result %s was recorded by a CI job, and nobody retracts it: a result is appended and never edited, and nobody writes a result for work that it did not do. "+
+			"A pass and a fail of the job at one commit leave that commit unknown; a run at a new commit records a new result.",
+		id)
 }
 
 // resultIsRetracted answers whether a retraction of this result stands already.

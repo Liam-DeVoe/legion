@@ -268,12 +268,14 @@ func jobResultOf(check, verdict string) map[string]any {
 	return map[string]any{"check": check, "commit": ciJobCommit, "verdict": verdict, "observed": "ok"}
 }
 
-// stored is how many rows check_results holds.
+// stored is how many results the two tables hold: check_results, a role's, and
+// ci_check_results, a CI job's.
 func (r *ciJobRig) stored(t *testing.T) int {
 	t.Helper()
 	var count int
-	if err := r.database.Pool.QueryRow(context.Background(), `select count(*) from check_results`).Scan(&count); err != nil {
-		t.Fatalf("count check_results: %v", err)
+	if err := r.database.Pool.QueryRow(context.Background(),
+		`select (select count(*) from check_results) + (select count(*) from ci_check_results)`).Scan(&count); err != nil {
+		t.Fatalf("count the stored results: %v", err)
 	}
 	return count
 }
@@ -384,7 +386,7 @@ func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 	}
 	var rowActor, eventActor string
 	if err := rig.database.Pool.QueryRow(context.Background(), `
-		select r.actor::text, e.actor::text from check_results r join events e on e.seq = r.event_seq and e.issue_key = r.check_issue_key
+		select r.actor::text, e.actor::text from ci_check_results r join events e on e.seq = r.event_seq and e.issue_key = r.check_issue_key
 		where r.id = $1::uuid
 	`, result.ID).Scan(&rowActor, &eventActor); err != nil {
 		t.Fatalf("read the stored row's actor and its event's: %v", err)
@@ -393,15 +395,17 @@ func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 		t.Fatalf("the stored row's actor %s or its event's actor %s names the result entry's person ada@example.com", rowActor, eventActor)
 	}
 
-	var role, run, branch, session, commit string
+	var run, branch, session, commit string
+	var roleRows int
 	if err := rig.database.Pool.QueryRow(context.Background(), `
-		select role, run, coalesce(branch, ''), session, commit_sha from check_results where id = $1::uuid
-	`, result.ID).Scan(&role, &run, &branch, &session, &commit); err != nil {
+		select run, branch, session, commit_sha, (select count(*) from check_results)
+		from ci_check_results where id = $1::uuid
+	`, result.ID).Scan(&run, &branch, &session, &commit, &roleRows); err != nil {
 		t.Fatalf("read the stored row: %v", err)
 	}
-	if role != "ci" || run != ciJobName || branch != ciJobBranch || session != ciJobSession || commit != ciJobCommit {
-		t.Fatalf("the row holds role %q, run %q, branch %q, session %q, commit %s; want ci, %s, %s, %s, %s",
-			role, run, branch, session, commit, ciJobName, ciJobBranch, ciJobSession, ciJobCommit)
+	if run != ciJobName || branch != ciJobBranch || session != ciJobSession || commit != ciJobCommit || roleRows != 0 {
+		t.Fatalf("the row of ci_check_results holds run %q, branch %q, session %q, commit %s, and check_results %d rows; want %s, %s, %s, %s and none",
+			run, branch, session, commit, roleRows, ciJobName, ciJobBranch, ciJobSession, ciJobCommit)
 	}
 	if events := resultEventsOn(t, rig.database, rig.issue); events != 1 {
 		t.Fatalf("%s holds %d result.recorded events, want one", rig.issue, events)
@@ -447,7 +451,7 @@ func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
 			}
 			var stored string
 			if err := rig.database.Pool.QueryRow(context.Background(),
-				`select observed from check_results where id = $1::uuid`, result.ID).Scan(&stored); err != nil {
+				`select observed from ci_check_results where id = $1::uuid`, result.ID).Scan(&stored); err != nil {
 				t.Fatalf("read the stored row's observed: %v", err)
 			}
 			read := ""

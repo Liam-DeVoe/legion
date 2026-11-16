@@ -126,7 +126,8 @@ const noCommitNamed = ""
 //
 // subjects is set for a `before_merge` check compared with heads (headBases): the heads a pass
 // must stand at, each of them, for the gate's answer to be yes (passStandsOf). Every subject is a
-// basis; a merged pull request older than the newest is a basis and no subject.
+// basis; a merged pull request's head beside an open pull request, and a merged one older than
+// the newest, is a basis and no subject.
 type comparison struct {
 	bases    []model.CheckBasis
 	reason   string
@@ -267,17 +268,18 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 	return compared
 }
 
-// headBases is the heads a `before_merge` check compares its results with, its subjects
-// (passStandsOf): where the check's issue has an open pull request, the head of each open one
-// alone, newest learned first; where it has none, the final head of each merged one, newest
-// learned first, and after them the head of each branch a CI job pushed for that issue
-// (collectChangeBranches) that belongs to it (branchOfIssue), in name order. A pull request under
-// review is the change a gate judges, so no other head speaks for it while it is open. A branch
-// whose head a pull request head already names adds nothing, since that commit is a basis
-// already, and a branch GitHub no longer holds adds nothing either. An issue with neither
-// compares with nothing, and nothingReason says which of the three kinds of nothing it is; where
-// the one thing it might compare with is a branch head Dispatch could not read, the reason is
-// that read's.
+// headBases is the heads a `before_merge` check compares its results with, and among them its
+// subjects (passStandsOf). The bases are the head of each pull request of the check's issue, open
+// or merged, newest learned first, and, where none is open, after them the head of each branch
+// a CI job pushed for that issue (collectChangeBranches) that belongs to it (branchOfIssue), in
+// name order. Where an open pull request is, the subjects are the head of each open one alone: a
+// pull request under review is the change a gate judges, so no other head speaks for it while it
+// is open, and a merged head stays a basis that is no subject. Where none is open, they are the
+// final head of the newest merged one and each branch head. A branch whose head a pull request
+// head already names adds nothing, since that commit is a basis already, and a branch GitHub no
+// longer holds adds nothing either. An issue with neither compares with nothing, and
+// nothingReason says which of the three kinds of nothing it is; where the one thing it might
+// compare with is a branch head Dispatch could not read, the reason is that read's.
 //
 // The pull request heads answer whether or not Dispatch can read the repository. A head
 // Dispatch holds is a fact about the work whatever the App can see today, so a result at one
@@ -296,14 +298,11 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 	var subjects []model.CheckBasis
 	newestMerged := -1
 	for index, head := range heads {
-		if open && !head.Open {
-			continue
-		}
 		bases = append(bases, headBasis(head))
 		switch {
-		case open:
+		case open && head.Open:
 			subjects = append(subjects, headBasis(head))
-		case newestMerged < 0 || head.Number > heads[newestMerged].Number:
+		case !open && (newestMerged < 0 || head.Number > heads[newestMerged].Number):
 			newestMerged = index
 		}
 	}
@@ -732,9 +731,10 @@ func standingCommit(result model.CheckResult) string {
 // with heads asks that of each head, its subjects (headBases), and a pass stands only where one
 // stands at each (eachSubjectStands): one head's fail is never hidden by a pass at another.
 //
-// R7: a commit cannot change, so it holds one answer. Where the check's CI job recorded a pass
-// and a fail at one commit, in either order, no pass stands there, and the state is unknown for
-// model.PassStandsReasonPassAndFail (jobConflicts). A role's results keep the rule above.
+// R7: a commit cannot change, so it holds one answer. Where a check CI proves holds a pass and a
+// fail of CI at one commit, in either order, no pass stands there, and the state is unknown for
+// model.PassStandsReasonPassAndFail (ciConflicts): a result its CI job recorded and the result
+// derived from its check run are both CI's evidence of the check at that commit.
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
 // nothing at all. So does a check CI proves whose check runs GitHub could not be read for: it
@@ -747,7 +747,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 		(check.CI != nil && check.CI.State == model.CIStateUnread) {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
-	conflicted := jobConflicts(check.Results)
+	conflicted := ciConflicts(check)
 	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
 		return eachSubjectStands(check, compared, conflicted)
 	}
@@ -825,8 +825,8 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 
 // subjectState is the state of one subject of a check: yes where a pass stands at its commit,
 // no where only a fail stands there (model.PassSubjectReasonFail) or nothing does
-// (model.PassSubjectReasonNoResult), and unknown where the check's CI job recorded a pass and a
-// fail at that commit (R7).
+// (model.PassSubjectReasonNoResult), and unknown where a check CI proves holds a pass and a fail
+// of CI at that commit (R7, ciConflicts).
 func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool) model.PassStandsSubject {
 	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult}
 	if conflicted[basis.Commit] {
@@ -846,13 +846,20 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 	return state
 }
 
-// jobConflicts is each commit at which the check's CI job recorded both a pass and a fail that
-// stand, retracted by nobody and against the check's words now (R7). A result a CI job recorded
-// names the branch its push ran on; a role's and a derived one name none.
-func jobConflicts(results []model.CheckResult) map[string]bool {
+// ciConflicts is each commit at which check, a check CI proves (validCICheck), holds both a pass
+// and a fail that count, retracted by nobody and against the check's words now (R7): the results
+// its CI job recorded and the result Dispatch derives from its check run alike, since each is
+// CI's evidence of the one check at that commit, and a pass of one never hides a fail of the
+// other. A role's result of such a check counts for nothing (not_counted), so it joins nothing.
+// An ordinary check holds none here.
+func ciConflicts(check model.CheckBlock) map[string]bool {
+	conflicted := map[string]bool{}
+	if !validCICheck(check) {
+		return conflicted
+	}
 	verdicts := map[string][2]bool{}
-	for _, result := range results {
-		if result.Branch == "" || standingCommit(result) == "" {
+	for _, result := range check.Results {
+		if standingCommit(result) == "" {
 			continue
 		}
 		seen := verdicts[result.CommitSHA]
@@ -863,7 +870,6 @@ func jobConflicts(results []model.CheckResult) map[string]bool {
 		}
 		verdicts[result.CommitSHA] = seen
 	}
-	conflicted := map[string]bool{}
 	for commit, seen := range verdicts {
 		if seen[0] && seen[1] {
 			conflicted[commit] = true

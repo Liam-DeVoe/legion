@@ -875,7 +875,9 @@ stored result as JSON and exits 0. A write that landed with its answer lost prin
 `{"landed_without_answer":"<code>"}` and exits 0: the result is stored. A write that reached
 Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`) prints
 `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits
-1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A call
+1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A 2xx
+answer that is not Dispatch's JSON is such an answer (`DispatchForeignAnswerError`, code
+`HTTP_<status>`): whatever answered in Dispatch's place may have sent the write on first. A call
 that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
 turns away before anything is stored is asked again after the answer's `Retry-After`, or a second,
@@ -899,8 +901,12 @@ waits, outcome lines and printing rule, and `--issue`, `--check`, `--verdict`, `
 `--observed` alone (`dispatch-commands/ci-job-result.ts`).
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
 results, one line each, newest first, or the stored results as JSON with `--json`.
-`dispatch results --issue <KEY>` prints each line of a result's reading, a CI job's log among
-them, by the same rule, so no line of a log names a workflow command.
+`dispatch results --issue <KEY>` prints every string of Dispatch's answer by the same rule
+(`printableStrings`): a result's reading, a CI job's log among them, is one line, its line breaks
+written as `\n`, so no line of a log names a workflow command or reads as a line of the command's
+own, such as another check's head line or an `A pass stands:` line. A result whose `not_counted`
+says why it counts for nothing prints `It counts for nothing: <reason>` under its reading. The
+`--json` forms of `dispatch results` print by the rule in JSON's escapes (`printableJson`).
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a

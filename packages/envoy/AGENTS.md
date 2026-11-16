@@ -356,9 +356,9 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/result_attestation.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`, `store/migrations/20261116132624_check_results_branch.up.sql`, `store/migrations/20261116162257_check_results_attestation.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/result_attestation.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`, `store/migrations/20261116213930_ci_check_results.up.sql`
 
-  `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
+  `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, a role's as `check_results` and a CI job's as `ci_check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
   What a read says about a result is computed at the read, never written by a push.
   Each check answers the commits and branches its results are compared with (`compared_with`), why it has none where it has none (`compared_nothing`) and whether a pass of it stands (`pass_stands`);
@@ -391,10 +391,12 @@ Each item below names a task and where its code is, then notes on it.
     the run's repository is the one the check's issue resolves to (`403 REPOSITORY_NOT_THE_ISSUES`);
     and the branch the run pushed belongs to the issue the result is recorded on (`delivery.BranchOfIssue`, `403 BRANCH_NOT_THE_ISSUES`): the head branch of one of its pull requests, or a branch whose name gives it to the issue by the attribution rule's branch source.
     The results read compares a check only with the heads of the branches that belong to its issue, whatever a stored row names.
-    Its row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, `observed` kept by the project route's rule (`cutObserved`, below), and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
+    Its row is a row of `ci_check_results` (`insertCIJobCheckResult`), never of `check_results`, which holds what a role recorded: the release before this table reads a `check_results` row against a check as a reason that it is no check CI proves, and reads no row of this table.
+    The row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, `observed` kept by the project route's rule (`cutObserved`, below), and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
     It also stores `attestation`, the in-toto Statement v1 of the run, which `api/result_attestation.go` builds for both results routes (`attestedResult.statement`): predicate type `check-block-result/v1`, `check` the check's block reference, `procedure_digest` the row's `check_sha256`, `test.job` the check's `ci_check`, and the job, the leg, the run, the recorder and `recorded_at` as the project's route writes them.
     A role's row and a derived result carry none.
-    A role's row stores no branch, which is how the read tells it from a CI job's: on a check CI proves it counts for nothing.
+    A role's row names no branch, which is how the read tells it from a CI job's: on a check CI proves it counts for nothing.
+    Nobody retracts a CI job's result: `POST /api/v1/results/{id}/retract` answers its id `403 RETRACTION_FORBIDDEN`, for the claim holder and a person too (`refuseCIJobRetraction`).
     `GET` also derives a result on every read, and stores nothing of it (`api/results_ci.go`, `deriveCIResults`):
     at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
     The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.

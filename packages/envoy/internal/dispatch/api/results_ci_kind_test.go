@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -81,8 +80,8 @@ func TestARolesRowOnACICheckCountsForNothing(t *testing.T) {
 		t.Fatalf("the role's row on c1 makes a pass stand: %+v", c1.PassStands)
 	}
 	notCounted := notCountedOf(t, rig.handler, rig.issue, "tester")
-	if len(notCounted["c1"]) != 1 || !strings.Contains(notCounted["c1"][0], "counts for nothing") {
-		t.Fatalf("the tester's row on c1 carries not_counted %q, want the reason it counts for nothing", notCounted["c1"])
+	if len(notCounted["c1"]) != 1 || notCounted["c1"][0] != model.ResultNotCountedRoleOnCICheck {
+		t.Fatalf("the tester's row on c1 carries not_counted %q, want the reason it counts for nothing, %q", notCounted["c1"], model.ResultNotCountedRoleOnCICheck)
 	}
 	if len(notCounted["k1"]) != 1 || notCounted["k1"][0] != "" {
 		t.Fatalf("the tester's row on k1 carries not_counted %q, want none", notCounted["k1"])

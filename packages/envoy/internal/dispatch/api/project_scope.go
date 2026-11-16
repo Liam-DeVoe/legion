@@ -222,14 +222,16 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 }
 
 // projectOfCheckResult is one hop to the project of the issue the result was recorded on,
-// since the check_results table holds no project of its own
-// (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
-// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
-// and both issues are of one project anyway, since an issue's parent is of its own project.
+// since neither table of results holds a project of its own
+// (store/migrations/20261102122200_check_results.up.sql, 20261116213930_ci_check_results.up.sql).
+// It reads issue_key and not check_issue_key: a result recorded on a child against a parent's
+// check belongs to the child, and both issues are of one project anyway, since an issue's parent
+// is of its own project. A CI job's result resolves too, so a caller of its project reaches the
+// retract route's own refusal of it rather than a refusal of scope.
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, '')
-		from check_results c
+		from (select id, issue_key from check_results union all select id, issue_key from ci_check_results) c
 		left join issues i on i.key = c.issue_key
 		where c.id = $1
 	`, r.PathValue("id")))

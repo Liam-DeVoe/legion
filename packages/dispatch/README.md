@@ -505,11 +505,11 @@ Verification document, and each runs that check's `run` and asserts its `negativ
   `e2e/verification.e2e.ts`.
 - `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
   pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
-  names the run and no recorder. A failed run prints `fail`, and `check_results` holds no row for
-  either block. The head of the merged pull request still answers. Three such checks at one head
-  cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
-  merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
-  to 2,000.
+  names the run and no recorder. A failed run prints `fail`, and neither `check_results` nor
+  `ci_check_results` holds a row for either block. The head of the merged pull request still
+  answers. Three such checks at one head cost one check-runs read (`GET /__fixture/requests`), an
+  open head is read before an older merged one, an issue with no such check reads no check runs,
+  and a summary of 2,500 runes is cut to 2,000.
 - `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
   holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
   of one name are decided by the higher id, in both orders of their conclusions.

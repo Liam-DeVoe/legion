@@ -2343,12 +2343,14 @@ Nothing updates or deletes a row: another run, attempt or leg is another row, an
 `spec_check_results_commit` on `(project_key, commit_sha, check_id)` serves the read of one project's results at one commit.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261116132624_check_results_branch` adds `branch` to `check_results`: the branch whose push a CI job ran on, set on every row a CI job recorded and null on every other.
-The results read tells a role's row from a CI job's by it: a role's result of a check CI proves counts for nothing.
-A nullable column with no default: no row is rewritten, and its census answers `0`.
-
-Migration `20261116162257_check_results_attestation` adds `attestation` to `check_results`: the in-toto statement of the run of the CI job that recorded the row, written once by the insert and null on every row a role recorded.
-A nullable column with no default: no row is rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+Migration `20261116213930_ci_check_results` creates `ci_check_results`, one row per result a CI job recorded against a check its `ci_check` names (`POST /api/v1/issues/{key}/results` under a results token).
+A row names the issue the result was recorded on, the check's own issue, document, block id, that block's `changed_version` and `text_sha256`, the check run's name as `run`, the check's `surface` and `negative_control`, `observed`, the commit the job tested, the `branch` whose push it ran on, the `verdict`, the in-toto statement of the run (`attestation`), the session and actor of the run, and the `event_seq` of its `result.recorded` event.
+Nothing updates or deletes a row, and no route retracts one (`POST /api/v1/results/{id}/retract` answers `403 RETRACTION_FORBIDDEN`); a row goes only with its issue or its document, by the cascade `check_results` takes.
+`ci_check_results_check` serves the results read, and `ci_check_results_issue` the cascade of an issue's delete.
+`check_results` holds what a role recorded, as before this migration: the release before reads every `check_results` row against a check block as a reason that the check is no check CI proves, and its settlement then deletes the block's `ci_check` from the live document, so a CI job's row there would change a document under that release.
+It reads no row of `ci_check_results`.
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+Rolling back past it is an image rollback alone, with no step before it: the release before reads none of its rows, so no result a job recorded changes what that release serves.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
@@ -3968,7 +3970,7 @@ Each item below names a path with its method and identity, then its purpose.
   A window kind's items are its own rows, since the indexers own which windows exist.
   With no embedder nothing is current.
   `not_indexed` is every kind of node neither leg of search holds a row of, each `{kind, items}`: `component`, `session`, `document_version`, `result` and `handoff`, with how many of that kind the database holds.
-  Each count is read from the table that holds the kind — `components`, the listener's stored session list (`route_roster`, which is Dispatch's whole record of which sessions exist, and counts 0 before the listener has answered), `artifact_versions`, `check_results` and `handoffs` — in the statement that counts the covered kinds, so every number of the report reads one snapshot.
+  Each count is read from the table that holds the kind — `components`, the listener's stored session list (`route_roster`, which is Dispatch's whole record of which sessions exist, and counts 0 before the listener has answered), `artifact_versions`, `check_results` with `ci_check_results` (the results a role recorded and those a CI job recorded) and `handoffs` — in the statement that counts the covered kinds, so every number of the report reads one snapshot.
   Such a kind is named rather than left out, because a reader of a report carrying the covered kinds alone cannot tell a kind that is covered with nothing left to embed from one nothing indexes.
   It carries no `current`, `lacking` or `failed`, none of which is defined for a kind that has no vector to be behind on, and it is in no total.
 

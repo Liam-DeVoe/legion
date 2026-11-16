@@ -169,6 +169,17 @@ export class DispatchGatewayError extends DispatchServiceError {
 }
 
 /**
+ * A 2xx answer to a write that is not the JSON Dispatch answers that write with, so whatever
+ * answers in Dispatch's place wrote it (a proxy, a server on the wrong port). The request went
+ * out, and that server may have sent it on to Dispatch first, so the write may or may not have
+ * taken effect whatever the status says: `mayHaveReachedDispatch` is true, which
+ * `writeOutcomeUnknown` reads. `code` is `HTTP_<status>`, as for a gateway's refusal.
+ */
+export class DispatchForeignAnswerError extends DispatchGatewayError {
+  override readonly mayHaveReachedDispatch = true;
+}
+
+/**
  * A write that ended with no definitive answer while an attempt of it may have reached Dispatch,
  * so it may or may not have taken effect. Either the last attempt's refusal alone would say the
  * write never took effect (a gateway's 408 or 429, a rate limit of Dispatch's own) or names an
@@ -912,6 +923,44 @@ function excerpt(text: string, token: string): string {
 }
 
 /**
+ * What a body that is not `wanted` is, for a message: a one-line plain-text excerpt of it
+ * (`excerpt`), or, when none of what the excerpt reads is text, its size.
+ */
+function bodyText(text: string, token: string, wanted: string): string {
+  const quoted = excerpt(text, token);
+  if (quoted !== "") return `a body that is not ${wanted} (${JSON.stringify(quoted)})`;
+  if (text === "") return "an empty body";
+  const within =
+    text.length > EXCERPT_SCAN_LIMIT ? ` in its first ${EXCERPT_SCAN_LIMIT / 1024} KiB` : "";
+  const size = Buffer.byteLength(text).toLocaleString("en-US");
+  return `a body of ${size} bytes and no readable text${within}`;
+}
+
+/** Whether `answer` is what the issue results route answers a write with: the stored result,
+ *  which has its id, beside its pull request line. */
+function isResultRecorded(answer: unknown): answer is CheckResultRecorded {
+  if (typeof answer !== "object" || answer === null || !("result" in answer)) return false;
+  const { result } = answer;
+  return (
+    typeof result === "object" && result !== null && "id" in result && typeof result.id === "string"
+  );
+}
+
+/** Whether `answer` is what the project results route answers a write with: the stored result,
+ *  which has its id and its in-toto statement. */
+function isSpecCheckResult(answer: unknown): answer is SpecCheckResult {
+  return (
+    typeof answer === "object" &&
+    answer !== null &&
+    "id" in answer &&
+    typeof answer.id === "string" &&
+    "attestation" in answer &&
+    typeof answer.attestation === "object" &&
+    answer.attestation !== null
+  );
+}
+
+/**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
  * `writeRetry` paces it, and where a broker token Dispatch says is no longer live is traded
@@ -1480,10 +1529,10 @@ export class DispatchClient {
    * check may be one of an issue above it, and the result is recorded against that issue.
    */
   async recordResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultRecorded> {
-    return this.#json(
-      "POST",
+    return this.#writeAnswering(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
-      input
+      input,
+      isResultRecorded
     );
   }
 
@@ -1501,10 +1550,10 @@ export class DispatchClient {
   ): Promise<CheckResultRecorded> {
     const { check, commit, verdict, observed } = input;
     const body = { check, commit, verdict, observed };
-    return this.#json(
-      "POST",
+    return this.#writeAnswering(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
-      body
+      body,
+      isResultRecorded
     );
   }
 
@@ -1527,7 +1576,8 @@ export class DispatchClient {
    * result itself is neither changed nor deleted: a reader of the results sees the result and
    * its retraction together. The session that recorded the result, a session holding the
    * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
-   * person may each retract it.
+   * person may each retract a role's result; nobody retracts a CI job's result, which the route
+   * answers 403 RETRACTION_FORBIDDEN.
    */
   async retractResult(
     resultID: string,
@@ -1548,7 +1598,11 @@ export class DispatchClient {
   ): Promise<SpecCheckResult> {
     const { commit, check, verdict, observed } = input;
     const body = { commit, check, verdict, observed };
-    return this.#json("POST", ["api", "v1", "projects", project, "results"], body);
+    return this.#writeAnswering(
+      ["api", "v1", "projects", project, "results"],
+      body,
+      isSpecCheckResult
+    );
   }
 
   /** Every result CI jobs stored for checks of `project`'s spec files at `commit`, of `check`
@@ -1972,8 +2026,8 @@ export class DispatchClient {
     return (await this.#jsonAnswer<T>(method, path, body, query, signal, key)).payload;
   }
 
-  /** `#json` with the status Dispatch answered, for a route whose status says what it did.
-   *  `signal` aborts a read beside the client's own signal (`#send`). */
+  /** `#json` with the status Dispatch answered, for a route whose status says what it did, and
+   *  the answer's content type. `signal` aborts a read beside the client's own signal (`#send`). */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -1981,7 +2035,7 @@ export class DispatchClient {
     query?: object,
     signal?: AbortSignal,
     key?: string
-  ): Promise<{ readonly status: number; readonly payload: T }> {
+  ): Promise<{ readonly status: number; readonly type: string | null; readonly payload: T }> {
     const url = this.#url(path, query);
     return this.#noRoute(async () => {
       const response = await this.#send(
@@ -1994,8 +2048,35 @@ export class DispatchClient {
         signal,
         key
       );
-      return { status: response.status, payload: await this.#response<T>(method, url, response) };
+      return {
+        status: response.status,
+        type: response.headers.get("content-type"),
+        payload: await this.#response<T>(method, url, response),
+      };
     }, signal);
+  }
+
+  /**
+   * A POST of `body` to `path` whose 2xx answer is the JSON `isAnswer` takes. A 2xx answer of any
+   * other body came from whatever answers in Dispatch's place, which may have sent the request on
+   * to Dispatch first, so it is a `DispatchForeignAnswerError` naming the request, the status,
+   * the content type and the body, and never a payload whose fields a caller reads.
+   */
+  async #writeAnswering<T>(
+    path: readonly string[],
+    body: unknown,
+    isAnswer: (answer: unknown) => answer is T
+  ): Promise<T> {
+    const { status, type, payload } = await this.#jsonAnswer<unknown>("POST", path, body);
+    if (isAnswer(payload)) return payload;
+    const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+    const request = `POST ${withoutUserinfo(this.#url(path))}`;
+    const content = type === null ? "no content type" : `content type ${type}`;
+    throw new DispatchForeignAnswerError(
+      status,
+      `${request} answered ${status} (${content}) with ${bodyText(text, this.token, "Dispatch's answer")}, ${GATEWAY_PAGE}`,
+      "the write may or may not have reached Dispatch: check whether it took effect before retrying it"
+    );
   }
 
   /**
@@ -2455,18 +2536,7 @@ export class DispatchClient {
           retryAfterMs(response) || null
         );
       }
-      const quoted = excerpt(text, this.token);
-      let body: string;
-      if (quoted !== "") {
-        body = `a body that is not Dispatch's error JSON (${JSON.stringify(quoted)})`;
-      } else if (text === "") {
-        body = "an empty body";
-      } else {
-        const within =
-          text.length > EXCERPT_SCAN_LIMIT ? ` in its first ${EXCERPT_SCAN_LIMIT / 1024} KiB` : "";
-        const size = Buffer.byteLength(text).toLocaleString("en-US");
-        body = `a body of ${size} bytes and no readable text${within}`;
-      }
+      const body = bodyText(text, this.token, "Dispatch's error JSON");
       const reasonPhrase = excerpt(response.statusText, this.token);
       const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
       const request = `${method} ${withoutUserinfo(url)}`;

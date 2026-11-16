@@ -30,8 +30,9 @@ import { Timestamp } from "../refs/Timestamp";
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
  * what the check compared its results with. The server reads it over every result of the
- * check, so no word here comes from the newest result alone: a pass recorded before a fail
- * still stands, and a fail recorded after a pass takes nothing away from it.
+ * check, so no word here comes from the newest result alone: on an ordinary check, a pass
+ * recorded before a fail still stands, and a fail recorded after a pass takes nothing away from
+ * it; on a check CI proves, a pass and a fail of CI at one commit leave no pass standing there.
  */
 const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
@@ -176,6 +177,7 @@ function Result({
   result: CheckResult;
 }): ReactNode {
   const retracted = result.retracted;
+  const notCounted = result.not_counted ?? "";
   return (
     <li className="space-y-2" data-testid="verification-result">
       <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurface}`}>
@@ -246,6 +248,14 @@ function Result({
             <Screenshot key={reference} reference={reference} />
           ))}
         </div>
+      )}
+      {notCounted === "" ? null : (
+        <p
+          className={`text-sm ${textMutedOnSurface}`}
+          data-testid="verification-result-not-counted"
+        >
+          It counts for nothing: {notCounted}
+        </p>
       )}
     </li>
   );
@@ -326,9 +336,9 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
 
 /** A check's results, newest first. A check CI proves holds the one the server derives from the
  *  CI run it names and each one its CI job recorded, and a role's result of it counts for nothing,
- *  drawn as a recorded one is; where that run proved nothing, the server's sentence saying why
- *  stands in place of the derived one. The tab reads that run as of its own load and asks GitHub
- *  nothing more. */
+ *  drawn as a recorded one is with the server's reason (`not_counted`); where that run proved
+ *  nothing, the server's sentence saying why stands in place of the derived one. The tab reads
+ *  that run as of its own load and asks GitHub nothing more. */
 function CheckResults({
   check,
   results,

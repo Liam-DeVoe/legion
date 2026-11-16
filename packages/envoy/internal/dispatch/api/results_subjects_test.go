@@ -147,8 +147,7 @@ func TestAFailAtOneBranchHeadHoldsBackThePassAtAnother(t *testing.T) {
 
 // TestAPassAndAFailOfTheJobAtOneCommitReadUnknown: R7. Two attempts of the job at one commit, a
 // fail and a pass, in each order, make that commit's state unknown: no pass stands, and the answer
-// says why (pass_and_fail). The controls: two passes at one commit read yes, and a role's pass and
-// fail at one commit of an ordinary check keep today's rule, yes.
+// says why (pass_and_fail). The control: two passes at one commit read yes.
 func TestAPassAndAFailOfTheJobAtOneCommitReadUnknown(t *testing.T) {
 	for _, order := range [][2]string{{"fail", "pass"}, {"pass", "fail"}, {"pass", "pass"}} {
 		t.Run(order[0]+" then "+order[1], func(t *testing.T) {
@@ -168,17 +167,67 @@ func TestAPassAndAFailOfTheJobAtOneCommitReadUnknown(t *testing.T) {
 			}
 		})
 	}
-	t.Run("a role's pass and fail", func(t *testing.T) {
-		rig := newCIJobRig(t)
-		writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "open", rig.issue)
-		for _, verdict := range []string{"fail", "pass"} {
-			response := rig.post(t, rig.issue, rig.sessionToken(), resultBody("k1", verdict, ciJobCommit, map[string]any{"role": "tester"}))
-			if response.Code != http.StatusCreated {
-				t.Fatalf("the tester's %s of k1: status=%d body=%s", verdict, response.Code, response.Body.String())
+}
+
+// TestCIsResultsThatDisagreeAtOneHeadReadUnknown: R7. ACME-1's open pull request #70 is at
+// ciJobHead. The job's own result of c1 at that head and the result Dispatch derives from the
+// go-checks run there are both CI's evidence of c1 at one commit, so a fail and a pass of the two,
+// in each order, make that head unknown (pass_and_fail). The controls: the job's fail alone reads
+// no, and the job's pass beside a derived pass reads yes.
+func TestCIsResultsThatDisagreeAtOneHeadReadUnknown(t *testing.T) {
+	for _, row := range []struct {
+		name, job, derived string
+		answer, reason     string
+	}{
+		{"the job's fail beside a derived pass", "fail", ciConclusionSuccess, model.PassStandsUnknown, model.PassStandsReasonPassAndFail},
+		{"the job's pass beside a derived fail", "pass", "failure", model.PassStandsUnknown, model.PassStandsReasonPassAndFail},
+		{"the control: the job's fail alone", "fail", "", model.PassStandsNo, "fail"},
+		{"the control: the job's pass beside a derived pass", "pass", ciConclusionSuccess, model.PassStandsYes, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newCIJobRig(t)
+			writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
+			rig.github.setBranch("legion/work", ciJobBranchHead{sha: ciJobHead})
+			jobRecorded(t, "the job's "+row.job+" at the pull request's head", rig.post(t, rig.issue,
+				jobTokenOn(rig, ciJobHead, "refs/heads/legion/work", 99), jobResultAt(ciJobHead, row.job)))
+			if row.derived != "" {
+				rig.github.listings.set(ciJobHead, completedRun(11, ciJobName, row.derived))
 			}
+			stands := passStandsOnWire(t, rig.handler, rig.issue, "c1")
+			subject := subjectAt(t, stands, ciJobHead)
+			if stands.Answer != row.answer || subject.Answer != row.answer || subject.Reason != row.reason {
+				t.Fatalf("c1 reads %+v, its subject at %s %+v; want %s, and %s at the subject", stands, ciJobHead, subject, row.answer, row.reason)
+			}
+		})
+	}
+}
+
+// TestAMergedHeadStaysABasisWhileAPullRequestIsOpen: ACME-1's pull request #69 merged at
+// ciJobCommit, and #70 is open at ciJobHead. k1 compares with both heads: the merged one stays a
+// basis and is no subject. A tester's pass at the merged head stands at that basis, and no pass of
+// k1 stands, since the open head, the one subject, holds no result.
+func TestAMergedHeadStaysABasisWhileAPullRequestIsOpen(t *testing.T) {
+	rig := newCIJobRig(t)
+	writeHead(t, rig.database, ciJobRepository, 69, ciJobCommit, "merged", rig.issue)
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
+	if recorded := rig.post(t, rig.issue, rig.sessionToken(), resultBody("k1", "pass", ciJobCommit, map[string]any{"role": "tester"})); recorded.Code != http.StatusCreated {
+		t.Fatalf("the tester's pass of k1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	check := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
+	heads := map[int]string{}
+	for _, basis := range check.ComparedWith {
+		if basis.PullRequest != nil {
+			heads[*basis.PullRequest] = basis.Commit
 		}
-		if stands := passStandsOnWire(t, rig.handler, rig.issue, "k1"); stands.Answer != model.PassStandsYes {
-			t.Fatalf("a role's fail and pass of k1 at one commit read %+v, want today's yes", stands)
-		}
-	})
+	}
+	if len(check.ComparedWith) != 2 || heads[69] != ciJobCommit || heads[70] != ciJobHead {
+		t.Fatalf("k1 compares with %+v, want the heads of #69 (%s) and #70 (%s)", check.ComparedWith, ciJobCommit, ciJobHead)
+	}
+	if len(check.Results) != 1 || check.Results[0].CommitStands == nil || check.Results[0].CommitStands.Answer != model.CommitAtBasis {
+		t.Fatalf("the tester's pass at the merged head reads %+v, want at_basis", check.Results)
+	}
+	stands := passStandsOnWire(t, rig.handler, rig.issue, "k1")
+	if stands.Answer != model.PassStandsNo || len(stands.Subjects) != 1 || stands.Subjects[0].Basis.Commit != ciJobHead {
+		t.Fatalf("k1 reads %+v, want no, with the open head %s its one subject", stands, ciJobHead)
+	}
 }

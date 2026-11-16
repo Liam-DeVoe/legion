@@ -3,12 +3,13 @@ package api
 // spec_results.go is the route a CI job writes the result of a check of the spec files with,
 // POST /api/v1/projects/{key}/results, and the read beside it (R12 of the spec). The job holds a
 // results token the secrets broker minted for its run (brokertoken.Caller.ResultsOnly), and this
-// route is the one route that token reaches (resultsScopeRoutes). Dispatch takes who wrote the
-// result and what it is for from that token, from GitHub and from the spec files at the run's
-// commit; the body says only what the job observed. The recorder of a result is the run, and no
-// person: the broker's result entry names a person, whom nobody authenticated for this write and
-// who ran no test, so that person stays inside the server. Each result is a new row of
-// spec_check_results, which nothing updates or deletes.
+// route is one of the two routes that token reaches (resultsScopeRoutes), beside
+// POST /api/v1/issues/{key}/results. Dispatch takes who wrote the result and what it is for from
+// that token, from GitHub and from the spec files at the run's commit; the body says only what
+// the job observed. The recorder of a result is the run, and no person: the broker's result entry
+// names a person, whom nobody authenticated for this write and who ran no test, so that person
+// stays inside the server. Each result is a new row of spec_check_results, which nothing updates
+// or deletes.
 
 import (
 	"context"

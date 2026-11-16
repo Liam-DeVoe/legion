@@ -8276,9 +8276,7 @@ describe("executeDispatchTool", () => {
         "- k5 (before_merge): pass at 1111111111111111111111111111111111111111 by ci (CI run contracts, success), that commit is the head of pull request #3530. The contracts job passes at the head.",
         "  A pass stands: yes, from ci.",
         "  Pull request line: - Check k5 (before_merge): pass at 1111111111111111111111111111111111111111, from CI run contracts. The contracts job passes at the head.",
-        "  Reading: conclusion: success",
-        "All checks passed",
-        "https://github.com/owner/repo/actions/runs/7/job/9001",
+        "  Reading: conclusion: success\\nAll checks passed\\nhttps://github.com/owner/repo/actions/runs/7/job/9001",
         "",
         "- k6 (before_merge): no result: CI run e2e is in_progress at 1111111111111111111111111111111111111111, the head of owner/repo#3530, and has not concluded. The e2e job passes at the head.",
         "  A pass stands: no.",
@@ -8418,8 +8416,7 @@ describe("executeDispatchTool", () => {
         "- k5 (before_merge): pass at 1111111111111111111111111111111111111111 by ci (CI run contracts, success), that commit is the head of pull request #3530. The contracts job passes at the head.",
         "  A pass stands: yes, from ci.",
         "  Pull request line: - Check k5 (before_merge): pass at 1111111111111111111111111111111111111111, from CI run contracts. The contracts job passes at the head.",
-        "  Reading: conclusion: success",
-        "https://github.com/owner/repo/actions/runs/7/job/71",
+        "  Reading: conclusion: success\\nhttps://github.com/owner/repo/actions/runs/7/job/71",
         "  - pass by ci on branch legion/DSP-42 at 3333333333333333333333333333333333333333. That commit is at the head of branch legion/DSP-42. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T11:00:00Z. Result job-2.",
         "    Reading: ok",
         "  - pass by ci on branch legion/DSP-42 at 1111111111111111111111111111111111111111. That commit is none of the compared commits. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result job-1.",
@@ -8463,6 +8460,59 @@ describe("executeDispatchTool", () => {
         "  A pass stands: yes, from ci.",
         "  - pass by ci on branch legion/DSP-42 at 3333333333333333333333333333333333333333. That commit is at the head of branch legion/DSP-42. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result job-1.",
         "    Reading: ok",
+      ].join("\n")
+    );
+  });
+
+  // A role's result of a check CI proves counts for nothing, and the route says why in
+  // not_counted: one more line of that result prints the reason as the route served it. The
+  // result the CI job recorded carries no not_counted and prints no such line (the control).
+  test("dispatch_results prints why a result counts for nothing, and no such line for a result that counts", async () => {
+    const branchHead = "3333333333333333333333333333333333333333";
+    const reason =
+      "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+    const read = await readCICheck(
+      ciCheckRead(
+        {
+          run: "contracts",
+          state: "no_result",
+          case: "no_head",
+          detail: "Dispatch holds no open or merged pull request head of DSP-42.",
+          line: "- Check k5 (before_merge): CI run contracts has no result (no_head)",
+        },
+        [
+          jobResult(
+            "job-1",
+            branchHead,
+            {
+              answer: "at_basis",
+              basis: { kind: "branch_head", branch: "legion/DSP-42", commit: branchHead },
+            },
+            "2026-11-10T11:00:00Z"
+          ),
+          {
+            ...jobResult("res-9", branchHead, { answer: "other_commit" }, "2026-11-10T10:00:00Z"),
+            role: "tester",
+            branch: undefined,
+            session: "session-9",
+            actor: { kind: "session", id: "session-9" },
+            not_counted: reason,
+          },
+        ]
+      )
+    );
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k5 (before_merge): its CI job's results below, and CI run contracts derives none: Dispatch holds no open or merged pull request head of DSP-42. The contracts job passes at the head.",
+        "  A pass stands: yes, from ci.",
+        "  - pass by ci on branch legion/DSP-42 at 3333333333333333333333333333333333333333. That commit is at the head of branch legion/DSP-42. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T11:00:00Z. Result job-1.",
+        "    Reading: ok",
+        "  - pass by tester at 3333333333333333333333333333333333333333. That commit is none of the compared commits. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result res-9.",
+        "    Reading: ok",
+        `    It counts for nothing: ${reason}`,
       ].join("\n")
     );
   });
@@ -8554,7 +8604,7 @@ describe("executeDispatchTool", () => {
       })
     );
     expect(conflicted.text).toContain(
-      `  A pass stands: not known, as the head of branch legion/DSP-42 at ${head} holds a pass and a fail of its CI job.`
+      `  A pass stands: not known, as the head of branch legion/DSP-42 at ${head} holds a pass and a fail of CI.`
     );
   });
 

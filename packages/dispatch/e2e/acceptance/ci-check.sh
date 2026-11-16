@@ -13,10 +13,11 @@
 #   of k1, a person pasting the four blocks, is the browser row of e2e/verification.e2e.ts.
 # - k2: `dispatch results` derives the result of the check from the named run at the issue's open
 #   pull request head: the run's name, conclusion, output and URL, and the pull-request body line,
-#   which names the run and no recorder; a failed run prints fail; check_results holds no row for
-#   either block; the merged head still answers; three such checks at one head cost one
-#   check-runs read; an open head is read before an older merged one; an issue with no such check
-#   reads nothing; a summary of 2,500 runes is cut to 2,000 and the answer is not refused.
+#   which names the run and no recorder; a failed run prints fail; neither check_results nor
+#   ci_check_results holds a row for either block; the merged head still answers; three such
+#   checks at one head cost one check-runs read; an open head is read before an older merged one;
+#   an issue with no such check reads nothing; a summary of 2,500 runes is cut to 2,000 and the
+#   answer is not refused.
 # - k3: the eleven outcomes of the run, among them the fake GitHub's 500 and a read held past the
 #   server's real 10 s deadline, and two runs of one name decided by the higher id in both orders.
 # - k4: a tester's and an implementer's result for a check CI proves are refused 409
@@ -413,12 +414,14 @@ unconcluded() {
   no_line "$1" "$3 prints no fail either" "- $3 (before_merge): fail at"
 }
 
-# no_rows SECTION WHAT ARTIFACT BLOCK: check_results holds no row for block BLOCK of ARTIFACT.
+# no_rows SECTION WHAT ARTIFACT BLOCK: neither check_results, a role's results, nor ci_check_results,
+# a CI job's, holds a row for block BLOCK of ARTIFACT.
 no_rows() {
   sql "$1" "$2" -v artifact="$3" -v block="$4" <<'SQL'
-select count(*) from check_results where check_artifact_id = :'artifact' and check_block_id = :'block';
+select (select count(*) from check_results where check_artifact_id = :'artifact' and check_block_id = :'block')
+     + (select count(*) from ci_check_results where check_artifact_id = :'artifact' and check_block_id = :'block');
 SQL
-  [[ "$(<"$work/sql")" == 0 ]] || fail "$1" "$2" "check_results holds $(<"$work/sql") rows for $4"
+  [[ "$(<"$work/sql")" == 0 ]] || fail "$1" "$2" "the results tables hold $(<"$work/sql") rows for $4"
   pass "$1" "$2"
 }
 
@@ -569,16 +572,14 @@ stage_head k2 "$k2_open" 101 "$open_sha" open
 results k2 "$k2_open"
 derived k2 "c-ci prints the pass of CI run contracts at the open head" c-ci pass "$open_sha" \
   success 101 "$ci_words"
-line k2 "the result's reading opens with the run's conclusion" "  Reading: conclusion: success"
-line k2 "the reading carries the run's output title" "contracts success"
-line k2 "the reading carries the run's output summary" "The contracts job concluded success."
-line k2 "the reading carries the run's URL" "https://github.com/$driven_repo/actions/runs/40/job/9001"
+line k2 "the result's reading is one line: the run's conclusion, output title, output summary and URL" \
+  "  Reading: conclusion: success\\ncontracts success\\nThe contracts job concluded success.\\nhttps://github.com/$driven_repo/actions/runs/40/job/9001"
 get "/api/v1/issues/$k2_open/results"
 want_status 200 k2 "GET /results answers"
 expect k2 "the one result is the derived one: its id, role, producer, run and commit" \
   "$(jq -cn --arg sha "$open_sha" '[["ci-run:9001","ci","github_app","github-actions","contracts",$sha]]')" \
   '[.checks[] | select(.block_id == "c-ci") | .results[] | [.id, .role, .actor.kind, .actor.id, .run, .commit_sha]]'
-no_rows k2 "check_results holds no row for $k2_open's c-ci" "$k2_open_artifact" c-ci
+no_rows k2 "no results table holds a row for $k2_open's c-ci" "$k2_open_artifact" c-ci
 
 ci_issue k2 "a check CI proves, whose run failed"
 readonly k2_fail="$key" k2_fail_artifact="$artifact"
@@ -589,7 +590,7 @@ stage_head k2 "$k2_fail" 102 "$fail_sha" open
 results k2 "$k2_fail"
 derived k2 "c-ci prints fail at the head for a run that concluded failure" c-ci fail "$fail_sha" \
   failure 102 "$ci_words"
-no_rows k2 "check_results holds no row for $k2_fail's c-ci" "$k2_fail_artifact" c-ci
+no_rows k2 "no results table holds a row for $k2_fail's c-ci" "$k2_fail_artifact" c-ci
 
 stage_head k2 "$k2_open" 101 "$open_sha" merged
 results k2 "$k2_open"

@@ -230,7 +230,7 @@ func TestTheResultsReadAnswersTheStatementTheWriteStored(t *testing.T) {
 	}
 	var column string
 	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select attestation::text from check_results where id = $1::uuid`, written.ID).Scan(&column); err != nil {
+		`select attestation::text from ci_check_results where id = $1::uuid`, written.ID).Scan(&column); err != nil {
 		t.Fatalf("read the stored statement: %v", err)
 	}
 	var stored wireStatement
@@ -243,8 +243,9 @@ func TestTheResultsReadAnswersTheStatementTheWriteStored(t *testing.T) {
 }
 
 // TestOnlyAJobsResultCarriesAStatementOfItsRun: a result a role recorded and a result Dispatch
-// derives from a check run carry no attestation member, in the write's answer, in the read and
-// in the row, while the job's result beside them carries one.
+// derives from a check run carry no attestation member, in the write's answer and in the read,
+// while the job's result beside them carries one; the job's row is the one row of
+// ci_check_results, and check_results, which holds the tester's row, holds no statement at all.
 func TestOnlyAJobsResultCarriesAStatementOfItsRun(t *testing.T) {
 	rig := newCIJobRig(t)
 	job, _ := recordedWithStatement(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
@@ -267,21 +268,15 @@ func TestOnlyAJobsResultCarriesAStatementOfItsRun(t *testing.T) {
 		t.Fatalf("the tester's result on k1 carries an attestation: %s", raw)
 	}
 
-	var attested int
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select count(*) from check_results where attestation is not null`).Scan(&attested); err != nil {
-		t.Fatalf("count the stored statements: %v", err)
+	var jobRows, testerRows int
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from ci_check_results where id = $1::uuid and attestation is not null),
+		       (select count(*) from check_results where id = $2::uuid)
+	`, job.ID, tester.ID).Scan(&jobRows, &testerRows); err != nil {
+		t.Fatalf("read the stored rows: %v", err)
 	}
-	if attested != 1 {
-		t.Fatalf("check_results holds %d rows with a statement, want 1, the job's", attested)
-	}
-	var testerNull bool
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select attestation is null from check_results where id = $1::uuid`, tester.ID).Scan(&testerNull); err != nil {
-		t.Fatalf("read the tester's row: %v", err)
-	}
-	if !testerNull {
-		t.Fatalf("the tester's row stores a statement, want null")
+	if jobRows != 1 || testerRows != 1 {
+		t.Fatalf("ci_check_results holds %d rows of the job's result with a statement, and check_results %d of the tester's; want 1 and 1", jobRows, testerRows)
 	}
 }
 

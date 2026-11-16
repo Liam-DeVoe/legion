@@ -9,7 +9,7 @@ import type {
 } from "@legion/contracts";
 import { checkWithNewerFields } from "@legion/contracts";
 import { actorText } from "../actor-text";
-import { printable, printableLine } from "../runner-log";
+import { printableStrings } from "../runner-log";
 
 // check-results.ts is what `dispatch results --issue` prints: each check of an issue's
 // Verification document, what Dispatch compared its results with, whether a pass of it stands,
@@ -98,7 +98,7 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
 /** What one subject of a check holds where no pass stands there. */
 function subjectReasonText(reason: string | undefined): string {
   if (reason === "fail") return "a fail";
-  if (reason === "pass_and_fail") return "a pass and a fail of its CI job";
+  if (reason === "pass_and_fail") return "a pass and a fail of CI";
   return "no result";
 }
 
@@ -126,33 +126,30 @@ function passStandsText(pass: CheckPassStands | undefined): string {
     return open === "" ? "A pass stands: no" : `A pass stands: no, as ${open}`;
   if (open !== "") return `A pass stands: not known, as ${open}`;
   return pass.reason === "pass_and_fail"
-    ? "A pass stands: not known, as its CI job recorded a pass and a fail at one commit"
+    ? "A pass stands: not known, as CI holds a pass and a fail at one commit"
     : "A pass stands: not known";
 }
 
-/** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
- *  whose result stands at none of the compared commits, and leaves every other reading whole: the
- *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
- *  stands. */
-function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
+/** The line of the reading one role recorded, under the line of its result at `indent`. The
+ *  reading is one line however many it holds: its line breaks are written as `\n`, as every string
+ *  of the answer is (`formatCheckResults`), so no line of a CI job's log reads as a line of this
+ *  command's own. `brief` cuts a reading whose result stands at none of the compared commits, and
+ *  leaves every other reading whole: the reading is the record, and a reader who asked for the
+ *  gate alone still reads the whole of what stands. */
+function readingLine(result: CheckResult, brief: boolean, indent = "    "): string {
   const observed = result.observed;
-  if (observed === "") return [`${indent}The role recorded no reading.`];
+  if (observed === "") return `${indent}The role recorded no reading.`;
   const cut = brief && result.commit_stands?.answer !== "at_basis";
   if (cut && observed.length > BRIEF_READING_CHARACTERS) {
-    return [
-      `${indent}Reading: ${printable(observed.slice(0, BRIEF_READING_CHARACTERS))}… (result ${result.id})`,
-    ];
+    return `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`;
   }
-  // A reading is text the command did not write, a CI job's log among them, and it may be read in
-  // a runner's log: each of its lines stays a line of its own, by runnerlog.Printable's rule, so
-  // none starts with `::` or holds a `##[` (runner-log.ts).
-  const [first = "", ...rest] = observed.split("\n").map(printableLine);
-  return [`${indent}Reading: ${first}`, ...rest];
+  return `${indent}Reading: ${observed}`;
 }
 
 /** One result, in the order the API served it: the verdict, the role, the branch a CI job's
  *  result was pushed on, the whole commit, R4's two facts, the time, the id, the retraction that
- *  stands against it, and the reading. */
+ *  stands against it, and the reading; then, for a result that counts for nothing, the reason
+ *  Dispatch served in `not_counted`. */
 function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
   const branch = result.branch === undefined ? "" : ` on branch ${result.branch}`;
   const lines = [
@@ -164,7 +161,10 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
       `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
     );
   }
-  return [...lines, ...readingLines(result, brief)];
+  lines.push(readingLine(result, brief));
+  const notCounted = result.not_counted ?? "";
+  if (notCounted !== "") lines.push(`    It counts for nothing: ${notCounted}`);
+  return lines;
 }
 
 /** What a derived result's id begins with, before its check run's own id, as Dispatch writes it
@@ -209,7 +209,7 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
     `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
     passStandsLine,
     ...pullRequestLine,
-    ...readingLines(derived, brief, "  "),
+    readingLine(derived, brief, "  "),
     ...recorded,
   ];
 }
@@ -242,8 +242,16 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
  *  result, or why it has none, as one line, then whether a pass of it stands, then each result
  *  its CI job recorded (`ciCheckLines`). A check with no result says so, and an issue with no
  *  Verification document says that instead of printing an empty list: Dispatch answers
- *  `verification_artifact_id` "" for such an issue, never null, so that is what is compared. */
-export function formatCheckResults(results: IssueCheckResults, brief = false): string {
+ *  `verification_artifact_id` "" for such an issue, never null, so that is what is compared.
+ *
+ *  Every string of the answer is text this command did not write: a CI job's log, a role's
+ *  reading, a check's words, a reason. Each is read as runnerlog.Printable writes it
+ *  (`printableStrings`, runner-log.ts), so it prints inside a line of this command's own, its
+ *  line breaks as `\n`, and no line it prints holds a "##[": no text from outside starts a line,
+ *  and none reads as a line this command wrote, such as a check's head line or its
+ *  `A pass stands:` line. */
+export function formatCheckResults(answer: IssueCheckResults, brief = false): string {
+  const results = printableStrings(answer);
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }

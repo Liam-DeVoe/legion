@@ -2829,6 +2829,27 @@ describe("dispatch result --project, as a CI job writes it", () => {
       note: sent.includes(SPEC_CHECK_OBSERVED_CUT_NOTE),
     }).toEqual({ characters: SPEC_CHECK_OBSERVED_MAX, first: true, last: true, note: true });
   });
+
+  // A 2xx answer that is not Dispatch's JSON, from a server that answers in Dispatch's place,
+  // says nothing of whether Dispatch stored the result, and the request may have reached it
+  // first: the job prints write_outcome_unknown and exits 1, as for a write that heard nothing.
+  // The control is the row above it: Dispatch's own answer prints as the stored result.
+  test("with the job's identity, a 2xx answer that is not Dispatch's prints write_outcome_unknown and exits 1", async () => {
+    dispatchAnswer = () =>
+      new Response("Welcome to Bun! To get started, return a Response object.", {
+        status: 200,
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+      });
+    const ran = await runJob(issueRecord, jobEnvironment());
+    expect(ran).toEqual({
+      code: 1,
+      stdout: `${JSON.stringify({ write_outcome_unknown: "HTTP_200" })}\n`,
+      stderr: "",
+    });
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/issues/DSP-1/results"],
+    ]);
+  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {

@@ -22,11 +22,11 @@ import (
 // of the run its `ci_check` names: each read takes the newest pull request head of the issue
 // (delivery.NewestPullRequestHead), reads that commit's check runs from GitHub once, and derives
 // a result from the run its `ci_check` names. A check CI proves holds that derived result beside
-// each result a run of its CI job recorded through the job's results token (role ci, Branch
-// set), newest first. The derived result goes through the same comparisonReader a recorded
-// result does, so one rule judges where both kinds stand. The branch such a recorded result
-// names is read here too, for the comparison of every `before_merge` check of the issue: its
-// head, as GitHub answers it on this read (readBranchHead).
+// each result a run of its CI job recorded through the job's results token (ci_check_results:
+// role ci, Branch set), newest first. The derived result goes through the same comparisonReader
+// a recorded result does, so one rule judges where both kinds stand. The branch such a recorded
+// result names is read here too, for the comparison of every `before_merge` check of the issue:
+// its head, as GitHub answers it on this read (readBranchHead).
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together, and the read of one pushed branch's head, its token mint included (readBranchHead):
@@ -142,9 +142,11 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 }
 
 // notCountedOnCICheck marks each result the read loaded for check, a check CI proves, that no CI
-// job recorded: a role's, which a build that counted such rows took while it served beside this
-// one. It counts for nothing (standingCommit) and says why (model.ResultNotCountedRoleOnCICheck).
-// It runs before the derived result is merged in, so that one is never marked.
+// job recorded: a role's, a row of check_results, which names no branch, where every row of
+// ci_check_results names one. Such a row is older than the check's ci_check, or a build released
+// before ci_check_results took it. It counts for nothing (standingCommit) and says why
+// (model.ResultNotCountedRoleOnCICheck). It runs before the derived result is merged in, so
+// that one is never marked.
 func notCountedOnCICheck(check *model.CheckBlock) {
 	for index := range check.Results {
 		if check.Results[index].Branch == "" {

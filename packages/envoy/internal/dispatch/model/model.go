@@ -1312,10 +1312,11 @@ type BasisLearnedAt struct {
 // moved does not stand, and a retracted result counts for nothing.
 //
 // A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
-// open pull request's head, or where the issue has none, each merged one's final head and the
-// head of each of its branches a CI job's result names. A pass stands only when one stands at
+// open pull request's head, or where the issue has none, the newest merged one's final head and
+// the head of each of its branches a CI job's result names. A pass stands only when one stands at
 // each subject, and Subjects says the state of each. Reason is PassStandsReasonPassAndFail where
-// the answer is unknown because the check's CI job recorded a pass and a fail at one commit (R7).
+// the answer is unknown because a check CI proves holds a pass and a fail of CI at one commit,
+// recorded by its CI job or derived from its check run (R7).
 type CheckPassStands struct {
 	Answer   string              `json:"answer" enum:"yes,no,unknown"`
 	Roles    []string            `json:"roles,omitempty"`
@@ -1343,8 +1344,8 @@ const (
 // ResultNotCountedRoleOnCICheck is why a role's result of a check CI proves counts for nothing
 // (CheckResult.NotCounted): only that check's CI job records its result. The kind of a check is its
 // block's alone, so such a row, which a build that counted such rows took while it served beside
-// a newer one, changes nothing about the check.
-const ResultNotCountedRoleOnCICheck = "a role's result of a check CI proves counts for nothing: only a run of the CI job its ci_check names records its result"
+// a newer one, changes nothing about the check. A reader prints it after "It counts for nothing: ".
+const ResultNotCountedRoleOnCICheck = "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves"
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
