@@ -720,9 +720,9 @@ trades that person, as the Go client does:
   name to one identity only.
 - The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
   by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
-  each one, and refuses the trade naming the first they may not see. A restricted member's trade
-  must name at least one. A value that is no list fails the call naming the variable. The
-  machine's own trade names no project.
+  each one, and refuses the trade naming the first they may not see. A person who signs in is of
+  the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
+  that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
 writes as that person.

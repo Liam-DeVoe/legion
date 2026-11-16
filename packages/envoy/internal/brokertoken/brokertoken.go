@@ -167,8 +167,9 @@ type Caller struct {
 	// is set.
 	Service string
 	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
-	// token's one project, and the projects a ProjectScopePerson token's trade asked for, each
-	// one its person could see then, nil for none. Sorted, each once.
+	// token's one project, or none for an account entry naming none (the shared public-session
+	// account's), and the projects a ProjectScopePerson token's trade asked for, each one its
+	// person could see then, nil for none. Sorted, each once.
 	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this

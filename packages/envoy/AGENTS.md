@@ -6526,6 +6526,8 @@ neither, and no workflow token is accepted at all), `BROKER_EXCHANGE_ACCOUNTS` (
 whitespace-separated `<service account>=<project>=<person>[=<session>]` entries, such as `system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com`:
 the token minted for a pod of that account may write that one project, acts for that person, and writes under the session the entry fixes
 — an entry that fixes none requires the pod to name its own.
+An entry may name no project, `<service account>==<person>`, which is the shared public-session account's: its tokens are `named`, act for that person and name no project.
+A project that is given must be a project key (`contracts.ProjectKeyPattern`); one that is not refuses the broker's start, naming the entry (`exchange.NewSet`), as it does for `BROKER_EXCHANGE_WORKFLOWS` and `BROKER_VM_EXCHANGE_ACCOUNTS`.
 The session is everything after the third `=`, so it alone may carry one; a namespace's `default` account and an account listed twice are refused.
 Needs `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`;
 unset, no account exchanges), `BROKER_EXCHANGE_WORKFLOWS` (optional;
@@ -6737,8 +6739,11 @@ Its refusals are one answer an operator can act on each:
 `ErrNoEntry`, `ErrNoPodBinding`, `ErrSessionMismatch`, `ErrSessionRequired`, `ErrSessionInvalid`, `ErrClaimMissing`, `ErrEmailNotVerified`, `ErrNoComputeEngine` and `ErrMachineNotAllowed` of a machine, `ErrNotInDomain` and `ErrNoActorToken` of a person's sign-in, `ErrProjectsFixed` and `ErrProjectsNoPerson` of a request's projects, and, of a pod-session registration, `ErrSessionFixed`.
 The exchange reads and decides the request outside any transaction, then asks Dispatch about the projects it decided (`oauth.Provider.projectAccess`, `internal/broker/projectaccess`, configured by `BROKER_PROJECT_ACCESS_URL` and `BROKER_PROJECT_ACCESS_TOKEN_FILE`), so no Dispatch call holds a lock or a pooled connection; the DPoP proof's and a GitHub token's single-use markers therefore commit on their own, and a refused trade has spent them.
 A `person` token's projects must each be one Dispatch says its person sees, refused `invalid_request` in one sentence whether Dispatch holds the project or not; a restricted member's trade must name at least one; a person's sign-in asks no member kind, the broker having checked its Workspace domain itself; a `named` token's project must be one Dispatch says the entry's person sees.
-With no project-access check configured, or while Dispatch cannot be reached, a trade naming no project and an entry's token mint as before, and a person's trade naming a project is refused (`invalid_request` naming the settings, or `temporarily_unavailable`).
-Dispatch's answers are kept `projectaccess.CacheTTL` (30 seconds).
+With no project-access check configured, a trade naming no project and an entry's token mint as before, and a person's trade naming a project is refused `invalid_request` naming the settings.
+While Dispatch cannot be reached (a transport failure, a 5xx, or a 404 whose code is not `PROJECT_NOT_FOUND`), a trade naming no project and an entry's token mint as before and log one line naming the principal, the session and the person (`projectaccess.ErrUnchecked` for an empty list), and a person's trade naming a project is refused `temporarily_unavailable`.
+Dispatch answering 401 or 403 to the broker's own account token is `projectaccess.ErrBrokerRefused`, a deployment that has not listed the broker, and refuses every trade that asks it `server_error` (`oauth.refusedByDispatch`), never minting unchecked.
+Dispatch's answers are kept `projectaccess.CacheTTL` (30 seconds), aged from before each question.
+A named token naming one project also stores it under the pre-list `project` claim, which no reader of this release reads, so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming none.
 The rest of the exchange runs in one transaction, because the claim on the session name and the token it is claimed for must land together or not at all.
 
 Beside the session name, the exchange reads two parameters of the broker's own.

@@ -236,8 +236,10 @@ func (r *recordingAccess) States(context.Context, []string) (map[string]projecta
 }
 
 // TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember: an empty list is refused for a
-// restricted member alone; a full member, a person Dispatch holds no row for and an unreachable
-// Dispatch all pass; and a non-empty list is Visible's question and never asks a member kind.
+// restricted member alone; a full member and a person Dispatch holds no row for pass; an
+// unreachable Dispatch answers ErrUnchecked, which a caller minting as today tells from a refusal
+// and logs; Dispatch refusing the broker's own token answers ErrBrokerRefused, which no caller
+// mints through; and a non-empty list is Visible's question and never asks a member kind.
 func TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember(t *testing.T) {
 	client := clientOf(standIn(t))
 	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrListRequired) || !strings.Contains(err.Error(), "bob@example.com") {
@@ -250,8 +252,12 @@ func TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember(t *testing.T) {
 	}
 	down := standIn(t)
 	down.SetDown(true)
-	if err := projectaccess.ListAllowed(t.Context(), clientOf(down), "bob@example.com", nil); err != nil {
-		t.Fatalf("ListAllowed(bob, none) while Dispatch is down = %v, want nil: an outage mints as today", err)
+	if err := projectaccess.ListAllowed(t.Context(), clientOf(down), "bob@example.com", nil); !errors.Is(err, projectaccess.ErrUnchecked) || errors.Is(err, projectaccess.ErrListRequired) {
+		t.Fatalf("ListAllowed(bob, none) while Dispatch is down = %v, want ErrUnchecked: an outage mints as today, and the caller logs it", err)
+	}
+	stranger := projectaccess.New(standIn(t).URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
+	if err := projectaccess.ListAllowed(t.Context(), stranger, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
+		t.Fatalf("ListAllowed(bob, none) with a bearer Dispatch refuses = %v, want ErrBrokerRefused and not ErrUnchecked", err)
 	}
 	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", []string{"PRIV"}); err != nil {
 		t.Fatalf("ListAllowed(bob, PRIV) = %v, want nil: PRIV lists bob", err)
@@ -398,14 +404,21 @@ func TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck(t *testing.T) {
 // later.
 func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
-	release := make(chan struct{})
+	// The first question's handler signals once it is blocked, so the second question is sent
+	// only after the first has reached Dispatch; release is closed on every way out of the test,
+	// so the server's cleanup never waits on a handler still blocked.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	free := func() { releaseOnce.Do(func() { close(release) }) }
 	server, _ := projectServer(t, func(_ string, call int) bool {
 		if call == 1 {
+			close(entered)
 			<-release
 			return true
 		}
 		return false
 	})
+	t.Cleanup(free)
 	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
 	projectaccess.SetClock(client, clock.read)
 	first := make(chan error, 1)
@@ -413,18 +426,69 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 		_, err := client.Access(context.Background(), "PRIV", "carol@example.com")
 		first <- err
 	}()
-	for !projectaccess.InFlight(client) {
-		time.Sleep(time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first question never reached Dispatch")
 	}
 	clock.advance(time.Second)
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
 		t.Fatalf("the later question = %+v, %v; want not visible", answer, err)
 	}
-	close(release)
+	free()
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
 		t.Fatalf("the cached answer after both arrived = %+v, %v; want the later question's, not visible", answer, err)
+	}
+}
+
+// TestOnlyDispatchsProjectNotFoundIsAnAnswer: a 404 is Dispatch holding no such project only when
+// its body's code is PROJECT_NOT_FOUND. Any other 404 — a Dispatch that does not serve the
+// project-access routes, or a wrong path behind an ingress — is a failure, never cached and never
+// read as a refusal of the project.
+func TestOnlyDispatchsProjectNotFoundIsAnAnswer(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"NOT_FOUND","error":"no route"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	for range 2 {
+		_, err := client.Access(t.Context(), "PRIV", "carol@example.com")
+		if err == nil || errors.Is(err, projectaccess.ErrProjectNotFound) || !strings.Contains(err.Error(), "NOT_FOUND") {
+			t.Fatalf("Access answered by a router's 404 = %v, want a failure naming the code NOT_FOUND, not ErrProjectNotFound", err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("Dispatch was asked %d times for two questions, want 2: a failure is never cached", calls)
+	}
+	if err := projectaccess.Visible(t.Context(), client, "carol@example.com", []string{"PRIV"}); errors.Is(err, projectaccess.ErrNotVisible) || err == nil {
+		t.Fatalf("Visible answered by a router's 404 = %v, want a failure that is no refusal", err)
+	}
+}
+
+// TestARefusalOfTheBrokersOwnTokenIsErrBrokerRefused: Dispatch answering 401 or 403 to the
+// broker's own account token is ErrBrokerRefused, from both routes: a deployment that has not
+// listed the broker as one that may ask, which no caller reads as an outage.
+func TestARefusalOfTheBrokersOwnTokenIsErrBrokerRefused(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not listed"}`))
+		}))
+		t.Cleanup(server.Close)
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") {
+			t.Errorf("Access answered %d = %v, want ErrBrokerRefused naming the code", status, err)
+		}
+		if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+			t.Errorf("MemberKind answered %d = %v, want ErrBrokerRefused", status, err)
+		}
 	}
 }

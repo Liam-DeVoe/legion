@@ -482,7 +482,8 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, acts for that person, and writes under
+	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
 	// public-session account's, whose tokens act for that person and name no project. The

@@ -9,7 +9,9 @@ body: |-
   hold `403 PROJECT_NOT_VISIBLE` (one answer for both), a restricted member's session naming none
   `403 PROJECTS_REQUIRED`, and a list it could not check with Dispatch, because it has no
   `BROKER_PROJECT_ACCESS_URL` or Dispatch did not answer, `503 PROJECTS_UNCHECKED`. A session
-  naming no project enrolls as before whether or not Dispatch answers. The list is fixed for the
+  naming no project enrolls as before while Dispatch cannot be reached, with a line saying it
+  enrolled unchecked; while Dispatch refuses the broker's own account, no session enrolls through
+  it, `503 PROJECTS_UNCHECKED` saying so. The list is fixed for the
   enrollment's life and is never carried to a successor that adopts its grants. Migration 0032
   adds `enrollments.projects`, empty on every existing row.
 time: 2026-11-16T02:40:03Z

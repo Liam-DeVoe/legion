@@ -109,7 +109,9 @@ func TestARestrictedMembersSessionMustNameItsProjects(t *testing.T) {
 // TestAnEmptyListEnrollsWhenK3IsDownOrUnset: a broker with no client of Dispatch's project
 // access, and one whose Dispatch does not answer, enrol a session naming no project exactly as
 // before, a restricted member's included, and refuse one naming a project, which could not be
-// checked (ErrProjectsUnchecked).
+// checked (ErrProjectsUnchecked). A Dispatch that refuses the broker's own account is a deployment
+// that has not listed the broker, not an outage (projectaccess.ErrBrokerRefused): no session is
+// enrolled through it, not even one naming no project.
 func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 	t.Run("no client", func(t *testing.T) {
 		svc := newService(t)
@@ -129,6 +131,14 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		}
 		if _, err := enrolSession(t, svc, carolLogin, "box-carol-down", "PRIV"); !errors.Is(err, ErrProjectsUnchecked) {
 			t.Fatalf("a session naming PRIV while Dispatch is down = %v; want ErrProjectsUnchecked", err)
+		}
+	})
+	t.Run("Dispatch refuses the broker's account", func(t *testing.T) {
+		svc := newService(t)
+		dispatch := withProjects(t, svc)
+		svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
+		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-refused"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, projectaccess.ErrBrokerRefused) && !strings.Contains(err.Error(), "refused the broker") {
+			t.Fatalf("a session naming no project while Dispatch refuses the broker's account = %v; want ErrProjectsUnchecked saying Dispatch refused the broker", err)
 		}
 	})
 }

@@ -30,7 +30,8 @@ const maxIntrospectionBytes = 64 << 10
 // Project scopes an Introspection's Projects is read under: the broker's own wire names, carried
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
-	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token.
+	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token, or
+	// none for an account entry naming none.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.
@@ -109,9 +110,19 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		// so none of them refuses it.
 		return Introspection{}, fmt.Errorf("%w: the broker answered %d", ErrBrokerUnreachable, response.StatusCode)
 	}
-	var answer Introspection
+	var answer struct {
+		Introspection
+		// LegacyProject is the field a broker before the list answered a named token's one
+		// project under. This reader reads no such field, so an answer carrying it would pass as
+		// a named token naming no project — the public-session account's shape, which Dispatch
+		// holds to no project — and is refused instead, whatever else it says.
+		LegacyProject json.RawMessage `json:"project"`
+	}
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return Introspection{}, fmt.Errorf("%w: decode the broker's answer: %w", ErrBrokerUnreachable, err)
 	}
-	return answer, nil
+	if answer.LegacyProject != nil {
+		return Introspection{}, ErrNotASession
+	}
+	return answer.Introspection, nil
 }

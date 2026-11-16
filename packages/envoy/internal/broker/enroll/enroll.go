@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -696,10 +697,12 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the rule the
 // token exchange applies too, decides: every project named must be one the person may see
 // (ErrProjectNotVisible), and a restricted member must name at least one (ErrProjectsRequired).
-// An empty list enrolls as before with no client, and with a client whose Dispatch did not
-// answer (ListAllowed asks the member kind alone and takes an outage as no restriction); a list
-// Dispatch did not answer for is refused, since taking it unchecked could name a project its
-// person may not see.
+// An empty list enrolls as before with no client, and with a client whose Dispatch could not be
+// asked the member kind (projectaccess.ErrUnchecked): the session is enrolled, and a line says it
+// was enrolled unchecked. A list Dispatch did not answer for is refused, since taking it
+// unchecked could name a project its person may not see; so is any list, empty or not, when
+// Dispatch refused the broker's own account (projectaccess.ErrBrokerRefused), a deployment that
+// has not listed the broker, through which no caller enrolls.
 func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 	if err := oauthwire.ValidProjects(in.Projects); err != nil {
 		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
@@ -722,6 +725,10 @@ func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 		return fmt.Errorf("%w: %s", ErrProjectNotVisible, unseen.Project)
 	case errors.Is(err, projectaccess.ErrListRequired):
 		return ErrProjectsRequired
+	case errors.Is(err, projectaccess.ErrUnchecked) && len(in.Projects) == 0:
+		slog.WarnContext(ctx, "broker: a session naming no project enrolled unchecked, since Dispatch could not be asked what kind of member its person is",
+			"person", *in.Operator, "runtime_id", in.RuntimeID, "error", err)
+		return nil
 	}
 	return fmt.Errorf("%w: %v", ErrProjectsUnchecked, err)
 }
