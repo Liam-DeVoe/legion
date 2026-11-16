@@ -299,17 +299,28 @@ test("a request made while a poll is held is answered at once, not after the hol
   expect(await settled("command.list's answer", answered)).toEqual([])
 })
 
+// The poll is held on the clock the row holds, as in the row above, so the probe is answered while
+// it is still held, and the hold, dropped unfired with the fake clock, never ends it. What ends it
+// is a request made after the probe: a probe that had answered the poll, or put anything into it,
+// would leave it holding something other than that request alone.
 test("the liveness probe is answered while a poll is held", async () => {
   const dir = await directory()
   const link = await start(dir, "s9")
-  const poll = call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
-  await untilPolled(link)
-  expect(await call(link.socketPath, "GET", MOD_ROUTE_HEALTH)).toEqual({
+  const { poll } = await heldUnderFakeClock(link)
+  jest.useRealTimers()
+  const probe = call(link.socketPath, "GET", MOD_ROUTE_HEALTH)
+  expect(await settled("the liveness probe's answer", probe)).toEqual({
     status: 200,
     body: { link: MOD_HEALTH_MARKER },
   })
   expect(link.connected()).toBe(true)
-  expect(polled(await poll)).toEqual([])
+  const answered = link.request("session.model", undefined)
+  const requests = polled(await settled("the held poll's answer", poll))
+  expect(requests.map((request) => request.call)).toEqual(["session.model"])
+  await call(link.socketPath, "POST", MOD_ROUTE_RESULTS, {
+    results: [{ id: requests[0]?.id ?? "", ok: true, value: "claude-opus-5" }],
+  })
+  expect(await settled("session.model's answer", answered)).toBe("claude-opus-5")
 })
 
 test("events reach the owner in the order the mod posted them", async () => {
