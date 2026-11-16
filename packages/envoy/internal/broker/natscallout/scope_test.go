@@ -632,6 +632,29 @@ func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 	}
 }
 
+// A grant the drop leaves WithinProjects unable to hold is refused under shared_lane, naming the
+// withheld lanes, and not as a grant that cannot be held at all. scopeGrant is handed a grant
+// whose one subscribe is every repository's GitHub lane: PUB1's one repository, acme/a.b, shares
+// its lane with PUB2's acme/a_b, so once it is withheld the subscribe keeps no entry. With PUB2
+// mapping another lane the same grant is held, so the drop is what leaves it empty. The daemon's
+// own grant, which a decision hands scopeGrant (serviceGrant), keeps its per-project subscribes
+// whatever is withheld, so only a grant like this one reaches the refusal. The control drops the
+// shared_lane case: the refusal is grant_not_holdable.
+func TestADropThatLeavesNoGrantIsRefusedAsASharedLane(t *testing.T) {
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	exchange := map[string][]string{pubDaemonAccount: {"PUB1"}, slowDaemonAccount: {"PUB2"}}
+	lanesOnly := natsgrant.Permissions{Publish: []string{contracts.DispatchIssueTopicPrefix + ">"}, Subscribe: []string{contracts.GithubTopicPrefix + ">"}}
+
+	apart := heldDeps(t, nil, exchange, &dispatchAnswers{answers: map[string][]string{"PUB1": {"acme/a.b"}, "PUB2": {"acme/c"}}}, services)
+	held, err := scopeGrant(t.Context(), apart, services[0], lanesOnly)
+	require.NoError(t, err, "the grant was refused with no lane withheld")
+	require.True(t, holdsLane(held, "acme/a.b"))
+
+	shared := heldDeps(t, nil, exchange, &dispatchAnswers{answers: map[string][]string{"PUB1": {"acme/a.b"}, "PUB2": {"acme/a_b"}}}, services)
+	_, err = scopeGrant(t.Context(), shared, services[0], lanesOnly)
+	requireRefused(t, err, labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service daemon/"+pubDaemonAccount)
+}
+
 // A held daemon is refused under shared_lane, inside the budget, until Dispatch's repository
 // mapping has been read once: until then no repository is known to be no other project's. Here
 // Dispatch answers about PUB at once and never answers the mapping: PUB's held daemon is refused
