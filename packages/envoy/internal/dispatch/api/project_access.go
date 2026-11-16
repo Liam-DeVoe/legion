@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -66,7 +67,7 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			"this deployment cannot make a project private yet: nothing was changed")
 		return
 	}
-	s.ownerWrite(w, r, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
 		if input.Visibility != nil {
@@ -118,7 +119,13 @@ func (s *server) deleteProjectAccessGroup(w http.ResponseWriter, r *http.Request
 }
 
 func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, principal string, write principalWrite) {
-	s.ownerWrite(w, r, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
+	// A group's name is locked before the project, as a delete of that group locks them
+	// (access.LockForAccessWrite), so the two never wait on each other in a cycle.
+	group := ""
+	if kind == access.PrincipalGroup {
+		group = strings.TrimSpace(principal)
+	}
+	s.ownerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
 		answer, event, err := write(ctx, tx, s.deps.Events, key, kind, principal, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -128,12 +135,13 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 }
 
 // ownerWrite runs one write of project {key}'s access for its owner: the caller acts as a person,
-// and is the project's owner as projects.owner reads in the write's own transaction, locked `for
-// no key update` (the level TestNoForUpdateOnOwnerTables holds every lock on projects to), so an
-// owner change committed meanwhile is read rather than raced. Anyone else is 403
+// and is the project's owner as projects.owner reads in the write's own transaction, under the
+// locks access.LockForAccessWrite takes in the one order every access write takes them (group,
+// the group the write names, or "" for none), so an owner change committed meanwhile is read
+// rather than raced and a delete of the group is ordered against the write. Anyone else is 403
 // PROJECT_OWNER_REQUIRED before anything is written. It publishes what the write appended once it
 // commits, and answers the project's access as the write left it.
-func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request,
+func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -146,13 +154,9 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var owner *string
-	if err := tx.QueryRow(r.Context(), `select owner from projects where key = $1 for no key update`, key).Scan(&owner); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			s.writeAccessError(w, access.ErrProjectNotFound)
-			return
-		}
-		s.writeHandlerError(w, err)
+	owner, err := access.LockForAccessWrite(r.Context(), tx, key, group)
+	if err != nil {
+		s.writeAccessError(w, err)
 		return
 	}
 	if owner == nil || *owner != actor.ID {

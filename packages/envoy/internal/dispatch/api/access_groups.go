@@ -132,7 +132,7 @@ func (s *server) groupWrite(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if _, err := tx.Exec(r.Context(), `select pg_advisory_xact_lock(hashtextextended('access_group:' || $1, 0))`, name); err != nil {
+	if err := access.LockGroupName(r.Context(), tx, name); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

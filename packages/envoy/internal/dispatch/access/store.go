@@ -72,6 +72,45 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 	return model.MemberKind(kind), nil
 }
 
+// The lock order every access write takes, so no two of them wait on each other in a cycle: a
+// group's name first (LockGroupName), then a project's row, then the rows a write appends events
+// on. A write of a group (PutGroup, DeleteGroup) takes the name and then the projects its delete
+// sweeps; a write of a project's list that names a group takes the same name before the project
+// (LockForAccessWrite), so a delete of that group and the write are ordered by the name: the
+// delete waits for the write and then sweeps its row, or the write, seeing the delete committed,
+// finds no group.
+
+// LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
+func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('access_group:' || $1, 0))`, name); err != nil {
+		return fmt.Errorf("lock group %s: %w", name, err)
+	}
+	return nil
+}
+
+// LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
+// the group's name when the write names a group (empty when it names none), then the project's row,
+// `for no key update`, the level TestNoForUpdateOnOwnerTables holds every lock on projects to. It
+// answers the project's owner as tx reads it under that lock, nil for a project with none, and
+// ErrProjectNotFound for an unknown key. AddPrincipal and RemovePrincipal of a group are sound only
+// after it.
+func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*string, error) {
+	if group != "" {
+		if err := LockGroupName(ctx, tx, group); err != nil {
+			return nil, err
+		}
+	}
+	var owner *string
+	err := tx.QueryRow(ctx, `select owner from projects where key = $1 for no key update`, key).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock project %s: %w", key, err)
+	}
+	return owner, nil
+}
+
 // ReadProject answers who may see project key and who changes that.
 func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAccess, error) {
 	var access model.ProjectAccess
@@ -332,6 +371,9 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	if !ValidGroupName(name) {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %q is no group name", ErrPrincipalInput, name)
 	}
+	if err := LockGroupName(ctx, tx, name); err != nil {
+		return model.AccessGroup{}, model.Event{}, err
+	}
 	ownerLogin := model.CanonicalLogin(owner)
 	kind, err := MemberKind(ctx, tx, ownerLogin)
 	if err != nil {
@@ -407,6 +449,9 @@ func groupChangeEvent(name, change string, by model.Actor) model.Event {
 // project and access_group.changed, all in tx, in that order. Who may delete the group is the
 // caller's to decide first.
 func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string, by model.Actor) ([]model.Event, error) {
+	if err := LockGroupName(ctx, tx, name); err != nil {
+		return nil, err
+	}
 	tag, err := tx.Exec(ctx, `delete from access_groups where name = $1`, name)
 	if err != nil {
 		return nil, fmt.Errorf("delete group %s: %w", name, err)
