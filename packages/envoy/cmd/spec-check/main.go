@@ -174,8 +174,8 @@ func say(w io.Writer, format string, args ...any) {
 }
 
 // counts is the count line's "3 statements, 4 checks, 2 components, 1 interface, 1 term": the
-// blocks the tree holds, an interface being a component with kind="interface", in the singular
-// for one.
+// blocks the tree holds, where components counts the components other than interfaces and
+// interfaces the components with kind="interface", each noun in the singular for one.
 func counts(statements, checks, components, interfaces, terms int) string {
 	return fmt.Sprintf("%s, %s, %s, %s, %s", count(statements, "statement"), count(checks, "check"),
 		count(components, "component"), count(interfaces, "interface"), count(terms, "term"))
@@ -216,8 +216,8 @@ func parse(flags *flag.FlagSet, args []string, stderr io.Writer, required ...str
 	return 2, false
 }
 
-// absolute is path made absolute, as every path the command prints is, and whether it could be;
-// when not, it has written the line that names the path.
+// absolute returns path as an absolute path, as the command prints every path, and whether it
+// could; when it could not, it has written the line that names the path.
 func absolute(stderr io.Writer, path string) (string, bool) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
