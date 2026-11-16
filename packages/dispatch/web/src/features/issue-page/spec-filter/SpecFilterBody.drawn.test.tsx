@@ -1276,3 +1276,246 @@ test("a read that fails again over the answer the page holds keeps every mark an
     read.mockRestore();
   }
 });
+
+// The architect's decision 98 on R35 and R5: an issue that holds no statement says so while its
+// coverage and blocks are asked again and when that ask fails, and a cell that says no decision
+// shaped its statement still says so when the decisions read fails again: only a read that failed
+// with nothing held says it failed (review 5928280634 on pull request 4234, the reviewer's
+// finding b, which named the empty line too).
+test("a read that fails again over the statements and decisions the page holds keeps the empty line and the cells, and says nothing failed", async () => {
+  const empty = drawBody(issueTree([]));
+  try {
+    expect(empty.view.container.querySelector("[data-spec-empty]")?.textContent).toBe(
+      EMPTY_STATE_LINES.spec
+    );
+    empty.read.coverage.mockRejectedValue(new Error("offline"));
+    empty.read.blocks.mockRejectedValue(new Error("offline"));
+    await act(async () => {
+      await empty.client.invalidateQueries();
+    });
+    await waitFor(() =>
+      expect(empty.client.getQueryState(issueCoverageQuery(KEY).queryKey)?.status).toBe("error")
+    );
+    expect(
+      empty.view.container.querySelector("[data-spec-empty]")?.textContent,
+      "a failed read again over the held coverage takes the empty line away"
+    ).toBe(EMPTY_STATE_LINES.spec);
+    expect(empty.view.container.textContent).not.toContain(ANSWER_LINES.statements_unreadable);
+  } finally {
+    empty.view.unmount();
+    empty.read.mockRestore();
+  }
+  const { client, read, view } = drawBody(issueTree([statement("r1")]));
+  try {
+    expect(view.container.querySelector("[data-spec-nothing]")).not.toBeNull();
+    read.decisions.mockRejectedValue(new Error("offline"));
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["decisions", KEY] });
+    });
+    await waitFor(() => expect(client.getQueryState(["decisions", KEY])?.status).toBe("error"));
+    expect(
+      view.container.querySelector("[data-spec-nothing]"),
+      "a failed read again over the held decisions takes the cell's words away"
+    ).not.toBeNull();
+    expect(view.container.textContent).not.toContain(ANSWER_LINES.decisions_unreadable);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R6 and R17: the error line a failed read of the Verification document's blocks draws reads
+// those blocks again, and the statement takes its mark once they hold an answer.
+test("Retry over a failed read of the Verification document's blocks reads them again and marks the statement", async () => {
+  const user = userEvent.setup();
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  const { read, view } = drawBody(tree, [], { checks: [passed], verification: "failed" });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
+    expect(rowOf(view, "spec#b-r1").hasAttribute("data-spec-mark")).toBe(false);
+    read.blocks.mockResolvedValue([]);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met")
+    );
+    expect(view.container.textContent).not.toContain(ANSWER_LINES.results_unreadable);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+/** Lays every element out `height` px tall until the answer is called, as
+ *  `NodeRow.drawn.test.tsx` does: no DOM of a unit test lays anything out, and a statement's cut
+ *  reads its words' own boxes (`measureClamp`). */
+function layOut(height: number): () => void {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => height,
+  });
+  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 600, height)
+  );
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
+    box.mockRestore();
+  };
+}
+
+// Review 5928280634 on pull request 4234 (thread 4592007127): a press focuses what it lands on as
+// it goes down, and a statement taking the focus for a link inside it drew its words whole under
+// the pointer - the cut and "more" gone - while the statement that had the focus lost its look,
+// so the link moved off the pointer and the press followed nothing. The focus a press gives a
+// statement is taken once the press is over, as the outline takes a row's (`IssueTree.tsx`'s
+// `focusRow`). happy-dom lays nothing out, so this reads the order: nothing the body draws changes
+// while the press is held, and then the pressed statement takes the focus.
+test("a press on a link inside a cut statement leaves every statement as drawn until it ends, and then the statement takes the focus", async () => {
+  const user = userEvent.setup();
+  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const long = `**R2.** Read [the guide](https://example.com/guide) first. ${words}`;
+  // 64 words over 400 lines of 24 px: six lines are drawn and the rest held back.
+  const restore = layOut(9600);
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2", { text: long, tree: displayTree(long) })])
+  );
+  const looksFocused = (id: string) => rowOf(view, id).className.includes(pageFocusedRow);
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    expect(looksFocused("spec#b-r1")).toBe(true);
+    const pressed = rowOf(view, "spec#b-r2");
+    const link = await waitFor(() => {
+      const found = pressed.querySelector<HTMLElement>("[data-node-words] a");
+      if (found === null) throw new Error("the cut statement draws no link in its words");
+      return found;
+    });
+    await waitFor(() => expect(pressed.querySelector("[data-node-more]")).not.toBeNull());
+    // What is read is who holds the focus, not where the link leads.
+    link.addEventListener("click", (event) => event.preventDefault());
+
+    await user.pointer({ keys: "[MouseLeft>]", target: link });
+    expect(document.activeElement, "the press did not focus the link it went down on").toBe(link);
+    expect(looksFocused("spec#b-r2"), "the held press drew the pressed statement focused").toBe(
+      false
+    );
+    expect(
+      pressed.querySelector("[data-node-more]"),
+      "the held press drew the cut statement's words whole"
+    ).not.toBeNull();
+    expect(
+      looksFocused("spec#b-r1"),
+      "the held press took the focused look from the statement that had it"
+    ).toBe(true);
+    expect(focusedNodeIn(view).id, "the held press moved Details").toBe("spec#b-r1");
+
+    await user.pointer({ keys: "[/MouseLeft]" });
+    await waitFor(() => expect(looksFocused("spec#b-r2")).toBe(true));
+    expect(pressed.querySelector("[data-node-more]")).toBeNull();
+    expect(looksFocused("spec#b-r1")).toBe(false);
+    expect(focusedNodeIn(view)).toEqual({ id: "spec#b-r2", type: "requirement" });
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    restore();
+  }
+});
+
+// The same order on a decision's cell: a press on the cell draws the person's whole answer only
+// once it ends, and the statement that had the focus keeps its look until then; a press on that
+// statement keeps the whole answer drawn until it ends, and then the statement takes the focus.
+test("a press on a decision's cell or away from it changes what the body draws only once it ends", async () => {
+  const stored = "Keep the memo in the pane.\n\n  It reads better there -  really.";
+  const user = userEvent.setup();
+  const { read, view } = drawBody(
+    issueTree([
+      answeredAsk("ask-1", { text: stored }),
+      statement("r1"),
+      decisionNode("d1", {
+        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+      }),
+    ]),
+    [
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      }),
+    ]
+  );
+  const whole = () => view.container.querySelector("[data-spec-whole-answer]")?.textContent;
+  const looksFocused = () => rowOf(view, "spec#b-r1").className.includes(pageFocusedRow);
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    const cell = view.container.querySelector<HTMLElement>("[data-spec-cell]");
+    if (cell === null) throw new Error("the body draws no cell");
+
+    await user.pointer({ keys: "[MouseLeft>]", target: cell });
+    expect(document.activeElement, "the press did not focus the cell it went down on").toBe(cell);
+    expect(whole(), "the held press drew the whole answer").toBeUndefined();
+    expect(looksFocused(), "the held press took the statement's focused look").toBe(true);
+    await user.pointer({ keys: "[/MouseLeft]" });
+    await waitFor(() => expect(whole()).toBe(stored));
+    expect(looksFocused()).toBe(false);
+
+    await user.pointer({ keys: "[MouseLeft>]", target: rowOf(view, "spec#b-r1") });
+    expect(document.activeElement).toBe(rowOf(view, "spec#b-r1"));
+    expect(whole(), "the held press on a statement closed the cell's whole answer").toBe(stored);
+    expect(looksFocused(), "the held press drew the statement focused").toBe(false);
+    await user.pointer({ keys: "[/MouseLeft]" });
+    await waitFor(() => expect(looksFocused()).toBe(true));
+    expect(whole()).toBeUndefined();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R11 of dispatch://INFRA-1196: the focused row is never under a sticky header. The view's column
+// heads stay at the top under the band, and the page's rule for placing a focused row clears the
+// band alone (`bringOnScreen`), so a statement the keys moved to stood with its first line under
+// the heads (the tester's reading of row (7) of `issue-page-j.e2e.ts` on a running build at
+// 8caa4357). happy-dom lays nothing out, so the boxes are given: the heads from 0 to 31 px, a
+// statement at 27 px and a cell's words at 10 px, each on screen and clear of the band; each one
+// a key moves the focus to is scrolled down below the heads, by the rule's 8 px.
+test("a statement or a cell a key moves the focus to is scrolled down from under the column heads", async () => {
+  const user = userEvent.setup();
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
+    if (this.dataset.nodeId === "spec#b-r2") return new DOMRect(0, 27, 600, 48);
+    if (this.parentElement?.hasAttribute("data-spec-cell") === true && this.tagName === "DIV") {
+      return new DOMRect(0, 10, 280, 120);
+    }
+    return new DOMRect(0, 200, 600, 48);
+  });
+  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), decisionNode("d1")]),
+    [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r2"))] })]
+  );
+  const scrolledBy = () => scrolls.mock.calls.map(([options]) => options);
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    expect(scrolledBy(), "a statement clear of the heads was scrolled").toEqual([]);
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(rowOf(view, "spec#b-r2"));
+    expect(scrolledBy(), "the statement stays under the heads").toContainEqual({
+      top: 27 - 31 - 8,
+    });
+    scrolls.mockClear();
+    await user.keyboard("w");
+    expect(document.activeElement?.getAttribute("data-decision-id")).toBe("decisions-md#b-d1");
+    expect(scrolledBy(), "the cell's words stay under the heads").toContainEqual({
+      top: 10 - 31 - 8,
+    });
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    scrolls.mockRestore();
+    boxes.mockRestore();
+  }
+});

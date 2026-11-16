@@ -3,15 +3,17 @@ import {
   Fragment,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { primarySpec } from "../../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
@@ -158,30 +160,48 @@ export function SpecFilterBody({
   view: TreeNode;
 }): ReactNode {
   const navigate = useNavigate();
+  // Every read below is judged by the answer it holds, never by its status: a read the page asks
+  // again - on every event that names its key (`event-refresh.ts`) - keeps its answer while it is
+  // out and when it fails, and what the body drew from that answer stands. Only a read that
+  // failed with no answer held says so, with a way to read again (`failedWithNothing`, the
+  // architect's decision 98 on dispatch://INFRA-1196).
   // The decisions the page already read for its tree, under the key `useIssueTree.ts` reads
-  // them with, so the body costs no request of its own (R20). Until that read answers the
-  // column says nothing of a statement no decision shaped, since it does not know yet; a read
-  // that failed says so over the columns, with a way to read again.
+  // them with, so the body costs no request of its own (R20). Until that read holds an answer
+  // the column says nothing of a statement no decision shaped, since it does not know yet.
   const decisionsRead = useQuery(issueDecisionsQuery(issue.key, true));
   const decisions = decisionsRead.data;
   // The two reads the statements come from, the coverage and the spec's blocks, under the keys
-  // the tree reads them with (no request of their own): until both have answered the body
-  // cannot say the issue holds no statement, and where one failed it says that instead.
+  // the tree reads them with (no request of their own): until both hold an answer the body
+  // cannot say the issue holds no statement.
   const spec = primarySpec(issue);
   const coverageRead = useQuery(issueCoverageQuery(issue.key));
   const specBlocksRead = useQuery({
     ...artifactBlocksQuery(spec?.id ?? ""),
     enabled: spec !== undefined,
   });
-  const statementsRead = coverageRead.isSuccess && (spec === undefined || specBlocksRead.isSuccess);
-  const statementsFailed = coverageRead.isError || specBlocksRead.isError;
-  // The issue's results, under the key the tree reads them with (no request of its own): each
-  // statement's mark is how it stands at the commit the page names, as the Verification filter
-  // reads it (`statement-state.ts`). Before the results and the coverage have answered a mark
-  // would say Unknown or no check of a statement that is Met, so none is drawn until they have.
+  const statementsRead =
+    coverageRead.data !== undefined && (spec === undefined || specBlocksRead.data !== undefined);
+  const statementsFailed = failedWithNothing(coverageRead) || failedWithNothing(specBlocksRead);
+  // Each statement's mark is how it stands at the commit the page names, as the Verification
+  // filter reads it (`statement-state.ts`), from three reads under the keys the tree reads them
+  // with (no request of their own): the issue's results, the coverage, and the blocks of its
+  // Verification document, which put each check under the statement it serves, the document
+  // found as the tree finds it (`useIssueTree.ts`'s `treeDocumentIds`). Before all three hold an
+  // answer a mark would say Unknown or no check of a statement that is Met, so none is drawn
+  // until they do; a failed read of the results or of those blocks is one line, since either
+  // leaves every statement unmarked.
   const resultsRead = useQuery(issueResultsQuery(issue.key));
   const results = resultsRead.data;
-  const marked = resultsRead.isSuccess && coverageRead.isSuccess;
+  const verification = roleDocument(issue, "verification");
+  const checksRead = useQuery({
+    ...artifactBlocksQuery(verification?.id ?? ""),
+    enabled: verification !== undefined,
+  });
+  const marked =
+    results !== undefined &&
+    coverageRead.data !== undefined &&
+    (verification === undefined || checksRead.data !== undefined);
+  const resultsFailed = failedWithNothing(resultsRead) || failedWithNothing(checksRead);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
@@ -207,6 +227,11 @@ export function SpecFilterBody({
   const writer = useOutlineWriter();
   const tree = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState<string | undefined>(undefined);
+  // The run whose cell holds the focus itself, which draws its decision whole (R5), named by
+  // the run's first statement; undefined while the focus is on a statement or on a control
+  // inside a cell. The body holds it, as it holds the focused statement, so a press defers both
+  // alike (`focusItem`).
+  const [openCell, setOpenCell] = useState<string | undefined>(undefined);
   // Where the tree's one tab stop rests, which outlives the focus leaving it (R9).
   const [stop, setStop] = useState<string | undefined>(undefined);
   // What a key reported when it had nowhere to go, and the statement it was pressed on, which
@@ -234,6 +259,7 @@ export function SpecFilterBody({
   const takeFocus = useCallback(
     (node: TreeNode) => {
       setFocused(node.id);
+      setOpenCell(undefined);
       setStop(node.id);
       // A move to a statement is the reader going on from what a key reported.
       setReport((held) => (held?.row === node.id ? held : undefined));
@@ -244,9 +270,11 @@ export function SpecFilterBody({
   // The focus on a decision's cell is the reader reading that decision: no statement draws the
   // focused look any longer, and Details draws the node the cell is drawn as, or the issue's own
   // facts beside a run no decision shaped. The tab stop stays on the last statement (R9).
+  // `open` names the run whose cell draws its words whole, where the cell itself has the focus.
   const takeCell = useCallback(
-    (decision: SpecDecision | undefined) => {
+    (decision: SpecDecision | undefined, open: string | undefined) => {
       setFocused(undefined);
+      setOpenCell(open);
       setReport(undefined);
       const id = decision?.node ?? decision?.id;
       const node = id === undefined ? undefined : nodesInOrder(root).find((one) => one.id === id);
@@ -254,10 +282,62 @@ export function SpecFilterBody({
     },
     [root, setFocusedNode]
   );
+  // R7 under a press, as the outline holds it (`IssueTree.tsx`'s `focusRow`). A press focuses
+  // what it lands on as it goes down, before it ends, so a statement taking the focus for a link
+  // inside it would draw its words whole - the cut, "more" and the chips beside it gone - and the
+  // statement or cell the focus left would draw its own cut again, while the press is held: a
+  // link inside or under a cut statement moved off the pointer, and the press ended on something
+  // else, so it followed no link (review 5928280634 on pull request 4234). So the focus a press
+  // gives a statement or a cell - any focus inside it, a link's included - is taken once the
+  // press is over, after its mouseup and the click that follows it, in a task of its own, and
+  // only while that statement or cell still holds the focus; a key's move takes it at once.
+  const press = useRef<{
+    ending?: number;
+    focus?: { readonly item: HTMLElement; readonly take: () => void };
+    held: boolean;
+  }>({ held: false });
+  const focusItem = useCallback((item: HTMLElement, take: () => void) => {
+    if (press.current.held) press.current.focus = { item, take };
+    else take();
+  }, []);
+  useEffect(() => {
+    const held = press.current;
+    const end = () => {
+      held.held = false;
+      const pending = held.focus;
+      held.focus = undefined;
+      if (pending?.item.contains(document.activeElement) === true) pending.take();
+    };
+    const ended = () => {
+      if (!held.held) return;
+      window.clearTimeout(held.ending);
+      held.ending = window.setTimeout(end, 0);
+    };
+    const listening = new AbortController();
+    for (const type of PRESS_ENDS) {
+      window.addEventListener(type, ended, { capture: true, signal: listening.signal });
+    }
+    return () => {
+      listening.abort();
+      window.clearTimeout(held.ending);
+    };
+  }, []);
+  const focusStatement = useCallback(
+    (item: HTMLElement, node: TreeNode) => focusItem(item, () => takeFocus(node)),
+    [focusItem, takeFocus]
+  );
+  const focusCell = useCallback(
+    (item: HTMLElement, decision: SpecDecision | undefined, open: string | undefined) =>
+      focusItem(item, () => takeCell(decision, open)),
+    [focusItem, takeCell]
+  );
   // The focus leaving the body gives the panel back to the issue's own facts, unless it went
   // to Details, where a reader reads the node's: the outline's own rule (`useReleaseFocus`).
   // This body edits nothing, so no row holds the focus through an edit.
-  const leave = useCallback(() => setFocused(undefined), []);
+  const leave = useCallback(() => {
+    setFocused(undefined);
+    setOpenCell(undefined);
+  }, []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // Puts the focus on the statement or the decision cell that draws node `id`.
   const goTo = useCallback((id: string): boolean => {
@@ -363,21 +443,24 @@ export function SpecFilterBody({
         <QueryError
           message={ANSWER_LINES.statements_unreadable}
           onRetry={() => {
-            if (coverageRead.isError) void coverageRead.refetch();
-            if (specBlocksRead.isError) void specBlocksRead.refetch();
+            if (failedWithNothing(coverageRead)) void coverageRead.refetch();
+            if (failedWithNothing(specBlocksRead)) void specBlocksRead.refetch();
           }}
         />
       ) : null}
-      {decisionsRead.isError ? (
+      {failedWithNothing(decisionsRead) ? (
         <QueryError
           message={ANSWER_LINES.decisions_unreadable}
           onRetry={() => void decisionsRead.refetch()}
         />
       ) : null}
-      {resultsRead.isError ? (
+      {resultsFailed ? (
         <QueryError
           message={ANSWER_LINES.results_unreadable}
-          onRetry={() => void resultsRead.refetch()}
+          onRetry={() => {
+            if (failedWithNothing(resultsRead)) void resultsRead.refetch();
+            if (failedWithNothing(checksRead)) void checksRead.refetch();
+          }}
         />
       ) : null}
       <Legend />
@@ -431,11 +514,14 @@ export function SpecFilterBody({
           event.preventDefault();
           leaveCell(cell, step);
         }}
-        // A press on what is no item - a group's heading, the space between runs and cells -
-        // leaves the focus where it was: the tree would take it as their nearest focusable box
-        // and hand it on to the tab-stop row, moving the reader and the page to a statement
-        // they did not press.
+        // A press in the tree, whose focus a statement or a cell takes once the press is over
+        // (`focusItem`). A press on what is no item - a group's heading, the space between runs
+        // and cells - leaves the focus where it was: the tree would take it as their nearest
+        // focusable box and hand it on to the tab-stop row, moving the reader and the page to a
+        // statement they did not press.
         onMouseDown={(event) => {
+          window.clearTimeout(press.current.ending);
+          press.current.held = true;
           if (
             event.target instanceof Element &&
             event.target.closest('[role="treeitem"]') === null
@@ -453,10 +539,11 @@ export function SpecFilterBody({
             focused={focused}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
-            known={decisionsRead.isSuccess}
+            known={decisions !== undefined}
             marked={marked}
-            onCellFocus={takeCell}
-            onFocus={takeFocus}
+            onCellFocus={focusCell}
+            onFocus={focusStatement}
+            openCell={openCell}
             {...(report === undefined ? {} : { report })}
             tabStop={tabStop}
           />
@@ -466,7 +553,7 @@ export function SpecFilterBody({
             focused={focused === node.id}
             key={node.id}
             node={node}
-            onFocus={() => takeFocus(node)}
+            onFocus={(row) => focusStatement(row, node)}
             tabStop={tabStop === node.id}
           />
         ))}
@@ -496,6 +583,78 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   j: 1,
   k: -1,
 };
+
+/** What ends a press in the tree, as the outline reads it (`IssueTree.tsx`'s `PRESS_ENDS`): its
+ *  mouseup, which the click follows in the same task; the drag a press on a link starts instead,
+ *  which sends no mouseup; a pointer the browser cancelled; and a key, since a press released
+ *  outside the window sends no mouseup, and a key's move must never wait on a press that is
+ *  over. */
+const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
+
+/** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
+ *  had, which the body still draws from, so only a read that left nothing to draw says it
+ *  failed (the architect's decision 98 on dispatch://INFRA-1196). A read that is off - no
+ *  document plays its part - has not failed. */
+function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
+  return read.isError && read.data === undefined;
+}
+
+/** How far below the view's column heads a statement or cell is put where it has to be scrolled
+ *  to: the clearance `bringOnScreen` leaves below the band (`identity-block.ts`). */
+const HEADS_CLEARANCE = 8;
+
+/**
+ * Places the focused statement or cell on screen by the page's one rule (`useRowOnScreen`,
+ * `bringOnScreen`), and then below the view's own column heads, which stay at the top under the
+ * band and which that rule does not know of (R4; R11 of dispatch://INFRA-1196: the focused row
+ * is never under a sticky header). The rule clears the band alone, so on the tester's build a
+ * statement the arrows moved up to stood with its top 27 px down, under heads 31 px tall. Where
+ * the item stands under the heads it is scrolled down by the rest, by the rule's own clearance,
+ * again whenever it grows - after the rule has placed it, since its observer is made first - and
+ * never while a press inside it is held, as the rule holds its own placing. At 901 px and below
+ * the heads are not drawn, and the rule alone places it.
+ *
+ * Answers the item's own `onPointerDown`, as `useRowOnScreen` does.
+ */
+function useOnScreenUnderHeads(item: RefObject<HTMLElement | null>, focused: boolean): () => void {
+  const placeByRule = useRowOnScreen(item, focused);
+  const pressed = useRef(false);
+  useLayoutEffect(() => {
+    const element = item.current;
+    if (!focused || element === null) return;
+    const place = () => {
+      if (!pressed.current) clearOfHeads(element);
+    };
+    place();
+    if (typeof ResizeObserver === "undefined") return;
+    const grown = new ResizeObserver(place);
+    grown.observe(element);
+    return () => grown.disconnect();
+  }, [focused, item]);
+  return () => {
+    placeByRule();
+    pressed.current = true;
+    const ended = new AbortController();
+    const release = () => {
+      pressed.current = false;
+      ended.abort();
+    };
+    window.addEventListener("pointerup", release, { capture: true, signal: ended.signal });
+    window.addEventListener("pointercancel", release, { capture: true, signal: ended.signal });
+  };
+}
+
+/** Scrolls the page until `element` stands below its view's column heads, where its top is
+ *  under them; nothing where the heads are not drawn. */
+function clearOfHeads(element: HTMLElement): void {
+  const heads = element
+    .closest("[data-spec-body]")
+    ?.querySelector("[data-spec-head]")
+    ?.getBoundingClientRect();
+  if (heads === undefined || heads.height === 0) return;
+  const top = element.getBoundingClientRect().top;
+  if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - HEADS_CLEARANCE });
+}
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
  *  case - or undefined where the keymap would read it otherwise: with a modifier held, in an
@@ -653,21 +812,30 @@ function Group({
   marked,
   onCellFocus,
   onFocus,
+  openCell,
   report,
   tabStop,
 }: {
   context: ReadonlySet<string>;
   focused: string | undefined;
   group: SpecGroup;
-  /** Whether the decisions read has answered, which is when a run with no decision can say
+  /** Whether the decisions read holds an answer, which is when a run with no decision can say
    *  that none shaped it. */
   known: boolean;
-  /** Whether the results and the coverage have answered, which is when a statement can carry
+  /** Whether the reads a mark comes from hold an answer, which is when a statement can carry
    *  how it stands. */
   marked: boolean;
-  /** Takes the focus on a run's cell, with the decision the cell draws. */
-  onCellFocus: (decision: SpecDecision | undefined) => void;
-  onFocus: (node: TreeNode) => void;
+  /** Takes a focus inside a run's cell, with the decision the cell draws, and the run whose
+   *  cell draws its words whole where the cell itself has the focus. */
+  onCellFocus: (
+    cell: HTMLElement,
+    decision: SpecDecision | undefined,
+    open: string | undefined
+  ) => void;
+  /** Takes a focus inside a statement's row. */
+  onFocus: (row: HTMLElement, node: TreeNode) => void;
+  /** The run whose cell draws its decision whole, by its first statement. */
+  openCell: string | undefined;
   /** What a key reported, and the statement it was pressed on. */
   report?: { readonly line: string; readonly row: string };
   tabStop: string | undefined;
@@ -689,8 +857,11 @@ function Group({
         >
           <DecisionCell
             decision={run.decision}
+            focused={openCell !== undefined && openCell === run.statements[0]?.node.id}
             known={known}
-            onFocus={() => onCellFocus(run.decision)}
+            onFocus={(cell, itself) =>
+              onCellFocus(cell, run.decision, itself ? run.statements[0]?.node.id : undefined)
+            }
             parent={group.parent}
             statements={run.statements}
           />
@@ -702,7 +873,7 @@ function Group({
                 focused={focused === statement.node.id}
                 key={statement.node.id}
                 marked={marked}
-                onFocus={() => onFocus(statement.node)}
+                onFocus={(row) => onFocus(row, statement.node)}
                 {...(report?.row === statement.node.id ? { report: report.line } : {})}
                 statement={statement}
                 tabStop={tabStop === statement.node.id}
@@ -746,31 +917,40 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * The decision that shaped a run of statements, in the left column: the words it came from,
  * where they came from and when, and a link to the whole of it (R5). The bracket at its
  * trailing edge spans the statements it shaped, in the decisions' violet, dashed where an agent
- * decided; a run no decision shaped says so in words (R35), once the decisions read has
- * answered, and says nothing before that or where the read failed, since it does not know.
+ * decided; a run no decision shaped says so in words (R35), once the decisions read holds an
+ * answer, and says nothing before that or where the read failed with none, since it does not
+ * know.
  *
  * A person's words are quoted, their first sentence in plain words; an agent's are drawn whole
  * as a row draws a node's words (`RowText`), each reference by its name, and cut as an agent's
  * are at six lines (ruling 1). The focus on the cell draws a person's whole answer character
  * for character under its first sentence (R5: "The focus on the line draws the whole answer word
  * for word"), an agent's words whole, and "Author unknown" where the model holds no author;
- * `w` on a statement is how a keyboard reader puts it there.
+ * `w` on a statement is how a keyboard reader puts it there. The focused cell's words are placed
+ * on screen and below the column heads (`useOnScreenUnderHeads`): they are what it draws, and
+ * they stay at the top of a run taller than the screen while the cell's own box runs past it.
  */
 function DecisionCell({
   decision,
+  focused,
   known,
   onFocus,
   parent,
   statements,
 }: {
   decision: SpecDecision | undefined;
+  /** Whether the cell itself has the focus, which draws its words whole (`SpecFilterBody`'s
+   *  `openCell`). */
+  focused: boolean;
   known: boolean;
-  /** Takes the focus anywhere in the cell, which no statement holds any longer. */
-  onFocus: () => void;
+  /** Takes a focus anywhere in the cell, which no statement holds any longer: the cell, and
+   *  whether the focus is on the cell itself. */
+  onFocus: (cell: HTMLElement, itself: boolean) => void;
   parent: SpecParent | undefined;
   statements: readonly SpecStatement[];
 }): ReactNode {
-  const [focused, setFocused] = useState(false);
+  const words = useRef<HTMLDivElement | null>(null);
+  const press = useOnScreenUnderHeads(words, focused);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
   const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
   // The question the words answer, unless the statements hang under it already: there the
@@ -792,13 +972,11 @@ function DecisionCell({
       data-spec-statements={statements.map((statement) => statement.node.id).join(" ")}
       // An item of the outline, as the statements beside it are: it is where the focus goes
       // from a statement (R5's `w`), and the prototype's own cell takes the focus the same way.
-      // Its words are drawn whole only while the cell itself has the focus: a press on its link
-      // focuses the link, and words growing under the pointer would move the link off it.
-      onBlur={() => setFocused(false)}
-      onFocus={(event) => {
-        setFocused(event.target === event.currentTarget);
-        onFocus();
-      }}
+      // Its words are drawn whole only while the cell itself has the focus, never a control
+      // inside it: `f` and a press put the focus on its link, and words growing around the link
+      // would move it from where the reader found it.
+      onFocus={(event) => onFocus(event.currentTarget, event.target === event.currentTarget)}
+      onPointerDown={press}
       role="treeitem"
       tabIndex={-1}
     >
@@ -810,7 +988,10 @@ function DecisionCell({
         aria-hidden="true"
         className={`absolute -right-0.5 bottom-0 h-0.5 w-2 max-[901px]:hidden ${cap}`}
       />
-      <div className="sticky top-[calc(var(--issue-identity-height,0px)+44px)] flex min-w-0 flex-col gap-[3px] max-[901px]:static">
+      <div
+        className="sticky top-[calc(var(--issue-identity-height,0px)+44px)] flex min-w-0 flex-col gap-[3px] max-[901px]:static"
+        ref={words}
+      >
         {decision === undefined ? (
           known ? (
             <p data-spec-nothing="" {...pageChrome}>
@@ -949,9 +1130,10 @@ function Statement({
   context: boolean;
   decision: SpecDecision | undefined;
   focused: boolean;
-  /** Whether the reads its mark comes from have answered. */
+  /** Whether the reads its mark comes from hold an answer. */
   marked: boolean;
-  onFocus: () => void;
+  /** Takes a focus anywhere in the row, once a press that gave it is over. */
+  onFocus: (row: HTMLElement) => void;
   /** What a key pressed on this statement reported when it had nowhere to go. */
   report?: string;
   statement: SpecStatement;
@@ -960,7 +1142,7 @@ function Statement({
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const press = useRowOnScreen(row, focused);
+  const press = useOnScreenUnderHeads(row, focused);
   const clamp = useClamp(words, true);
   useOutOfTabOrder(words, true);
   const [opened, setOpened] = useState(false);
@@ -1000,8 +1182,9 @@ function Statement({
       data-spec-mark={marked ? statement.mark : undefined}
       data-spec-statement=""
       // Any focus inside the row is the reader on this statement - a chip or a link of its
-      // words as much as the row itself - as a row of the outline takes it (`NodeRow.tsx`).
-      onFocus={onFocus}
+      // words as much as the row itself - as a row of the outline takes it (`NodeRow.tsx`), and
+      // only once a press that gave it is over (`focusItem`).
+      onFocus={(event) => onFocus(event.currentTarget)}
       onPointerDown={press}
       ref={row}
       role="treeitem"
@@ -1073,7 +1256,7 @@ function Statement({
           </p>
         )}
       </div>
-      {/* No mark until its reads have answered; the row's third column keeps its width, so
+      {/* No mark until its reads hold an answer; the row's third column keeps its width, so
           the row does not move when the mark comes. */}
       {marked ? (
         <NodeGlyph
@@ -1096,11 +1279,12 @@ function OtherRow({
 }: {
   focused: boolean;
   node: TreeNode;
-  onFocus: () => void;
+  /** Takes a focus anywhere in the row, once a press that gave it is over. */
+  onFocus: (row: HTMLElement) => void;
   tabStop: boolean;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
-  const press = useRowOnScreen(row, focused);
+  const press = useOnScreenUnderHeads(row, focused);
   return (
     <div
       aria-level={1}
@@ -1112,7 +1296,7 @@ function OtherRow({
       data-node-type={node.type}
       data-spec-other=""
       // Any focus inside the row is the reader on it, as on a statement.
-      onFocus={onFocus}
+      onFocus={(event) => onFocus(event.currentTarget)}
       onPointerDown={press}
       ref={row}
       role="treeitem"

@@ -527,6 +527,15 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     const answer = answered.ask.answer?.text ?? "";
     expect(answer, "the seeded ask holds no answer to quote").not.toBe("");
     const quote = firstLineOf(answer).line;
+    // An agent's decision is quoted by its first block's line, as every one-line place cuts a
+    // node's (`lineWords`): for a decision that is its own heading, never the heading run into
+    // the paragraph under it.
+    const agent = stored.find(
+      (one) => one.kind === "agent" && one.text.includes("Chosen so the page makes no request")
+    );
+    const opening = (agent?.text ?? "").trimStart().split(/\n\s*\n/u)[0] ?? "";
+    const agentQuote = firstLineOf(/^#{1,6} +(.*)/u.exec(opening)?.[1] ?? opening).line;
+    expect(agentQuote, "the seed holds no agent's decision to quote").not.toBe("");
 
     const traffic = watchApiRequests(page);
     await openPreset(page, seeded.key, "spec");
@@ -594,7 +603,7 @@ test("a spec node shows the decisions that shaped it at every version", async ({
       expect(
         lines[statement(index)],
         `statement ${index} carries no line for the agent's decision`
-      ).toContain("Chosen so the page makes no request per node.");
+      ).toContain(`${SPEC_WORDS.because} “${agentQuote}”`);
     }
     // A replaced decision draws no line: the statement it shaped stands with none, and its
     // cell says so, as does the cell of a statement no decision shaped (R35).
