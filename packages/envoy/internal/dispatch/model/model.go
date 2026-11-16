@@ -1228,13 +1228,16 @@ type ArtifactReviewEventPayload struct {
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 }
 
-// CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
-// results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
+// CheckBasisNamed, CheckBasisPullRequest, CheckBasisBranch and CheckBasisBranchHead are the kinds
+// of thing a check's results are compared with: the one commit a reader named in `at`, the head
+// of a pull request Dispatch holds for the check's issue, a branch of the check's issue's
+// repository, and the head of a branch that a CI job's result on the check's issue names, the
+// commit that branch is at as GitHub answered it on this read.
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
 	CheckBasisBranch      = "branch"
+	CheckBasisBranchHead  = "branch_head"
 )
 
 // BasisLearnedReadAt and BasisLearnedUpdatedAt say which time a basis learned from a pull
@@ -1285,10 +1288,10 @@ const (
 )
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
-// `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is.
+// `named`, a `pull_request` and a `branch_head` basis, Branch for a `branch` and a `branch_head`
+// one, and PullRequest is the number of the pull request whose head the commit is.
 type CheckBasis struct {
-	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Kind        string          `json:"kind" enum:"named,pull_request,branch,branch_head"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`

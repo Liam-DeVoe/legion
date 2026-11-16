@@ -54,12 +54,28 @@ var ciJobVerification = ciCheckBlock("c1", `negative_control="`+ciJobNegativeCon
 var ciJobSession = resultsOnlyToken("", ciJobProject).Session
 
 // ciJobGitHub is the GitHub the route reads for a job's result: the installation of every
-// repository, the check runs of a job by id, the commits a repository holds (every one), and the
-// check runs listed at a pull request head, which the derived result of the read is made from.
+// repository, the check runs of a job by id, the commits a repository holds (every one), the
+// check runs listed at a pull request head, which the derived result of the read is made from,
+// and the head of each branch the results read compares a before_merge check with.
 type ciJobGitHub struct {
 	mu        sync.Mutex
 	checkRuns map[int64]specCheckRunAnswer
 	listings  *checkRunsFake
+	// branches is what GitHub answers for the head of each branch, by name. A branch it holds
+	// no answer for is 404, a branch the repository does not hold.
+	branches map[string]ciJobBranchHead
+	// branchReads is how many times GitHub was asked for each branch's head.
+	branchReads map[string]int
+	// hidden has GitHub answer 404 for the repository itself, as it does for a repository the
+	// App cannot see.
+	hidden bool
+}
+
+// ciJobBranchHead is GitHub's answer for one branch's head: the commit it is at, or, where
+// status is set, that status and no commit.
+type ciJobBranchHead struct {
+	sha    string
+	status int
 }
 
 // setCheckRun has GitHub name check run id name, at commit headSHA.
@@ -67,6 +83,34 @@ func (g *ciJobGitHub) setCheckRun(id int64, name, headSHA string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.checkRuns[id] = specCheckRunAnswer{name: name, headSHA: headSHA}
+}
+
+// setBranch has GitHub answer head for the head of branch.
+func (g *ciJobGitHub) setBranch(branch string, head ciJobBranchHead) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.branches[branch] = head
+}
+
+// deleteBranch has GitHub hold branch no longer, so a read of its head is 404.
+func (g *ciJobGitHub) deleteBranch(branch string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.branches, branch)
+}
+
+// hideRepository has GitHub answer 404 for the repository, as for one the App cannot see.
+func (g *ciJobGitHub) hideRepository() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hidden = true
+}
+
+// branchReadsOf is how many times GitHub was asked for the head of branch.
+func (g *ciJobGitHub) branchReadsOf(branch string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.branchReads[branch]
 }
 
 func (g *ciJobGitHub) serve(t *testing.T) string {
@@ -80,7 +124,33 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 		fmt.Fprint(w, `{"token":"ghs_fake_77","expires_at":"2099-01-01T00:00:00Z"}`)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if g.hidden {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
+	})
+	// The exact read of a branch's head (githubapp.Client.Branch), its name path-escaped so a
+	// branch with a / in it is one segment.
+	mux.HandleFunc("GET /repos/{owner}/{repo}/git/ref/heads/{branch}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		branch := r.PathValue("branch")
+		g.branchReads[branch]++
+		head, held := g.branches[branch]
+		switch {
+		case !held:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		case head.status != 0:
+			w.WriteHeader(head.status)
+			fmt.Fprint(w, `{"message":"Server Error"}`)
+		default:
+			fmt.Fprintf(w, `{"ref":%q,"object":{"sha":%q,"type":"commit"}}`, "refs/heads/"+branch, head.sha)
+		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
@@ -123,8 +193,10 @@ type ciJobRig struct {
 func newCIJobRig(t *testing.T) *ciJobRig {
 	t.Helper()
 	github := &ciJobGitHub{
-		checkRuns: map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
-		listings:  newCheckRunsFake(),
+		checkRuns:   map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
+		listings:    newCheckRunsFake(),
+		branches:    map[string]ciJobBranchHead{},
+		branchReads: map[string]int{},
 	}
 	_, pemText := githubapptest.Key(t)
 	rig := &ciJobRig{

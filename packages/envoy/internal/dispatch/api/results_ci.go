@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,12 +24,15 @@ import (
 // a result from the run its `ci_check` names. A check CI proves holds that derived result beside
 // each result a run of its CI job recorded through the job's results token (role ci, Branch
 // set), newest first. The derived result goes through the same comparisonReader a recorded
-// result does, so one rule judges where both kinds stand.
+// result does, so one rule judges where both kinds stand. The branch such a recorded result
+// names is read here too, for the comparison of every `before_merge` check of the issue: its
+// head, as GitHub answers it on this read (readBranchHead).
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
-// together: the route is read inside a role's turn and inside the reviewer's gate, and a read
-// that runs out is a failed read the next one repairs. githubapp.RequestTimeout bounds one call
-// at twice this, so the bound is the context's. A var so a test can shorten it.
+// together, and the read of one pushed branch's head, its token mint included (readBranchHead):
+// the route is read inside a role's turn and inside the reviewer's gate, and a read that runs out
+// is a failed read the next one repairs. githubapp.RequestTimeout bounds one call at twice this,
+// so the bound is the context's. A var so a test can shorten it.
 var ciReadDeadline = 10 * time.Second
 
 // ciCheckRunPages bounds the pages of one head's check runs, a hundred runs a page, as
@@ -213,6 +217,41 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 		}
 	}
 	return nil, fmt.Errorf("the check runs did not end within %d pages", ciCheckRunPages)
+}
+
+// readBranchHead asks GitHub for the head of one branch of repo, for the comparison of a
+// `before_merge` check (comparisonReader.branchHeadOf): the installation token and the exact read
+// of the branch (githubapp.Client.Branch) together under one ciReadDeadline, as a read of one
+// head's check runs is bounded, for the same reason.
+//
+// A deployment holding no App key, an App installed on no repository covering this one, and a
+// token refused the repository are model.ReasonRepositoryUnreadable. The branch read's 404, 409
+// (an empty repository) and 422 are gone, a branch GitHub does not hold: a repository the App
+// cannot see answers 404 too, and is told from a deleted branch by the read of the repository
+// itself, which nothingReason and commitStands make (defaultBranchOf). Every other answer — a 403,
+// which GitHub also sends for a rate limit, a 5xx, the deadline — is model.ReasonReadFailed. The
+// token never reaches the log: it is sent in a header, and no error names it.
+func (s *server) readBranchHead(ctx context.Context, repo, branch string) branchHeadAnswer {
+	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
+	defer cancel()
+	owner, name, _ := strings.Cut(repo, "/")
+	token, err := s.deps.GitHub.RepositoryToken(ctx, owner, name)
+	if err != nil {
+		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrRepositoryUnreadable) {
+			return branchHeadAnswer{reason: model.ReasonRepositoryUnreadable}
+		}
+		slog.Warn("dispatch: mint a token to read the head of a branch a CI job pushed", "repo", repo, "branch", branch, "error", err)
+		return branchHeadAnswer{reason: model.ReasonReadFailed}
+	}
+	sha, err := s.deps.GitHub.Branch(ctx, token, owner, name, branch)
+	switch {
+	case err == nil:
+		return branchHeadAnswer{sha: sha}
+	case errors.Is(err, githubapp.ErrNoBranch):
+		return branchHeadAnswer{gone: true}
+	}
+	slog.Warn("dispatch: read the head of a branch a CI job pushed", "repo", repo, "branch", branch, "error", err)
+	return branchHeadAnswer{reason: model.ReasonReadFailed}
 }
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err

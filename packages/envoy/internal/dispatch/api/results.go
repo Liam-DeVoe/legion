@@ -33,8 +33,9 @@ import (
 // job's own results token (refuseResultOfAnotherRecorder). The read route lists the checks of
 // one issue's Verification document with every result recorded against each, from any issue,
 // newest first, and says what each check compared those results with: a `before_merge` check is
-// compared with the pull request heads of the check's own issue, so a child's pull request
-// answers for nothing against its parent's check. The comparison itself is answered in
+// compared with the pull request heads of the check's own issue and with the head of each branch
+// a CI job's result on that issue names, so a child's pull request and a child's branch answer for
+// nothing against its parent's check. The comparison itself is answered in
 // results_comparison.go.
 
 // checkResultRole bounds the role a result names: the word the pull-request body line prints.

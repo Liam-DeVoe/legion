@@ -16,18 +16,25 @@ import (
 // commit stands against that, and whether a pass of the check stands. It holds no policy about
 // GitHub: what is asked, how long an answer is believed and what is written back are
 // delivery's (delivery/branch.go, delivery/commit_pull_reads.go, delivery.HeadsAttributedTo,
-// delivery.ReadThroughCommitPulls). What lives here is the choice of bases (comparedWith,
-// measuredBranches) and one memo per read, so a tab listing twenty results against a handful
-// of commits costs a handful of round trips.
+// delivery.ReadThroughCommitPulls), and the read of a pushed branch's head is results_ci.go's
+// (readBranchHead). What lives here is the choice of bases (comparedWith, measuredBranches) and
+// one memo per read, so a tab listing twenty results against a handful of commits costs a
+// handful of round trips.
 
 // comparisonReader answers one read of one issue's results: for each check the bases its
 // results are compared with, and for each result where its commit stands among them.
 //
 // A `before_merge` check is compared with every pull request head Dispatch holds for the
-// check's own issue (delivery.HeadsAttributedTo), open or merged. The issue a result was
-// recorded on counts for nothing here, so a child's pull request never answers for a check of
-// its parent. A child carrying part of a parent's requirement proves it with a check of its
-// own whose `serves` names that requirement.
+// check's own issue (delivery.HeadsAttributedTo), open or merged, and then with the head of each
+// branch that a CI job's result recorded on that issue names (model.CheckResult.Branch), as
+// GitHub answers that head on this read. A change's CI job runs on a push of its branch before
+// any pull request opens (R12), so a pass at the commit the branch is at stands without waiting
+// for a pull request or for main; a branch whose head a pull request head already names adds
+// nothing, and a branch GitHub no longer holds, deleted once its change merged, adds no basis.
+// The issue a result was recorded on counts for nothing else here, so a child's pull request,
+// and the branch a child's CI job pushed, never answer for a check of its parent. A child
+// carrying part of a parent's requirement proves it with a check of its own whose `serves` names
+// that requirement.
 //
 // An `after_merge` check is compared with the branch the check's issue's pull request merged
 // into — the base branch of the newest merged pull request attributed to that issue
@@ -75,15 +82,16 @@ import (
 // The check runs of a check CI proves are read apart from this reader (deriveCIResults).
 //
 // The repository each issue resolves to, its default branch, the branch each issue's pull
-// request merged into, the pull request heads of each issue, the stored heads of each
-// repository-and-commit pair and GitHub's answer about each repository, branch and commit are
-// each read once per read of the results. The branch is in that last key, and not the
-// repository and the commit alone, because one issue's Verification document may hold an
-// `after_merge` check and a `default_branch` check with a result at the same commit: two
-// questions, with two answers, that one key for both would collapse into whichever was asked
-// first. Across reads, a repository's default branch, a commit's place on a branch and the
-// last read-through of a commit's pull requests are held by delivery (server.branches,
-// branch_commits and server.commitPulls).
+// request merged into, the pull request heads of each issue, the head of each branch a CI job
+// pushed, the stored heads of each repository-and-commit pair and GitHub's answer about each
+// repository, branch and commit are each read once per read of the results. The branch is in
+// that last key, and not the repository and the commit alone, because one issue's Verification
+// document may hold an `after_merge` check and a `default_branch` check with a result at the
+// same commit: two questions, with two answers, that one key for both would collapse into
+// whichever was asked first. Across reads, a repository's default branch, a commit's place on a
+// branch and the last read-through of a commit's pull requests are held by delivery
+// (server.branches, branch_commits and server.commitPulls); a branch's head is held by nothing,
+// since a push moves it.
 type comparisonReader struct {
 	server *server
 	// at is the one commit the reader named, and noCommitNamed where it named none.
@@ -95,6 +103,11 @@ type comparisonReader struct {
 	readThroughs map[[2]string]struct{}
 	storedHeads  map[[2]string]bool
 	commits      map[[3]string]delivery.BranchAnswer
+	// changeBranches is, by issue, every branch a CI job's result recorded on that issue names,
+	// in name order (collectChangeBranches), and branchHeads GitHub's answer for the head of each,
+	// by repository and branch (branchHeadOf).
+	changeBranches map[string][]string
+	branchHeads    map[[2]string]branchHeadAnswer
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -104,10 +117,13 @@ const noCommitNamed = ""
 // comparison is what one check's results are compared with: the bases, in the order they are
 // asked about, and the reason there are none where the list is empty. Exactly one of the two
 // is filled in, and bases is never nil, so the answer carries an empty list rather than a
-// null.
+// null. unread is set beside bases alone: the reason the head of a branch a CI job pushed could
+// not be read, while the list holds other bases. A commit none of them names may be that head,
+// so it is unknown for that reason and never another commit (commitStands).
 type comparison struct {
 	bases  []model.CheckBasis
 	reason string
+	unread string
 }
 
 // noBases is a check comparing with nothing, for the one reason given: the empty list is the
@@ -150,6 +166,19 @@ type baseBranchAnswer struct {
 	read   bool
 }
 
+// branchHeadAnswer is what GitHub said, on this read, about the head of one branch a CI job
+// pushed: the commit the branch is at; gone, where GitHub holds no such branch
+// (githubapp.ErrNoBranch), which is a branch deleted once its change merged; or the reason
+// Dispatch could not read it. A gone branch is kept apart from an unread one because the two
+// part the answers: a deleted branch is no basis and leaves no question open, so a result on it
+// stands where a pull request head names its commit and at another commit otherwise, while a
+// head Dispatch could not read may be any commit, so a commit no basis names is unknown.
+type branchHeadAnswer struct {
+	sha    string
+	gone   bool
+	reason string
+}
+
 func newComparisonReader(s *server, at string) *comparisonReader {
 	return &comparisonReader{
 		server: s, at: at, repos: map[string]repositoryAnswer{},
@@ -157,7 +186,9 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
 		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
-		commits: map[[3]string]delivery.BranchAnswer{},
+		commits:        map[[3]string]delivery.BranchAnswer{},
+		changeBranches: map[string][]string{},
+		branchHeads:    map[[2]string]branchHeadAnswer{},
 	}
 }
 
@@ -228,26 +259,96 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 }
 
 // headBases is every pull request head Dispatch holds for the check's issue, newest learned
-// first, as the bases a `before_merge` check compares its results with. An issue holding none
-// compares with nothing, and nothingReason says which of the three kinds of nothing it is.
+// first, and after them the head of each branch a CI job pushed for that issue
+// (collectChangeBranches), in name order, as the bases a `before_merge` check compares its
+// results with. A branch whose head a pull request head already names adds nothing, since that
+// commit is a basis already, and a branch GitHub no longer holds adds nothing either. An issue
+// with neither compares with nothing, and nothingReason says which of the three kinds of nothing
+// it is; where the one thing it might compare with is a branch head Dispatch could not read, the
+// reason is that read's.
 //
-// The heads answer whether or not Dispatch can read the repository. A head Dispatch holds is a
-// fact about the work whatever the App can see today, so a result at one stands at it, and
-// only a result at no head of the list needs the repository read at all (commitStands).
+// The pull request heads answer whether or not Dispatch can read the repository. A head
+// Dispatch holds is a fact about the work whatever the App can see today, so a result at one
+// stands at it, and only a result at no head of the list needs the repository read at all
+// (commitStands). A branch head is GitHub's answer now and nothing Dispatch holds, so a branch of
+// an issue resolving to no repository is never read, and a resolve that did not answer leaves
+// every branch unread for model.ReasonReadFailed.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
 	heads, err := delivery.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
 	}
-	if len(heads) == 0 {
-		return noBases(c.nothingReason(ctx, issueKey))
-	}
 	bases := make([]model.CheckBasis, 0, len(heads))
 	for _, head := range heads {
 		bases = append(bases, headBasis(head))
 	}
-	return comparison{bases: bases}
+	pullRequestHeads := len(bases)
+	unread := ""
+	if branches := c.changeBranches[issueKey]; len(branches) > 0 {
+		repo, answered := c.repositoryOf(ctx, issueKey)
+		switch {
+		case !answered:
+			unread = model.ReasonReadFailed
+		case repo != nil:
+			for _, branch := range branches {
+				head := c.branchHeadOf(ctx, *repo, branch)
+				switch {
+				case head.reason != "":
+					if unread == "" {
+						unread = head.reason
+					}
+				case head.gone, basisAt(bases[:pullRequestHeads], head.sha) != nil:
+				default:
+					bases = append(bases, model.CheckBasis{Kind: model.CheckBasisBranchHead, Branch: branch, Commit: head.sha})
+				}
+			}
+		}
+	}
+	switch {
+	case len(bases) > 0:
+		return comparison{bases: bases, unread: unread}
+	case unread != "":
+		return noBases(unread)
+	}
+	return noBases(c.nothingReason(ctx, issueKey))
+}
+
+// collectChangeBranches records, for the issue of each `before_merge` check of the document, the
+// branch whose push a CI job ran on for each result recorded on that issue against one of its
+// checks (model.CheckResult.Branch), each branch once and in name order. A role's result and a
+// derived one name no branch. A result recorded on another issue — a child's against its
+// parent's check — names no branch of the check's issue, as a child's pull request is no head of
+// it. It runs before any check is compared, so every `before_merge` check of one issue compares
+// with one list of heads, whichever of them holds the result that names a branch.
+func (c *comparisonReader) collectChangeBranches(checks []model.CheckBlock) {
+	for _, check := range checks {
+		if check.When != docs.CheckWhenBeforeMerge {
+			continue
+		}
+		for _, result := range check.Results {
+			branches := c.changeBranches[check.IssueKey]
+			if result.Branch == "" || result.IssueKey != check.IssueKey || slices.Contains(branches, result.Branch) {
+				continue
+			}
+			c.changeBranches[check.IssueKey] = append(branches, result.Branch)
+		}
+	}
+	for _, branches := range c.changeBranches {
+		slices.Sort(branches)
+	}
+}
+
+// branchHeadOf is the head of one branch of repo, read once per read of the results. Nothing
+// holds it across reads: a push moves a branch, and the next read must see where it went.
+func (c *comparisonReader) branchHeadOf(ctx context.Context, repo, branch string) branchHeadAnswer {
+	key := [2]string{repo, branch}
+	if held, read := c.branchHeads[key]; read {
+		return held
+	}
+	head := c.server.readBranchHead(ctx, repo, branch)
+	c.branchHeads[key] = head
+	return head
 }
 
 // headBasis is one stored pull request head as the surface names it: the commit, the pull
@@ -369,6 +470,10 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 //
 // A reader that named a commit asks GitHub nothing at all, and learns nothing here.
 //
+// Before any check is compared, it collects the branches the CI jobs of each issue pushed
+// (collectChangeBranches), so the first comparison of an issue's `before_merge` checks already
+// holds the head of each of them.
+//
 // Only a `before_merge` check reaches GitHub this way, since a check compared with branches
 // is compared with no head. The memo is the pair of the issue and the commit: a pair read
 // through once in this read is never read through again, whichever check holds the result
@@ -378,6 +483,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 	if c.at != noCommitNamed {
 		return
 	}
+	c.collectChangeBranches(checks)
 	for _, check := range checks {
 		if check.When != docs.CheckWhenBeforeMerge {
 			continue
@@ -441,11 +547,15 @@ func (c *comparisonReader) commitStands(
 	}
 	if check.When == docs.CheckWhenBeforeMerge {
 		// The heads are the whole of this check's comparison, and none of them is this commit.
-		// Two answers Dispatch cannot give stand against reading that as another commit: a
-		// repository the App cannot read, where nothing can have taught Dispatch this commit's
-		// pull request, and a resolve of Dispatch's own that did not answer. nothingReason
-		// tells both from an issue that resolves to no repository, where the heads Dispatch
-		// holds are every head it will ever hold.
+		// Three answers Dispatch cannot give stand against reading that as another commit: the
+		// head of a branch a CI job pushed that GitHub did not answer for, which may be this
+		// commit; a repository the App cannot read, where nothing can have taught Dispatch this
+		// commit's pull request; and a resolve of Dispatch's own that did not answer.
+		// nothingReason tells the last two from an issue that resolves to no repository, where
+		// the heads Dispatch holds are every head it will ever hold.
+		if compared.unread != "" {
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: compared.unread}
+		}
 		if reason := c.nothingReason(ctx, check.IssueKey); reason != model.ReasonNoPullRequestOrBranch {
 			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason}
 		}
@@ -454,9 +564,9 @@ func (c *comparisonReader) commitStands(
 	return c.onNamedBranch(ctx, check, compared, result)
 }
 
-// basisAt is the basis naming that commit, and nil where none does. A branch basis names no
+// basisAt is the basis naming that commit, and nil where none does. A `branch` basis names no
 // commit, so it is never the answer here: a branch that carries the commit is the walk's
-// (onNamedBranch).
+// (onNamedBranch). A `branch_head` basis names the commit its branch is at, which is the answer.
 func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 	for _, basis := range bases {
 		if basis.Commit == sha {

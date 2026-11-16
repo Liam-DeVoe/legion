@@ -365,13 +365,16 @@ Each item below names a task and where its code is, then notes on it.
   each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
 
   - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
-    the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
+    after them, in name order, with the head of each branch that a result a CI job recorded on that issue names (`branch_head`, `comparisonReader.headBases`), as GitHub answers it on that read (`githubapp.Client.Branch`, under the 10-second `ciReadDeadline`), so a pass at the commit a pushed branch is at stands before any pull request opens;
+    a branch whose head a pull request head already names adds nothing, and a branch GitHub no longer holds (a 404, 409 or 422 of that read) adds no basis;
+    a head GitHub did not answer for leaves each result at no compared commit `unknown`, since it may be that head;
+    the issue a result was recorded on counts for nothing here, so a child's pull request, and the branch a child's CI job pushed, are never a basis for a check above it;
 
   - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;
 
   - a `default_branch` check with the repository's default branch, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 
-  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request, compare with nothing for `no_pull_request_or_branch`:
+  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request and no branch a CI job pushed, compare with nothing for `no_pull_request_or_branch`:
     their results stand at no basis and no pass of them stands, since Dispatch holds every head such an issue will ever have.
     A `before_merge` check whose repository the App cannot read compares with nothing for `repository_unreadable`, and each of its results and its own `pass_stands` answer `unknown`.
     A branch check of such a repository still compares with every branch Dispatch can name — the branch its issue merged into, read from the database, and the default branch this process last resolved — because a `branch_commits` yes is keyed by a branch and stands for good, so a stored answer still places the commit (`branchBases`);
