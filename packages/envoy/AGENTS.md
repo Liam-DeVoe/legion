@@ -3147,9 +3147,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   It is logic over bytes and values, with no store, no route and no database (`TestSpecgraphReachesNoStore` runs `go list -deps` over it), so `cmd/spec-check`, Dispatch's importer and the pilot can call the same rules.
   `Parse` reads the four blocks, statements (`requirement`), checks (`check`), components (`component`) and terms (`term`), with `pmdoc.ParseTypedDirectiveOpen`, the one reader of a typed block's opening line, and refuses any attribute a block does not take;
   it does not call `pmdoc.Parse`, whose block schema lacks the attributes these files need.
+  It refuses a file that is not UTF-8 or holds a NUL byte at its first such line (`bad-encoding`), as the architecture importer refuses such a file.
   `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
   `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
-  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a check without its parts, and a name of code in a text (`CodeNames`).
+  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text (`CodeNames`).
+  `CodeNames` finds only the names that no plain word or product name has the shape of, the name of a Go test among them:
+  a word with a capital at the start of each part, such as `ReadSet`, and a bare package word, such as `pmdoc`, are left to the reviewer.
   `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
   a statement that only moved to another file is no change.
   `ReadGoTestJSON` reads a `go test -json` report and `MatchTests` matches a check's selector to its one test:
@@ -3163,7 +3166,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
-  `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
+  `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`;
+  it reads a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory, so the first change that adds a spec file lists each statement as `added`.
   `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
   Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
