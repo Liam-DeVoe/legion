@@ -648,18 +648,33 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
   none: "no credential",
 }
 
+/** What a failed dial says in place of a server address it will not name. */
+const UNNAMED_SERVER = "a server address that does not read as a host"
+
+/** One label of a host name a failed dial names: letters, digits and inner hyphens, at most 32
+ *  characters. A pasted nkey seed (58 characters) or a token's segment is a longer label. */
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/i
+
+/** Whether `hostname` (a URL's, so an IPv6 literal keeps its brackets) reads as a host: an IP
+ *  literal, or a name whose every label is a `HOST_LABEL`. */
+function readsAsHost(hostname: string): boolean {
+  if (/^\[[0-9a-f:.]+\]$/i.test(hostname) || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return true
+  return hostname.split(".").every((label) => HOST_LABEL.test(label))
+}
+
 /** A NATS server as a failed dial names it: scheme, host and port alone, and host and port alone
  * for one written without a scheme, which nats.js dials as `nats://`. A URL may carry a token or a
- * user and password (`nats://token@host:port`), and a value that does not parse may be a
- * credential pasted into the wrong setting, so neither reaches a log. */
+ * user and password (`nats://token@host:port`), and a value that does not read as a host may be a
+ * credential pasted into the wrong setting (an nkey seed parses as a host name), so neither
+ * reaches a log: such an address is `UNNAMED_SERVER`. */
 function serverForLog(server: string): string {
   const schemed = server.includes("://")
   try {
-    const { protocol, host } = new URL(schemed ? server : `nats://${server}`)
-    if (host === "" || /\s/.test(server)) return "a server address that does not parse"
+    const { protocol, host, hostname } = new URL(schemed ? server : `nats://${server}`)
+    if (host === "" || /\s/.test(server) || !readsAsHost(hostname)) return UNNAMED_SERVER
     return schemed ? `${protocol}//${host}` : host
   } catch {
-    return "a server address that does not parse"
+    return UNNAMED_SERVER
   }
 }
 
@@ -698,33 +713,68 @@ export async function dialChannelNats(
   }
 }
 
-/** How long the startup flush waits before asking again after a redial rejected it. */
+/** How long the startup flush waits before asking again after a redial rejected it, and how often
+ *  it looks whether the connection was closed for good meanwhile. */
 const REDIAL_FLUSH_RETRY_MS = 250
+
+/** Why a start that `flushThroughRedials` ended did not come up. */
+const START_STOPPING = "the channel server stopped before its NATS subscriptions reached the server"
+const START_CLOSED = "the NATS connection closed before its subscriptions reached the server"
+/** How long a start that failed waits for its connection to drain before closing it. */
+const START_DRAIN_BOUND_MS = 2_000
 
 /**
  * Flushes `connection`, asking again while the connection redials: nats.js rejects every pending
  * flush with DISCONNECT each time it redials (`protocol.js`'s `prepare`), and a hub that is
  * restarting, or whose auth service is away, as a channel server starts is a hub it reconnects to,
- * not one that fails the session's start. A connection closed for good fails it, naming why, as
- * does `signal`: the process is stopping.
+ * not one that fails the session's start. The start ends, naming why, the moment `signal` aborts
+ * (the process is stopping) or the connection closes for good — before an attempt, while a flush
+ * is pending, during the wait to ask again, and after a flush that succeeded once stopping began —
+ * since nats.js's close leaves a pending flush unsettled, so only watching the connection sees it.
  */
 async function flushThroughRedials(
   connection: ChannelConnection,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  for (;;) {
-    try {
-      await connection.flush()
-      return
-    } catch (error) {
-      if (connection.isClosed() || signal?.aborted === true) {
-        throw new Error(
-          `the NATS connection closed before its subscriptions reached the server: ${messageFor(error)}`,
-          { cause: error },
-        )
+  const ended = Promise.withResolvers<"stopping" | "closed">()
+  const check = (): void => {
+    if (signal?.aborted === true) ended.resolve("stopping")
+    else if (connection.isClosed()) ended.resolve("closed")
+  }
+  const watch = setInterval(check, REDIAL_FLUSH_RETRY_MS)
+  signal?.addEventListener("abort", check)
+  // A stop is its own reason; a closed connection is named with the flush error that showed it.
+  const failure = (why: "stopping" | "closed", error?: unknown): Error =>
+    why === "stopping"
+      ? new Error(START_STOPPING)
+      : error === undefined
+        ? new Error(START_CLOSED)
+        : new Error(`${START_CLOSED}: ${messageFor(error)}`, { cause: error })
+  try {
+    for (;;) {
+      check()
+      const attempt = connection.flush().then(
+        () => ({ flushed: true as const }),
+        (error: unknown) => ({ flushed: false as const, error }),
+      )
+      const outcome = await Promise.race([attempt, ended.promise])
+      if (outcome === "stopping" || outcome === "closed") throw failure(outcome)
+      if (outcome.flushed) {
+        if (signal?.aborted === true) throw failure("stopping")
+        return
       }
-      await Bun.sleep(REDIAL_FLUSH_RETRY_MS)
+      check()
+      if (signal?.aborted === true) throw failure("stopping", outcome.error)
+      if (connection.isClosed()) throw failure("closed", outcome.error)
+      const waited = await Promise.race([
+        Bun.sleep(REDIAL_FLUSH_RETRY_MS).then(() => "asked again" as const),
+        ended.promise,
+      ])
+      if (waited !== "asked again") throw failure(waited, outcome.error)
     }
+  } finally {
+    clearInterval(watch)
+    signal?.removeEventListener("abort", check)
   }
 }
 
@@ -2437,7 +2487,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       )
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
-      session = await startChannelSession({
+      const started = await startChannelSession({
         identity,
         connection,
         notifier,
@@ -2455,7 +2505,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
         ...(dialled.followSession === undefined ? {} : { followSession: dialled.followSession }),
         startSignal: booting.signal,
+      }).catch((error: unknown) => {
+        // A stop asked for while the session was still starting (its connection waiting on the
+        // hub) ends the start, and is no failure: the process ends as an asked-for stop does.
+        if (stopping) return undefined
+        throw error
       })
+      if (started === undefined) return
+      session = started
       // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a
       // session whose link never binds never starts one, and runs as it did before.
@@ -2544,7 +2601,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
     await linking
     await modLink?.close().catch(() => undefined)
     if (session === undefined && connection !== undefined) {
-      await connection.drain().catch(() => undefined)
+      // Bounded: a connection still redialing, as one whose start a stop ended can be, may never
+      // finish a drain, and the close after it is what ends the connection for good.
+      await Promise.race([
+        connection.drain().catch(() => undefined),
+        Bun.sleep(START_DRAIN_BOUND_MS),
+      ])
       await connection.close().catch(() => undefined)
     }
     // Release stdin so the process can exit once the session is deregistered,

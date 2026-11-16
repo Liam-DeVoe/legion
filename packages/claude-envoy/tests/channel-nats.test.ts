@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { brokerNatsCredential } from "@legion/envoy-client/nats-credential"
-import type { Authenticator, ConnectionOptions, NatsConnection } from "nats"
+import { type Authenticator, type ConnectionOptions, type NatsConnection, nkeys } from "nats"
 import { dialChannelNats } from "../src/envoy-channel-server"
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
@@ -138,7 +138,36 @@ test("a failed dial names each server by scheme, host and port, never a credenti
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(failure).toBe(
-    "could not connect to NATS at nats://127.0.0.1:4222, tls://nats.example:4443, 127.0.0.1:4223, localhost:4224, a server address that does not parse presenting no credential: CONNECTION_REFUSED",
+    "could not connect to NATS at nats://127.0.0.1:4222, tls://nats.example:4443, 127.0.0.1:4223, localhost:4224, a server address that does not read as a host presenting no credential: CONNECTION_REFUSED",
   )
   expect(failure).not.toContain("E2_SENTINEL")
+})
+
+test("a credential pasted as a bare server address is never named", async () => {
+  // A throwaway user nkey seed, made here: it parses as a host name, as a pasted token's segments
+  // do, so a value that does not read as a host name is not named.
+  const seed = new TextDecoder().decode(nkeys.createUser().getSeed())
+  const segments = Array.from({ length: 3 }, () =>
+    crypto.randomUUID().replaceAll("-", "").repeat(2),
+  )
+  const refused = async (): Promise<NatsConnection> => {
+    throw new Error("CONNECTION_REFUSED")
+  }
+  const failure = await dialChannelNats(
+    {
+      natsUrls: [seed, `nats://${seed}`, segments.join("."), "nats.example:4222"],
+      natsCredential: { kind: "none" },
+    },
+    "claude-envoy-channel-ses_seed",
+    () => {},
+    refused,
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  expect(failure).not.toContain(seed)
+  for (const segment of segments) expect(failure).not.toContain(segment)
+  expect(failure).toBe(
+    "could not connect to NATS at a server address that does not read as a host, a server address that does not read as a host, a server address that does not read as a host, nats.example:4222 presenting no credential: CONNECTION_REFUSED",
+  )
 })

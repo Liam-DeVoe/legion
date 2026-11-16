@@ -51,6 +51,41 @@ function refusingHub(): string {
   return `nats://127.0.0.1:${server.port}`
 }
 
+/** A NATS server that admits a client with no credential, answers the first PING (which a client's
+ * connect waits for) and then goes silent: every later PING, a flush's, is left unanswered, as on
+ * a path to the hub that dropped after admitting the session. `pings()` counts the PINGs seen. */
+function silentHub(): { url: string; pings(): number } {
+  let pings = 0
+  const server = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        const info = {
+          server_id: "silent-hub",
+          server_name: "silent-hub",
+          version: "2.10.22",
+          proto: 1,
+          host: "127.0.0.1",
+          port: 0,
+          headers: true,
+          max_payload: 1_048_576,
+        }
+        socket.write(`INFO ${JSON.stringify(info)}\r\n`)
+      },
+      data(socket, data) {
+        for (const line of data.toString().split("\r\n")) {
+          if (line !== "PING") continue
+          pings += 1
+          if (pings === 1) socket.write("PONG\r\n")
+        }
+      },
+    },
+  })
+  cleanups.push(() => server.stop(true))
+  return { url: `nats://127.0.0.1:${server.port}`, pings: () => pings }
+}
+
 interface Started {
   readonly server: Subprocess<"pipe", "ignore", "pipe">
   readonly socketPath: string
@@ -151,3 +186,21 @@ test("a server whose parent is gone exits on its stdin's end of file, its socket
   expect(code, `still running after stdin closed: ${started.stderr()}`).toBeDefined()
   expect(existsSync(started.socketPath)).toBe(false)
 }, 20_000)
+
+test("a stop asked for while the start waits on a silent hub exits 0, its socket removed", async () => {
+  // Admitted, then the hub answers no flush: the start waits, as on a path that dropped after
+  // admitting the session. A stop then is an asked-for stop, not a failure.
+  const hub = silentHub()
+  const started = await startServer([hub.url])
+  const deadline = Date.now() + 8_000
+  while ((hub.pings() < 2 || !existsSync(started.socketPath)) && Date.now() < deadline) {
+    await Bun.sleep(50)
+  }
+  expect(hub.pings(), started.stderr()).toBeGreaterThanOrEqual(2)
+  expect(await exitWithin(started.server, 500)).toBeUndefined()
+  started.server.kill("SIGTERM")
+  const code = await exitWithin(started.server, 8_000)
+  expect(code, `still running after SIGTERM: ${started.stderr()}`).toBe(0)
+  expect(started.stderr()).not.toContain("channel server failed")
+  expect(existsSync(started.socketPath)).toBe(false)
+}, 30_000)
