@@ -1026,8 +1026,9 @@ test.skipIf(natsUrl === undefined && !onActions)(
     /**
      * The same send to `sid`, made by a process of its own: what it ended with, then the time its
      * shared wait had left when it ended (`timeLeft`). That process is no `bun test`, so it waits
-     * by LEGION_PROOF_DEADLINE_MS (`@legion/test-fixtures/wait`), which this sets
-     * `ALONE_SEND_MS` off.
+     * by LEGION_PROOF_DEADLINE_MS (`@legion/test-fixtures/wait`), which it sets `ALONE_SEND_MS` off
+     * once it has connected, right before the send: a loaded machine's slow start of the process
+     * then spends none of the send's own time, so the no-responders half meets its 503 inside it.
      */
     const sentAlone = async (sid: string): Promise<string[]> => {
       const driver = Bun.spawn(
@@ -1038,6 +1039,7 @@ test.skipIf(natsUrl === undefined && !onActions)(
 import { timeLeft } from "@legion/test-fixtures/wait";
 import { connect, headers, StringCodec } from "nats";
 const connection = await connect({ servers: ${JSON.stringify(natsUrl)} });
+process.env.LEGION_PROOF_DEADLINE_MS = String(Date.now() + ${ALONE_SEND_MS});
 const outcome = await sendRelayFrame({
   connection,
   newHeaders: headers,
@@ -1054,7 +1056,7 @@ await connection.close();`,
         ],
         {
           cwd: import.meta.dir,
-          env: { ...process.env, LEGION_PROOF_DEADLINE_MS: String(Date.now() + ALONE_SEND_MS) },
+          env: { ...process.env },
           stdout: "pipe",
         }
       );
