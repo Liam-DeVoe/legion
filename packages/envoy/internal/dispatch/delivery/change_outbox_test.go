@@ -692,3 +692,72 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 	}
 	t.Logf("the group's update waited for the change log's lock holding the session groups' lock and no group row; it held the lock at most %s, the run write and the second create behind it", held.Round(time.Microsecond))
 }
+
+// TestASessionGroupEditThatChangesNothingWritesNothing: an edit naming the group's own name, a
+// session it holds and one it does not hold, by another actor than the one that wrote it, changes
+// nothing the group holds, so it writes nothing. The decision is a read under the session groups'
+// lock, so with the change log's lock held elsewhere the edit answers without waiting for it, the
+// group as it stands, and leaves the stored group as it was (its updated_by and updated_at
+// included) with no session_group change row: the trigger logs none for an update that moves
+// updated_at alone (migration 0100), so such an update would leave a live view answering the old
+// updated_at while the read answered the new.
+func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
+	shared, ctx := deliveryTestPool(t)
+	pool := wideTestPool(t, shared)
+	clearSessionGroups(t, pool, "Steady crew")
+	author := model.Actor{Kind: "system", ID: "delivery-test"}
+	var crew SessionGroup
+	if err := inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		crew, err = CreateSessionGroup(ctx, tx, "Steady crew", []string{"steady-s1", "steady-s2"}, author)
+		return err
+	})(); err != nil {
+		t.Fatalf("create the group: %v", err)
+	}
+	seq, err := LatestChangeSeq(ctx, pool)
+	if err != nil {
+		t.Fatalf("read the change log's head: %v", err)
+	}
+
+	gate := takeChangeLock(t, ctx, pool)
+	name := crew.Name
+	var answered SessionGroup
+	edit := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		answered, err = UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{
+			Name: &name, Add: []string{"steady-s1"}, Remove: []string{"steady-absent"},
+		}, model.Actor{Kind: "user", ID: "another-editor"})
+		return err
+	}))
+	select {
+	case answer := <-edit:
+		if answer.err != nil {
+			t.Fatalf("the edit that changes nothing: %v", answer.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the edit that changes nothing waited for the change log's lock: it writes")
+	}
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("let the change log's lock go: %v", err)
+	}
+
+	stored, err := getSessionGroup(ctx, pool, crew.ID)
+	if err != nil {
+		t.Fatalf("read the group: %v", err)
+	}
+	for label, group := range map[string]SessionGroup{"the edit's answer": answered, "the stored group": stored} {
+		if group.Name != crew.Name || !slices.Equal(group.Sessions, crew.Sessions) || group.UpdatedBy.ID != author.ID || !group.UpdatedAt.Equal(crew.UpdatedAt) {
+			t.Errorf("%s = %+v, want the group as created, %+v", label, group, crew)
+		}
+	}
+	changes, err := ChangesSince(ctx, pool, seq, 100)
+	if err != nil {
+		t.Fatalf("read the changes after the edit: %v", err)
+	}
+	for _, change := range changes {
+		if change.Kind == ChangeKindSessionGroup {
+			t.Errorf("the edit that changes nothing logged a session_group change at seq %d", change.Seq)
+		}
+	}
+	t.Logf("the edit answered with the change log's lock held elsewhere and logged none of the %d changes after seq %d", len(changes), seq)
+}

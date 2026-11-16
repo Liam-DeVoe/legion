@@ -35,10 +35,11 @@ type Member struct {
 }
 
 // ProjectDay is one project's computed rows of one UTC day, as WriteProjectDay and
-// WriteLegionProjectDay write them: the day rows (their built_by and updated_at are the write's)
-// and the items they counted; and Gaps, the zero rows of the later days the day leaves with no row
-// where it moves an eval's first input day earlier (refresh.gapsBehind), which the write inserts
-// where a day holds no row of their key, in its own transaction.
+// WriteLegionProjectDay write them: the day rows (their built_by is the write's, and their
+// updated_at its moment where a value moved) and the items they counted; and Gaps, the zero rows
+// of the later days the day leaves with no row where it moves an eval's first input day earlier
+// (refresh.gapsBehind), which the write inserts where a day holds no row of their key, in its own
+// transaction.
 type ProjectDay struct {
 	Project string
 	// Day is the day's UTC midnight.
@@ -178,13 +179,22 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 // upsertDays writes rows in one statement, in key order, each the computation's (writer
 // `computation`) with built_by builtBy: a new row is inserted, and a stored one rewritten only
 // where a value differs (built_by included, so a new build's rebuild marks every row it rebuilt).
+// updated_at moves only with a value: the trigger of eval_days (migration 20261113082202) logs no
+// change for a rewrite that moves built_by and updated_at alone, and the evals list answers the
+// oldest updated_at of the rows it folds (api/evals.go's freshness), so a rebuild that moved it
+// would leave a live evals view answering the old one while the read answered the new.
 func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) error {
 	return writeDayRows(ctx, tx, rows, builtBy, `
 		on conflict (project_key, eval_id, writer, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den,
 			max = excluded.max, samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
 			counts = excluded.counts, via_repository = excluded.via_repository, built_by = excluded.built_by,
-			updated_at = now()
+			updated_at = case
+				when (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max,
+						eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.counts, eval_days.via_repository)
+					is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max,
+						excluded.samples, excluded.last_value, excluded.last_at, excluded.counts, excluded.via_repository)
+				then now() else eval_days.updated_at end
 		where (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max,
 				eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.counts,
 				eval_days.via_repository, eval_days.built_by)
@@ -201,8 +211,10 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 // series and repository with none), so its series has a first input day and 0 is that day's
 // value; deleting it would leave the day with no row, which reads as no data, and would log no
 // eval_days change, so a view of the row's numbers would never wake to the change. A row already
-// zero, built_by included, is left as it is and logs nothing. The readings write's rows of those
-// evals (an eval a register write made logged for a while) are its own, and stay as they are.
+// zero, built_by included, is left as it is and logs nothing; a row already zero under another
+// build takes builtBy and keeps its updated_at, as upsertDays keeps it where no value moved.
+// The readings write's rows of those evals (an eval a register write made logged for a while)
+// are its own, and stay as they are.
 func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time, evalIDs []string, held []DayRow, builtBy string) error {
 	evals, series, repos := make([]string, len(held)), make([]string, len(held)), make([]string, len(held))
 	for i, row := range held {
@@ -221,7 +233,13 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 		)
 		update eval_days
 		set n = 0, sum = stale.sum, num = stale.num, den = stale.den, max = null, samples = stale.samples,
-			last_value = null, last_at = null, counts = stale.counts, via_repository = 0, built_by = $7, updated_at = now()
+			last_value = null, last_at = null, counts = stale.counts, via_repository = 0, built_by = $7,
+			updated_at = case
+				when (eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
+						eval_days.last_value, eval_days.last_at, eval_days.counts, eval_days.via_repository)
+					is distinct from (0, stale.sum, stale.num, stale.den, null::double precision, stale.samples,
+						null::double precision, null::timestamptz, stale.counts, 0)
+				then now() else eval_days.updated_at end
 		from stale
 		where eval_days.project_key = stale.project_key and eval_days.eval_id = stale.eval_id and eval_days.writer = stale.writer
 			and eval_days.series = stale.series and eval_days.repo = stale.repo and eval_days.day = stale.day

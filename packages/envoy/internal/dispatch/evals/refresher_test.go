@@ -3,6 +3,7 @@ package evals
 import (
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -430,6 +431,49 @@ func TestANewBuildRewritesEveryRowOfAFamily(t *testing.T) {
 			t.Errorf("build %s's turn after both walks reached today walked %d project days, want none", build, len(again.days))
 		}
 	}
+}
+
+// TestANewBuildsRewriteKeepsTheUpdatedAtOfEveryRowWhoseValuesStood: a live evals view hears of a
+// day row's write only through its eval_days change row, which the trigger logs for no rewrite
+// that moves only built_by and updated_at (migration 20261113082202), and the evals list answers
+// the oldest updated_at of the rows it folds (api/evals.go's freshness). So a new build's walk,
+// which rewrites every computed row with its own build, keeps the updated_at of each row whose
+// values it left as they were: moved, the read would answer the walk's moment while a live view
+// kept the one it read before, and no change row would ever tell it otherwise.
+func TestANewBuildsRewriteKeepsTheUpdatedAtOfEveryRowWhoseValuesStood(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedHistories(t)
+	r.settle(t)
+	before := r.dayRows(t)
+	seq := r.latestSeq(t)
+
+	r.build = "another-build"
+	r.settle(t)
+	after := r.dayRows(t)
+	values := func(row DayRow) DayRow {
+		row.BuiltBy, row.UpdatedAt = "", time.Time{}
+		return row
+	}
+	stood, moved := 0, 0
+	for key, row := range after {
+		old, held := before[key]
+		switch {
+		case !held || row.BuiltBy != r.build:
+			// A row the new walk made, or one it did not write (a readings write's row).
+		case !reflect.DeepEqual(values(row), values(old)):
+			moved++
+		case !row.UpdatedAt.Equal(old.UpdatedAt):
+			t.Errorf("%s: the new build's rewrite moved its updated_at from %s to %s and none of its values",
+				key, old.UpdatedAt.Format(time.RFC3339Nano), row.UpdatedAt.Format(time.RFC3339Nano))
+		default:
+			stood++
+		}
+	}
+	if stood == 0 {
+		t.Fatalf("the new build rewrote no row whose values stood (%d of %d rows moved a value)", moved, len(after))
+	}
+	t.Logf("the new build rewrote %d rows whose values stood, each keeping its updated_at, and %d whose values moved; eval_days changes of its walk: %v",
+		stood, moved, r.evalDayChanges(t, seq))
 }
 
 // TestTwoBuildsOnOneDatabaseEachFinishTheirOwnWalk: while two builds' refreshers share a database

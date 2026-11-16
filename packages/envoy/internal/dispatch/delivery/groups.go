@@ -301,7 +301,8 @@ func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []
 }
 
 // SessionGroupUpdate is one edit of a group: a new name, sessions to add and sessions to remove,
-// each optional. Adding a session the group holds, or removing one it does not, changes nothing.
+// each optional. Adding a session the group holds, or removing one it does not, changes nothing,
+// and neither does naming the group's own name.
 type SessionGroupUpdate struct {
 	Name   *string
 	Add    []string
@@ -310,7 +311,11 @@ type SessionGroupUpdate struct {
 
 // UpdateSessionGroup applies update to the group id in tx, after the same refusals as
 // CreateSessionGroup for what it adds and names, and ErrSessionGroupEmpty for an edit that
-// removes every session.
+// removes every session. An edit that changes neither the name nor the members writes nothing and
+// answers the group as it stands, whoever sends it: the change trigger of delivery_session_groups
+// (migration 0100) logs no update that moves updated_at alone, so writing one would leave a live
+// view answering the old updated_at while the read answers the new. That decision is a read under
+// the session groups' lock, so such an edit never takes the change log's lock.
 func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update SessionGroupUpdate, actor model.Actor) (SessionGroup, error) {
 	if err := lockSessionGroups(ctx, tx); err != nil {
 		return SessionGroup{}, err
@@ -342,6 +347,9 @@ func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update Sessio
 	}
 	if len(members) == 0 {
 		return SessionGroup{}, ErrSessionGroupEmpty
+	}
+	if !setsName && len(removed) == 0 && len(added) == 0 {
+		return current, nil
 	}
 	if err := refuseHeldSessions(ctx, tx, &id, added); err != nil {
 		return SessionGroup{}, err
