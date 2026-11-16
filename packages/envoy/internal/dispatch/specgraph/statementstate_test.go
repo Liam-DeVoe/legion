@@ -8,13 +8,6 @@ import (
 	"time"
 )
 
-// The derivation of a statement recurses into the statements under it and its supporters, and its
-// loop guard (reaches) is what ends a loop of parent and support relations. With no guard, the rows
-// of a loop ("a loop of supporters", and the loop of parents of
-// TestDeriveListsEachStatementInPreorder) recurse without end. This cap of 16 MiB makes them fail
-// in a fraction of a second; Go's own limit of 1 GB would take far longer and that much memory.
-func init() { debug.SetMaxStack(16 << 20) }
-
 // The nodes of TestStatementState beside TestCheckState's. T is checkStateTop, with its own check of
 // the code CT, and L1 is checkStateLeaf under it, with its check C1, checkStateCheck. L2 is a second
 // statement under T, with its check C2. P is a top statement that supports T, with its check CP: T
@@ -559,6 +552,59 @@ func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	got := statementIDs(Derive(s.input()))
 	if sorted := slices.Sorted(slices.Values(got)); !slices.Equal(sorted, slices.Sorted(slices.Values(want))) {
 		t.Errorf("with a loop of parents, the statements of Derive: %q, want each of %q once", got, want)
+	}
+}
+
+// The derivation of a statement recurses into the statements under it and its supporters, and its
+// loop guard (reaches) is what ends a loop of parent and support relations. This test derives each
+// loop of the rows of TestStatementState, TestNoTreeThatTheRulesRefuseReadsTrueOrMet and
+// TestDeriveListsEachStatementInPreorder under a stack cap of 16 MiB, so that a derivation with no
+// guard fails in a fraction of a second, where Go's own limit of 1 GB would take far longer and that
+// much memory. Exceeding the cap ends the whole test binary (runtime/debug.SetMaxStack). The test
+// does not run in parallel, so no other test runs under the cap: each test that calls t.Parallel
+// waits until the tests that do not have ended. It sets the previous limit back when it ends.
+func TestTheDerivationEndsOnEachLoop(t *testing.T) {
+	previous := debug.SetMaxStack(16 << 20)
+	t.Cleanup(func() { debug.SetMaxStack(previous) })
+	T, L1, P, Q := checkStateTop.ID, checkStateLeaf.ID, statementSupporter.ID, statementFast.ID
+	serves := func(ids ...string) func(s *checkCase) {
+		return func(s *checkCase) {
+			loop := checkStateTop
+			loop.Serves = ids
+			s.replace(loop)
+		}
+	}
+	for _, row := range []struct {
+		name   string
+		change func(s *checkCase)
+	}{
+		{"a loop of supporters: T serves Q, and Q serves T", func(s *checkCase) {
+			serves(Q)(s)
+			fast := statementFast
+			fast.Serves = []string{T}
+			s.addNodes(fast, statementFastCheck)
+		}},
+		{"T serves L1 under it", serves(L1)},
+		{"T serves P, which serves T", serves(P)},
+		{"a loop of parents: T under L1, which is under T", func(s *checkCase) {
+			loop := checkStateTop
+			loop.Parent = L1
+			s.replace(loop)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s := newStatementCase(t)
+			row.change(s)
+			in := s.input()
+			var want []string
+			for _, st := range in.Files.Statements {
+				want = append(want, st.ID)
+			}
+			slices.Sort(want)
+			if got := slices.Sorted(slices.Values(statementIDs(Derive(in)))); !slices.Equal(got, want) {
+				t.Errorf("the statements of Derive: %q, want each of %q once", got, want)
+			}
+		})
 	}
 }
 

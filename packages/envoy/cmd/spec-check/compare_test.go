@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
@@ -353,22 +353,53 @@ func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode
 	if err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Join(t.TempDir(), "approved.json")
+	writeFile(t, path, content)
+	editApproved(t, path, func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+		for i := range nodes {
+			edit(&nodes[i])
+		}
+		return nodes
+	})
+	return path
+}
+
+// editApproved decodes the approved.json at path as the approved nodes of specgraph, lets edit
+// change, add or take out nodes, and writes back the nodes that edit returns. A test of a file that
+// is not valid edits its bytes instead (replaceIn).
+func editApproved(t *testing.T, path string, edit func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode) {
+	t.Helper()
 	var file struct {
 		Nodes []specgraph.ApprovedNode `json:"nodes"`
 	}
-	if err := json.Unmarshal(content, &file); err != nil {
-		t.Fatal(err)
+	readJSONFile(t, path, &file)
+	file.Nodes = edit(file.Nodes)
+	writeJSONFile(t, path, file)
+}
+
+// compare and print read approved.json through the one strict JSON reader, as state does: a member
+// written in other letters or given two times, and a byte that is not UTF-8, are exit 2 with one
+// line that names the file.
+func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	const first = `"removed": false,`
+	for _, row := range []struct{ name, old, new, fault string }{
+		{"a field name in capitals", first, `"REMOVED": false,`, `member "/nodes/0/REMOVED" is not in the format`},
+		{"one field two times, in two cases", first, `"removed": false, "Removed": true,`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times", first, `"removed": false, "removed": true,`, `member "/nodes/0/removed" is in one object two times`},
+		{"a byte that is not UTF-8", `"id": "acme-keeps-each-order"`, "\"id\": \"acme-keeps-each-\xfforder\"", "it is not UTF-8"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			fixtureDir := copyOf(t, fixture(t, "compare", "approved-text"))
+			approved := filepath.Join(fixtureDir, "approved.json")
+			replaceIn(t, approved, row.old, row.new)
+			want := result{code: 2, stderr: "spec-check: " + approved + ": specgraph: approved spec: " + row.fault + "\n"}
+			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(fixtureDir, "spec"), "--approved", approved), want)
+			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "acme-keeps-each-order"), want)
+		})
 	}
-	for i := range file.Nodes {
-		edit(&file.Nodes[i])
-	}
-	changed, err := json.Marshal(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "approved.json")
-	writeFile(t, path, changed)
-	return path
 }
 
 // withoutBlock is text with the block of the node id taken out, from its opening line to its
