@@ -38,6 +38,24 @@ const (
 // requests queue for a slot with a handful of them (queue_test.go).
 var concurrentDecisions = 64
 
+// maxWaiting bounds the requests one replica holds waiting for a decision slot; the one past it is
+// refused at once (waitingRefusal). Each waiting request holds a goroutine, its sealed request and
+// a deadline until a slot frees or its budget ends, and a client holding no credential can send one
+// per TCP connect, so with no bound what a replica holds grows with whatever such a client sends.
+// The bound is sixteen times the slots: at the slowest decision this package's storm measured
+// (146 ms), concurrentDecisions slots decide about 64 x 1.5 s / 146 ms = 650 requests inside one
+// budget, so a request behind 1024 others would be refused at its budget anyway. At faster
+// decisions the bound refuses some that could have waited; their clients retry a refusal
+// (IgnoreAuthErrorAbort) and hear it at once rather than after their budget. It is a var so a test
+// can fill it with a handful of requests (queue_test.go).
+var maxWaiting = 1024
+
+// waitingRefusal is what a request that arrives with maxWaiting others already waiting is refused
+// with. Its label in the decision counter is labelWaitingBound.
+func waitingRefusal() *Refusal {
+	return refuse(labelWaitingBound, fmt.Sprintf("%d requests already wait for a decision slot on this replica, the most it holds", maxWaiting))
+}
+
 // decideBudget is how long one decision may take. A Go client fails its connect when the server's
 // answer arrives later than two seconds: nats.go sets one deadline of Opts.Timeout, 2 s by
 // default, over the whole handshake (nats.go, processConnectInit), and the server sends its PONG
@@ -95,6 +113,8 @@ type Service struct {
 	sub   *nats.Subscription
 	slots chan struct{}
 	wait  sync.WaitGroup
+	// waiting counts the requests waiting for a decision slot, which maxWaiting bounds.
+	waiting atomic.Int64
 	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds, and done ends
 	// the heartbeat at Close.
 	beat      atomic.Int64
@@ -214,6 +234,15 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		// start late. Each request waits for its slot on a goroutine of its own, and one still
 		// waiting when its budget is spent is answered with a refusal without one (answer).
 		received := time.Now()
+		// Past maxWaiting the request is refused here, on the delivery goroutine, with no
+		// goroutine of its own: opening, signing and sealing a refusal takes no broker call, and
+		// what a flood of them costs then is this one goroutine's time, which nats.go's pending
+		// limits bound, rather than a goroutine each.
+		if s.waiting.Add(1) > int64(maxWaiting) {
+			s.waiting.Add(-1)
+			answer.answer(context.Background(), msg, received, waitingRefusal())
+			return
+		}
 		ctx, cancel := context.WithDeadline(context.Background(), received.Add(decideBudget))
 		// Added on the delivery goroutine Close waits out, so every Add happens before its Wait.
 		s.wait.Add(1)
@@ -222,10 +251,12 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 			defer cancel()
 			select {
 			case s.slots <- struct{}{}:
+				s.waiting.Add(-1)
 				defer func() { <-s.slots }()
 			case <-ctx.Done():
+				s.waiting.Add(-1)
 			}
-			answer.answer(ctx, msg, received)
+			answer.answer(ctx, msg, received, nil)
 		}()
 	})
 	if err != nil {
@@ -317,8 +348,9 @@ type answerer struct {
 // is not used: the server writes it in whole seconds (server/auth_callout.go, claim.Expires), so it
 // can name a moment up to a second before the server actually gives up, and would cut a budget of
 // 1.5 s by as much. A request it cannot open or read is not answered: the server refuses that
-// connection at its authorization timeout, and the broker's log says why.
-func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time) {
+// connection at its authorization timeout, and the broker's log says why. refusal, when it is not
+// nil, is the answer already settled before any decision (waitingRefusal), and nothing is decided.
+func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time, refusal *Refusal) {
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
 	if serverXKey != "" {
@@ -351,6 +383,8 @@ func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time
 		if a.deps.Log != nil {
 			a.deps.Log.Error("natscallout: an authorization request arrived in the clear; the hub's auth_callout names no xkey, so every token and proof crosses the wire unencrypted", "host", req.Host)
 		}
+	case refusal != nil:
+		refused = refusal
 	case time.Since(received) > decideBudget-minimumDecision:
 		refused = budgetRefusal("the wait for a decision slot")
 	default:

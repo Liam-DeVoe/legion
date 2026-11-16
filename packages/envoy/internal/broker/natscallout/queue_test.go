@@ -27,6 +27,15 @@ func withDecisionSlots(t *testing.T, n int) {
 	t.Cleanup(func() { concurrentDecisions = was })
 }
 
+// withWaitingBound runs the rest of the test with maxWaiting set to n, so a test can fill the
+// bound with a handful of requests.
+func withWaitingBound(t *testing.T, n int) {
+	t.Helper()
+	was := maxWaiting
+	maxWaiting = n
+	t.Cleanup(func() { maxWaiting = was })
+}
+
 // slowIntrospect answers each session's token after wait, giving up when ctx ends, as a broker
 // whose database is slow does.
 func slowIntrospect(wait time.Duration, sessions ...*session) Deps {
@@ -163,6 +172,62 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	})
 	require.Contains(t, log.String(), "budget at the wait for a decision slot", "no refusal named the wait:\n%s", log.String())
 	require.Zero(t, asked.Load(), "the broker was asked about a token whose wait had spent its budget:\n%s", log.String())
+}
+
+// A replica holds at most maxWaiting requests waiting for a decision slot, and refuses the one past
+// the bound at once, naming the bound, while the ones it holds wait on and are decided. One slot is
+// held for a second by a decision that sleeps; two requests, the bound, wait behind it; a third is
+// refused within half a second rather than waiting, and the two held are admitted once the slot
+// frees. With no bound the third waits behind the slot too and is admitted.
+func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
+	withDecisionSlots(t, 1)
+	withWaitingBound(t, 2)
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	holder, extra := newSession(t, "ses_holder", 15*time.Minute), newSession(t, "ses_extra", 15*time.Minute)
+	waiters := sessionsNamed(t, "ses_waiting", 2)
+	log := &lockedLog{}
+	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil))}
+	holding := make(chan struct{})
+	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+		if req.Token == holder.token {
+			close(holding)
+			time.Sleep(time.Second)
+		}
+		return Decide(ctx, deps, services, req)
+	})
+
+	held := make(chan error, 1)
+	go func() {
+		nc, err := connectSession(t, url, holder, nil)
+		if err == nil {
+			nc.Close()
+		}
+		held <- err
+	}()
+	<-holding
+	results := make(chan []error, 1)
+	go func() {
+		errs, _ := connectAll(t, url, waiters)
+		results <- errs
+	}()
+	testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "both waiters waiting for the slot", func() bool {
+		return service.waiting.Load() == int64(len(waiters))
+	})
+
+	began := time.Now()
+	_, err := connectSession(t, url, extra, nil)
+	took := time.Since(began)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
+	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
+		return strings.Contains(log.String(), "label="+labelWaitingBound)
+	})
+	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
+	require.NoError(t, <-held, "the slot's holder was refused")
+	for index, err := range <-results {
+		require.NoError(t, err, "waiter %d of the bound was refused", index)
+	}
 }
 
 // lockedLog is a log the service's answering goroutines write while a test reads it.

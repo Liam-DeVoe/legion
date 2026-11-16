@@ -140,6 +140,7 @@ const (
 	labelBudget            = "budget"
 	labelServiceFailed     = "service_failed"
 	labelUnsealed          = "unsealed"
+	labelWaitingBound      = "waiting_bound"
 )
 
 // credentialKind is which credential req presents: a session's token beside a proof and no user,

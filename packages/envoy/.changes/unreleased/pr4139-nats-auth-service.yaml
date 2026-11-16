@@ -11,8 +11,10 @@ body: |-
   `BROKER_NATS_SERVICES` lists, is admitted to its kind's grant. Any other connection is refused by
   one line, and the NATS user each is admitted as expires with the credential it was issued for.
   Every connection is answered within 1.5 s of its request reaching a replica, admitted or
-  refused, and the broker's metrics port answers `GET /livez` with 503 once the service's loop has
-  not turned for ten seconds, so a liveness probe restarts a replica that has stalled.
+  refused; a replica holds at most 1024 requests waiting for a decision and refuses the next at
+  once (`reason="waiting_bound"` in `broker_nats_callout_decisions_total`). The broker's metrics
+  port answers `GET /livez` with 503 once the service's loop has not turned for ten seconds, so a
+  liveness probe restarts a replica that has stalled.
   Go clients present those credentials through `NATS_SERVICE_TOKEN_FILE` or
   `NATS_SERVICE_GOOGLE_AUDIENCE` for a service, and through the token client for a session, each
   reconnecting before its user expires, a service only once the auth service admits its new token,
