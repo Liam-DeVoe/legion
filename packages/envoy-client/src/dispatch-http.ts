@@ -427,8 +427,8 @@ const ISSUE_EVENTS_PAGE_MAX = 200;
 
 export const DISPATCH_TOOL_DEADLINE_MS = 60_000;
 
-function requestSignal(signal: AbortSignal | undefined): AbortSignal {
-  const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
+function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): AbortSignal {
+  const deadline = AbortSignal.timeout(deadlineMs);
   return signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
 }
 
@@ -932,9 +932,9 @@ export class DispatchClient {
   readonly #retryNoRoute: boolean;
   readonly writeRetry: DispatchWriteRetry;
   /**
-   * When this client was made, on the write clock (`#now`): its 60 s deadline counts from here, so
-   * no write asks again later than `writeRetry.inFlightWithinMs` after it, however late in the
-   * client's life the write began.
+   * When this client was made, on the write clock (`#now`): its deadline (`deadlineMs`, 60 s by
+   * default) counts from here, so no write asks again later than `writeRetry.inFlightWithinMs`
+   * after it, however late in the client's life the write began.
    */
   readonly #madeAt: number;
 
@@ -944,6 +944,10 @@ export class DispatchClient {
     readonly fetchImpl: typeof fetch = fetch,
     options: {
       readonly signal?: AbortSignal | undefined;
+      /** How long after it is made every request of the client ends, DISPATCH_TOOL_DEADLINE_MS by
+       *  default. A caller with a bound of its own sets it, and `writeRetry.inFlightWithinMs` short
+       *  enough to fit inside it. */
+      readonly deadlineMs?: number | undefined;
       readonly writeRetry?: DispatchWriteRetry | undefined;
       readonly sleep?: Sleep | undefined;
       /** Whether a request a Dispatch process answered with no route for it is asked again
@@ -956,7 +960,7 @@ export class DispatchClient {
   ) {
     this.#credential = credential;
     this.#baseUrl = withoutTrailingSlashes(baseUrl);
-    this.#signal = requestSignal(options.signal);
+    this.#signal = requestSignal(options.signal, options.deadlineMs ?? DISPATCH_TOOL_DEADLINE_MS);
     this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
     this.#sleep = options.sleep ?? sleep;
     this.#retryNoRoute = options.retryNoRoute ?? true;
@@ -2144,11 +2148,15 @@ export class DispatchClient {
     for (let attempt = 1; ; attempt++) {
       let answer: WriteAnswer | undefined;
       let thrown: unknown;
+      // Whether this attempt went out: one the deadline or a cancellation ended before it was sent
+      // carried nothing, so only the attempts before it say whether one reached Dispatch.
+      let sentOut = false;
       try {
         // Each attempt after the first presents the credential afresh: a resource server that
         // keeps a replay store refuses a proof it has already seen.
         if (attempt > 1) presented = await this.#credential.headers(method, url);
         const sent = { ...headers, ...presented };
+        sentOut = !this.#signal.aborted;
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) return answer.response;
@@ -2163,7 +2171,7 @@ export class DispatchClient {
           !(error instanceof WriteAttemptSilent) &&
           (this.#signal.aborted || name === "AbortError" || name === "TimeoutError")
         ) {
-          throw this.#ended(error, request, attempt, true, sawKeyedLayer);
+          throw this.#ended(error, request, attempt, sentOut || reached, sawKeyedLayer);
         }
         thrown = error;
         // A connection that was never opened sent nothing, so that attempt reached nothing.
@@ -2192,6 +2200,12 @@ export class DispatchClient {
         try {
           await pause(wait, this.#signal);
         } catch (error) {
+          // The deadline ended the pause, before the next attempt went out: where no attempt may
+          // have reached Dispatch, the write stands at its last answer, which says why nothing
+          // was stored (a late timer can bring this about inside the write's own bound).
+          if (!reached && answer !== undefined && this.#timedOut(error)) {
+            return this.#unsettled(method, url, answer.response, reached, attempt, sawKeyedLayer);
+          }
           throw this.#ended(error, request, attempt, reached, sawKeyedLayer);
         }
         again = this.#now() <= latest;
@@ -2276,15 +2290,20 @@ export class DispatchClient {
     mayHaveReached: boolean,
     keyed: boolean
   ): unknown {
-    const reason: unknown = this.#signal.aborted ? this.#signal.reason : error;
-    const timedOut =
-      (reason instanceof Error || reason instanceof DOMException) && reason.name === "TimeoutError";
-    if (!timedOut || !mayHaveReached || !(error instanceof Error)) return error;
+    if (!this.#timedOut(error) || !mayHaveReached || !(error instanceof Error)) return error;
     return new DispatchWriteUnsettledError(
       error,
       attempts,
       `${request} had no definitive answer when its deadline ended it`,
       keyed
+    );
+  }
+
+  /** Whether the client's deadline, and not a cancellation, ended what threw `error`. */
+  #timedOut(error: unknown): boolean {
+    const reason: unknown = this.#signal.aborted ? this.#signal.reason : error;
+    return (
+      (reason instanceof Error || reason instanceof DOMException) && reason.name === "TimeoutError"
     );
   }
 

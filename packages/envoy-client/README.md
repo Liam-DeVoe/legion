@@ -567,7 +567,8 @@ with no attempt started more than 55 s after the first (`inFlightWithinMs`), unt
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
 repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there. The numbers come from the 3,612 `dispatch`
+was made, since its 60 s deadline counts from there; a caller with a bound of its own sets
+`deadlineMs` and an `inFlightWithinMs` inside it, as `dispatch result --project` does. The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
@@ -635,7 +636,10 @@ and that the write may or may not have taken effect, so check before running it 
 command is a new key. A write that ends with no answer at all is one too, naming the request: its
 last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
 deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
-definitive answer when its deadline ended it"); `last` is the cut or the timeout.
+definitive answer when its deadline ended it"); `last` is the cut or the timeout. An attempt the
+deadline ends before it goes out sent nothing, so where no attempt before it may have reached
+Dispatch the timeout is thrown as it is; a pause the deadline ends after such an answer ends the
+write with that answer.
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown: a
 `DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
 5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
@@ -888,8 +892,14 @@ Dispatch with no answer that says whether it stored the result (`writeOutcomeUnk
 1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A call
 that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
-turns away before anything is stored is asked again after the answer's `Retry-After`, or a second,
-for at most 60 s of waits in all, after which the command prints which turned it away and exits 1. The
+turns away before anything is stored is asked again after the answer's `Retry-After`, or a second.
+The whole call has one bound, 60 s from its start on one clock (`ResultBound`): the write client's
+deadline is that bound, its asks again under the key and the command's rounds start no later than
+5 s before its end, and a call turned away until then prints which turned it away with the last
+answer, its code named, and exits 1, with no `write_outcome_unknown`: only an attempt that may have
+reached a handler prints that line. An attempt the deadline ends before it is sent reached
+nothing. `dispatch results --project` prints its lines and `--json` by the same rule of a runner's
+log as the command's own output. The
 stored result names the run as its recorder and no person, so the job's log holds no person's
 address. It prints Dispatch's refusal as `<CODE>: <message>` and exits 1, such as
 `SPEC_FILES_REFUSED` with the first problem of spec files the graph logic refuses. A refusal of
