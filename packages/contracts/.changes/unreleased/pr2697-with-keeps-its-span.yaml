@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  `dispatch_doc_edit`'s `with` says the text a `replace` writes keeps every bold, italic,
+  strikethrough, link or code span the match lies wholly inside, that a `find` which spells a
+  span's own markup (`**Sami bold**`) lets `with` decide that span's formatting, and that a `find`
+  which matched the text as written spells none (`2*3*4` in `*a 2\*3\*4 b*`). It names the new
+  refusal too: a `find` that crosses a span's edge, covering text inside it and text outside it, is
+  `400 FIND_CROSSES_SPAN`, to be narrowed to the span's inside or written with the whole span's
+  markup. `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
+
+  `dispatch_doc_edit`'s validation refuses a `replace` that names no `with`, or carries a key
+  `replace` does not take (`markdown`, `after`, `before`, `block`, `index`, `type`,
+  `attributes`), naming `ops[<index>]` and the key, so every host refuses it before it is sent;
+  `with: ""` still passes. The `with` description says so, and names the server's
+  `400 REPLACE_FIELDS` for the same two shapes.
+time: 2026-11-16T20:55:00Z
+custom:
+    Issue: pr2697

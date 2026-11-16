@@ -3320,6 +3320,12 @@ type EditOp struct {
 	Index      json.RawMessage `json:"index,omitempty"`
 	Type       string          `json:"type,omitempty"`
 	Attributes map[string]any  `json:"attributes,omitempty"`
+	// WithOmitted says the op's JSON named no with, which With alone cannot say: it reads "" both
+	// for no with and for with "", which deletes the match on purpose. The edit route reads it
+	// off the request body (api.markOmittedWith), and a replace that names no with is refused
+	// rather than read as an empty one, which deleted its match (docs.ErrReplaceFields). An op a
+	// Go caller builds leaves it false.
+	WithOmitted bool `json:"-"`
 }
 
 // Route is a validated issue delivery route.

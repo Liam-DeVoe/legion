@@ -258,6 +258,107 @@ func oneCellAdvice(field string, cells []string) string {
 
 func (e *ErrQuoteSpansBlocks) Unwrap() error { return pmdoc.ErrTargetSpansBlocks }
 
+// ErrFindCrossesSpan names a replace whose find crosses the edge of a marked span - bold, italic,
+// strikethrough, a link, code: it covers text inside the span and text outside it
+// (pmdoc.TextblockAt.CrossedSpan). Text written over such a find lands outside the span, so a link
+// it covered went with its URL and no warning, and a span it cut to end on a space was written
+// with character references. The fix is to narrow the find to the span's inside, or to spell the
+// span's whole markup in it, which then replaces the markup too, so with decides that formatting.
+type ErrFindCrossesSpan struct {
+	opIndex
+	Find string
+	Span pmdoc.Span
+}
+
+// Kind is what the span the find crosses is, as the refusal names it: "link", "bold", "italic",
+// "strikethrough" or "code".
+func (e *ErrFindCrossesSpan) Kind() string {
+	switch e.Span.Mark.Type {
+	case "strong":
+		return "bold"
+	case "emphasis":
+		return "italic"
+	case "strike_through":
+		return "strikethrough"
+	case "inlineCode":
+		return "code"
+	}
+	return e.Span.Mark.Type
+}
+
+func (e *ErrFindCrossesSpan) Error() string {
+	noun := e.Kind() + " span"
+	if e.Kind() == "link" {
+		noun = "link"
+	}
+	refusal := fmt.Sprintf(
+		"%sfind %q crosses the edge of the %s %q: it covers text inside the %s and text outside it, and text written over both would not keep the %s whole; narrow find to the text inside the %s",
+		e.prefix(), e.Find, noun, e.Span.Text, noun, noun, noun,
+	)
+	if e.Span.Mark.Type == "strike_through" {
+		return refusal + ", and replace the text outside it in an operation of its own, since a find cannot spell strikethrough's markup"
+	}
+	spelled := ""
+	if e.Span.Markdown != "" {
+		spelled = fmt.Sprintf(" (%q)", e.Span.Markdown)
+	}
+	return fmt.Sprintf("%s, or write the whole %s with its markup in find%s, which then replaces the markup too, so with decides that formatting", refusal, noun, spelled)
+}
+
+// ErrReplaceFields names a replace whose fields do not say what it writes: it names no with
+// (model.EditOp.WithOmitted), or it carries a field replace does not take, another operation's,
+// where its new text may stand instead (markdown). Read as an empty with, such a replace deleted
+// the text its find matched: a caller that sent markdown in place of with lost that text
+// (dispatch://INFRA-1946). An explicit with "" is no such replace: it deletes the match on
+// purpose.
+type ErrReplaceFields struct {
+	opIndex
+	// Omitted says the replace named no with, and Foreign is each field it carries that replace
+	// does not take, by its JSON name.
+	Omitted bool
+	Foreign []string
+}
+
+func (e *ErrReplaceFields) Error() string {
+	var problems []string
+	if e.Omitted {
+		problems = append(problems, "names no with, which would delete the text find matches")
+	}
+	if len(e.Foreign) > 0 {
+		problems = append(problems, fmt.Sprintf("carries %s, which replace does not take", strings.Join(e.Foreign, " and ")))
+	}
+	return fmt.Sprintf(
+		`%sreplace %s; a replace takes find, with and occurrence alone: write the new text in with, or with "" to delete the match on purpose`,
+		e.prefix(), strings.Join(problems, ", and "),
+	)
+}
+
+// replaceFieldsRefusal is the refusal of a replace op that names no with or carries a field
+// replace does not take, and nil for one that names with and carries replace's fields alone.
+func replaceFieldsRefusal(op model.EditOp) error {
+	var foreign []string
+	for _, field := range [...]struct {
+		name    string
+		carried bool
+	}{
+		{"markdown", op.Markdown != ""},
+		{"after", op.After != ""},
+		{"before", op.Before != ""},
+		{"block", op.Block != ""},
+		{"index", len(op.Index) > 0},
+		{"type", op.Type != ""},
+		{"attributes", op.Attributes != nil},
+	} {
+		if field.carried {
+			foreign = append(foreign, field.name)
+		}
+	}
+	if !op.WithOmitted && len(foreign) == 0 {
+		return nil
+	}
+	return &ErrReplaceFields{Omitted: op.WithOmitted, Foreign: foreign}
+}
+
 // stampOperation gives index to an error that renders its own operation, and falls back to
 // wrapping everything else with the same prefix.
 func stampOperation(index int, err error) error {
@@ -278,13 +379,17 @@ func isEditRefusal(err error) bool {
 	var invalid *ErrInvalidOp
 	var ambiguous *ErrAnchorAmbiguous
 	var ciCheck *ErrInvalidCICheck
+	var crossed *ErrFindCrossesSpan
+	var replaceFields *ErrReplaceFields
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
 		errors.Is(err, pmdoc.ErrTableWidth) ||
 		IsTooLarge(err) ||
 		errors.As(err, &invalid) ||
 		errors.As(err, &ambiguous) ||
-		errors.As(err, &ciCheck)
+		errors.As(err, &ciCheck) ||
+		errors.As(err, &crossed) ||
+		errors.As(err, &replaceFields)
 }
 
 // ErrInvalidPrecondition identifies a malformed optimistic-concurrency guard.
@@ -629,7 +734,7 @@ func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, err
 // quotePreconditionBlock is the block holding the text quote matched, written in field: a
 // replace's or a delete's find, or an insert's or a move's anchor.
 func quotePreconditionBlock(tree *batchTree, field, quote string, occurrence *int) ([]string, error) {
-	range_, _, err := findEditQuote(tree, field, quote, occurrence)
+	range_, _, _, err := findEditQuote(tree, field, quote, occurrence)
 	if err != nil {
 		return nil, err
 	}
@@ -1462,7 +1567,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if op.Find == "" {
 			return nil, invalidOp("find or block")
 		}
-		r, _, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+		r, _, _, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
 		if err != nil {
 			return nil, err
 		}
@@ -1803,17 +1908,19 @@ func invalidMarkdownOp(field string, err error) error {
 }
 
 // findEditQuote resolves the quote field names, so a miss reports the field the caller wrote. It
-// resolves through the batch's one quote finder over that tree (batchTree.finder). byMarker
-// reports that the quote's leading list marker selected the item it matched (resolveEditQuote).
-func findEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, byMarker bool, err error) {
-	r, byMarker, err = resolveEditQuote(tree, field, quote, occurrence)
+// resolves through the batch's one quote finder over that tree (batchTree.finder). step is the
+// step of the matcher cascade the quote matched at, so a replace reads its find as markup only
+// where the finder did (pmdoc.QuoteMarkdown), and byMarker reports that the quote's leading list
+// marker selected the item it matched (resolveEditQuote).
+func findEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, step pmdoc.QuoteStep, byMarker bool, err error) {
+	r, step, byMarker, err = resolveEditQuote(tree, field, quote, occurrence)
 	if err != nil {
-		return pmdoc.Range{}, false, err
+		return pmdoc.Range{}, step, false, err
 	}
 	if pmdoc.TargetSpansBlocks(tree.node, r) {
-		return pmdoc.Range{}, false, quoteSpansBlocks(tree, field, quote, r)
+		return pmdoc.Range{}, step, false, quoteSpansBlocks(tree, field, quote, r)
 	}
-	return r, byMarker, nil
+	return r, step, byMarker, nil
 }
 
 // quoteSpansBlocks is the refusal of quote, written in field, whose match r reaches past one
@@ -1830,22 +1937,23 @@ func quoteSpansBlocks(tree *batchTree, field, quote string, r pmdoc.Range) error
 
 // resolveEditQuote resolves quote as text the document holds and, when it matches none and opens
 // with a list item's marker, as the list items the marker selects (pmdoc.QuoteFinder.FindListItem),
-// reporting that in byMarker. The selection is a document edit's alone: a comment's or an ask's
-// quote is text the document held, so its marker is text.
-func resolveEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, byMarker bool, err error) {
+// reporting that in byMarker, and the step of the matcher cascade it matched at in step. The
+// selection is a document edit's alone: a comment's or an ask's quote is text the document held,
+// so its marker is text.
+func resolveEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, step pmdoc.QuoteStep, byMarker bool, err error) {
 	finder, err := tree.finder()
 	if err != nil {
-		return pmdoc.Range{}, false, err
+		return pmdoc.Range{}, step, false, err
 	}
-	r, err = finder.Find(quote, occurrence, nil)
+	r, step, err = finder.FindStep(quote, occurrence, nil)
 	if err == nil {
-		return r, false, nil
+		return r, step, false, nil
 	}
 	var missing *pmdoc.ErrQuoteNotFound
 	if errors.As(err, &missing) && missing.Matches == 0 && pmdoc.ParseListItemQuote(quote).Text != "" {
-		selected, selectErr := finder.FindListItem(quote, occurrence)
+		selected, selectedStep, selectErr := finder.FindListItem(quote, occurrence)
 		if selectErr == nil {
-			return selected, true, nil
+			return selected, selectedStep, true, nil
 		}
 		// A selection the occurrence overshoots, or that several items answer, is the quote's
 		// answer; a selection of nothing leaves the miss as text.
@@ -1854,7 +1962,7 @@ func resolveEditQuote(tree *batchTree, field, quote string, occurrence *int) (r 
 			err = selectErr
 		}
 	}
-	return pmdoc.Range{}, false, describeQuoteError(tree, field, quote, err)
+	return pmdoc.Range{}, step, false, describeQuoteError(tree, field, quote, err)
 }
 
 // describeQuoteError dresses a quote finder's refusal of quote, written in field, for the caller.
@@ -2072,7 +2180,7 @@ func insertTarget(tree *batchTree, op model.EditOp, field, anchor string, occurr
 		}
 		return r, false, nil
 	}
-	r, _, err := resolveEditQuote(tree, field, anchor, occurrence)
+	r, _, _, err := resolveEditQuote(tree, field, anchor, occurrence)
 	if err != nil {
 		return pmdoc.Range{}, true, err
 	}
@@ -2184,11 +2292,23 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if op.Find == "" {
 		return nil, invalidOp("find")
 	}
-	r, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+	// A replace that names no with, or whose new text stands under another operation's field,
+	// would be read as an empty with and delete its match; it is refused before anything is read.
+	if err := replaceFieldsRefusal(op); err != nil {
+		return nil, err
+	}
+	r, step, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
 	if err != nil {
 		return nil, err
 	}
 	at, _ := pmdoc.ContainingTextblock(tree.node, r.From)
+	// A find that crosses a marked span's edge is refused before its with is read: the text
+	// written over it would land outside the span, so a link it covered would go with its URL,
+	// and a span it cut to end on a space would be written with character references
+	// (`**Sami said&#32;**loud`). A find that spells the whole span's markup replaces it instead.
+	if span, crossed := at.CrossedSpan(r, op.Find, step); crossed {
+		return nil, &ErrFindCrossesSpan{Find: op.Find, Span: span}
+	}
 	code := at.Node.Type == "code_block"
 	var with *pmdoc.Node
 	// blocks says `with` names blocks of its own, which are written over the match by the
@@ -2282,7 +2402,9 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	// it and the split's edges were written as character references, `**Sami&#32;**&#97;nswered`.
 	// Text that writes a mark of the span's type itself keeps its own (pmdoc.AddSpanMarks), and a
 	// find that spells a span's markup (`**Sami bold**`) leaves that mark to the with
-	// (pmdoc.WithoutQuotedMarkup), which keeps it by writing it or drops it by leaving it off.
+	// (pmdoc.WithoutQuotedMarkup), which keeps it by writing it or drops it by leaving it off. Only
+	// a find the finder read as markdown spells markup: one it matched as written is text, so
+	// `2*3*4` in `*a 2\*3\*4 b*` keeps the italic.
 	anchors, spans := pmdoc.MarksCovering(tree.node, r)
 	if blocks {
 		if err := markBlockReplacement(with, anchors, op.With); err != nil {
@@ -2290,7 +2412,10 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		}
 	} else {
 		pmdoc.AddMarks(with, anchors)
-		pmdoc.AddSpanMarks(with, pmdoc.WithoutQuotedMarkup(spans, op.Find))
+		if step == pmdoc.QuoteMarkdown {
+			spans = pmdoc.WithoutQuotedMarkup(spans, op.Find)
+		}
+		pmdoc.AddSpanMarks(with, spans)
 	}
 	valid, err := tree.validated("Splice")
 	if err != nil {

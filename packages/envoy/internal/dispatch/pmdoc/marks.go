@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"slices"
+	"strings"
 )
 
 // The mark vocabulary the reader and the writer share: which marks a text is written under, in
@@ -66,6 +67,215 @@ func nodeHasMark(node *Node, markType string) bool {
 // between.
 var renderedMarkTypes = map[string]bool{
 	"link": true, "strong": true, "emphasis": true, "strike_through": true, "inlineCode": true,
+}
+
+// anchorMarkTypes are the marks an ask or comment row anchors to: its quote is the text they
+// cover (FindMark). They are exactly the marks whose schema declares an empty excludes (the fork's
+// proofComment and proofSuggestion, packages/proof-editor's dispatchAsk), so two of one type may
+// cover one character and each is stored under its own Y attribute key (markAttributeKey). The
+// set moves with those schemas.
+var anchorMarkTypes = map[string]bool{"proofComment": true, "proofSuggestion": true, "dispatchAsk": true}
+
+// MarksCovering returns the marks text written over r takes from the text r held, from one walk
+// of doc: each mark that every text run inside r carries.
+//
+// anchors is each anchor mark among them, every anchor r lies wholly inside. Text written over r
+// belongs inside those anchors: a replacement spliced in without them ends each one's run where it
+// lands, and FindMark then reads only the text before it.
+//
+// spans is each mark the rendering writes (renderedMarkTypes) among them - bold, italic,
+// strikethrough, a link, code - every marked span r lies wholly inside. Text written over r belongs
+// inside those spans too: a replacement spliced in without them splits each span where it lands,
+// and a split span whose edge is a space is written with character references to keep its
+// delimiters (`**Sami&#32;**&#97;nswered`).
+//
+// A range that runs past an anchor's or a span's edge has a run without its mark, so that anchor
+// or span keeps only the text the write leaves alone. A document edit refuses a replace whose
+// find runs past a span's edge (TextblockAt.CrossedSpan); an accepted suggestion's text still
+// lands outside that span.
+func MarksCovering(doc *Node, r Range) (anchors, spans []Mark) {
+	var covering []Mark
+	first := true
+	walk(doc, func(node *Node, _ []int, pos, end int) bool {
+		if pos >= r.To {
+			return false
+		}
+		if node.Type != "text" || end <= r.From {
+			return true
+		}
+		if first {
+			first = false
+			for _, mark := range node.Marks {
+				if anchorMarkTypes[mark.Type] || renderedMarkTypes[mark.Type] {
+					covering = append(covering, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
+				}
+			}
+			return len(covering) > 0
+		}
+		kept := covering[:0]
+		for _, mark := range covering {
+			if carriesMark(node, mark) {
+				kept = append(kept, mark)
+			}
+		}
+		covering = kept
+		return len(covering) > 0
+	})
+	for _, mark := range covering {
+		if anchorMarkTypes[mark.Type] {
+			anchors = append(anchors, mark)
+		} else {
+			spans = append(spans, mark)
+		}
+	}
+	return anchors, spans
+}
+
+func carriesMark(node *Node, want Mark) bool {
+	for _, mark := range node.Marks {
+		if mark.Type == want.Type && attrsEqual(mark.Attrs, want.Attrs) {
+			return true
+		}
+	}
+	return false
+}
+
+// AddMarks adds marks to every text node under node, in place.
+func AddMarks(node *Node, marks []Mark) {
+	addMarks(node, marks, false)
+}
+
+// AddSpanMarks adds each of spans (MarksCovering) to every text node under node that carries no
+// mark of its type, in place. A mark of that type the text carries is its own - `**answered**`
+// written inside a bold span, a link of its own inside a link - and a span's mark of the type
+// beside it would write it twice, or two links over one text.
+func AddSpanMarks(node *Node, spans []Mark) {
+	addMarks(node, spans, true)
+}
+
+// addMarks adds a copy of each of marks to every text node under node, in place, and keeps each
+// node's marks in their order (sortMarks). skip passes over a mark of a type the node carries
+// already, AddSpanMarks' rule.
+func addMarks(node *Node, marks []Mark, skip bool) {
+	if len(marks) == 0 {
+		return
+	}
+	if node.Type == "text" {
+		added := false
+		for _, mark := range marks {
+			if skip && containsMark(node.Marks, mark.Type) {
+				continue
+			}
+			node.Marks = append(node.Marks, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
+			added = true
+		}
+		if added {
+			sortMarks(node.Marks)
+		}
+		return
+	}
+	for _, child := range node.Children {
+		addMarks(child, marks, skip)
+	}
+}
+
+// Span is a marked span of a textblock: the run of its children one bold, italic, strikethrough,
+// link or code mark (renderedMarkTypes) covers, which canonical Markdown writes inside one pair of
+// delimiters.
+type Span struct {
+	Mark Mark
+	// Text is the span's whole text, as a read serves it (TextContent).
+	Text string
+	// Markdown is the span written under its own mark alone, as a find spells its markup
+	// (`[this](https://example.com/Sami)`). It is empty for strikethrough, whose markup the finder
+	// never reads (markTypeMarkup), so that no find spells it.
+	Markdown string
+}
+
+// CrossedSpan is the first span of the textblock, in the order the spans end, whose edge r
+// crosses: r covers text inside the span and text outside it. Text written over such a range lands
+// outside the span, so a link it covered goes with its URL, and a span it cut to end or start on a
+// space is written with character references to keep its delimiters (`**Sami said&#32;**loud`). A
+// range inside one span crosses no edge of it, and neither does one over a span's whole text
+// alone.
+//
+// find is the quote that matched r, and step the step of the matcher cascade it matched at. A find
+// matched as markdown (QuoteMarkdown) that spells a span's markup over the whole span (`wrote
+// [this](https://example.com/Sami)`) crosses no edge of it: it replaces that markup too, which is
+// then the text written over it to keep or drop (WithoutQuotedMarkup). One that spells only the
+// part of a span it covers (`**bold** now` in `**Sami said bold** now`) still crosses that span's
+// edge, and a find matched as written spells no markup at all.
+func (at TextblockAt) CrossedSpan(r Range, find string, step QuoteStep) (Span, bool) {
+	type open struct {
+		mark Mark
+		// first is the index of the span's first child, and from its position.
+		first, from int
+	}
+	// At most one span of each rendered mark type is open at a child, since none of those marks
+	// overlaps another of its type.
+	var openSpans [5]open
+	opened := openSpans[:0]
+	var spelled inlineMarkup
+	read := false
+	children := at.Node.Children
+	pos := at.Content.From
+	for index := 0; index <= len(children); index++ {
+		var child *Node
+		if index < len(children) {
+			child = children[index]
+		}
+		kept := opened[:0]
+		for _, span := range opened {
+			if child != nil && carriesMark(child, span.mark) {
+				kept = append(kept, span)
+				continue
+			}
+			// The span ends at pos.
+			if span.from >= r.To || pos <= r.From || (span.from <= r.From && r.To <= pos) {
+				continue
+			}
+			if step == QuoteMarkdown && r.From <= span.from && pos <= r.To {
+				if !read {
+					spelled, read = quotedMarkup(find), true
+				}
+				if markTypeMarkup(span.mark.Type)&spelled != 0 {
+					continue
+				}
+			}
+			return spanOf(span.mark, children[span.first:index]), true
+		}
+		opened = kept
+		if child == nil || (pos >= r.To && len(opened) == 0) {
+			break
+		}
+		// A span opening at or past r's end lies outside it.
+		if pos < r.To {
+			for _, mark := range child.Marks {
+				if renderedMarkTypes[mark.Type] && !slices.ContainsFunc(opened, func(span open) bool { return sameMark(span.mark, mark) }) {
+					opened = append(opened, open{mark: mark, first: index, from: pos})
+				}
+			}
+		}
+		pos += nodeSize(child)
+	}
+	return Span{}, false
+}
+
+// spanOf is the span mark covers over runs, the textblock's children it covers, with its text and
+// the markdown a find spells it with: the runs written under mark alone, at a line's start, where
+// the finder reads a find.
+func spanOf(mark Mark, runs []*Node) Span {
+	written := &Node{Type: "paragraph", Children: make([]*Node, len(runs))}
+	for index, run := range runs {
+		written.Children[index] = &Node{Type: run.Type, Text: run.Text, Attrs: run.Attrs, Marks: []Mark{mark}}
+	}
+	span := Span{Mark: mark, Text: TextContent(written)}
+	if markTypeMarkup(mark.Type) != 0 {
+		if markdown, err := Render(&Node{Type: "doc", Children: []*Node{written}}); err == nil {
+			span.Markdown = strings.TrimSuffix(markdown, "\n")
+		}
+	}
+	return span
 }
 
 // writtenMarks is the marks a node's text is written under: its visible marks, less a bare URL's

@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  `dispatch doc-edit`'s `replace` and an accepted suggestion keep the bold, italic, strikethrough,
+  link or code span the replaced text lies wholly inside: replacing `said` in `**Sami said bold**`
+  gives `**Sami answered bold**`, where the span was split and its edges written as character
+  references (`**Sami&#32;**&#97;nswered`), and replacing a span's whole text keeps its mark, where
+  it was dropped. A `find` that spells the span's markup (`**Sami bold**`) lets `with` decide that
+  formatting; one that matched the text as written spells none, so `2*3*4` in `*a 2\*3\*4 b*`
+  stays in the italic. A `replace` whose `find` crosses a span's edge, covering text inside it and
+  text outside it (`wrote this`, where only `this` is a link), is refused with
+  `400 FIND_CROSSES_SPAN` naming the span, and nothing is written, where the link went with its URL
+  and a span cut to end on a space was written with character references: narrow the `find` to the
+  span's inside, or spell the whole span's markup in it.
+
+  A `replace` that names no `with`, or carries a field `replace` does not take (`markdown`,
+  `after`, `before`, `block`, `index`, `type`, `attributes`), is refused with `400 REPLACE_FIELDS`
+  naming the operation and the field, and nothing in the batch is written. It was read as an empty
+  `with` and deleted the text its `find` matched, as a `replace` that sent its new text as
+  `markdown` did. `with: ""` still deletes the match on purpose.
+time: 2026-11-16T20:55:00Z
+custom:
+    Issue: pr2697

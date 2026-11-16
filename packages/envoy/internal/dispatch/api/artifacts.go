@@ -1199,6 +1199,37 @@ type editArtifactInput struct {
 	Actor        *model.Actor            `json:"actor"`
 }
 
+// jsonPresence decodes any JSON value into nothing, so a pointer to one says only whether a
+// member was there, and reading it copies none of the member's value.
+type jsonPresence struct{}
+
+func (*jsonPresence) UnmarshalJSON([]byte) error { return nil }
+
+// markOmittedWith marks each replace of ops whose JSON in body, the request's bytes, named no with
+// (model.EditOp.WithOmitted), which docs refuses: a decoded op's With is "" both for no with and
+// for with "", which deletes the match on purpose, and a JSON null with is none. Only a replace
+// whose With is empty takes the second read of body, which decodes nothing but each op's with
+// member, so a batch of replaces that each write text decodes its body once.
+func markOmittedWith(ops []model.EditOp, body []byte) error {
+	if !slices.ContainsFunc(ops, func(op model.EditOp) bool { return op.Op == "replace" && op.With == "" }) {
+		return nil
+	}
+	var named struct {
+		Ops []struct {
+			With *jsonPresence `json:"with"`
+		} `json:"ops"`
+	}
+	if err := json.Unmarshal(body, &named); err != nil {
+		return fmt.Errorf("read the edit's with members: %w", err)
+	}
+	for index := range ops {
+		if ops[index].Op == "replace" && ops[index].With == "" && named.Ops[index].With == nil {
+			ops[index].WithOmitted = true
+		}
+	}
+	return nil
+}
+
 // editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns answer.
 type editArtifactResponse struct {
@@ -1225,7 +1256,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input editArtifactInput
-	if err := decodeJSON(r, &input); err != nil {
+	body, err := decodeJSONBody(r, &input)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := markOmittedWith(input.Ops, body); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

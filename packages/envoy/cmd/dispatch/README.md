@@ -4656,7 +4656,10 @@ Each item below names an operation and its required fields, then its behavior.
 - `replace` (`find`, `with`)
 
   Replace one plain-text target.
+  Every `replace` names `with`, and `with: ""` deletes the target on purpose: a `replace` with no `with`, or carrying a field `replace` does not take (`markdown`, `after`, `before`, `block`, `index`, `type`, `attributes`), is `400 REPLACE_FIELDS` naming the operation and the field, with nothing written, where it was read as an empty `with` and deleted the target.
   Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's own markup (`**Sami bold**`) lets `with` decide that span's formatting.
+  A `find` matched as the text is written spells no markup: `2*3*4` inside `*a 2\*3\*4 b*` is the span's own text, so the replacement stays in the italic.
+  A `find` that crosses a span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written: narrow it to the span's inside, or spell the whole span's markup in it (`wrote [this](https://example.com/Sami)`), which then replaces the markup too.
 
 - `delete` (`find`)
 
@@ -4775,6 +4778,17 @@ Each item below names a status and code, then its meaning.
 - `400 TARGET_SPANS_BLOCKS`
 
   A document edit quote crosses textblock boundaries.
+
+- `400 FIND_CROSSES_SPAN`
+
+  A `replace`'s `find` covers text inside a bold, italic, strikethrough, link or code span and text outside it, which would write the replacement outside the span, dropping a link with its URL or cutting the span to end on a space; nothing is written.
+  The message names the span's text and kind and the markup that spells it: narrow `find` to the span's inside, or write the whole span with its markup in `find`, which then replaces the markup too (a find never spells strikethrough, so a struck span's edge takes one replace inside it and one outside).
+
+- `400 REPLACE_FIELDS`
+
+  A `replace` names no `with` (a JSON `null` is none), or carries a field `replace` does not take (`markdown`, `after`, `before`, `block`, `index`, `type`, `attributes`); nothing in the batch is written.
+  Such a replace was read as an empty `with`, which deleted the text its `find` matched; `with: ""` still deletes it on purpose.
+  The message names the operation and each such field: `operation 1: replace names no with, which would delete the text find matches, and carries markdown, which replace does not take; …`.
 
 - `400 TABLE_WIDTH`
 

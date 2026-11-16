@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -15,8 +16,13 @@ import (
 // split the span and wrote its edge characters as entities (`**Sami&#32;**&#97;nswered…`), and
 // replaced over a bold span's whole text, `Sami bold` lost the bold. The rows after the repro's
 // are the same fault at a span's start and end, in a link, italic, strikethrough and code, and
-// three bounds of the rule: a with that writes the span's mark itself, a find that spells the
-// span's markup, and a find that runs past the span's edge, whose text is written outside it.
+// the bounds of the rule: a with that writes the span's mark itself, and a find that spells the
+// span's markup, over its whole text or across its edge, which leaves the mark to the with. A
+// find that runs past a span's edge without spelling its markup is refused
+// (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as written,
+// whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a backtick inside
+// a bold, an italic and a code span, the review's two finds (`2*3*4` in italic, `2**3**4` in bold),
+// and `snake_case_name`, whose underscores no reading takes for markup.
 // Each row writes one replace and reads it back three ways: the markdown the version stored, the
 // document a caller reads, and the text of the paragraph the replace wrote in.
 func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
@@ -110,12 +116,108 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 			text:     "Sami wrote this and Sami answered bold.",
 		},
 		{
-			name:     "a find across a bold span's end writes outside the span",
-			markdown: "**Sami's** bold now.\n",
-			find:     "'s bold",
-			with:     "'s loud",
-			want:     "**Sami**'s loud now.\n",
-			text:     "Sami's loud now.",
+			name:     "a find that spells a link's markup across its edge leaves the link to the with",
+			markdown: "Sami wrote [this](https://example.com/Sami) today.\n",
+			find:     "wrote [this](https://example.com/Sami)",
+			with:     "wrote that",
+			want:     "Sami wrote that today.\n",
+			text:     "Sami wrote that today.",
+		},
+		{
+			name:     "a literal * inside a bold span",
+			markdown: "**a \\*\\*b\\*\\* c** now.\n",
+			find:     "**b**",
+			with:     "x",
+			want:     "**a x c** now.\n",
+			text:     "a x c now.",
+		},
+		{
+			name:     "a literal _ inside a bold span",
+			markdown: "**a \\_\\_b\\_\\_ c** now.\n",
+			find:     "__b__",
+			with:     "x",
+			want:     "**a x c** now.\n",
+			text:     "a x c now.",
+		},
+		{
+			name:     "a literal backtick inside a bold span",
+			markdown: "**a \\`b\\` c** now.\n",
+			find:     "`b`",
+			with:     "x",
+			want:     "**a x c** now.\n",
+			text:     "a x c now.",
+		},
+		{
+			name:     "a literal * inside an italic span",
+			markdown: "*a \\*b\\* c* now.\n",
+			find:     "*b*",
+			with:     "x",
+			want:     "*a x c* now.\n",
+			text:     "a x c now.",
+		},
+		{
+			name:     "a literal _ inside an italic span",
+			markdown: "*a \\_b\\_ c* now.\n",
+			find:     "_b_",
+			with:     "x",
+			want:     "*a x c* now.\n",
+			text:     "a x c now.",
+		},
+		{
+			name:     "a literal backtick inside an italic span",
+			markdown: "*a \\`b\\` c* now.\n",
+			find:     "`b`",
+			with:     "x",
+			want:     "*a x c* now.\n",
+			text:     "a x c now.",
+		},
+		{
+			name:     "a literal * inside a code span",
+			markdown: "Run `make *b* all` now.\n",
+			find:     "*b*",
+			with:     "x",
+			want:     "Run `make x all` now.\n",
+			text:     "Run make x all now.",
+		},
+		{
+			name:     "a literal _ inside a code span",
+			markdown: "Run `make _b_ all` now.\n",
+			find:     "_b_",
+			with:     "x",
+			want:     "Run `make x all` now.\n",
+			text:     "Run make x all now.",
+		},
+		{
+			name:     "a literal backtick inside a code span",
+			markdown: "Run ``make `b` all`` now.\n",
+			find:     "`b`",
+			with:     "x",
+			want:     "Run `make x all` now.\n",
+			text:     "Run make x all now.",
+		},
+		{
+			name:     "the review's literal asterisks inside an italic span",
+			markdown: "*a 2\\*3\\*4 b* now.\n",
+			find:     "2*3*4",
+			with:     "x",
+			want:     "*a x b* now.\n",
+			text:     "a x b now.",
+		},
+		{
+			name:     "the review's literal double asterisks inside a bold span",
+			markdown: "**a 2\\*\\*3\\*\\*4 b**\n",
+			find:     "2**3**4",
+			with:     "x",
+			want:     "**a x b**\n",
+			text:     "a x b",
+		},
+		{
+			name:     "underscores inside a word inside an italic span",
+			markdown: "*a snake_case_name b*\n",
+			find:     "snake_case_name",
+			with:     "x",
+			want:     "*a x b*\n",
+			text:     "a x b",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -136,6 +238,101 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 			if stored != test.want || read != test.want || text != test.text {
 				t.Fatalf("replace %q with %q in %q:\n stored markdown %q\n read markdown   %q\n text            %q\nwant markdown %q and text %q",
 					test.find, test.with, test.markdown, stored, read, text, test.want, test.text)
+			}
+		})
+	}
+}
+
+// A replace whose find crosses a marked span's edge - it covers text inside the span and text
+// outside it - is refused, and the document is left as it was. Text written over such a find
+// lands outside the span: over the tester's `wrote this`, where only `this` is the link, the link
+// and its URL were gone with no warning, and a bold, italic or struck span the write cut to end
+// on a space was written with character references (`**Sami said&#32;**loud`). The refusal names
+// the span and its kind (ErrFindCrossesSpan). The rows are the link, bold and italic edges, a
+// strikethrough's and a code span's, a find that spells only the part of a bold span's markup it
+// covers, and the find past a bold span's end (`'s bold` in `**Sami's** bold`) that
+// TestReplaceInsideAMarkedSpanKeepsTheSpanWhole once wrote outside the span, as `**Sami**'s loud`.
+func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
+	for _, test := range []struct{ name, markdown, find, with, kind, span string }{
+		{
+			name:     "a find across a link's start",
+			markdown: "Sami wrote [this](https://example.com/Sami) today.\n",
+			find:     "wrote this",
+			with:     "wrote that",
+			kind:     "link",
+			span:     "this",
+		},
+		{
+			name:     "a find across a bold span's end",
+			markdown: "**Sami said bold** now.\n",
+			find:     "bold now",
+			with:     "loud then",
+			kind:     "bold",
+			span:     "Sami said bold",
+		},
+		{
+			name:     "a find across an italic span's end",
+			markdown: "*Sami said it* now.\n",
+			find:     "it now",
+			with:     "that then",
+			kind:     "italic",
+			span:     "Sami said it",
+		},
+		{
+			name:     "a find across a struck span's end",
+			markdown: "~~Sami said it~~ now.\n",
+			find:     "it now",
+			with:     "that then",
+			kind:     "strikethrough",
+			span:     "Sami said it",
+		},
+		{
+			name:     "a find across a code span's end",
+			markdown: "Run `make said all` now.\n",
+			find:     "all now",
+			with:     "test then",
+			kind:     "code",
+			span:     "make said all",
+		},
+		{
+			name:     "a find that spells only the part of a bold span it covers",
+			markdown: "**Sami said bold** now.\n",
+			find:     "**bold** now",
+			with:     "loud then",
+			kind:     "bold",
+			span:     "Sami said bold",
+		},
+		{
+			name:     "a find across a bold span's end that once wrote outside the span",
+			markdown: "**Sami's** bold now.\n",
+			find:     "'s bold",
+			with:     "'s loud",
+			kind:     "bold",
+			span:     "Sami's",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			seedServiceText(t, service, artifactID, test.markdown)
+			before, _ := latestVersionOf(t, service.store, artifactID)
+			_, err := joinedApplyOps(service, artifactID, []model.EditOp{
+				{Op: "replace", Find: test.find, With: test.with},
+			}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil)
+			read, readErr := service.Text(context.Background(), artifactID)
+			if readErr != nil {
+				t.Fatalf("read the document: %v", readErr)
+			}
+			var crossed *ErrFindCrossesSpan
+			if !errors.As(err, &crossed) || crossed.Kind() != test.kind || crossed.Span.Text != test.span {
+				t.Fatalf("replace %q with %q in %q = %v, want it refused for crossing the %s %q; the document reads %q",
+					test.find, test.with, test.markdown, err, test.kind, test.span, read)
+			}
+			// A refused replace stores no version: the latest is the one before the seed, or the
+			// seed's own if a settlement has stored it since.
+			stored, _ := latestVersionOf(t, service.store, artifactID)
+			if (stored != before && stored != test.markdown) || read != test.markdown {
+				t.Fatalf("after the refused replace %q in %q:\n stored markdown %q, was %q\n read markdown   %q\nwant both unchanged",
+					test.find, test.markdown, stored, before, read)
 			}
 		})
 	}
