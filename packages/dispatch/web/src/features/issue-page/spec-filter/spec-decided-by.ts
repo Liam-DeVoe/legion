@@ -11,6 +11,7 @@ import {
   type NodeType,
   type StatementState,
 } from "../page-words";
+import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
 
 /**
@@ -195,7 +196,8 @@ export function specDecidedBy({
     parent?: SpecParent;
     runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
   }[] = [];
-  const rows = rowsOf(view);
+  // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
+  const rows = nodesInOrder(view).slice(1);
   for (const node of rows.filter((row) => row.type === "requirement")) {
     const parent = parentOf(node, nodes, nameOf);
     const under = answerUnder(parent, nodes, reader, nameOf);
@@ -272,17 +274,6 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
     if (route?.kind === "ask") asks.set(route.id, node);
   }
   return asks;
-}
-
-/** Every row the Spec filter kept, in the order it draws them. */
-function rowsOf(view: TreeNode): readonly TreeNode[] {
-  const rows: TreeNode[] = [];
-  const walk = (node: TreeNode): void => {
-    rows.push(node);
-    for (const child of node.children) walk(child);
-  };
-  for (const child of view.children) walk(child);
-  return rows;
 }
 
 /** The decisions that shaped each statement, by the statement's node id, in the order the

@@ -119,7 +119,10 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
           }
           return text.replace(/\s+/g, " ").trim();
         }, filled),
-      { message: "the new page draws text outside its header and its view row" }
+      {
+        message:
+          "the new page draws text outside its header, its view row, the Contents pane and the Spec view",
+      }
     )
     .toBe(`${issue.key} ${issue.title}`);
   const controls = "button, a, input, select, textarea";
@@ -130,7 +133,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         (found, parts) => found.filter((control) => control.closest(parts) === null).length,
         filled
       ),
-    "the new page draws a control outside its view row"
+    "the new page draws a control outside its view row, the Contents pane and the Spec view"
   ).toBe(0);
 }
 

@@ -44,7 +44,7 @@ export interface ChildWithSpecSeed {
 }
 
 /** A statement of a seeded spec: one `requirement` block. */
-function statementBlock(id: string, words: string): string {
+export function statementBlock(id: string, words: string): string {
   return `:::requirement{#${id}}\n${words}\n:::`;
 }
 

@@ -35,9 +35,9 @@ export interface OneLineBox {
  * The list's one reading of its own width, for its one-line entries: taken as the list is first
  * laid out, before it is painted, again whenever its box changes size, by one `ResizeObserver`
  * on the list and none on any entry, and again whenever the document's fonts finish loading. A
- * reading that says what it said before leaves the entries alone. Undefined while `oneLine` is
- * false, and where the page has no canvas to measure words on, which is no browser this page
- * runs in; an entry given none draws its first line uncut.
+ * reading that says what it said before leaves the entries alone. Undefined where the page has
+ * no canvas to measure words on, which is no browser this page runs in; an entry given none
+ * draws its first line uncut.
  *
  * The fonts are read because `styles.css` loads Inter with `font-display: swap`: the list's
  * first frames are drawn in the fallback while Inter's file is on its way, and drawn again in
@@ -47,14 +47,11 @@ export interface OneLineBox {
  * `loadingdone` - a face the document was loading has arrived, or failed - makes a new reading
  * whatever the width, and each entry measures its words again in the face that now draws them.
  */
-export function useOneLineBox(
-  tree: RefObject<HTMLElement | null>,
-  oneLine: boolean
-): OneLineBox | undefined {
+export function useOneLineBox(tree: RefObject<HTMLElement | null>): OneLineBox | undefined {
   const [box, setBox] = useState<OneLineBox | undefined>(undefined);
   useLayoutEffect(() => {
     const element = tree.current;
-    if (!oneLine || element === null) return;
+    if (element === null) return;
     const context = document.createElement("canvas").getContext("2d");
     if (context === null) return;
     let width = element.getBoundingClientRect().width;
@@ -102,8 +99,8 @@ export function useOneLineBox(
       fonts?.removeEventListener("loadingdone", loaded);
       observer?.disconnect();
     };
-  }, [oneLine, tree]);
-  return oneLine ? box : undefined;
+  }, [tree]);
+  return box;
 }
 
 /** What a one-line entry draws of its node's first line, and where it draws it. */

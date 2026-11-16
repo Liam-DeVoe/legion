@@ -9,6 +9,7 @@ import { QueryError } from "../../../components/QueryError";
 import {
   pageDecisionText,
   pageFocusedRow,
+  pageHairBg,
   pageHairBorder,
   pageInkText,
   pageKindBullet,
@@ -21,7 +22,11 @@ import {
 } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
-import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import {
+  buildReferencePath,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+} from "../../refs/routes";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
@@ -60,6 +65,7 @@ import {
   type SpecGroup,
   type SpecMark,
   type SpecParent,
+  type SpecSaid,
   type SpecStatement,
   specDecidedBy,
 } from "./spec-decided-by";
@@ -99,9 +105,11 @@ const NOTHING = (): void => {};
  * It is the outline under the Spec filter, so it is one `role="tree"` named as the outline is,
  * with the outline's keys (`useTreeKeymap.ts`): the statements are its rows, the focused one is
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
- * a statement, `r` replies to it and Enter goes to it in the conversation, where it is edited.
- * The focus on a statement puts its facts in Details, as a row of the outline does, and an
- * address naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
+ * a statement, and Enter goes to it in the conversation, where it is edited. `r` replies to a
+ * statement once part L makes a statement a target of the outline's writer, which the body
+ * already passes to the keymap. The focus on a statement puts its facts in Details, as a row of
+ * the outline does, and an address naming a statement (`/spec#b-<block>`) puts the focus on it
+ * (R10, R19).
  */
 export function SpecFilterBody({
   context,
@@ -374,6 +382,9 @@ export function SpecFilterBody({
 /** A column heading, in the prototype's `.cap`. */
 const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
 
+/** A link inside a line of words, which the hair-coloured underline marks as one. */
+const INLINE_LINK = "dispatch-inline-link underline decoration-page-hair underline-offset-[3px]";
+
 /** The colour each mark is drawn in, which repeats what its shape and the legend's word say
  *  (R6): met in the passed green, not met and no check in the failed red, unknown quiet. */
 const MARK_TONES: Readonly<Record<SpecMark, string>> = {
@@ -385,6 +396,13 @@ const MARK_TONES: Readonly<Record<SpecMark, string>> = {
 
 /** The four marks in the order the legend draws them. */
 const MARK_ORDER: readonly SpecMark[] = ["met", "not_met", "unknown", "no_check"];
+
+/** The cell's first line, which says who decided: an agent, a person, or the reader (R34). */
+const SAID_WORDS: Readonly<Record<SpecSaid, string>> = {
+  agent: SPEC_WORDS.said_agent,
+  person: SPEC_WORDS.said_person,
+  you: SPEC_WORDS.said_you,
+};
 
 /** The shape of a mark: how a statement stands, or that no check serves it. */
 function markToken(mark: SpecMark): string {
@@ -454,6 +472,22 @@ function Day({ at }: { at: string }): ReactNode {
       {shortDay(at)}
     </span>
   );
+}
+
+/** Words quoted from a person or an agent, between the page's own curly quotes. */
+function Quote({ words }: { words: string }): ReactNode {
+  return (
+    <>
+      <span {...pageChrome}>“</span>
+      <span {...authorText}>{words}</span>
+      <span {...pageChrome}>”</span>
+    </>
+  );
+}
+
+/** Where the link to a decision goes: its node's own address, where the model holds one. */
+function routeOf(decision: SpecDecision | undefined): DispatchReferenceRoute | undefined {
+  return decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
 }
 
 /** One part of a line `dotted` draws. */
@@ -596,7 +630,7 @@ function DecisionCell({
 }): ReactNode {
   const [focused, setFocused] = useState(false);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
-  const cap = decision === undefined ? "bg-page-hair" : "bg-page-decision";
+  const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
   // The question the words answer, unless the statements hang under it already: there the
   // group's heading is that question, and the two are one line (R5).
   const question =
@@ -642,20 +676,14 @@ function DecisionCell({
         ) : (
           <>
             <p className={`font-semibold ${pageDecisionText}`} data-spec-said="" {...pageChrome}>
-              {decision.said === "agent"
-                ? SPEC_WORDS.said_agent
-                : decision.said === "you"
-                  ? SPEC_WORDS.said_you
-                  : SPEC_WORDS.said_person}
+              {SAID_WORDS[decision.said]}
             </p>
             {decision.words === undefined ? (
               <p
                 className={`min-w-0 text-sm leading-[21px] [overflow-wrap:anywhere] ${pageInkText}`}
                 data-spec-quote=""
               >
-                <span {...pageChrome}>“</span>
-                <span {...authorText}>{decision.quote}</span>
-                <span {...pageChrome}>”</span>
+                <Quote words={decision.quote} />
               </p>
             ) : (
               // A block, since a text drawn from its reading holds paragraphs, lists and links.
@@ -736,8 +764,7 @@ function DecisionCell({
  *  goes to the node's own address, which is where every other link of this page goes (`Chip`),
  *  and is out of the tab order as every control inside a row is (R9). */
 function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
-  const route =
-    decision.reference === undefined ? undefined : parseNodeReference(decision.reference);
+  const route = routeOf(decision);
   if (route === undefined) return null;
   return (
     <Link
@@ -965,16 +992,8 @@ function Because({
   statement: SpecStatement;
 }): ReactNode {
   if (decision === undefined && statement.alsoShapedBy.length === 0) return null;
-  const route =
-    decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
-  const quoted =
-    decision === undefined ? null : (
-      <>
-        <span {...pageChrome}>“</span>
-        <span {...authorText}>{decision.quote}</span>
-        <span {...pageChrome}>”</span>
-      </>
-    );
+  const route = routeOf(decision);
+  const quoted = decision === undefined ? null : <Quote words={decision.quote} />;
   return (
     <p
       className={`mb-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
@@ -988,7 +1007,7 @@ function Because({
           ) : (
             // Out of the tab order, as every control inside a row is (R9): `f` steps to it.
             <Link
-              className="dispatch-inline-link underline decoration-page-hair underline-offset-[3px]"
+              className={INLINE_LINK}
               data-spec-because-link=""
               tabIndex={-1}
               to={buildReferencePath(route)}
@@ -1016,10 +1035,10 @@ function Because({
             {SPEC_WORDS.informed_by}{" "}
           </span>
           {statement.alsoShapedBy.map((informed, place) => (
-            <span key={informed.id}>
+            <Fragment key={informed.id}>
               {place === 0 ? null : <span {...pageChrome}>, </span>}
               <Informed decision={informed} />
-            </span>
+            </Fragment>
           ))}
         </>
       )}
@@ -1033,8 +1052,7 @@ function Because({
  *  is an identifier (R22). A decision with no words is named by its kind's word, so no link is
  *  empty (decision 66). */
 function Informed({ decision }: { decision: SpecDecision }): ReactNode {
-  const route =
-    decision.reference === undefined ? undefined : parseNodeReference(decision.reference);
+  const route = routeOf(decision);
   const words = chipWords(decision.quote);
   const named =
     words === "" ? (
@@ -1048,7 +1066,7 @@ function Informed({ decision }: { decision: SpecDecision }): ReactNode {
         <span data-spec-informed="">{named}</span>
       ) : (
         <Link
-          className="dispatch-inline-link underline decoration-page-hair underline-offset-[3px]"
+          className={INLINE_LINK}
           data-spec-informed=""
           tabIndex={-1}
           to={buildReferencePath(route)}

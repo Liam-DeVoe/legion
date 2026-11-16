@@ -13,10 +13,10 @@ function alone(text: string, room: number) {
 }
 
 /**
- * R1: a row carries its type, its author, its own first line and its state, and no row truncates
- * a word - at every width, the one-line widths of the zoomed tree included
- * (dispatch://INFRA-1196, c-tree). The cut is made in pixels, against the room the row's own box
- * leaves the line, so the ellipsis is part of what has to fit.
+ * R1, R14: a Contents entry draws its node's first line on one line, and no entry truncates a
+ * word, at every width the pane is drawn at (dispatch://INFRA-1196). The cut is made in pixels,
+ * against the room the entry's own box leaves the line, so the ellipsis is part of what has to
+ * fit.
  */
 test("a one-line row cuts its first line at a word to the pixels it has, never inside one", () => {
   // Short enough: the whole line, and no ellipsis, since nothing was cut.
@@ -58,10 +58,10 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
 });
 
 /**
- * The parts beside the line take from it: the twisty, the type and the author before it, the
- * state after it. Where they leave it less than its first word, it goes on a line of its own
- * under them, where only the state shares its width - a row that kept it beside them would draw
- * it 0 px wide, and hide the parts after it past its own edge.
+ * The parts beside the line take from it: the twisty and the bullet before it, the waiting dot
+ * and the marks after it. Where they leave it less than its first word, it goes on a line of its
+ * own under them, where only the waiting dot and the marks share its width - an entry that kept
+ * it beside them would draw it 0 px wide, and hide the parts after it past its own edge.
  */
 test("a one-line row's first line goes under its other words where they leave it no word", () => {
   const long = "Does the fold open to the frontier on a phone too?";

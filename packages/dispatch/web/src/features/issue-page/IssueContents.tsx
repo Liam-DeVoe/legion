@@ -11,7 +11,6 @@ import {
   pageInkBg,
   pageInkBorder,
   pageInkText,
-  pageIssueBg,
   pageKindTag,
   pageMarkBg,
   pageMutedText,
@@ -199,14 +198,17 @@ export function ContentsList({
   const current = inEntry ?? (lastIn !== undefined && entryIds.has(lastIn) ? lastIn : undefined);
 
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
-  const rows: { depth: number; entry: ContentsEntry; guides: number }[] = [];
-  const walk = (list: readonly ContentsEntry[], depth: number) => {
-    for (const entry of list) {
-      rows.push({ depth, entry, guides: depth });
-      if (!folded.has(entry.node.id)) walk(entry.children, depth + 1);
-    }
-  };
-  walk(entries, 0);
+  const rows = useMemo(() => {
+    const found: { depth: number; entry: ContentsEntry }[] = [];
+    const walk = (list: readonly ContentsEntry[], depth: number) => {
+      for (const entry of list) {
+        found.push({ depth, entry });
+        if (!folded.has(entry.node.id)) walk(entry.children, depth + 1);
+      }
+    };
+    walk(entries, 0);
+    return found;
+  }, [entries, folded]);
   const fold = (id: string, shut: boolean) =>
     setFolded((held) => {
       const next = new Set(held);
@@ -216,13 +218,57 @@ export function ContentsList({
     });
 
   const list = useRef<HTMLDivElement | null>(null);
-  const box = useOneLineBox(list, true);
+  const box = useOneLineBox(list);
+  // What each row draws of its entry - its words, their cut and its marks - read again only
+  // when what they are read from changes: the list is drawn again on every move of the focus in
+  // the outline (`useFocusedNode`), and a cut measures its words on a canvas.
+  const drawn = useMemo(
+    () =>
+      rows.map(({ depth, entry }) => {
+        const { node } = entry;
+        const isCurrent = node.id === current;
+        const named = namedLine(nodeWords(node), nameOf);
+        const unnamed = named.trim() === "";
+        const words = unnamed ? NODE_TYPE_NAMES[node.type] : named;
+        const indent = ROW.inset + depth * ROW.indent;
+        const marks = MARKS.filter(({ mark }) => entry.marks[mark] > 0);
+        // What stands after the words: the waiting dot, then each mark, its shape, its count
+        // and the gaps between them, which the words' own line is cut to leave room for.
+        const after =
+          box === undefined
+            ? 0
+            : (node.waiting ? ROW.gap + ROW.waiting : 0) +
+              marks.reduce(
+                (total, { mark }) =>
+                  total +
+                  (total === 0 ? ROW.gap : ROW.markGap) +
+                  ROW.markGlyph +
+                  ROW.markInner +
+                  box.widthOf(String(entry.marks[mark]), MARK_TEXT_REM, 600),
+                0
+              );
+        const cut =
+          box === undefined
+            ? undefined
+            : oneLineCut({
+                after,
+                before: indent + ROW.twisty + ROW.gap + ROW.dot + ROW.gap,
+                room: box.width - ROW.margins - ROW.paddingRight,
+                text: words,
+                widthOf: (text) => box.widthOf(text, ROW_TEXT_REM, isCurrent ? 600 : undefined),
+              });
+        // Until the list's box is read, the entry draws its first line by R1's rule uncut by
+        // width, never its whole words (`useOneLineBox`).
+        const line = cut ?? { ...firstLineOf(words), under: false, wraps: false };
+        return { indent, isCurrent, line, marks, unnamed };
+      }),
+    [box, current, nameOf, rows]
+  );
   // The list's one tab stop: the row the reader last moved to, else the entry they are in,
   // else the first.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const ids = rows.map((row) => row.entry.node.id);
-  const tabStop =
-    stop !== undefined && ids.includes(stop) ? stop : (current ?? ids[0] ?? undefined);
+  const tabStop = stop !== undefined && ids.includes(stop) ? stop : (current ?? ids[0]);
   const moveTo = (id: string | undefined) => {
     if (id === undefined) return;
     setStop(id);
@@ -298,43 +344,10 @@ export function ContentsList({
         ref={list}
         role="tree"
       >
-        {rows.map(({ depth, entry, guides }, at) => {
+        {rows.map(({ depth, entry }, at) => {
           const { node } = entry;
           const holds = entry.children.length > 0;
-          const isCurrent = node.id === current;
-          const named = namedLine(nodeWords(node), nameOf);
-          const unnamed = named.trim() === "";
-          const words = unnamed ? NODE_TYPE_NAMES[node.type] : named;
-          const indent = ROW.inset + depth * ROW.indent;
-          const marks = MARKS.filter(({ mark }) => entry.marks[mark] > 0);
-          // What stands after the words: the waiting dot, then each mark, its shape, its count
-          // and the gaps between them, which the words' own line is cut to leave room for.
-          const after =
-            box === undefined
-              ? 0
-              : (node.waiting ? ROW.gap + ROW.waiting : 0) +
-                marks.reduce(
-                  (total, { mark }) =>
-                    total +
-                    (total === 0 ? ROW.gap : ROW.markGap) +
-                    ROW.markGlyph +
-                    ROW.markInner +
-                    box.widthOf(String(entry.marks[mark]), MARK_TEXT_REM, 600),
-                  0
-                );
-          const cut =
-            box === undefined
-              ? undefined
-              : oneLineCut({
-                  after,
-                  before: indent + ROW.twisty + ROW.gap + ROW.dot + ROW.gap,
-                  room: box.width - ROW.margins - ROW.paddingRight,
-                  text: words,
-                  widthOf: (text) => box.widthOf(text, ROW_TEXT_REM, isCurrent ? 600 : undefined),
-                });
-          // Until the list's box is read, the entry draws its first line by R1's rule uncut by
-          // width, never its whole words (`useOneLineBox`).
-          const line = cut ?? { ...firstLineOf(words), under: false, wraps: false };
+          const { indent, isCurrent, line, marks, unnamed } = drawn[at];
           return (
             <div
               aria-expanded={holds ? !folded.has(node.id) : undefined}
@@ -356,7 +369,7 @@ export function ContentsList({
               style={{ paddingLeft: `${indent}px` }}
               tabIndex={node.id === tabStop ? 0 : -1}
             >
-              {Array.from({ length: guides }, (_, level) => (
+              {Array.from({ length: depth }, (_, level) => (
                 <i
                   aria-hidden="true"
                   className={`absolute inset-y-0 w-px ${pageGuideBg}`}
@@ -384,11 +397,7 @@ export function ContentsList({
               <span
                 aria-hidden="true"
                 className={`inline-block size-[7px] shrink-0 rounded-full ${
-                  node.type === "issue"
-                    ? pageIssueBg
-                    : node.type === "ask"
-                      ? pageQuestionBg
-                      : pagePersonBg
+                  node.type === "ask" ? pageQuestionBg : pagePersonBg
                 }`}
               />
               <span className="sr-only" {...pageChrome}>

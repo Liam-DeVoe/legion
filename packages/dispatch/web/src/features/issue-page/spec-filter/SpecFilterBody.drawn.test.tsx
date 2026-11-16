@@ -832,7 +832,7 @@ test("the body draws one tree, named as the outline is, of the statements and th
 // last word, a direct child of the words' box (departure 3 of dispatch://INFRA-3939's plan), and
 // nowhere else in the row. The one for a statement no check serves is the mark at the right of
 // the row, and is not said twice: that statement draws no trail at all.
-test("a gap the mark does not say is drawn under the statement, and no check is not said twice", () => {
+test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", () => {
   const { read, view } = drawBody(
     issueTree([
       statement("r1", { gaps: ["shaped_disagreement"] }),

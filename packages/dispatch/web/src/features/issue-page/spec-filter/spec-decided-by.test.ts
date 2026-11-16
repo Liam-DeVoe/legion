@@ -8,7 +8,6 @@ import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
-  COMMIT,
   check,
   checkNode,
   OTHER_COMMIT,
@@ -44,7 +43,9 @@ import {
 /** How this issue addresses a node, which is how a tie finds the statement it names. */
 const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
-/** A page that names no reference, which `namedLine` then names by its kind's word. */
+/** A page that names no reference, so `namedLine` names one by its issue's key where it is an
+ *  issue, else by the page's word for a whole document (`documentWord`), else by the word for a
+ *  document (`NODE_TYPE_NAMES.document`). */
 const NO_NAMES = (): undefined => undefined;
 
 /** The Spec filter's body over `tree`, as the page reads it; `nameOf` is how the page names a
@@ -381,7 +382,6 @@ test("a person's answer that cites a block carries its whole text for the focus,
   try {
     const made = bodyOf(tree, [], READER, [], names.result.current)[0]?.runs[0]?.decision;
     expect(made?.quote).toBe("Keep it as the one-line rule says.");
-    expect(made?.quote).not.toContain("dispatch://");
     expect(made?.whole).toBe(stored);
   } finally {
     names.unmount();
@@ -434,7 +434,6 @@ test("a statement's mark is how it stands at the commit the page names", () => {
     READER,
     [passed, failed, elsewhere, unrun]
   );
-  expect(COMMIT).not.toBe(OTHER_COMMIT);
   expect(groups[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
     ["spec#b-r1", "met"],
     ["spec#b-r2", "not_met"],

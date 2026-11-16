@@ -83,6 +83,7 @@ import {
   rowAuthor,
   seedChildWithSpec,
   specRuns,
+  statementBlock,
   TYPEFACE,
   threeThings,
   typefaceAddress,
@@ -818,7 +819,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       ops: [
         {
           after: `block:${requirementBlockId(12)}`,
-          markdown: `:::requirement{#${LONG_BLOCK_ID}}\n${longWords("long", 200)}\n:::`,
+          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 200)),
           op: "insert",
         },
       ],
@@ -1006,7 +1007,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
           );
           return focused !== null && ids.includes(focused);
         },
-        { message: "t s does not put the focus on a statement on screen" }
+        { message: "t s does not put the focus on a statement of the Spec view" }
       )
       .toBe(true);
     const focused = (await focusedNodeId(page)) ?? "";
