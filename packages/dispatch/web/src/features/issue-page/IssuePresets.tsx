@@ -120,9 +120,11 @@ export function IssuePresets({
     };
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
-    // listener of the page's that a layer under it added earlier.
+    // listener of the page's that a layer under it added earlier. A modal dialog open over the
+    // row takes the press even before its focus has moved into it, the frame after it opens.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
       event.preventDefault();
       setOpen(undefined);
     };
