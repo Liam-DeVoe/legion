@@ -68,6 +68,9 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
+  SpecCheckResult,
+  SpecCheckResultInput,
+  SpecCheckResults,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -1444,6 +1447,34 @@ export class DispatchClient {
     input: CheckResultRetractionInput
   ): Promise<CheckResultRetraction> {
     return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
+  }
+
+  /**
+   * Records one CI job's result of one check of `project`'s spec files, and answers the stored
+   * result. The body is built from the four members the route takes, so nothing else a caller's
+   * object carries reaches the wire: Dispatch takes who wrote the result from the credential.
+   * JSON leaves out an `observed` that is undefined.
+   */
+  async recordSpecCheckResult(
+    project: string,
+    input: SpecCheckResultInput
+  ): Promise<SpecCheckResult> {
+    const { commit, check, verdict, observed } = input;
+    const body = { commit, check, verdict, observed };
+    return this.#json("POST", ["api", "v1", "projects", project, "results"], body);
+  }
+
+  /** Every result CI jobs stored for checks of `project`'s spec files at `commit`, of `check`
+   *  alone when it is given, newest first in Dispatch's record order. */
+  async specCheckResults(
+    project: string,
+    commit: string,
+    check?: string
+  ): Promise<SpecCheckResults> {
+    return this.#json("GET", ["api", "v1", "projects", project, "results"], undefined, {
+      commit,
+      check,
+    });
   }
 
   async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {

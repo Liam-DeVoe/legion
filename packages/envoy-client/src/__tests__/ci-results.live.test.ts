@@ -1,0 +1,356 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { newDpopKey } from "@legion/broker-client/dpop";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import {
+  type CIResultsStack,
+  type JobRun,
+  OTHER_JOBS_CHECK,
+  PROBE_CHECK,
+  startCIResultsStack,
+  useCIResultsStackDirectory,
+  writeProbeSpec,
+} from "../../test/ci-results-stack";
+import { dispatchStackEnabled } from "../../test/dispatch-stack";
+import { ownIdentityDispatch } from "../dispatch-config";
+
+// The v-recorder path over its whole length: a CI job's own GitHub token, traded at the real
+// secrets broker (./cmd/broker) under a real result entry for a token that writes results only,
+// presented by the real `dispatch` CLI of this checkout, run as a child process, to the real
+// Dispatch server (./cmd/dispatch), which reads the job's check run and the spec files at the
+// run's commit from a stand-in of GitHub. The Go tests of each part prove its own rules; only
+// this file proves that the token the broker mints is the token Dispatch serves, and that the
+// command a CI job runs writes the result Dispatch keeps.
+
+// Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
+// `process.env.X`.
+const { PATH: SHELL_PATH = "" } = process.env;
+
+/** The CLI entry a row runs, as a CI job's shell reaches it: this checkout's own `dispatch`. */
+const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+
+/** The branch every run below is a push of: two segments, which the result entry's pattern
+ *  `refs/heads/*` `/*` takes. */
+const REF = "refs/heads/topic/probe";
+/** The job the probe check names, which the check run of each run below is named after. */
+const JOB = "go-checks";
+/** The agent session that reads the results back: a session's own command runs with a host and a
+ *  session, which a CI job's `dispatch result --project` needs neither of. */
+const SESSION = "session-ci-results-live";
+
+/** A commit of its own for each row, so what a row reads back is that row's alone. */
+function commit(digit: string): string {
+  return digit.repeat(40);
+}
+
+// Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
+// `describe` below has stopped every process writing into it.
+const stackDirectory = useCIResultsStackDirectory();
+const cliState = temporaryDirectory("ci-results-cli-state");
+const specFiles = temporaryDirectory("ci-results-spec");
+
+/** What one run of the CLI printed and how it ended. */
+interface Ran {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+describe.skipIf(!dispatchStackEnabled)(
+  "a CI job writes its result with its own identity, and Dispatch keeps it",
+  () => {
+    let stack: CIResultsStack | undefined;
+
+    /** The running stack, or the error that says why no row can run. */
+    function running(): CIResultsStack {
+      if (stack === undefined) throw new Error("the CI results stack did not start");
+      return stack;
+    }
+
+    /** The real CLI entry run with `env` and nothing of this process's own but PATH. */
+    async function cli(
+      args: readonly string[],
+      env: Readonly<Record<string, string>>
+    ): Promise<Ran> {
+      const child = Bun.spawn([process.execPath, ENTRY, ...args], {
+        env: { PATH: SHELL_PATH, HOME: cliState, DISPATCH_STATE_DIR: cliState, ...env },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { code, stdout, stderr };
+    }
+
+    /** `dispatch result --project` for the probe check, at `at`, as the job `run` describes. */
+    function writeResult(run: JobRun, at: string, check: string = PROBE_CHECK): Promise<Ran> {
+      return cli(
+        [
+          "result",
+          "--project",
+          running().project,
+          "--check",
+          check,
+          "--verdict",
+          "pass",
+          "--commit",
+          at,
+          "--observed",
+          "ok  \texample.com/acme/probe\t0.01s",
+        ],
+        running().jobEnv(run)
+      );
+    }
+
+    /** A run of the job on REF at `sha`, with a check run of its own. */
+    function runAt(sha: string, checkRunId: number, overrides: Partial<JobRun> = {}): JobRun {
+      running().setFiles(sha, specFiles);
+      return { sha, ref: REF, job: JOB, runAttempt: 1, checkRunId, ...overrides };
+    }
+
+    /** A refusal: the CLI exited 1 and named `code` in what it printed. */
+    function refused(ran: Ran, code: string): void {
+      expect({ code: ran.code, named: `${ran.stderr}${ran.stdout}`.includes(code) }).toEqual({
+        code: 1,
+        named: true,
+      });
+    }
+
+    /** A session's own command: a host, a session and the session's own token, the one the
+     *  stack's Dispatch takes for an agent. */
+    function asSession(): Record<string, string> {
+      return {
+        DISPATCH_URL: running().dispatch.url,
+        DISPATCH_TOKEN: running().dispatch.token,
+        DISPATCH_HOST: "omp",
+        DISPATCH_SESSION_ID: SESSION,
+      };
+    }
+
+    beforeAll(async () => {
+      writeProbeSpec(specFiles);
+      stack = await startCIResultsStack({ work: stackDirectory });
+    }, 600_000);
+    afterAll(async () => {
+      await stack?.stop();
+    }, 60_000);
+
+    test("a CI job's pass is stored at the commit it tested, under the job its check run names", async () => {
+      const at = commit("1");
+      const ran = await writeResult(runAt(at, 101), at);
+
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const stored = JSON.parse(ran.stdout) as {
+        id: string;
+        seq: number;
+        kind: string;
+        attestation: {
+          subject: { digest: { gitCommit: string } }[];
+          predicate: {
+            project: string;
+            check: string;
+            verdict: string;
+            job: string;
+            leg: string;
+            run: {
+              run_id: string;
+              check_run_id: string;
+              attempt: number;
+              ref: string;
+              event_name: string;
+            };
+            recorder: { session: string; principal: string; person: string };
+          };
+        };
+      };
+      const { predicate } = stored.attestation;
+      expect({
+        kind: stored.kind,
+        commit: stored.attestation.subject[0]?.digest.gitCommit,
+        project: predicate.project,
+        check: predicate.check,
+        verdict: predicate.verdict,
+        job: predicate.job,
+        leg: predicate.leg,
+        checkRun: predicate.run.check_run_id,
+        attempt: predicate.run.attempt,
+        ref: predicate.run.ref,
+        event: predicate.run.event_name,
+        recorder: predicate.recorder,
+      }).toEqual({
+        kind: "run",
+        commit: at,
+        project: running().project,
+        check: PROBE_CHECK,
+        verdict: "pass",
+        job: JOB,
+        leg: "",
+        checkRun: "101",
+        attempt: 1,
+        ref: REF,
+        event: "push",
+        recorder: {
+          session: running().resultSession,
+          principal: running().resultPrincipal,
+          person: running().person,
+        },
+      });
+
+      // A person reads the one result back, and so does `dispatch results --project` under a
+      // session's own token, which reads results and writes none.
+      expect((await running().results(at)).map((row) => row.id)).toEqual([stored.id]);
+      const listed = await cli(
+        ["results", "--project", running().project, "--commit", at],
+        asSession()
+      );
+      expect({ code: listed.code, stderr: listed.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(listed.stdout).toContain(
+        `- #${stored.seq} ${PROBE_CHECK}: pass. Job ${JOB}, no leg, run ${predicate.run.run_id} attempt 1, commit ${at}.`
+      );
+    }, 120_000);
+
+    test("a result for another commit than the one the job tested is refused, and nothing is stored", async () => {
+      const tested = commit("2");
+      const other = commit("3");
+      running().setFiles(other, specFiles);
+
+      refused(await writeResult(runAt(tested, 102), other), "COMMIT_NOT_THE_RUNS");
+      expect(await running().results(other)).toEqual([]);
+      expect(await running().results(tested)).toEqual([]);
+    }, 120_000);
+
+    test("a result for a check that names another job is refused, and nothing is stored", async () => {
+      const at = commit("4");
+
+      refused(await writeResult(runAt(at, 103), at, OTHER_JOBS_CHECK), "CHECK_NOT_THIS_JOBS");
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    test("a run token signed by a key the issuer does not publish gets no token at the broker, and nothing is stored", async () => {
+      const at = commit("5");
+
+      refused(await writeResult(runAt(at, 104, { forged: true }), at), "invalid_request");
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    test("a run on a ref that no result entry lists gets no token, and nothing is stored", async () => {
+      const at = commit("6");
+      const ref = "refs/heads/a/b/c";
+
+      const ran = await writeResult(runAt(at, 105, { ref }), at);
+      refused(ran, ref);
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    test("a random access token with a valid DPoP proof is refused as not active, and nothing is stored", async () => {
+      const at = commit("7");
+      running().setFiles(at, specFiles);
+      const url = `${running().dispatch.url}/api/v1/projects/${running().project}/results`;
+      const accessToken = crypto.randomUUID();
+      const key = await newDpopKey();
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `DPoP ${accessToken}`,
+          DPoP: await key.proof({ method: "POST", url, accessToken }),
+        },
+        body: JSON.stringify({ commit: at, check: PROBE_CHECK, verdict: "pass", observed: "" }),
+      });
+      const body = (await response.json()) as { code?: string };
+
+      expect({ status: response.status, code: body.code }).toEqual({
+        status: 401,
+        code: "BROKER_TOKEN_NOT_ACTIVE",
+      });
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    test("a session's own token writes no result: the command sends none, and Dispatch refuses it", async () => {
+      const at = commit("8");
+      running().setFiles(at, specFiles);
+
+      // The project form writes with the machine's own identity alone and reads no bearer, so with
+      // no secrets broker named the command refuses before any request.
+      const ran = await cli(
+        [
+          "result",
+          "--project",
+          running().project,
+          "--check",
+          PROBE_CHECK,
+          "--verdict",
+          "pass",
+          "--commit",
+          at,
+        ],
+        asSession()
+      );
+      expect({
+        code: ran.code,
+        named: `${ran.stderr}${ran.stdout}`.includes("AGENT_SECRETS_URL"),
+      }).toEqual({
+        code: 2,
+        named: true,
+      });
+      // The same write under the session's token, which another client can send, is refused by
+      // Dispatch itself.
+      const response = await fetch(
+        `${running().dispatch.url}/api/v1/projects/${running().project}/results`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${running().dispatch.token}`,
+          },
+          body: JSON.stringify({ commit: at, check: PROBE_CHECK, verdict: "pass", observed: "" }),
+        }
+      );
+      const body = (await response.json()) as { code?: string };
+      expect({ status: response.status, code: body.code }).toEqual({
+        status: 403,
+        code: "RESULTS_SCOPE_REQUIRED",
+      });
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    test("the results token reaches no other route: a read, a write and the results read are refused", async () => {
+      const at = commit("9");
+      const project = running().project;
+
+      // The command presents a results token on the one route it writes, and its session path
+      // takes no session the result entry fixes. So this row resolves the command's own credential
+      // (ownIdentityDispatch: the job's identity traded at the broker) and presents it elsewhere.
+      const resolution = ownIdentityDispatch(running().jobEnv(runAt(at, 106)));
+      if (!resolution.enabled) throw new Error(`the job's credential: ${resolution.error}`);
+      const answers: string[] = [];
+      for (const [method, route, body] of [
+        ["GET", `/api/v1/issues?project=${project}`, undefined],
+        ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
+        ["GET", `/api/v1/projects/${project}/results?commit=${at}`, undefined],
+      ] as const) {
+        const url = `${resolution.url}${route}`;
+        const response = await fetch(url, {
+          method,
+          headers: {
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+            ...(await resolution.credential.headers(method, url)),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        const answer = (await response.json()) as { code?: string };
+        answers.push(`${method} ${route}: ${response.status} ${answer.code}`);
+      }
+
+      expect(answers).toEqual([
+        `GET /api/v1/issues?project=${project}: 403 RESULTS_ONLY_TOKEN`,
+        "POST /api/v1/issues: 403 RESULTS_ONLY_TOKEN",
+        `GET /api/v1/projects/${project}/results?commit=${at}: 403 RESULTS_ONLY_TOKEN`,
+      ]);
+    }, 120_000);
+  }
+);

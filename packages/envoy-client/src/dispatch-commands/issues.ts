@@ -14,6 +14,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -838,9 +839,78 @@ function formatCheckResults(results: IssueCheckResults, brief = false): string {
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
-/** `dispatch result`: record one result of one check of an issue's Verification document. */
+/**
+ * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
+ * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
+ * reader keeps. The job runs it with its own identity and no session (`runDispatchCli`), and a
+ * session's call reaches it through `resultCommand`.
+ */
+export async function specCheckResultCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const observed = optionalString(args, "observed");
+  const stored = await client.recordSpecCheckResult(project, {
+    commit: stringArg(args, "commit"),
+    check: stringArg(args, "check"),
+    verdict: stringArg(args, "verdict"),
+    ...(observed === undefined ? {} : { observed }),
+  });
+  const { predicate } = stored.attestation;
+  return {
+    text: JSON.stringify(stored, null, 2),
+    details: {
+      project,
+      result: stored.id,
+      seq: stored.seq,
+      check: predicate.check,
+      verdict: predicate.verdict,
+    },
+  };
+}
+
+/** One stored result of a check of the spec files, as `dispatch results --project` lists it:
+ *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
+ *  the commit. */
+function specCheckResultLine(result: SpecCheckResult): string {
+  const { predicate, subject } = result.attestation;
+  const leg = predicate.leg === "" ? "no leg" : `leg ${predicate.leg}`;
+  const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
+  return `- #${result.seq} ${predicate.check}: ${predicate.verdict}. Job ${predicate.job}, ${leg}, run ${predicate.run.run_id} attempt ${predicate.run.attempt}, commit ${commit}.`;
+}
+
+/** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
+ *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
+ *  results as JSON with `json`. */
+async function specCheckResultsCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const commit = stringArg(args, "commit");
+  const check = optionalString(args, "check");
+  const results = (await client.specCheckResults(project, commit, check)).results ?? [];
+  const what = check === undefined ? project : `check ${check} of ${project}`;
+  const text =
+    optionalBoolean(args, "json") === true
+      ? JSON.stringify(results, null, 2)
+      : results.length === 0
+        ? `No result of ${what} is stored at ${commit}.`
+        : [
+            `Results of ${what} at ${commit}, newest first:`,
+            ...results.map(specCheckResultLine),
+          ].join("\n");
+  return { text, details: { project, commit, results: results.length } };
+}
+
+/** `dispatch result`: record one result of one check of an issue's Verification document, or,
+ *  with `project`, a CI job's result of a check of the spec files. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultCommand(client, args);
+  }
   const retract = optionalString(args, "retract");
   if (retract !== undefined) {
     const retraction = await client.retractResult(retract, {
@@ -891,9 +961,12 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, or, with `project`, the results CI jobs stored for checks of the spec files. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultsCommand(client, args);
+  }
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;

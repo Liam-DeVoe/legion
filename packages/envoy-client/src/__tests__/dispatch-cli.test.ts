@@ -1,9 +1,17 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_SESSION,
+  SUBJECT_TOKEN_TYPE_GITHUB,
+} from "@legion/broker-client/wire";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -86,6 +94,63 @@ const rows = `${Array.from(
   { length: 15 },
   (_, index) => `{"row_id": ${index}, "file_name": "wave_${index}.json", "note": "*kept*"}`
 ).join("\n")}\n`;
+
+/** The commit a CI job tested, which every result of a check of ACME's spec files below is for. */
+const SPEC_COMMIT = "1111111111111111111111111111111111111111";
+
+/** One result a CI job stored for check p-1 of ACME's spec files at SPEC_COMMIT, as Dispatch
+ *  serves it: Dispatch's record number and an in-toto statement of the job's run. */
+function storedSpecResult(seq: number, verdict: string, leg: string, attempt: number) {
+  const workflow = "example-org/example-repo/.github/workflows/ci-results.yaml";
+  return {
+    id: `00000000-0000-4000-8000-0000000000${seq}`,
+    seq,
+    kind: "run",
+    attestation: {
+      _type: "https://in-toto.io/Statement/v1",
+      subject: [
+        {
+          name: "git+https://github.com/example-org/example-repo",
+          digest: { gitCommit: SPEC_COMMIT },
+        },
+      ],
+      predicateType: "https://github.com/cybermonklabs/legion/attestations/spec-check-result/v1",
+      predicate: {
+        project: "ACME",
+        check: "p-1",
+        procedure_digest: "sha256:5f1d9c0e",
+        test: { runner: "go", selector: "example.com/m/p TestP", job: "go-checks" },
+        verdict,
+        observed: verdict === "pass" ? "--- PASS: TestP (0.01s)" : "--- FAIL: TestP (0.02s)",
+        job: "go-checks",
+        leg,
+        run: {
+          repository: "example-org/example-repo",
+          workflow_ref: `${workflow}@refs/heads/feat/probe`,
+          ref: "refs/heads/feat/probe",
+          event_name: "push",
+          run_id: "4242",
+          attempt,
+          check_run_id: "7001",
+          runner_environment: "github-hosted",
+        },
+        recorder: {
+          session: `ci-results:${workflow}`,
+          principal: `workflow-results:${workflow}`,
+          person: "ada@example.com",
+        },
+        recorded_at: "2026-11-16T10:00:00Z",
+      },
+    },
+  };
+}
+
+/** What ACME's read of SPEC_COMMIT answers, newest first, and the query of each such read. */
+const storedSpecResults = [
+  storedSpecResult(42, "fail", "linux", 2),
+  storedSpecResult(41, "pass", "", 1),
+];
+const specResultQueries: string[] = [];
 
 /** The Envoy listener's answer for session ses-1's subscriptions. */
 let interests: () => Response = () => Response.json({ error: "unset" }, { status: 500 });
@@ -512,6 +577,10 @@ const server = Bun.serve({
         { status: 404 }
       );
     }
+    if (pathname === "/api/v1/projects/ACME/results" && request.method === "GET") {
+      specResultQueries.push(search);
+      return Response.json({ results: storedSpecResults });
+    }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
   },
 });
@@ -525,6 +594,7 @@ beforeEach(() => {
   blocksServer = { tableRows: true };
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
+  specResultQueries.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
@@ -1728,6 +1798,322 @@ describe("the dispatch entry as its own process", () => {
       expect(stdout, command).toContain(decisionBlockRefusal(2));
     }
   }, 30_000);
+});
+
+// `dispatch result --project` is a CI job's own write, and the job has no session: it trades the
+// OIDC token its runner mints for it at the secrets broker, as a workflow run's token, and writes
+// with the results token it got. The three stand-ins below are the runner's token endpoint, the
+// broker's token endpoint and Dispatch's two project results routes.
+describe("dispatch result --project, as a CI job writes it", () => {
+  const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+  /** The run's OIDC token, the bearer the runner's endpoint takes, and the results token the
+   *  broker mints: none of the three may reach the command's output or its argument list. */
+  const OIDC_TOKEN = "job.oidc.token.of-run-4242";
+  const REQUEST_TOKEN = "runner-request-bearer-of-run-4242";
+  const RESULTS_TOKEN = "broker-results-token-of-run-4242";
+  const SECRETS = [OIDC_TOKEN, REQUEST_TOKEN, RESULTS_TOKEN];
+
+  interface Seen {
+    readonly method: string;
+    readonly path: string;
+    readonly authorization: string | null;
+    readonly dpop: string | null;
+    readonly body: unknown;
+  }
+  const runnerAsked: { authorization: string | null; audience: string | null }[] = [];
+  const trades: { form: URLSearchParams; proof: string }[] = [];
+  const written: Seen[] = [];
+  let brokerAnswer: () => Response;
+  let dispatchAnswer: () => Response;
+  const stored = storedSpecResult(43, "pass", "", 1);
+
+  const runner = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (request) => {
+      runnerAsked.push({
+        authorization: request.headers.get("Authorization"),
+        audience: new URL(request.url).searchParams.get("audience"),
+      });
+      return Response.json({ count: 1, value: OIDC_TOKEN });
+    },
+  });
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      trades.push({
+        form: new URLSearchParams(await request.text()),
+        proof: request.headers.get("DPoP") ?? "",
+      });
+      return brokerAnswer();
+    },
+  });
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      const text = await request.text();
+      written.push({
+        method: request.method,
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("Authorization"),
+        dpop: request.headers.get("DPoP"),
+        body: text === "" ? undefined : JSON.parse(text),
+      });
+      return dispatchAnswer();
+    },
+  });
+  afterAll(() => {
+    for (const stub of [runner, broker, dispatch]) stub.stop(true);
+  });
+  beforeEach(() => {
+    runnerAsked.length = 0;
+    trades.length = 0;
+    written.length = 0;
+    forgetBrokerClients();
+    brokerAnswer = () =>
+      Response.json(
+        Object.fromEntries([
+          ["access_token", RESULTS_TOKEN],
+          ["issued_token_type", "urn:ietf:params:oauth:token-type:access_token"],
+          ["token_type", "DPoP"],
+          ["expires_in", 600],
+        ])
+      );
+    dispatchAnswer = () => Response.json(stored, { status: 201 });
+  });
+
+  const dispatchUrl = `http://127.0.0.1:${dispatch.port}`;
+  /** A job's environment as the reporter action writes it: no DISPATCH_HOST and no session. */
+  const jobEnvironment = (): Record<string, string | undefined> => ({
+    PATH: process.env.PATH,
+    HOME: stateDir,
+    DISPATCH_STATE_DIR: stateDir,
+    DISPATCH_URL: dispatchUrl,
+    AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+    AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
+    AGENT_SECRETS_MACHINE_AUDIENCE: "example-audience",
+    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${runner.port}/_apis/idtoken?api-version=2.0`,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
+  });
+  const record = [
+    "result",
+    "--project",
+    "ACME",
+    "--check",
+    "p-1",
+    "--verdict",
+    "pass",
+    "--commit",
+    SPEC_COMMIT,
+  ];
+
+  /** The command as its own process, as a job's step runs it. */
+  async function spawnJob(
+    argv: readonly string[],
+    env: Record<string, string | undefined>
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const child = Bun.spawn([process.execPath, entry, ...argv], {
+      cwd: stateDir,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { code, stdout, stderr };
+  }
+
+  /** The command in this process, under exactly `env`. */
+  async function runJob(
+    argv: readonly string[],
+    env: Record<string, string | undefined>
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    let stdout = "";
+    let stderr = "";
+    const code = await runDispatchCli(argv, env, {
+      stdout: (text) => {
+        stdout += text;
+      },
+      stderr: (text) => {
+        stderr += text;
+      },
+      readText: (path) => readFileSync(path, "utf-8"),
+      cwd: stateDir,
+    });
+    return { code, stdout, stderr };
+  }
+
+  /** One part of a compact JWS, as JSON. */
+  const jwsPart = (compact: string | null, at: number): Record<string, unknown> =>
+    JSON.parse(Buffer.from((compact ?? "").split(".")[at] ?? "", "base64url").toString("utf8"));
+
+  /** Nothing went to the runner, the broker, Dispatch or the session's Dispatch. */
+  const sentNothing = () => {
+    expect(runnerAsked).toEqual([]);
+    expect(trades).toEqual([]);
+    expect(written).toEqual([]);
+    expect(requests).toEqual([]);
+  };
+
+  /** No token is in what the command printed, nor in the argument list it ran with. */
+  const namesNoToken = (argv: readonly string[], stdout: string, stderr: string) => {
+    for (const secret of SECRETS) {
+      expect(stdout, secret).not.toContain(secret);
+      expect(stderr, secret).not.toContain(secret);
+      expect(argv.join(" "), secret).not.toContain(secret);
+    }
+  };
+
+  // The 30 s limit is the hang guard of the rows above that run the entry as a child process.
+  test("trades the job's OIDC token as a workflow run and presents the DPoP token it got", async () => {
+    // A test's output opens with `---`, so the job gives it in the `=` form, which reads no flag.
+    const argv = [...record, "--observed=--- PASS: TestP (0.01s)"];
+    const { code, stdout, stderr } = await spawnJob(argv, jobEnvironment());
+
+    expect({ code, stderr }, stdout).toEqual({ code: 0, stderr: "" });
+    expect(JSON.parse(stdout)).toEqual(stored);
+    expect(runnerAsked).toEqual([
+      { authorization: `Bearer ${REQUEST_TOKEN}`, audience: "example-audience" },
+    ]);
+    expect(trades).toHaveLength(1);
+    const form = trades[0]?.form;
+    expect(form?.get("subject_token")).toBe(OIDC_TOKEN);
+    expect(form?.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_GITHUB);
+    expect(form?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
+    // The broker's result entry fixes the session, so the job names none.
+    expect(form?.has(FORM_SESSION)).toBe(false);
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/projects/ACME/results"],
+    ]);
+    const write = written[0];
+    expect(write?.authorization).toBe(`DPoP ${RESULTS_TOKEN}`);
+    const proof = jwsPart(write?.dpop ?? null, 1);
+    expect(proof["htm"]).toBe("POST");
+    expect(proof["htu"]).toBe(`${dispatchUrl}/api/v1/projects/ACME/results`);
+    expect(proof["ath"]).toBe(createHash("sha256").update(RESULTS_TOKEN).digest("base64url"));
+    // One key: the one the trade proved is the one the write proves.
+    expect(jwsPart(write?.dpop ?? null, 0)["jwk"]).toEqual(
+      jwsPart(trades[0]?.proof ?? null, 0)["jwk"]
+    );
+    namesNoToken(argv, stdout, stderr);
+  }, 30_000);
+
+  test("a refusal names no token either", async () => {
+    const refusal = `The files of .dispatch/spec at ${SPEC_COMMIT} hold no check p-9.`;
+    dispatchAnswer = () =>
+      Response.json({ code: "CHECK_NOT_IN_FILES", error: refusal }, { status: 409 });
+    const argv = record.map((word) => (word === "p-1" ? "p-9" : word));
+    const dispatchRefused = await spawnJob(argv, jobEnvironment());
+    expect(dispatchRefused.code, dispatchRefused.stdout).toBe(1);
+    expect(dispatchRefused.stdout.trim()).toBe(`CHECK_NOT_IN_FILES: ${refusal}`);
+    namesNoToken(argv, dispatchRefused.stdout, dispatchRefused.stderr);
+
+    written.length = 0;
+    brokerAnswer = () =>
+      Response.json(
+        { error: "invalid_grant", error_description: "The subject token was presented before." },
+        { status: 400 }
+      );
+    const brokerRefused = await spawnJob(record, jobEnvironment());
+    expect(brokerRefused.code, brokerRefused.stdout).toBe(1);
+    expect(brokerRefused.stdout).toContain("invalid_grant");
+    expect(written).toEqual([]);
+    namesNoToken(record, brokerRefused.stdout, brokerRefused.stderr);
+  }, 30_000);
+
+  test("a job whose runner gave it no token URL is refused naming the variable, and sends nothing", async () => {
+    const {
+      ACTIONS_ID_TOKEN_REQUEST_URL: _url,
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: _token,
+      ...noEndpoint
+    } = jobEnvironment();
+    const { code, stdout } = await runJob(record, noEndpoint);
+    expect(code, stdout).toBe(2);
+    expect(stdout).toContain(
+      "ACTIONS_ID_TOKEN_REQUEST_URL is required by AGENT_SECRETS_MACHINE_IDENTITY=github-actions"
+    );
+    sentNothing();
+  });
+
+  test("--issue and --project are exclusive, refused before any request", async () => {
+    for (const env of [jobEnvironment(), { ...jobEnvironment(), ...omp }]) {
+      const { code, stdout } = await runJob([...record, "--issue", "DSP-1"], env);
+      expect(code, stdout).toBe(2);
+      expect(stdout).toContain("exactly one of issue and project is required");
+    }
+    sentNothing();
+  });
+
+  test("an argument of an issue's record is refused with --project", async () => {
+    for (const [flag, value, field] of [
+      ["--role", "implementer", "role"],
+      ["--surface", "api", "surface"],
+      ["--run", "go test ./...", "run"],
+      ["--negative-control", "The test without its check.", "negative_control"],
+      ["--failed", "0", "failed"],
+      ["--skipped", "0", "skipped"],
+      ["--excluded", "0", "excluded"],
+      ["--screenshot", "dispatch://DSP-1/artifact/shot-png", "screenshots"],
+      ["--retract", "00000000-0000-4000-8000-000000000041", "retract"],
+    ] as const) {
+      const { code, stdout } = await runJob([...record, flag, value], jobEnvironment());
+      expect(code, `${flag}: ${stdout}`).toBe(2);
+      expect(stdout, flag).toContain(`This call also carries ${field}.`);
+    }
+    sentNothing();
+  });
+
+  test("posts the body {commit, check, verdict, observed} and nothing else", async () => {
+    // A person's bearer in the job's environment is not what the job writes with.
+    const env = { ...jobEnvironment(), DISPATCH_TOKEN: "a-person-bearer" };
+    const observed = "panic: test timed out after 10m0s";
+    const withObserved = await runJob(
+      [...record.map((word) => (word === "pass" ? "could_not_run" : word)), "--observed", observed],
+      env
+    );
+    expect(withObserved.code, withObserved.stdout).toBe(0);
+    const bare = await runJob(record, env);
+    expect(bare.code, bare.stdout).toBe(0);
+
+    expect(written.map((seen) => seen.body)).toStrictEqual([
+      { commit: SPEC_COMMIT, check: "p-1", verdict: "could_not_run", observed },
+      { commit: SPEC_COMMIT, check: "p-1", verdict: "pass" },
+    ]);
+    expect(written.map((seen) => seen.authorization)).toEqual([
+      `DPoP ${RESULTS_TOKEN}`,
+      `DPoP ${RESULTS_TOKEN}`,
+    ]);
+    expect(requests).toEqual([]);
+  });
+
+  test("dispatch results --project lists each stored result of the commit, one line each, newest first", async () => {
+    const listed = await run(["results", "--project", "ACME", "--commit", SPEC_COMMIT], omp);
+    expect(listed.code, listed.stdout).toBe(0);
+    expect(listed.stdout).toBe(
+      [
+        `Results of ACME at ${SPEC_COMMIT}, newest first:`,
+        `- #42 p-1: fail. Job go-checks, leg linux, run 4242 attempt 2, commit ${SPEC_COMMIT}.`,
+        `- #41 p-1: pass. Job go-checks, no leg, run 4242 attempt 1, commit ${SPEC_COMMIT}.`,
+        "",
+      ].join("\n")
+    );
+
+    const rows = await run(
+      ["results", "--project", "ACME", "--commit", SPEC_COMMIT, "--check", "p-1", "--json"],
+      omp
+    );
+    expect(rows.code, rows.stdout).toBe(0);
+    expect(JSON.parse(rows.stdout)).toEqual(storedSpecResults);
+    expect(specResultQueries).toEqual([
+      `?commit=${SPEC_COMMIT}`,
+      `?commit=${SPEC_COMMIT}&check=p-1`,
+    ]);
+  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {

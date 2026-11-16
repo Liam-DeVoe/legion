@@ -106,6 +106,14 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
+      # A CI job's result over the whole path a job writes it through: the real CLI, run as the
+      # job's own process, trades the job's OIDC token from a stand-in of GitHub at the real
+      # secrets broker for a token that writes results only, and the real Dispatch server stores
+      # the result or refuses it (packages/envoy-client/test/ci-results-stack.ts). It builds the
+      # broker and the server from this tree, on this job's Postgres.
+      - name: A CI job's result through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-results.live.test.ts
+        working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
