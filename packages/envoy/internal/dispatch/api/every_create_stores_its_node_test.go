@@ -208,6 +208,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":                   noObject,
 	"POST /api/v1/artifacts/{id}/rebuild":                                  noObject,
 	"POST /api/v1/artifacts/{id}/reviews":                                  noObject,
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews":                noObject,
 	"POST /api/v1/artifacts/{id}/plan-reviews":                             noObject,
 	"POST /api/v1/artifacts/{id}/versions":                                 noObject,
 	"POST /api/v1/artifacts/{id}/edits":                                    noObject,
