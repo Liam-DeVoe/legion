@@ -4,8 +4,8 @@ import (
 	"context"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,32 +28,42 @@ import (
 // the server's size, never the pools: pools shrunk for tests would test a shape production does
 // not run.
 //
-// dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
-// one count for the whole binary because one `go test` binary is what one lane's server serves,
-// and parallel root tests in it share that server. A process counts from its start until it exits,
-// which is what it holds connections for, so a row that restarts a process one after another asks
-// for one process's worth.
-var dispatchProcessesRunning atomic.Int64
+// dispatchProcessSlots holds one token per Dispatch process this test binary may run at once. It
+// is one budget for the whole binary because one `go test` binary is what one lane's server
+// serves, and parallel root tests in it share that server. A process holds a token from its start
+// until it exits, which is what it holds connections for, so a row that restarts a process one
+// after another asks for one process's worth.
+//
+// A start that finds no token waits for one rather than failing: how many of this package's
+// parallel rows are inside a process at one moment is the scheduler's to say, and a row that
+// failed on it would fail for the machine. The wait is bounded by processSlotWait so a token a
+// test never releases is reported as itself rather than as a run that never ends.
+var dispatchProcessSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
 
-// requireConnectionCeiling counts one more Dispatch process running in this test binary and
-// refuses its start when the count is over testlimits.MaxProcessesAtOnce or the server cannot serve
-// that many. It answers the release that takes the process off the count, which the caller runs
-// once the process has exited; the test's cleanup runs it too, for a start that never ran a
-// process, and only the first call counts.
+// processSlotWait is the give-up on a free process slot. It is far above any row's own run: the
+// longest process-holding row of this package takes under a minute, so a wait that reaches this
+// bound is a leaked token and not a busy binary.
+const processSlotWait = 5 * time.Minute
+
+// requireConnectionCeiling takes one of this test binary's process slots, waiting for one while
+// testlimits.MaxProcessesAtOnce are held, and refuses the start when the server cannot serve that
+// many. It answers the release that gives the slot back, which the caller runs once the process
+// has exited; the test's cleanup runs it too, for a start that never ran a process, and only the
+// first call releases.
 func requireConnectionCeiling(t *testing.T, databaseURL string) (release func()) {
 	t.Helper()
-	processes := int(dispatchProcessesRunning.Add(1))
-	var once sync.Once
-	release = func() { once.Do(func() { dispatchProcessesRunning.Add(-1) }) }
-	t.Cleanup(release)
-
-	if processes > testlimits.MaxProcessesAtOnce {
-		release()
-		t.Fatalf("this start would run %d Dispatch processes at once in this test binary, and "+
-			"testlimits.MaxProcessesAtOnce is %d. Every CI lane's Postgres is sized from that constant: "+
-			"raise it, so the lanes grow with it, rather than leaving this row to meet a server that "+
-			"cannot serve it.", processes, testlimits.MaxProcessesAtOnce)
+	select {
+	case dispatchProcessSlots <- struct{}{}:
+	case <-time.After(processSlotWait):
+		t.Fatalf("no Dispatch process slot came free in %s, with testlimits.MaxProcessesAtOnce = %d "+
+			"held: a test that started a process and never released its slot keeps them, since a "+
+			"release runs when the process exits and at the test's cleanup.",
+			processSlotWait, testlimits.MaxProcessesAtOnce)
 	}
+	processes := len(dispatchProcessSlots)
+	var once sync.Once
+	release = func() { once.Do(func() { <-dispatchProcessSlots }) }
+	t.Cleanup(release)
 
 	ctx := context.Background()
 	config, err := pgx.ParseConfig(databaseURL)
