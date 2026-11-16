@@ -840,6 +840,12 @@ jobs:
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The daemon's NATS connection presents its service token through natscred and takes
+              # its reply prefix from natsgrant (internal/natsauth), which reach the bus and its ids.
+              - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/natsgrant/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -2284,7 +2290,6 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -4390,6 +4395,12 @@ jobs:
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The daemon's NATS connection presents its service token through natscred and takes
+              # its reply prefix from natsgrant (internal/natsauth), which reach the bus and its ids.
+              - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/natsgrant/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
             # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
             # rules that binary carries to the frozen shell script's verdicts, case for case.
