@@ -167,8 +167,8 @@ type Deps struct {
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
-	// changes the listener's sessions sees the change at its next read. A deployment leaves it
-	// false.
+	// changes the listener's sessions sees the change at its next read. A landing asks once for
+	// all of its parts, which share that one answer (landingRoster). A deployment leaves it false.
 	ListenerRosterUncached bool
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.

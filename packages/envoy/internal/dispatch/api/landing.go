@@ -25,6 +25,14 @@
 // that accepted the connection and never answered held the whole landing for each client's own
 // window in turn, and with it the first paint of every cold page, where before the landing only
 // the one chip that service draws had waited (dispatch://INFRA-1109).
+//
+// The listener answers one more thing the landing waits on: the route roster, which the agents
+// read and so does every database part that shows a route - the inbox's asks, the pinned issues,
+// the board's issues and the issue itself. The landing reads that roster once, beside its
+// database parts and under the same bound, and every one of those parts takes that one read
+// (landingRoster). Each part reading the roster for itself waited on the listener's shared fetch
+// for up to routeRosterTimeout, outside any bound the landing kept, and a routed issue held the
+// whole landing that long behind a listener that never answered.
 package api
 
 import (
@@ -61,22 +69,31 @@ const (
 var landingPages = []string{landingPageIssue, landingPageBoard, landingPageInbox, landingPageDocument}
 
 // landingServiceBound is how long the landing waits on a service outside the database - the Envoy
-// listener behind the agents and the subscribers, the secrets broker behind the credential
-// requests - before it leaves that service's part null.
+// listener behind the agents, the subscribers and the route roster, the secrets broker behind the
+// credential requests - before it leaves that service's part null, or, for the roster, reads
+// every route the landing shows as unknown.
 //
-// The dashboard draws nothing but its skeleton until the landing answers, so the bound is what one
-// silent service costs every cold page. A part left null costs far less: the page reads it from
-// the route it stands in for once it has drawn, and that read waits on the service under the
-// client's own window (envoy.defaultTimeout and agentsecrets.defaultTimeout, five seconds each)
-// while it holds the one chip that part draws and nothing else, which is how every page read the
-// part before the landing existed. So the bound trades a late page against a late chip, and it is
-// short. Read in line with the database parts, a listener and a broker that accept a connection
-// and never answer held the landing for the broker's window, then the roster fetch's
-// (routeRosterTimeout, two seconds), then the listener's window again for the subscribers. One
-// second is below routeRosterTimeout, so the agents part never waits a roster fetch out. It is no
-// shorter because the bound must be one a healthy service does not meet: a part a healthy service
-// misses is null on every landing, which buys back the read the landing exists to save and writes
-// a warning about a service that was answering.
+// The dashboard draws nothing but its skeleton until the landing answers, so the bound is what a
+// silent service costs a cold page, and it costs it once: the service parts wait it out beside one
+// another and beside the database parts, and every part that asks for the route roster - the
+// agents, and each database part that shows a route - takes the one read the landing makes of it
+// under the bound (landingRoster), so a silent listener costs a cold page the bound once however
+// many of its parts read a route. A part left null costs far less: the page reads it from the
+// route it stands in for once it has drawn, and that read waits on the service under the client's
+// own window (envoy.defaultTimeout and agentsecrets.defaultTimeout, five seconds each) while it
+// holds the one chip that part draws and nothing else, which is how every page read the part
+// before the landing existed. A route read unknown costs nothing new either: it is what the
+// route's own read answers while the listener is silent. So the bound trades a late page against
+// a late chip, and it is short. Read in line with the database parts, a listener and a broker that
+// accept a connection and never answer held the landing for the broker's window, then the roster
+// fetch's (routeRosterTimeout, two seconds), then the listener's window again for the
+// subscribers; and once the service parts were bound, a database part that read the roster for
+// itself still waited the roster fetch out, which held a board with an open ask on a routed issue
+// for 2.077 s (TestLandingDoesNotWaitOnASilentListenerForARoutedIssue). One second is below
+// routeRosterTimeout, so the landing's roster read never waits a roster fetch out, and neither
+// does any part that takes it. It is no shorter because the bound must be one a healthy service
+// does not meet: a part a healthy service misses is null on every landing, which buys back the
+// read the landing exists to save and writes a warning about a service that was answering.
 const landingServiceBound = time.Second
 
 // landingResponse is the body GET /api/v1/landing answers: the viewer, the shell every page
@@ -321,11 +338,14 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 			"the event log's head could not be read")
 		return
 	}
-	ctx := r.Context()
 	trees := wantsDisplayTrees(r)
-	// The parts a service answers are on their way before the first database part is read and
-	// are taken after the last, so a slow service costs the landing landingServiceBound beside
-	// the database reads rather than after them.
+	// The landing's one read of the route roster and the parts a service answers are on their way
+	// before the first database part is read, so a slow listener or broker costs the landing
+	// landingServiceBound beside the database reads rather than after them: the service parts are
+	// taken after the last database part, and each part that shows a route takes the roster read
+	// when it reaches one. The roster read starts first and the rest read through the context it
+	// answers, so the agents part takes that same read (startLandingRoster).
+	ctx := s.startLandingRoster(r.Context())
 	services := s.startLandingServices(ctx, caller, read)
 	answer := landingResponse{
 		Viewer: landingViewer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: caller.ID},
@@ -420,16 +440,18 @@ func landingNotFound(err error) bool {
 // http.NewRequestWithContext and send it with http.Client.Do, and net/http abandons a request
 // whose context has ended and answers that context's error, whether it was dialling, sending,
 // waiting for the answer or reading its body; and the roster read behind the agents
-// (readRouteRoster) stops waiting on the shared listener fetch once its context ends. So the read
-// has returned by the bound, and wait, which blocks on the read rather than on a timer of its
+// (readRouteRoster) takes the landing's one roster read (landingRoster), which ends at a bound of
+// its own started just before this one, and stops waiting on it once its own context ends. So the
+// read has returned by the bound, and wait, which blocks on the read rather than on a timer of its
 // own, has answered by then too and leaves no goroutine writing into a part while the response
 // encodes it. TestLandingDoesNotWaitOnASilentListenerOrBroker holds both services silent for the
 // whole test and reads each landing back within the bound and its margin.
 //
 // The read's context carries a connection mark of its own (store.ForConcurrentRead). The agents
-// read takes the roster row, the open-ask counts and the last activity from the database beside
-// the listener; on the request's one mark, its open cursor would have the pool refuse the database
-// part read beside it, or have that part's refuse it (store.ErrNestedAcquire).
+// read takes the open-ask counts and the last activity from the database beside the listener, as
+// the landing's roster read takes the roster row; on the request's one mark, either's open cursor
+// would have the pool refuse the database part read beside it, or have that part's refuse it
+// (store.ErrNestedAcquire).
 type landingServicePart[T any] struct {
 	name string
 	// request is the request's own context: its end is the caller going away, which is no
@@ -444,8 +466,9 @@ type landingServicePart[T any] struct {
 }
 
 // startLandingServicePart starts read under landingServiceBound and answers the part wait takes
-// its answer from. ctx is the request's, and must hold no pooled connection, which is how every
-// caller starts one: before the first database part, or between two of them.
+// its answer from. ctx is the landing's - the request's own, carrying the landing's roster read
+// (startLandingRoster) - and must hold no pooled connection, which is how every caller starts
+// one: before the first database part, or between two of them.
 func startLandingServicePart[T any](ctx context.Context, name string, read func(context.Context) (T, error)) *landingServicePart[T] {
 	part := &landingServicePart[T]{name: name, request: ctx, done: make(chan struct{})}
 	marked, err := store.ForConcurrentRead(ctx)
@@ -486,6 +509,82 @@ func (p *landingServicePart[T]) wait() T {
 	return landingPart(p.request, p.name, p.value, p.err)
 }
 
+// landingRoster is the one read of the route roster a landing makes, which every part of that
+// landing that asks for the roster takes: the agents, and the database parts that show a route -
+// the inbox's asks, the pinned issues, the board's issues and the issue itself. readRouteRoster
+// finds it in the part's context (landingRosterKey) and waits on it instead of reading the roster
+// itself.
+//
+// It is one read rather than one per part for two reasons. Every part of one landing shows the
+// same route statuses: read part by part, the stored answer could turn stale or be replaced
+// between two of them, and one page could show a route live in its inbox and no_holder on its
+// board. And no database part waits on the listener past landingServiceBound: this read runs
+// under that bound, where a part's own read waited on the listener's shared fetch for up to
+// routeRosterTimeout, so with the listener silent and an open ask on a routed issue a board landing
+// answered after 2.077 s (TestLandingDoesNotWaitOnASilentListenerForARoutedIssue). A roster the
+// bound left unanswered reads every route unknown, which is what a part's own read answered once
+// it had waited the listener out, and no database part logs it, since a silent listener is no
+// failed read (routeRosterOrUnknown). The agents part takes it as the listener's silence and is
+// left null and named once in the log, as for a silence the roster row stored; this read's bound
+// started a moment before the agents part's own, so it usually ends first, and the line then
+// names the silence rather than the bound.
+//
+// The read starts before the landing's first database part, on a connection mark of its own: it
+// reads the stored roster row while the database parts read theirs, and store.ForConcurrentRead,
+// which gives it that mark, refuses a context that holds a connection, which the request's does
+// whenever a database part has a cursor open.
+type landingRoster struct {
+	// done closes once the read has returned and roster and err hold what it answered.
+	done   chan struct{}
+	roster routeRoster
+	err    error
+}
+
+// landingRosterKey is the context key a landing's roster read is found under. The read's own
+// context holds a nil *landingRoster under it, so readRouteRoster makes the read there rather
+// than waiting on one.
+type landingRosterKey struct{}
+
+// startLandingRoster starts the landing's one roster read under landingServiceBound and answers
+// ctx carrying it, which getLanding reads every part through. ctx is the request's, and must hold
+// no pooled connection: getLanding starts it before the first database part. A deployment with no
+// listener starts nothing and answers ctx as it is, since readRouteRoster answers every route
+// unknown there at once, with nothing to wait on and so nothing to share.
+func (s *server) startLandingRoster(ctx context.Context) context.Context {
+	if s.deps.Envoy == nil {
+		return ctx
+	}
+	shared := &landingRoster{done: make(chan struct{})}
+	landing := context.WithValue(ctx, landingRosterKey{}, shared)
+	marked, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		// A caller that held a connection here is a bug, as it is for startLandingServicePart:
+		// every part reads the roster unanswered with this error, and each logs it as the failed
+		// read it is (routeRosterOrUnknown, landingPart).
+		shared.err = err
+		close(shared.done)
+		return landing
+	}
+	// Under a context that carries a landing's read, readRouteRoster waits on that read rather
+	// than making one, so this read's own context carries none, whatever ctx carried.
+	marked = context.WithValue(marked, landingRosterKey{}, (*landingRoster)(nil))
+	go func() {
+		defer close(shared.done)
+		bounded, cancel := context.WithTimeout(marked, landingServiceBound)
+		defer cancel()
+		roster, err := s.readRouteRoster(bounded)
+		if err != nil && bounded.Err() != nil {
+			// The bound, or the request's end, cut the read of the stored roster row short. That
+			// is the listener's answer out of this landing's reach, not a failed read of the
+			// database, so it answers what a read the bound ended while it waited on the fetch
+			// answers: unanswered, with no error, which no database part logs as a failure.
+			roster, err = endedRouteRoster(bounded), nil
+		}
+		shared.roster, shared.err = roster, err
+	}()
+	return landing
+}
+
 // landingServices is the landing's parts a service outside the database answers that it can ask
 // for before it has read anything, each on its way while the database parts are read. A nil
 // member is a part not started, which wait answers null.
@@ -497,7 +596,10 @@ type landingServices struct {
 
 // startLandingServices starts the shell's agents and credential requests, and the issue page's
 // subscribers, which need only the key the request names. The document page's subscribers need
-// the document the page reads first, so landingDocumentPage starts them itself.
+// the document the page reads first, so landingDocumentPage starts them itself. ctx carries the
+// landing's roster read (startLandingRoster), which the agents part takes rather than reading the
+// roster itself, so the agents and every database part that shows a route judge one roster, and
+// a silent listener holds them all for one bound rather than one each.
 func (s *server) startLandingServices(ctx context.Context, caller model.Actor, read landingRequest) landingServices {
 	var started landingServices
 	// The agents and the subscribers are the listener's to answer, and loadSubscribers refuses

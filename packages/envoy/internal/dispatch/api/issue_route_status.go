@@ -33,7 +33,9 @@ import (
 // connection held (envoy_resolve.go carries the reason). A read that waits for the fetch waits on
 // the listener too, so the rule binds every caller of readRouteRoster: listIssues and getIssue
 // call it only once their pooled reads have finished, listAgents before its two aggregates run,
-// and a new caller must do the same.
+// and a new caller must do the same. A landing (GET /api/v1/landing) reads it once for all of its
+// parts, on a goroutine and a connection mark of its own and under the landing's bound, and each
+// part that asks for the roster takes that one read (landingRoster).
 //
 // no_holder is one read and says only "nobody right now": a session that restarts or moves
 // between agent boxes keeps its id but is absent from the listener for minutes. The read does not
@@ -77,8 +79,9 @@ type routeRoster struct {
 	holders map[string]string
 	// err is why the roster did not answer: the listener client's own error when this process's
 	// fetch got it, errListenerSilence or errListenerRefill when the silence was read from a row
-	// another fetch stored, or, for a read whose request ended while it waited on the shared
-	// fetch, envoy.ErrUnavailable wrapping the request's context error. It matches
+	// another fetch stored, or, for a read whose own context ended while it waited on the shared
+	// fetch or on its landing's roster read - its request's end, or the landing's bound -
+	// envoy.ErrUnavailable wrapping that context's error (endedRouteRoster). It matches
 	// envoy.ErrRefilling when reason is model.RouteReasonRefilling and envoy.ErrUnavailable
 	// otherwise. It is nil when the roster answered or the listener is unconfigured.
 	err error
@@ -181,6 +184,13 @@ type rosterFetch struct {
 // lists the sessions answers it as one rather than as the listener's silence, while a caller
 // that only shows a route may read it unknown (routeRosterOrUnknown).
 //
+// A read made under a landing's context takes that landing's one read instead (landingRoster),
+// which is this same read made once under landingServiceBound, so every part of one landing
+// judges one roster and none waits on the listener past that bound. A landing's read the bound
+// ended answers as a read whose own context ended while it waited: unanswered and unreachable,
+// with no error, so a part that only shows a route reads it unknown and logs nothing, as it does
+// when the listener's silence is stored.
+//
 // A read that found the row stale may reach the lock only after the fetch that was in flight
 // while it read has stored its answer and gone. It then takes the answer this process built
 // since its own read of the row (builtSent later than the sent_at that read saw) rather than
@@ -192,9 +202,18 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	if s.deps.Envoy == nil {
 		return routeRoster{reason: model.RouteReasonUnreachable}, nil
 	}
+	if shared, _ := ctx.Value(landingRosterKey{}).(*landingRoster); shared != nil {
+		select {
+		case <-shared.done:
+			return shared.roster, shared.err
+		case <-ctx.Done():
+			return endedRouteRoster(ctx), nil
+		}
+	}
 	if s.deps.ListenerRosterUncached {
 		// An end-to-end test process: every read asks the listener itself, with no stored answer,
-		// no shared fetch and nothing kept.
+		// no shared fetch and nothing kept. A landing's parts still take the landing's one read,
+		// above, which asked the listener this way.
 		return s.listRouteRoster(ctx), nil
 	}
 	roster, fresh, now, seen, err := s.storedRouteRoster(ctx)
@@ -227,8 +246,18 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	case <-fetch.done:
 		return fetch.roster, nil
 	case <-ctx.Done():
-		return routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}, nil
+		return endedRouteRoster(ctx), nil
 	}
+}
+
+// endedRouteRoster is what readRouteRoster answers a read whose own context ended while it waited
+// for a roster to be read: unanswered, unreachable, and its err envoy.ErrUnavailable wrapping that
+// context's error. readRouteRoster answers it with no error of its own, since nothing failed but
+// the read's wait: the listener is only out of that read's reach, so a caller that shows a route
+// reads it unknown and logs nothing (routeRosterOrUnknown), and listAgents answers the 503 a
+// silent listener answers.
+func endedRouteRoster(ctx context.Context) routeRoster {
+	return routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}
 }
 
 // routeRosterOrUnknown is readRouteRoster for a read that only shows a route: a failed read of the
