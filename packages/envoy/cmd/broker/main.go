@@ -1321,9 +1321,9 @@ func (l loggedIssuers) boot(ctx context.Context) {
 // noted (readable).
 func (l loggedIssuers) run(ctx context.Context) { l.set.Run(ctx, l.readable) }
 
-// Verify is IssuerSet.Verify, logging the change it finds in the token's issuer (note).
-func (l loggedIssuers) Verify(ctx context.Context, raw string) (oidc.Claims, oidc.NamedIssuer, error) {
-	claims, issuer, err := l.set.Verify(ctx, raw)
+// VerifyClaims is IssuerSet.VerifyClaims, logging the change it finds in the token's issuer (note).
+func (l loggedIssuers) VerifyClaims(ctx context.Context, raw string, into ...any) (oidc.Claims, oidc.NamedIssuer, error) {
+	claims, issuer, err := l.set.VerifyClaims(ctx, raw, into...)
 	l.note(ctx, issuer, err)
 	return claims, issuer, err
 }

@@ -219,11 +219,17 @@ func WithKeyFailureSpacing(spacing time.Duration) LazyVerifierOption {
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
 // and an attempt is due; before that every error matches ErrIssuerUnavailable.
 func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
+	return v.VerifyClaims(ctx, raw)
+}
+
+// VerifyClaims is Verifier.VerifyClaims once the issuer is discovered, as Verify is Verifier.Verify:
+// it also unmarshals the payload the signature covers into each of into.
+func (v *LazyVerifier) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, error) {
 	issuer, err := v.discovery.discover(ctx)
 	if err != nil {
 		return Claims{}, err
 	}
-	return issuer.verifier.Verify(ctx, raw)
+	return issuer.verifier.VerifyClaims(ctx, raw, into...)
 }
 
 // Key is Keys.Key on the key set Verify reads, once the issuer is discovered, discovering it

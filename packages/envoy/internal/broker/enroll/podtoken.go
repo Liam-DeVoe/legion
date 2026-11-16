@@ -1,9 +1,10 @@
 // K8sPodVerifier verifies a projected service-account token with the shared internal/oidc
-// verifiers (issuer, audience, signature, expiry, subject) and then reads the pod UID claim from
-// the same, already-verified token — the check Hawk's token broker makes (_is_pod_bound). A pod's
-// enrollment needs the token bound to its pod (Verify); a service's token login reads the account
-// and, when the token has one, its pod (VerifyAccount), and the issuer of BROKER_K8S_OIDC_ISSUER
-// that signed the token, which an account entry's issuers are judged by.
+// verifiers (issuer, audience, signature, expiry, subject) and reads the pod UID claim from the
+// payload that verification's signature covers (oidc.IssuerSet.VerifyClaims), never from the
+// token's text — the check Hawk's token broker makes (_is_pod_bound). A pod's enrollment needs the
+// token bound to its pod (Verify); a service's token login reads the account and, when the token
+// has one, its pod (VerifyAccount), and the issuer of BROKER_K8S_OIDC_ISSUER that signed the
+// token, which an account entry's issuers are judged by.
 package enroll
 
 import (
@@ -11,18 +12,18 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // IssuerVerifier checks a token against the issuer its iss names, among several, and answers
-// that issuer beside the claims: *oidc.IssuerSet, over the issuers BROKER_K8S_OIDC_ISSUER names.
-// It is an interface so that a test can verify through a key set it configures itself, which a
-// set builds for each of its issuers out of reach.
+// that issuer beside the claims, unmarshalling the payload the signature covers into each of
+// into: *oidc.IssuerSet, over the issuers BROKER_K8S_OIDC_ISSUER names. It is an interface so that
+// a test can verify through a key set it configures itself, which a set builds for each of its
+// issuers out of reach.
 type IssuerVerifier interface {
-	Verify(ctx context.Context, raw string) (oidc.Claims, oidc.NamedIssuer, error)
+	VerifyClaims(ctx context.Context, raw string, into ...any) (oidc.Claims, oidc.NamedIssuer, error)
 }
 
 // K8sPodVerifier is the broker's PodVerifier: Issuers checks every token against the issuer it
@@ -45,14 +46,6 @@ type AccountClaims struct {
 // VerifyAccount verifies raw as Verify does but accepts a token bound to no pod. Every error wraps
 // one of the oidc sentinels (oidc.ErrExpired for an expired token), or is a malformed private claim.
 func (k K8sPodVerifier) VerifyAccount(ctx context.Context, raw string) (AccountClaims, error) {
-	claims, issuer, err := k.Issuers.Verify(ctx, raw)
-	if err != nil {
-		return AccountClaims{}, err
-	}
-	parsed, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256, jose.ES256})
-	if err != nil {
-		return AccountClaims{}, err
-	}
 	var registered jwt.Claims
 	var private struct {
 		Kubernetes struct {
@@ -61,9 +54,8 @@ func (k K8sPodVerifier) VerifyAccount(ctx context.Context, raw string) (AccountC
 			} `json:"pod"`
 		} `json:"kubernetes.io"`
 	}
-	// The signature was verified by the issuer's oidc.Verifier on this exact token; reading the
-	// claims without a second verification is safe here and only here.
-	if err := parsed.UnsafeClaimsWithoutVerification(&registered, &private); err != nil {
+	claims, issuer, err := k.Issuers.VerifyClaims(ctx, raw, &registered, &private)
+	if err != nil {
 		return AccountClaims{}, err
 	}
 	var issuedAt time.Time

@@ -56,7 +56,7 @@ func TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain(t *testing.
 		errs := make([]error, burst)
 		var wg sync.WaitGroup
 		for i := range burst {
-			wg.Go(func() { _, _, errs[i] = verifier.Verify(context.Background(), token(b, bKey)) })
+			wg.Go(func() { _, _, errs[i] = verifier.VerifyClaims(context.Background(), token(b, bKey)) })
 		}
 		wg.Wait()
 		for i, err := range errs {
@@ -76,7 +76,7 @@ func TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain(t *testing.
 	})
 
 	t.Run("a token of an issuer that can be read writes no line", func(t *testing.T) {
-		if _, _, err := verifier.Verify(context.Background(), token(a, aKey)); err != nil {
+		if _, _, err := verifier.VerifyClaims(context.Background(), token(a, aKey)); err != nil {
 			t.Fatalf("the token of A = %v, want it verified", err)
 		}
 		if found := lines(issuerUnreadableMessage); len(found) != 1 || strings.Contains(found[0], "name=a") {
@@ -90,7 +90,7 @@ func TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain(t *testing.
 	t.Run("the first token of the issuer that verifies again writes one line", func(t *testing.T) {
 		b.FailKeys(0)
 		for i := range 3 {
-			if _, _, err := verifier.Verify(context.Background(), token(b, bKey)); err != nil {
+			if _, _, err := verifier.VerifyClaims(context.Background(), token(b, bKey)); err != nil {
 				t.Fatalf("token %d of B once its key set answers = %v, want it verified", i, err)
 			}
 		}
@@ -112,7 +112,7 @@ func TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain(t *testing.
 		c.FailDiscovery(http.StatusServiceUnavailable)
 		hungUp, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, _, err := verifier.Verify(hungUp, token(c, cKey)); !errors.Is(err, oidc.ErrIssuerUnavailable) {
+		if _, _, err := verifier.VerifyClaims(hungUp, token(c, cKey)); !errors.Is(err, oidc.ErrIssuerUnavailable) {
 			t.Fatalf("a token of C on an ended request, C's discovery document failing = %v, want oidc.ErrIssuerUnavailable", err)
 		}
 		if found := lines(issuerUnreadableMessage); len(found) != 1 || !strings.Contains(found[0], "name=b") {
@@ -141,7 +141,7 @@ func TestAnIssuerTheBootCouldNotReadWritesOneLineWhenRead(t *testing.T) {
 	if len(booted) != 2 || !strings.Contains(booted[1], "name=b") || !strings.Contains(booted[1], "read=false") {
 		t.Fatalf("the boot wrote %v, want one line for each issuer, B's saying it was not read:\n%s", booted, logged)
 	}
-	if _, _, err := verifier.Verify(context.Background(), tokenOfB); !errors.Is(err, oidc.ErrIssuerUnavailable) {
+	if _, _, err := verifier.VerifyClaims(context.Background(), tokenOfB); !errors.Is(err, oidc.ErrIssuerUnavailable) {
 		t.Fatalf("a token of B while B's discovery document fails = %v, want oidc.ErrIssuerUnavailable", err)
 	}
 	if found := lines(issuerUnreadableMessage); len(found) != 0 {
@@ -158,7 +158,7 @@ func TestAnIssuerTheBootCouldNotReadWritesOneLineWhenRead(t *testing.T) {
 	for range 4 {
 		callers.Go(func() {
 			for {
-				_, _, _ = verifier.Verify(context.Background(), tokenOfB)
+				_, _, _ = verifier.VerifyClaims(context.Background(), tokenOfB)
 				select {
 				case <-ran:
 					return
@@ -173,7 +173,7 @@ func TestAnIssuerTheBootCouldNotReadWritesOneLineWhenRead(t *testing.T) {
 		t.Fatal("the background read of B did not succeed within a minute of B answering")
 	}
 	callers.Wait()
-	if _, _, err := verifier.Verify(context.Background(), tokenOfB); err != nil {
+	if _, _, err := verifier.VerifyClaims(context.Background(), tokenOfB); err != nil {
 		t.Fatalf("a token of B once B is read = %v, want it verified", err)
 	}
 	found := lines(issuerReadableMessage)

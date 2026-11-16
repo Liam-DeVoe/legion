@@ -50,9 +50,17 @@ func NewIssuerSet(issuers []NamedIssuer, audience string, keySpacing time.Durati
 // ErrIssuer, as Verifier.Verify classifies each; neither reads anything. Every other answer is
 // that issuer's LazyVerifier's, ErrIssuerUnavailable while its discovery document has not been
 // read or its key set cannot be, and it carries the issuer even when it is an error, so a caller
-// can say which issuer could not be read.
+// can say which issuer could not be read. The unverified iss only chooses the verifier: every
+// claim the answer carries is read from the payload that issuer's signature covers.
 func (s *IssuerSet) Verify(ctx context.Context, raw string) (Claims, NamedIssuer, error) {
-	claims, err := decodeClaims(raw)
+	return s.VerifyClaims(ctx, raw)
+}
+
+// VerifyClaims is Verify that also unmarshals the verified payload into each of into, through the
+// issuer's LazyVerifier (Verifier.VerifyClaims): the one way a caller of the set reads a claim
+// Claims does not carry, such as a pod's private claims.
+func (s *IssuerSet) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, NamedIssuer, error) {
+	claims, err := decodeUnverifiedClaims(raw)
 	if err != nil {
 		return Claims{}, NamedIssuer{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
@@ -60,7 +68,7 @@ func (s *IssuerSet) Verify(ctx context.Context, raw string) (Claims, NamedIssuer
 	if err != nil {
 		return Claims{}, NamedIssuer{}, err
 	}
-	verified, err := entry.verifier.Verify(ctx, raw)
+	verified, err := entry.verifier.VerifyClaims(ctx, raw, into...)
 	return verified, entry.issuer, err
 }
 

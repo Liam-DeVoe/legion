@@ -293,8 +293,8 @@ type keysIssuer struct {
 	issuer   oidc.NamedIssuer
 }
 
-func (k keysIssuer) Verify(ctx context.Context, raw string) (oidc.Claims, oidc.NamedIssuer, error) {
-	claims, err := k.verifier.Verify(ctx, raw)
+func (k keysIssuer) VerifyClaims(ctx context.Context, raw string, into ...any) (oidc.Claims, oidc.NamedIssuer, error) {
+	claims, err := k.verifier.VerifyClaims(ctx, raw, into...)
 	return claims, k.issuer, err
 }
 
