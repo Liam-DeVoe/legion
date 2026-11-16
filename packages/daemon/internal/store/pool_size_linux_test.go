@@ -10,8 +10,10 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/sys/unix"
 )
 
@@ -98,9 +100,55 @@ func poolSizeChild(t *testing.T, oneCPU bool, gomaxprocs int) (numCPU, procs, ma
 	return numCPU, procs, maxConns
 }
 
-// A DSN that names pool_max_conns keeps its own number, in a URL and in a keyword/value string,
-// and one that does not gets poolConns. The deployed daemons name 32 in their DSN; a deployment
-// that needs another number writes it there, as it writes the idle bound.
+// withSetting is dsn with one more connection setting, in dsn's own form: a URL's query, or the
+// next quoted pair of a keyword/value string.
+func withSetting(t *testing.T, dsn, key, value string) string {
+	t.Helper()
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parse the test database's URL: %v", err)
+		}
+		query := u.Query()
+		query.Set(key, value)
+		u.RawQuery = query.Encode()
+		return u.String()
+	}
+	return dsn + " " + key + "=" + quoted(value)
+}
+
+// quoted is value as a keyword/value string writes it: in single quotes, with each backslash and
+// single quote escaped.
+func quoted(value string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value) + "'"
+}
+
+// asKeywords is the connection dsn names, as a keyword/value string, whichever form dsn has: so a
+// row can write a setting no URL can carry the same way, a quoted value. A connection pgx would
+// make without TLS keeps sslmode=disable.
+func asKeywords(t *testing.T, dsn string) string {
+	t.Helper()
+	config, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse the test database's connection string: %v", err)
+	}
+	pairs := []string{
+		"host=" + quoted(config.Host), "port=" + strconv.Itoa(int(config.Port)), "user=" + quoted(config.User),
+		"password=" + quoted(config.Password), "dbname=" + quoted(config.Database),
+	}
+	if config.TLSConfig == nil {
+		pairs = append(pairs, "sslmode=disable")
+	}
+	for key, value := range config.RuntimeParams {
+		pairs = append(pairs, key+"="+quoted(value))
+	}
+	return strings.Join(pairs, " ")
+}
+
+// Settings that name pool_max_conns keep their own number, as pgx reads them: in a URL and in a
+// keyword/value string. Text inside a quoted value names nothing, and settings that name no size
+// get poolConns. The deployed daemons name 32 in their DSN; a deployment that needs another
+// number writes it there.
 func TestADSNsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 	for _, tc := range []struct {
 		name, dsn string
@@ -113,7 +161,7 @@ func TestADSNsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 		{"a keyword/value string that names it", "host=h dbname=db pool_max_conns=7", true},
 		{"a keyword/value string with spaces around the =", "host=h pool_max_conns = 7", true},
 		{"a keyword/value string that does not", "host=h dbname=db", false},
-		{"a key that only ends in the name", "host=h xpool_max_conns=7", false},
+		{"the key inside a quoted value", "host=localhost application_name='worker pool_max_conns=7'", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := namesPoolMaxConns(tc.dsn); got != tc.names {
@@ -122,26 +170,19 @@ func TestADSNsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 		})
 	}
 
-	dsn, err := url.Parse(testDSN(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := testDSN(t)
+	keywords := asKeywords(t, database)
 	for _, tc := range []struct {
-		name  string
-		value string
-		want  int32
+		name, dsn string
+		want      int32
 	}{
-		{"named", "7", 7},
-		{"unnamed", "", poolConns},
+		{"the test database as given, naming no size", database, poolConns},
+		{"the test database as given, naming 7", withSetting(t, database, poolMaxConnsKey, "7"), 7},
+		{"a keyword/value string naming 7", withSetting(t, keywords, poolMaxConnsKey, "7"), 7},
+		{"the key inside a quoted value", withSetting(t, keywords, "application_name", "worker pool_max_conns=7"), poolConns},
 	} {
 		t.Run("Open, "+tc.name, func(t *testing.T) {
-			u := *dsn
-			q := u.Query()
-			if tc.value != "" {
-				q.Set(poolMaxConnsKey, tc.value)
-			}
-			u.RawQuery = q.Encode()
-			s, err := Open(t.Context(), u.String())
+			s, err := Open(t.Context(), tc.dsn)
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}

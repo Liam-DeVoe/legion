@@ -12,7 +12,6 @@ import (
 	"math"
 	"net"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -63,26 +62,25 @@ const (
 // daemon already runs with: agent-infra's legion program writes pool_max_conns=32 into each
 // daemon's DSN (legion/main.go), chosen after LINUX's daemon failed six boots in a row on
 // 2026-10-26 with about 880 claims deciding at once, while its instance served 41-48
-// connections. A DSN that names pool_max_conns keeps that number (namesPoolMaxConns).
+// connections. Settings that name pool_max_conns keep that number (namesPoolMaxConns).
 const poolConns = 32
 
-// poolMaxConnsKey is the DSN key pgxpool.ParseConfig reads MaxConns from.
+// poolMaxConnsKey is the connection setting pgxpool.ParseConfig reads MaxConns from.
 const poolMaxConnsKey = "pool_max_conns"
 
-// keywordPoolMaxConns finds poolMaxConnsKey as a key of a keyword/value DSN
-// (`host=... pool_max_conns=8`), with or without spaces around its `=`.
-var keywordPoolMaxConns = regexp.MustCompile(`(^|\s)` + poolMaxConnsKey + `\s*=`)
-
-// namesPoolMaxConns reports whether dsn sets pool_max_conns itself, in either form pgx reads: a
-// postgres:// or postgresql:// URL's query, or a keyword/value string. pgxpool.ParseConfig takes
-// the key out of the config it returns, so the config alone cannot tell a size the DSN chose from
-// pgxpool's default.
+// namesPoolMaxConns reports whether dsn's effective connection settings name pool_max_conns, as
+// pgx itself reads them: pgconn.ParseConfig resolves a URL query, a keyword/value string with its
+// quoting, and the keys of a `service=` entry's service file, and keeps every key it does not know
+// itself among RuntimeParams, as target reads them below. pgxpool.ParseConfig takes the key out
+// of the config it returns, so that config cannot tell a size the settings chose from pgxpool's
+// default.
 func namesPoolMaxConns(dsn string) bool {
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		parsed, err := url.Parse(dsn)
-		return err == nil && parsed.Query().Has(poolMaxConnsKey)
+	settings, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return false
 	}
-	return keywordPoolMaxConns.MatchString(dsn)
+	_, named := settings.RuntimeParams[poolMaxConnsKey]
+	return named
 }
 
 // Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
