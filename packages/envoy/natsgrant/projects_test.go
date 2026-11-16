@@ -1,0 +1,342 @@
+package natsgrant_test
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/natsgrant"
+)
+
+// pubScope is one daemon's scope: project PUB, two repositories (one whose name holds a dot, which
+// a subject spells as an underscore), and the account that names its reply prefix.
+var pubScope = natsgrant.Scope{
+	Projects:     []string{"PUB"},
+	Repositories: []string{"acme/widgets", "acme/gadgets.js"},
+	Identity:     "legion-daemon-PUB",
+}
+
+// A reply prefix is "_INBOX_" and the identity with every byte outside [A-Za-z0-9_-] written "_",
+// so it is one subject token whatever the identity holds, and never nats.go's own "_INBOX".
+func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {
+	for identity, want := range map[string]string{
+		"legion-daemon-PUB": "_INBOX_legion-daemon-PUB",
+		"system:serviceaccount:legion-pub:legion-pub-daemon": "_INBOX_system_serviceaccount_legion-pub_legion-pub-daemon",
+		"daemon@example.iam.gserviceaccount.com":             "_INBOX_daemon_example_iam_gserviceaccount_com",
+		"a.b*c>d e\tf":                                       "_INBOX_a_b_c_d_e_f",
+		"é":                                                  "_INBOX___",
+	} {
+		got := natsgrant.InboxPrefix(identity)
+		require.Equal(t, want, got, "InboxPrefix(%q)", identity)
+		require.True(t, natsgrant.SessionToken(got), "InboxPrefix(%q) = %q is one subject token", identity, got)
+	}
+}
+
+// The daemon's grant held to PUB: its reply prefix in place of _INBOX.>, the role-lane exceptions
+// of PUB alone, and for each consumer the daemon opens under PUB (t-c-10's names, each create
+// subject naming its one filter) the create, info, pull and acknowledgement of that consumer and
+// no other. The stream's info and stored-message get are gone. Written out in full, so the test
+// reads the subjects, not the code that builds them.
+func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
+	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), pubScope)
+	require.NoError(t, err)
+
+	const (
+		api  = "$JS.API.CONSUMER."
+		ack  = "$JS.ACK.ENVOY_NOTIFICATIONS."
+		pre  = "ENVOY_NOTIFICATIONS.legion-go-PUB-"
+		gads = "notifications.github.acme.gadgets_js.>"
+		wids = "notifications.github.acme.widgets.>"
+	)
+	consumers := []string{"dispatch", "mapping", "wake", "ready", "github-0", "github-1"}
+	var info, next, acks []string
+	for _, consumer := range consumers {
+		info = append(info, api+"INFO."+pre+consumer)
+		next = append(next, api+"MSG.NEXT."+pre+consumer)
+		acks = append(acks, ack+"legion-go-PUB-"+consumer+".>")
+	}
+	creates := []string{
+		api + "CREATE." + pre + "dispatch.notifications.dispatch.issue.PUB.>",
+		api + "CREATE." + pre + "mapping.notifications.dispatch.project.PUB.settings.repo_project.updated",
+		api + "CREATE." + pre + "wake.notifications.legion.pub.wake",
+		api + "CREATE." + pre + "ready.notifications.legion.wake",
+		api + "CREATE." + pre + "github-0." + gads,
+		api + "CREATE." + pre + "github-0." + wids,
+		api + "CREATE." + pre + "github-1." + gads,
+		api + "CREATE." + pre + "github-1." + wids,
+	}
+	require.Equal(t, natsgrant.Permissions{
+		Publish: slices.Concat(info, creates, next, acks),
+		Subscribe: []string{
+			"notifications.envoy.exceptions.notifications.role.PUB.>",
+			"_INBOX_legion-daemon-PUB.>",
+		},
+	}, got)
+}
+
+// Each kind of entry on its own: rewritten to the scope's subjects, dropped, or refused naming the
+// entry. A refusal is the whole answer, never a grant with the entry left out.
+func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
+	scope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets"}, Identity: "id"}
+	pubConsumers := []string{"dispatch", "mapping", "wake", "ready", "github-0"}
+	each := func(format string) []string {
+		out := make([]string, len(pubConsumers))
+		for i, consumer := range pubConsumers {
+			out[i] = fmt.Sprintf(format, "legion-go-PUB-"+consumer)
+		}
+		return out
+	}
+	creates := []string{
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch.notifications.dispatch.issue.PUB.>",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-mapping.notifications.dispatch.project.PUB.settings.repo_project.updated",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-wake.notifications.legion.pub.wake",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-ready.notifications.legion.wake",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-github-0.notifications.github.acme.widgets.>",
+	}
+	for _, row := range []struct {
+		entry   string
+		want    []string // nil with refused empty: dropped
+		refused string   // a word the refusal holds beside the entry
+	}{
+		{entry: "_INBOX.>", want: []string{"_INBOX_id.>"}},
+		{entry: "$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS"},
+		{entry: "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS"},
+		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>", want: creates},
+		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*.>", want: creates},
+		{entry: "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.>", want: each("$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.%s")},
+		{entry: "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*", want: each("$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.%s")},
+		{entry: "$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.>", want: each("$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.%s")},
+		{entry: "$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.*", want: each("$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.%s")},
+		{entry: "$JS.ACK.ENVOY_NOTIFICATIONS.>", want: each("$JS.ACK.ENVOY_NOTIFICATIONS.%s.>")},
+		{entry: "$JS.ACK.ENVOY_NOTIFICATIONS.*.>", want: each("$JS.ACK.ENVOY_NOTIFICATIONS.%s.>")},
+		{entry: "notifications.dispatch.issue.>", want: []string{"notifications.dispatch.issue.PUB.>"}},
+		{entry: "notifications.dispatch.issue.> example-queue", want: []string{"notifications.dispatch.issue.PUB.> example-queue"}},
+		{entry: "notifications.envoy.exceptions.notifications.role.>", want: []string{"notifications.envoy.exceptions.notifications.role.PUB.>"}},
+		{entry: "notifications.legion.>", want: []string{"notifications.legion.pub.>"}},
+		{entry: "notifications.github.>", want: []string{"notifications.github.acme.widgets.>"}},
+		// The stored-message reads of any other stream, and direct gets of this one.
+		{entry: "$JS.API.STREAM.MSG.GET.OTHER", refused: "stored message"},
+		{entry: "$JS.API.DIRECT.GET.ENVOY_NOTIFICATIONS.>", refused: "stored message"},
+		{entry: "$JS.API.DIRECT.GET.ENVOY_NOTIFICATIONS", refused: "stored message"},
+		// A consumer create whose subject cannot name a filter.
+		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*", refused: "no filter"},
+		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch", refused: "no filter"},
+		{entry: "$JS.API.CONSUMER.DURABLE.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch", refused: "no filter"},
+		{entry: "$JS.API.CONSUMER.DURABLE.CREATE.ENVOY_NOTIFICATIONS.>", refused: "no filter"},
+		// A KV bucket's calls.
+		{entry: "$KV.envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.API.STREAM.INFO.KV_envoy_roles", refused: "KV bucket"},
+		{entry: "$JS.API.STREAM.MSG.GET.KV_envoy_roles", refused: "KV bucket"},
+		{entry: "$JS.API.DIRECT.GET.KV_envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.API.CONSUMER.CREATE.KV_envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.API.CONSUMER.DELETE.KV_envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.FC.KV_envoy_roles.>", refused: "KV bucket"},
+		// Every project's notifications at once.
+		{entry: "notifications.>", refused: "every project"},
+		{entry: "notifications.> example-queue", refused: "every project"},
+		// Everything else is refused rather than passed through: an entry this function does not
+		// know how to hold to projects is one it cannot vouch for.
+		{entry: "notifications.dispatch.>", refused: "cannot be held"},
+		{entry: "notifications.agent.>", refused: "cannot be held"},
+		{entry: "notifications.role.>", refused: "cannot be held"},
+		{entry: "notifications.dispatch.issue.*.>", refused: "cannot be held"},
+		{entry: "_INBOX.abc.>", refused: "cannot be held"},
+		{entry: "$JS.API.INFO", refused: "cannot be held"},
+		{entry: "$JS.API.STREAM.INFO.OTHER", refused: "cannot be held"},
+		{entry: "$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.*", refused: "cannot be held"},
+		{entry: "$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS", refused: "cannot be held"},
+		{entry: "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.envoy-listener-example-host-a", refused: "cannot be held"},
+		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch.notifications.dispatch.issue.PUB.>", refused: "cannot be held"},
+		{entry: "$JS.ACK.ENVOY_NOTIFICATIONS.delivery-events.>", refused: "cannot be held"},
+		{entry: "$SYS.REQ.USER.AUTH", refused: "cannot be held"},
+		{entry: ">", refused: "cannot be held"},
+		{entry: "", refused: "cannot be held"},
+	} {
+		for _, direction := range []string{"publish", "subscribe"} {
+			grant := natsgrant.Permissions{Publish: []string{row.entry}}
+			if direction == "subscribe" {
+				grant = natsgrant.Permissions{Subscribe: []string{row.entry}}
+			}
+			got, err := natsgrant.WithinProjects(grant, scope)
+			name := direction + " " + strconv.Quote(row.entry)
+			if row.refused != "" {
+				require.Error(t, err, name)
+				require.ErrorContains(t, err, strconv.Quote(row.entry), name)
+				require.ErrorContains(t, err, row.refused, name)
+				require.Equal(t, natsgrant.Permissions{}, got, name)
+				continue
+			}
+			require.NoError(t, err, name)
+			held := got.Publish
+			if direction == "subscribe" {
+				held = got.Subscribe
+			}
+			if row.want == nil {
+				require.Empty(t, slices.Concat(got.Publish, got.Subscribe), name)
+				continue
+			}
+			require.Equal(t, row.want, held, name)
+		}
+	}
+}
+
+// A grant holding _INBOX.> needs the identity that names its reply prefix, and a scope names
+// project keys and owner/name repositories only: anything else would widen a subject the grant
+// names, so it is refused naming the value.
+func TestWithinProjectsRefusesAScopeItCannotName(t *testing.T) {
+	_, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}})
+	require.ErrorContains(t, err, strconv.Quote("_INBOX.>"))
+	require.ErrorContains(t, err, "identity")
+
+	for _, project := range []string{"pub", "*", ">", "_", "PUB.X", "PUB X", "", "P", "ABCDEFGHIJK"} {
+		_, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB", project}, Identity: "id"})
+		require.ErrorContains(t, err, "project "+strconv.Quote(project), "project %q", project)
+	}
+	for _, repo := range []string{"acme", "acme/", "/widgets", "acme/widgets/x", "*/widgets", "acme/>", "ac me/widgets", "acme/wid\tgets", ""} {
+		_, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{repo}, Identity: "id"})
+		require.ErrorContains(t, err, "repository "+strconv.Quote(repo), "repository %q", repo)
+	}
+}
+
+// With no project the grant names no project's subject: the daemon keeps its reply prefix and
+// nothing else.
+func TestWithinProjectsWithNoProjectNamesNoProjectSubject(t *testing.T) {
+	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Repositories: []string{"acme/widgets"}, Identity: "id"})
+	require.NoError(t, err)
+	require.Equal(t, natsgrant.Permissions{Subscribe: []string{"_INBOX_id.>"}}, got)
+}
+
+// The order of a scope's lists and a repeat in them change nothing.
+func TestWithinProjectsReadsAScopeAsASet(t *testing.T) {
+	want, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
+		Projects: []string{"OTHER", "PUB"}, Repositories: []string{"acme/gadgets.js", "acme/widgets"}, Identity: "id",
+	})
+	require.NoError(t, err)
+	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
+		Projects: []string{"PUB", "OTHER", "PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js", "acme/widgets"}, Identity: "id",
+	})
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+// Narrowing a grant changes no other holder's: the grant handed in keeps every entry, and the
+// daemon's static grant is still, element for element, what the hub rendered before this package
+// (the merge-base fixture), so a deployment that never runs WithinProjects keeps today's daemon
+// user byte for byte (R9).
+func TestWithinProjectsLeavesTheGrantItNarrows(t *testing.T) {
+	grant := natsgrant.Daemon()
+	before := natsgrant.Permissions{Publish: slices.Clone(grant.Publish), Subscribe: slices.Clone(grant.Subscribe)}
+	_, err := natsgrant.WithinProjects(grant, pubScope)
+	require.NoError(t, err)
+	require.Equal(t, before, grant)
+
+	var base mergeBase
+	readJSON(t, "testdata/merge-base-grants.json", &base)
+	requireSet(t, base.Daemon, natsgrant.Daemon(), "Daemon() after WithinProjects")
+}
+
+// What the grant names is read back through the readers every other part of the bus uses: each
+// notification subject, and each filter a create subject names, belongs to a project of the scope
+// (contracts.SubjectProject) or to a repository of it; each consumer is one the daemon opens under
+// a project of the scope; and the reply prefix is the identity's. The one subject of no project is
+// the wake lane every daemon shares (bus.LegionWakeTopic), which carries the listener's own start.
+func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
+	every := natsgrant.Permissions{
+		Publish: []string{
+			"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
+			"$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS",
+			"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>",
+			"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*",
+			"$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.>",
+			"$JS.ACK.ENVOY_NOTIFICATIONS.>",
+			"notifications.legion.>",
+		},
+		Subscribe: []string{
+			"_INBOX.>",
+			"notifications.dispatch.issue.>",
+			"notifications.envoy.exceptions.notifications.role.>",
+			"notifications.legion.>",
+			"notifications.github.>",
+		},
+	}
+	for _, scope := range []natsgrant.Scope{
+		pubScope,
+		{Projects: []string{"PUB", "OTHER"}, Repositories: []string{"acme/widgets", "beta/a.b", "Gamma/Delta"}, Identity: "system:serviceaccount:legion-pub:legion-pub-daemon"},
+		{Projects: []string{"ZZ"}, Identity: "daemon@example.com"},
+	} {
+		for name, grant := range map[string]natsgrant.Permissions{"Daemon()": natsgrant.Daemon(), "every kind": every} {
+			got, err := natsgrant.WithinProjects(grant, scope)
+			require.NoError(t, err, "%s within %v", name, scope)
+			require.NotEmpty(t, got.Subscribe, "%s within %v", name, scope)
+			entry, found := natsgrant.NamesSystemSubject(got)
+			require.False(t, found, "%s within %v names %q", name, scope, entry)
+			for _, entry := range slices.Concat(got.Publish, got.Subscribe) {
+				requireInScope(t, scope, entry)
+			}
+		}
+	}
+}
+
+// requireInScope fails unless entry reaches only what scope names.
+func requireInScope(t *testing.T, scope natsgrant.Scope, entry string) {
+	t.Helper()
+	subject, _, _ := strings.Cut(entry, " ")
+	consumer := regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch|mapping|wake|ready|github-([0-9]+))$`)
+	ownConsumer := func(name string) {
+		t.Helper()
+		match := consumer.FindStringSubmatch(name)
+		require.NotNil(t, match, "%q names consumer %q, which no daemon opens", entry, name)
+		require.Contains(t, scope.Projects, match[1], "%q names another project's consumer", entry)
+		if match[3] != "" {
+			index, err := strconv.Atoi(match[3])
+			require.NoError(t, err)
+			require.Less(t, index, len(scope.Repositories), "%q names a GitHub consumer past the scope's repositories", entry)
+		}
+	}
+	inScope := func(subject string) {
+		t.Helper()
+		if subject == bus.LegionWakeTopic {
+			return
+		}
+		project, repo, ok := contracts.SubjectProject(subject)
+		require.True(t, ok, "%q names %q, which is no notification subject", entry, subject)
+		if repo != "" {
+			var repos []string
+			for _, r := range scope.Repositories {
+				owner, name, _ := strings.Cut(r, "/")
+				repos = append(repos, contracts.SanitizeSubjectSegment(owner)+"/"+contracts.SanitizeSubjectSegment(name))
+			}
+			require.Contains(t, repos, repo, "%q names a repository outside the scope", entry)
+			return
+		}
+		require.Contains(t, scope.Projects, project, "%q names subject %q of project %q", entry, subject, project)
+	}
+	const stream = bus.Stream + "."
+	switch {
+	case subject == natsgrant.InboxPrefix(scope.Identity)+".>":
+	case strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE."+stream):
+		name, filter, found := strings.Cut(strings.TrimPrefix(subject, "$JS.API.CONSUMER.CREATE."+stream), ".")
+		require.True(t, found, "%q creates a consumer with no filter", entry)
+		ownConsumer(name)
+		inScope(filter)
+	case strings.HasPrefix(subject, "$JS.API.CONSUMER.INFO."+stream):
+		ownConsumer(strings.TrimPrefix(subject, "$JS.API.CONSUMER.INFO."+stream))
+	case strings.HasPrefix(subject, "$JS.API.CONSUMER.MSG.NEXT."+stream):
+		ownConsumer(strings.TrimPrefix(subject, "$JS.API.CONSUMER.MSG.NEXT."+stream))
+	case strings.HasPrefix(subject, "$JS.ACK."+stream):
+		name, rest, _ := strings.Cut(strings.TrimPrefix(subject, "$JS.ACK."+stream), ".")
+		require.Equal(t, ">", rest, "%q", entry)
+		ownConsumer(name)
+	case strings.HasPrefix(subject, bus.NotificationTopicPrefix):
+		inScope(subject)
+	default:
+		t.Fatalf("%q is no entry a grant held to %v may hold", entry, scope)
+	}
+}
