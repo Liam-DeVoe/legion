@@ -1,9 +1,9 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
 // callers it answers share: the clients they present, the scope a machine login asks for and the
 // ones a read entry's and a result entry's tokens hold, the names the token exchange knows a
-// subject token by, the fields the broker adds to a token answer, and the run a result entry's
-// token carries. It imports nothing, so the agent-secrets helper reads it without the broker's
-// storage.
+// subject token by, the fields the broker adds to a token answer, the run a result entry's token
+// carries, and how that run's workflow and principal are read from it. It imports nothing, so the
+// agent-secrets helper reads it without the broker's storage.
 package oauthwire
 
 const (
@@ -119,14 +119,16 @@ const (
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
 // token named it: the claims of that token, copied onto the token the exchange mints and answered
 // back by introspection (Introspection.CI). The exchange mints such a token only when every field
-// is set, the commit in the form IsCommit holds and the run, the attempt and the check run in the
-// form IsPositiveDecimal holds (exchange.Set.Workflow), and a resource server admits it only so
-// (brokertoken). The check run is the job's identity: GitHub names the check run of each job, and
-// a resource server reads its name and its commit from GitHub by this id.
+// is set, the workflow_ref one WorkflowPath reads under the repository and the ref, the commit in
+// the form IsCommit holds and the run, the attempt and the check run in the form IsPositiveDecimal
+// holds (exchange.Set.Workflow), and a resource server admits it only so (brokertoken). The check
+// run is the job's identity: GitHub names the check run of each job, and a resource server reads
+// its name and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
-	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, the workflow the run started.
+	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, the workflow the run started, which
+	// WorkflowPath reads the path out of.
 	WorkflowRef string `json:"workflow_ref"`
 	// Ref is the git ref the run is on, such as refs/heads/main.
 	Ref string `json:"ref"`
@@ -171,6 +173,32 @@ func IsPositiveDecimal(text string) bool {
 		}
 	}
 	return len(text) < len(largest) || text <= largest
+}
+
+// WorkflowPath is the path, inside repository, of the workflow file that a run's workflow_ref
+// names. GitHub writes workflow_ref as "<repository>/<path>@<ref>", where ref is the run's own ref
+// claim. A workflow file's name and a branch's name can each hold an "@", so no cut at an "@"
+// reads the path: it is what is left once the prefix "<repository>/" and the suffix "@<ref>" are
+// removed. It answers false for a workflow_ref that does not start with that prefix, does not end
+// with that suffix, or holds no path between them. The broker reads a run's workflow with it
+// (exchange.Set.Workflow), a resource server admits a results token's run only where it reads
+// (brokertoken), and Dispatch reads the principal it stores on a result with it, so the identity
+// on a result is the one the broker authenticated.
+func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
+	prefix, suffix := repository+"/", "@"+ref
+	if len(workflowRef) <= len(prefix)+len(suffix) ||
+		workflowRef[:len(prefix)] != prefix || workflowRef[len(workflowRef)-len(suffix):] != suffix {
+		return "", false
+	}
+	return workflowRef[len(prefix) : len(workflowRef)-len(suffix)], true
+}
+
+// ResultPrincipal is the principal a result entry's run writes under: workflow-results:, the
+// repository and the path of the workflow file (WorkflowPath), one holder for every run of the
+// workflow whatever its ref. The broker spells it so (exchange.Set.Workflow), and Dispatch stores
+// it as the recorder of a result, so the two spell one string with one definition.
+func ResultPrincipal(repository, workflow string) string {
+	return "workflow-results:" + repository + "/" + workflow
 }
 
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the

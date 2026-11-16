@@ -98,6 +98,27 @@ test("an endpoint that refuses, or answers no token, is an error naming the vari
   }
 });
 
+test("a runner URL that is no URL is an error naming the variable, and asks nothing", async () => {
+  const asked: unknown[] = [];
+  const source = githubActionsIdentity({
+    requestUrl: "not a URL",
+    requestToken: REQUEST_TOKEN,
+    audience: "example-audience",
+    fetchImpl: (async (input: string | URL | Request) => {
+      asked.push(input);
+      return Response.json({ value: "a.token" });
+    }) as typeof fetch,
+  });
+  const refusal = await source.read().then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusal?.message).toBe(
+    `the runner's OIDC token endpoint (${ACTIONS_TOKEN_URL_VAR}) is no URL`
+  );
+  expect(asked).toEqual([]);
+});
+
 test("a job's token file is read as the workflow run's token at every read, and an empty one is refused", async () => {
   const path = join(makeDirectory(), "run-token");
   await writeFile(path, "first.run.token\n", { mode: 0o600 });

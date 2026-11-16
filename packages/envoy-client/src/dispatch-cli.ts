@@ -186,8 +186,11 @@ export function fitOutput(
  * person's sign-in, since the result must carry the identity the broker authenticated. The
  * call's own argument check runs first, as for every command, so a refused call sends nothing.
  * It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
- * `<CODE>: <message>` and exits 1. No token reaches what it prints: the broker's and Dispatch's
- * words name none, and the runner's endpoint is named by its variable.
+ * `<CODE>: <message>` and exits 1. A write that landed with its answer lost prints
+ * `{"landed_without_answer": <code>}`, the details the session path records for the same case,
+ * and exits 0: the result is stored, and a results token reads nothing back. No token reaches
+ * what it prints: the broker's and Dispatch's words name none, and the runner's endpoint is
+ * named by its variable.
  */
 async function ownIdentityResult(
   parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
@@ -219,9 +222,10 @@ async function ownIdentityResult(
     print((await specCheckResultCommand(client, checked.args)).text);
     return OK;
   } catch (error) {
-    // A write that landed with its answer lost is done: its one line says to read it back.
+    // A write that landed with its answer lost is done. A program reads the job's output, so it
+    // is the JSON of the session path's ledger entry, with no advice to read the result back.
     if (error instanceof DispatchWriteLandedError) {
-      print(messageFor(error));
+      print(JSON.stringify({ landed_without_answer: error.code }));
       return OK;
     }
     return refuse(messageFor(error), REFUSED, parsed.tool);

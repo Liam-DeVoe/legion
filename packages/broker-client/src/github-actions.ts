@@ -33,8 +33,14 @@ export function githubActionsIdentity(options: GitHubActionsIdentityOptions): To
   const where = `the runner's OIDC token endpoint (${ACTIONS_TOKEN_URL_VAR})`;
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
-      // The runner's URL carries a query of its own, so the audience joins it.
-      const url = new URL(options.requestUrl);
+      // The runner's URL carries a query of its own, so the audience joins it. A value that is no
+      // URL is refused by its variable, as every other refusal here is, and never quoted.
+      let url: URL;
+      try {
+        url = new URL(options.requestUrl);
+      } catch {
+        throw new Error(`${where} is no URL`);
+      }
       url.searchParams.set("audience", options.audience);
       const signals = [AbortSignal.timeout(TIMEOUT_MS), ...(signal === undefined ? [] : [signal])];
       let answer: Response;

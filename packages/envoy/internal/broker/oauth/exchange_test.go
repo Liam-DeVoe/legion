@@ -464,19 +464,23 @@ func TestAResultEntrysRunIntrospectsWithItsRun(t *testing.T) {
 // exchange as an access token, the subject type a dev box's machine login trades under, is
 // refused, and nothing is minted from it. Every token the exchange mints is issued to the
 // exchange client, and the library refuses a client the exchange of its own token
-// (rfc8693.validateExchangeTokenPolicy, invalid_grant) before any decision of the broker's runs;
-// past that, the machine login's trade reads the launcher credential its token names, and a
-// results token names none, so Set.Machine refuses it too (invalid_request). The request asks
-// under a session name of its own, so the claim on the results token's own session, which
-// another principal holds, is not what refuses it.
+// (rfc8693.validateExchangeTokenPolicy) with invalid_grant and the hint that says so, before any
+// decision of the broker's runs: the refusal is that one, and no later refusal of the broker's
+// (Set.Machine's invalid_request for a token that names no machine credential id) is reached. The
+// request asks under a session name of its own, so the claim on the results token's own session,
+// which another principal holds, is not what refuses it.
 func TestAResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	results := f.exchanged(t, f.resultRunForm(t, "7"), key)
 	before := f.count(t, "oauth_access_tokens")
 	status, body := f.exchange(t, exchangeForm(results, oauthwire.SubjectTokenTypeAccessToken, "a-session-of-its-own"), key)
-	if status != http.StatusBadRequest || body["access_token"] != nil {
-		t.Fatalf("an exchange of a results token = %d %v, want 400 and no access token", status, body)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("an exchange of a results token = %d %v, want 400 invalid_grant and no access token", status, body)
+	}
+	const ownToken = "Clients are not allowed to perform a token exchange on their own tokens."
+	if hint, _ := body["error_description"].(string); !strings.Contains(hint, ownToken) {
+		t.Errorf("the refusal reads %q, which is not the library's refusal of a client's own token %q", hint, ownToken)
 	}
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)

@@ -2,7 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { newDpopKey } from "@legion/broker-client/dpop";
-import { SPEC_CHECK_OBSERVED_CUT_NOTE, SPEC_CHECK_OBSERVED_MAX } from "@legion/contracts";
+import {
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
+  SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
+} from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   type CIResultsStack,
@@ -414,17 +419,24 @@ describe.skipIf(!dispatchStackEnabled)(
     }, 120_000);
 
     // A failing test's log over 1 MiB is ordinary. Dispatch keeps SPEC_CHECK_OBSERVED_MAX
-    // characters of it, so the command sends those, and the stored text says that it was cut.
-    test("an observed text of 1 MiB is stored, cut to 2000 runes", async () => {
+    // characters of it, so the command sends those: the start, which names the test, the note
+    // that says the middle was cut, and the end, which says why the test failed.
+    test("an observed text of 1 MiB is stored as its start and its end, cut to 2000 runes", async () => {
       const at = commit("d");
       const big = join(observedFiles, "observed-1mib.txt");
-      writeFileSync(big, "x".repeat(1024 * 1024));
+      const first = "=== RUN   TestProbe\n";
+      const last = "--- FAIL: TestProbe (0.01s)\n";
+      writeFileSync(big, `${first}${"x".repeat(1024 * 1024)}${last}`);
       const ran = await writeResult(runAt(at, 110), at, PROBE_CHECK, ["--observed-file", big]);
 
       expect(ran.code).toBe(0);
       const [row] = await running().results(at);
-      expect(row?.attestation.predicate.observed.length).toBe(SPEC_CHECK_OBSERVED_MAX);
-      expect(row?.attestation.predicate.observed.endsWith(SPEC_CHECK_OBSERVED_CUT_NOTE)).toBe(true);
+      const observed = row?.attestation.predicate.observed ?? "";
+      expect(observed).toBe(
+        `${first}${"x".repeat(SPEC_CHECK_OBSERVED_START - first.length)}${SPEC_CHECK_OBSERVED_CUT_NOTE}` +
+          `${"x".repeat(SPEC_CHECK_OBSERVED_END - last.length)}${last}`
+      );
+      expect(observed.length).toBe(SPEC_CHECK_OBSERVED_MAX);
     }, 120_000);
 
     // Dispatch cannot store a NUL, so the command sends it as U+FFFD and the result is written.

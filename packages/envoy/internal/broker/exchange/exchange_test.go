@@ -504,6 +504,8 @@ func TestWorkflowRefusesWhatItCannotDecide(t *testing.T) {
 			session: "release-bot", want: exchange.ErrNoEntry, names: ".github/workflows/other.yaml"},
 		{name: "a ref no entry lists", token: workflowToken(repository, repository+"/"+workflow+"@refs/heads/topic", repository+"/"+workflow+"@refs/heads/topic", "refs/heads/topic"),
 			session: "release-bot", want: exchange.ErrNoEntry, names: "refs/heads/topic"},
+		{name: "a workflow_ref that does not end in the token's ref", token: workflowToken(repository, runRef(workflow), runRef(workflow), "refs/heads/topic"),
+			session: "release-bot", want: exchange.ErrClaimMissing, names: runRef(workflow) + " is not " + repository + "/<path>@refs/heads/topic"},
 		{name: "a repository no entry lists", token: workflowToken("example-org/other-repo", "example-org/other-repo/"+workflow+"@"+ref, "example-org/other-repo/"+workflow+"@"+ref, ref),
 			session: "release-bot", want: exchange.ErrNoEntry, names: "example-org/other-repo"},
 		{name: "a session the entry does not fix", token: workflowToken(repository, runRef(nightly), runRef(nightly), ref),
@@ -534,8 +536,11 @@ func withRun(token map[string]any, run string) map[string]any {
 // resultRunToken is the GitHub token claims of a run of resultsWorkflow on gitRef: the claims a
 // plain workflow token carries, and the run's commit, its event, its run and attempt, its runner
 // and the check run of its job, which a result entry's token carries on as its run.
-func resultRunToken(gitRef string) map[string]any {
-	runRef := repository + "/" + resultsWorkflow + "@" + gitRef
+func resultRunToken(gitRef string) map[string]any { return resultRunTokenOf(resultsWorkflow, gitRef) }
+
+// resultRunTokenOf is resultRunToken for a run of the workflow at path.
+func resultRunTokenOf(path, gitRef string) map[string]any {
+	runRef := repository + "/" + path + "@" + gitRef
 	token := workflowToken(repository, runRef, runRef, gitRef)
 	token["sha"] = commitSHA
 	token["event_name"] = "push"
@@ -596,6 +601,44 @@ func TestAResultEntryMatchesARefByPattern(t *testing.T) {
 	}
 	if again, err := set.Workflow(resultRunToken(branch), resultsSession); err != nil || !sameClaims(again, want) {
 		t.Errorf("Workflow(a run naming the session the entry fixes) = %+v, %v; want %+v", again, err, want)
+	}
+}
+
+// TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt: git allows an "@" in a branch's name
+// and in a workflow file's name, and GitHub writes workflow_ref as <repository>/<path>@<ref>, so
+// the path is the workflow_ref without its repository and without "@" and the token's own ref
+// claim (oauthwire.WorkflowPath). A run of a listed workflow on a branch its pattern matches is
+// answered as its entry's run in each case: the session and the principal of the workflow's whole
+// path, and the run as the token named it. The plain row is the control.
+func TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt(t *testing.T) {
+	const atPath = ".github/workflows/ci@probe.yaml"
+	set, err := exchange.NewSet(nil, nil, nil, []exchange.ResultWorkflowEntry{
+		resultEntry(resultsPattern),
+		{Repository: repository, Workflow: atPath, RefPattern: resultsPattern, Project: project, Person: person},
+	}, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	for _, row := range []struct{ name, path, gitRef string }{
+		{"a plain path on a plain branch", resultsWorkflow, "refs/heads/legion/ACME-1"},
+		{"a workflow file whose name holds an @", atPath, "refs/heads/legion/ACME-1"},
+		{"a branch whose name holds an @", resultsWorkflow, "refs/heads/legion/a@b"},
+		{"both at one time", atPath, "refs/heads/legion/a@b"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			claims, err := set.Workflow(resultRunTokenOf(row.path, row.gitRef), "")
+			run := oauthwire.CIRun{
+				Repository: repository, WorkflowRef: repository + "/" + row.path + "@" + row.gitRef, Ref: row.gitRef,
+				SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "2", RunnerEnvironment: "github-hosted", CheckRunID: "9",
+			}
+			want := exchange.Claims{
+				Session: "ci-results:" + repository + "/" + row.path, Person: person, Scope: exchange.ProjectScopeResults, Project: project,
+				Principal: "workflow-results:" + repository + "/" + row.path, CI: &run,
+			}
+			if err != nil || !sameClaims(claims, want) {
+				t.Fatalf("Workflow(a run of %s on %s) = %+v (run %+v), %v; want %+v (run %+v)", row.path, row.gitRef, claims, claims.CI, err, want, run)
+			}
+		})
 	}
 }
 
