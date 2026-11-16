@@ -544,6 +544,10 @@ jobs:
               - 'packages/envoy/internal/dispatch/routes/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
               - 'packages/envoy/internal/dispatch/startup/*'
+              # The form of The Spec, which the approval routes judge (api/spec_form.go), and its
+              # port of ste-lint's hard rules with the word lists and the notice it embeds.
+              - 'packages/envoy/internal/dispatch/specform/*'
+              - 'packages/envoy/internal/dispatch/specform/ste/*'
               - 'packages/envoy/internal/dispatch/store/*'
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/text/*'
@@ -1777,6 +1781,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
+              # The form of The Spec and its port of ste-lint, testdata included, which the tests
+              # of the server this job compiles read.
+              - 'packages/envoy/internal/dispatch/specform/**'
               - 'packages/envoy/internal/dispatch/store/*'
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/text/**'
