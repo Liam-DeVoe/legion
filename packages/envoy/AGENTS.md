@@ -3151,7 +3151,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
   `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
   a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text (`CodeNames`).
-  `CodeNames` finds only the names that no plain word or product name has the shape of, the name of a Go test among them:
+  `CodeNames` finds a name of code only in a shape that no plain word or product name has, such as a Go test's name, `readSet` or `pmdoc.ReadSet`;
   a word with a capital at the start of each part, such as `ReadSet`, and a bare package word, such as `pmdoc`, are left to the reviewer.
   `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
   a statement that only moved to another file is no change.

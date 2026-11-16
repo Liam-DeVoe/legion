@@ -51,8 +51,8 @@ const (
 // block a file holds only headings and blank lines. A file's leading byte order mark is dropped, a
 // CRLF or a lone CR ends a line as an LF does, each line loses its trailing white space, and a body
 // loses its leading and trailing blank lines. A file that is not UTF-8, or that holds a NUL byte,
-// is refused at its first such line, as the importer of .dispatch/architecture refuses it
-// (text.StorableBytes), and is read all the same. A block whose opening line the grammar refuses,
+// is refused at its first such line, as the importer of .dispatch/architecture refuses it (both by
+// text.Storable's rule), and is read all the same. A block whose opening line the grammar refuses,
 // or whose name is not one of the four, gives no node, and its lines up to its closing line are its
 // own; every other block gives its node even when Parse finds a problem in it, so one fault does
 // not make others appear.
