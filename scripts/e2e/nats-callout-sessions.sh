@@ -536,11 +536,15 @@ admitted_as() {
 }
 
 # received LABEL MARKER: that session holds a delivery naming MARKER. A stand-in host answers what
-# its plugin handed it; a real host's transcript holds it: an envoy-message card or a user message
-# of Oh My Pi's, a user message of Claude Code's (the turn the bridge made of the delivery).
+# its plugin handed it; a real host's own record holds it: an envoy-message card or a user message
+# of Oh My Pi's, a user message of Claude Code's (the turn the bridge made of the delivery). Oh My
+# Pi's record is read from the host itself (`get_entries` over its RPC), never from its session
+# file: the host writes that file first with the session's first assistant turn, so a card it
+# holds the moment its plugin hands it over reaches the file only once the model has answered
+# (15.6 s after the card in one run, past the wait below).
 # shellcheck disable=SC2016 # jq's variables, not the shell's
-readonly omp_entries='def text: if type == "string" then . else (map(.text? // empty) | join("\n")) end;
-  inputs | fromjson? | select((.type == "custom_message" and .customType == "envoy-message")
+readonly omp_entry_text='def text: if type == "string" then . else (map(.text? // empty) | join("\n")) end;
+  select((.type == "custom_message" and .customType == "envoy-message")
     or (.type == "message" and .message.role == "user")) | (.content // .message.content | text)'
 # shellcheck disable=SC2016 # jq's variables, not the shell's
 readonly claude_entries='def text: if type == "string" then . else (map(select(.type? == "text") | .text) | join("\n")) end;
@@ -552,13 +556,30 @@ claude_transcript() {
   done
   return 1
 }
+# omp_entries ID: the texts of Oh My Pi's session entries as the host holds them now, its answer
+# to one `get_entries` request named ID. Each request needs an ID of its own, or the first answer
+# in the log would be read again; received numbers them in its own shell, since this function
+# runs in the subshell of the command substitution that reads it.
+omp_requests=0
+omp_answer() {
+  jq -ecnR --arg id "$1" 'first(inputs | fromjson? | select(.type == "response" and .id == $id))' \
+    "$omp_home/rpc.log"
+}
+omp_entries() {
+  local answer
+  printf '{"type":"get_entries","id":"%s"}\n' "$1" >&"$omp_fd"
+  wait_for 10 omp_answer "$1" >/dev/null || return 1
+  answer=$(omp_answer "$1") || return 1
+  jq -r ".data.entries[]? | $omp_entry_text" <<<"$answer"
+}
 received() {
-  local file
+  local file texts
   if [ "$hosts" = plugins ]; then
     send "$1" '{"op":"deliveries"}'
     jq -e --arg m "$2" '(.deliveries // []) + (.turns // []) | any(contains($m))' <<<"$reply" >/dev/null
   elif [ "$1" = omp ]; then
-    [ -f "$omp_transcript" ] && jq -rnR "$omp_entries" "$omp_transcript" 2>/dev/null | grep -qF -- "$2"
+    omp_requests=$((omp_requests + 1))
+    texts=$(omp_entries "ncs-entries-$omp_requests") && grep -qF -- "$2" <<<"$texts"
   else
     file=$(claude_transcript) && jq -rnR "$claude_entries" "$file" 2>/dev/null | grep -qF -- "$2"
   fi
