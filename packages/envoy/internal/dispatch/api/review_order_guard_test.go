@@ -1,3 +1,8 @@
+//go:build !race
+
+// The guard is static, as lock_level_test.go's is and for the reason given there: it reads the
+// module's source, so the race detector adds nothing to it.
+
 package api
 
 import (
@@ -42,7 +47,7 @@ var (
 // statements on purpose.
 func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 	t.Parallel()
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)

@@ -36,8 +36,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
-	"github.com/sjawhar/envoy/internal/testpg"
 	"github.com/sjawhar/envoy/internal/testpg/pgtemplate"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -97,12 +97,12 @@ func Open(t testing.TB, params ...string) *store.Store {
 	return st
 }
 
-// ownMigratedURL is what a package with no Main gets: a database of its own (testpg.DatabaseOn),
+// ownMigratedURL is what a package with no Main gets: a database of its own (testdb.DatabaseOn),
 // migrated, and dropped with the test - a whole migration run per test.
 func ownMigratedURL(t testing.TB, raw string, params []string) string {
 	t.Helper()
 	// The database is a file copy of template1 (docs/testing.md, "A database a Go test creates").
-	dsn := withParams(testpg.DatabaseOn(t, raw, "broker_test"), params...)
+	dsn := withParams(testdb.DatabaseOn(t, raw, "broker_test"), params...)
 	if err := migrate(context.Background(), dsn); err != nil {
 		t.Fatalf("migrate the test database: %v", err)
 	}
@@ -166,7 +166,7 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 // processes are there to settle. A caller that wants tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
-	return testpg.DatabaseOn(t, serverURL(t), "broker_test")
+	return testdb.DatabaseOn(t, serverURL(t), "broker_test")
 }
 
 // Querier is what AwaitLockWaiters polls through: a pool, or a connection of its own when the

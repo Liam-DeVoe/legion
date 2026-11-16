@@ -612,10 +612,11 @@ func TestMessageHandlersRejectBlankMessage(t *testing.T) {
 	}
 }
 
-// Each route that resolves a role names the state it found. The lookup still answers 404 with the
-// reason, unclaimed or holder_lapsed; the publish route now keeps the message for the role's next
-// holder and answers 202 with kept true and the same reason as kept_reason. Both release a lapsed
-// holder's claim.
+// Each route that resolves a role names the state it found. The lookup answers 404 with the
+// reason, unclaimed or holder_lapsed; the publish route keeps the message for the role's next live
+// holder in both states and answers 202 with kept true, the same reason as kept_reason and the end
+// of the copy's hour as kept_until, and for a lapsed holder that holder, its state and when it was
+// last seen, as the 404 names them. Neither releases a lapsed holder's claim.
 func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 	t.Parallel()
 	type roleError struct {
@@ -626,23 +627,30 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 		LastSeen      int64  `json:"last_seen"`
 		ClaimReleased bool   `json:"claim_released"`
 	}
-	assertKept := func(t *testing.T, recorder *httptest.ResponseRecorder, reason, holder string) {
+	assertKept := func(t *testing.T, recorder *httptest.ResponseRecorder, reason, holder, holderState string, lastSeen int64) {
 		t.Helper()
 		if recorder.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want 202 for a message the listener kept; body = %s", recorder.Code, recorder.Body.String())
 		}
 		t.Logf("kept role response: %s", recorder.Body.String())
 		var kept struct {
-			Kept       bool   `json:"kept"`
-			KeptReason string `json:"kept_reason"`
-			Holder     string `json:"holder"`
-			Topic      string `json:"topic"`
+			Kept        bool   `json:"kept"`
+			KeptReason  string `json:"kept_reason"`
+			KeptUntil   int64  `json:"kept_until"`
+			Holder      string `json:"holder"`
+			HolderState string `json:"holder_state"`
+			LastSeen    int64  `json:"last_seen"`
+			Topic       string `json:"topic"`
 		}
 		if err := json.NewDecoder(recorder.Body).Decode(&kept); err != nil {
 			t.Fatalf("decode kept response: %v", err)
 		}
-		if !kept.Kept || kept.KeptReason != reason || kept.Holder != holder || kept.Topic != "notifications.role.reviewer" {
-			t.Fatalf("kept response = %+v, want kept with reason %s and holder %q on the role topic", kept, reason, holder)
+		if !kept.Kept || kept.KeptReason != reason || kept.Holder != holder || kept.HolderState != holderState ||
+			kept.LastSeen != lastSeen || kept.Topic != "notifications.role.reviewer" {
+			t.Fatalf("kept response = %+v, want kept with reason %s, holder %q as %q last seen %d, on the role topic", kept, reason, holder, holderState, lastSeen)
+		}
+		if now := time.Now().UnixMilli(); kept.KeptUntil <= now {
+			t.Fatalf("kept response names kept_until %d, at or before now (%d): want the end of the copy's hour", kept.KeptUntil, now)
 		}
 	}
 	tests := []struct {
@@ -685,11 +693,11 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 			deps := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
 			handler := tc.handler(deps)
 			// The publish route's keep hands the role's lane over in a goroutine of its own
-			// (keepForNextHolder), and that handover resolves the role's holder: it would find
-			// the claim this test makes below lapsed and release it, which is right of the
-			// product and wrong for a test that is about what each route answers. The guard one
-			// handover of a role takes is held here for the whole subtest, so every handover the
-			// keeps start waits and none resolves a holder while the test is setting one up.
+			// (keepForNextHolder), and that handover reads the role's claim and its holder while
+			// this test is changing both, which is the product's business and not that of a test
+			// about what each route answers. The guard one handover of a role takes is held here
+			// for the whole subtest, so every handover the keeps start waits and none resolves a
+			// holder while the test is setting one up.
 			release, held := deps.delivery.roleKeepDrains.hold(context.Background(), "reviewer")
 			if !held {
 				t.Fatalf("take the reviewer role's handover guard")
@@ -699,7 +707,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 			unclaimedRecorder := httptest.NewRecorder()
 			handler.ServeHTTP(unclaimedRecorder, tc.request())
 			if tc.kept {
-				assertKept(t, unclaimedRecorder, "unclaimed", "")
+				assertKept(t, unclaimedRecorder, "unclaimed", "", "", 0)
 			} else {
 				if unclaimedRecorder.Code != http.StatusNotFound {
 					t.Fatalf("unclaimed status = %d, want 404; body = %s", unclaimedRecorder.Code, unclaimedRecorder.Body.String())
@@ -734,24 +742,28 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 
 			lapsedRecorder := httptest.NewRecorder()
 			handler.ServeHTTP(lapsedRecorder, tc.request())
-			// A lapsed claim is kept for by nobody in this build, on the publish route as on
-			// the lookup: no resolution releases a claim, so the holder keeps its role and the
-			// 404 says the claim was retained (roleKeepable).
-			if lapsedRecorder.Code != http.StatusNotFound {
-				t.Fatalf("lapsed status = %d, want 404; body = %s", lapsedRecorder.Code, lapsedRecorder.Body.String())
-			}
-			t.Logf("lapsed role response: %s", lapsedRecorder.Body.String())
-			var lapsed roleError
-			if err := json.NewDecoder(lapsedRecorder.Body).Decode(&lapsed); err != nil {
-				t.Fatalf("decode lapsed response: %v", err)
-			}
-			if lapsed.Error != fmt.Sprintf(
-				"role reviewer holder ses_holder lapsed; claim retained (last seen %d)",
-				entry.UpdatedAt,
-			) || lapsed.Reason != "holder_lapsed" || lapsed.Holder != "ses_holder" ||
-				lapsed.HolderState != "gone" ||
-				lapsed.LastSeen != entry.UpdatedAt || lapsed.ClaimReleased {
-				t.Fatalf("lapsed response = %+v", lapsed)
+			// A lapsed claim is kept for on the publish route, and the lookup still answers 404:
+			// no resolution releases a claim, so the holder keeps its role, and both answers name
+			// it, its state and when it was last seen (roleKeepable).
+			if tc.kept {
+				assertKept(t, lapsedRecorder, "holder_lapsed", "ses_holder", "gone", entry.UpdatedAt)
+			} else {
+				if lapsedRecorder.Code != http.StatusNotFound {
+					t.Fatalf("lapsed status = %d, want 404; body = %s", lapsedRecorder.Code, lapsedRecorder.Body.String())
+				}
+				t.Logf("lapsed role response: %s", lapsedRecorder.Body.String())
+				var lapsed roleError
+				if err := json.NewDecoder(lapsedRecorder.Body).Decode(&lapsed); err != nil {
+					t.Fatalf("decode lapsed response: %v", err)
+				}
+				if lapsed.Error != fmt.Sprintf(
+					"role reviewer holder ses_holder lapsed; claim retained (last seen %d)",
+					entry.UpdatedAt,
+				) || lapsed.Reason != "holder_lapsed" || lapsed.Holder != "ses_holder" ||
+					lapsed.HolderState != "gone" ||
+					lapsed.LastSeen != entry.UpdatedAt || lapsed.ClaimReleased {
+					t.Fatalf("lapsed response = %+v", lapsed)
+				}
 			}
 			// Nothing but the role reaper releases a claim, so the holder this answer reported
 			// lapsed still holds it: a replacement takes it with a soft claim, or the reaper does.
@@ -1342,7 +1354,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		}
 	})
 
-	t.Run("a lapsed holder keeps its claim, so the publish keeps nothing and both answer 404", func(t *testing.T) {
+	t.Run("a lapsed holder keeps its claim, so the publish is kept for it and the lookup answers 404", func(t *testing.T) {
 		t.Parallel()
 		if err := sessions.Delete(context.Background(), "ses_lapsed"); err != nil {
 			t.Fatalf("delete holder session: %v", err)
@@ -1353,28 +1365,34 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 			"/v1/messages/publish",
 			strings.NewReader(`{"topic":"notifications.role.planner","message":"please review"}`),
 		))
-		// Nothing is kept for a claim that stands: the holder writes no new claim, so a copy
-		// would wait for a claim that never comes (roleKeepable).
-		if publishRecorder.Code != http.StatusNotFound {
-			t.Fatalf("publish status = %d, want 404 with nothing kept; body = %s", publishRecorder.Code, publishRecorder.Body.String())
+		// A claim whose holder is not live is kept for, as a role nobody claims is: the copy
+		// waits on the role's kept lane for the next session that holds the role live, and the
+		// answer names the holder the 404 would have named (roleKeepable).
+		if publishRecorder.Code != http.StatusAccepted {
+			t.Fatalf("publish status = %d, want 202 with the message kept; body = %s", publishRecorder.Code, publishRecorder.Body.String())
 		}
-		var refusal struct {
-			Reason        string `json:"reason"`
-			Holder        string `json:"holder"`
-			HolderState   string `json:"holder_state"`
-			ClaimReleased bool   `json:"claim_released"`
-			Kept          bool   `json:"kept"`
+		var kept struct {
+			EventID     string `json:"event_id"`
+			Holder      string `json:"holder"`
+			HolderState string `json:"holder_state"`
+			Kept        bool   `json:"kept"`
+			KeptReason  string `json:"kept_reason"`
+			KeptUntil   int64  `json:"kept_until"`
 		}
-		if err := json.NewDecoder(publishRecorder.Body).Decode(&refusal); err != nil {
-			t.Fatalf("decode the refusal: %v", err)
+		if err := json.NewDecoder(publishRecorder.Body).Decode(&kept); err != nil {
+			t.Fatalf("decode the kept answer: %v", err)
 		}
-		if refusal.Reason != "holder_lapsed" || refusal.Holder != "ses_lapsed" || refusal.ClaimReleased || refusal.Kept {
-			t.Fatalf("refusal = %+v, want reason holder_lapsed naming ses_lapsed, its claim retained and nothing kept", refusal)
+		if !kept.Kept || kept.KeptReason != "holder_lapsed" || kept.Holder != "ses_lapsed" || kept.HolderState != "gone" || kept.KeptUntil == 0 {
+			t.Fatalf("kept answer = %+v, want kept with reason holder_lapsed naming ses_lapsed as gone, and its kept_until", kept)
 		}
+		waitForKeptRoleMessage(t, client, "planner", kept.EventID)
 		roleRecorder := httptest.NewRecorder()
 		roleGetHandler(state).ServeHTTP(roleRecorder, httptest.NewRequest(http.MethodGet, "/v1/roles/planner", nil))
 		if roleRecorder.Code != http.StatusNotFound {
 			t.Fatalf("role lookup status = %d, want 404; body = %s", roleRecorder.Code, roleRecorder.Body.String())
+		}
+		if holder, err := registry.RoleHolder("planner"); err != nil || holder != "ses_lapsed" {
+			t.Fatalf("the claim after the kept publish = %q, %v; want ses_lapsed's, retained", holder, err)
 		}
 	})
 }
@@ -2061,6 +2079,67 @@ func TestUnwiredRepositoryWarningSkipsWildcardRepositorySegment(t *testing.T) {
 	}
 }
 
+// subscribeWarnings registers the topics for one session through subscribeHandler and returns the
+// warnings its answer carries.
+func subscribeWarnings(t *testing.T, state *listenerDeps, topics ...string) []string {
+	t.Helper()
+	body := consumerRegistration("ses_subscriber", "e", topics...)
+	recorder := httptest.NewRecorder()
+	subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("subscribe %v: status %d, body %s", topics, recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Warnings
+}
+
+// A pull request's bare subject, `pr.<n>`, carries its lifecycle alone, so a session that follows
+// it and nothing that reaches the pull request's reviews hears no review, comment or check of it,
+// and the listener says so. The plugins register the bare subject beside every `pr.<n>.>`, and a
+// session may follow the repository's pull requests or the whole repository instead: none of
+// those is warned. Another pull request's family does not reach this one, and neither does a
+// subject that only starts the same way (`pr.70` is not `pr.7`).
+func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycle(t *testing.T) {
+	t.Parallel()
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), streamName: "notifications", streamInfo: inspector}
+	const bare = "notifications.github.example-org.example-repo.pr.7"
+	want := bare + " carries only the pull request's own events (opened, synchronize, closed and its other actions): subscribe to " + bare + ".> for its reviews, comments, mentions and checks as well"
+	for _, others := range [][]string{
+		nil,
+		{"notifications.github.example-org.example-repo.pr.8.>"},
+		{"notifications.github.example-org.example-repo.pr.70.>"},
+		{"notifications.github.example-org.example-repo.pr.7.checks"},
+	} {
+		if got := subscribeWarnings(t, state, append([]string{bare}, others...)...); len(got) != 1 || got[0] != want {
+			t.Errorf("subscribe %s beside %v: warnings %q, want [%q]", bare, others, got, want)
+		}
+	}
+	for _, covering := range []string{
+		bare + ".>",
+		bare + ".review",
+		"notifications.github.example-org.example-repo.pr.>",
+		"notifications.github.example-org.example-repo.>",
+		"notifications.github.example-org.example-repo.pr.*.review",
+	} {
+		if got := subscribeWarnings(t, state, bare, covering); len(got) != 0 {
+			t.Errorf("subscribe %s beside %s: warnings %q, want none", bare, covering, got)
+		}
+	}
+	for _, family := range []string{bare + ".comment", "notifications.github.example-org.example-repo.issue.7"} {
+		if got := subscribeWarnings(t, state, family); len(got) != 0 {
+			t.Errorf("subscribe %s: warnings %q, want none", family, got)
+		}
+	}
+}
+
 // A GitHub topic writes each dot in a repository's name as `_`, and the token after the name is
 // one of contracts.GithubTopicKinds, so a subscription whose token there is not a kind or a
 // wildcard would receive nothing, and the listener warns. When a kind follows the extra tokens,
@@ -2076,19 +2155,7 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), streamName: "notifications", streamInfo: inspector}
 	warnings := func(t *testing.T, topic string) []string {
 		t.Helper()
-		body := consumerRegistration("ses_subscriber", "e", topic)
-		recorder := httptest.NewRecorder()
-		subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("subscribe %s: status %d, body %s", topic, recorder.Code, recorder.Body.String())
-		}
-		var response struct {
-			Warnings []string `json:"warnings"`
-		}
-		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-			t.Fatal(err)
-		}
-		return response.Warnings
+		return subscribeWarnings(t, state, topic)
 	}
 	for _, kind := range append(append([]string{}, contracts.GithubTopicKinds...), "*", ">") {
 		topic := "notifications.github.example-org.example-repo." + kind
@@ -3592,7 +3659,11 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
 	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
+	// withRoleClaimDrain, because the last registration names a role lane, and a registration
+	// that makes its session live again hands it the kept lane of each role its row names
+	// (runKeptRoleDrain), claimed or not.
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
+	handler := subscribeHandler(deps, "test-machine", logging.New("test"))
 	subscribe := func(t *testing.T, sessionID string, topics ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		encoded, err := json.Marshal(map[string]any{"session_id": sessionID, "topics": topics, "self_subscribed": true, "delivery": map[string]any{"consumer": true, "epoch": "e"}})
@@ -3707,7 +3778,10 @@ const (
 )
 
 // interestRig is a listener's /v1 routes over the test's own notification stream, with topics
-// already registered for interestSession.
+// already registered for interestSession. The routes carry the delivery configuration a kept-lane
+// handover runs on (withRoleClaimDrain), as main's do: a registration that makes its session live
+// again hands it the kept lane of each role whose claim record it read for that session
+// (runKeptRoleDrain).
 type interestRig struct {
 	deps *listenerDeps
 	mux  *http.ServeMux
@@ -3717,7 +3791,7 @@ func newInterestRig(t *testing.T, topics ...string) *interestRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{interestSession: topics}, nil)
-	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}
+	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)})
 	mux := http.NewServeMux()
 	registerV1Routes(mux, deps, "test-machine", logging.New("test"))
 	return &interestRig{deps: deps, mux: mux}

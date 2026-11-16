@@ -90,8 +90,8 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	registerV1Routes(routes, deps, "test-machine", logger)
 	return &brokerRig{
 		deps:    deps,
-		handler: apiAuth("", nil, tokens, nil, logger, routes),
-		open:    apiAuth("", nil, nil, nil, logger, routes),
+		handler: apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes),
+		open:    apiAuth(listenerAPIAuth{logger: logger}, routes),
 		broker:  broker,
 		caller:  brokertokentest.NewCaller(t),
 		logs:    logs,
@@ -365,6 +365,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 // memory — would let a proof captured from one replica be presented to another, so there is no
 // fallback to refuse into.
 func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
+	t.Parallel()
 	// A server of this test's own with no -js, connected to directly: testnats.Connect waits for
 	// JetStream, which this one will never have.
 	_, uri := testnats.StartConfig(t, "", nil, true)
@@ -395,7 +396,7 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	request.Host = "127.0.0.1:9020"
 	request.Header.Set("Authorization", "DPoP some-access-token")
-	apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", &bytes.Buffer{}),
+	apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &bytes.Buffer{})},
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {

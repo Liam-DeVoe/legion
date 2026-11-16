@@ -115,7 +115,7 @@ func requireIndexedWithoutLongIDs(t *testing.T, database *store.Store, service *
 func TestAVersionHoldingABlockIDPastTheBoundIsWrittenAndIndexed(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	spec := createOwedDocument(t, database, service, "", "spec", boundSpec, "")
+	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", boundSpec, "")
 	long := giveLongBlockIDs(t, service, spec)
 
 	result, err := namedVersion(t, service, spec, "a version holding long block ids", model.Actor{Kind: "user", ID: "alice"})
@@ -137,7 +137,7 @@ func TestAVersionHoldingABlockIDPastTheBoundIsWrittenAndIndexed(t *testing.T) {
 func TestADocumentAlreadyHoldingABlockIDPastTheBoundIsIndexedAndLeavesOwed(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	spec := createOwedDocument(t, database, service, "", "spec", boundSpec, "")
+	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", boundSpec, "")
 	settle(t, database, spec)
 	long := giveLongBlockIDs(t, service, spec)
 	version, _ := writeAsAnOlderBuild(t, database, service, spec, "Other paragraph.", "Other paragraph, edited.")

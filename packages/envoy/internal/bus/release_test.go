@@ -293,6 +293,7 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 // The server is read from a second client connected to it directly, as the row above does: the
 // giving-up client's own reads run over the link under test.
 func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	relay := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{relay.url()})
@@ -355,6 +356,12 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	relay.refuse.Store(true)
 	relay.drop()
 	waitFor(t, busWait, "the client to start reconnecting", client.Conn.IsReconnecting)
+	// The client sees its socket close before the server lets the durable go: a message published
+	// while the server still holds it bound is delivered down the dead link, and its redelivery
+	// waits out the durable's ack wait, the server's default 30 s (releaseDurable sets none), before
+	// the second client below is handed it. So the probe goes out once the server reads the
+	// durable unbound; the check this test exists for, after the reconnect's resend, is unchanged.
+	awaitPushBound(t, direct, consumer, false, "the server to let the durable go once the link dropped")
 	publishReleaseProbe(t, direct, "notifications.github.test.released")
 
 	relay.refuse.Store(false)

@@ -220,7 +220,10 @@ func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 // the pool (releaseMigrationConn, pgmigrate.ResetSession), so after migrate returns no connection
 // the pool can give carries the migration's statement_timeout or search_path. The test holds as
 // many connections as the pool can give at once (its MaxConns) and reads each, because the
-// migration ran on one of them. The store's database is the test's own (emptyDatabaseStore) and
+// migration ran on one of them. The pool is capped at 4, which is what pgxpool's default
+// (max(4, NumCPU)) gives on CI's 4-CPU runner: left at that default on a many-CPU machine, the
+// pool asks for more connections than a Postgres at its default max_connections (100) has, as it
+// did for 288 on a 288-CPU box. The store's database is the test's own (emptyDatabaseStore) and
 // its URL names no search_path, so the reset gives back the server's default, which a new
 // connection reads too; the schema the migration creates goes with that database. The control
 // runs the same SETs in a committed transaction on a connection of its own and reads them back:
@@ -231,7 +234,7 @@ func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := emptyDatabaseStore(t)
+	s := emptyDatabaseStore(t, "pool_max_conns=4")
 	schema := "broker_migrate_leak_" + randomSuffix(t)
 	leaked := schema + ", public"
 	set := fstest.MapFS{
@@ -313,13 +316,14 @@ func testDatabaseURL(t *testing.T) string {
 }
 
 // emptyDatabaseStore opens a store on a database of its own on the BROKER_TEST_DATABASE_URL
-// server, created empty and dropped when t ends. A test that migrates a set of its own needs
-// one: a database already carrying the broker's real versions would pass over the test set's
-// numbers as applied. It is a database rather than a schema of a shared one because Migrate
+// server, created empty and dropped when t ends, with params, extra connection parameters as
+// key=value (e.g. "pool_max_conns=4"), added to the URL. A test that migrates a set of its own
+// needs one: a database already carrying the broker's real versions would pass over the test
+// set's numbers as applied. It is a database rather than a schema of a shared one because Migrate
 // takes its advisory lock database-wide, so two rows migrating their own schemas of one database
 // would still queue on each other, and because a row here holds a table lock until its own
 // migration gives up (dispatch://INFRA-1075).
-func emptyDatabaseStore(t *testing.T) *Store {
+func emptyDatabaseStore(t *testing.T, params ...string) *Store {
 	t.Helper()
 	raw := testDatabaseURL(t)
 	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
@@ -330,6 +334,15 @@ func emptyDatabaseStore(t *testing.T) *Store {
 		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
 	}
 	parsed.Path = "/" + database
+	query := parsed.Query()
+	for _, param := range params {
+		key, value, ok := strings.Cut(param, "=")
+		if !ok {
+			t.Fatalf("connection parameter %q is not key=value", param)
+		}
+		query.Set(key, value)
+	}
+	parsed.RawQuery = query.Encode()
 	s, err := Open(context.Background(), parsed.String())
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)

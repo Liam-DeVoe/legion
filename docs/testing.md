@@ -141,11 +141,13 @@ itself, whose tests import its sources by relative path.
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
   cache that exists to be shared by both languages and either fills for the other. The Go build and
-  module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane`
+  module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
-  `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed
-  `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
-  scripts/e2e/lib` (`.github/workflows/ci.yaml`). The condition is the rename: `fillNativesCache` in
+  `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
+  `go-daemon-<runner os>-go<version>`, before it runs that scenario
+  (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
+  there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
+  suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in
   `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
   directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
@@ -216,20 +218,23 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
 `envoy-go-race-api`, the job that runs it by itself, which gives it 32 minutes (`-timeout 32m`,
-`.github/workflows/ci.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which gives it
-60 (`-timeout 60m`). Of those two packages `envoy-go` keeps only the few tests the race build
-leaves out or runs smaller, by name, in the race-impossible call of its unit step.
+`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
+runs its fifteen source-guard tests by name. `docs` runs under `-race` in `envoy-go-race-docs`,
+which gives it 60 (`-timeout 60m`). Of those two packages `envoy-go` keeps only the few tests the
+race build leaves out or runs smaller, by name, in the race-impossible call of its unit step.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test
-job now runs it only under the race detector, in its race step, once per job; the plain step
-("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still
-compiles it without the detector. On CI's runners, while the plain step still ran it, it took
-at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
-733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
+`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
+detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+figures below were measured while these steps were the `test` job's. On CI's runners, while the
+plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
+2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
+125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
 job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
@@ -267,7 +272,7 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
 It is one of the nine slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
@@ -283,7 +288,7 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
 `packages/envoy/internal/testpg/pgtemplate` (the harness both of envoy's stores clone their test
-databases through) and both modules' `internal/testpg` do. Without
+databases through), the daemon's `internal/testpg` and Envoy's `internal/testpg/testdb` do. Without
 it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
 4.5 MB of log for an empty database made from `template1`, and 7.1 MB for a clone of Dispatch's
 migrated template, measured on PostgreSQL 18 against `dev-postgres.sh --throwaway` on a pod at
@@ -291,13 +296,21 @@ migrated template, measured on PostgreSQL 18 against `dev-postgres.sh --throwawa
 A file copy writes a few hundred bytes.
 `pgtemplate`'s `TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate`
 fails when a clone writes more than a hundredth of its template's size, and each module's
-`internal/testpg` test
+`internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
 A file copy costs checkpoints instead: Postgres forces one before the copy and one after it, and
 the drop at the end of the test forces one more, so each test's database costs three forced
 checkpoints, and what those cost depends on the server's settings ("A test Postgres's five
 settings").
+
+In Envoy, a test that already holds a server's URL makes its database with
+`internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
+testcontainers, whose package init walks every process on the machine before any test runs, and
+on a box running some 26,000 processes that cost a test binary about 9.8 seconds of start
+(`GODEBUG=inittrace=1`). `testpg.URL`, which may start a container, keeps that cost for the tests
+that need it. The broker's `storetest` holds itself to it: `TestStoretestLinksNoContainerRuntime`
+fails when its dependencies reach testcontainers.
 
 A test that needs the schema takes a clone of a template its package migrated once, rather than
 running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's
@@ -354,7 +367,7 @@ psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
 
 ## A test Postgres's five settings
 
-Every Postgres service of `.github/workflows/ci.yaml` starts with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command`):
+Every Postgres service of the jobs `.github/workflows/ci.yaml` runs, each declared in that job's own `.github/workflows/ci-job-<job>.yaml`, starts with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command`):
 
 ```sh
 postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
@@ -392,7 +405,7 @@ Two of this repository's learnings are about these settings, and this is what ea
 `docs/solutions/database-issues/an-index-only-scan-test-depends-on-the-visibility-map-and-asynchronous-commit-leaves-it-empty-pr2376.md` found that a plan test asserting an `Index Only Scan` is also asserting that the table's pages are marked all-visible:
 the planner costs that scan by `relallvisible/relpages`, so a table whose visibility map is empty is read by a bitmap heap scan over the same index, and the test fails as if the index or the query were wrong.
 That half holds, and so does its first move, which is to read `select relallvisible, relpages from pg_class where relname = '<table>'` before changing the index or the query.
-Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every Postgres service of `.github/workflows/ci.yaml` now runs with the three off.
+Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every Postgres service of the jobs `.github/workflows/ci.yaml` runs now runs with the three off.
 What replaced it is that the test states the planner input it is making a claim about rather than taking it from a vacuum:
 `packages/envoy/internal/dispatch/sessionanswers/sessionanswers_test.go` calls `pg_restore_relation_stats(…, 'relallvisible', c.relpages)` inside the transaction its two `EXPLAIN`s run in, and that transaction is rolled back when the test ends, so the harness hands the database on as it found it.
 The cause recorded there is wider than the learning's inference, too:
@@ -402,7 +415,7 @@ a page is marked all-visible only once every transaction on the whole server is 
 Its finding is that a load recipe's dependency settings are part of the recipe:
 `TestTwoAnnouncersAtOnceAnnounceAndPublishOnce` (`packages/envoy/internal/dispatch/startup/started_test.go`) races a losing pass against the winner's announcing transaction, and against a Postgres with `fsync`, `full_page_writes` and `synchronous_commit` off the pre-fix binary passed 30 of 30 runs, while the same loop against the same server with its durability on failed 17 of 30.
 What has changed is where that fast server is:
-it is every Postgres service of `.github/workflows/ci.yaml` and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
+it is every Postgres service of the jobs `.github/workflows/ci.yaml` runs and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
 Read it the other way too: a race of that kind the lane does report is one that survived these settings.
 
 ## A test that calls `t.Parallel()`
@@ -437,7 +450,7 @@ A file that already writes `// No t.Parallel: <reason>` keeps that form; every o
 The reason is the true one, named for what the test does: a test whose reason no longer holds is independent, and it calls `t.Parallel()` instead.
 A table test's rows follow the same rules one by one: a row that is independent calls `t.Parallel()` inside its `t.Run`, and a row that is not carries a `// Serial:` line of its own.
 
-Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes`, `internal/dispatch/events` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the three whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes`, `postgres_events` and `postgres_shutdown` in `.github/workflows/ci.yaml`).
+Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes`, `internal/dispatch/events` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the three whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes`, `postgres_events` and `postgres_shutdown` in `.github/workflows/ci-job-envoy-go.yaml`).
 
 ## A Go test that opens a NATS client
 

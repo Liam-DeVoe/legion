@@ -1,0 +1,156 @@
+name: CI job envoy-go-race-docs
+
+# The steps of ci.yaml's `envoy-go-race-docs` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go-race-docs:
+    runs-on: ubuntu-24.04
+    # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
+    # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
+    # package takes at most half of it: internal/dispatch/docs, this job's one package,
+    # 1795.4 s (run 43810293311, job 133110320511, its envoy-go-race-docs-test-json artifact),
+    # 1795.4 / 30 = 59.85, so 60m, which it fills to 49.9 per cent (59m, the whole minute below
+    # it, it would fill to 50.7, which is what moved this number). The readings before it:
+    # 1746.1 s (run 43737129665, job 132882140098), 1740.3 s (run 43720554541, job 132831440633),
+    # 1736.6 s (run 43733795306, job 132871904345), 1695.219 s (run 43640601453, job
+    # 132587189297), and 1523.812 s and 1675.755 s in the pair
+    # at fae4eab5 (runs 43654965125 and 43657875798). The job's own bound follows its largest
+    # measured time, 1907 s in run 43810293311 (job 133110320511), which is 31.78 minutes, plus
+    # that largest -timeout plus 6: 31.78 + 60 + 6 = 97.78, so 98; the readings before it ask
+    # less: 1849 s in run 43737129665 and 1842 s in run 43720554541. The limit must fire
+    # before the runner cancels the job, so a hung test prints the dump that names it.
+    timeout-minutes: 98
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075).
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
+    # (internal/dispatch/docs/persistence_test.go:31-32), and storetest.Open skips every test that
+    # opens the store when DISPATCH_TEST_DATABASE_URL is unset
+    # (internal/dispatch/store/storetest/storetest.go:60-63). A skip is a pass, so without the
+    # service this job would be green having run almost nothing.
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy: its modules are the envoy module's, though this job builds the document
+      # service's race test binary rather than the listener and natsd ci-caches.yaml builds.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per
+      # byte of heap, and this package's race binary asked for more than the runner's 16 GiB,
+      # which has no swap. The kernel killed this step three times with no output at all, which
+      # names no test (dispatch://INFRA-1085). .github/scripts/race_memory.py samples the largest
+      # process beside the run, writing a line every 5 s that names that process and the tests
+      # running at that moment, so a step the kernel does take still says what it reached. After
+      # the run it writes the peak, and fails this step when the peak passed RACE_MEM_LIMIT_KB,
+      # 8388608 kB, half the runner, naming the tests that were running at the highest sample.
+      # -json is the stream the sampler reads to know them; it writes every Output field back
+      # out, so the log still carries the --- FAIL lines and the package's own line. -count=1
+      # because the job restores the Go build cache above, and a cached pass must not stand in
+      # for a run.
+      #
+      # -parallel 2 rather than go test's default of GOMAXPROCS, which is four here, is what
+      # holds the peak under that limit: this package's memory is what its parallel cases hold at
+      # once. At four slots the sampler read a peak of 14,189,716 kB. Its highest sample,
+      # 14,174,324 kB at 738.6 s, had TestAMarginWriteMatchesTheWholeDocumentWrite's
+      # generated-390KiB and generated-600KiB cases running together beside
+      # TestReadsOfALiveDocumentRunBesideItsPeers; the plateau before them, 11,555,172 kB, had
+      # the four parallel passes of TestACaptureNeverReusesARenderingTheForkHasMovedPast; and
+      # before any of those cases ran the step stood at 5,101,120 kB (run 42342555091, job
+      # 128313251577). Each such case holds a document of hundreds of kilobytes with the whole
+      # update history it writes, which the detector shadows at about four bytes a byte, so the
+      # nine gigabytes those two families added are two slots' worth more than this limit has
+      # room for. Two slots were measured rather than chosen: those same three families under
+      # this sampler at -parallel 2 peaked at 1,534,288 kB, and the rest of the package at
+      # -parallel 2 reached 6,240,116 kB, so even added as though nothing were reused they stay
+      # under 8388608 kB. What it costs is this step's own time, about twice the 965 s the run
+      # above spent at four slots, which the -timeout 60m below and the job's 98 minutes hold.
+      # No -p beside it: one package is one build lane, so go test's package parallelism has
+      # nothing to divide. No GOMEMLIMIT either: two slots leave the heap it would bound below
+      # the 2 GiB this step once set, so it would only make the detector's work slower.
+      #
+      # RACE_MEM_JSON_PATH is where the sampler keeps the stream it unwraps, byte for byte as go
+      # test wrote it, so this job uploads one artifact of its own as the lane's other two do:
+      # .github/scripts/go-test-times.py ranks the packages and tests of such a stream, and
+      # without the file this job's per-package times were in its log alone (dispatch://INFRA-1075,
+      # check 9b3200e3). The sampler's own log is unchanged: it still unwraps every Output field
+      # to stdout, still prints a sample every 5 s, and still fails the step over the limit.
+      - name: Race-test the document service
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 60m ./internal/dispatch/docs/
+        working-directory: packages/envoy
+      # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
+      - name: Upload the go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-race-docs-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-race-docs
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

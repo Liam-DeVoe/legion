@@ -44,6 +44,7 @@ import (
 // store (testnats.Server.CutStream), and on a one-copy stream, which has no other copy for the
 // server to recover the cut block from.
 func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	srv, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
@@ -88,6 +89,13 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
+	// The deregistration deletes the consumer off its own goroutine (deleteAfterAnswer), which
+	// holds the session's lock until the delete's reply comes. The server can drop the consumer
+	// before that reply has reached the listener, and the cut below stops the server: a reply lost
+	// to it keeps the lock for the delete's whole budget (sessionConsumerCallTimeout), and the
+	// second registration, waiting on that lock inside its own shorter budget, answers 503. So the
+	// cut waits for the listener's own delete to end, not only for the server to drop the consumer.
+	rig.deps.consumers.deletes.Wait()
 	if floor, err := resumeRecordFloor(client, sessionID); err != nil || floor != resume {
 		t.Fatalf("the session's resume record after its deregistration holds floor %d, %v; want %d, the last message it acked", floor, err, resume)
 	}

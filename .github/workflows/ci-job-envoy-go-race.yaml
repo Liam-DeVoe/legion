@@ -1,0 +1,114 @@
+name: CI job envoy-go-race
+
+# The steps of ci.yaml's `envoy-go-race` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go-race:
+    runs-on: ubuntu-24.04
+    # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
+    # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
+    # package takes at most half of it: internal/bus, 463.2 s (run 43733795306, job
+    # 132871904364), 463.2 / 30 = 15.44, so 16m, which it fills to 48.3 per cent (15m, the whole
+    # minute below it, it would fill to 51.5; the reading itself ran under 16m). The job's own
+    # bound follows its largest measured time of a green run, 705 s in run 43737129665 (job
+    # 132882140167), 11.75 minutes, plus that largest -timeout plus 6: 11.75 + 16 + 6 = 33.75, so
+    # 34. The readings before it ask less: 694 s in run 43733795306 (job 132871904364) and 634 s
+    # in run 43675841985 (job 132695730267). A job of this lane varies between two runs of one
+    # commit, by a minute here and by much more in the race lane's longer jobs (at bdffd7d2
+    # envoy-go-race-api read 865 s and 1,125 s, and envoy-go-race-docs 1,665 s and 1,241 s), so a
+    # bound follows the largest reading rather than the newest. The limit must fire before the
+    # runner cancels the job, so a hung test prints the dump that names it.
+    timeout-minutes: 34
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075).
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The `go test -json` stream goes to a file the upload step below publishes, as every test
+      # step of envoy-go does and for the same reason: .github/scripts/go-test-times.py ranks the
+      # packages and tests of such a stream, and this lane's per-package times are what the next
+      # change to it is measured against (dispatch://INFRA-1075). The log keeps the package result
+      # lines of a green run and the whole stream of a red one, race report included. -count=1
+      # keeps a restored build cache from replaying a stored result as `(cached)`.
+      - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -race -count=1 -timeout 16m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/race.json"
+          fi
+          exit $s
+        working-directory: packages/envoy
+      # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
+      - name: Upload the go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-race-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-race
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
