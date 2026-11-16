@@ -14,25 +14,47 @@
 #   bash docs/research/internet-of-cognition/check.sh --coverage
 #   bash docs/research/internet-of-cognition/check.sh --help
 #
-# It prints PASS and FAIL lines, each naming an assertion, and ends in one of three ways:
+# The three endings. Every mode prints PASS and FAIL lines, each naming an assertion, and
+# ends in one of three ways, and this is the one place they are defined:
 #   all N assertions passed                exit 0: every assertion the mode declares passed
 #   F of N assertions failed: <names>      exit 1: one or more of them failed
-#   check.sh cannot run<: the reason>      exit 2: the mode could not run, so it judged
-#                                          nothing and no assertion is counted
+#   check.sh cannot run[ <what>]: <why>    exit 2: it could not run, so an assertion it
+#                                          declares is not judged, and none failed;
+#                                          <what> names the mode, as --replay, and <why>
+#                                          is the reason
 # N is the number of assertions the mode declares in the one assertion table below, not
 # the number of lines it printed. The mode runs in a subshell, and its verdict reads what
 # each declared assertion reported: one that reported a FAIL failed, and one that
 # reported nothing, because its code crashed, exited or was skipped, is a FAIL naming it,
 # so no assertion is passed by its silence; each prints its PASS only after all its parts
-# have run. A mode cannot run when a prerequisite its table declares is missing, the GitHub
-# budget is spent, env.sh or the install reader cannot load or does not run to its end, a
-# live source does not answer, or, for --self-test, a run of the gate it makes over its
-# fixture, of check.test.sh or of --admitted cannot run; the reason is then the last line,
-# for a missing prerequisite it names what is missing and, at its end, what provides it,
-# and for --self-test it names the run and ends with that run's own reason. Any other
-# ending, no output at all included, is a failed check: a run that was killed prints
-# nothing and exits non-zero for a reason that is not this deliverable's. Read the run by
-# its last line and not by the exit status alone.
+# have run. check.test.sh ends the same three ways, counting its cases where a mode counts
+# its assertions: all N cases passed, F of N cases failed, or check.sh cannot run
+# check.test.sh with each case that could not run and why; a case whose run of the gate
+# could not run could not run itself, and is neither passed nor failed.
+#
+# A run cannot run only when something outside the evidence it judges is missing or does
+# not answer: a prerequisite its table declares (a tool, a variable, an install, the
+# history, the clone root), env.sh or the install reader when it cannot load because
+# env.sh is missing or python3 cannot start it, the environment env.sh builds from the
+# package index and the clones, the GitHub budget, or a live source. What the evidence
+# holds is never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL
+# (below), and a reader that loaded and then stopped is a failure of the gate. A run that
+# cannot run ends exit 2 with the reason as its last line, which names what is missing,
+# and for a missing prerequisite ends with what provides it; for --self-test it names the
+# run of the gate it made that could not run and ends with that run's own last line.
+#
+# How a run ended is read from its exit status and its last line together, by one
+# function, run_ending, which --self-test reads each run it makes by and check.test.sh
+# each run its cases make: exit 0 with the all-passed line passed; exit 2 with a last line
+# of the form above could not run; every other ending failed. So exit 2 without that line
+# is a crash, a bash syntax error among them, and a crash is a failure, as is a run that
+# was killed, which prints nothing and exits non-zero for a reason that is not this
+# deliverable's. Read a run in the same way, by its status and its last line together.
+#
+# Precedence. A run that reported any FAIL ends exit 1, and when part of it then could not
+# run, its last line names after the failures each assertion, or each case, that could not
+# run and why. Only a run with no FAIL and something that could not run ends exit 2. A run
+# whose every assertion, or every case, passed ends exit 0.
 #
 # Two rules hold what every mode reads, and this is the one place they are stated.
 #
@@ -110,10 +132,12 @@
 #
 # Nothing a killed run leaves is trusted. A pod replacement kills a run part-way, and the
 # next run reads the same IOC_CACHE and IOC_CLONES, so every entry env.sh keeps there is
-# written under a temporary name and renamed into place only when it is whole, or carries
-# a stamp written last, which the next run reads before it reuses the entry; an entry with
-# no stamp, or with the stamp of other inputs, is built again from nothing. env.sh's
-# header lists each entry with the one of the two that keeps it. An environment env.sh
+# kept whole in one of three ways: it is written under a temporary name and renamed into
+# place only when it is whole; it carries a stamp written last, which the next run reads
+# before it reuses the entry, so an entry with no stamp, or with the stamp of other
+# inputs, is built again from nothing; or it is written again at every run, as
+# IOC_TM_OVERLAY is. IOC_OUR_TREE is kept both ways: renamed into place, and holding a
+# stamp. env.sh's header lists each entry with the way that keeps it. An environment env.sh
 # built is no longer its build once a row installs into it, so --replay removes env.sh's
 # stamp of each environment a row installs into, as the install reader reads the row,
 # before the row runs, and of each whose site-packages changed while it ran, after; the
@@ -134,24 +158,28 @@
 #             without any one of which dispatch refuses to read, and DISPATCH_STATE_DIR,
 #             without which it writes its session's state under HOME, each measured on
 #             2026-11-15 by running the fixture's four modes with one taken away; and,
-#             where they are set, the proxy variables git, curl and go read, and GOPROXY,
-#             GONOPROXY, GOSUMDB, GONOSUMDB, GOPRIVATE, GOINSECURE and GOTOOLCHAIN, by which
-#             go reaches a module (FIXTURE_CARRIED)
+#             where they are set, IOC_CLONES, a place as TMPDIR and HOME are, under which
+#             --citations clones each repository at the commit sources.json pins and each
+#             clone's stamp holds, so that a fixture clones where the prerequisite line of
+#             --citations tells a reader to point it; the proxy variables git, curl and go
+#             read; and GOPROXY, GONOPROXY, GOSUMDB, GONOSUMDB, GOPRIVATE, GOINSECURE and
+#             GOTOOLCHAIN, by which go reaches a module (FIXTURE_CARRIED)
 #   set       IOC_ROOT, IOC_EVIDENCE and IOC_JUDGEMENT to the fixture's tree and judgement,
-#             IOC_NO_ENV=1, IOC_PUBLISHED_COMMIT to the fixture's head, and IOC_CACHE to an
-#             empty directory of the fixture's own
-#   cleared   every other variable: IOC_HISTORY_REF, IOC_CLONES, IOC_OUR_TREE, every
-#             variable env.sh exports and every cache of its table among them, so the
-#             fixture reads its own history, clones under $TMPDIR/ioc-clones and keeps its
-#             caches in its own IOC_CACHE
+#             IOC_NO_ENV=1, IOC_PUBLISHED_COMMIT to the fixture's head, and IOC_CACHE to
+#             the fixture's own directory cache/, which the runs over that one fixture
+#             share and no run over another fixture reads
+#   cleared   every other variable: IOC_HISTORY_REF, IOC_OUR_TREE, every variable env.sh
+#             exports and every cache of its table among them, so the fixture reads its
+#             own history and keeps its caches in its own IOC_CACHE
 # A case of check.test.sh plants a fault by setting one of FIXTURE_INPUTS on its own
-# command (IOC_HISTORY_REF, IOC_CACHE, IOC_CLONES, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the
-# five program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, UV_OFFLINE,
-# UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes on; --self-test, and a shell
-# that sources this script as check.test.sh does, unset the caller's values of them
-# first, so a fixture reads one only from a case. A run the self-test makes that cannot
-# run, over the fixture or of check.test.sh or --admitted, ends the self-test exit 2,
-# naming the run and its reason; it is never counted as an assertion that failed.
+# command (IOC_HISTORY_REF, IOC_CACHE, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the five
+# program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, UV_OFFLINE, UV_NO_INDEX and
+# UV_FIND_LINKS), which fixture_run passes on; --self-test, and a shell that sources this
+# script as check.test.sh does, unset the caller's values of them first, so a fixture
+# reads one only from a case. fixture_run records how each run ended, which check.test.sh
+# reads its cases by. A run the self-test makes that cannot run, over the fixture or of
+# check.test.sh or --admitted, stops the self-test there, naming the run and its reason,
+# and ends it by the precedence above; it is never counted as an assertion that failed.
 #
 # No recorded command may read the scratch of the pod this reading was made in, because
 # that pod's disk died with it. --replay therefore reads the two Dispatch records under
@@ -186,11 +214,28 @@
 # number of rows that use it, and fails an entry no row uses, a row the classifier refuses,
 # and a line of the table in the header above run_recorded that differs from the one it
 # measured; it fails as well a list of reserved names there that differs from the
-# reader's, and a name of the runner no reserved prefix covers. A line of claims.jsonl
-# that is no JSON object is the evidence being wrong: it fails admitted-rows alone, naming
-# the line. The reader reads the whole file before any of the four judges, and one that
-# cannot load, because env.sh is missing or the reader does not start, or that does not
-# run to its end, is a mode that cannot run, exit 2. --self-test runs it as one assertion.
+# reader's, and a name of the runner no reserved prefix covers. --self-test runs it as one
+# assertion.
+#
+# The one parse of claims.jsonl. Every mode that reads a row of claims.jsonl, --replay,
+# --citations and --admitted, and --self-test through its fixture and its run of
+# --admitted, first parses the whole file once, claims_judge, before it builds any
+# environment or starts any reader. A line holding only space is no row. Every other line
+# is a row when it is one JSON object, holds an id that is a string that is not empty,
+# and holds each of requirement, source, kind, claim, mark, note, output and command only
+# as a string and evidence only as an object, the shape the list of keys below gives;
+# expect may hold any value, since predicate-form judges it. A line that is no row is the
+# evidence being wrong, which reading it again does not cure: it is one FAIL naming its
+# line number and why, and the mode reads on and ends with its declared assertions
+# counted, exit 1. In --replay the FAIL is claim-form's, since a line that is no claim
+# carries no form of evidence; in --admitted admitted-rows', since it is a line the
+# classifier reads no row of; in --citations citation-kinds', the assertion over how the
+# mode reads a citation rather than over what one of a kind resolves to, since a line that
+# is no row is a citation of no kind. Every reader after it, the install reader, jq over
+# the rows and env.sh's two reads of claims.jsonl when --replay sources it, reads only the
+# rows the parse read (claims), so none of them meets a line it cannot read. --shape,
+# --landed and --published read no row of claims.jsonl; --published asks only that the
+# default branch holds the file.
 #
 # The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
 # into a file under its own scratch, readable by its owner alone, exports that file's path
@@ -230,8 +275,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --self-test" says why each). A shell that runs fixtures, --self-test or one that sources
 # this script as check.test.sh does, first unsets its caller's FIXTURE_INPUTS, so that a
 # fixture reads one only from a case that sets it on its own command.
-FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
-FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_CLONES IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR IOC_CLONES http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
+FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
 if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${1:-}" = --self-test ]; then
     # shellcheck disable=SC2086
     unset $FIXTURE_INPUTS
@@ -254,7 +299,7 @@ MODE=""  # the mode run_mode runs, which live_read names when a source does not 
 # --self-test its own rows and every row with a planted fault.
 assertion_table() {
     cat <<'TABLE'
-claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
+claim-form|replay|every line of claims.jsonl is a claim the one parse reads, and every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
 predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
 install-pinned|replay|every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend, and every environment a row installed into holds only packages its lock holds at their version and packages its pinned clone builds|a recorded command that runs a package with no version
@@ -283,7 +328,7 @@ citation-our-code|citations|every citation into our own repository names a path 
 citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
-citation-kinds|citations|the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
+citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
 landed-proof|landed|every landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, and the committed command passes|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
@@ -292,7 +337,7 @@ landed-third-change|landed|the third change, a refusal of a reviewer completion 
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
 published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|-
 admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
-admitted-rows|admitted|every line of claims.jsonl is a JSON object the classifier reads, and it refuses no row that carries a command|-
+admitted-rows|admitted|every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command|-
 admitted-header|admitted|the table of admitted forms in the header above run_recorded is the one --admitted measures, line for line|-
 admitted-reserved|admitted|the header's list of reserved names is the reader's, and every name the runner and the shims record with starts with a reserved prefix|-
 self-test-baseline|self-test|the fixture deliverable passes --replay, --shape, --citations and --landed|-
@@ -493,15 +538,20 @@ fail() {
     printf 'FAIL %s: %s\n' "$1" "$2"
 }
 
-# finish <mode>; the verdict of the mode over the assertions it declares. One that
-# reported a FAIL failed; one that reported nothing failed, and is named in a FAIL line
-# here; one that reported only PASS passed. An assertion the mode reported but does not
-# declare fails too. The last line counts the declared assertions. It relies on one
-# verdict per assertion, printed after all of that assertion's parts have run: a PASS
-# printed before a later part would stand however that part ended, so every assertion of
-# more than one part prints its PASS last.
+# finish <mode>; the verdict of the mode over the assertions it declares, by the three
+# endings of the header and their precedence. One that reported a FAIL failed; one that
+# reported only PASS passed; one that reported nothing could not run when the mode
+# stopped at cannot_run, and otherwise failed and is named in a FAIL line here. An
+# assertion the mode reported but does not declare fails too. With a failure, the last
+# line counts the declared assertions, names the failed ones and then each that could not
+# run, with the reason the mode stopped, and the mode ends exit 1; with none, a mode that
+# stopped ends exit 2 with cannot_run's line last, and one that did not ends with the
+# all-passed line, exit 0. It relies on one verdict per assertion, printed after all of
+# that assertion's parts have run: a PASS printed before a later part would stand however
+# that part ended, so every assertion of more than one part prints its PASS last.
 finish() {
-    local family failed=0 total=0 families="" declared
+    local family failed=0 total=0 families="" declared stopped="" unrun=0 unrun_families=""
+    [ -s "$RUN_SCRATCH/cannot-run" ] && stopped="$(tail -1 "$RUN_SCRATCH/cannot-run")"
     declared="$(declared_assertions "$1")"
     while IFS= read -r family; do
         [ -n "$family" ] || continue
@@ -509,7 +559,12 @@ finish() {
         if grep -qxF "FAIL $family" "$REPORTED"; then
             failed=$((failed + 1))
             families="$families $family"
-        elif ! grep -qxF "PASS $family" "$REPORTED"; then
+        elif grep -qxF "PASS $family" "$REPORTED"; then
+            :
+        elif [ -n "$stopped" ]; then
+            unrun=$((unrun + 1))
+            unrun_families="$unrun_families $family"
+        else
             printf 'FAIL %s: it reported no verdict, so its code crashed, exited or was skipped before it passed or failed\n' "$family"
             failed=$((failed + 1))
             families="$families $family"
@@ -522,18 +577,22 @@ finish() {
         families="$families $family"
         printf 'FAIL %s: --%s reported it, and the assertion table declares no such assertion for --%s\n' "$family" "$1" "$1"
     done < <(cut -d' ' -f2 "$REPORTED" | sort -u | grep -vxF -f <(printf '%s\n' "$declared"))
-    if [ "$failed" -eq 0 ]; then
-        printf 'all %d assertions passed\n' "$total"
-        return 0
+    if [ "$failed" -gt 0 ]; then
+        if [ "$unrun" -gt 0 ]; then
+            printf '%d of %d assertions failed:%s; %d could not run:%s, since %s\n' "$failed" "$total" "$families" "$unrun" "$unrun_families" "$stopped"
+        else
+            printf '%d of %d assertions failed:%s\n' "$failed" "$total" "$families"
+        fi
+        return 1
     fi
-    printf '%d of %d assertions failed:%s\n' "$failed" "$total" "$families"
-    return 1
+    [ -z "$stopped" ] || return 2
+    printf 'all %d assertions passed\n' "$total"
+    return 0
 }
 
-# cannot_run <reason>; the third outcome, beside every assertion passed (exit 0) and one
-# or more failed (exit 1): the mode could not run, so it judged nothing, and no assertion
-# of it is counted. It prints the reason, which is the run's last line, records it for
-# run_mode, and exits 2.
+# cannot_run <reason>; the third ending, beside every assertion passed (exit 0) and one
+# or more failed (exit 1): the mode could not run, so no assertion it had not yet judged
+# is judged. It prints the reason, records it for finish, and ends the mode's subshell.
 cannot_run() {
     printf 'check.sh cannot run%s\n' "$1" | tee "$RUN_SCRATCH/cannot-run"
     exit 2
@@ -541,19 +600,133 @@ cannot_run() {
 
 # run_mode <mode>; runs the mode in a subshell, after the one check of its prerequisites,
 # so that however its code ends the verdict still reads what it reported, then ends the
-# run: exit 2 with the mode's reason when it could not run, and otherwise the verdict of
-# finish, exit 0 or 1.
+# run by finish's verdict: exit 0, 1 or 2.
 run_mode() {
     MODE="$1"
     (prerequisites "$1" && "mode_${1//-/_}")
-    [ -s "$RUN_SCRATCH/cannot-run" ] && exit 2
     finish "$1"
+}
+
+# run_ending <status> <output>; the one reading of how a run ended, a mode of this gate or
+# check.test.sh, from its exit status and its last line together, by the three endings of
+# the header: prints passed, failed or cannot-run. Exit 2 without a cannot-run line is a
+# crash and reads as failed, as does every ending but the two others.
+CANNOT_RUN_LINE='^check\.sh cannot run( [^:]*)?: .'
+run_ending() {
+    local last
+    last="$(printf '%s\n' "$2" | tail -1)"
+    if [ "$1" = 0 ] && printf '%s\n' "$last" | grep -qE '^all [0-9]+ (assertions|cases) passed$'; then
+        printf 'passed\n'
+    elif [ "$1" = 2 ] && printf '%s\n' "$last" | grep -qE "$CANNOT_RUN_LINE"; then
+        printf 'cannot-run\n'
+    else
+        printf 'failed\n'
+    fi
+}
+
+# run_record <status> <output> <what it was>; records how one run of the gate ended, one
+# line of RUNS_RECORDED: the sha256 of its output, its status, what it was and its last
+# line. fixture_run records each of its runs, so that a case of check.test.sh, handed the
+# output of a run, reads that run's status as well as its last line.
+RUNS_RECORDED="$RUN_SCRATCH/runs"
+run_record() {
+    printf '%s\t%s\t%s\t%s\n' "$(printf '%s' "$2" | sha256sum | cut -d' ' -f1)" "$1" "$3" \
+        "$(printf '%s\n' "$2" | tail -1 | tr '\t' ' ')" >>"$RUNS_RECORDED"
 }
 
 claims_file() { printf '%s/claims.jsonl' "$EVIDENCE"; }
 
-# Every row of claims.jsonl, as compact JSON, one per line.
-claims() { grep -v '^[[:space:]]*$' "$(claims_file)"; }
+# claims_parsed; the one parse of claims.jsonl the header states, made once per run: it
+# writes CLAIMS_ROWS, each line that is a row, as it stands, and CLAIMS_UNREAD, one line
+# <line number><TAB><why> for each line that is not. A claims.jsonl that is not there
+# holds no row. It returns non-zero, and writes neither, when the parse could not run to
+# its end, which leaves every reader with no row.
+CLAIMS_ROWS="$RUN_SCRATCH/claims.rows"
+CLAIMS_UNREAD="$RUN_SCRATCH/claims.unread"
+claims_parsed() {
+    [ -e "$CLAIMS_ROWS" ] && return 0
+    python3 - "$(claims_file)" "$CLAIMS_ROWS.part" "$CLAIMS_UNREAD.part" 2>"$CLAIMS_ROWS.err" <<'PY' || return 1
+import json, sys
+
+path, rows_path, unread_path = sys.argv[1:4]
+STRINGS = ("id", "requirement", "source", "kind", "claim", "mark", "note", "output", "command")
+OBJECTS = ("evidence",)
+
+def kind(value):
+    for name, types in (("a boolean", bool), ("a number", (int, float)), ("a string", str),
+                        ("an array", list), ("an object", dict)):
+        if isinstance(value, types):
+            return name
+    return "null"
+
+def constant(name):
+    raise ValueError("%s is no JSON value" % name)
+
+def why_not(text):
+    try:
+        row = json.loads(text, parse_constant=constant)
+    except ValueError as why:
+        return "it is no JSON: " + " ".join(str(why).split())[:160]
+    if not isinstance(row, dict):
+        return "it holds %s, and a row is one JSON object" % kind(row)
+    if not isinstance(row.get("id"), str) or not row["id"]:
+        return "its id is %s, and a row is named by an id that is a string that is not empty" % (
+            "missing" if "id" not in row else "an empty string" if row["id"] == "" else kind(row["id"]))
+    for key in STRINGS:
+        if key in row and not isinstance(row[key], str):
+            return "its %s is %s, and a %s is a string" % (key, kind(row[key]), key)
+    for key in OBJECTS:
+        if key in row and not isinstance(row[key], dict):
+            return "its %s is %s, and an %s is an object" % (key, kind(row[key]), key)
+    return None
+
+try:
+    data = open(path, "rb").read()
+except FileNotFoundError:
+    data = b""
+with open(rows_path, "w", encoding="utf-8") as rows, open(unread_path, "w", encoding="utf-8") as unread:
+    for number, raw in enumerate(data.split(b"\n"), 1):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            unread.write("%d\tit is not UTF-8\n" % number)
+            continue
+        if not text.strip():
+            continue
+        why = why_not(text)
+        if why is None:
+            rows.write(text.strip() + "\n")
+        else:
+            unread.write("%d\t%s\n" % (number, why))
+PY
+    mv "$CLAIMS_UNREAD.part" "$CLAIMS_UNREAD" && mv "$CLAIMS_ROWS.part" "$CLAIMS_ROWS"
+}
+
+# claims_judge <family>; the one parse, run by each mode that reads a row of claims.jsonl
+# before it builds any environment or starts any reader: one FAIL of <family> for each
+# line that is no row, naming the line and why, and one when the parse itself could not
+# run to its end. It returns non-zero when it reported a FAIL.
+claims_judge() {
+    local number why unread=0
+    if ! claims_parsed; then
+        fail "$1" "the parse of claims.jsonl did not run to its end, so no row of it is read: $(tail -1 "$CLAIMS_ROWS.err" | head -c 240)"
+        return 1
+    fi
+    while IFS=$'\t' read -r number why; do
+        unread=1
+        fail "$1" "line $number of claims.jsonl is no row, so nothing of it is read: $why"
+    done <"$CLAIMS_UNREAD"
+    return "$unread"
+}
+
+# Every row of claims.jsonl the one parse read, one per line, as the line stands.
+claims() {
+    claims_parsed || {
+        printf 'check.sh: the parse of claims.jsonl did not run to its end: %s\n' "$(tail -1 "$CLAIMS_ROWS.err")" >&2
+        return 1
+    }
+    cat "$CLAIMS_ROWS"
+}
 
 # live_read <source> <file> <command...>; the one read of a live source, which every mode
 # makes in its own shell before any assertion judges: the judgement and the records under
@@ -829,8 +1002,9 @@ GAPS
 # exports one variable per input. Sourcing it here puts those variables in this shell's
 # environment, so that each recorded command reads them beside IOC_CLONES. The fixture of
 # --self-test builds a deliverable whose rows need none of them and sets IOC_NO_ENV=1; its
-# rows' tools still keep every cache under IOC_CACHE, an empty one of the fixture's own, by
-# env.sh's one table of them, so a row planted there runs as cold as the tree's own.
+# rows' tools still keep every cache under IOC_CACHE, the fixture's own directory, which
+# no run outside that fixture reads (fixture_run), by env.sh's one table of them, so a row
+# planted there runs as cold as the tree's own.
 prepare_env() {
     if [ "${IOC_NO_ENV:-0}" = 1 ]; then
         env_functions || cannot_run ": env.sh, which names where every tool cache of a recorded command lives, did not load."
@@ -1415,15 +1589,16 @@ github_budget() {
 # for uv run's, shell_string for a shell given -c, variable_name for a variable command
 # word, ASSIGNMENT for an assignment, and tokenize, which refuses a character bash does
 # not read as it would, by foreign_character. Its last argument selects what it prints:
-# "installs" reads claims.jsonl on stdin and prints each refusal as <id><TAB><what it
-# runs>; "environments" reads claims.jsonl on stdin and prints <id><TAB><label> for each
-# environment of env.sh's IOC_ENV_FROZEN a row's command installs into; "names" reads one
-# command on stdin and prints each program name the classifier admits in command
-# position, one per line, or one UNREAD line naming the refusal; "stages" reads one
-# command and prints the command of each stage of its final pipeline; "admitted" reads
-# claims.jsonl on stdin and prints each line that is no JSON object, each refused row,
-# each entry of ADMITTED with the number of rows that use it and each reserved name, which
-# --admitted reads. The reader's first lines are PROGRAM_VARIABLES and RUNNER_PREFIXES,
+# "installs" reads the rows of claims.jsonl on stdin, as the gate's one parse read them
+# (claims), and prints each refusal as <id><TAB><what it runs>; "environments" reads those
+# rows and prints <id><TAB><label> for each environment of env.sh's IOC_ENV_FROZEN a row's
+# command installs into; "names" reads one command on stdin and prints each program name
+# the classifier admits in command position, one per line, or one UNREAD line naming the
+# refusal; "stages" reads one command and prints the command of each stage of its final
+# pipeline; "admitted" reads the rows and prints each refused row, each entry of ADMITTED
+# with the number of rows that use it and each reserved name, which --admitted reads;
+# "load" reads nothing, so the gate can start the reader before it reads a row
+# (reader_load). The reader's first lines are PROGRAM_VARIABLES and RUNNER_PREFIXES,
 # written from the two variables above program_shims, then env.sh's ENFORCED and
 # ENVIRONMENTS, and env.sh's reader of a lock.
 reader_py() {
@@ -2808,9 +2983,17 @@ def classify(command, depth=0):
     return ("admitted", programs, stages)
 
 
-if sys.argv[-1] == "environments":
-    # Reads claims.jsonl on stdin and prints <id><TAB><label> for each environment of
-    # ENVIRONMENTS a row's command installs into, which the gate checks after the row.
+# Each mode that reads rows reads the rows the gate's one parse of claims.jsonl read, one
+# JSON object per line, each id a string and each command a string, so no line here is one
+# it cannot read.
+if sys.argv[-1] == "load":
+    # Reads nothing: the gate starts the reader once this way before it reads any row, so
+    # that a reader that cannot load is told from one that stopped on a row.
+    pass
+elif sys.argv[-1] == "environments":
+    # Reads the rows of claims.jsonl on stdin and prints <id><TAB><label> for each
+    # environment of ENVIRONMENTS a row's command installs into, which the gate checks
+    # after the row.
     for line in sys.stdin:
         row = json.loads(line)
         TARGETS.clear()
@@ -2832,23 +3015,13 @@ elif sys.argv[-1] == "names":
         for kind in sorted({k for k in result[1] if k[0] == "program"}):
             print(kind[1])
 elif sys.argv[-1] == "admitted":
-    # Reads claims.jsonl on stdin and classifies the command of each row that carries one.
-    # Prints UNREAD<TAB><line><TAB><why> for each line that is no JSON object, by its number
-    # in the file, REFUSED<TAB><id><TAB><why> for each row it refuses, then one line per
-    # entry of ADMITTED, in its order, FORM<TAB><key><TAB><rows that use it><TAB><what it
-    # is>, then one line per name no row may touch, RESERVED<TAB><name><TAB><what it is>. A
-    # line that holds only space is no row, as claims() reads the file.
+    # Reads the rows of claims.jsonl on stdin and classifies the command of each row that
+    # carries one. Prints REFUSED<TAB><id><TAB><why> for each row it refuses, then one line
+    # per entry of ADMITTED, in its order, FORM<TAB><key><TAB><rows that use it><TAB><what
+    # it is>, then one line per name no row may touch, RESERVED<TAB><name><TAB><what it is>.
     counts = {key: 0 for key in ADMITTED}
-    for number, line in enumerate(sys.stdin, 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                raise ValueError("it holds a JSON %s" % type(row).__name__)
-        except ValueError as why:
-            print("UNREAD\t%d\t%s" % (number, " ".join(str(why).split())[:160]))
-            continue
+    for line in sys.stdin:
+        row = json.loads(line)
         if not row.get("command"):
             continue
         USED.clear()
@@ -2872,8 +3045,23 @@ PYREADER
 
 unpinned_installs() {
     # The install reader reads each lock a command names from this tree's evidence/,
-    # LOCKS_DIR, which reader_py writes into it.
+    # LOCKS_DIR, which reader_py writes into it, and the rows of the one parse.
     claims | python3 -c "$(reader_py)" installs
+}
+
+# reader_load; builds the reader of command text from env.sh once per run, into READER
+# under this run's scratch, and starts it once with nothing to read. A reader that cannot
+# load, because env.sh did not load or python3 cannot start it, is a mode that cannot run.
+# Once it has loaded it reads only rows the one parse read, so a reader that then stops
+# on one is a failure of the gate, which its caller fails by name.
+READER="$RUN_SCRATCH/reader.py"
+reader_load() {
+    [ -s "$READER" ] && return 0
+    env_functions || cannot_run " --$MODE: env.sh, which holds the variables and the lock reader the install reader is built from, did not load."
+    reader_py >"$READER.part" || cannot_run " --$MODE: the install reader could not be built from env.sh."
+    python3 "$READER.part" load </dev/null >/dev/null 2>"$READER.err" ||
+        cannot_run " --$MODE: the install reader cannot load: $(tail -1 "$READER.err" | head -c 240)"
+    mv "$READER.part" "$READER"
 }
 
 # environment_stamps; one line per environment of env.sh's IOC_ENV_FROZEN that exists, its
@@ -2918,32 +3106,25 @@ reserved_line() { printf '%-37s %s' "$1" "$2"; }
 
 # mode_admitted; the audit of ADMITTED. It runs the classifier over the command of every
 # row of claims.jsonl, through the one table the classifier admits by, and prints one line
-# per entry with the number of rows that use it. It fails a line of claims.jsonl that is no
-# JSON object, naming the line, an entry no row uses, a row the classifier refuses, and a
-# line of the header's table that differs from the one measured. It fails as well a header
-# list of reserved names that differs from the reader's, which the reader builds from
-# PROGRAM_VARIABLES, RUNNER_PREFIXES and env.sh's IOC_ENV_ENFORCED, and a name the runner
-# or the shims record with that starts with none of RUNNER_PREFIXES, which no row would be
-# kept from touching. The reader is built from env.sh and runs to its end before any of
-# the four judges: one that cannot load or does not run to its end is a mode that cannot
-# run, exit 2.
+# per entry with the number of rows that use it. It fails an entry no row uses, a row the
+# classifier refuses, and a line of the header's table that differs from the one measured.
+# It fails as well a header list of reserved names that differs from the reader's, which
+# the reader builds from PROGRAM_VARIABLES, RUNNER_PREFIXES and env.sh's IOC_ENV_ENFORCED,
+# and a name the runner or the shims record with that starts with none of RUNNER_PREFIXES,
+# which no row would be kept from touching. The one parse comes first, and a line it reads
+# no row of fails admitted-rows; a reader that cannot load is a mode that cannot run, and
+# one that loaded and then stopped fails admitted-rows by name (the header).
 mode_admitted() {
     local kind a b c line measured=() header=() reserved=() refused=0 differ=0 unused=0
-    local reader table="$RUN_SCRATCH/admitted" input
-    env_functions || cannot_run " --admitted: env.sh, which holds the variables and the lock reader the install reader is built from, did not load."
-    reader="$(reader_py)" || cannot_run " --admitted: the install reader could not be built from env.sh."
-    # The reader reads claims.jsonl itself, so a line it cannot parse is named by its number
-    # in the file; a claims.jsonl that is not there reads as one with no row.
-    input="$(claims_file)"
-    [ -r "$input" ] || input=/dev/null
-    python3 -c "$reader" admitted <"$input" >"$table" 2>"$table.err" ||
-        cannot_run " --admitted: the install reader did not run to its end: $(tail -1 "$table.err" | head -c 240)"
+    local table="$RUN_SCRATCH/admitted"
+    claims_judge admitted-rows || refused=1
+    reader_load
+    claims | python3 "$READER" admitted >"$table" 2>"$table.err" || {
+        refused=$((refused + 1))
+        fail admitted-rows "the classifier stopped before its end, so what it printed is no reading of the rows: $(tail -1 "$table.err" | head -c 240)"
+    }
     while IFS=$'\t' read -r kind a b c; do
         case "$kind" in
-        UNREAD)
-            refused=$((refused + 1))
-            fail admitted-rows "line $a of claims.jsonl is no JSON object, so the classifier reads no row there: $b"
-            ;;
         REFUSED)
             refused=$((refused + 1))
             fail admitted-rows "the row $a is refused: $b"
@@ -2968,7 +3149,7 @@ mode_admitted() {
     if [ "${#measured[@]}" -eq 0 ]; then
         fail admitted-rows "the classifier printed no table, so no row was read"
     elif [ "$refused" -eq 0 ]; then
-        pass admitted-rows "every line of claims.jsonl is a row the classifier reads, and it refuses no row that carries a command"
+        pass admitted-rows "every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command"
     fi
 
     # The header's table: the lines after its column names, down to the first comment line
@@ -3016,8 +3197,13 @@ mode_admitted() {
 }
 
 mode_replay() {
-    local work="$RUN_SCRATCH/replay"
+    local work="$RUN_SCRATCH/replay" unread_rows=0
     mkdir -p "$work"
+    # The one parse of claims.jsonl comes first, before any environment is built or any
+    # reader starts: a line that is no row fails claim-form, and every read below reads
+    # only the rows it read, env.sh's two reads of claims.jsonl among them (IOC_ENV_CLAIMS).
+    claims_judge claim-form || unread_rows=1
+    local IOC_ENV_CLAIMS="$CLAIMS_ROWS"
     # The scratch of the rows, each row's output and its own empty TMPDIR, is under the
     # run's scratch, which the EXIT trap removes however the run ends, and this function
     # removes it at its end too. env.sh clones the three repositories at the commits
@@ -3042,13 +3228,17 @@ mode_replay() {
 
     local kinds='project-code our-code behaviour published absence quotation'
     local marks='verified false unverified not-externally-checkable supported unsupported unreleased'
-    local bad_form=0 bad_mark=0 bad_predicate=0 ran=0 command_failures="" absence_failures="" bad_quotation=0
+    local bad_form="$unread_rows" bad_mark=0 bad_predicate=0 ran=0 command_failures="" absence_failures="" bad_quotation=0
     local row id kind mark command expect environments installs stamps changed frozen_failures=""
     # The environments each row installs into, as the install reader reads its command;
     # each is checked after the row, beside any whose site-packages changed while it ran.
-    env_functions || cannot_run ": env.sh, which names the environments a row installs into, did not load."
-    environments="$(claims | python3 -c "$(reader_py)" environments)" ||
-        cannot_run ": the install reader could not read which environment each row installs into."
+    # A reader that cannot load cannot run the mode; one that loaded and then stopped
+    # fails install-pinned, since which environment a row installs into is then unread.
+    reader_load
+    environments="$(claims | python3 "$READER" environments 2>"$work/environments.err")" || {
+        frozen_failures="$frozen_failures reader"
+        fail install-pinned "the install reader stopped before its end, so which environment each row installs into is unread: $(tail -1 "$work/environments.err" | head -c 240)"
+    }
     while IFS= read -r row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
         kind="$(printf '%s' "$row" | jq -r '.kind // ""')"
@@ -3152,8 +3342,13 @@ mode_replay() {
         fi
     done < <(claims)
 
+    # The reader loaded above, so one that stops here stopped on a row the one parse read,
+    # a failure of the gate and no mode that cannot run.
     local unpinned unpinned_id unpinned_what
-    unpinned="$(unpinned_installs)" || cannot_run ": the install reader did not run to its end."
+    unpinned="$(unpinned_installs 2>"$work/installs.err")" || {
+        frozen_failures="$frozen_failures reader"
+        fail install-pinned "the install reader stopped before its end, so what a row installs is unread: $(tail -1 "$work/installs.err" | head -c 240)"
+    }
     while IFS=$'\t' read -r unpinned_id unpinned_what; do
         [ -n "$unpinned_id" ] || continue
         fail install-pinned "$unpinned_id runs '$unpinned_what': a package with no version, or read from no hashed lock, installs whatever release or file the index holds now, and a form this reader cannot read is refused rather than passed"
@@ -3903,7 +4098,10 @@ report_unchecked_parts() {
 }
 
 mode_citations() {
-    local commit bad_ours=0 bad_theirs=0 bad_published=0 bad_dispatch=0 row id file symbol repo rcommit
+    local commit bad_ours=0 bad_theirs=0 bad_published=0 bad_dispatch=0 bad_kinds=0 row id file symbol repo rcommit
+    # The one parse of claims.jsonl comes first: a line that is no row fails citation-kinds,
+    # and every read below reads only the rows it read.
+    claims_judge citation-kinds || bad_kinds=1
     # The flattened text of each committed copy, read once: eight rows cite one page of
     # 400 KB, and reading it per row is the cost of the mode.
     local flat_dir="$RUN_SCRATCH/citations"
@@ -4048,10 +4246,10 @@ mode_citations() {
     done <"$unresolved"
     [ "$bad_dispatch" -eq 0 ] && pass citation-dispatch "each of the $asked dispatch:// references of this directory resolves to a node Dispatch holds"
 
-    if python3 "$EVIDENCE/citations.py" --self-test >/dev/null 2>&1; then
-        pass citation-kinds "the extraction rule reads a citation of every kind it names, a number written in words among them"
-    else
+    if ! python3 "$EVIDENCE/citations.py" --self-test >/dev/null 2>&1; then
         fail citation-kinds "citations.py --self-test does not pass, so the extraction rule reads less than it names"
+    elif [ "$bad_kinds" -eq 0 ]; then
+        pass citation-kinds "every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them"
     fi
 }
 
@@ -4519,24 +4717,29 @@ MD
 }
 
 fixture_run() {
-    # fixture_run <dir> <mode>; prints the gate's own output, and ends with its status. The
+    # fixture_run <dir> <mode>; prints the gate's own output, ends with its status, and
+    # records how the run ended (run_record), which a case of check.test.sh reads. The
     # fixture's own rows read its own repository alone, so it needs nothing env.sh
     # prepares and skips it. It runs in an environment of its own, as the header's "The
     # fixture of --self-test" states: FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is
     # set, the fixture's own tree, judgement and head, and an IOC_CACHE of its own unless a
     # case names one; no other variable of the caller's.
-    local dir="$1" mode="$2" name carried=()
+    local dir="$1" mode="$2" name carried=() out status
     for name in $FIXTURE_CARRIED $FIXTURE_INPUTS; do
         [ -n "${!name+set}" ] && carried+=("$name=${!name}")
     done
-    env -i "${carried[@]}" \
+    out="$(env -i "${carried[@]}" \
         IOC_ROOT="$dir/repo" \
         IOC_EVIDENCE="$dir/repo/docs/research/internet-of-cognition" \
         IOC_JUDGEMENT="$dir/judgement.md" \
         IOC_NO_ENV=1 \
         IOC_PUBLISHED_COMMIT="$(git -C "$dir/repo" rev-parse HEAD 2>/dev/null)" \
         IOC_CACHE="${IOC_CACHE:-$dir/cache}" \
-        bash "$dir/repo/docs/research/internet-of-cognition/check.sh" "$mode" 2>&1
+        bash "$dir/repo/docs/research/internet-of-cognition/check.sh" "$mode" 2>&1)"
+    status=$?
+    printf '%s\n' "$out"
+    run_record "$status" "$out" "$mode over the fixture ${dir##*/}"
+    return "$status"
 }
 
 fixture_plant() {
@@ -4702,27 +4905,30 @@ MD
     return 0
 }
 
-# self_test_ran <the run> <its status> <its output>; a run the self-test made that ended
-# exit 2 could not run, and judged nothing, so neither can the self-test: it ends here,
-# exit 2, naming the run and, last, the run's own last line, its reason. Such a run is
-# never read as an assertion that failed.
+# self_test_ran <family> <the run> <its status> <its output>; reads how a run the self-test
+# made ended, by run_ending. One that could not run judged nothing, so the self-test stops
+# there, at <family>, naming the run and, last, the run's own last line, its reason; finish
+# then ends the self-test by the precedence of the header. Such a run is never read as an
+# assertion that failed, and a run that crashed, exit 2 with no such line among them, is
+# read as the failure it is by its caller.
 self_test_ran() {
-    [ "$2" -eq 2 ] || return 0
-    cannot_run " --self-test: $1 could not run, so the self-test judged nothing: $(printf '%s\n' "$3" | tail -1)"
+    [ "$(run_ending "$3" "$4")" = cannot-run ] || return 0
+    cannot_run " --self-test: $2 could not run, so the self-test stops at $1: $(printf '%s\n' "$4" | tail -1)"
 }
 
 mode_self_test() {
-    local work="$RUN_SCRATCH/self-test" baseline
+    local work="$RUN_SCRATCH/self-test" baseline status
     mkdir -p "$work"
     fixture_build "$work/base"
     local mode modes="replay shape citations landed"
     local broken=0
     for mode in $modes; do
         baseline="$(fixture_run "$work/base" "--$mode")"
-        self_test_ran "--$mode over the fixture deliverable" "$?" "$baseline"
-        if ! printf '%s' "$baseline" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+        status=$?
+        self_test_ran self-test-baseline "--$mode over the fixture deliverable" "$status" "$baseline"
+        if [ "$(run_ending "$status" "$baseline")" != passed ]; then
             broken=$((broken + 1))
-            fail "self-test-baseline" "the fixture deliverable does not pass --$mode: $(printf '%s' "$baseline" | grep '^FAIL' | head -3 | tr '\n' ' ')$(printf '%s' "$baseline" | tail -1)"
+            fail "self-test-baseline" "the fixture deliverable does not pass --$mode, exit $status: $(printf '%s' "$baseline" | grep '^FAIL' | head -3 | tr '\n' ' ')$(printf '%s' "$baseline" | tail -1)"
         fi
     done
     [ "$broken" -eq 0 ] || return 0
@@ -4744,7 +4950,7 @@ mode_self_test() {
         fi
         local out
         out="$(fixture_run "$planted" "--$mode")"
-        self_test_ran "--$mode over the fixture with the planted fault of $family" "$?" "$out"
+        self_test_ran "$family" "--$mode over the fixture with the planted fault of $family" "$?" "$out"
         if printf '%s' "$out" | grep -q "^FAIL $family"; then
             pass "$family" "the gate fails the planted fault and names it: $fault"
         else
@@ -4760,11 +4966,12 @@ mode_self_test() {
     if [ -r "$EVIDENCE/check.test.sh" ]; then
         local cases
         cases="$(bash "$EVIDENCE/check.test.sh" 2>&1)"
-        self_test_ran "check.test.sh" "$?" "$cases"
-        if printf '%s\n' "$cases" | tail -1 | grep -q '^all [0-9]* cases passed$'; then
+        status=$?
+        self_test_ran gate-cases "check.test.sh" "$status" "$cases"
+        if [ "$(run_ending "$status" "$cases")" = passed ]; then
             pass gate-cases "check.test.sh: $(printf '%s\n' "$cases" | tail -1)"
         else
-            fail gate-cases "check.test.sh does not pass: $(printf '%s\n' "$cases" | grep '^FAIL' | head -3 | tr '\n' ' ')"
+            fail gate-cases "check.test.sh does not pass, exit $status: $(printf '%s\n' "$cases" | grep '^FAIL' | head -3 | tr '\n' ' ')$(printf '%s\n' "$cases" | tail -1)"
         fi
     else
         fail gate-cases "check.test.sh is missing, so the faults the tester found are proved by nothing"
@@ -4774,11 +4981,12 @@ mode_self_test() {
     # header's table is the one --admitted measures.
     local admitted
     admitted="$(bash "$EVIDENCE/check.sh" --admitted 2>&1)"
-    self_test_ran "check.sh --admitted" "$?" "$admitted"
-    if printf '%s\n' "$admitted" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+    status=$?
+    self_test_ran admitted-table "check.sh --admitted" "$status" "$admitted"
+    if [ "$(run_ending "$status" "$admitted")" = passed ]; then
         pass admitted-table "check.sh --admitted: every entry of ADMITTED is used by a row, no row is refused, and the header's table is the one measured"
     else
-        fail admitted-table "check.sh --admitted does not pass: $(printf '%s\n' "$admitted" | grep '^FAIL' | head -3 | tr '\n' ' ')"
+        fail admitted-table "check.sh --admitted does not pass, exit $status: $(printf '%s\n' "$admitted" | grep '^FAIL' | head -3 | tr '\n' ' ')$(printf '%s\n' "$admitted" | tail -1)"
     fi
 
     # --coverage names every family the gate holds, so a mode nothing runs is still read.

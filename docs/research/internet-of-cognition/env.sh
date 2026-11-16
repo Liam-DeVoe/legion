@@ -15,11 +15,10 @@
 # It is idempotent. A second run reuses what the first built whole: it re-downloads
 # nothing, re-installs nothing but an environment a recorded command has installed into
 # since, and, run on its own, re-reads Dispatch only when a copy is missing. Nothing a run
-# that was killed part-way left is reused: each entry below carries a stamp written last or
-# is renamed into place when whole, by the rule check.sh's header states ("Nothing a killed
-# run leaves is trusted"), and the list after the exports names which. To build it all
-# again from nothing, remove the cache directory, after making it writable, since go makes
-# its module cache read-only:
+# that was killed part-way left is reused: each entry below is kept whole in one of the
+# three ways check.sh's header states ("Nothing a killed run leaves is trusted"), and the
+# list after the exports names which. To build it all again from nothing, remove the cache
+# directory, after making it writable, since go makes its module cache read-only:
 #
 #   chmod -R u+w "$IOC_CACHE" && rm -rf "$IOC_CACHE"
 #
@@ -68,8 +67,9 @@
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   the variables of ioc_env_cache_table   every tool cache, each under IOC_CACHE
 #
-# What it keeps, and how each entry is kept whole, so that the next run builds again what a
-# killed run left part-built rather than reuse it:
+# What it keeps, and the way each entry is kept whole. The rule, its three ways, and what
+# a recorded command writes under IOC_CACHE are stated once, in check.sh's header ("Nothing
+# a killed run leaves is trusted"):
 #
 #   entry                                   kept whole by
 #   each clone, IOC_CLONES/<name>           a stamp, .git/ioc-complete, naming the pinned
@@ -89,11 +89,8 @@
 #   IOC_REVIEWS                             a temporary name, reviews.jsonl.part
 #   IOC_OUR_TREE                            a temporary name, <dir>.part, holding a stamp,
 #                                           .complete
-#   IOC_TM_OVERLAY                          nothing: it is written again at every run
+#   IOC_TM_OVERLAY                          written again at every run
 #   the caches of ioc_env_cache_table       each tool, by its own means
-#
-# A recorded command that writes under IOC_CACHE writes what it reads back itself or what a
-# later row of the same run reads, so no row reads what a killed run left there.
 #
 # Every package env.sh installs comes from a committed, hashed file under evidence/,
 # resolved as the package index stood at 2026-11-12T07:55:56Z, the instant sources.json
@@ -214,6 +211,13 @@ ioc_env_stamp() {
     shift
     printf '%s %s\n' "$commit" "$(sha256sum "$@" | cut -d' ' -f1 | tr '\n' ' ')"
 }
+
+# ioc_env_claims; the rows of claims.jsonl, of which env.sh reads two values, the checksum
+# of s-model-checksum and the count of tc-corpus-1. When check.sh --replay sources env.sh
+# they are the rows its one parse read, which it names as IOC_ENV_CLAIMS in its own shell,
+# so no line the parse read no row of reaches jq here; run on its own, env.sh reads the
+# file.
+ioc_env_claims() { cat "${IOC_ENV_CLAIMS:-$IOC_ENV_HERE/claims.jsonl}"; }
 
 # ioc_env_lock_py prints the one reader of a committed hashed lock, Python source that
 # ioc_env_frozen below and check.sh's reader_py both run, so the two read a lock alike.
@@ -549,7 +553,7 @@ ioc_env_model() {
     local revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41" want got file stamp="$IOC_CACHE/model.built-from"
     export IOC_MODEL_DIR="$HF_HOME/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/$revision"
     file="$IOC_MODEL_DIR/model.safetensors"
-    want="$(jq -r 'select(.id=="s-model-checksum") | .expect.contains' "$IOC_ENV_HERE/claims.jsonl" | head -1)"
+    want="$(ioc_env_claims | jq -r 'select(.id=="s-model-checksum") | .expect.contains' | head -1)"
     [ -n "$want" ] ||
         ioc_env_refuse "IOC_MODEL_DIR" "claims.jsonl carries no checksum in the row s-model-checksum" || return 1
     if [ "$(cat "$stamp" 2>/dev/null)" != "$revision $want" ] || [ ! -s "$file" ]; then
@@ -682,7 +686,7 @@ ioc_env_reviews() {
     export IOC_TC_PY="$IOC_TC_WORK/venv/bin/python"
     export IOC_REVIEWS="$IOC_TC_WORK/reviews.jsonl"
     local want part n
-    want="$(jq -r 'select(.id=="tc-corpus-1") | .expect.at_least' "$IOC_ENV_HERE/claims.jsonl" | head -1)"
+    want="$(ioc_env_claims | jq -r 'select(.id=="tc-corpus-1") | .expect.at_least' | head -1)"
     [ -n "$want" ] ||
         ioc_env_refuse "IOC_REVIEWS" "claims.jsonl carries no count in the row tc-corpus-1" || return 1
     mkdir -p "$IOC_TC_WORK"

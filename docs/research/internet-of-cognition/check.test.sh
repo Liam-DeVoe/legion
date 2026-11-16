@@ -7,7 +7,11 @@
 #
 #   bash docs/research/internet-of-cognition/check.test.sh
 #
-# It prints one PASS or FAIL line per case and a last line reading `all N cases passed`.
+# It prints one PASS or FAIL line per case, or COULD NOT RUN for a case whose run of the
+# gate could not run, and ends by the three endings check.sh's header defines: `all N cases
+# passed`, exit 0; `F of N cases failed`, exit 1, naming after the count each case that
+# could not run; or, with no failure, `check.sh cannot run check.test.sh: ...`, exit 2,
+# naming each case that could not run and its run's reason.
 # It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
 # --self-test and of the four modes it runs over its fixture, --replay, --shape, --citations
 # and --landed. A case that needs uv, go or bun prints SKIP when that tool is missing.
@@ -26,19 +30,127 @@ export IOC_ROOT="$(cd "$HERE/../../.." && pwd)"
 
 CASES_PASSED=0
 CASES_FAILED=0
+CASES_UNRUN=0
+UNRUN_CASES=()
+
+# Every case reads the ending of the run of the gate it judges in one way, case_ending,
+# which every helper below calls first: by check.sh's run_ending, from the run's status and
+# its last line together. A run that could not run makes its case one that could not run,
+# never a failed case and never a passed one, unless the case expects the run not to run,
+# as ending_result's cases that ask for exit 2 do. The status is the one the case read, or
+# else the one fixture_run or gate_run recorded for a run that printed exactly that output
+# (RUNS_RECORDED); a run nobody recorded fails its case, since how it ended is unknown.
+# Each run a case read is marked read, and a run that could not run and that no case read,
+# as one an inline check reads, is named at the end beside the cases that could not run.
+#
+# case_ending <gate output> [<status>]; sets CASE_ENDING to passed, failed, cannot-run or
+# unrecorded, and CASE_LAST to the run's last line, and marks the run read.
+case_ending() {
+    local out="$1" status="${2:-}" hash
+    hash="$(printf '%s' "$out" | sha256sum | cut -d' ' -f1)"
+    CASE_LAST="$(printf '%s\n' "$out" | tail -1)"
+    if [ -z "$status" ]; then
+        status="$(awk -F'\t' -v h="$hash" '$1 == h { s = $2 } END { print s }' "$RUNS_RECORDED" 2>/dev/null)"
+    fi
+    printf '%s\n' "$hash" >>"$RUNS_RECORDED.read"
+    if [ -z "$status" ]; then
+        CASE_ENDING=unrecorded
+    else
+        CASE_ENDING="$(run_ending "$status" "$out")"
+    fi
+}
+# case_read <name> <gate output> [<status>]; reads the run's ending by case_ending, and
+# settles the case there, returning non-zero, when the run could not run, which counts the
+# case as one that could not run, or when nobody recorded its status, which fails it.
+case_read() {
+    case_ending "$2" "${3:-}"
+    case "$CASE_ENDING" in
+    cannot-run)
+        CASES_UNRUN=$((CASES_UNRUN + 1))
+        UNRUN_CASES+=("$1: $CASE_LAST")
+        printf 'COULD NOT RUN %s: %s\n' "$1" "$CASE_LAST"
+        return 1
+        ;;
+    unrecorded)
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: check.test.sh read a run whose status nobody recorded, so how it ended is unknown: %s\n' "$1" "$CASE_LAST"
+        return 1
+        ;;
+    esac
+}
+# gate_run <check.sh> <mode>; runs a copy of the gate, not over a fixture, and records
+# how it ended, as fixture_run does.
+gate_run() {
+    local out status
+    out="$(bash "$1" "$2" 2>&1)"
+    status=$?
+    printf '%s\n' "$out"
+    run_record "$status" "$out" "$2 of ${1%/check.sh}"
+    return "$status"
+}
 
 case_result() {
-    # case_result <name> <family the gate should name> <gate output>
+    # case_result <name> <family the gate should name> <gate output> [<status>]
     local name="$1" family="$2" out="$3"
-    if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+    case_read "$name" "$out" "${4:-}" || return 0
+    if [ "$CASE_ENDING" = passed ]; then
         CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: the gate passed it: %s\n' "$name" "$(printf '%s\n' "$out" | tail -1)"
+        printf 'FAIL %s: the gate passed it: %s\n' "$name" "$CASE_LAST"
     elif ! printf '%s\n' "$out" | grep -qE "^FAIL ($family)"; then
         CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: the gate failed but named no %s: %s\n' "$name" "$family" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')"
+        printf 'FAIL %s: the gate failed but named no %s: %s\n' "$name" "$family" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')$CASE_LAST"
     else
         CASES_PASSED=$((CASES_PASSED + 1))
         printf 'PASS %s\n' "$name"
+    fi
+}
+
+# honest_result <name> <family> <gate output>; the honest form beside a planted fault,
+# which passes when the gate ran and names no failure of that family.
+honest_result() {
+    local name="$1" family="$2" out="$3"
+    case_read "$name" "$out" || return 0
+    if printf '%s\n' "$out" | grep -qE "^FAIL ($family)"; then
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep -E "^FAIL ($family)" | head -1)"
+    else
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    fi
+}
+
+# passed_result <name> <gate output>; an honest form that passes only when the gate ends
+# with its all-passed line, with no failure of any family.
+passed_result() {
+    local name="$1" out="$2"
+    case_read "$name" "$out" || return 0
+    if [ "$CASE_ENDING" = passed ]; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')$CASE_LAST"
+    fi
+}
+
+# ending_result <name> <status> <last line, an extended regular expression> <status read>
+# <gate output> [planted]; passes when both match. A case that asks for exit 0 or 1 and
+# reads a run that could not run could not run itself. One that asks for exit 2, or that
+# says with a sixth argument that it plants the source that does not answer itself, holds
+# the run to the ending it asks for, and reads any other as a failure.
+ending_result() {
+    local name="$1" want="$2" last="$3" got="$4" out="$5"
+    if [ "$want" = 2 ] || [ -n "${6:-}" ]; then
+        case_ending "$out" "$got"
+    else
+        case_read "$name" "$out" "$got" || return 0
+    fi
+    if [ "$got" = "$want" ] && printf '%s\n' "$out" | tail -1 | grep -qE -- "$last"; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: exit %s, last line: %s\n' "$name" "$got" "$(printf '%s\n' "$out" | tail -1)"
     fi
 }
 
@@ -128,7 +240,9 @@ case_result "an absence search whose first of two reads failed does not pass as 
 # unreachable all count, so it needs no network.
 dir="$(fresh live-address)"
 out="$(fixture_run "$dir" --citations)"
-if printf '%s\n' "$out" | grep -F 'https://example.org/page' | grep -qiE 'still carries|changed|unreachable|does not answer|no longer'; then
+if ! case_read "--citations reports the live state of each published copy" "$out"; then
+    :
+elif printf '%s\n' "$out" | grep -F 'https://example.org/page' | grep -qiE 'still carries|changed|unreachable|does not answer|no longer'; then
     CASES_PASSED=$((CASES_PASSED + 1))
     printf 'PASS %s\n' "--citations reports the live state of each published copy"
 else
@@ -324,13 +438,7 @@ grep -qF 'uv pip install -c c.txt -b $IOC_EVID/build-constraints.txt ./local' "$
     exit 1
 }
 out="$(fixture_run "$dir" --replay)"
-if printf '%s\n' "$out" | grep -q '^FAIL install-pinned'; then
-    CASES_FAILED=$((CASES_FAILED + 1))
-    printf 'FAIL %s: %s\n' "a local path beside a constraints file passes install-pinned" "$(printf '%s\n' "$out" | grep '^FAIL install-pinned' | head -1)"
-else
-    CASES_PASSED=$((CASES_PASSED + 1))
-    printf 'PASS %s\n' "a local path beside a constraints file passes install-pinned"
-fi
+honest_result "a local path beside a constraints file passes install-pinned" install-pinned "$out"
 
 # 24-28 plant into the fixture row f-behaviour-1, whose command is `printf 'ran once\n'`
 # and whose predicate is {"contains":"ran once"}, a command and a predicate of their own.
@@ -347,32 +455,6 @@ plant_behaviour() {
         printf 'FAIL the command %s could not be planted\n' "$2"
         exit 1
     }
-}
-
-# honest_result <name> <family> <gate output>; the honest form beside a planted fault,
-# which passes when the gate names no failure of that family.
-honest_result() {
-    local name="$1" family="$2" out="$3"
-    if printf '%s\n' "$out" | grep -qE "^FAIL ($family)"; then
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep -E "^FAIL ($family)" | head -1)"
-    else
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
-    fi
-}
-
-# passed_result <name> <gate output>; an honest form that passes only when the gate ends
-# with its all-passed line, with no failure of any family.
-passed_result() {
-    local name="$1" out="$2"
-    if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
-    else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')"
-    fi
 }
 
 # 24. A read that failed in a stage of the final pipeline before its last. The pipeline's
@@ -633,13 +715,13 @@ plant_gate() {
 # 41. The audit's own bite: an entry of ADMITTED that no row uses is admitted unchecked, so
 # --admitted fails it and names it. The copy adds the keyword until, which no row writes.
 plant_gate admitted-unused 's/^ADMITTED = {$/&\n    "until": "a keyword no row writes, planted by check.test.sh",/' '"until": "a keyword no row writes' holds
-case_result "an entry of ADMITTED that no row uses fails --admitted, named" 'admitted-form: until is used by no row' "$(bash "$GATE" --admitted 2>&1)"
+case_result "an entry of ADMITTED that no row uses fails --admitted, named" 'admitted-form: until is used by no row' "$(gate_run "$GATE" --admitted)"
 
 # 42. The table is the classifier's only admission: with the entry && taken out of
 # ADMITTED, every row that joins two pipelines with && is refused, and --admitted fails
 # naming a refused row and the form.
 plant_gate admitted-missing '/^    "&&": /d' '    "&&": ' lacks
-case_result "an entry the rows use, taken out of ADMITTED, refuses those rows" 'admitted-rows: the row [^ ]+ is refused: the operator &&' "$(bash "$GATE" --admitted 2>&1)"
+case_result "an entry the rows use, taken out of ADMITTED, refuses those rows" 'admitted-rows: the row [^ ]+ is refused: the operator &&' "$(gate_run "$GATE" --admitted)"
 
 # 43. $_ is bash's special parameter, the last argument of the last command, but at
 # c2ab1b7c56 the name pattern matched it, so it was admitted as the entry "$NAME or
@@ -760,12 +842,12 @@ refused_read head-unused "head -c 0 /nonexistent-ioc 2>/dev/null; printf 'ran on
 # reserved names, and --admitted fails the list by name. At 6f3da565d1 the variable left
 # only the shims, and the classifier still admitted it as a command word with no shim.
 plant_gate program-variable-dropped '/^PROGRAM_VARIABLES=/s/ IOC_TC_PY\(:python\)\{0,1\}"/" # IOC_TC_PY dropped by check.test.sh/' '" # IOC_TC_PY dropped by check.test.sh' holds
-case_result "a program variable taken out of PROGRAM_VARIABLES fails --admitted" 'admitted-reserved: the header' "$(bash "$GATE" --admitted 2>&1)"
+case_result "a program variable taken out of PROGRAM_VARIABLES fails --admitted" 'admitted-reserved: the header' "$(gate_run "$GATE" --admitted)"
 
 # 51. A name of the runner that starts with no prefix of RUNNER_PREFIXES is one no row
 # is kept from touching, and --admitted fails it by name.
 plant_gate runner-name-unreserved 's/__ioc_stages/__gate_stages/g' '__gate_stages' holds
-case_result "a name of the runner that no reserved prefix covers fails --admitted" 'admitted-reserved: the runner or the shims record with a name no prefix of RUNNER_PREFIXES reserves: __gate_stages' "$(bash "$GATE" --admitted 2>&1)"
+case_result "a name of the runner that no reserved prefix covers fails --admitted" 'admitted-reserved: the runner or the shims record with a name no prefix of RUNNER_PREFIXES reserves: __gate_stages' "$(gate_run "$GATE" --admitted)"
 
 # 52. A script path a variable builds could name a stream as well: o=/dev/stdin and then
 # sh "$o" reads its commands from the pipe. A script's path is held to a literal file,
@@ -1032,14 +1114,13 @@ freeze_venv() {
     UV_CACHE_DIR="$FREEZE/cache" UV_OFFLINE=1 uv venv -q --python "$(command -v python3)" "$FREEZE/$1/venv" >/dev/null 2>&1
 }
 # freeze_run <dir> <environment name>; the gate's --replay of a fixture whose row installs
-# into $FREEZE/<environment name>/venv, offline.
+# into $FREEZE/<environment name>/venv, offline: uv reads no index and finds the wheel of
+# ioc-freeze-dep under UV_FIND_LINKS, three of the inputs fixture_run passes on, and keeps
+# its cache under the fixture's own IOC_CACHE, where prepare_env puts it.
 freeze_run() {
-    (
-        unset UV_REQUIRE_HASHES UV_BUILD_CONSTRAINT PIP_REQUIRE_HASHES UV_INDEX_URL UV_EXTRA_INDEX_URL
-        export UV_CACHE_DIR="$FREEZE/cache" UV_OFFLINE=1 UV_NO_INDEX=1 UV_FIND_LINKS="$FREEZE/wheels"
+    UV_OFFLINE=1 UV_NO_INDEX=1 UV_FIND_LINKS="$FREEZE/wheels" \
         IOC_EVID="$1/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/$2" IOC_CLONES="$FREEZE/clones" \
-            fixture_run "$1" --replay
-    )
+        fixture_run "$1" --replay
 }
 if freeze_world; then
     admitted_read exempt-honest "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" tcwork
@@ -1120,26 +1201,15 @@ case_result "an assertion whose code exits before its verdict fails, named" 'ord
 # A scratch copy of check.sh plants each before the second part, and --admitted fails
 # admitted-reserved by name.
 plant_gate reserved-second-exit 's/^    local name prefix stray=""$/    exit 0 # planted by check.test.sh\n&/' 'exit 0 # planted by check.test.sh' holds
-case_result "an exit before the second part of admitted-reserved fails it, named" 'admitted-reserved: it reported no verdict' "$(bash "$GATE" --admitted 2>&1)"
+case_result "an exit before the second part of admitted-reserved fails it, named" 'admitted-reserved: it reported no verdict' "$(gate_run "$GATE" --admitted)"
 plant_gate reserved-second-unbound 's/^    local name prefix stray=""$/&\n    : "$NO_SUCH_VARIABLE"/' ': "$NO_SUCH_VARIABLE"' holds
-case_result "an unbound variable in the second part of admitted-reserved fails it, named" 'admitted-reserved: it reported no verdict' "$(bash "$GATE" --admitted 2>&1)"
+case_result "an unbound variable in the second part of admitted-reserved fails it, named" 'admitted-reserved: it reported no verdict' "$(gate_run "$GATE" --admitted)"
 
 # 70. Three endings, kept apart to the end. At 987017b05f a mode that could not run ended
 # as every declared assertion failing, exit 1, so a spent GitHub budget read as the
 # deliverable failing. A mode that cannot run now ends exit 2 with its reason as the last
 # line and no assertion counted; one that ran and failed ends exit 1 with the count; one
-# that passed ends exit 0. ending_result <name> <status> <last line, an extended regular
-# expression> <status read> <gate output> passes when both match.
-ending_result() {
-    local name="$1" want="$2" last="$3" got="$4" out="$5"
-    if [ "$got" = "$want" ] && printf '%s\n' "$out" | tail -1 | grep -qE -- "$last"; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
-    else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: exit %s, last line: %s\n' "$name" "$got" "$(printf '%s\n' "$out" | tail -1)"
-    fi
-}
+# that passed ends exit 0. Each form is read by ending_result, at the top of this file.
 dir="$(fresh ending-no-env)"
 rm "$dir/repo/docs/research/internet-of-cognition/env.sh"
 out="$(fixture_run "$dir" --replay)"
@@ -1491,12 +1561,14 @@ honest_result "a row that writes into its own TMPDIR and reads it back passes" r
 # caller's module cache, so a cache a machine had filled before stayed warm at a fresh
 # IOC_CACHE and go printed "rows 38" alone; a predicate over the whole output passed there
 # and failed on a machine that never ran it. The case serves a module from a file proxy
-# offline, fills a module cache outside IOC_CACHE with it as such a machine would have, and
-# runs a row that counts with go at a fresh IOC_CACHE. The gate keeps go's caches under
-# IOC_CACHE, so go downloads the module and prints "go: downloading" before "rows 38": the
-# predicate {"equals":"rows 38"} fails, by name, and the module stands under IOC_CACHE
-# afterwards; {"matches":"^rows 38$"}, the measured line, passes. It needs go, and prints
-# SKIP when go is missing.
+# offline and fills go's own default module cache with it, $HOME/go/pkg/mod under a HOME of
+# its own, as a machine that ran the row before would hold it. fixture_run carries HOME and
+# passes on no GOMODCACHE, GOCACHE or GOPATH of its caller's, so a go given no cache
+# variable would read that warm default; what the case proves is that the gate gives it
+# one, by env.sh's table, under the fresh IOC_CACHE the row runs at. So go downloads the
+# module and prints "go: downloading" before "rows 38": the predicate {"equals":"rows 38"}
+# fails, by name, and the module stands under IOC_CACHE afterwards; {"matches":"^rows
+# 38$"}, the measured line, passes. It needs go, and prints SKIP when go is missing.
 if command -v go >/dev/null 2>&1; then
     gocold="$WORK/go-cold"
     mkdir -p "$gocold/src/example.com/ioccount@v1.0.0" "$gocold/proxy/example.com/ioccount/@v"
@@ -1510,9 +1582,12 @@ z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccou
     cp "$gocold/src/example.com/ioccount@v1.0.0/go.mod" "$gocold/proxy/example.com/ioccount/@v/v1.0.0.mod"
     printf 'v1.0.0\n' >"$gocold/proxy/example.com/ioccount/@v/list"
     printf '{"Version":"v1.0.0"}\n' >"$gocold/proxy/example.com/ioccount/@v/v1.0.0.info"
-    export GOPROXY="file://$gocold/proxy" GOSUMDB=off GOTOOLCHAIN=local GOMODCACHE="$gocold/warm-mod" GOCACHE="$gocold/warm-build"
-    (cd "$gocold" && go mod download example.com/ioccount@v1.0.0) || {
-        printf 'FAIL the module cache outside IOC_CACHE could not be filled from the file proxy\n'
+    # GOPROXY, GOSUMDB and GOTOOLCHAIN are carried into the fixture, so its go reads the
+    # file proxy and no other; the cache variables set here fill the warm default alone.
+    export GOPROXY="file://$gocold/proxy" GOSUMDB=off GOTOOLCHAIN=local
+    (cd "$gocold" && HOME="$gocold/home" GOMODCACHE="$gocold/home/go/pkg/mod" GOCACHE="$gocold/home/.cache/go-build" \
+        go mod download example.com/ioccount@v1.0.0) || {
+        printf 'FAIL the module cache under the HOME of the case could not be filled from the file proxy\n'
         exit 1
     }
     for form in fault honest; do
@@ -1522,9 +1597,11 @@ z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccou
         printf 'package main\n\nimport (\n\t"fmt"\n\n\t"example.com/ioccount"\n)\n\nfunc main() { fmt.Println("rows", ioccount.Rows) }\n' >"$dir/repo/gocount/cmd/count/main.go"
         if [ "$form" = fault ]; then
             plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"equals":"rows 38"}'
-            out="$(IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
+            out="$(HOME="$gocold/home" IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
             case_result "a row whose go downloads on a cold cache fails a predicate over the whole output" 'replay-command: f-behaviour-1 ran .* does not meet \{"equals":"rows 38"\}: go: downloading example\.com/ioccount v1\.0\.0' "$out"
-            if [ -d "$dir/cache/cache/go/mod/example.com/ioccount@v1.0.0" ]; then
+            if [ "$CASE_ENDING" = cannot-run ] || [ "$CASE_ENDING" = unrecorded ]; then
+                :
+            elif [ -d "$dir/cache/cache/go/mod/example.com/ioccount@v1.0.0" ]; then
                 CASES_PASSED=$((CASES_PASSED + 1))
                 printf 'PASS the module a row downloads stands under IOC_CACHE, in the module cache env.sh names\n'
             else
@@ -1533,11 +1610,11 @@ z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccou
             fi
         else
             plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"matches":"^rows 38$"}'
-            out="$(IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
+            out="$(HOME="$gocold/home" IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
             ending_result "a row whose go downloads on a cold cache meets the measured line, ^rows 38\$" 0 '^all 16 assertions passed$' "$?" "$out"
         fi
     done
-    unset GOPROXY GOSUMDB GOTOOLCHAIN GOMODCACHE GOCACHE
+    unset GOPROXY GOSUMDB GOTOOLCHAIN
     # go writes its module cache read-only, and the EXIT trap removes $WORK.
     chmod -R u+w "$WORK"
 else
@@ -1590,7 +1667,7 @@ cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$H
 cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
     "$HERE/evidence/build-constraints.txt" "$self_copy/evidence/"
 printf '%s\n' "printf 'all 0 cases passed\\n'" >"$self_copy/check.test.sh"
-SELF_CANNOT='^check\.sh cannot run --self-test: --citations over the fixture deliverable could not run, so the self-test judged nothing: check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
+SELF_CANNOT='^check\.sh cannot run --self-test: --citations over the fixture deliverable could not run, so the self-test stops at self-test-baseline: check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
 out="$(DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
 ending_result "--self-test whose fixture's --citations has no Dispatch to read cannot run, naming the run and Dispatch" 2 "$SELF_CANNOT" "$?" "$out"
 out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
@@ -1603,11 +1680,11 @@ ending_result "--self-test of the copy passes when every run it makes can run" 0
 # one line of claims.jsonl that is no JSON object, the eleventh review's
 # {"id": "broken-row", "kind": , stopped the reader with a traceback and the mode ended
 # "4 of 4 assertions failed", as it did with env.sh missing and with a reader that does not
-# start. A line the reader cannot parse is the evidence being wrong: it fails admitted-rows
-# alone, exit 1, naming the line by its number. A reader that cannot load is a mode that
-# cannot run, exit 2. Each form runs --admitted over a scratch copy of claims.jsonl and
-# env.sh, or, for the reader that does not start, a scratch copy of check.sh, as cases 41
-# and 42 do; the honest form is the copy as it stands.
+# start. A line that is no row is the evidence being wrong: the one parse fails it in
+# admitted-rows alone, exit 1, naming the line by its number. A reader that cannot load is
+# a mode that cannot run, exit 2. Each form runs --admitted over a scratch copy of
+# claims.jsonl and env.sh, or, for the reader that does not start, a scratch copy of
+# check.sh, as cases 41 and 42 do; the honest form is the copy as it stands.
 admitted_copy() {
     # admitted_copy <name>; prints a scratch directory holding this directory's
     # claims.jsonl, env.sh and evidence/, which --admitted reads as its IOC_EVIDENCE.
@@ -1620,15 +1697,16 @@ admitted_copy() {
 copy="$(admitted_copy admitted-broken-line)"
 printf '%s\n' '{"id": "broken-row", "kind": ' >>"$copy/claims.jsonl"
 out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
-ending_result "a line of claims.jsonl that is no JSON object fails admitted-rows alone, exit 1" 1 '^1 of 4 assertions failed: admitted-rows$' "$?" "$out"
-case_result "a line of claims.jsonl that is no JSON object is named by its number" "admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims.jsonl is no JSON object" "$out"
+status=$?
+ending_result "a line of claims.jsonl that is no JSON object fails admitted-rows alone, exit 1" 1 '^1 of 4 assertions failed: admitted-rows$' "$status" "$out"
+case_result "a line of claims.jsonl that is no JSON object is named by its number" "admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims.jsonl is no row" "$out" "$status"
 copy="$(admitted_copy admitted-no-env)"
 rm "$copy/env.sh"
 out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
 ending_result "--admitted whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run --admitted: env\.sh, which holds .* did not load\.$' "$?" "$out"
 plant_gate admitted-reader-start 's/^import json, os, re, shlex, sys$/&, ioc_no_such_module_3134/' 'import json, os, re, shlex, sys, ioc_no_such_module_3134' holds
 out="$(bash "$GATE" --admitted 2>&1)"
-ending_result "--admitted whose install reader does not start cannot run: exit 2, the reason last" 2 "^check\\.sh cannot run --admitted: the install reader did not run to its end: ModuleNotFoundError: No module named 'ioc_no_such_module_3134'\$" "$?" "$out"
+ending_result "--admitted whose install reader does not start cannot run: exit 2, the reason last" 2 "^check\\.sh cannot run --admitted: the install reader cannot load: ModuleNotFoundError: No module named 'ioc_no_such_module_3134'\$" "$?" "$out"
 copy="$(admitted_copy admitted-honest)"
 out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
 ending_result "--admitted over a copy of claims.jsonl and env.sh passes" 0 '^all 4 assertions passed$' "$?" "$out"
@@ -1642,8 +1720,11 @@ ending_result "--admitted over a copy of claims.jsonl and env.sh passes" 0 '^all
 # kills the run; env.sh builds the graph once killed and once more, and the graph must then
 # hold the generator's second line. The honest form is a build nobody kills. Then, offline,
 # in an environment case 66's world builds, a fixture's --replay of a row that installs
-# into IOC_TC_WORK must leave no stamp of env.sh's on it, so the next run builds it again;
-# a row that installs into nothing leaves the stamp, the honest form.
+# into IOC_TC_WORK must find no stamp of env.sh's on it while the row runs, so that a kill
+# during the install leaves none, and none after it, so the next run builds it again; a
+# row that installs into nothing leaves the stamp, the honest form. At 9c82069807 the
+# stamp half's row ran no step that read the stamp while it ran, so it passed with the
+# removal before the row taken out.
 killed="$WORK/killed-shapes"
 mkdir -p "$killed/clones/scope/ontology/scripts" "$killed/clones/scope/ontology/src/scope_ontology" "$killed/cache" "$killed/honest-cache"
 for name in mas-ontology metrics-ontology semantic-ontology analysis-ontology insight-ontology mas-shapes-custom; do
@@ -1693,24 +1774,30 @@ if command -v setsid >/dev/null 2>&1; then
 else
     printf 'SKIP a killed build of the shapes graph: setsid is missing\n'
 fi
-# stamp_result <name> <gone|stands> <stamp file> <gate output>; passes when the stamp is
-# gone, or stands, as named.
+# stamp_result <name> <gone|stands> <stamp file> <gate output>; passes when the replay
+# passed every assertion and, after it, the stamp is gone, or stands, as named.
 stamp_result() {
-    if { [ "$2" = gone ] && [ ! -e "$3" ]; } || { [ "$2" = stands ] && [ -e "$3" ]; }; then
+    case_read "$1" "$4" || return 0
+    if [ "$CASE_ENDING" = passed ] && { { [ "$2" = gone ] && [ ! -e "$3" ]; } || { [ "$2" = stands ] && [ -e "$3" ]; }; }; then
         CASES_PASSED=$((CASES_PASSED + 1))
         printf 'PASS %s\n' "$1"
     else
         CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: the stamp %s does not; the run ended %s\n' "$1" "$2" "$(printf '%s\n' "$4" | tail -1)"
+        printf 'FAIL %s: the stamp is to be %s after the run, and the run ended %s, %s\n' "$1" "$2" "$CASE_LAST" "$(printf '%s\n' "$4" | grep '^FAIL' | head -1)"
     fi
 }
+# The planted row installs into IOC_TC_WORK as the install reader reads it, and, while it
+# runs, searches IOC_TC_WORK's environment for the stamp, printing the stamp's path when it
+# is there, and then ran once. Its predicate {"equals":"ran once"} holds only when the
+# stamp was already gone while the row ran, which the removal before the row does and the
+# removal after it cannot; the stamp gone after the run is the second half.
 if freeze_world && freeze_venv stamped && freeze_venv kept; then
     printf 'built by env.sh\n' >"$FREEZE/stamped/venv/.ioc-built-from"
     printf 'built by env.sh\n' >"$FREEZE/kept/venv/.ioc-built-from"
     dir="$(fresh stamp-install)"
-    plant_behaviour "$dir" "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" '{"contains":"ran once"}'
+    plant_behaviour "$dir" "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; grep -rlF 'built by env.sh' \"\$IOC_TC_WORK/venv\"; printf 'ran once\\n'" '{"equals":"ran once"}'
     out="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/stamped" IOC_CLONES="$FREEZE/clones" fixture_run "$dir" --replay)"
-    stamp_result "a replay whose row installs into IOC_TC_WORK removes env.sh's stamp of it" gone "$FREEZE/stamped/venv/.ioc-built-from" "$out"
+    stamp_result "a replay whose row installs into IOC_TC_WORK removes env.sh's stamp of it before the row runs, and it stays gone" gone "$FREEZE/stamped/venv/.ioc-built-from" "$out"
     dir="$(fresh stamp-no-install)"
     out="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/kept" IOC_CLONES="$FREEZE/clones" fixture_run "$dir" --replay)"
     stamp_result "a replay whose rows install into nothing leaves env.sh's stamp of IOC_TC_WORK" stands "$FREEZE/kept/venv/.ioc-built-from" "$out"
@@ -1718,10 +1805,202 @@ else
     printf 'SKIP the stamp of an environment a row installs into: uv, or an environment it builds here offline, is missing\n'
 fi
 
-total=$((CASES_PASSED + CASES_FAILED))
-if [ "$CASES_FAILED" -eq 0 ]; then
-    printf 'all %d cases passed\n' "$total"
-    exit 0
+# 88-89 come from the twelfth review of the pull request and the architect's rulings on it
+# of 2026-11-15T22:45Z and 23:10Z, and the header of check.sh states each rule they hold:
+# the one parse of claims.jsonl, and the three endings, read in one way by run_ending.
+# Each fault ended at 9c82069807 in a mode that could not run, in a pass, or in a failure
+# read for a run that could not run; each honest form beside it passes there and here.
+#
+# dir_copy <name> <check.test.sh>; a scratch copy of this directory that --self-test can
+# run, whose check.test.sh is the file <check.test.sh> names.
+dir_copy() {
+    local copy="$WORK/$1"
+    mkdir -p "$copy/evidence"
+    cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$copy/"
+    cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
+        "$HERE/evidence/build-constraints.txt" "$copy/evidence/"
+    cp "$2" "$copy/check.test.sh"
+    printf '%s' "$copy"
+}
+
+# 88. One parse of claims.jsonl, before any environment is built or any reader starts. At
+# 9c82069807 --replay read claims.jsonl through the install reader, which stopped on a
+# line that is no JSON and on a row whose command is a list, so the mode ended exit 2 as if
+# it could not run; --citations read the rows with jq, which passed over both lines with
+# no word, all 5 assertions passed; --admitted's classifier stopped on a row whose command
+# is a list, exit 2, and counted a row whose id is a number into its table, so that
+# admitted-header failed and no line was named; and --self-test took that --admitted for a
+# run that could not run, exit 2. Each mode that reads the file now fails one assertion for
+# the line, naming it, and ends exit 1 with its declared assertions counted: --replay
+# claim-form, --citations citation-kinds, --admitted admitted-rows, and --self-test, which
+# reads the file through its run of --admitted, admitted-table. Each form appends one line
+# to the fixture's claims.jsonl, or to a copy of this directory's; the honest form is the
+# same mode over the same file without it.
+# A case that holds a run to failing, where the gate of 9c82069807 said it could not run,
+# reads a cannot-run as its run's not running only when the reason is outside the tree, a
+# source that did not answer or a missing prerequisite (outside_unrun); any other reason
+# is the fault the case plants, and fails it.
+# outside_unrun <name> <status> <gate output>; true, counting the case as one that could
+# not run, when the run could not run for a reason outside the tree.
+outside_unrun() {
+    case_ending "$3" "$2"
+    [ "$CASE_ENDING" = cannot-run ] && printf '%s\n' "$CASE_LAST" | grep -qE 'did not answer|; provided by: ' || return 1
+    case_read "$1" "$3" "$2"
+    return 0
+}
+# one_failure_result <name> <the run's last line> <its one FAIL> <status> <gate output>; the
+# second and third are extended regular expressions. It passes when the mode ended exit 1
+# with that last line and printed one FAIL, that one.
+one_failure_result() {
+    local name="$1" summary="$2" failure="$3" status="$4" out="$5"
+    outside_unrun "$name" "$status" "$out" && return 0
+    if [ "$status" = 1 ] && printf '%s\n' "$out" | tail -1 | grep -qE -- "$summary" &&
+        [ "$(printf '%s\n' "$out" | grep -c '^FAIL ')" = 1 ] && printf '%s\n' "$out" | grep -qE -- "$failure"; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: exit %s, %s, last line: %s\n' "$name" "$status" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')" "$(printf '%s\n' "$out" | tail -1)"
+    fi
+}
+BROKEN_LINE='{"id": "broken-row", "kind": '
+LIST_COMMAND='{"id":"command-list","requirement":"r7","source":"the case","kind":"behaviour","claim":"A command that is a list.","mark":"verified","evidence":{"surface":"cli"},"command":["ls"],"expect":{"contains":"ls"},"note":"planted"}'
+NUMBER_ID='{"id":7,"requirement":"r7","source":"the case","kind":"behaviour","claim":"An id that is a number.","mark":"verified","evidence":{"surface":"cli"},"command":"printf ran","expect":{"contains":"ran"},"note":"planted"}'
+for mode in replay:16:claim-form citations:5:citation-kinds; do
+    family="${mode##*:}"
+    count="${mode#*:}"
+    count="${count%%:*}"
+    mode="${mode%%:*}"
+    for form in 'BROKEN_LINE:a line cut short' 'LIST_COMMAND:a row whose command is a list'; do
+        planted="${form%%:*}"
+        dir="$(fresh "parse-$mode-$planted")"
+        claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+        printf '%s\n' "${!planted}" >>"$claims_copy"
+        out="$(fixture_run "$dir" "--$mode")"
+        status=$?
+        one_failure_result "--$mode over a claims.jsonl holding ${form#*:} fails $family alone, naming the line, exit 1" \
+            "^1 of $count assertions failed: $family\$" "^FAIL $family: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" "$status" "$out"
+    done
+    dir="$(fresh "parse-$mode-honest")"
+    out="$(fixture_run "$dir" "--$mode")"
+    ending_result "--$mode over the fixture's claims.jsonl as it stands passes" 0 "^all $count assertions passed\$" "$?" "$out"
+done
+for form in 'LIST_COMMAND:a row whose command is a list' 'NUMBER_ID:a row whose id is a number'; do
+    planted="${form%%:*}"
+    copy="$(admitted_copy "parse-admitted-$planted")"
+    printf '%s\n' "${!planted}" >>"$copy/claims.jsonl"
+    out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
+    status=$?
+    one_failure_result "--admitted over a claims.jsonl holding ${form#*:} fails admitted-rows alone, naming the line, exit 1" \
+        '^1 of 4 assertions failed: admitted-rows$' "^FAIL admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$status" "$out"
+done
+printf '%s\n' "printf 'all 0 cases passed\\n'" >"$WORK/cases-stub.sh"
+copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
+printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
+out="$(IOC_EVIDENCE="$copy" bash "$copy/check.sh" --self-test 2>&1)"
+status=$?
+one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" \
+    '^1 of 39 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$status" "$out"
+
+# 89. check.test.sh ends the three ways the gate does, and --self-test reads it by its
+# status and its last line together. At 9c82069807 case_result, passed_result and
+# ending_result read a fixture run that could not run as a failed case and honest_result
+# read it as a passed one, so a Dispatch that did not answer during one case ended this
+# file exit 1, or exit 0, and --self-test then failed gate-cases, or passed it; and
+# --self-test took any exit 2 of this file, a bash syntax error's among them, for a run
+# that could not run. The case writes copies of this file from its own text: its helpers,
+# then one case, then its summary. The first copy holds case 4 with a Dispatch that does
+# not answer given to its --citations, and ends exit 2 naming the case and Dispatch; the
+# second holds an honest form, read by honest_result, with the same Dispatch, and ends the
+# same way; the third holds case 4 and then a syntax error, which ends it with bash's own
+# line. --self-test over a copy of this directory whose check.test.sh is the first ends
+# exit 2, naming the case and Dispatch, and over one whose check.test.sh is the third ends
+# exit 1 on gate-cases, since a crash is a failure. The honest form is the copy of case 4
+# with Dispatch answering, which passes. Two forms hold the precedence: a copy holding the
+# first copy's case and a case that fails ends exit 1, naming the failure and then the case
+# that could not run; and a mode, the fixture's --citations with a line cut short in its
+# claims.jsonl and the same Dispatch, ends exit 1, naming the assertion that failed and
+# then the four that could not run, where at 9c82069807 it ended exit 2 and named neither.
+# cases_copy <name> <case text>; a copy of this directory, by dir_copy, whose check.test.sh
+# is this file up to its first case, then <case text>, then its summary; it prints the
+# copy's path.
+cases_copy() {
+    {
+        sed -n '1,/^# 1\. /p' "$HERE/check.test.sh" | sed '$d'
+        printf '%s\n' "$2"
+        sed -n '/^total=\$((CASES_PASSED/,$p' "$HERE/check.test.sh"
+    } >"$WORK/$1.cases"
+    dir_copy "$1" "$WORK/$1.cases"
+}
+case_four="$(sed -n '/^# 4\. /,/^# 5\. /p' "$HERE/check.test.sh" | sed '$d')"
+outage="$(printf '%s\n' "$case_four" | sed 's#"$(fixture_run "$dir" --citations)"$#"$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"#')"
+printf '%s\n' "$outage" | grep -qF 'DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations' || {
+    printf 'FAIL the Dispatch outage could not be planted in case 4 of a copy of check.test.sh\n'
+    exit 1
+}
+CASE_FOUR_NAME='a project citation whose quoted text the file does not hold is refused'
+DISPATCH_DOWN='check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
+copy="$(cases_copy cases-outage "$outage")"
+out="$(bash "$copy/check.test.sh" 2>&1)"
+ending_result "a case whose --citations has no Dispatch could not run, and check.test.sh ends exit 2 naming it and Dispatch" 2 \
+    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$?" "$out"
+out="$(IOC_EVIDENCE="$copy" bash "$copy/check.sh" --self-test 2>&1)"
+ending_result "--self-test whose check.test.sh meets no Dispatch in one case ends exit 2, naming the case and Dispatch" 2 \
+    "^check\\.sh cannot run --self-test: check\\.test\\.sh could not run, so the self-test stops at gate-cases: check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$?" "$out"
+copy="$(cases_copy cases-honest-outage "$(sed -n '/^honest_result() {$/,/^}$/p' "$HERE/check.test.sh")
+dir=\"\$(fresh honest-no-dispatch)\"
+honest_result \"an honest --citations names no failure of citation-dispatch\" citation-dispatch \"\$(DISPATCH_URL=http://127.0.0.1:1 fixture_run \"\$dir\" --citations)\"")"
+out="$(bash "$copy/check.test.sh" 2>&1)"
+ending_result "an honest form whose --citations has no Dispatch could not run, never passed, and check.test.sh ends exit 2" 2 \
+    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: an honest --citations names no failure of citation-dispatch: $DISPATCH_DOWN" "$?" "$out"
+copy="$(cases_copy cases-honest "$case_four")"
+out="$(bash "$copy/check.test.sh" 2>&1)"
+ending_result "the copy of case 4 with Dispatch answering passes" 0 '^all 1 cases passed$' "$?" "$out"
+copy="$(cases_copy cases-precedence "$outage
+case_result \"a planted case that the gate passes\" replay-command \"\$(fixture_run \"\$(fresh precedence-passes)\" --replay)\"")"
+out="$(bash "$copy/check.test.sh" 2>&1)"
+ending_result "check.test.sh with a failed case and a case that could not run ends exit 1, naming the failure first" 1 \
+    "^1 of 2 cases failed; 1 could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$?" "$out" planted
+dir="$(fresh precedence-citations)"
+printf '%s\n' "$BROKEN_LINE" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
+ending_result "a mode that failed an assertion and then met no Dispatch ends exit 1, naming the failure and then what could not run" 1 \
+    "^1 of 5 assertions failed: citation-kinds; 4 could not run: citation-our-code citation-project-code citation-published citation-dispatch, since $DISPATCH_DOWN" "$?" "$out" planted
+copy="$(cases_copy cases-syntax "$case_four
+fi")"
+out="$(bash "$copy/check.test.sh" 2>&1)"
+status=$?
+if [ "$status" != 2 ] || ! printf '%s\n' "$out" | grep -q "syntax error near unexpected token \`fi'" ||
+    printf '%s\n' "$out" | tail -1 | grep -qE "$CANNOT_RUN_LINE"; then
+    printf 'FAIL the syntax error could not be planted in a copy of check.test.sh: exit %s, %s\n' "$status" "$(printf '%s\n' "$out" | tail -1)"
+    exit 1
 fi
-printf '%d of %d cases failed\n' "$CASES_FAILED" "$total"
-exit 1
+out="$(IOC_EVIDENCE="$copy" bash "$copy/check.sh" --self-test 2>&1)"
+status=$?
+one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no reason, fails gate-cases" \
+    '^1 of 39 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$status" "$out"
+
+# The summary, by the three endings and their precedence (check.sh's header). A run that
+# could not run and that no case read, as an inline check reads it, is named beside the
+# cases that could not run.
+total=$((CASES_PASSED + CASES_FAILED + CASES_UNRUN))
+while IFS=$'\t' read -r hash status what last; do
+    [ "$(run_ending "$status" "$last")" = cannot-run ] || continue
+    grep -qxF "$hash" "$RUNS_RECORDED.read" 2>/dev/null && continue
+    UNRUN_CASES+=("the run of $what, which no case read: $last")
+done < <(cat "$RUNS_RECORDED" 2>/dev/null)
+unrun="$(printf '%s; ' "${UNRUN_CASES[@]}")"
+if [ "$CASES_FAILED" -gt 0 ]; then
+    if [ "${#UNRUN_CASES[@]}" -gt 0 ]; then
+        printf '%d of %d cases failed; %d could not run: %s\n' "$CASES_FAILED" "$total" "${#UNRUN_CASES[@]}" "${unrun%; }"
+    else
+        printf '%d of %d cases failed\n' "$CASES_FAILED" "$total"
+    fi
+    exit 1
+fi
+if [ "${#UNRUN_CASES[@]}" -gt 0 ]; then
+    printf 'check.sh cannot run check.test.sh: %d of %d cases could not run: %s\n' "${#UNRUN_CASES[@]}" "$total" "${unrun%; }"
+    exit 2
+fi
+printf 'all %d cases passed\n' "$total"
+exit 0
