@@ -368,12 +368,13 @@ func (h *heldAccess) refresh(ctx context.Context) {
 // again, a repository or lane new to the pass held, and a lane the later mapping no longer shows
 // shared, wait for a complete pass, which replaces the merged lanes with its own, so the grant
 // still never holds what one complete pass did not, and a mapping moved between two complete
-// passes is no shared lane. A pass held as refused stays refused.
+// passes is no shared lane. A pass held as refused stays refused. Like hold, it logs at error
+// each lane the merged lanes withhold from a held entry, once a pass.
 func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer, lanes map[string][]string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	held := h.pass
 	if held == nil || held.refused || began.Before(held.began) {
+		h.mu.Unlock()
 		return
 	}
 	narrowed := &heldPass{began: began, answers: maps.Clone(held.answers), lanes: mergeLanes(held.lanes, lanes)}
@@ -391,6 +392,8 @@ func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer, lan
 		}
 	}
 	h.pass = narrowed
+	h.mu.Unlock()
+	h.logWithheldLanes(narrowed.lanes)
 }
 
 // mergeLanes is every project either held or later maps to each lane, sorted and each once: a
@@ -414,8 +417,7 @@ func mergeLanes(held, later map[string][]string) map[string][]string {
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must
-// not replace, and logs at error each lane pass's mapping names for a project of a held entry and
-// a project outside that entry, since that entry's daemon is not served the lane.
+// not replace, and logs the lanes its mapping withholds (logWithheldLanes).
 func (h *heldAccess) hold(pass *heldPass) {
 	h.mu.Lock()
 	later := h.pass == nil || !pass.began.Before(h.pass.began)
@@ -423,11 +425,18 @@ func (h *heldAccess) hold(pass *heldPass) {
 		h.pass = pass
 	}
 	h.mu.Unlock()
-	if !later {
-		return
+	if later {
+		h.logWithheldLanes(pass.lanes)
 	}
-	for _, lane := range slices.Sorted(maps.Keys(pass.lanes)) {
-		projects := pass.lanes[lane]
+}
+
+// logWithheldLanes logs at error each lane of lanes that names a project of a held entry and a
+// project outside that entry, since that entry's daemon is not served the lane: once for each
+// pass held or narrowed, so an operator reading an outage sees the lane a pass withholds whether
+// or not that pass was complete.
+func (h *heldAccess) logWithheldLanes(lanes map[string][]string) {
+	for _, lane := range slices.Sorted(maps.Keys(lanes)) {
+		projects := lanes[lane]
 		withheld := func(entry []string) bool {
 			return outside(projects, entry) && slices.ContainsFunc(projects, func(project string) bool { return slices.Contains(entry, project) })
 		}
