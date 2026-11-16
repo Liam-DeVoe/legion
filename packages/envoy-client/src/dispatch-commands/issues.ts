@@ -14,6 +14,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -22,7 +23,6 @@ import {
   DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
-  type SpecCheckResult,
 } from "../dispatch-http";
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
@@ -850,11 +850,12 @@ export async function specCheckResultCommand(
   args: Record<string, unknown>
 ): Promise<DispatchToolResult> {
   const project = stringArg(args, "project");
+  const observed = optionalString(args, "observed");
   const stored = await client.recordSpecCheckResult(project, {
     commit: stringArg(args, "commit"),
     check: stringArg(args, "check"),
     verdict: stringArg(args, "verdict"),
-    observed: optionalString(args, "observed"),
+    ...(observed === undefined ? {} : { observed }),
   });
   const { predicate } = stored.attestation;
   return {
@@ -875,7 +876,7 @@ export async function specCheckResultCommand(
 function specCheckResultLine(result: SpecCheckResult): string {
   const { predicate, subject } = result.attestation;
   const leg = predicate.leg === "" ? "no leg" : `leg ${predicate.leg}`;
-  const commit = subject?.[0]?.digest["gitCommit"] ?? "an unnamed commit";
+  const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
   return `- #${result.seq} ${predicate.check}: ${predicate.verdict}. Job ${predicate.job}, ${leg}, run ${predicate.run.run_id} attempt ${predicate.run.attempt}, commit ${commit}.`;
 }
 

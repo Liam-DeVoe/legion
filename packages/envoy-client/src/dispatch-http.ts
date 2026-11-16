@@ -68,6 +68,9 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
+  SpecCheckResult,
+  SpecCheckResultInput,
+  SpecCheckResults,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -107,61 +110,6 @@ export type {
 export interface ArtifactFileVersion {
   readonly mime: string;
   readonly bytes: Uint8Array;
-}
-
-/** What a CI job sends to record its result of one check of the spec files: what it ran and what
- *  it saw, and nothing about who the job is, which Dispatch reads from the job's credential. */
-export interface SpecCheckResultInput {
-  readonly commit: string;
-  readonly check: string;
-  readonly verdict: string;
-  readonly observed?: string | undefined;
-}
-
-/** One result a CI job stored for a check of the spec files, as Dispatch serves it: its place in
- *  Dispatch's record order and an in-toto statement of the run. */
-export interface SpecCheckResult {
-  readonly id: string;
-  readonly seq: number;
-  readonly kind: string;
-  readonly attestation: {
-    readonly _type: string;
-    readonly subject:
-      | readonly { readonly name: string; readonly digest: Readonly<Record<string, string>> }[]
-      | null;
-    readonly predicateType: string;
-    readonly predicate: {
-      readonly project: string;
-      readonly check: string;
-      readonly procedure_digest: string;
-      readonly test: { readonly runner: string; readonly selector: string; readonly job: string };
-      readonly verdict: string;
-      readonly observed: string;
-      readonly job: string;
-      readonly leg: string;
-      readonly run: {
-        readonly repository: string;
-        readonly workflow_ref: string;
-        readonly ref: string;
-        readonly event_name: string;
-        readonly run_id: string;
-        readonly attempt: number;
-        readonly check_run_id: string;
-        readonly runner_environment: string;
-      };
-      readonly recorder: {
-        readonly session: string;
-        readonly principal: string;
-        readonly person: string;
-      };
-      readonly recorded_at: string;
-    };
-  };
-}
-
-/** `GET /api/v1/projects/{key}/results`'s answer. */
-export interface SpecCheckResults {
-  readonly results: readonly SpecCheckResult[] | null;
 }
 
 export class DispatchServiceError extends Error {
