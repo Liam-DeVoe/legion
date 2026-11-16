@@ -23,12 +23,14 @@ import type { SlotProps } from "../slot-props";
  * outline's rows and under the view row and Details. The reach it publishes lifts the shell's
  * floating status above it (`useFootInset`).
  *
- * The mark stands in the flow after the stage's last row and before the box, moved down by the
- * box's height (`--issue-composer-height`, `FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), which
- * moves its box and not the layout: the dwell reads where it is moved to, so it reaches the screen
- * only once the outline's last row is clear of the box, and on an outline shorter than the screen
- * at once. It is drawn while the address names no view and no document, whose end is not the
- * conversation's.
+ * The mark stands in the flow after the stage and before the box, 12 px under the outline's last
+ * row (the tree's own `mb-3`, `IssueTree.tsx`), and is moved down by the box's height less those
+ * 12 px (`--issue-composer-height`, `FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), which moves
+ * its box and not the layout. So it stands where the last row's bottom edge would stand if it
+ * were the box's height lower: the dwell reads where it is moved to, so it reaches the screen
+ * exactly once the last row is clear of the box (`End` leaves that row 8 px above the box), and on
+ * an outline shorter than the screen at once. It is drawn while the address names no view and no
+ * document, whose end is not the conversation's.
  */
 export function FootSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
@@ -43,7 +45,7 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
   return (
     <>
       {place.viewOn || place.documentOpen ? null : (
-        <div className="relative top-[var(--issue-composer-height,0px)]">
+        <div className="relative top-[calc(var(--issue-composer-height,0px)-0.75rem)]">
           <IssueReadMark issueKey={issue.key} />
         </div>
       )}
