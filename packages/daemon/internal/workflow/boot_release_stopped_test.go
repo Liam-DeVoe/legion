@@ -208,3 +208,35 @@ func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
 		t.Fatalf("the boot queued starts %v, want %v", got, want)
 	}
 }
+
+// A root's architect the project release stopped at admitted comes back as it does in every other
+// phase: one start with no task, no entry and no phase, marked ruleResume, though phase.RoleFor
+// answers the architect for admitted (dispatch://INFRA-2614) and its phases row names an entry
+// above the one its claim was given. startStoppedClaim reads no architect as a phase owner, so the
+// boot sends it no entry's work and names no phase the outbox's phase fence could end the start
+// on; the work of its entry is admission's sweep's to send, as for an architect the resume by rule
+// leaves alone (TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting).
+func TestTheBootStartsAnArchitectTheProjectReleaseStoppedAtAdmittedWithNoTask(t *testing.T) {
+	pool := migratedPool(t)
+	root := "LEGION-208"
+	seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+		Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
+	seedTreeLifecycle(t, pool, root)
+	architect := seedReleaseStopped(t, pool, root, claim.RoleArchitect, seededEntry-1)
+	seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleArchitect, Claim: architect, Entry: seededEntry,
+		EntryTask: "Write the root's spec.", EntryRaisedAt: seededRaisedAt})
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the boot: %v", err)
+	}
+
+	starts := startsOf(t, pool, root, claim.RoleArchitect)
+	if len(starts) != 1 {
+		t.Fatalf("the boot left the architect stopped at admitted the starts %+v, want exactly one", starts)
+	}
+	if start := starts[0]; start.Task != "" || start.Entry != 0 || start.Phase != "" || !start.RuleResume || start.NeedsSlot {
+		t.Fatalf("the boot's start of the architect stopped at admitted = %+v, want one with no task, no entry and no phase, marked ruleResume and waiting for no slot",
+			start)
+	}
+}
