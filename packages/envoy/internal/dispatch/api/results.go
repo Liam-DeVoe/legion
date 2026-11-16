@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -107,6 +108,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The reader is resolved here, before any connection is held: the check is resolved as it
+	// reads it, so a result for an issue of a project it does not see is refused as one for a
+	// key no issue carries.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	if err := input.refusal(); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -125,7 +133,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is settled
 	// here — the check's words and its `when` are the document's, not the issue's — and what it
 	// does protect, the block's indexed version and digest, is read again under it below.
-	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
+	check, err := s.resolveCheck(r.Context(), pool, who, issueKey, input.Check)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -195,7 +203,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	recordingOpen, checkOpen, err := issuesOpenForResult(r.Context(), tx, issueKey, check.IssueKey)
+	recordingOpen, checkOpen, err := issuesOpenForResult(r.Context(), tx, who, issueKey, check.IssueKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -207,7 +215,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// `when` it carried before the lock. The digest is read under the locks either way, and the
 	// attributes only when that digest moved, which is the only way the block's words can have
 	// changed.
-	if err := s.refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
+	if err := s.refreshResolvedCheck(r.Context(), tx, who, &check, input.Check); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -228,7 +236,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.Attributes.When))
 		return
 	}
-	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
+	if err := s.refuseResultScreenshots(r.Context(), tx, who, issueKey, check.IssueKey, input.Screenshots); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -281,7 +289,8 @@ type issueCheckResults struct {
 	VerificationArtifactID string             `json:"verification_artifact_id"`
 }
 
-// GET /api/v1/issues/{key}/results  (any authenticated caller)
+// GET /api/v1/issues/{key}/results  (a caller that sees the issue's project; to any other, the
+// issue is one nobody holds)
 //
 // The checks of the issue's Verification document in document order, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
@@ -298,7 +307,8 @@ type issueCheckResults struct {
 // newest pull request head as on every read: the derived result is that head's, and stands at
 // the named commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	at := r.URL.Query().Get("at")
@@ -308,11 +318,11 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
+	if err := s.requireIssueExists(r.Context(), who, issueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
+	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, who, issueKey, "")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -322,12 +332,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, body)
 		return
 	}
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
+	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, who, artifact)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
+	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -398,11 +408,12 @@ func (input checkResultInput) refusal() error {
 // one query over the rows the caller has already locked (lockIssueRows). It makes no refusal of
 // its own for a closed issue, as requireOpenOwnerStatus does: the results route decides for itself,
 // since a closed issue takes a result for an after-merge check. An issue with no row is the
-// route's 404, which is the lock's answer too: lockIssueRows skips a key nothing holds.
-func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey string) (bool, bool, error) {
+// route's 404, which is the lock's answer too: lockIssueRows skips a key nothing holds. An issue
+// who does not see is that 404 as well.
+func issuesOpenForResult(ctx context.Context, tx pgx.Tx, who model.Actor, issueKey, checkIssueKey string) (bool, bool, error) {
 	open := map[string]bool{}
-	rows, err := tx.Query(ctx, `select key, closed_at is null from issues where key = any($1)`,
-		[]string{issueKey, checkIssueKey})
+	rows, err := tx.Query(ctx, `select key, closed_at is null from issues where key = any($1) and `+
+		access.ProjectClause("project_key", "$2"), []string{issueKey, checkIssueKey}, refs.VisibilityArg(who))
 	if err != nil {
 		return false, false, fmt.Errorf("read whether %s and %s are open: %w", issueKey, checkIssueKey, err)
 	}
@@ -429,19 +440,31 @@ func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey
 	return recording, check, nil
 }
 
-// requireIssueExists is the read route's 404 for an issue nobody has.
-func (s *server) requireIssueExists(ctx context.Context, key string) error {
+// requireIssueExists is the read route's 404 for an issue nobody has, and for an issue of a
+// project who does not see, which it answers alike.
+func (s *server) requireIssueExists(ctx context.Context, who model.Actor, key string) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	var exists bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select true from issues where key = $1`, key).Scan(&exists); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
-		}
-		return fmt.Errorf("read issue %s: %w", key, err)
+	seen, err := s.issueSeen(ctx, who, key)
+	if err != nil {
+		return err
+	}
+	if !seen {
+		return errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
 	}
 	return nil
+}
+
+// issueSeen reports whether an issue of key is one who sees: false for a key no issue carries and
+// for an issue of a project who does not see alike.
+func (s *server) issueSeen(ctx context.Context, who model.Actor, key string) (bool, error) {
+	var seen bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select exists (select 1 from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2")+`)`, key, refs.VisibilityArg(who)).Scan(&seen); err != nil {
+		return false, fmt.Errorf("read issue %s: %w", key, err)
+	}
+	return seen, nil
 }
 
 // verificationDocument is one issue's Verification document and whether it has one. slug, when
@@ -451,13 +474,15 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 // version written under its row repairs it (documentRole), and the slug is meanwhile the only
 // thing that says what the document is. Every reader of an issue's Verification document in
 // this package goes through here — the results routes, the check resolver and the approval
-// request's second document.
-func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
+// request's second document — read as who reads it: the document of an issue of a project who
+// does not see is a document the issue does not have.
+func (s *server) verificationDocument(ctx context.Context, q queryer, who model.Actor, issueKey, slug string) (model.Artifact, bool, error) {
 	artifact, err := scanArtifact(q.QueryRow(ctx, `
 		select `+artifactColumns+` from artifacts
 		where issue_key = $1 and `+verificationRolePredicate+` and ($2 = '' or slug = $2)
+		  and `+access.ProjectClause("project_key", "$3")+`
 		limit 1
-	`, issueKey, slug))
+	`, issueKey, slug, refs.VisibilityArg(who)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Artifact{}, false, nil
 	}
@@ -472,8 +497,9 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // (`dispatch://KEY/artifact/verification-md#b-<id>`) that names one document when a block id is
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
-// UNKNOWN_CHECK.
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+// UNKNOWN_CHECK. It reads as who reads: an issue of a project who does not see holds no check, as
+// a key no issue carries holds none.
+func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, issueKey, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -488,7 +514,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			return resolvedCheck{}, unknownCheck(value)
 		}
 		blockID = ref.Block
-		document, held, err := s.verificationDocument(ctx, q, ref.IssueKey, ref.ID)
+		document, held, err := s.verificationDocument(ctx, q, who, ref.IssueKey, ref.ID)
 		if err != nil {
 			return resolvedCheck{}, err
 		}
@@ -505,8 +531,9 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
 		  and ($3 = '' or d.artifact_id = $3::uuid)
+		  and `+access.ProjectClause("a.project_key", "$4")+`
 		order by a.issue_key
-	`, scope, blockID, artifactFilter)
+	`, scope, blockID, artifactFilter, refs.VisibilityArg(who))
 	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
@@ -569,12 +596,12 @@ func unknownCheck(value string) error {
 // between the resolve and the lock is exactly what leaves the read cache cold
 // (docs/read_cache.go), so the one case the second read would answer differently is the one it
 // would answer slowest in. Only a digest that moved pays for it.
-func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
+func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, who model.Actor, check *resolvedCheck, named string) error {
 	resolved := check.SHA256
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&check.Version, &check.SHA256)
+		where artifact_id = $1::uuid and block_id = $2 and type = 'check' and `+artifactClause("$1::uuid", "$3")+`
+	`, check.ArtifactID, check.BlockID, refs.VisibilityArg(who)).Scan(&check.Version, &check.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return unknownCheck(named)
 	}
@@ -685,8 +712,9 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.
 // checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
-func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact) ([]model.CheckBlock, error) {
+// does not hold yet still answers a reference every check can be addressed by. The index is read
+// as who reads it.
+func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, artifact model.Artifact) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, artifact.ID)
 	if err != nil {
 		return nil, err
@@ -701,8 +729,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
 		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
-	`, artifact.ID)
+		from document_blocks where artifact_id = $1 and type = 'check' and `+artifactClause("$1", "$2")+`
+	`, artifact.ID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
@@ -800,8 +828,8 @@ func nonNilStrings(values []string) []string {
 }
 
 // refuseResultScreenshots holds a result's screenshots to image documents of the recording
-// issue or of the check's issue, named by their dispatch:// reference.
-func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKey, checkIssueKey string, screenshots []string) error {
+// issue or of the check's issue, named by their dispatch:// reference and read as who reads them.
+func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, who model.Actor, issueKey, checkIssueKey string, screenshots []string) error {
 	for _, screenshot := range screenshots {
 		ref, ok := text.ParseRef(screenshot, "")
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
@@ -812,7 +840,8 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 		var found bool
 		err := q.QueryRow(ctx, `
 			select true from artifacts where issue_key = $1 and slug = $2 and kind = 'image'
-		`, ref.IssueKey, ref.ID).Scan(&found)
+			  and `+access.ProjectClause("project_key", "$3")+`
+		`, ref.IssueKey, ref.ID, refs.VisibilityArg(who)).Scan(&found)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errorf(http.StatusBadRequest, "RESULT_INPUT",
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
@@ -848,16 +877,16 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,
-// from any issue, by the block id of the check each names, newest first within each. One query
-// serves the whole document: a Verification document holding twenty checks is one round trip,
-// not twenty.
-func loadCheckResults(ctx context.Context, q queryer, artifactID string) (map[string][]model.CheckResult, error) {
+// from any issue who sees, by the block id of the check each names, newest first within each. One
+// query serves the whole document: a Verification document holding twenty checks is one round
+// trip, not twenty.
+func loadCheckResults(ctx context.Context, q queryer, who model.Actor, artifactID string) (map[string][]model.CheckResult, error) {
 	rows, err := q.Query(ctx, `
 		select `+checkResultColumns+`
 		from check_results
-		where check_artifact_id = $1::uuid
+		where check_artifact_id = $1::uuid and `+issueClause("check_results.issue_key", "$2")+`
 		order by check_block_id, created_at desc, id desc
-	`, artifactID)
+	`, artifactID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the results of document %s: %w", artifactID, err)
 	}

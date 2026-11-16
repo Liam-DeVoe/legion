@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // handoffPhasePattern is a handoff's phase, the routes' {phase}: a lowercase slug. Legion writes
@@ -138,17 +139,19 @@ func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string
 }
 
 // listHandoffs is every handoff of one issue without its body, newest first: GET
-// /api/v1/issues/{key}/handoffs. A closed issue's handoffs read as an open one's.
+// /api/v1/issues/{key}/handoffs. A closed issue's handoffs read as an open one's, and an issue of
+// a project the caller does not see holds none, as a key no issue carries holds none.
 func (s *server) listHandoffs(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+handoffColumns+`
 		from handoffs
-		where issue_key = $1
+		where issue_key = $1 and `+issueClause("$1", "$2")+`
 		order by created_at desc, phase, version desc
-	`, r.PathValue("key"))
+	`, r.PathValue("key"), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -166,7 +169,8 @@ func (s *server) listHandoffs(w http.ResponseWriter, r *http.Request) {
 // getLatestHandoff is the newest handoff of one phase of an issue, with its body: GET
 // /api/v1/issues/{key}/handoffs/{phase}/latest.
 func (s *server) getLatestHandoff(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	issueKey, phase := r.PathValue("key"), r.PathValue("phase")
@@ -177,15 +181,16 @@ func (s *server) getLatestHandoff(w http.ResponseWriter, r *http.Request) {
 	s.writeHandoff(w, r, fmt.Sprintf("issue %s has no %s handoff", issueKey, phase), `
 		select `+handoffColumns+`, body
 		from handoffs
-		where issue_key = $1 and phase = $2
+		where issue_key = $1 and phase = $2 and `+issueClause("$1", "$3")+`
 		order by version desc
 		limit 1
-	`, issueKey, phase)
+	`, issueKey, phase, refs.VisibilityArg(who))
 }
 
 // getHandoff is one handoff by id, with its body: GET /api/v1/handoffs/{id}.
 func (s *server) getHandoff(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	if !requireUUIDPath(w, r, "handoff") {
@@ -193,12 +198,13 @@ func (s *server) getHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	s.writeHandoff(w, r, "handoff "+id+" not found", `
-		select `+handoffColumns+`, body from handoffs where id = $1
-	`, id)
+		select `+handoffColumns+`, body from handoffs where id = $1 and `+issueClause("handoffs.issue_key", "$2")+`
+	`, id, refs.VisibilityArg(who))
 }
 
 // writeHandoff answers the one handoff query selects (handoffColumns, then body), or 404
-// HANDOFF_NOT_FOUND with missing when it selects none.
+// HANDOFF_NOT_FOUND with missing when it selects none: no row, and a row of an issue the caller
+// does not see, which query's project clause leaves out.
 func (s *server) writeHandoff(w http.ResponseWriter, r *http.Request, missing, query string, args ...any) {
 	var handoff model.Handoff
 	summary, err := scanHandoff(s.deps.Store.Pool.QueryRow(r.Context(), query, args...), &handoff.Body)

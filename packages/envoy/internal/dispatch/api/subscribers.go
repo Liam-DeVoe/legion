@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/routing"
 )
 
@@ -86,15 +90,36 @@ func exactTopics(topics []string, base string) []string {
 	return exact
 }
 
+// listIssueSubscribers answers the sessions subscribed to an issue's topics. An issue of a
+// project the caller does not see answers as a key no issue carries answers: a topic scoped to
+// that issue alone names it, so it is left out (writeSubscribers' hidden), and what a broader
+// wildcard delivers is listed as for any key.
 func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	s.writeSubscribers(w, r, issueSubscriberBase(r.PathValue("key")))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	key := r.PathValue("key")
+	viewer := refs.VisibilityArg(who)
+	var hidden bool
+	err := s.deps.Store.Pool.QueryRow(r.Context(), `select not `+access.ProjectClause("project_key", "$2")+
+		` from issues where key = $1`, key, viewer).Scan(&hidden)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeSubscribers(w, r, viewer, issueSubscriberBase(key), hidden)
 }
 
 func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
@@ -102,10 +127,14 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeSubscribers(w, r, documentSubscriberBase(artifact.Project, artifact.Slug))
+	s.writeSubscribers(w, r, refs.VisibilityArg(who), documentSubscriberBase(artifact.Project, artifact.Slug), false)
 }
 
-func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base string) {
+// writeSubscribers answers the sessions whose interests deliver an event published under base,
+// each one the viewer may see (seenSessions). hidden is an owner of a project the viewer does not
+// see: a topic scoped exactly to it (exactTopics) is that owner's own, and is left out of every
+// row, a row holding no other topic with it, so the answer is the one a key nobody holds gets.
+func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer any, base string, hidden bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
@@ -130,6 +159,10 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 	result := make([]subscriber, 0)
 	for _, interest := range interests {
 		matched := matchingTopics(interest.Topics, base)
+		if hidden {
+			exact := exactTopics(matched, base)
+			matched = slices.DeleteFunc(matched, func(topic string) bool { return slices.Contains(exact, topic) })
+		}
 		if len(matched) == 0 {
 			continue
 		}
@@ -152,6 +185,12 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		}
 		result = append(result, entry)
 	}
+	seen, err := s.seenSessions(r.Context(), viewer, result)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	result = slices.DeleteFunc(result, func(entry subscriber) bool { return !seen[entry.SessionID] })
 	sort.SliceStable(result, func(left, right int) bool {
 		if result[left].LastSeen != result[right].LastSeen {
 			return result[left].LastSeen > result[right].LastSeen
@@ -159,6 +198,34 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		return result[left].SessionID < result[right].SessionID
 	})
 	WriteJSON(w, http.StatusOK, result)
+}
+
+// seenSessions is which sessions of subscribers the viewer may see (access.SessionClause): every
+// session for an open viewer; for any other, its own and those that have acted in a project it
+// sees. No subscriber reads nothing.
+func (s *server) seenSessions(ctx context.Context, viewer any, subscribers []subscriber) (map[string]bool, error) {
+	seen := map[string]bool{}
+	if len(subscribers) == 0 {
+		return seen, nil
+	}
+	ids := make([]string, len(subscribers))
+	for index, entry := range subscribers {
+		ids[index] = entry.SessionID
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select subscriber.id from unnest($1::text[]) as subscriber(id)
+		where `+access.SessionClause("subscriber.id", "$2"), ids, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("read which subscribers the caller sees: %w", err)
+	}
+	ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which subscribers the caller sees: %w", err)
+	}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	return seen, nil
 }
 
 func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -88,12 +89,12 @@ func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
 	return issueChildrenFixture{database: database, root: root.Key}
 }
 
-// issueChildrenRows runs one children statement and returns its rows as text, one string per
-// row in the order the statement gave them, which is how the two statements' answers are
-// compared here.
-func issueChildrenRows(t *testing.T, database *store.Store, statement, key string) []string {
+// issueChildrenRows runs one children statement over arguments and returns its rows as text, one
+// string per row in the order the statement gave them, which is how the two statements' answers
+// are compared here.
+func issueChildrenRows(t *testing.T, database *store.Store, statement string, arguments ...any) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, key)
+	rows, err := database.Pool.Query(context.Background(), statement, arguments...)
 	if err != nil {
 		t.Fatalf("run the children statement: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 	if len(want) != 2 {
 		t.Fatalf("main's children statement answered %v; want the branch and the leaf", want)
 	}
-	if got := issueChildrenRows(t, fixture.database, issueChildrenStatement, fixture.root); !slices.Equal(got, want) {
+	if got := issueChildrenRows(t, fixture.database, issueChildrenStatement, fixture.root, refs.VisibilityArg(everyReader)); !slices.Equal(got, want) {
 		t.Fatalf("the children statement answered\n%v\nwant main's rows\n%v", got, want)
 	}
 }
@@ -136,7 +137,7 @@ func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 // index holds the statement to one read of each issue either way.
 func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
 	fixture := newIssueChildrenFixture(t)
-	plan := planWithoutSeqScans(t, fixture.database, issueChildrenStatement, fixture.root)
+	plan := planWithoutSeqScans(t, fixture.database, issueChildrenStatement, fixture.root, refs.VisibilityArg(everyReader))
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 		t.Errorf("the children statement reads %v, which no index serves:\n%s", unkeyed, plan)
 	}
