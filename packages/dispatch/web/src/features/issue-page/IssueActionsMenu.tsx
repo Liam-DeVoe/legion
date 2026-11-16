@@ -55,7 +55,6 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
     };
   }, [open]);
 
-  if (actions.length === 0) return null;
   return (
     // A flex box, so the control is the wrapper's whole height: as an inline box in a block it
     // sat on a text line 2 px taller than itself, and the header's first row with it.

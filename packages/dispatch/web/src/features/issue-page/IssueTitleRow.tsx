@@ -36,15 +36,12 @@ import { authorText } from "./page-structure";
  */
 export function IssueTitleRow({
   drafts,
-  editing,
   isClosed,
-  onEditingChange,
 }: {
   drafts: IssueDrafts;
-  editing: boolean;
   isClosed: boolean;
-  onEditingChange: (editing: boolean) => void;
 }): ReactNode {
+  const [editing, setEditing] = useState(false);
   // Whether a mouse button is down right now, read by the editor's blur: a blur a press caused
   // keeps the heading at the editor's height until that press is released and its click has
   // been dispatched. A tap's mousedown comes after its pointerup, so the mouse's own events are
@@ -93,15 +90,15 @@ export function IssueTitleRow({
           editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
         }`}
         onClick={() => {
-          if (!isClosed) onEditingChange(true);
+          if (!isClosed) setEditing(true);
         }}
         onFocus={() => {
-          if (!isClosed && !returning.current) onEditingChange(true);
+          if (!isClosed && !returning.current) setEditing(true);
         }}
         onKeyDown={(event) => {
           if (!isClosed && (event.key === "Enter" || event.key === " ")) {
             event.preventDefault();
-            onEditingChange(true);
+            setEditing(true);
           }
         }}
         ref={heading}
@@ -129,7 +126,7 @@ export function IssueTitleRow({
                 once: true,
               });
             }
-            onEditingChange(false);
+            setEditing(false);
           }}
           // A title is one line of words: a line break typed or pasted is a space.
           onChange={(event) => drafts.writeTitle(event.target.value.replace(/\s*\n\s*/gu, " "))}
@@ -137,7 +134,7 @@ export function IssueTitleRow({
             if (event.key === "Escape") {
               drafts.discardTitle();
               returning.current = true;
-              onEditingChange(false);
+              setEditing(false);
               return;
             }
             if (event.key === "Enter") {

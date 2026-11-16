@@ -1,4 +1,3 @@
-import type { IssuePriority } from "../../api/types";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
@@ -31,8 +30,6 @@ export function useIssuePalette({
       keys: [],
       label: "Close issue",
       run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={saving}` on the control, and `isClosed` decides whether it is rendered at
-      // all; a row offered while the write is in flight would submit a second one.
       when: () => !isClosed && !saving,
     },
     {
@@ -46,7 +43,7 @@ export function useIssuePalette({
       id: `set-p${level}`,
       keys: [],
       label: `Set priority P${level}`,
-      run: () => priorityWrite.submit(level as IssuePriority),
+      run: () => priorityWrite.submit(level),
       // `PriorityEditor`'s `disabled` (`IssuePropertiesRow.tsx`), so the row is offered while
       // the priority takes input. The write goes in the issue's line of the keyed store
       // (`target: issue:<key>`, `useIssueFieldWrite.ts`), so a row run while another write of

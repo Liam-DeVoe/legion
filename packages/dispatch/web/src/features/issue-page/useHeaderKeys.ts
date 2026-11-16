@@ -2,6 +2,7 @@ import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
+import { PROPERTY_LABELS } from "./page-structure";
 
 /**
  * What the header's keys act on. Every target is a control the header already renders - the
@@ -12,7 +13,7 @@ import { useKeymap } from "../shell/keymap";
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
-const STATUS_SELECT = 'select[aria-label="Status"]';
+const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
 /** The header control `selector` names, or `null` when it is absent or refuses input (a closed

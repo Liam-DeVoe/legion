@@ -113,13 +113,17 @@ export function IssuePropertiesRow({
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
     [coverage.data, nodeIdOf]
   );
-  const waiting = waitingOnReader(
-    issue,
-    viewer,
-    decisions.data,
-    (reference) => statements.has(nodeIdOf(reference)),
-    comments.data,
-    documents
+  const waiting = useMemo(
+    () =>
+      waitingOnReader(
+        issue,
+        viewer,
+        decisions.data,
+        (reference) => statements.has(nodeIdOf(reference)),
+        comments.data,
+        documents
+      ),
+    [issue, viewer, decisions.data, statements, nodeIdOf, comments.data, documents]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -139,6 +143,7 @@ export function IssuePropertiesRow({
     (entry) => entry.document?.id === issue.primary_artifact_id
   );
   const approval = documentArtifact?.approval;
+  const line = useRef<HTMLDivElement>(null);
 
   // The count's press: the Decisions filter, with the outline drawn in place of any document,
   // and the focus on the next item there that waits, in the filter's order - the first press on
@@ -157,9 +162,8 @@ export function IssuePropertiesRow({
       navigate(path, { replace: pathname === path, state: press });
       return;
     }
-    const header = document.querySelector("[data-issue-header]");
     const control = [
-      ...(header?.querySelectorAll<HTMLElement>("[data-approval-artifact]") ?? []),
+      ...(line.current?.querySelectorAll<HTMLElement>("[data-approval-artifact]") ?? []),
     ].find((found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? ""));
     control?.focus();
   };
@@ -168,10 +172,12 @@ export function IssuePropertiesRow({
     <div
       className={`flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3.5 pt-1 pb-2.5 text-sm leading-5 min-[761px]:gap-x-3.5 min-[761px]:px-7 min-[761px]:pt-0.5 min-[761px]:pb-[7px] ${pageLineBorder} ${pageMutedText}`}
       data-testid="issue-state-actions"
+      ref={line}
     >
       {/* The prototype's `.pill`: the status's glyph and word inside a rule of its colour. The
           rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
-          every width, the least a target may be (WCAG 2.5.8, the tester's finding F13). */}
+          every width, the least a target may be (WCAG 2.5.8, finding F13 of
+          dispatch://INFRA-1196/artifact/tester-findings-md). */}
       <label
         className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
       >
@@ -357,9 +363,10 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
 /**
  * The labels, in Dispatch's order, as many as fit on what is left of the line once every other
  * property is drawn, and then the count of those left over, which opens Details at its Labels
- * row, where every label is listed with its control (R13, the ruling of 2026-11-15). An issue
- * whose labels fit draws them all and no count. Where what is left of a line holds no label and
- * the count has gone on to the next line anyway, the labels go on with it.
+ * row, where every label is listed with its control (R13, the ruling of
+ * dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). An issue whose labels
+ * fit draws them all and no count. Where what is left of a line holds no label and the count has
+ * gone on to the next line anyway, the labels go on with it.
  *
  * What fits is read off the page, never guessed at a width the typeface decides: every chip is
  * laid out once, with the count drawn at its widest, and the chips past the end of the box's
@@ -454,7 +461,8 @@ function HeaderLabels({
       </div>
       {left === 0 ? null : (
         // Tabular digits, so the count read at its widest is as wide as any count of as many
-        // digits it then draws. 24 px tall at every width (WCAG 2.5.8, the tester's finding F13).
+        // digits it then draws. 24 px tall at every width (WCAG 2.5.8, finding F13 of
+        // dispatch://INFRA-1196/artifact/tester-findings-md).
         <button
           className={`inline-flex min-h-6 shrink-0 items-center text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing}`}
           data-testid="issue-labels-left"

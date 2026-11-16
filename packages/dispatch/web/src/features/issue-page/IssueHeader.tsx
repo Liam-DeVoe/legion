@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef } from "react";
 
 import type { Artifact, IssueDetails, UserIssueState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -77,7 +77,6 @@ export function IssueHeader({
   writes: IssueHeaderWrites;
 }): ReactNode {
   const { drafts, pendingStatus, updateIssue } = writes;
-  const [editingTitle, setEditingTitle] = useState(false);
   const block = useRef<HTMLDivElement | null>(null);
   const { condensed } = useIdentityBlock(block);
   useIssuePalette({
@@ -87,8 +86,6 @@ export function IssueHeader({
     saving: updateIssue.isPending,
   });
 
-  // Each action is named by the words it shows, which is the name the control carries: a voice
-  // user who says what they read presses it (WCAG 2.5.3, axe's `label-content-name-mismatch`).
   const actions: IssueAction[] = [
     {
       disabled: writes.pin.isPending,
@@ -152,12 +149,7 @@ export function IssueHeader({
           parent={issue.parent}
           project={issue.project}
         />
-        <IssueTitleRow
-          drafts={drafts}
-          editing={editingTitle}
-          isClosed={isClosed}
-          onEditingChange={setEditingTitle}
-        />
+        <IssueTitleRow drafts={drafts} isClosed={isClosed} />
         {drafts.titleError === null ? null : (
           <p className={`text-sm ${pageFailedText}`} id="issue-title-help">
             {drafts.titleError}

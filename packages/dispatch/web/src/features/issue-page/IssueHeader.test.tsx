@@ -184,12 +184,15 @@ function HeaderAlone(): ReactNode {
   return <HeaderSlot issue={read.data} route={route} />;
 }
 
-function renderHeader(
-  path = "/issues/CORE-1",
-  queryClient = new QueryClient({
+/** The client each case renders with: a failed read is not retried, and an answer never goes
+ *  stale. */
+function headerClient(): QueryClient {
+  return new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  })
-) {
+  });
+}
+
+function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -222,9 +225,7 @@ test("the header updates whose turn when a human clarification is latest", async
     open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: "human" as const }],
   };
   const restore = stubHeader(waitingIssue);
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
+  const queryClient = headerClient();
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
@@ -426,9 +427,7 @@ test("the header's pin refreshes the sidebar's pinned list once the pin is saved
   const restore = stubHeader(issue);
   const saved = { dismissed: [], last_read_seq: 0, pinned: true, seq: 1 };
   const putIssueState = spyOn(api, "putIssueState").mockResolvedValue(saved);
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
+  const queryClient = headerClient();
   // The sidebar's read of the pinned issues, as it is cached beside the page.
   queryClient.setQueryData(["issues", "pinned"], []);
   const view = renderHeader("/issues/CORE-1/conversation", queryClient);

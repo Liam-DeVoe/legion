@@ -53,7 +53,7 @@ import {
   waitingCount,
   waitingPressInHistory,
 } from "./issue-page-p";
-import { leaveFocus } from "./keyboard-issue";
+import { leaveFocus, onBody } from "./keyboard-issue";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -93,12 +93,17 @@ function reviewActions(scope: Locator): Locator {
   return scope.getByRole("button", { name: /^(Approve( v\d+)?|Request changes)$/ });
 }
 
+/** The words the labels' count reads with `left` labels it does not draw: `+3 labels`. */
+function labelsLeftWords(left: number): string {
+  return `+${left} ${left === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`;
+}
+
 /** How a row presses a control: the mouse's click, a tap of the phone's touch screen, or Enter
  *  with the focus on it. */
 type Press = "click" | "Enter" | "tap";
 
 /** Presses `control` as the row's project and width do it. */
-async function press(page: Page, control: Locator, how: Press): Promise<void> {
+async function press(control: Locator, how: Press): Promise<void> {
   if (how === "click") {
     await control.click();
     return;
@@ -107,8 +112,7 @@ async function press(page: Page, control: Locator, how: Press): Promise<void> {
     await control.tap();
     return;
   }
-  await control.focus();
-  await page.keyboard.press("Enter");
+  await control.press("Enter");
 }
 
 /** A real press on `control` straight out of the title's edit, `what` naming it: on `iphone` a
@@ -294,9 +298,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
       const drawn = await headerLabels(page).count();
       expect(drawn, `the header draws every label at ${width} px`).toBeLessThan(20);
       if (width === DESKTOP.width) drawnAtDesktop = drawn;
-      await expect(labelsLeft(page)).toHaveText(
-        `+${20 - drawn} ${20 - drawn === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`
-      );
+      await expect(labelsLeft(page)).toHaveText(labelsLeftWords(TWENTY_LABELS.length - drawn));
 
       // The frame after the line narrows, drawn before the labels are read again on the next
       // frame, draws each label whole or not at all: one that no longer fits wraps onto a line
@@ -315,9 +317,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
               const now = await headerLabels(page).count();
               const words = ((await labelsLeft(page).textContent()) ?? "").replace(/\s+/g, " ");
               const settled =
-                now === before &&
-                words.trim() ===
-                  `+${20 - now} ${20 - now === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`;
+                now === before && words.trim() === labelsLeftWords(TWENTY_LABELS.length - now);
               before = now;
               return settled;
             },
@@ -731,14 +731,14 @@ test("the count of what waits is a control that opens the Decisions address @pho
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       expect(await waitingCount(page).evaluate((count) => count.tagName)).toBe("BUTTON");
 
-      await press(page, waitingCount(page), how);
+      await press(waitingCount(page), how);
       await expect(page).toHaveURL(decisionsAddress(seeded.key));
       const first = await waitingPressInHistory(page);
       expect(first, `the press left no mark in the history entry at ${width} px`).not.toBeNull();
       const length = await page.evaluate(() => history.length);
 
       // A press made at that address replaces its entry, with a new mark.
-      await press(page, waitingCount(page), how);
+      await press(waitingCount(page), how);
       await expect
         .poll(() => waitingPressInHistory(page), {
           message: `a second press left the first press's mark at ${width} px`,
@@ -766,7 +766,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await gotoIssue(page, `/issues/${lone.key}`);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
-    await press(page, waitingCount(page), pointer);
+    await press(waitingCount(page), pointer);
     await expect
       .poll(() =>
         page.evaluate(() => document.activeElement?.hasAttribute("data-approval-artifact"))
@@ -801,7 +801,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
       issueHeader(page).locator(`[data-approval-artifact="${spec}"]`),
       "the header draws no chip of the approved spec"
     ).toBeVisible();
-    await press(page, waitingCount(page), pointer);
+    await press(waitingCount(page), pointer);
     expect(
       [null, verification.artifact.id],
       "the count's press focused another document's chip"
@@ -840,7 +840,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await expect(waitingCount(page), "a decision on the review list is not counted").toHaveText(
       "Waiting on you (1)"
     );
-    await press(page, waitingCount(page), pointer);
+    await press(waitingCount(page), pointer);
     await expect(
       page,
       "the count's press with a decision waiting did not open the Decisions address"
@@ -849,8 +849,9 @@ test("the count of what waits is a control that opens the Decisions address @pho
 });
 
 // c-header (5): the checkpoint's "the count of what waits holds only what waits on the reader"
-// (`e2e/issue-layout.e2e.ts:3368`), the tester's finding F4. A question waits on the person the
-// server resolves it to - whoever it was handed to, else the issue's assignee.
+// (`e2e/issue-layout.e2e.ts:3368`), finding F4 of
+// dispatch://INFRA-1196/artifact/tester-findings-md. A question waits on the person the server
+// resolves it to - whoever it was handed to, else the issue's assignee.
 test("the count of what waits holds only what waits on the reader", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (alice) => {
@@ -907,7 +908,8 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
 });
 
 // c-header (6): the checkpoint's "a press on the status straight out of the title's editor lands
-// on the status" (`e2e/issue-layout.e2e.ts:3416`), the tester's finding F5.
+// on the status" (`e2e/issue-layout.e2e.ts:3416`), finding F5 of
+// dispatch://INFRA-1196/artifact/tester-findings-md.
 test("a press on the status straight out of the title's editor lands on the status", async ({
   browser,
 }) => {
@@ -1093,15 +1095,11 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await page.keyboard.press("p");
     await expect(priority, "p did not put the focus on the priority").toBeFocused();
     await page.keyboard.press("Escape");
-    await expect
-      .poll(() => page.evaluate(() => document.activeElement === document.body))
-      .toBe(true);
+    await expect.poll(() => onBody(page)).toBe(true);
     await page.keyboard.press("s");
     await expect(status, "s did not put the focus on the status").toBeFocused();
     await page.keyboard.press("Escape");
-    await expect
-      .poll(() => page.evaluate(() => document.activeElement === document.body))
-      .toBe(true);
+    await expect.poll(() => onBody(page)).toBe(true);
     expect(patched, "a key that focuses a control wrote the issue").toEqual([]);
 
     // A refused write: the digit and the picker are one write, so the refusal is said once, in

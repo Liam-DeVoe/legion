@@ -370,9 +370,10 @@ export function undersizedTargets(page: Page): Promise<string[]> {
   });
 }
 
-/** The controls R3 holds to 24 px tall at every width (the tester's finding F13): the status,
- *  the priority, the assignee, the count, Approve, Request changes and the labels' count, each
- *  as `<name>: <height>` where it is drawn shorter. */
+/** The controls R3 holds to 24 px tall at every width (finding F13 of
+ *  dispatch://INFRA-1196/artifact/tester-findings-md): the status, the priority, the assignee,
+ *  the count, Approve, Request changes and the labels' count, each as `<name>: <height>` where
+ *  it is drawn shorter. */
 export function shortControls(page: Page, key: string): Promise<string[]> {
   return issueHeader(page).evaluate((header, key) => {
     const named: [string, Element | null][] = [
@@ -394,7 +395,7 @@ export function shortControls(page: Page, key: string): Promise<string[]> {
 }
 
 /** The header as R3 measures it: from the top of the header to the top of the view row. */
-export interface HeaderReading {
+interface HeaderReading {
   readonly height: number;
   /** The words of each line drawn between the two, top to bottom. */
   readonly lines: readonly string[];
@@ -408,7 +409,7 @@ export interface HeaderReading {
  * box of at most a pixel clips away, or that is invisible or transparent, is not drawn. Null when
  * the page draws no header or no view row.
  */
-export function headerReading(page: Page): Promise<HeaderReading | null> {
+function headerReading(page: Page): Promise<HeaderReading | null> {
   return page.evaluate(() => {
     const root = document.querySelector("[data-issue-page]");
     const header = root?.querySelector("header[data-issue-header]") ?? null;
@@ -510,7 +511,7 @@ export function headerReading(page: Page): Promise<HeaderReading | null> {
  * and 9 lines and 280 px while one does (ruling 8 of
  * dispatch://INFRA-1196/artifact/build-rulings-md). No other width has a limit.
  */
-export function headerLimit(
+function headerLimit(
   width: number,
   requestWaiting: boolean
 ): { readonly height: number; readonly lines: number } | undefined {
