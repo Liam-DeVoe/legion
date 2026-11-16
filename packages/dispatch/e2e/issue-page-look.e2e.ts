@@ -15,6 +15,7 @@
 
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
+import { COMPACT_VIEWPORT_WIDTH, sidebarInbox } from "./inbox-threads";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Response, test } from "./test";
 
@@ -90,6 +91,13 @@ function firstHeld(stack: string, held: string[]): string | undefined {
 /** The computed `font-family` stack one element draws in. */
 function stackOf(element: Locator): Promise<string> {
   return element.evaluate((node) => getComputedStyle(node).fontFamily);
+}
+
+/** The `--font-sans` custom property as `html` computes it. */
+function rootFontSans(page: Page): Promise<string> {
+  return page
+    .locator("html")
+    .evaluate((node) => getComputedStyle(node).getPropertyValue("--font-sans"));
 }
 
 type ElementStack = { element: string; stack: string };
@@ -168,9 +176,7 @@ test("no page but the new issue page takes the shipped typeface @phone", async (
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
     const held = await fontSetFamilies(page);
     expect(firstElementNaming(name, await elementStacks(page), held)).toBeNull();
-    const rootSans = await page
-      .locator("html")
-      .evaluate((node) => getComputedStyle(node).getPropertyValue("--font-sans"));
+    const rootSans = await rootFontSans(page);
     expect(
       firstHeld(rootSans, held),
       `${name}: --font-sans on html is \`${rootSans}\``
@@ -227,9 +233,7 @@ test("the new issue page draws the whole document in the shipped typeface @phone
 
   // `body` is where `createPortal` attaches a menu, outside the page's own element.
   const drawnIn = {
-    "--font-sans on html": await page
-      .locator("html")
-      .evaluate((node) => getComputedStyle(node).getPropertyValue("--font-sans")),
+    "--font-sans on html": await rootFontSans(page),
     "[data-issue-page]": await stackOf(issuePage),
     body: await stackOf(page.locator("body")),
     html: await stackOf(page.locator("html")),
@@ -252,10 +256,10 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   });
   // Below `xl` (`COMPACT_VIEWPORT_QUERY`, `web/src/features/shell/useDialog.ts`) the shell draws
   // its top bar, whose `Dispatch` link goes to the Inbox, and no navigation column.
-  const compact = (page.viewportSize()?.width ?? 0) < 1280;
+  const compact = (page.viewportSize()?.width ?? 0) < COMPACT_VIEWPORT_WIDTH;
   const toInbox = compact
     ? page.getByRole("banner").getByRole("link", { exact: true, name: "Dispatch" })
-    : page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
+    : sidebarInbox(page);
   await toInbox.click();
   await expect(
     page.locator("main").getByRole("heading", { exact: true, level: 1, name: "Inbox" })

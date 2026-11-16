@@ -22,22 +22,31 @@
  * and a type are told apart by a word and a shape, never by colour alone.
  *
  * This module is data and pure functions. It holds no React and touches no DOM, and it imports
- * data and types, with one helper:
+ * data and types, with three helpers:
  *
  * - from its sibling `page-structure.ts`, the property and section names and help lines
  *   `DECLARED_WORDS` is derived from as well, and `freeze`, which its tables are made with;
  * - from `@legion/contracts`, the most issues one issue may wait on, the most priorities it may
- *   advance, and the type of how a result's commit stands;
+ *   advance, and the types of how a result's commit stands and of when a check runs;
  * - from `../../api/types`, the type of an actor;
- * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in: the
- *   module's one link to a file today's pages use.
+ * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
+ *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
+ * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in.
+ *
+ * The last two are the module's links to files today's pages use.
  *
  * A test, a browser spec and a component therefore all read the same list.
  */
 
-import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
+import {
+  type CheckWhen,
+  MAX_ISSUE_ADVANCES,
+  MAX_ISSUE_BLOCKERS,
+  type ResultCommitStands,
+} from "@legion/contracts";
 
 import type { Actor } from "../../api/types";
+import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 import {
   freeze,
@@ -451,27 +460,18 @@ export const NODE_REFERENCES_WORDS = freeze({
 
 /**
  * How an issue stands, as the page says it: the word a child's row draws beside it (R10). The
- * keys are the server's own status tokens, in the lifecycle order `features/project/board-model.ts`
- * holds them in, and `page-words.test.ts` reads that module, so a status added there fails
- * until it has a word here.
+ * keys are the server's own status tokens and the words the board's own labels, both read from
+ * `features/project/board-model.ts` in the lifecycle order it holds them in, so a status added
+ * there has its word here too.
  */
-export const ISSUE_STATUS_WORDS = freeze({
-  backlog: "Backlog",
-  done: "Done",
-  icebox: "Icebox",
-  in_progress: "In progress",
-  needs_review: "Needs review",
-  retro: "Retro",
-  testing: "Testing",
-  todo: "Todo",
-  triage: "Triage",
-} as const);
+export const ISSUE_STATUS_WORDS: Readonly<Record<string, string>> = freeze(
+  Object.fromEntries(issueStatuses.map((status) => [status, statusLabel(status)]))
+);
 
-/** The word for the issue status `token`. A token the module does not declare reads as itself,
- *  which is what the server sent; `page-words.test.ts` fails until a declared status has a word. */
+/** The word for the issue status `token`, the board's own (`statusText`): a token the board does
+ *  not know reads as itself, which is what the server sent. */
 export function issueStatusWord(token: string): string {
-  const words: Readonly<Record<string, string>> = ISSUE_STATUS_WORDS;
-  return words[token] ?? token;
+  return statusText(token);
 }
 
 /**
@@ -643,7 +643,7 @@ export const CHECK_WHEN_WORDS = freeze({
   after_merge: "after the merge",
   before_merge: "before the merge",
   default_branch: "on the default branch",
-} as const);
+} as const satisfies Record<CheckWhen, string>);
 
 /** What a recorded result says about itself beside its verdict: where its commit stands against
  *  what its check compared its results with, by the server's answer for that result

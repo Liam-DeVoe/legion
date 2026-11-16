@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { AskResolution } from "../../api/types";
-import { issueStatuses, statusText } from "../project/board-model";
+import { compiledBlockSchema } from "../doc/schema";
 import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
 import * as pageStructure from "./page-structure";
 import {
@@ -36,7 +34,6 @@ import {
   GLYPH_NAMES,
   GLYPH_TOKENS,
   ISSUE_STATUS_WORDS,
-  issueStatusWord,
   NODE_FACT_LABELS,
   NODE_REFERENCES_WORDS,
   NODE_STATE_WORDS,
@@ -62,19 +59,7 @@ import {
 
 /** The block schema the server owns, read here rather than repeated, so a type, an attribute or
  *  a `when` choice added to it fails this file until the page has a word for it. */
-interface BlockSchema {
-  readonly types: readonly {
-    readonly attributes: Readonly<Record<string, { readonly choices?: readonly string[] }>>;
-    readonly name: string;
-  }[];
-}
-
-const schema: BlockSchema = JSON.parse(
-  readFileSync(
-    join(import.meta.dir, "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json"),
-    "utf8"
-  )
-);
+const schema = compiledBlockSchema;
 
 function blockType(name: string) {
   const type = schema.types.find((candidate) => candidate.name === name);
@@ -139,15 +124,6 @@ const UNASKED: readonly unknown[] = [
 const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
-
-test("every issue status the board knows has a word, and it is the board's own", () => {
-  for (const status of issueStatuses) {
-    expect(Object.keys(ISSUE_STATUS_WORDS), `${status} has no word`).toContain(status);
-    expect(issueStatusWord(status)).toBe(statusText(status));
-  }
-  expect(Object.keys(ISSUE_STATUS_WORDS).sort()).toEqual([...issueStatuses].sort());
-  expect(issueStatusWord("something-the-server-added")).toBe("something-the-server-added");
-});
 
 test("every node type has a plain name, and no name is an internal token", () => {
   expect(NODE_TYPES.length).toBeGreaterThan(0);
@@ -472,21 +448,8 @@ test("a result's verdict reads as a word", () => {
 });
 
 test("DECLARED_WORDS holds every declared word and no other", () => {
-  const derived = new Set(
-    WORD_SOURCES.flatMap(phrasesOf).flatMap((phrase) => [...wordsIn(phrase)])
-  );
+  const derived = new Set(WORD_SOURCES.flatMap(phrasesOf).flatMap(wordsIn));
   expect([...derived].sort()).toEqual([...DECLARED_WORDS]);
-
-  for (const phrase of WORD_SOURCES.flatMap(phrasesOf)) {
-    for (const word of wordsIn(phrase)) {
-      expect(DECLARED_WORDS).toContain(word);
-    }
-  }
-  for (const word of DECLARED_WORDS) {
-    expect(WORD_SOURCES.flatMap(phrasesOf).some((phrase) => wordsIn(phrase).includes(word))).toBe(
-      true
-    );
-  }
 
   expect(DECLARED_WORDS).toContain("merge");
   // Verification is the filter's name, his word for what draws the checks (R2, the Design's

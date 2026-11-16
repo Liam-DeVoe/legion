@@ -185,10 +185,10 @@ function hexOf(swatch: Swatch): string {
 
 /**
  * One line for each token of the table whose swatch in `PAGE_COLORS` renders another value than
- * the table's, in either scheme, and for each token `PAGE_COLORS` has no swatches for. A key of
- * `PAGE_COLORS` is its token's name without `--color-`; a key the table has no token for is
- * passed over. A token with no dark value is dark in both schemes, so its dark swatch renders its
- * light value.
+ * the table's, in either scheme, for each token `PAGE_COLORS` has no swatches for, and for each
+ * key of `PAGE_COLORS` the table has no token for. A key of `PAGE_COLORS` is its token's name
+ * without `--color-`. A token with no dark value is dark in both schemes, so its dark swatch
+ * renders its light value.
  */
 function paletteDifferences(): string[] {
   const problems: string[] = [];
@@ -209,6 +209,11 @@ function paletteDifferences(): string[] {
           `${token} (${scheme}): PAGE_COLORS gives ${swatch.name}, which is ${rendered}, the design has ${value}`
         );
       }
+    }
+  }
+  for (const key of Object.keys(PAGE_COLORS)) {
+    if (!LIGHT.has(`--color-${key}`)) {
+      problems.push(`PAGE_COLORS has "${key}", which the design has no --color-${key} token for`);
     }
   }
   return problems;
