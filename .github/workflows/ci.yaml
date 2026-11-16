@@ -5896,10 +5896,15 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-build tests of the Dispatch server
+        # -run keeps this lane to the rows the twobuild tag adds: without it the untagged
+        # cmd/dispatch tests, which other lanes run, ran here a second time. Every row of the
+        # twobuild-tagged files is named TestTwoBuilds… or TestThisBuilds…, which is what the
+        # pattern selects; a two-build row named otherwise would not run here, so name a new one
+        # that way.
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
-        run: go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
+        run: go test -tags twobuild -count=1 -timeout 30m -run '^(TestTwoBuilds|TestThisBuilds)' ./cmd/dispatch
         working-directory: packages/envoy
       - name: Build contracts for dispatch e2e
         # The e2e helpers the specs import read some of contracts' values from its built dist/
