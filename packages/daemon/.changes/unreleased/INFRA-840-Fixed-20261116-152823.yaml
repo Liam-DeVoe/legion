@@ -9,9 +9,11 @@ body: |-
   recorded for another claim of this daemon; …` before anything is recorded or enrolled, and a
   relaunch whose record names one is refused before anything starts; a claim's own earlier session
   and a session no claim has recorded register as before. A session id or a session file's name
-  longer than 255 bytes is refused with `400`. At every boot the daemon holds, in one statement,
-  each name a claim records that no row holds, as after a rollback to a release before this one,
-  and logs at Error and suspends each claim whose current session records a name held for another
+  longer than 255 bytes is refused with `400`, and a registration that would take one claim past
+  2,048 held names is refused with `409`, the claim keeping its names and resuming its recorded
+  session. At every boot the daemon holds, in one statement, each name a claim records that no row
+  holds, as after a rollback to a release before this one, and logs at Error and suspends each
+  claim whose current session records a name held for another
   claim or for none. An operator gives each suspended claim that is not the rightful holder a new
   session (`legion claims forget-session`, then `legion claims resume`), and for a name held for
   none records the rightful holder (`update claim_sessions set claim = '<token>' where project =

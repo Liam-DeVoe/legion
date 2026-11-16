@@ -6311,6 +6311,7 @@ each issue's pod (every role of it alike) and the image probe's.
   An operator gives each suspended claim that is not the rightful holder a new session (`legion claims forget-session`, then `legion claims resume`), and for a name held for no claim records the rightful holder with the statement the line gives (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`) and resumes that claim with `legion claims resume`.
   A name held for another claim stays that claim's; the line gives no statement for it.
   A session id, and a session file's name, are at most 255 bytes: a registration of a longer one is refused `400`, and the boot holds no name past that bound.
+  One claim holds at most 2,048 names, 10 times what the busiest claim in production could hold: a registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), and the claim keeps its names and resumes the session it recorded.
   A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
   Another project's daemon is not held to this project's names; the broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing.
 
