@@ -34,10 +34,11 @@ import (
 // installed would: a mise whose `mise where <tool>` answers a tool directory of the rig's holding
 // bin/omp (and refuses a tool it does not hold, as mise refuses one that is not installed), and a
 // Claude Code, a bun and a built claude-envoy plugin. Every build is handed to the rig
-// (overrides.buildTmux), which keeps the Options it read and runs that build on a fake runtime,
-// so no tmux is needed: a test reads the launchers of the runtime the holder serves from now, and
-// with them the command a pane that runtime opens would run (tmux.Launcher.Launch, which is what
-// a tmux spawn splices in after the shim's `--`).
+// (overrides.buildTmux), which keeps the Options it read, runs the runtime's construction on them
+// (tmux.New, whose refusals are that build's own) and serves that build from a fake runtime, so
+// no tmux is run: a test reads the launchers of the runtime the holder serves from now, and with
+// them the command a pane that runtime opens would run (tmux.Launcher.Launch, which is what a
+// tmux spawn splices in after the shim's `--`), and the provider-key directory its panes are told.
 type tmuxLaunchRig struct {
 	t       *testing.T
 	live    *config.Live
@@ -45,12 +46,16 @@ type tmuxLaunchRig struct {
 	holder  runtimeHolding
 	logs    *syncBuffer
 	tools   string
+	bin     string
 	claude  string
 	mu      sync.Mutex
 	builds  int
 	state   string
 	legion  string
 	project string
+	// reread is the file watcher's settle after a wake: every credential holder reads its files
+	// again (rebuilder.rereadCredentials).
+	reread func()
 }
 
 // launchedTmux is one runtime a build of the rig made: the fake, beside the Options that build
@@ -64,7 +69,7 @@ type launchedTmux struct {
 func newTmuxLaunchRig(t *testing.T, lines ...string) *tmuxLaunchRig {
 	t.Helper()
 	host := t.TempDir()
-	rig := &tmuxLaunchRig{t: t, tools: filepath.Join(host, "tools"), logs: &syncBuffer{}, legion: "/opt/legion/bin/legion"}
+	rig := &tmuxLaunchRig{t: t, tools: filepath.Join(host, "tools"), bin: filepath.Join(host, "bin"), logs: &syncBuffer{}, legion: "/opt/legion/bin/legion"}
 	for _, tool := range []string{"omp-a", "omp-b"} {
 		writeExecutable(t, filepath.Join(rig.tools, tool, "bin", "omp"), "#!/bin/sh\n")
 	}
@@ -76,6 +81,8 @@ func newTmuxLaunchRig(t *testing.T, lines ...string) *tmuxLaunchRig {
 	writeExecutable(t, rig.claude, "#!/bin/sh\n")
 	bun := filepath.Join(host, "bin", "bun")
 	writeExecutable(t, bun, "#!/bin/sh\n")
+	// The tmux the construction finds on PATH; nothing runs it.
+	writeExecutable(t, filepath.Join(rig.bin, "tmux"), "#!/bin/sh\nexit 1\n")
 	plugin := filepath.Join(host, "claude-envoy")
 	for _, file := range []string{filepath.Join("dist", "envoy-channel.js"), filepath.Join("legion", ".claude-plugin", "plugin.json")} {
 		writeExecutable(t, filepath.Join(plugin, file), "")
@@ -86,6 +93,7 @@ func newTmuxLaunchRig(t *testing.T, lines ...string) *tmuxLaunchRig {
 	rebuild := newRebuilder(logger, rig.live)
 	rig.live.OnChange(rebuild.observe)
 	routed := rebuild.route(settings.New(rig.live, nil, logger).Route)
+	rig.reread = func() { rig.live.WhileSettled(rebuild.rereadCredentials) }
 	rig.route = func(changes map[string]any) ([]config.Change, map[string]string) {
 		t.Helper()
 		applied, refused, failed, err := routed(t.Context(), config.CallerOperator, "someone", changes)
@@ -154,10 +162,19 @@ func writeExecutable(t *testing.T, path, contents string) {
 }
 
 // record is the rig's stand-in for the tmux runtime's construction (overrides.buildTmux): it
-// keeps the Options the build read and runs that build on a fake runtime.
+// keeps the Options the build read, constructs the runtime from them as tmuxRuntime does
+// (tmux.New) — on the stream address the factory is handed, a connection directory, and a PATH
+// holding the rig's tmux — so a build the construction refuses fails here as it fails on a host,
+// and serves a build it accepts from a fake runtime.
 func (r *tmuxLaunchRig) record(opts tmux.Options) runtimeFactory {
-	return func(context.Context, *stream.Listener, string, appauth.Tokens,
-		func(context.Context, string) (ghrepo.Repository, string, error), *store.Store, func() []ghrepo.Repository) (runtime.Runtime, error) {
+	return func(_ context.Context, _ *stream.Listener, address string, _ appauth.Tokens,
+		_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+		constructed := opts
+		constructed.StreamAddress, constructed.Conns, constructed.Environ = address, fake.NewConns(), []string{"PATH=" + r.bin}
+		constructed.Executable = func() (string, error) { return r.legion, nil }
+		if _, err := tmux.New(constructed); err != nil {
+			return nil, err
+		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.builds++

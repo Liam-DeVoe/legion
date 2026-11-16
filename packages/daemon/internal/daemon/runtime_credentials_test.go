@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	workershim "github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -557,16 +558,16 @@ func TestARouteChangeOfTheNatsSeedFileReachesTheNextLaunch(t *testing.T) {
 	}
 }
 
-// A tmux daemon's panes read every provider key from the directory the daemon writes under its
-// state directory (`<state_dir>/secrets/provider-env`, each pane's `--provider-env-dir`), one
+// A tmux daemon's panes read every provider key from a set the daemon writes under its state
+// directory (`<state_dir>/secrets/provider-env/<set>`, each pane's `--provider-env-dir`), one
 // 0600 file per variable, never from the secret store or the operator's file themselves
-// (config.MaterializeProviderKeys). `provider_keys` is held by the runtime, and each build of
-// the tmux runtime writes that directory again when the keys it names or their files have moved
-// (prepareTmux's runtimeFor, providerKeyFiles): after a change of `provider_keys` through the
-// route, and after a key's file is rotated in place, which the file watcher's reread finds since
-// the runtime holder reports each key's file among its credentials (runtimeHolder.credentials),
-// the next pane reads the new key. Written once at boot instead, every pane went on reading the
-// keys the daemon booted on.
+// (config.MaterializeProviderKeys). `provider_keys` is held by the runtime, and each build of the
+// tmux runtime is built on a set written for the keys it names, written again when they or their
+// files have moved (prepareTmux's runtimeFor, providerKeyFiles): after a change of
+// `provider_keys` through the route, and after a key's file is rotated in place, which the file
+// watcher's reread finds since the runtime holder reports each key's file among its credentials
+// (runtimeHolder.credentials), the next pane reads the new key. Written once at boot instead,
+// every pane went on reading the keys the daemon booted on.
 //
 // The keys are of the file form (`file:/abs/path`), which the daemon reads itself; the secretsd
 // form runs `secrets get`, which is that form's own test (TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune).
@@ -578,38 +579,251 @@ func TestATmuxRuntimeRebuildWritesTheProviderKeysTheNextPaneReads(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	live := liveSettings(t, "provider_keys:\n  AGENT_API_KEY: file:"+booted)
-	o := fakeRuntime(fake.NewRuntime(), &built{})
-	var rebuild *rebuilder
-	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
-	d := startDaemonOn(t, live, o, quietLogger(), 10*time.Second)
-	paneKey := func() string {
-		t.Helper()
-		contents, err := os.ReadFile(filepath.Join(config.ProviderEnvDir(d.cfg.StateDir), "AGENT_API_KEY"))
-		if err != nil {
-			t.Fatalf("read the panes' provider key file: %v", err)
-		}
-		return string(contents)
-	}
-	if got := paneKey(); got != "booted-provider-key" {
-		t.Fatalf("after boot the panes read the provider key %q, want the file's", got)
+	rig := newTmuxLaunchRig(t, `omp_invocation: "mise x omp-a -- omp"`, "provider_keys:\n  AGENT_PROVIDER_KEY: file:"+booted)
+	if got, want := paneExports(t, rig.current()), []string{"AGENT_PROVIDER_KEY=booted-provider-key"}; !slices.Equal(got, want) {
+		t.Fatalf("after boot a pane exports %q, want %q", got, want)
 	}
 
-	apply(t, live, map[string]any{"provider_keys": map[string]any{"AGENT_API_KEY": "file:" + routed}})
-	if got := paneKey(); got != "routed-provider-key" {
-		t.Fatalf("after a route change of provider_keys the next pane reads the provider key %q, want the new file's", got)
+	if _, failed := rig.route(map[string]any{"provider_keys": map[string]any{"AGENT_PROVIDER_KEY": "file:" + routed}}); len(failed) != 0 {
+		t.Fatalf("the route was told %v for a change of provider_keys this host can build", failed)
+	}
+	if got, want := paneExports(t, rig.current()), []string{"AGENT_PROVIDER_KEY=routed-provider-key"}; !slices.Equal(got, want) {
+		t.Fatalf("after a route change of provider_keys the next pane exports %q, want %q", got, want)
 	}
 
 	if err := os.WriteFile(routed, []byte("rotated-provider-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if rebuild == nil {
-		t.Fatal("the daemon handed the test no rebuild observer")
+	rig.reread()
+	if got, want := paneExports(t, rig.current()), []string{"AGENT_PROVIDER_KEY=rotated-provider-key"}; !slices.Equal(got, want) {
+		t.Fatalf("after the key's file was rotated in place the next pane exports %q, want %q", got, want)
 	}
-	d.live.WhileSettled(rebuild.rereadCredentials)
-	if got := paneKey(); got != "rotated-provider-key" {
-		t.Fatalf("after the key's file was rotated in place the next pane reads the provider key %q, want the rotated one", got)
+}
+
+// A build of the tmux runtime can refuse a change of `provider_keys`: the runtime's construction
+// refuses a key named for a variable every pane already carries (tmux.New), and a key changed
+// beside a launch this host cannot resolve fails with that launch (paneLaunchers). A refused
+// build changes nothing — the daemon keeps the runtime it has (runtimeHolder.rebuild) — and the
+// keys that runtime's panes read are part of it: the next pane the kept runtime opens is told
+// the set it was told before the change, and its shim exports the keys it exported before
+// (workershim.ReadProviderEnv). Written where every pane reads before the build could refuse,
+// the kept runtime's next pane exported the keys of the change the daemon refused.
+//
+// Nothing of the refusal outlives it but the set it wrote, which no pane is told: the next
+// build of the same keys is handed that set rather than resolving every key again (a secretsd
+// key of the human tier may cost a tap), and a build of other keys removes it.
+//
+// The keys are of the file form (`file:/abs/path`), which the daemon reads itself.
+func TestARefusedProviderKeyChangeLeavesTheKeptRuntimesPanesTheKeysTheyRead(t *testing.T) {
+	dir := t.TempDir()
+	booted, routed, lang := filepath.Join(dir, "booted-key"), filepath.Join(dir, "routed-key"), filepath.Join(dir, "lang")
+	for file, key := range map[string]string{booted: "booted-provider-key\n", routed: "routed-provider-key\n", lang: "C.UTF-8\n"} {
+		if err := os.WriteFile(file, []byte(key), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	before := []string{"AGENT_PROVIDER_KEY=booted-provider-key"}
+	for _, tc := range []struct {
+		name    string
+		refused map[string]any
+		why     string
+		next    map[string]any
+		// reuses is whether the next change names the keys the refused one did, so its build is
+		// handed the set the refused build wrote.
+		reuses bool
+	}{
+		{
+			name:    "the runtime refuses a key",
+			refused: map[string]any{"provider_keys": map[string]any{"AGENT_PROVIDER_KEY": "file:" + routed, "LANG": "file:" + lang}},
+			why:     config.HolderRuntime + ": tmux runtime: provider key LANG is a variable every pane already carries",
+			next:    map[string]any{"provider_keys": map[string]any{"AGENT_PROVIDER_KEY": "file:" + routed}},
+		},
+		{
+			name:    "the host cannot launch the change beside it",
+			refused: map[string]any{"provider_keys": map[string]any{"AGENT_PROVIDER_KEY": "file:" + routed}, "omp_invocation": "mise x omp-missing -- omp"},
+			why:     config.HolderRuntime + ": mise could not resolve OMP tool omp-missing",
+			next:    map[string]any{"omp_invocation": "mise x omp-b -- omp"},
+			reuses:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newTmuxLaunchRig(t, `omp_invocation: "mise x omp-a -- omp"`, "provider_keys:\n  AGENT_PROVIDER_KEY: file:"+booted)
+			kept := rig.current()
+			if got := paneExports(t, kept); !slices.Equal(got, before) {
+				t.Fatalf("a pane of the boot's runtime exports %q, want %q", got, before)
+			}
+
+			_, failed := rig.route(tc.refused)
+
+			if why := failed["provider_keys"]; !strings.HasPrefix(why, tc.why) {
+				t.Fatalf("the route was told %v, want provider_keys answered failed with %q: this proves nothing", failed, tc.why)
+			}
+			if rig.current() != kept {
+				t.Fatal("the holder serves another runtime after a build that refused")
+			}
+			if got := paneExports(t, kept); !slices.Equal(got, before) {
+				t.Errorf("the next pane of the runtime the daemon kept exports %q, want the keys it exported before the refused change, %q", got, before)
+			}
+			sets := keySets(t, rig)
+			if len(sets) != 2 || !slices.Contains(sets, kept.opts.ProviderEnvDir) {
+				t.Fatalf("after the refusal the provider-key directory holds %q, want the kept runtime's set (%s) and the one the refused build wrote", sets, kept.opts.ProviderEnvDir)
+			}
+			refusedSet := sets[0]
+			if refusedSet == kept.opts.ProviderEnvDir {
+				refusedSet = sets[1]
+			}
+
+			// The next change this host can build reaches the next pane.
+			if _, failed := rig.route(tc.next); len(failed) != 0 {
+				t.Fatalf("the route was told %v for a change this host can build", failed)
+			}
+			served := rig.current()
+			if served == kept {
+				t.Fatal("the holder still serves the boot's runtime after a change it could build")
+			}
+			if got, want := paneExports(t, served), []string{"AGENT_PROVIDER_KEY=routed-provider-key"}; !slices.Equal(got, want) {
+				t.Errorf("a pane of the runtime built after the refusal exports %q, want %q", got, want)
+			}
+			if reused := served.opts.ProviderEnvDir == refusedSet; reused != tc.reuses {
+				t.Errorf("the runtime built after the refusal is built on %s, the refused build's set %s: reused %t, want %t", served.opts.ProviderEnvDir, refusedSet, reused, tc.reuses)
+			}
+			if _, err := os.Stat(refusedSet); !tc.reuses && !os.IsNotExist(err) {
+				t.Errorf("the set the refused build wrote outlived a build of other keys (stat: %v)", err)
+			}
+			if got := paneExports(t, kept); !slices.Equal(got, before) {
+				t.Errorf("a pane the kept runtime opened before its stop exports %q, want %q: the set a runtime was built on outlives its stop", got, before)
+			}
+		})
+	}
+}
+
+// A runtime holds the set it was built on past its own stop. The holder stops the runtime it
+// replaced once the calls inside it have returned (runtimeHolder.rebuild), but a tmux Spawn
+// answers once the pane's process runs its command, and that pane's shim reads its set after
+// that, before it dials the daemon (workerShimConfig). So the set reads whole while the runtime
+// drains, still reads whole after the runtime is stopped, and goes once the registration
+// deadline the runtime was built from (`worker_boot_timeout_seconds` ×
+// `worker_boot_registration_deadline_intervals`, here one second) has passed after its stop, by
+// which every pane it opened has dialled or been retired. Removed at the stop, it could go from
+// under a pane opened a moment before, whose shim would refuse to start.
+func TestAKeySetOutlivesTheRuntimeBuiltOnItByItsRegistrationDeadline(t *testing.T) {
+	dir := t.TempDir()
+	booted, held, next := filepath.Join(dir, "booted-key"), filepath.Join(dir, "held-key"), filepath.Join(dir, "next-key")
+	for file, key := range map[string]string{booted: "booted-provider-key\n", held: "held-provider-key\n", next: "next-provider-key\n"} {
+		if err := os.WriteFile(file, []byte(key), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rig := newTmuxLaunchRig(t, `omp_invocation: "mise x omp-a -- omp"`, "provider_keys:\n  AGENT_PROVIDER_KEY: file:"+booted)
+	if _, failed := rig.route(map[string]any{
+		"worker_boot_timeout_seconds": 1, "worker_boot_registration_deadline_intervals": 1,
+		"provider_keys": map[string]any{"AGENT_PROVIDER_KEY": "file:" + held},
+	}); len(failed) != 0 {
+		t.Fatalf("the route was told %v for a change this host can build", failed)
+	}
+	draining := rig.current()
+	set, want := draining.opts.ProviderEnvDir, []string{"AGENT_PROVIDER_KEY=held-provider-key"}
+	read := func() ([]string, error) {
+		exported, err := workershim.ReadProviderEnv(set, func(string) (string, bool) { return "", false })
+		slices.Sort(exported)
+		return exported, err
+	}
+
+	// A launch inside the runtime holds the next rebuild's drain open until the set has been read.
+	entered, release := make(chan struct{}), make(chan struct{})
+	draining.OnResume = func(context.Context) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	launched := make(chan error, 1)
+	go func() {
+		_, err := rig.holder.Resume(t.Context(), nil, rig.spec(claim.RoleImplementer))
+		launched <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the launch never entered the runtime")
+	}
+	type reading struct {
+		exported []string
+		err      error
+	}
+	whileDraining := make(chan reading, 1)
+	go func() {
+		defer close(release)
+		for give := time.Now().Add(10 * time.Second); rig.holder.(heldRuntime).get() == runtime.Runtime(draining); time.Sleep(time.Millisecond) {
+			if time.Now().After(give) {
+				whileDraining <- reading{err: fmt.Errorf("the holder never swapped in the runtime the change built")}
+				return
+			}
+		}
+		exported, err := read()
+		whileDraining <- reading{exported, err}
+	}()
+
+	if _, failed := rig.route(map[string]any{"provider_keys": map[string]any{"AGENT_PROVIDER_KEY": "file:" + next}}); len(failed) != 0 {
+		t.Fatalf("the route was told %v for a change this host can build", failed)
+	}
+	if err := <-launched; err != nil {
+		t.Fatalf("the launch inside the draining runtime: %v", err)
+	}
+	if got := <-whileDraining; got.err != nil || !slices.Equal(got.exported, want) {
+		t.Fatalf("while the replaced runtime drained its set read %q (%v), want %q", got.exported, got.err, want)
+	}
+
+	// The rebuild has stopped the replaced runtime; half its deadline later its set still reads.
+	time.Sleep(500 * time.Millisecond)
+	if got, err := read(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("half the registration deadline after its runtime was stopped the set read %q (%v), want %q: a pane opened just before the stop may not have read it yet", got, err, want)
+	}
+	for give := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(set); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(give) {
+			t.Fatalf("the set of a runtime stopped well past its registration deadline is still there: %s", set)
+		}
+	}
+	if got, want := paneExports(t, rig.current()), []string{"AGENT_PROVIDER_KEY=next-provider-key"}; !slices.Equal(got, want) {
+		t.Errorf("a pane of the runtime the daemon serves exports %q, want %q", got, want)
+	}
+}
+
+// keySets are the sets of provider keys the rig's state directory holds (config.ProviderEnvDir),
+// each by its path, in name order.
+func keySets(t *testing.T, rig *tmuxLaunchRig) []string {
+	t.Helper()
+	parent := config.ProviderEnvDir(rig.state)
+	entries, err := os.ReadDir(parent)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sets []string
+	for _, entry := range entries {
+		sets = append(sets, filepath.Join(parent, entry.Name()))
+	}
+	return sets
+}
+
+// paneExports is what the shim of a pane served opens exports into Oh My Pi's environment from
+// the provider-key directory the pane is told (`--provider-env-dir`), in a pane whose own
+// environment carries none of the keys.
+func paneExports(t *testing.T, served *launchedTmux) []string {
+	t.Helper()
+	if served.opts.ProviderEnvDir == "" {
+		return nil
+	}
+	exported, err := workershim.ReadProviderEnv(served.opts.ProviderEnvDir, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("the provider keys a pane is told: %v", err)
+	}
+	slices.Sort(exported)
+	return exported
 }
 
 // A build of the tmux runtime whose provider keys have not moved resolves none of them again

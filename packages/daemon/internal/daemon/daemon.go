@@ -189,10 +189,11 @@ type overrides struct {
 	buildSandbox func(sandboxReads) runtimeFactory
 	// buildTmux stands in for the construction of the tmux runtime (tmuxRuntime): it is handed
 	// the Options each build of the runtime read from the configuration it was given — the
-	// launchers among them, with the provider key directory and the Dispatch token file the build
-	// wrote (prepareTmux's runtimeFor) — and answers the factory that build runs. nil, in
-	// production, builds the real runtime. It is how a test reads the launchers a rebuild holds,
-	// and so the command a pane it opens would run, on a machine with no tmux to open one on.
+	// launchers among them, with the set of provider keys the build is built on and the Dispatch
+	// token file the build wrote (prepareTmux's runtimeFor) — and answers the factory that build
+	// runs. nil, in production, builds the real runtime. It is how a test reads the launchers a
+	// rebuild holds, and so the command a pane it opens would run, on a machine with no tmux to
+	// open one on.
 	buildTmux func(tmux.Options) runtimeFactory
 	// workflowTokens replaces the GitHub App token manager in a workflow integration test. The
 	// production daemon always mints through appauth.New.
@@ -1001,11 +1002,12 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 }
 
 // prepareTmux is what panes on this host need beyond readBoot's: the plugin gate on the OMP
-// invocation readBoot resolved, the provider keys resolved from secretsd or their files into the
-// directory every pane's shim reads (providerKeyFiles), and the runtime's build, which writes the
-// Dispatch bearer where every pane reads it (writePaneDispatchToken) and the provider keys again
-// when they have moved, and resolves a Launcher for each backend its configuration's roles run on
-// (paneLaunchers), the boot's own build taking the ones readBoot resolved (tmuxReads.launches).
+// invocation readBoot resolved, the provider keys resolved from secretsd or their files into a
+// set of the directory every pane's shim reads (providerKeyFiles), and the runtime's build, which
+// writes the Dispatch bearer where every pane reads it (writePaneDispatchToken), builds the
+// runtime on a set of keys written whole for it, writing one again when the keys have moved, and
+// resolves a Launcher for each backend its configuration's roles run on (paneLaunchers), the
+// boot's own build taking the ones readBoot resolved (tmuxReads.launches).
 // The worker stream is a unix socket under the state directory (decision 2 — no configuration
 // key). The gate and the model-fallback read are Oh My Pi's, since the architect runs on it alone
 // (runtime.Backends), and are the boot's: neither runs again.
@@ -1023,15 +1025,15 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxRea
 	}
 	// Last of the refusals: resolving a human-tier key may cost a YubiKey tap, which a
 	// configuration refused a line earlier should never have asked for. The gate reads the keys
-	// before the runtime is built, so the boot writes them here, and the boot's build finds them
-	// written.
+	// before the runtime is built, so the boot writes them here, and the boot's build is handed
+	// the set the gate read.
 	keys := &providerKeyFiles{stateDir: cfg.StateDir, environ: o.environment(), log: log}
-	providerEnvDir, err := keys.write(cfg.ProviderKeys)
+	booted, err := keys.write(cfg.ProviderKeys)
 	if err != nil {
 		return err
 	}
 	if o.runtime == nil {
-		env, err := gateEnvironment(os.Environ(), cfg.StateDir, providerEnvDir, cfg.Runtime.Tmux)
+		env, err := gateEnvironment(os.Environ(), cfg.StateDir, booted.dir, cfg.Runtime.Tmux)
 		if err != nil {
 			return err
 		}
@@ -1067,12 +1069,14 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxRea
 	// Everything but the configuration — the gh boot resolved — is this boot's; the rest is read
 	// again from the configuration each build is given, the boot's own included. The Dispatch
 	// bearer, the provider keys and the launchers are among the rest: each build reads the bearer
-	// from the file the configuration names and writes it again where every pane reads it, writes
-	// the provider keys again where they have moved (providerKeyFiles), and resolves a launcher
-	// for every backend the configuration's roles run on where `omp_invocation`,
-	// `omp_launch_prefix` or `worker_backends` has moved (paneLaunchers). So a change of
-	// `dispatch_token_file`, `provider_keys` or a launch key, or a rotation in place of a file the
-	// first two name, reaches the next pane (config.Classes' rows, runtimeHolder.credentials). A
+	// from the file the configuration names and writes it again where every pane reads it, builds
+	// the runtime on a set of provider keys written for the keys it names, writing one again when
+	// they have moved (providerKeyFiles), and resolves a launcher for every backend the
+	// configuration's roles run on where `omp_invocation`, `omp_launch_prefix` or
+	// `worker_backends` has moved (paneLaunchers). So a change of `dispatch_token_file`,
+	// `provider_keys` or a launch key, or a rotation in place of a file the first two name,
+	// reaches the next pane (config.Classes' rows, runtimeHolder.credentials), and a build that
+	// refuses leaves the panes of the runtime the daemon keeps the keys they read. A
 	// configuration that is not this runtime's is refused rather than built from (ownRuntime), as
 	// the Sandbox build refuses one (readSandbox). A test that handed the daemon its runtime has
 	// every build answer that one, since nothing of it comes from the configuration, once the
@@ -1085,22 +1089,22 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxRea
 		if err != nil {
 			return nil, err
 		}
-		keyDir, err := keys.write(c.ProviderKeys)
+		set, err := keys.write(c.ProviderKeys)
 		if err != nil {
 			return nil, err
 		}
 		if o.runtime != nil {
-			return o.runtime, nil
+			return keys.builds(set, c, o.runtime), nil
 		}
 		resolved, err := launchers.resolve(c)
 		if err != nil {
 			return nil, err
 		}
-		opts := tmuxOptions(c, p.project, resolved, keyDir, dispatchTokenFile, log)
+		opts := tmuxOptions(c, p.project, resolved, set.dir, dispatchTokenFile, log)
 		if o.buildTmux != nil {
-			return o.buildTmux(opts), nil
+			return keys.builds(set, c, o.buildTmux(opts)), nil
 		}
-		return tmuxRuntime(opts, c.RepositoryRenames, p.tools["gh"], p.repositories.Accepted, log), nil
+		return keys.builds(set, c, tmuxRuntime(opts, c.RepositoryRenames, p.tools["gh"], p.repositories.Accepted, log)), nil
 	}
 	return nil
 }
@@ -1124,49 +1128,136 @@ func writePaneDispatchToken(c config.Config) (string, error) {
 	return file, nil
 }
 
-// providerKeyFiles is the directory of provider keys every pane's shim reads
-// (`--provider-env-dir`), as the tmux runtime's builds keep it (config.MaterializeProviderKeys):
-// written at boot, before the plugin gate reads it, and again by each build whose keys have
-// moved since it was last written — a change of `provider_keys`, or a key's file rotated in
-// place (runtimeHolder.credentials) — so the next pane reads the keys the configuration names
-// now. MaterializeProviderKeys resolves every key before it writes any, and replaces each file
-// whole, so a pane launched during a rewrite reads each key old or new, never part of one.
+// providerKeyFiles are the provider keys every pane's shim reads (`--provider-env-dir`), as the
+// tmux runtime's builds keep them (config.MaterializeProviderKeys): one set per write, each in a
+// directory of its own, written at boot, before the plugin gate reads it, and again by each build
+// whose keys have moved since a set was written for them — a change of `provider_keys`, or a
+// key's file rotated in place (runtimeHolder.credentials) — so the next pane reads the keys the
+// configuration names now.
 //
-// A build whose keys have not moved writes nothing. Resolving a secretsd key of the human tier
-// may cost a person a YubiKey tap, and the runtime is built again for every change of a row it
-// holds — its boot build right after the gate's write among them — so a write at every build
-// would ask for a tap over a change that moved no key. A secretsd key's value is no file of this
-// host's, so a change of it inside secretsd alone reaches the panes at the next change of
+// Each build is handed one set and builds its runtime on it (providerKeyFiles.builds), and every
+// pane a runtime opens is told the set it was built on. A set is written whole before any build
+// is handed it — MaterializeProviderKeys resolves every key before it writes any, into a
+// directory nothing names yet — and is never written again. So a build that refuses (a key the
+// runtime's construction refuses, a launch this host cannot resolve beside it) leaves the panes
+// of the runtime the daemon keeps reading the set they read, and a pane reads one whole set,
+// never part of one: a runtime's set takes the place of its predecessor's only as the holder
+// swaps that runtime in (runtimeHolder.rebuild), and no file is replaced under a reader. A
+// rewrite in place gave neither: the build wrote before it could refuse, and a pane launched
+// during a rewrite could read one key new and another old.
+//
+// A build whose keys have not moved writes nothing: it is handed the set already written for
+// them, the one the runtime it replaces was built on or the one a refused build wrote for the
+// same keys. Resolving a secretsd key of the human tier may cost a person a YubiKey tap, and the
+// runtime is built again for every change of a row it holds — its boot build right after the
+// gate's write among them, and every build after a refused one — so a write at every build would
+// ask for a tap over a change that moved no key. A secretsd key's value is no file of this host's,
+// so a change of it inside secretsd alone reaches the panes at the next change of
 // `provider_keys` or the next boot, as it did before the runtime wrote the keys again.
 //
+// A set stays while a runtime built on it holds it, and a runtime holds its set past its own
+// stop. The holder stops a runtime once it has swapped in its successor and the calls inside it
+// have returned (runtimeHolder.rebuild), but a pane a tmux Spawn opened has not read its set when
+// that call returns: Spawn answers once the pane's process runs its command, and the shim reads
+// `--provider-env-dir` after that, before it dials the daemon (workerShimConfig). So a runtime
+// releases its set the registration deadline after it is stopped — `worker_boot_timeout_seconds`
+// times `worker_boot_registration_deadline_intervals`, as the configuration it was built from
+// sets them, both rows of the runtime's own — the bound by which every pane it opened has said
+// hello, having read its set first, or has been retired by its claim's machine (supervise's
+// armRegistration). Removed at the stop, the set could go from under a pane opened a moment
+// before, whose shim would then refuse to start and spend one of the claim's launch failures on
+// the daemon's own tidying. The last write's set is never released, so the set of the runtime
+// the daemon serves at its stop stays for the next boot to clear.
+//
+// What no runtime holds goes — a refused build's set once a write answers another, a key no
+// longer configured once the last runtime built on its set has released it (config.
+// RemoveProviderKeysBut) — and the boot's write removes whatever an earlier daemon left, the
+// files it wrote straight into the directory before sets among them.
+//
 // Builds never overlap — the boot's runs before any settings change can, and every rebuild runs
-// under the settings holder's lock — so it takes no lock of its own.
+// under the settings holder's lock — and the lock here is for the releases, each of which runs on
+// a timer of its own.
 type providerKeyFiles struct {
 	stateDir string
 	environ  []string
 	log      *slog.Logger
-	// written says the directory has been written; keys and files are what it was written from
-	// (the entries, and their files' digest read before the write, so a file rotated during it is
-	// written again at the next build), and dir what MaterializeProviderKeys answered.
-	written bool
-	keys    []config.ProviderKey
-	files   string
-	dir     string
+	mu       sync.Mutex
+	// latest is the set the last write answered, which no release removes; sets are every set
+	// written and not yet removed, latest among them.
+	latest *providerKeySet
+	sets   []*providerKeySet
 }
 
-// write writes keys into the directory unless they and their files are what it last wrote, and
-// answers the directory, "" with no keys.
-func (f *providerKeyFiles) write(keys []config.ProviderKey) (string, error) {
+// providerKeySet is one set of provider keys a write made: the entries it was written from and
+// their files' digest read before the write (so a file rotated during it is written again at the
+// next build), the directory MaterializeProviderKeys answered ("" for no keys), and how many
+// runtimes built on it have not yet released it.
+type providerKeySet struct {
+	keys  []config.ProviderKey
+	files string
+	dir   string
+	held  int
+}
+
+// write answers the set a build of keys is handed — the one written for them and their files,
+// else a new one — and removes every set no runtime holds but that one. A write that refuses
+// removes nothing.
+func (f *providerKeyFiles) write(keys []config.ProviderKey) (*providerKeySet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	files := credentialDigest(providerKeyFilesOf(keys)...)
-	if f.written && slices.Equal(keys, f.keys) && files == f.files {
-		return f.dir, nil
+	i := slices.IndexFunc(f.sets, func(s *providerKeySet) bool { return s.files == files && slices.Equal(s.keys, keys) })
+	if i < 0 {
+		dir, err := config.MaterializeProviderKeys(keys, f.stateDir, f.environ, f.log)
+		if err != nil {
+			return nil, err
+		}
+		f.sets = append(f.sets, &providerKeySet{keys: slices.Clone(keys), files: files, dir: dir})
+		i = len(f.sets) - 1
 	}
-	dir, err := config.MaterializeProviderKeys(keys, f.stateDir, f.environ, f.log)
-	if err != nil {
-		return "", err
+	f.latest = f.sets[i]
+	f.removeUnheld()
+	return f.latest, nil
+}
+
+// builds is factory, the build of a runtime on set from c: each runtime it builds holds the set
+// until the registration deadline c sets has passed after the runtime is stopped, which ends the
+// context the factory is handed.
+func (f *providerKeyFiles) builds(set *providerKeySet, c config.Config, factory runtimeFactory) runtimeFactory {
+	hold := runtime.RegistrationDeadline(c.WorkerBootTimeout, c.WorkerBootRegistrationDeadlineIntervals, 0)
+	return func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		rt, err := factory(ctx, listener, address, tokens, repository, st, mapped)
+		if err != nil {
+			return nil, err
+		}
+		f.mu.Lock()
+		set.held++
+		f.mu.Unlock()
+		context.AfterFunc(ctx, func() {
+			time.AfterFunc(hold, func() {
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				set.held--
+				f.removeUnheld()
+			})
+		})
+		return rt, nil
 	}
-	f.written, f.keys, f.files, f.dir = true, slices.Clone(keys), files, dir
-	return dir, nil
+}
+
+// removeUnheld removes every set but the latest and those a runtime still holds, with whatever
+// else the directory holds (config.RemoveProviderKeysBut). What it could not remove is logged and
+// found again by the next removal, since that keeps only the sets it names. The caller holds mu.
+func (f *providerKeyFiles) removeUnheld() {
+	f.sets = slices.DeleteFunc(f.sets, func(s *providerKeySet) bool { return s != f.latest && s.held == 0 })
+	keep := make([]string, 0, len(f.sets))
+	for _, s := range f.sets {
+		keep = append(keep, s.dir)
+	}
+	if err := config.RemoveProviderKeysBut(f.stateDir, keep); err != nil {
+		f.log.Error("provider_keys: a set of keys no runtime holds could not be removed; the next removal tries again", "error", err)
+	}
 }
 
 // providerKeyFilesOf are the files keys name (`file:/abs/path`), in order; a secretsd key names
