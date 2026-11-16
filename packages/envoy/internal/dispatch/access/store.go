@@ -25,6 +25,8 @@ var (
 	ErrVisibilityInput       = errors.New("a project is public or private")
 	ErrListFull              = fmt.Errorf("an access list names at most %d people and groups", MaxPrincipals)
 	ErrGroupFull             = fmt.Errorf("a group holds at most %d members", MaxGroupMembers)
+	ErrSlackChannelInput     = errors.New("a Slack channel is named by its id, such as C0123456789")
+	ErrSlackChannelsFull     = fmt.Errorf("a project names at most %d Slack channels", MaxSlackChannels)
 )
 
 // The bounds of an access list and of a group.
@@ -76,10 +78,11 @@ func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAcces
 	err := q.QueryRow(ctx, `
 		select p.key, coalesce(p.owner, ''), p.visibility,
 			array(select principal from project_access where project_key = p.key and principal_kind = 'person' order by principal collate "C"),
-			array(select principal from project_access where project_key = p.key and principal_kind = 'group' order by principal collate "C")
+			array(select principal from project_access where project_key = p.key and principal_kind = 'group' order by principal collate "C"),
+			p.slack_channels
 		from projects p
 		where p.key = $1
-	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups)
+	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -116,6 +119,40 @@ func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visib
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessVisibilityChanged, "", by)
+}
+
+// MaxSlackChannels is how many Slack channels a project names.
+const MaxSlackChannels = 16
+
+// slackChannel is the form of a Slack channel id, which the column's own check repeats.
+var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
+
+// SetSlackChannels replaces the Slack channel ids project key's credentials may post to, sorted
+// and with each id named once. The secrets broker releases the Legion Slack bot token to a
+// private project's credentials for these channels alone (R14), so only the project's owner
+// writes them: the caller makes that check first. It appends project.access_changed in tx.
+func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor) (model.ProjectAccess, model.Event, error) {
+	named := make([]string, 0, len(channels))
+	for _, channel := range channels {
+		id := strings.TrimSpace(channel)
+		if !slackChannel.MatchString(id) {
+			return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %q", ErrSlackChannelInput, id)
+		}
+		named = append(named, id)
+	}
+	slices.Sort(named)
+	named = slices.Compact(named)
+	if len(named) > MaxSlackChannels {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %d given", ErrSlackChannelsFull, len(named))
+	}
+	tag, err := tx.Exec(ctx, `update projects set slack_channels = $2 where key = $1`, key, named)
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("write the Slack channels of project %s: %w", key, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	return appendProjectChange(ctx, tx, ev, key, model.AccessSlackChannelsChanged, "", by)
 }
 
 func updateProject(ctx context.Context, tx pgx.Tx, key, statement string, value string) error {

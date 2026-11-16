@@ -25,6 +25,9 @@ type projectAccessInput struct {
 	Owner *string `json:"owner,omitempty"`
 	// Visibility is public or private.
 	Visibility *string `json:"visibility,omitempty"`
+	// SlackChannels replaces the Slack channel ids the project's credentials may post to, at
+	// most 16, each `C…` or `G…`; [] names none.
+	SlackChannels *[]string `json:"slack_channels,omitempty"`
 }
 
 // getProjectAccess answers who may see project key and who changes that.
@@ -54,8 +57,8 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if input.Owner == nil && input.Visibility == nil {
-		writeError(w, "PROJECT_ACCESS_INPUT", http.StatusBadRequest, "name the owner, the visibility or both")
+	if input.Owner == nil && input.Visibility == nil && input.SlackChannels == nil {
+		writeError(w, "PROJECT_ACCESS_INPUT", http.StatusBadRequest, "name the owner, the visibility, the Slack channels or several of them")
 		return
 	}
 	if input.Visibility != nil && *input.Visibility == model.ProjectPrivate {
@@ -75,6 +78,13 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 		}
 		if input.Owner != nil {
 			written, event, err := access.SetOwner(ctx, tx, s.deps.Events, key, *input.Owner, by)
+			if err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			answer, appended = written, append(appended, event)
+		}
+		if input.SlackChannels != nil {
+			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
@@ -186,6 +196,8 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrVisibilityInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{access.ErrListFull, "ACCESS_LIST_FULL", http.StatusConflict},
 		{access.ErrGroupFull, "GROUP_FULL", http.StatusConflict},
+		{access.ErrSlackChannelInput, "INVALID_SLACK_CHANNEL", http.StatusBadRequest},
+		{access.ErrSlackChannelsFull, "CAP_EXCEEDED", http.StatusBadRequest},
 	} {
 		if errors.Is(err, refusal.match) {
 			writeError(w, refusal.code, refusal.status, err.Error())

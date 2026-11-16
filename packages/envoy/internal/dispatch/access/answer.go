@@ -32,10 +32,12 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 					union
 					select renamed_to from repo_projects where project = p.key and renamed_to is not null
 				) repositories
-				order by name collate "C")
+				order by name collate "C"),
+			p.slack_channels
 		from projects p, person
 		where p.key = $1
-	`, key, login).Scan(&answer.Project, &answer.Visibility, &answer.Owner, &answer.MemberKind, &answer.Visible, &answer.Repositories)
+	`, key, login).Scan(&answer.Project, &answer.Visibility, &answer.Owner, &answer.MemberKind, &answer.Visible,
+		&answer.Repositories, &answer.SlackChannels)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.AccessAnswer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
