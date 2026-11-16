@@ -194,8 +194,12 @@ type lockGraph struct {
 	stored map[*types.Var][]*lockFunction
 	// concrete are this module's named types that are not interfaces, the candidates for an
 	// interface method call.
-	concrete        []types.Type
-	implementations map[*types.Func][]*lockFunction
+	concrete []types.Type
+	// implementations is funcTargets' answer for each interface method it has been asked about,
+	// filled as the walks ask. The guard tests run in parallel over the one graph
+	// sharedCopyLockGraph builds, so implementationsMu guards every read and write of it.
+	implementationsMu sync.Mutex
+	implementations   map[*types.Func][]*lockFunction
 }
 
 // listedPackage is the part of `go list -json` the guard reads.
@@ -533,6 +537,8 @@ func (g *lockGraph) funcTargets(fn *types.Func) []*lockFunction {
 		}
 		return nil
 	}
+	g.implementationsMu.Lock()
+	defer g.implementationsMu.Unlock()
 	if implementations, ok := g.implementations[fn]; ok {
 		return implementations
 	}

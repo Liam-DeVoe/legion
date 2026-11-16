@@ -177,6 +177,7 @@ func TestPlanReviewTakesAPlanRowThatCarriesNoRole(t *testing.T) {
 // approval of it is requested as any other project document's is, and no plan review takes it.
 // The project's notes.md is the control: its request opens an ask the same way.
 func TestAProjectDocumentNamedPlanIsAPlainDocument(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	createInteractionIssue(t, handler, "PROJPLAN", "A project with documents", "A spec\n")
 	type requested struct {
@@ -214,6 +215,7 @@ func TestAProjectDocumentNamedPlanIsAPlainDocument(t *testing.T) {
 // answers ISSUE_CLOSED, the real blocker, and not PLAN_APPROVED_BY_REVIEW, whose advice to record
 // the approval with dispatch plan-approve would only be refused in its turn.
 func TestAnApprovalRequestOnAClosedIssuesPlanNamesTheClose(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "PLANC", "Closed with its plan", "A spec\n")
 	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nOne.\n")

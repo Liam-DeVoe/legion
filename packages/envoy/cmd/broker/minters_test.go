@@ -94,6 +94,7 @@ func TestEachKindReachesItsOwnMinter(t *testing.T) {
 // and nothing else, so a kind added to policy.Kinds with no minter behind it, or a minter left
 // under a key no kind names, fails here rather than when a session asks for that secret.
 func TestKindMinters(t *testing.T) {
+	t.Parallel()
 	minters := kindMinters(secrets.GitHubApp{}, secrets.GoogleLogin{}, secrets.AzureLogin{}, &secrets.GoogleServiceAccount{})
 	for _, kind := range policy.Kinds {
 		if minters[kind] == nil {
@@ -111,6 +112,7 @@ func TestKindMinters(t *testing.T) {
 }
 
 func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "azure-token")
 	const token = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
@@ -142,6 +144,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 // Google login's 503 is then tried once. Two seconds on, the budget holds two retries again, and
 // the same Google minter asks three times.
 func TestKindMintersShareOneRetryBudget(t *testing.T) {
+	t.Parallel()
 	var githubCalls, googleCalls atomic.Int64
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		githubCalls.Add(1)
@@ -183,6 +186,7 @@ func TestKindMintersShareOneRetryBudget(t *testing.T) {
 // the GitHub stand answering its token request 503 once and then as ordinary mints at the second
 // attempt, and the registry's own handler serves both attempts in broker_mint_attempts_total.
 func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
+	t.Parallel()
 	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
 	if err != nil {
 		t.Fatal(err)

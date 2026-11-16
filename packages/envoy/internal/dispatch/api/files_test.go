@@ -253,6 +253,9 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // bucket, so the bucketless process serves it. A live process with a bucket, or a bucketless one
 // whose row has lapsed, leaves the bytes in the bucket alone.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
+	// No t.Parallel: the process a row inserts reads as live for only 15 s
+	// (processes.LiveWindow), and in the two rows that keep the bytes the upload must find it live,
+	// a span below concurrentWait.
 	for _, tc := range []struct {
 		name, insert string
 		keepsBytes   bool
@@ -263,6 +266,9 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// No t.Parallel: the process this row inserts reads as live for only 15 s
+			// (processes.LiveWindow), and where it keeps the bytes the upload must find it live, a
+			// span below concurrentWait.
 			memory := filestest.NewMemory()
 			handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 			issue := fileIssue(t, handler)
@@ -320,12 +326,6 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 	return h.Memory.Put(ctx, sha, mime, body)
 }
 
-// uploadLockProbeWindow bounds how long the probe below retries the issue's row lock. It is far
-// longer than any write this test's own setup makes - the issue create and the settlement of the
-// spec document it wrote - and shorter than the package's test timeout, so a holder the probe
-// cannot name is reported as a failure rather than a hang.
-const uploadLockProbeWindow = 20 * time.Second
-
 // uploadIssueLock is the statement an upload's transaction takes the issue row with
 // (storeArtifact's issue branch, through requireOpenOwnerStatus and issueOpenStatus under
 // ownerRowLock), as pg_stat_activity shows it, and it is the only statement of this test's two
@@ -334,8 +334,8 @@ const uploadLockProbeWindow = 20 * time.Second
 // (events/broker.go), never this one. It is also the first statement the upload's transaction
 // makes, so an upload that opened its transaction before writing its object would sit on it for
 // the whole of Put. One that ran further statements between the row and Put would show one of
-// those instead and be retried to the window's end, whose failure names what it read rather
-// than timing out mutely.
+// those instead and be retried until concurrentWait gives up, whose failure names what it read
+// rather than timing out mutely.
 const uploadIssueLock = "select status, closed_at is null from issues where key = $1 for no key update"
 
 // issueRowLockHolder is what the probe reads of the backend whose transaction holds the issue's
@@ -400,8 +400,8 @@ func readIssueRowLockHolder(t *testing.T, database *store.Store, issue string) *
 // Which of the two it met is measured rather than reasoned: the first refused attempt reads the
 // holder of the row (readIssueRowLockHolder) and logs it, so a run that waited names the writer
 // it waited for, and a holder running the upload's own statement (uploadIssueLock) fails the
-// test there, where retrying could only spend the window. Most runs are refused nothing and log
-// nothing: the settlement usually commits while fileIssue's own request is still answering,
+// test there, where retrying could only spend concurrentWait. Most runs are refused nothing and
+// log nothing: the settlement usually commits while fileIssue's own request is still answering,
 // before there is an upload to hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	t.Parallel()
@@ -452,7 +452,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
-	deadline := time.Now().Add(uploadLockProbeWindow)
+	deadline := time.Now().Add(concurrentWait)
 	// Read once, at the first refusal: a reading per attempt would bury the one that matters,
 	// and a holder parked in Put is still there to be named at any later attempt.
 	var holder *issueRowLockHolder
@@ -481,7 +481,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("lock the issue while its upload's bytes are in flight, over %s of attempts: %v; the first refusal read %s", uploadLockProbeWindow, err, heldBy())
+			t.Fatalf("lock the issue while its upload's bytes are in flight, over %s of attempts: %v; the first refusal read %s", concurrentWait, err, heldBy())
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

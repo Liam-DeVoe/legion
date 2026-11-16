@@ -16,6 +16,9 @@ import (
 // methods decode it, and an answer carrying none (DENY_ME, as a broker from before the field
 // answers every denial) decodes as nil rather than as an empty sentence no line could tell from a
 // real one.
+// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which sessionContext (main.go) reads the
+// broker's address and the signer from; t.Setenv panics under t.Parallel.
 func TestTheClientDecodesARefusalsDetail(t *testing.T) {
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -49,6 +52,7 @@ func TestTheClientDecodesARefusalsDetail(t *testing.T) {
 // of those lines is then exactly the line it was, with no empty detail line and no dangling
 // colon. Every case drives the one built binary, since a build costs more than all of them.
 func TestEveryLineAboutARefusalNamesTheSecretAndTheRule(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()

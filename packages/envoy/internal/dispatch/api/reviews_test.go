@@ -522,6 +522,7 @@ func approvalShown(t *testing.T, handler http.Handler, artifactID string) string
 // read, and nothing is written - no review, no event, the approval as it was - so `dispatch
 // review --version 1` never records version 2 in a person's name.
 func TestAReviewNamingAVersionRecordsOnlyTheVersionTheReviewWouldRecord(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, artifactID := specMovedToVersionTwo(t)
 	reviewEvents := func() []string {
 		t.Helper()
@@ -591,6 +592,7 @@ func TestAReviewNamingAVersionRecordsOnlyTheVersionTheReviewWouldRecord(t *testi
 // A {number} that is no version of any document, whether zero, a negative number or a word, is
 // refused 400 INVALID_REVIEW before the document is read, and nothing is written.
 func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, artifactID := specMovedToVersionTwo(t)
 	approvalBefore := approvalShown(t, handler, artifactID)
 	eventsBefore := len(issueEvents(t, handler, issueKey))
@@ -623,6 +625,7 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 // same token naming no other session is refused that 400, so the number check is live for the
 // caller the 403 turned away. None of them writes a review.
 func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const personToken = "a-person-token-that-reviews"
@@ -700,6 +703,7 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 // row holds them apart here, and the review is held to the request's version, not the latest. A
 // refused review leaves the request open and unanswered, writes no review and appends no event.
 func TestAReviewUnderAnOpenRequestMustNameTheVersionTheRequestNames(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Review under a request", "A spec")
 	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})

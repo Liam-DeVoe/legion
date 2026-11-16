@@ -748,6 +748,7 @@ func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
 // stored as reads back as written and the create is refused, naming the line as written
 // (pmdoc's htmlFlowRefusal).
 func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

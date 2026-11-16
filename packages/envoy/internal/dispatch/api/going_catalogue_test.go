@@ -109,6 +109,8 @@ func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) 
 // nothing else — each entry carries that spec's own description and its own argument schema,
 // unchanged — and every row an entry names is a write of the table the server mounts.
 func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
+	// No t.Parallel: each of its rows writes a throwaway tool's rows into the package-level
+	// goingToolRoutes (withThrowawayToolRoutes), which every catalogue build in this process reads.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	catalogue, err := buildGoingCatalogue(routes)
 	if err != nil {
@@ -156,6 +158,8 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 	}
 
 	t.Run("a tool naming a row the table does not hold fails the build", func(t *testing.T) {
+		// No t.Parallel: withThrowawayToolRoutes writes into the package-level goingToolRoutes,
+		// which every catalogue build in this process reads.
 		withThrowawayToolRoutes(t, "dispatch_whoami", goingToolRoute{
 			Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint",
 			Path: map[string]string{"id": "widget"},
@@ -167,6 +171,8 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 	})
 
 	t.Run("a tool naming a read row fails the build", func(t *testing.T) {
+		// No t.Parallel: withThrowawayToolRoutes writes into the package-level goingToolRoutes,
+		// which every catalogue build in this process reads.
 		withThrowawayToolRoutes(t, "dispatch_whoami", goingToolRoute{
 			Method: http.MethodGet, Pattern: "/api/v1/projects", Path: map[string]string{},
 		})
@@ -177,6 +183,8 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 	})
 
 	t.Run("rows named for a tool that does not exist fail the build", func(t *testing.T) {
+		// No t.Parallel: withThrowawayToolRoutes writes into the package-level goingToolRoutes,
+		// which every catalogue build in this process reads.
 		withThrowawayToolRoutes(t, "dispatch_paint_widget", goingToolRoute{
 			Method: http.MethodPost, Pattern: "/api/v1/projects", Path: map[string]string{},
 		})
@@ -187,6 +195,8 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 	})
 
 	t.Run("a placeholder no argument of the tool fills fails the build", func(t *testing.T) {
+		// No t.Parallel: withThrowawayToolRoutes writes into the package-level goingToolRoutes,
+		// which every catalogue build in this process reads.
 		withThrowawayToolRoutes(t, "dispatch_whoami", goingToolRoute{
 			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/claim",
 			Path: map[string]string{"key": "issue"},
@@ -203,6 +213,7 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 // or, for the two review routes, one it must never propose, and the list is committed here so a
 // write added later is either given a tool or added to it.
 func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
+	t.Parallel()
 	routes := (&server{}).routes()
 	performed := map[string]bool{}
 	for _, rows := range goingToolRoutes {
@@ -226,6 +237,7 @@ func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 // TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument: each entry's schema accepts
 // the call the tool spec carries, and refuses that call with any one required argument left out.
 func TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument(t *testing.T) {
+	t.Parallel()
 	catalogue, err := buildGoingCatalogue((&server{}).routes())
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
@@ -269,6 +281,7 @@ func (d *countingDoer) Do(request *http.Request) (*http.Response, error) {
 // nobody serves is refused with the caller's own error, and the client is never asked to send
 // anything. The action it does hold is the control: that one is sent.
 func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
@@ -369,6 +382,8 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is
 // refused, so no entry can promise an edge the graph has no kind for.
 func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
+	// No t.Parallel: withThrowawayToolRoutes writes a throwaway tool's rows into the
+	// package-level goingToolRoutes, which every catalogue build in this process reads.
 	families := edgeFamilies()
 	for _, relation := range append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...) {
 		if !slices.Contains(families, relation) {
@@ -395,6 +410,7 @@ func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
 // TestTheGoingCatalogueIsMountedOnTheServedTable: the server builds its catalogue from the table
 // it mounts, so the route serves what the tests above check rather than a copy built elsewhere.
 func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/going/catalogue", nil, "alice")
 	if response.Code != http.StatusOK {

@@ -94,6 +94,7 @@ func (s *narrowingServer) values(t *testing.T, grantID string, body any) (int, [
 // and answers the narrowing it applied as github_app. A release with no body, or an empty object,
 // is today's: no narrowing reaches the minter and the answer carries no github_app.
 func TestAReleaseNarrowsAGitHubAppToken(t *testing.T) {
+	t.Parallel()
 	s := newNarrowingServer(t)
 
 	status, body := s.values(t, s.grantID, map[string]any{"github_app": map[string]any{
@@ -146,6 +147,7 @@ func TestAReleaseNarrowsAGitHubAppToken(t *testing.T) {
 // shows; a narrowing of a grant that holds no github-app secret is refused 400
 // NARROWING_NOT_APPLICABLE. None runs a minter.
 func TestABadNarrowingIs400AndMintsNothing(t *testing.T) {
+	t.Parallel()
 	s := newNarrowingServer(t)
 	for _, tc := range []struct {
 		name      string
@@ -186,6 +188,7 @@ func TestABadNarrowingIs400AndMintsNothing(t *testing.T) {
 // App that failed, and each is logged at WARN as a refused narrowing, never as the operator's
 // mint failure, beside the record of the refusal the answer recorder writes for it.
 func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing.T) {
+	// Serial: it swaps the standard logger's output (policytest.CaptureLog).
 	logged := policytest.CaptureLog(t)
 	s := newNarrowingServer(t)
 	for _, tc := range []struct {
@@ -245,6 +248,7 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 // arms come in, and this fails once the shared helper answers the sentinel ahead of
 // ErrMintFailed.
 func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
+	t.Parallel()
 	s := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {

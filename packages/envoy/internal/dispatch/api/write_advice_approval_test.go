@@ -73,6 +73,7 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 // whoever approved it), so the client names `dispatch plan-approve` rather than
 // `dispatch request-approval` for a plan, which it reads from the document's role.
 func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "PLANGATE")
 	spec := "# Transport\n\nThe design.\n"

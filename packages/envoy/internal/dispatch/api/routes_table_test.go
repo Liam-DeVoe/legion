@@ -44,6 +44,7 @@ func routeIndexLines(routes []apiRoute) string {
 // table happens to hold: two methods of one path whose auth classes sort the other way round are
 // ordered by their methods, not by their auth.
 func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
+	t.Parallel()
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
 		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
@@ -218,6 +219,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 // one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
 // having one, so nothing else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	t.Parallel()
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
 		descriptions[route.Method+" "+route.Pattern] = route.Description
@@ -271,6 +273,8 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 // nothing and says why not at once, and one that resolves an id without naming that 404, fails
 // on each.
 func TestEveryIDRouteIsNamed(t *testing.T) {
+	// No t.Parallel: four of its rows write a row into the package-level idRoutes (withIDRoute),
+	// which every server this process registers reads its routes' id prefixes from.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
@@ -299,6 +303,8 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves nothing and gives no reason fails it too", func(t *testing.T) {
+		// No t.Parallel: withIDRoute writes into the package-level idRoutes, which every server
+		// this process registers reads.
 		withIDRoute(t, "GET /api/v1/widgets/{block_id}", idRoute{})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{block_id}", Auth: authAny}},
@@ -309,6 +315,8 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves a kind and gives a reason fails it too", func(t *testing.T) {
+		// No t.Parallel: withIDRoute writes into the package-level idRoutes, which every server
+		// this process registers reads.
 		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask", NotFound: "NOT_FOUND", Reason: "and also not"})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
@@ -319,6 +327,8 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves an id and names no 404 of its own fails it too", func(t *testing.T) {
+		// No t.Parallel: withIDRoute writes into the package-level idRoutes, which every server
+		// this process registers reads.
 		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask"})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
@@ -329,6 +339,8 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves a block and names no 404 for it fails it too", func(t *testing.T) {
+		// No t.Parallel: withIDRoute writes into the package-level idRoutes, which every server
+		// this process registers reads.
 		withIDRoute(t, "GET /api/v1/widgets/{id}/blocks/{block_id}",
 			idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND", Blocks: true})
 		undecided := undecidedIDRoutes([]apiRoute{
