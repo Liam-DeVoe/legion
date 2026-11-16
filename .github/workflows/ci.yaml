@@ -1133,6 +1133,11 @@ jobs:
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
               - 'packages/envoy/internal/brokerclient/testdata/wire.json'
+              # The connection proofs each client's checker reads of the other's signer:
+              # packages/broker-client/src/__tests__/dpop.test.ts:212-215 reads both by relative
+              # path, so a vector written again on either side must start this job.
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-go.json'
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-ts.json'
             # The private workspace package both Oh My Pi plugins import, and the jj
             # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
             # that runs the real jj.

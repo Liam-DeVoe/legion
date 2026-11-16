@@ -53,7 +53,7 @@
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
-    "lint": "bunx biome check src/ test/"
+    "lint": "bunx biome check src/ test/ scripts/"
   },
   "dependencies": {
     "@legion/contracts": "workspace:*",
