@@ -369,9 +369,11 @@ case "$mode" in
     # bound was 2,040 s when this mode was written, from four runs of 2026-11-11 and 2026-11-12,
     # 43045412941, 43074443876, 43079610268 and 43150379433, which cost 2,061, 1,974, 1,997 and
     # 2,041 s with their merge jobs (2,025, 1,946, 1,964 and 2,003 s without); it became 2,400 s
-    # when the machines moved, not when this suite did, and 2,700 s when one slow afternoon
-    # proved that an absolute figure near the
-    # measurement is a figure the fleet decides. On 2026-11-15 two runs of one tree cost 2,252
+    # when the machines moved, not when this suite did - between run 43150379433 (2,003 s) and
+    # run 43192333526 (2,285 s), both dispatched on 2026-11-12, the binaries job, which runs no
+    # row, rose from 157 to 205 s - and 2,700 s when one slow pair of runs proved that an
+    # absolute figure near the measurement is a figure the fleet decides. On 2026-11-15 two runs
+    # of one tree cost 2,252
     # and 2,450 s (43664675139, 43667557013), whose real-stack row medians were 2,746 and
     # 3,126 ms: the lane's cost tracked the runner and not the rows. The default branch moved
     # with it, as it always does - the thirteen green merge-queue runs of that day up to 15:03Z
