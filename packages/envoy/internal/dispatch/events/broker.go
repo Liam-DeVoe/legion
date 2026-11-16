@@ -278,12 +278,56 @@ func (b *Broker) AppendAll(ctx context.Context, tx pgx.Tx, events []model.Event)
 	for _, key := range slices.Sorted(maps.Keys(last)) {
 		queueOwnerSeq(&batch, appended[last[key]])
 	}
+	queueSessionProjects(&batch, appended)
 	if batch.Len() > 0 {
 		if err := tx.SendBatch(ctx, &batch).Close(); err != nil {
 			return nil, err
 		}
 	}
 	return appended, nil
+}
+
+// queueSessionProjects queues into b the record that each session among events' actors acted in
+// the project its event belongs to (session_projects), which is how a session is one of a
+// project's agents (access.SessionClause): a read model of the event log, not a node, so it is
+// written here, where every event is appended, rather than by each route. An event of a person,
+// of a credential that names no session (a personal token's actor has an empty id) or of no
+// project records nothing.
+//
+// A pair is written only where no committed row holds it, and session_projects has no unique
+// key, so the write never waits for another transaction: with a unique key, a second open write
+// of the same pair would wait for the first to end, and the two writers hold their issues' locks
+// while they append, so a first writer that then takes the second's issue would wait for it in
+// turn, a deadlock (TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit). Two writes open
+// at once may therefore both record a pair; every reader asks only whether a row exists, and the
+// rows a pair can gain this way are bounded by how many of its writers are open at one moment.
+func queueSessionProjects(b *pgx.Batch, events []model.Event) {
+	type pair struct{ session, project string }
+	seen := make(map[pair]struct{})
+	var sessions, projects []string
+	for _, e := range events {
+		if e.Actor.Kind != "session" || e.Actor.ID == "" || e.Project == "" {
+			continue
+		}
+		p := pair{e.Actor.ID, e.Project}
+		if _, recorded := seen[p]; recorded {
+			continue
+		}
+		seen[p] = struct{}{}
+		sessions = append(sessions, p.session)
+		projects = append(projects, p.project)
+	}
+	if len(sessions) == 0 {
+		return
+	}
+	store.QueueExec(b, "record the sessions' projects", `
+		insert into session_projects (session_id, project_key)
+		select input.session_id, input.project_key
+		from unnest($1::text[], $2::text[]) as input(session_id, project_key)
+		where not exists (
+			select 1 from session_projects recorded
+			where recorded.session_id = input.session_id and recorded.project_key = input.project_key)
+	`, sessions, projects)
 }
 
 // queueOwnerSeq queues into b the write recording e, its owner's last appended event, as that
@@ -312,21 +356,23 @@ func ownerless(e model.Event) bool {
 }
 
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
-// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
-// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
-// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
-// event is refused, so there is still no ownerless event for a plain configuration change: a
-// cross-project singleton settings table (no project, issue, or artifact of its own) has
-// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
-// a worked example of a route that checked this directly and deliberately skips appending an
-// event rather than inventing an owner.
+// of them is one of exactly three kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>"; a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>"; and a group's write
+// (model.AccessGroupEventPayload, `access_group.changed`), keyed "access_group:<name>", since a
+// group belongs to no project. Any other ownerless event is refused, so there is still no
+// ownerless event for a plain configuration change: a cross-project singleton settings table (no
+// project, issue, or artifact of its own) has nothing valid to pass here. See
+// api/settings_delivery.go's putDeliverySettings doc comment for a worked example of a route that
+// checked this directly and deliberately skips appending an event rather than inventing an owner.
 //
 // The key of an ownerless event locks nothing: lockOwners skips it, and AppendAll advances no
-// sequence for it. It is the event's identity in lockOwners' sort, so it is per priority as it is
-// per session. What orders two writes of one priority is the priority_nodes row each wrote before
-// it appended (AppendAll's doc). Two writes of different priorities share no key, so the broker
-// adds no wait between them; they wait on each other only where their own writes do, as a create
-// and a rank move both take the order's allocation lock (prioritystore.RankAt).
+// sequence for it. It is the event's identity in lockOwners' sort, so it is per priority, per
+// group and per session. What orders two writes of one priority is the priority_nodes row each
+// wrote before it appended (AppendAll's doc), and of one group its access_groups row. Two writes
+// of different priorities share no key, so the broker adds no wait between them; they wait on
+// each other only where their own writes do, as a create and a rank move both take the order's
+// allocation lock (prioritystore.RankAt).
 func eventOwnerKey(e model.Event) (string, error) {
 	owners := 0
 	if e.IssueKey != nil {
@@ -339,11 +385,17 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
-		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+		switch payload := e.Payload.(type) {
+		case model.PriorityEventPayload:
 			if e.Type != "priority.updated" || payload.ID == "" {
 				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
 			}
 			return "priority:" + payload.ID, nil
+		case model.AccessGroupEventPayload:
+			if e.Type != "access_group.changed" || payload.Name == "" {
+				return "", fmt.Errorf("ownerless group event requires type access_group.changed and a group name")
+			}
+			return "access_group:" + payload.Name, nil
 		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
@@ -460,12 +512,15 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept", "priority.updated":
+		"user_thread_state.updated", "decision.kept", "priority.updated",
+		"project.access_changed", "access_group.changed":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by.
+		// and nobody is asked anything by. A change of a project's access list, owner or
+		// visibility, or of a group, is who may see what: every reader resolves its viewer again
+		// on it, and nobody is asked anything by it.
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

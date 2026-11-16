@@ -16997,6 +16997,9 @@
           },
           "open_asks": {
             "type": "integer"
+          },
+          "visibility": {
+            "type": "string"
           }
         },
         "required": [
@@ -23902,6 +23905,9 @@
           },
           "open_asks": {
             "type": "integer"
+          },
+          "visibility": {
+            "type": "string"
           }
         },
         "required": [
