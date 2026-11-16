@@ -14795,6 +14795,11 @@ describe("executeDispatchTool", () => {
         });
       }
       if (target.pathname === "/api/v1/references") return response(emptyGraph("ask"));
+      // The read of an ask Dispatch does not hold asks whether the issue is there, so that its
+      // refusal can say which of the two is missing.
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({ issue: { key: "DSP-42", title: "An issue", status: "todo" } });
+      }
       throw new Error(`unexpected request: ${target.pathname}`);
     };
     const read = (id: string) =>
@@ -14843,7 +14848,11 @@ describe("executeDispatchTool", () => {
     expect(await refusal("rule-nobody-wrote")).toContain(
       "ask id rule-nobody-wrote must be a full uuid, a prefix of at least 8 hex characters, or the id of an :::ask block on DSP-42"
     );
-    expect(await refusal("deadbeef-0000-4000-8000-000000000000")).toContain("not found");
+    // The ask Dispatch does not hold is named, as a missing comment or message is, and the
+    // issue it names standing is what tells the two apart (dispatch://INFRA-1523).
+    expect(await refusal("deadbeef-0000-4000-8000-000000000000")).toContain(
+      "DSP-42 holds no ask deadbeef-0000-4000-8000-000000000000"
+    );
   });
 
   test("reads the children listing from a Dispatch children reference", async () => {
@@ -15869,6 +15878,43 @@ for (const [tool, args] of [
     expect((error as Error).message).not.toContain("predates post corrections");
     expect(requests).toEqual([]);
   });
+}
+
+// `.` and `..` are the same fault as the empty id with another spelling: the client encodes
+// each path segment, and the URL parse then removes the dot segments, so the request reaches
+// /api/v1/comments/ or /api/v1/ and earns the same no-route 404 this release reads as an older
+// server. So the rule is the server's own shape rule - a whole uuid, or a prefix of at least
+// eight hex characters - and anything else is refused before a request is sent.
+for (const value of [".", "..", "../..", "not-a-uuid", "1234"]) {
+  for (const tool of ["dispatch_edit_comment", "dispatch_delete_comment"] as const) {
+    test(`${tool} refuses the comment id ${JSON.stringify(value)} without calling Dispatch`, async () => {
+      const requests: string[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        requests.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+        return response({ code: "NOT_FOUND", error: "no route" }, 404);
+      };
+      const error: unknown = await executeDispatchTool({
+        tool,
+        args: tool === "dispatch_edit_comment" ? { comment: value, body: "x" } : { comment: value },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        sleep: async () => {},
+        fetchImpl: fetchImpl as typeof fetch,
+      }).then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("comment must be a bare comment id");
+      expect((error as Error).message).not.toContain("predates post corrections");
+      expect(requests).toEqual([]);
+    });
+  }
 }
 
 // Dispatch answers a correction of a post it does not hold `404 NOT_FOUND` with the word

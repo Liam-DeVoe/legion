@@ -21,9 +21,9 @@ export function pageSummaryText(offset: number, count: number, total: number): s
 }
 
 /** One hit's line. A delete takes the post's windows with its body, so a deleted post is no hit
- *  once the delete commits; a window that outlives it some other way still matches, and such a
- *  hit's snippet is empty: the deleted line every read prints for one (`deletedMark`) stands
- *  where the snippet would. */
+ *  once the delete commits. The mark is the backstop for a hit of one all the same, whose
+ *  snippet is empty: the deleted line every read prints for one (`deletedMark`) stands where
+ *  the snippet would. */
 function searchHitLine(result: SearchResult, baseUrl: string): string {
   const href = new URL(result.href, baseUrl).toString();
   const text =

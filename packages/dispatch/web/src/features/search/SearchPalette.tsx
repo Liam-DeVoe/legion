@@ -232,9 +232,9 @@ function ResultOption({
   // for keeps its own word and draws no icon, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
   // A delete takes the post's windows with its body, so a deleted post is no hit once the
-  // delete commits. A window that outlives it some other way still matches, and such a hit's
-  // snippet is empty: the deleted line stands where the snippet would, as it does in the
-  // referenced-by list.
+  // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
+  // empty: the deleted line stands where the snippet would, as it does in the referenced-by
+  // list.
   const deleted = postDeletion(result);
 
   return (

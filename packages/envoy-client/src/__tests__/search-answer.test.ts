@@ -307,8 +307,7 @@ describe("searchAnswer: where an ask hit stands", () => {
 
 describe("searchAnswer: a deleted post's hit", () => {
   // A deleted post is no hit once its delete commits, which takes its windows with its body;
-  // a window that outlives the delete some other way still matches, and such a hit's snippet is
-  // empty. The line says who deleted it and when where the snippet would be, and a post nobody
+  // the mark is the backstop for a hit of one all the same, whose snippet is empty. The line says who deleted it and when where the snippet would be, and a post nobody
   // deleted keeps its snippet.
   test("prints the deleted line in place of the snippet, on an issue's hit and a document's", () => {
     const deleted = {

@@ -103,9 +103,9 @@ while IFS= read -r query || [[ -n "$query" ]]; do
   answer="$(curl -fsS -G -H 'X-Dispatch-User: smoke@example.test' "${base}/api/v1/search" \
     --data-urlencode "q=${query}" --data-urlencode "limit=${limit}" --data-urlencode "offset=${offset}")"
   # An answer from a server that predates totals prints "-" for them. A deleted post is no hit
-  # once its delete commits, since the delete takes its windows with its body; a hit of one whose
-  # window outlived the delete some other way carries an empty snippet and its delete mark, and
-  # prints the mark in the snippet's place.
+  # once its delete commits, since the delete takes its windows with its body; a hit of one all
+  # the same, which the mark is the backstop for, carries an empty snippet and its delete mark,
+  # and prints the mark in the snippet's place.
   jq -r --arg query "$query" --argjson offset "$offset" '
     "== \($query)  total=\(.total // "-") reachable=\(.reachable // "-")",
     "   took_ms=\(.took_ms)",

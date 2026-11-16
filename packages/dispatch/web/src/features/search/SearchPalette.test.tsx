@@ -265,9 +265,8 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
   }
 });
 
-// A deleted post is no hit once its delete commits, which takes its windows with its body; a
-// window that outlives the delete some other way still matches, and such a hit's snippet is
-// empty. The hit draws the deleted line where the snippet would be, naming who deleted it and
+// A deleted post is no hit once its delete commits, which takes its windows with its body; the
+// mark is the backstop for a hit of one all the same, whose snippet is empty. The hit draws the deleted line where the snippet would be, naming who deleted it and
 // when, and no edited mark beside its kind; a post nobody deleted draws its snippet and no
 // deleted line.
 test("a deleted post's hit draws the deleted line where its snippet would be", async () => {

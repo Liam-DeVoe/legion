@@ -83,6 +83,10 @@ const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"
  * `INVALID_JSON` naming any other field is passed through. Without this, an agent is told its
  * credential lacks a scope, or that its own request was malformed, and goes asking a person for
  * one or rewriting the call.
+ *
+ * Where `post` names the post the call was for, Dispatch's own `404 NOT_FOUND` of that post is
+ * rewritten to name it, since `not found` alone says neither which post nor whether the route
+ * was there. A router's no-route 404 is not that answer and keeps the sentence above.
  */
 export async function throughPostCorrections<T>(
   tool: string,
@@ -103,7 +107,7 @@ export async function throughPostCorrections<T>(
       // Dispatch's own `not found` names neither the post nor the id, so a reader cannot tell a
       // post that is not there from an issue or a route that is not: the id the call used says
       // which (dispatch://INFRA-1523).
-      if (post !== undefined && dispatchAnswered(error, 404) && error.code === "NOT_FOUND") {
+      if (post !== undefined && dispatchNotFound(error)) {
         throw refusalWithCode(error, `this Dispatch holds no ${post.kind} ${post.id}`);
       }
       throw error;
@@ -143,34 +147,49 @@ export function withAccount(error: unknown, account: string): Error {
 }
 
 /**
- * The refusal a reference's own read of a post earns when Dispatch answers `404 NOT_FOUND`: its
- * `not found` names neither the post nor the issue, so a reader cannot tell a post that is not
- * there from an issue that is not (dispatch://INFRA-1523). The owner is read once, on this
- * failing path alone, to say which: a reference whose issue Dispatch does not hold names that
- * issue, and one whose issue stands names the post it holds no row of. A document owner is read
- * by the caller before this point, so only an issue is read here. Every caller that resolves a
- * `dispatch://KEY/<kind>/<id>` reference runs it: the four correction commands, `dispatch
- * resolve-comment`, and `dispatch read` of a comment or a message reference.
+ * Whether Dispatch itself answered `404 NOT_FOUND` for the thing asked for. A router's no-route
+ * 404, which every build gives a path that names no route, is a `DispatchNoRouteError` and is no
+ * answer about the thing: it is what tells a correction that the server predates post
+ * corrections, so it is never read as a missing post.
+ */
+function dispatchNotFound(error: unknown): error is DispatchServiceError {
+  return (
+    !(error instanceof DispatchNoRouteError) &&
+    dispatchAnswered(error, 404) &&
+    error.code === "NOT_FOUND"
+  );
+}
+
+/**
+ * The refusal a reference's own read of a post or an ask earns when Dispatch answers
+ * `404 NOT_FOUND`: its `not found` names neither the item nor the issue, so a reader cannot tell
+ * an item that is not there from an issue that is not (dispatch://INFRA-1523). The issue is read
+ * once, on this failing path alone, to say which: a reference whose issue Dispatch does not hold
+ * names that issue, and one whose issue stands names the item it holds no row of. A reference
+ * naming a document has no issue to read, so that case keeps Dispatch's own answer. Every caller
+ * that resolves a `dispatch://KEY/<kind>/<id>` reference runs it: the four correction commands,
+ * `dispatch resolve-comment`, and `dispatch read` of a comment, a message or an ask reference.
  */
 export async function refuseMissingOfRef(
   client: DispatchClient,
   error: unknown,
-  kind: "comment" | "message",
+  kind: "ask" | "comment" | "message",
   id: string,
-  owner: { readonly kind: string; readonly issue?: string },
+  owner: { readonly kind: "issue"; readonly issue: string } | { readonly kind: "project" },
   ownerName: string
 ): Promise<unknown> {
-  if (!(dispatchAnswered(error, 404) && error.code === "NOT_FOUND")) return error;
-  if (owner.kind === "issue" && owner.issue !== undefined) {
-    const issueKey = owner.issue;
+  if (!dispatchNotFound(error)) return error;
+  if (owner.kind === "issue") {
     const issueStands = await client
-      .getIssue(issueKey)
+      .getIssue(owner.issue)
       .then(() => true)
       .catch((caught: unknown) => {
         if (dispatchAnswered(caught, 404)) return false;
         throw caught;
       });
-    if (!issueStands) return refusalWithCode(error, `this Dispatch holds no issue ${issueKey}`);
+    if (!issueStands) {
+      return refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`);
+    }
   }
   return refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);
 }

@@ -94,9 +94,9 @@ const deletedPostDeliveryError = "not sent: the post was deleted"
 // cleared body and the deleted post stops matching a keyword search. The post's embedding
 // windows go in this transaction too (refs.WriteItemWindows): the cleared body splits into no
 // block, so the write enqueues no window and deletes each window the post held, and no meaning
-// search finds the post once the delete commits. A window that outlives the delete some other
-// way still matches, and search stamps that hit with the post's delete mark
-// (stampSearchPostMarks, search.go).
+// search finds the post once the delete commits. No path of this build leaves a window of a
+// deleted post behind; the mark is the backstop for a hit that reaches one all the same, which
+// search stamps with the post's delete mark (stampSearchPostMarks, search.go).
 func (s *server) clearDeletedPostBody(
 	ctx context.Context,
 	tx pgx.Tx,

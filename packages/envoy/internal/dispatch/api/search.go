@@ -885,8 +885,8 @@ totals as (
 // keeps the row and clears its body, and nothing outside the tests runs `delete from comments`.
 // That delete drops the comment's windows in its own transaction (clearDeletedPostBody,
 // refs.WriteItemWindows), so no window of a deleted comment is left for this join to read; one
-// that outlives the delete some other way joins here, and its hit carries the comment's delete
-// mark (stampSearchPostMarks). A change that deletes comment rows must delete the comment's
+// left behind by some later defect would join here, and its hit carries the comment's delete
+// mark (stampSearchPostMarks), which is the backstop for that case. A change that deletes comment rows must delete the comment's
 // windows in the same transaction, or move this join back inside the limit.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
@@ -1225,9 +1225,9 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 //
 // A delete clears the post's body, so the keyword arm drops the post with it: its search vector
 // follows the body. The meaning arm drops it too, since the delete drops the post's windows in
-// its own transaction (clearDeletedPostBody, refs.WriteItemWindows). A window that outlives the
-// delete some other way still matches, with the empty snippet the cleared body gives, and the
-// mark is what tells that hit's reader the post is deleted.
+// its own transaction (clearDeletedPostBody, refs.WriteItemWindows). This stamp is the backstop
+// for a hit of a deleted post all the same, which no path of this build produces: it carries the
+// empty snippet the cleared body gives, and the mark is what tells its reader the post is deleted.
 func (s *server) stampSearchPostMarks(ctx context.Context, results []model.SearchResult) error {
 	var comments, messages []string
 	for _, result := range results {

@@ -1,6 +1,7 @@
 import {
   dispatchToolSchema,
   dispatchToolSpecs,
+  isIdPrefix,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   zodSchemaApi,
@@ -36,6 +37,7 @@ import {
   messageIdOf,
   messageIdProblem,
   messageInReplyTo,
+  normalizeUUID,
   refOwnerName,
   replyBlockProblem,
 } from "./refs";
@@ -128,12 +130,21 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_edit_comment":
     case "dispatch_delete_comment": {
       const comment = optionalString(args, "comment");
-      // A blank id names no comment and puts the request at /api/v1/comments/, which every
-      // build answers with its router's no-route 404, whatever its age. Read as an answer,
-      // that 404 is this release's own tell for a server without the correction routes, so a
-      // blank id would be reported as the server predating them (dispatch://INFRA-1523). It is
-      // what a failed shell substitution passes, so it is refused here, before any request.
-      if (comment !== undefined && comment.trim() === "") {
+      // A bare value that is no id leaves something in the request's path that is not an id:
+      // a blank one and the dot segments the URL parse removes each reach
+      // /api/v1/comments/ or /api/v1/, which every build answers with its router's no-route
+      // 404, whatever its age, and that 404 is this release's own tell for a server without
+      // the correction routes (dispatch://INFRA-1523). No reading of that answer separates the
+      // two, so the id is refused here, before anything is sent, for dispatch resolve-comment
+      // as much as for the two corrections, since all three read this argument the same way.
+      // The rule is the server's own: a whole uuid, or a prefix of at least eight hex
+      // characters.
+      if (
+        comment !== undefined &&
+        !comment.startsWith("dispatch://") &&
+        normalizeUUID(comment) === undefined &&
+        !isIdPrefix(comment)
+      ) {
         problems.push(commentIdProblem);
       } else if (
         comment?.startsWith("dispatch://") &&

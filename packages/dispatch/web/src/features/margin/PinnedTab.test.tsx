@@ -252,7 +252,7 @@ test("a pinned message event its author edited marks its byline edited, and one 
 // holds the body it was written with, and the deleted line takes its place (`PostBody`), so no
 // part of that body prints. The byline carries no ` · edited`: the deleted line already says
 // what became of the text.
-test("a pinned message event of a post edited and then deleted reads as deleted, and its byline is not marked edited", () => {
+test("a pinned message event of a post edited and then deleted reads as deleted, and its byline is not marked edited", async () => {
   const editedThenDeleted: DispatchEvent = {
     ...messageEvent,
     payload: {
@@ -271,6 +271,22 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
       target: null,
     },
   };
+  // A standing post beside it, whose own body draws a list: the markdown of this render is
+  // asynchronous, so the assertions below wait for that list before they read either card.
+  // Without the wait they run while no body has drawn at all, and the one that says the
+  // deleted card holds no body is green whatever the card does (dispatch://INFRA-1523).
+  const standing: DispatchEvent = {
+    ...messageEvent,
+    id: 2,
+    payload: {
+      ...editedThenDeleted.payload,
+      body: "Standing message\n\n- item",
+      deleted_at: null,
+      deleted_by: null,
+      edited_at: null,
+      id: "message-2",
+    },
+  };
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -279,7 +295,7 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
       <QueryClientProvider client={queryClient}>
         <PinnedTab
           conversations={[]}
-          events={[editedThenDeleted]}
+          events={[editedThenDeleted, standing]}
           onUnpin={() => {}}
           onUnpinConversation={() => {}}
           pinnedIds={["1"]}
@@ -289,7 +305,8 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
   );
 
   try {
-    const card = view.container.querySelector("article");
+    expect(await screen.findByText("Standing message")).not.toBeNull();
+    const [card] = view.container.querySelectorAll("article");
     expect(card?.textContent).not.toContain("Pinned message");
     expect(card?.textContent).toContain("Deleted by alice");
     expect(card?.textContent).not.toContain("edited");

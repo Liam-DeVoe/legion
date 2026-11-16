@@ -622,10 +622,10 @@ func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
 
 // A delete clears a post's body, so the keyword arm drops the post at once, and it drops the
 // post's windows in the same transaction (TestDeleteDropsThePostsWindowsBeforeAnyTick). A
-// window that outlives the delete some other way still matches, and the meaning arm then
-// returns the deleted comment or message with an empty snippet; the hit carries the post's
-// delete mark so its reader can say the post is deleted, and a hit of a post that stands
-// carries none (stampSearchPostMarks). The windows are written and embedded as the package's
+// hit of a deleted post is what the mark is the backstop for, which this row makes by writing
+// the post's windows back: the meaning arm then returns the deleted comment or message with an
+// empty snippet, the hit carries the post's delete mark so its reader can say the post is
+// deleted, and a hit of a post that stands carries none (stampSearchPostMarks). The windows are written and embedded as the package's
 // meaning rows seed them; after the delete each deleted post's windows are written back as
 // they stood and the post is marked owed its windows, which is what a delete that dropped no
 // window would leave (refs.recordItemIndexed), and the tick is not run between that and the

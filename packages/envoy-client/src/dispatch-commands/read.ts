@@ -143,11 +143,17 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
   };
   if (ownerArguments.ref?.kind === "ask") {
     const ref = ownerArguments.ref;
+    // The same undecidable `not found` the corrections and the two post reads met, one arm
+    // over: a reference whose issue Dispatch does not hold reads the same as one whose ask it
+    // does not. A reference naming a document has no issue to read, so that case keeps the
+    // bare answer, as a comment on a document does.
     const askRead = await readAskRef(input.tool, ref.id, refOwnerName(ref), client, async () =>
       ref.owner.kind === "issue"
         ? client.listIssueAsks(ref.owner.issue)
         : client.getArtifactAsks(await documentIdOf(ref), "all")
-    );
+    ).catch(async (error: unknown) => {
+      throw await refuseMissingOfRef(client, error, "ask", ref.id, ref.owner, refOwnerName(ref));
+    });
     await refuseItemOffRef(input.tool, "ask", ref, stringArg(args, "ref"), askRead.ask, () =>
       documentIdOf(ref)
     );
@@ -244,14 +250,15 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         details: { issue: messageIssue, message: id },
       };
     }
+    const named = ownerArguments.ref;
     const messageRead = await client
-      .getMessage(ownerArguments.ref.owner.issue, ownerArguments.ref.id)
+      .getMessage(messageIssue, named.id)
       .catch(async (error: unknown) => {
         throw await refuseMissingOfRef(
           client,
           error,
           "message",
-          ownerArguments.ref?.id ?? "",
+          named.id,
           { kind: "issue", issue: messageIssue },
           messageIssue
         );

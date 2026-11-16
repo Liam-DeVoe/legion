@@ -280,10 +280,9 @@ func IndexItem(
 //     indexItemBlocks). The item's embedding windows are not dropped here: the delete drops them
 //     next, in this same transaction, by writing the windows of an item left with no block,
 //     which are none (api's clearDeletedPostBody, WriteItemWindows), so no meaning search finds
-//     the deleted item once the delete commits. A window that outlives the delete some other
-//     way still matches, with the empty snippet the cleared body gives, while the keyword arm
-//     drops the item with its body; search stamps that hit with the item's delete mark (api's
-//     stampSearchPostMarks).
+//     the deleted item once the delete commits. The keyword arm drops the item with its body,
+//     and for a hit of a deleted item all the same, which no path of this build produces,
+//     search stamps the item's delete mark as the backstop (api's stampSearchPostMarks).
 //   - each block's stored excerpt, which a removal keeps and which is what a reply read serves
 //     as the text of the block it answers (ReplyBlocks), so without this clear a reply still
 //     prints the deleted text.

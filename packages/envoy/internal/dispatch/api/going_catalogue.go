@@ -6,9 +6,9 @@ package api
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. The tools that write are a few dozen of
-// them, and the catalogue holds every one but dispatch_review, which is under the count where a
-// model's choice measurably falls apart, so the list is read whole: nothing searches it, and no
+// what a model chooses on, and its own argument schema. The catalogue holds every tool that
+// writes but dispatch_review, and that many actions is under the count where a model's choice
+// measurably falls apart, so the list is read whole: nothing searches it, and no
 // second schema is authored per route. It leaves dispatch_review out on purpose: a review
 // records an approval or a changes request in a person's name, and the loop that proposes
 // operations on Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
