@@ -4374,7 +4374,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   before it, both named the listener the session first registered through).
   The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
   The publish row's 403 for a denied publish reaches this route too:
-  it publishes `contracts.AgentSubject(target)`, which the stream's `notifications.agent.>` captures, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
+  it publishes `contracts.LegacyAgentSubject(target)`, the target's agent subject in the old form, with no project (`contracts.AgentSubject` builds the new form, which no producer writes yet), and the stream's `notifications.agent.>` captures it, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
@@ -4514,6 +4514,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The role is named in either form, `INFRA.<role>` or `<role>` alone, and a claim is keyed by the bare name whichever form claimed it, so this route, a publish to a role's lane and the lane's own delivery each read the name through `contracts.CanonicalRole` before they resolve the holder:
   a send to `notifications.role.<P>.<role>` reaches the holder that claimed `<role>`.
 
+- A role claim's key is the bare role name in this slice, the claim of the project the name gives (`contracts.RoleProject`), so `/v1/roles/set` answers `400`, naming both projects, for a new form under any other project (`PRIV.legion-zz-controller`, `PRIV.lead-reviewer`), as for every dotted role before; t-c-8 lifts this for a free-form role once a claim keys on its project.
+
 - `/v1/roles/set` (POST)
 
   Claims a role for a live session; the claim alone makes it the holder, and the route also adds the role's topic to its interest record.
@@ -4607,6 +4609,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   `/v1/interests/unsubscribe` drops them from the row it rewrites as well), so `Match` stops fanning those messages out to the session after its next heartbeat, and so does the lane of a session that has since lost the controller role.
 
 - A topic stored in the old form of its name, an issue's key without its project, a role's or an agent's name without one, is stored as the caller wrote it and named in `warnings` with its new form (`<old> is the old form of <new>; register <new>`), and counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
+  A role's lane is named with the claim that reaches it instead (`…; a role's lane delivers nothing to an interest: claim <project>.<role> through POST /v1/roles/set`), since an interest in a role's lane, in either form, delivers nothing.
   The session's own agent subject in the old form, which the plugins add to every registration, is counted and not named, and only the caller's own topics are weighed, so the agent subject the route adds itself is never counted ("Session consumers").
 
 - A session's own client is the last reader of a delivered frame, and it takes both forms too (`packages/envoy-client/src/consumer-delivery.ts`): a frame whose subject names the project reaches a session that followed the form without it, and the other way round, and a message on the session's own inbox under any project is its own, while another session's is refused in either form.
@@ -4680,6 +4683,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The row it rewrites also drops any stored topic reaching a private stream subject other than the session's own agent subject, as `/v1/interests/subscribe` says.
   A session whose entry records consumer delivery has its consumer's filter set to the topics left before the call answers (`sessionDelivery.refollow`);
   a failure there is logged, and the plugin drops a frame no followed topic matches.
+
+- An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
 
 - A hand-back is the one release that marks a claim it could not free (`store.RoleClaim.HandedBack`, `store.markRoleClaimHandedBack`):
   a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends.
@@ -4876,8 +4881,15 @@ an issue's events, `notifications.dispatch.issue.<KEY>.<type>` and `notification
 one session's messages, `notifications.agent.<session>` and `notifications.agent.<PROJECT or _>.<session>`;
 a role's lane, `notifications.role.<role>` and `notifications.role.<PROJECT or _>.<role>` (`contracts.CanonicalTopic`, `contracts.LegacyTwin`, `contracts.TopicForms`).
 A session's consumer filters on every form of each topic it follows, and on its own agent subject in the old form and under any project (`notifications.agent.*.<session>`), so a message published in either form is delivered once, whichever form the session registered (`bus.SessionConsumers`, `sessionConsumerTarget`).
-The two forms of a name never overlap as filters, since they differ in their token count or in the token after the family's prefix.
-An issue's topic over every issue of one project in the new form (`notifications.dispatch.issue.INFRA.>`) has no old form, since no subject pattern names the issues of one project in the old form.
+The two forms a name is read in never overlap as filters, since they differ in their token count or in the token after the family's prefix.
+An issue's topic under a wildcard project (`notifications.dispatch.issue.*.<KEY>.>`) has no old form: its old form would overlap it, and the two would reduce to a filter over every project's issues (`bus.ReduceFilterSubjects`), so it stays one filter.
+Nor has an issue's topic over every issue of one project in the new form (`notifications.dispatch.issue.INFRA.>`), since no subject pattern names the issues of one project in the old form.
+**Envoy needs nats-server v2.11.12, v2.12.4, or v2.14.0 and later.**
+From v2.10.26 (nats-io/nats-server#7713), and in 2.11 before v2.11.12 and 2.12 before v2.12.4 (a variant, nats-io/nats-server#7726), nats-server can skip a literal filter beside a wildcard one when it reads a block by subject: measured on v2.10.29, a consumer on both forms of a session's agent subject was handed a new-form message and never the old-form one stored just before it, behind 24 other sessions' messages, with no error.
+No 2.10 release has the fix, so the floor refuses every 2.10, and a prerelease counts as before its release, so v2.11.12-RC.1 to RC.3 and v2.12.4-RC.1 and RC.2, which still have the bug, are refused too.
+So the listener refuses to start against such a server, naming its version and the fixed releases: its start opens its session consumers (`bus.ConnectSessionConsumers`), which ask `natsversion.ConnectedRefusal` of the version the connection answers once it is connected, and `main` ends the process on the error (`TestTheListenerRefusesAServerThatSkipsAFilter`).
+The Legion daemon refuses it by the same function before it opens its consumers (`intake.OpenConsumers`); a connection reconnecting at that moment is waited for, within `natsversion.VersionWait`, never read as a server of no version.
+The live proofs that start their own NATS server run the hub's image, which `scripts/e2e/lib/nats-image.sh` reads from `testnats.HubImage`.
 The interest record stores each topic as its caller wrote it, because the plugins read their record back and an unfamiliar form would be unsubscribed or misread;
 the registry's own readers take both forms instead (`store.Registry.Match` through its subject index, `store.Remove`, the role read of a record), and `POST /v1/interests/subscribe` names each topic the caller gave in the old form in its answer's `warnings` with its new form, counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
 Each read of a stored row into a session's consumer filter (a repair, a restart, a fenced filter write: `storedRowFilter`) counts there too each topic the filter carries in the old form, so the counter keeps moving while any record holds one (`store.Registry.CountStoredLegacyTopics`);
