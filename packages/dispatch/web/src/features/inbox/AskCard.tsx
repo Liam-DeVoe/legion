@@ -489,6 +489,8 @@ export function AskCard({
     }
     if (quoteCaret.current === null) return;
     placeCaret(field, quoteCaret.current);
+    // The button that sends the answer comes into view with the box, where the page has room.
+    actionsRef.current?.scrollIntoView({ block: "nearest" });
     quoteCaret.current = null;
     quoteGrew.current = true;
   });
@@ -745,7 +747,8 @@ export function AskCard({
       {mutation.isPending ? "Saving…" : "Save answer"}
     </button>
   ) : (
-    <div className="inline-flex" ref={actionsRef}>
+    // `scroll-mb-4`: a Quote reply brings this row into view with the card's foot under it.
+    <div className="inline-flex scroll-mb-4" ref={actionsRef}>
       <AskSplitButton
         action={
           askingBack

@@ -24,7 +24,7 @@ import {
  *  the document's bar, whose blocks stand further apart than an ask's or a comment's lines, so it
  *  covers no more than the line just above them. */
 const MARGIN = 12;
-const GAP = 6;
+const GAP = 4;
 /** How long a touch selection stands still before its bar shows, as the document's waits. */
 const TOUCH_SETTLE_MS = 400;
 
@@ -117,7 +117,9 @@ function BarButton({
       type="button"
     >
       {label}
-      <kbd className={`rounded px-1 font-mono text-[11px] leading-4 ${selectionBarKey}`}>
+      <kbd
+        className={`min-w-[18px] rounded px-1 text-center font-mono text-xs leading-4 font-medium ${selectionBarKey}`}
+      >
         {hotkey}
       </kbd>
     </button>

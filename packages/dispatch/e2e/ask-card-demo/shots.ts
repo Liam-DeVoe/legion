@@ -585,16 +585,17 @@ const shots: Shot[] = [
     viewport: DESKTOP,
     caret: true,
     take: async (page) => {
-      await openComment(page);
-      const reply = `${COMMENT} textarea[aria-label="Reply"]`;
-      await page.locator(reply).fill("Agreed. One question about the next cycle:");
-      await drag(page, `${COMMENT} .dispatch-markdown`, "hand a refused lease back at once");
+      // The answer box holds a line the reader typed; the quote of the question's words follows.
+      await inbox(page, FLIP);
+      const answer = `${card(FLIP)} [data-ask-answer]`;
+      await page.locator(answer).fill("Flip. One thing I can't read here:");
+      await drag(page, `${card(FLIP)} [data-ask-question]`, "go with B per the train?");
       await page.keyboard.press("q");
       await page.waitForTimeout(400);
       await checkQuoted(
         page,
-        reply,
-        "Agreed. One question about the next cycle:\n\n> hand a refused lease back at once\n\n",
+        answer,
+        "Flip. One thing I can't read here:\n\n> go with B per the train?\n\n",
         "a quote goes at the end of what the box already held, after a blank line"
       );
       await rest(page);
