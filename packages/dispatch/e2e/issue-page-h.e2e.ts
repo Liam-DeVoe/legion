@@ -640,15 +640,28 @@ test("every property with a value is visible in Details at every width @phone", 
         underline: UNDERLINE,
       });
     }
-    // Who opened the issue is part E's `AgentName`, which draws its link in the ink inside
-    // `NoTooltips` (its own underline is E's, R8's last sentence).
-    expect(
-      await detailsRow(page, PROPERTY_LABELS.opened_by)
-        .getByRole("link")
-        .first()
-        .evaluate((element) => getComputedStyle(element).color),
-      "the opener in Details is not the ink"
-    ).toBe(INK);
+    // Who opened the issue and who holds its claim are part E's `AgentName`, which draws a
+    // session's link in the ink inside `NoTooltips` (its own underline is E's, R8's last
+    // sentence): alice opened ONE, a person, so her name is words; the planner's claim is a
+    // session's link.
+    for (const [what, name] of [
+      [
+        "the opener",
+        detailsRow(page, PROPERTY_LABELS.opened_by).getByText("alice", { exact: true }),
+      ],
+      [
+        "the claim's holder",
+        detailsRow(page, PROPERTY_LABELS.claim).getByRole("link", {
+          exact: true,
+          name: PLANNER_TITLE,
+        }),
+      ],
+    ] as const) {
+      expect(
+        await name.evaluate((element) => getComputedStyle(element).color),
+        `${what} in Details is not the ink`
+      ).toBe(INK);
+    }
     expect(
       await documents.first().evaluate((element) => getComputedStyle(element).color),
       "a document's entry in Details is not the ink"
