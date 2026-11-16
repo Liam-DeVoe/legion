@@ -36,8 +36,6 @@ const (
 	streamMessages = 51
 )
 
-// calloutRig is a hub's authorization with a callout, fresh keys whose seeds the test keeps, and
-// the count of authorization requests the server has sent the auth service.
 type calloutRig struct {
 	staticSeed, serviceSeed string
 	issuer, curve           nkeys.KeyPair
@@ -45,9 +43,6 @@ type calloutRig struct {
 	requests                atomic.Int64
 }
 
-// newCalloutRig makes a static client user with a seed, as a hub's users are today, and the auth
-// service's user, with a callout naming a fresh issuer and curve key; with session, it adds a
-// session user without a seed as the authorization's noAuthUser.
 func newCalloutRig(t *testing.T, session bool) *calloutRig {
 	t.Helper()
 	staticSeed, staticKey := testnats.User(t)
@@ -92,7 +87,6 @@ func newCalloutRig(t *testing.T, session bool) *calloutRig {
 	return &calloutRig{staticSeed: staticSeed, serviceSeed: serviceSeed, issuer: issuer, curve: curve, authorization: a}
 }
 
-// render is the rig's authorization as the hub renders it, with its callout or without.
 func (r *calloutRig) render(t *testing.T, callout bool) string {
 	t.Helper()
 	a := r.authorization
@@ -138,8 +132,6 @@ func (r *calloutRig) restart(t *testing.T, ctr hubContainer, config string) stri
 	return uri
 }
 
-// serve connects the auth service as its user, retrying while the restarted server comes up, and
-// answers every authorization request the server sends.
 func (r *calloutRig) serve(t *testing.T, uri string) {
 	t.Helper()
 	var conn *natsgo.Conn
@@ -199,7 +191,6 @@ func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
 	}
 }
 
-// requireRequests requires the auth service to have answered want requests in all.
 func (r *calloutRig) requireRequests(t *testing.T, want int64, why string) {
 	t.Helper()
 	require.Equal(t, want, r.requests.Load(), why)

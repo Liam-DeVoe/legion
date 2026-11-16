@@ -18,8 +18,6 @@ const (
 	calloutXKey    = "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
 )
 
-// authService is the user the auth service connects as: it answers the server's authorization
-// requests and publishes nothing else.
 func authService() core.User {
 	return core.User{
 		Name:      "example-auth",

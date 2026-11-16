@@ -343,7 +343,7 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		}
 	}
 	for _, f := range calloutSeedFields(args.AuthCallout) {
-		fields = append(fields, field{f[0], f[1]})
+		fields = append(fields, f)
 	}
 	for _, f := range fields {
 		if bus.HoldsSeed(f.value) {
@@ -461,9 +461,10 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 // monitoring port answers /connz, /subsz and /jsz with no authentication (v2.15.1
 // server/monitor.go), naming the subjects, connections and consumers of every client, a private
 // project's among them, to every pod of each namespace the NetworkPolicy admits to it. No reader
-// needs that reach: the kubelet's probes do not pass the NetworkPolicy, the exporter in each pod
-// reads localhost:8222, an operator's kubectl port-forward and exec reach the pod through the API
-// server, and Managed Prometheus scrapes the exporter's own port, metricsNamespaces'.
+// needs that reach: the kubelet probes from the pod's own node, which the NetworkPolicy does not
+// fence; the exporter in each pod reads localhost:8222; an operator's kubectl port-forward and exec
+// reach the pod through the API server; and Managed Prometheus scrapes the exporter's own port,
+// metricsNamespaces'.
 func monitorBesidePrivateProjects(namespaces []string) error {
 	return core.InputErrorf("monitorNamespaces", "monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
 		"naming the subjects, connections and consumers of every client, a private project's among them, to every pod of %q; "+

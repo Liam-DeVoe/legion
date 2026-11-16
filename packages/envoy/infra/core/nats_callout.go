@@ -47,8 +47,6 @@ const (
 	calloutReplyPrefix    = "$SYS._INBOX."
 )
 
-// seedField names, by its path, the first of the callout's fields that holds an nkey seed, or
-// returns "".
 func (c AuthCallout) seedField() string {
 	for _, f := range []struct{ field, value string }{
 		{"callout.issuer", c.Issuer}, {"callout.xkey", c.XKey}, {"callout.serviceUser", c.ServiceUser},

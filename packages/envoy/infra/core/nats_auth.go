@@ -104,7 +104,6 @@ func (a Authorization) Validate() error {
 	return a.validateCallout()
 }
 
-// validateFallback refuses a noAuthUser that names no user, a pending user or a user with a seed.
 func (a Authorization) validateFallback() error {
 	if a.NoAuthUser == "" {
 		return nil

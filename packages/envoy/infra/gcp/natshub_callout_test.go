@@ -16,8 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// calloutNatsHub is exampleArgs behind the auth service: today's users and session user stay, the
-// auth service's user joins them, and the hub runs no listener of its own.
 func calloutNatsHub() *gcp.NatsHubArgs {
 	args := exampleArgs()
 	args.Users = append(args.Users, authServiceUser())
@@ -26,7 +24,6 @@ func calloutNatsHub() *gcp.NatsHubArgs {
 	return args
 }
 
-// calloutClusteredHub is clusteredArgs behind the auth service, as calloutNatsHub is exampleArgs.
 func calloutClusteredHub() *gcp.ClusteredNatsHubArgs {
 	args := withoutTailnet(clusteredArgs())
 	args.Users = append(args.Users, authServiceUser())
@@ -44,7 +41,6 @@ func calloutBlock(keys ...string) string {
 		"  }\n"
 }
 
-// otherXKey is a curve public key other than calloutXKey, made fresh for the test.
 func otherXKey(t *testing.T) string {
 	t.Helper()
 	curve, err := nkeys.CreateCurveKeys()

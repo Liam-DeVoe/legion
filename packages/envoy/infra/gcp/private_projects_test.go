@@ -19,8 +19,6 @@ const (
 	calloutXKey   = "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
 )
 
-// authServiceUser is the user the auth service connects as: it answers the server's authorization
-// requests and publishes nothing else.
 func authServiceUser() gcp.NATSUserArgs {
 	return gcp.NATSUserArgs{Name: "example-auth", NKey: keyAuth, Permissions: &gcp.PermissionsArgs{
 		Publish:   nats.RulesArgs{Allow: []string{"$SYS._INBOX.>"}},
@@ -28,7 +26,6 @@ func authServiceUser() gcp.NATSUserArgs {
 	}}
 }
 
-// authCallout is a callout naming authServiceUser.
 func authCallout() *nats.AuthCalloutArgs {
 	return &nats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: "example-auth"}
 }
@@ -63,7 +60,6 @@ type privateProjectsRefusal struct {
 	want                                                  string
 }
 
-// apply makes the row of a private hub's users, session user and callout.
 func (row privateProjectsRefusal) apply(users *[]gcp.NATSUserArgs, session **gcp.SessionUserArgs, callout **nats.AuthCalloutArgs) {
 	if row.session {
 		*session = &gcp.SessionUserArgs{Name: "example-sessions", NKey: keySessions}

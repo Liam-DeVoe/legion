@@ -78,16 +78,17 @@ func TestSchemaNamesTheReleaseDownloadURLAndTheGoImportPath(t *testing.T) {
 // The schema's types are exactly the components' own, and the rules and the authorization callout
 // every NATS component shares under nats, which names no cloud.
 func TestSchemaTypes(t *testing.T) {
+	s := servedSchema(t)
 	require.ElementsMatch(t, []string{
 		"envoy-infra:host:Watchdog", "envoy-infra:host:Adopt",
 		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules", "envoy-infra:nats:AuthCallout",
 		"envoy-infra:gcp:NatsUser", "envoy-infra:gcp:Permissions", "envoy-infra:gcp:HubListener", "envoy-infra:gcp:SessionUser",
 		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener",
-	}, slices.Collect(maps.Keys(servedSchema(t).Types)))
+	}, slices.Collect(maps.Keys(s.Types)))
 	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
 	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
 	// its service user, so the schema requires all three.
-	callout := servedSchema(t).Types["envoy-infra:nats:AuthCallout"]
+	callout := s.Types["envoy-infra:nats:AuthCallout"]
 	require.ElementsMatch(t, []string{"issuer", "xkey", "serviceUser"}, slices.Collect(maps.Keys(callout.Properties)))
 	require.ElementsMatch(t, []string{"issuer", "xkey", "serviceUser"}, callout.Required)
 }

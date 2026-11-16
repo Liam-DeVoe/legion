@@ -306,12 +306,13 @@ and /jsz with no authentication, …`, and a private hub's NetworkPolicy admits 
 chart's headless Service, `<n>-headless`, also lists 8222, but it adds no reach: it has no cluster
 address (`clusterIP: None`), so its name resolves to the pods' own addresses, and the NetworkPolicy
 on those pods admits only the ports its rules name, whatever name a caller dialled. No reader of the
-hub needs 8222 from another namespace: the kubelet's probes do not pass the NetworkPolicy, the
-exporter in each pod reads `localhost:8222`, `kubectl port-forward` and `exec` reach a pod through
-the API server, and Managed Prometheus reads the exporter's port, 7777. `gcp:NatsHub` opens 8222
-only to Google Cloud's health-check probe ranges, `130.211.0.0/22` and `35.191.0.0/16` (its
-firewall `<h>-health-checks` and the VM's own iptables rule), from which its group's health check
-reads `/healthz`; no input widens that, so it has nothing to refuse.
+hub needs 8222 from another namespace: the kubelet probes from the pod's own node, which the
+NetworkPolicy does not fence; the exporter in each pod reads `localhost:8222`; `kubectl
+port-forward` and `exec` reach a pod through the API server; and Managed Prometheus reads the
+exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-check probe ranges,
+`130.211.0.0/22` and `35.191.0.0/16` (its firewall `<h>-health-checks` and the VM's own iptables
+rule), from which its group's health check reads `/healthz`; no input widens that, so it has
+nothing to refuse.
 
 `privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
 (the callout, no session user, no client user beside the auth service's) reaches a running server
@@ -949,12 +950,12 @@ session user's public key into the hub pods' annotation `envoy-infra.sjawhar.dev
 template, and the StatefulSet replaces its pods one at a time, each server restarting on its own
 claim while the other two serve. Without `authCallout`, any other users change leaves the pod
 template as it was; while `authCallout` is set, a users change that adds, removes or rekeys a user
-rolls the pods too (the callout, below), and only a change of a grant, or of a name, which is only a comment beside its key, leaves the template as it was. A
-users change made in the same update as a session-user change applies, with it, as each pod
-restarts. The roll must start from the new `auth.conf`: a pod restarted on the old file keeps the
-old session user, and the reload that later brings the new file is refused. The same holds for the
-store's roll below, from the new `nats.conf`, and for the callout's, from the new `auth.conf`. So
-the StatefulSet's annotation
+rolls the pods too (the callout, below), and only a change of a grant, or of a name, which is only
+a comment beside its key, leaves the template as it was. A users change made in the same update as
+a session-user change applies, with it, as each pod restarts. The roll must start from the new
+`auth.conf`: a pod restarted on the old file keeps the old session user, and the reload that later
+brings the new file is refused. The same holds for the store's roll below, from the new
+`nats.conf`, and for the callout's, from the new `auth.conf`. So the StatefulSet's annotation
 `config.kubernetes.io/depends-on: /namespaces/<namespace>/ConfigMap/<n>-config` makes pulumi-kubernetes
 apply the StatefulSet only after the ConfigMap, with or without a session user, and a ConfigMap
 update that fails stops the update before any pod rolls.

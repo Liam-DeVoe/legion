@@ -36,8 +36,6 @@ func renderedTimeout(t *testing.T, text string) int {
 	return seconds
 }
 
-// restartWithAuthServiceDelay is calloutRig.restart with an auth service that holds each answer for
-// delay before it gives it.
 func (r *calloutRig) restartWithAuthServiceDelay(t *testing.T, ctr hubContainer, config string, delay time.Duration) string {
 	t.Helper()
 	ctx := context.Background()

@@ -175,16 +175,17 @@ to `maxFileStoreGb`, with no memory store, and monitoring listens on 8222. The p
 zone, held hard (`topology.kubernetes.io/zone`, `maxSkew: 1`, `DoNotSchedule`, `minDomains: 3`), so
 on a cluster with nodes in fewer than three zones a pod stays Pending rather than share a zone. A
 change of `users` rewrites `auth.conf` alone, which the reloader applies without restarting a
-server; while `authCallout` is set, only a change of a user's grant or name does, since a name is only a comment in `auth.conf` and keeps its key in `auth_users`. Three changes restart
-the hub pods one at a time instead, each through an annotation on the pod template, since
-nats-server refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a change
-of the file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused,
-and a refused reload blocks every later one, a `users` change's included, until the server
-restarts); and, while `authCallout` is set, a change of the callout's lines, which a change of
-`authCallout` or of the keys in `users`, a user added or removed among them, makes (`auth_users`
-lists every user's key). The StatefulSet carries `config.kubernetes.io/depends-on` naming the
-chart's ConfigMap `<n>-config`, so Pulumi applies it only once the ConfigMap holding the new
-`nats.conf` and `auth.conf` is applied, and every restarted pod starts on them.
+server; while `authCallout` is set, only a change of a user's grant or name does, since a name is
+only a comment in `auth.conf` and keeps its key in `auth_users`. Three changes restart the hub
+pods one at a time instead, each through an annotation on the pod template, since nats-server
+refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a change of the
+file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused, and a
+refused reload blocks every later one, a `users` change's included, until the server restarts);
+and, while `authCallout` is set, a change of the callout's lines, which a change of `authCallout`
+or of the keys in `users`, a user added or removed among them, makes (`auth_users` lists every
+user's key). The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's
+ConfigMap `<n>-config`, so Pulumi applies it only once the ConfigMap holding the new `nats.conf`
+and `auth.conf` is applied, and every restarted pod starts on them.
 
 ### Inputs
 
@@ -203,7 +204,7 @@ chart's ConfigMap `<n>-config`, so Pulumi applies it only once the ConfigMap hol
 | `natsCpu`, `natsMemory` | `1` and `2Gi`; with `streamMaxBytes`, `natsMemory` is larger (see [Sizing](#sizing)) | nats-server's container size, Kubernetes quantities, each rendered as both its request and its limit. |
 | `priorityClassName` | none | The name, a DNS subdomain, of an existing PriorityClass that every pod of the component names, hub pods, tailnet hosts and the listener pod alike. The component reads the class and never creates it. |
 | `clientNamespaces` | required | The namespaces admitted to NATS's client port, 4222: at least one, each a DNS label, none repeated. |
-| `monitorNamespaces` | none | The namespaces admitted to NATS's monitoring port, 8222, with the same rules. Without one, no namespace is. Refused beside `privateProjects`: the port answers `/connz`, `/subsz` and `/jsz` with no authentication, naming every client's subjects, connections and consumers, a private project's among them. No reader needs it then: the kubelet's probes do not pass the NetworkPolicy, the exporter in each pod reads `localhost:8222`, `kubectl port-forward` and `exec` go through the API server, and Managed Prometheus reads the exporter's port. |
+| `monitorNamespaces` | none | The namespaces admitted to NATS's monitoring port, 8222, with the same rules. Without one, no namespace is. Refused beside `privateProjects`: the port answers `/connz`, `/subsz` and `/jsz` with no authentication, naming every client's subjects, connections and consumers, a private project's among them. No reader needs it then: the kubelet probes from the pod's own node, which the NetworkPolicy does not fence; the exporter in each pod reads `localhost:8222`; `kubectl port-forward` and `exec` go through the API server; and Managed Prometheus reads the exporter's port. |
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub has `tailnet`, whose listener is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
@@ -2978,15 +2979,16 @@ must answer within 1.5 s. A longer timeout would not give it longer: the server 
 first PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPingTimer`), even
 while the client's CONNECT still waits for the callout, and a Go client (nats.go) reads anything
 but PONG there as an error, `nats: expected 'PONG', got 'PING'`, so it fails at about 2 s whatever
-the timeout. No nats-server 2.15.1 setting delays that first PING past 2 s (a `ping_interval` below 2 s moves it earlier). Measured on the hub's image
-(nats-server 2.15.1, nats.go v1.53.1): under an authorization timeout of 5 s, an answer after
-3.5 s failed the client at 2.1 s. The TypeScript client the plugins use (nats.js 2.29.3) waits that
-PING out: on nats-server 2.15.1 it was admitted on answers at 1.0 s and 1.8 s under the default
-timeout and at 3.5 s under 5 s, while nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s.
-So the 1.5 s budget is the Go client's. Without a callout the text is byte for byte what it was before
-callouts existed. With a `noAuthUser`, `no_auth_user` follows the authorization block, naming that
-user's key. For three keyed users, a pending `example-pending` and `noAuthUser`
-`example-fallback`, `core`'s tests pin this text:
+the timeout. No nats-server 2.15.1 setting delays that first PING past 2 s (a `ping_interval`
+below 2 s moves it earlier). Measured on the hub's image (nats-server 2.15.1, nats.go v1.53.1):
+under an authorization timeout of 5 s, an answer after 3.5 s failed the client at 2.1 s. The
+TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-server 2.15.1 it
+was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
+nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. So the 1.5 s budget is the Go
+client's. Without a callout the text is byte for byte what it was before callouts existed. With a
+`noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key. For three
+keyed users, a pending `example-pending` and `noAuthUser` `example-fallback`, `core`'s tests pin
+this text:
 
 ```text
 # Rendered by envoy-infra from placeholder inputs.

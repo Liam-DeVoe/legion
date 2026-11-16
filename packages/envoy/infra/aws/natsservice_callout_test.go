@@ -20,7 +20,6 @@ const (
 	calloutXKey   = "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
 )
 
-// authServiceUser is the user the auth service connects as.
 func authServiceUser() envoyaws.UserArgs {
 	return envoyaws.UserArgs{
 		Name:      "example-auth",
