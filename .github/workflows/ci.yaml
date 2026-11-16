@@ -2351,6 +2351,12 @@ jobs:
               # The digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the
               # same bytes, read by e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs.
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
+              # The spec node schema, its table of cases and the YAML nodes, read by
+              # e2e/__tests__/spec-node-schema.test.ts, which holds ajv's and yaml's readings to the
+              # Go reader's.
+              - 'packages/envoy/internal/dispatch/specgraph/schema/**'
+              - 'packages/envoy/internal/dispatch/specgraph/testdata/schema-cases.json'
+              - 'packages/envoy/internal/dispatch/specgraph/testdata/nodes/**'
               # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
               # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'

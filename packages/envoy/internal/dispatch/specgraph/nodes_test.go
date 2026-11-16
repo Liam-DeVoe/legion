@@ -76,6 +76,14 @@ func TestPrintWritesTheFileForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	sameText(t, "quoted.yaml", document, fileText(t, "testdata/nodes/quoted.yaml"))
+
+	// The line ends of YAML 1.1 that YAML 1.2 reads as characters print as escapes in double
+	// quotes, so the yaml library of TypeScript reads the same strings (spec-node-schema.test.ts).
+	document, err = printNode(Term{ID: "separators", Name: "separators term", Definition: "a\u2028b\nc\u2029d\ne\u0085f"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameText(t, "separators.yaml", document, fileText(t, "testdata/nodes/separators.yaml"))
 }
 
 // sameText fails the test at the first line where got and want differ.

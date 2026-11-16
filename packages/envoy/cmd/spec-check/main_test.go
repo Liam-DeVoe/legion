@@ -210,7 +210,7 @@ func TestTheBuiltBinary(t *testing.T) {
 			writeFile(t, filepath.Join(dir, name), content)
 		}
 		writeFile(t, filepath.Join(dir, "notes.txt"), []byte("Not a spec file.\n"))
-		writeFile(t, filepath.Join(dir, "old.md"), []byte(":::term{#old-term name=\"old term\"}\nAn old term is a term of the block form.\n:::\n"))
+		writeFile(t, filepath.Join(dir, "old.md"), []byte("A spec file of the block form, which the command reads no more.\n"))
 		if err := os.Mkdir(filepath.Join(dir, "nested.yaml"), 0o755); err != nil {
 			t.Fatal(err)
 		}

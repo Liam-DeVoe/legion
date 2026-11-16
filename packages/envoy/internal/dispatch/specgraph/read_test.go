@@ -18,7 +18,7 @@ import (
 // the schema holds yaml's reading of the same files to the same data.
 func TestNodesDecodeToTheirData(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"all-kinds", "quoted"} {
+	for _, name := range []string{"all-kinds", "quoted", "separators"} {
 		documents, problems, _ := readDocuments(name+".yaml", []byte(fileText(t, "testdata/nodes/"+name+".yaml")))
 		if len(problems) != 0 {
 			t.Fatalf("%s.yaml: problems %+v", name, problems)
