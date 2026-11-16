@@ -310,7 +310,7 @@ func (r *storeWriterRig) commentDeliverySettle() storeWriter {
 				write: func() error {
 					settled, err := r.direct.completeCommentDelivery(ctx, comment, model.CommentDelivery{
 						CommentID: comment.ID, Target: "session:s1", Attempt: 1, Delivery: mode, SessionID: &session,
-					}, actor, attemptClaim{attempt: 1, claimedAt: claimed}, &envelope, false, "")
+					}, actor, attemptClaim{attempt: 1, claimedAt: claimed}, sendOutcome{envelopeID: &envelope})
 					if err != nil {
 						return err
 					}
@@ -355,7 +355,7 @@ func (r *storeWriterRig) messageDeliverySettle() storeWriter {
 							Target: "session:s1", Delivery: mode, SessionID: &session,
 							attemptSessionID: session, title: "planner",
 						},
-					}, &envelope, false, "")
+					}, sendOutcome{envelopeID: &envelope})
 					if err != nil {
 						return err
 					}
