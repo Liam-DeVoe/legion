@@ -39,10 +39,10 @@ type Deps struct {
 	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
 	// whether that is a Google account, and when the token was issued and expires.
 	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
-	// Exchange is the projects the broker's own exchange list gives account, and false for an
-	// account no entry lists (exchange.Set.ProjectsForAccount). Nil, or a nil Access, holds no
-	// service to its projects, and refuses every entry that is not an all-projects one.
-	Exchange func(account string) ([]string, bool)
+	// Exchange is the person and the projects the broker's own exchange list gives account, and
+	// false for an account no entry lists (exchange.Set.MappedForAccount). Nil, or a nil Access,
+	// holds no service to its projects, and refuses every entry that is not an all-projects one.
+	Exchange func(account string) (person string, projects []string, ok bool)
 	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
 	// the service asks it in the background and decides on the answers it holds (heldAccess).
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
@@ -143,6 +143,7 @@ const (
 	labelNoExchangeEntry   = "no_exchange_entry"
 	labelProjectNotKnown   = "project_not_known"
 	labelProjectNotFound   = "project_not_found"
+	labelProjectNotVisible = "project_not_visible"
 	labelNotHeldToProjects = "not_held_to_projects"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"

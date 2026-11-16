@@ -29,19 +29,30 @@ const (
 	slowDaemonAccount = "system:serviceaccount:legion-slow:legion-daemon"
 )
 
-// exchangeOf is a Deps.Exchange that gives each account its projects, and no entry to any other.
-func exchangeOf(projects map[string][]string) func(string) ([]string, bool) {
-	return func(account string) ([]string, bool) {
+// entryPerson is the person every exchange entry in these tests acts for.
+const entryPerson = "ada@example.com"
+
+// exchangeOf is a Deps.Exchange that gives each account entryPerson and its projects, and no
+// entry to any other.
+func exchangeOf(projects map[string][]string) func(string) (string, []string, bool) {
+	return func(account string) (string, []string, bool) {
 		listed, ok := projects[account]
-		return listed, ok
+		if !ok {
+			return "", nil, false
+		}
+		return entryPerson, listed, true
 	}
 }
 
 // dispatchAnswers is a Deps.Access standing in for Dispatch: each project's answer, or
-// projectaccess.ErrProjectNotFound for one it does not hold, counting the asks about each.
+// projectaccess.ErrProjectNotFound for one it does not hold, counting the asks about each. As
+// Dispatch answers, a project is visible to no person when it is private, and to entryPerson
+// unless unseen names it.
 type dispatchAnswers struct {
 	mu      sync.Mutex
 	answers map[string][]string // project → repositories
+	private map[string]bool
+	unseen  map[string]bool // private projects entryPerson cannot see
 	failing error
 	asked   map[string]int
 	// blockAfter is how many asks about a project answer at once; each later ask blocks for
@@ -57,13 +68,11 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 		d.asked = map[string]int{}
 	}
 	d.asked[project]++
-	asks, repositories, held, failing := d.asked[project], d.answers[project], false, d.failing
-	_, held = d.answers[project]
+	asks, repositories, failing := d.asked[project], d.answers[project], d.failing
+	_, held := d.answers[project]
+	private, unseen := d.private[project], d.unseen[project]
 	blocks := d.blockAlways[project] || (d.block > 0 && asks > d.blockAfter)
 	d.mu.Unlock()
-	if person != "" {
-		return projectaccess.Answer{}, fmt.Errorf("the auth service asked about person %q", person)
-	}
 	if blocks {
 		select {
 		case <-ctx.Done():
@@ -77,7 +86,12 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 	case !held:
 		return projectaccess.Answer{}, fmt.Errorf("%w: %s", projectaccess.ErrProjectNotFound, project)
 	}
-	return projectaccess.Answer{Project: project, Visibility: "public", Visible: true, Repositories: slices.Clone(repositories)}, nil
+	answer := projectaccess.Answer{Project: project, Visibility: "public", Visible: true, Repositories: slices.Clone(repositories)}
+	if private {
+		answer.Visibility = "private"
+		answer.Visible = person == entryPerson && !unseen
+	}
+	return answer, nil
 }
 
 func (d *dispatchAnswers) set(project string, repositories ...string) {
@@ -205,7 +219,7 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	asks, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
 	go deps.held.refresh(asks)
-	testwait.Eventually(t, "the first answer about PUB", func() bool { _, known := deps.held.answer("PUB"); return known })
+	testwait.Eventually(t, "the first answer about PUB", func() bool { _, known := deps.held.answer("PUB", entryPerson); return known })
 	go deps.held.refresh(asks) // its ask about PUB blocks three seconds
 	testwait.Eventually(t, "a second ask about PUB in flight", func() bool {
 		dispatch.mu.Lock()
@@ -281,6 +295,48 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	requireRefused(t, err, "project not found: GONE")
+}
+
+// The connection is held to what the token exchange holds the account's token to: the person its
+// exchange entry acts for must see each project (projectaccess.Visible). A private project that
+// person sees is served, with its repository's lane, which an ask naming no person would not
+// have found visible; one that person cannot see refuses the connection, naming the project, as
+// the exchange refuses the token. The control drops the person's check: the PRIV2 row is served.
+func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	tokens := map[string]platformToken{
+		"seen-token":   {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"unseen-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
+	dispatch := &dispatchAnswers{
+		answers: map[string][]string{"PRIV": {"acme/priv"}, "PRIV2": {"acme/priv2"}},
+		private: map[string]bool{"PRIV": true, "PRIV2": true},
+		unseen:  map[string]bool{"PRIV2": true},
+	}
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PRIV"}, slowDaemonAccount: {"PRIV2"}}, dispatch, services)
+
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("seen-token"))
+	require.NoError(t, err, "a private project the entry's person sees was refused: the auth service asked about no person")
+	want, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PRIV"}, Repositories: []string{"acme/priv"}, Identity: pubDaemonAccount})
+	require.NoError(t, err)
+	require.Equal(t, want, decision.Grant)
+
+	_, err = Decide(t.Context(), deps, services, serviceRequest("unseen-token"))
+	requireRefused(t, err, "project not visible to the account's person: PRIV2")
+}
+
+// An exchange entry that names no project (the shared public-session account's form) gives the
+// connection nothing to hold it to, and is refused saying so, not by the grant's emptiness.
+func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	tokens := map[string]platformToken{"empty-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: nil}, dispatch, services)
+
+	_, err := Decide(t.Context(), deps, services, serviceRequest("empty-token"))
+	requireRefused(t, err, "account's exchange entry names no project to hold it to: "+slowDaemonAccount)
 }
 
 // Through the auth service, Dispatch's grant may write the private-projects bucket and a
