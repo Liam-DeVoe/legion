@@ -168,7 +168,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		actor.Service = &caller.Service
 	}
 	// Only a token an operator's entry mapped to one project names that project as the one it
-	// may write, which is today's named-scope rule. A token acting as its person carries the list
+	// may write, which is today's named-scope rule; a named token naming none (the shared
+	// public-session account's) writes, as a token naming no project does, wherever Dispatch's
+	// own rules let it, and brokertoken refuses a named token naming two.
+	// A token acting as its person carries the list
 	// its trade asked for (brokertoken.Caller.Projects), and that list limits no write here: a
 	// dev box session's person writes wherever they may, and the token of a machine naming a
 	// service and no person names no project at all.

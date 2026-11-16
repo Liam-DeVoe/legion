@@ -5,6 +5,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -125,6 +126,39 @@ func TestIntrospectionAnswersAStorageOutage503(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusServiceUnavailable || refusal.Code != "DATABASE_UNAVAILABLE" {
 		t.Fatalf("introspecting a live token with the store closed = %d %+v, want 503 DATABASE_UNAVAILABLE, not a confident negative", response.StatusCode, refusal)
+	}
+}
+
+// TestIntrospectionAnswersAMalformedStoredClaimAsSuch: a token row whose stored projects claim is
+// not its string is no outage, so it is not answered 503 DATABASE_UNAVAILABLE, which would point
+// an operator at the database: it is answered 500 STORED_CLAIM_MALFORMED, naming the launcher
+// credential whose token it is.
+func TestIntrospectionAnswersAMalformedStoredClaimAsSuch(t *testing.T) {
+	rig := brokertest.NewRig(t)
+	_, tok, credentialID := approvedLogin(t, rig)
+	tag, err := rig.Store.Pool.Exec(context.Background(), `update oauth_access_tokens
+		set request = jsonb_set(request, '{session,extra,projects}', '["ACME"]') where credential_id = $1`, credentialID)
+	if err != nil || tag.RowsAffected() == 0 {
+		t.Fatalf("rewrite the token's row: %v, %d rows", err, tag.RowsAffected())
+	}
+	form := url.Values{"token": {tok.AccessToken}}
+	request, err := http.NewRequest(http.MethodPost, rig.URL+"/v1/oauth/introspect", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Authorization", "Bearer "+rig.UIToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/oauth/introspect: %v", err)
+	}
+	defer response.Body.Close()
+	var refusal wireError
+	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	if response.StatusCode != http.StatusInternalServerError || refusal.Code != "STORED_CLAIM_MALFORMED" || !strings.Contains(refusal.Error, credentialID) {
+		t.Fatalf("introspecting a token whose stored projects claim is a list = %d %+v, want 500 STORED_CLAIM_MALFORMED naming the credential %s", response.StatusCode, refusal, credentialID)
 	}
 }
 
