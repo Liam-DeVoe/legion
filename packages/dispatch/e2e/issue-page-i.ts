@@ -38,6 +38,8 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * - **What stays at the foot of the screen**: part L's box, whose height the page publishes on
  *   the document element as `--issue-composer-height` (`FOOT_HEIGHT_PROPERTY` of
  *   `identity-block.ts`). Until L draws it, `standInFootBox` draws a box in its place.
+ * - **A control under the outline**, which a body closing above it moves: none of the page's own
+ *   at this head. `standInControlBelow` draws one in its place.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -470,6 +472,53 @@ export async function standInFootBox(page: Page, height: number): Promise<() => 
       document.querySelector("[data-foot-stand-in]")?.remove();
       document.documentElement.style.removeProperty(footHeight);
     }, FOOT_HEIGHT_PROPERTY);
+  };
+}
+
+/**
+ * Draws a stand-in for a control of the page under the outline: nothing of the page's own stands
+ * there at this head - part L's line at the foot is not drawn (`slots/foot.tsx`), Details is a
+ * drawer fixed at the right of the screen, and the Contents pane stays where it is as the page
+ * scrolls - and a control under the outline is the one a body closing above it moves. It is a
+ * button, the column's last part, where L's line will stand, that counts the presses that fire
+ * it, with a screen's height of page under it: a row can put it in the middle of the screen,
+ * where a body closing above it moves it. With the page scrolled to its foot, the browser keeps
+ * the foot on the screen as the page shortens, and the button with it, so no press there could
+ * tell a body closing from one that stays. Answers the button, how many presses fired it, and
+ * what takes it away again.
+ */
+export async function standInControlBelow(page: Page): Promise<{
+  readonly control: Locator;
+  readonly presses: () => Promise<number>;
+  readonly remove: () => Promise<void>;
+}> {
+  const drawn = await page.evaluate((stage) => {
+    const column = document.querySelector(stage);
+    if (column === null) return false;
+    const box = document.createElement("div");
+    box.setAttribute("data-control-stand-in", "");
+    box.style.cssText = "flex: none; padding-bottom: 100vh;";
+    const control = document.createElement("button");
+    control.type = "button";
+    control.textContent = "A control under the outline";
+    control.dataset.presses = "0";
+    control.addEventListener("click", () => {
+      control.dataset.presses = String(Number(control.dataset.presses) + 1);
+    });
+    box.append(control);
+    column.append(box);
+    return true;
+  }, SELECTORS.stage);
+  expect(drawn, "the page draws no stage column to stand a control under the outline in").toBe(
+    true
+  );
+  const control = page.locator("[data-control-stand-in] button");
+  return {
+    control,
+    presses: async () => Number(await control.getAttribute("data-presses")),
+    remove: async () => {
+      await page.evaluate(() => document.querySelector("[data-control-stand-in]")?.remove());
+    },
   };
 }
 

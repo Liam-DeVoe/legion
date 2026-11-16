@@ -49,7 +49,9 @@ export function TreeRows({
   cycle: number;
   /** The row the reader is editing in and the document its editor belongs to. */
   editing: { readonly artifactId: string; readonly row: string } | undefined;
-  /** The key of the row that holds the focus. */
+  /** The key of the row whose body and acts the focus opened: the row that holds the focus, or
+   *  the one it left for another control of the page, which keeps them drawn until another row
+   *  takes the focus or Escape is pressed (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
