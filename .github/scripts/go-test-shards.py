@@ -265,9 +265,10 @@ def pattern_command(arguments: list[str]) -> str:
         raise Refused(f"index {index} is not a shard of {total}: an index runs from 0 to {total - 1}")
     flags, package = split_package(arguments[2:])
     with package_tests(flags, package, "split") as (binary, everything):
-        shards: list[list[str]] = [[] for _ in range(total)]
-        for name in everything:
-            shards[shard_of(name, total)].append(name)
+        # Each shard is the names shard_of gives its number, so a name given no shard's number is
+        # in none, and prove() below refuses it by name rather than the split failing on an index.
+        # go-test-shards.test.sh breaks shard_of that way to show this leg's own proof refuses it.
+        shards = [[name for name in everything if shard_of(name, total) == number] for number in range(total)]
         empty = [str(number + 1) for number, names in enumerate(shards) if not names]
         if empty:
             raise Refused(f"shard(s) {', '.join(empty)} of {total} hold no test of the {len(everything)} "

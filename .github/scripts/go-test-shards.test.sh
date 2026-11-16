@@ -50,11 +50,14 @@ tests() {
 
 # run_shards <directory> <argument>...: runs the script in that directory; sets out, err and
 # status, keeping the two streams apart, because a refusal must print nothing on standard output.
-run_shards() {
-  local directory=$1
-  shift
+run_shards() { run_script "$shards" "$@"; }
+
+# run_script <script> <directory> <argument>...: run_shards, for the script or a stand-in for it.
+run_script() {
+  local script=$1 directory=$2
+  shift 2
   set +e
-  out=$(cd "$directory" && "$shards" "$@" 2>"$work/stderr")
+  out=$(cd "$directory" && "$script" "$@" 2>"$work/stderr")
   status=$?
   set -e
   err=$(cat "$work/stderr")
@@ -183,6 +186,33 @@ check "prints nothing on standard output" "$(is "$out" "")"
 check "names the test and both shards" \
   "$(contains "$err" "^go-test-shards.py: TestAlpha is in shards [123] and 4 of 4: each of those legs runs it$")"
 check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
+
+echo "case: control - pattern refuses its own split when the split leaves a test in no shard"
+# A leg runs only the pattern `pattern` prints, so `pattern` proves its own split before it
+# prints one: the comment on the race leg's step rests on that. Here the script runs with shard_of
+# replaced by a stand-in that gives TestGamma the number of no shard, every other name its own; the
+# split then leaves TestGamma out, and every leg must refuse it by name.
+broken_split=$work/broken-split.py
+cat >"$broken_split" <<EOF
+#!/usr/bin/env python3
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("go_test_shards", "$shards")
+shards = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shards)
+shard_of = shards.shard_of
+shards.shard_of = lambda name, total: total if name == "TestGamma" else shard_of(name, total)
+sys.exit(shards.main(sys.argv[1:]))
+EOF
+chmod +x "$broken_split"
+for index in 0 1 2; do
+  run_script "$broken_split" "$root" pattern "$index" 3 .
+  check "shard $index exits 1" "$(is "$status" 1)"
+  check "shard $index prints nothing on standard output" "$(is "$out" "")"
+  check "shard $index names TestGamma as in no shard, and no other test" "$(is "$(grep 'is in' <<<"$err")" \
+    'go-test-shards.py: TestGamma is in no shard: none of the 3 patterns selects it, so no leg runs it')"
+done
 
 echo "case: a name both the package and its external test package declare is one name of the split"
 # go test runs both TestSame functions here, one of package fixture and one of package
