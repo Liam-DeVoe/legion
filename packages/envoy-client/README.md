@@ -567,8 +567,11 @@ with no attempt started more than 55 s after the first (`inFlightWithinMs`), unt
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
 repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there; a caller with a bound of its own sets
-`deadlineMs` and an `inFlightWithinMs` inside it, as `dispatch result --project` does. The numbers come from the 3,612 `dispatch`
+was made, since its 60 s deadline counts from there; a caller with a bound of its own hands the
+client that bound's one timeout as `deadline`, and an `inFlightWithinMs` inside it, as `dispatch
+result --project` does. The client hands its signal to the credential for each request
+(`RequestCredential.headers`' `signal`), so a broker credential's trade and the identity it reads
+end at the same deadline. The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
@@ -637,9 +640,17 @@ command is a new key. A write that ends with no answer at all is one too, naming
 last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
 deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
 definitive answer when its deadline ended it"); `last` is the cut or the timeout. An attempt the
-deadline ends before it goes out sent nothing, so where no attempt before it may have reached
-Dispatch the timeout is thrown as it is; a pause the deadline ends after such an answer ends the
-write with that answer.
+deadline ends before it goes out is not sent, and neither it nor a presentation of the credential
+that failed counts as one that may have reached Dispatch; a pause the deadline ends after answers
+that reached no handler ends the write with the last one.
+What the attempts showed is a fact of the whole call (`WriteCall`), not of one series of them: a
+write carries one key across its no-route retries and its re-send after a dead token, which the
+keyed layer, wrapping each route's handler, stores nothing under, and once one attempt may have
+reached a handler the call ends as a `DispatchWriteUnsettledError` unless its last answer is the
+keyed layer's verdict on the key (a definitive answer that names the key back: the stored result,
+a replay, a landed answer, or the handler's refusal). A no-route answer, Dispatch's check of the
+token, a dead token or a credential that could not present proves nothing of the earlier attempt.
+The caller's own cancellation is thrown as it is.
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown: a
 `DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
 5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
@@ -893,12 +904,16 @@ Dispatch with no answer that says whether it stored the result (`writeOutcomeUnk
 that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
 turns away before anything is stored is asked again after the answer's `Retry-After`, or a second.
-The whole call has one bound, 60 s from its start on one clock (`ResultBound`): the write client's
-deadline is that bound, its asks again under the key and the command's rounds start no later than
-5 s before its end, and a call turned away until then prints which turned it away with the last
-answer, its code named, and exits 1, with no `write_outcome_unknown`: only an attempt that may have
-reached a handler prints that line. An attempt the deadline ends before it is sent reached
-nothing. `dispatch results --project` prints its lines and `--json` by the same rule of a runner's
+The whole call has one bound, 60 s from its start: one timeout, made where the call starts, is the
+signal every await of it runs under, the runner's token request and the broker's trade included
+(`ResultBound`). The write client's deadline is that signal, its asks again under the key and the
+command's rounds start no later than 7 s before its end, a reserve greater than the 5 s Dispatch's
+check of a token waits on the broker, and a call turned away until then prints
+which turned it away with the last answer, its code named, and exits 1, with no
+`write_outcome_unknown`: only an attempt that may have reached a handler prints that line. An
+attempt the deadline ends before it is sent reached nothing. A bound that ends in the trade prints
+which part, the job's own token or the broker's trade, and that nothing was written.
+`dispatch results --project` prints its lines and `--json` by the same rule of a runner's
 log as the command's own output. The
 stored result names the run as its recorder and no person, so the job's log holds no person's
 address. It prints Dispatch's refusal as `<CODE>: <message>` and exits 1, such as

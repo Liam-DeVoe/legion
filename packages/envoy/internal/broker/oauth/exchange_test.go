@@ -1678,7 +1678,8 @@ func TestASignInTradeAsksNoMemberKind(t *testing.T) {
 
 // TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject: an operator's entry maps a token
 // to one project and one person, and the exchange holds that pairing to Dispatch at every trade,
-// for each of the three settings that write such an entry.
+// for each of the three settings that write a named entry and for a result entry, whose results
+// token names its one project the same way.
 func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T) {
 	access := newFakeAccess()
 	access.sees[person] = []string{"PRIV"}
@@ -1688,6 +1689,8 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 	status, body = f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
+	status, body = f.exchange(t, f.resultRunForm(t, "8"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 
 	machines := newSignInFixtureWith(t, func(c *oauth.Config) {
@@ -1701,6 +1704,7 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
 	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
+	f.introspectsProjects(t, f.exchanged(t, f.resultRunForm(t, "9"), key), oauthwire.ProjectScopeResults, []string{project})
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
 

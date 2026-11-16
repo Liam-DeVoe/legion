@@ -14,11 +14,12 @@ import type { SubjectToken, TokenSource } from "../source";
 import {
   BrokerRefusedError,
   BrokerTokenClient,
+  identityReadFailed,
   isFinalRefusal,
   SignInEndedError,
 } from "../token-client";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { accepted, stubBroker } from "./stub";
+import { accepted, refusalOf, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -84,6 +85,69 @@ test("two callers that need a token at once make one trade", async () => {
     expect(first.accessToken).toBe("token-1");
     expect(second.accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(1);
+  } finally {
+    broker.stop();
+  }
+});
+
+// A caller that joins a trade another caller started ends at its own signal, and leaves that
+// trade to the caller that started it: the identity here answers only once the test lets it.
+test("a caller that joins a trade under way ends at its own signal", async () => {
+  const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const source: TokenSource = {
+    read: async () => {
+      await held;
+      return { token: "subject-1", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
+    },
+    describe: () => "an identity that answers once the test lets it",
+  };
+  const client = await clientAt(broker.url, { now: Date.now() }, source);
+  try {
+    const first = client.token();
+    const ended = new AbortController();
+    const joined = client.token(ended.signal);
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    expect((await refusalOf(() => joined))?.name).toBe("TimeoutError");
+    release();
+    expect((await first).accessToken).toBe("token-1");
+    expect(broker.trades.length).toBe(1);
+  } finally {
+    release();
+    broker.stop();
+  }
+});
+
+// A trade that fails while it reads its identity is marked so, and its error stays the source's
+// own, a sign-in the issuer ended still final; a refusal the broker answered is no such failure.
+test("a trade that fails reading its identity is marked so, and keeps its own error", async () => {
+  const broker = stubBroker(() => ({
+    status: 400,
+    body: { error: "invalid_grant", error_description: "the run is not listed" },
+  }));
+  const ended: TokenSource = {
+    read: async () => {
+      throw new SignInEndedError("https://accounts.example", PERSON);
+    },
+    describe: () => "a sign-in the issuer ended",
+  };
+  try {
+    const unread = await refusalOf(async () =>
+      (await clientAt(broker.url, { now: Date.now() }, ended)).token()
+    );
+    expect({
+      marked: identityReadFailed(unread),
+      signInEnded: unread instanceof SignInEndedError,
+      final: isFinalRefusal(unread),
+      trades: broker.trades.length,
+    }).toEqual({ marked: true, signInEnded: true, final: true, trades: 0 });
+    const refused = await refusalOf(async () =>
+      (await clientAt(broker.url, { now: Date.now() }, countingSource())).token()
+    );
+    expect({
+      marked: identityReadFailed(refused),
+      refused: refused instanceof BrokerRefusedError,
+    }).toEqual({ marked: false, refused: true });
   } finally {
     broker.stop();
   }
