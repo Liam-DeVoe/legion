@@ -1105,9 +1105,12 @@ Delivery's `Parent agent` values (the facet, the lanes, the PR list, the drill-d
 agents: the server sends a session title, a session group or a placeholder, never a session id,
 so there is no one agent to link and they stay text.
 
-A lint rule holds the boundary. The root `biome.json`'s last three `overrides` turn on
-`style.noRestrictedImports` at `error` for `packages/dispatch/web/src/**`, tests included: no
-import of `actorAttribution`, `actorLabel`, `actorName`, `sessionLabel` or `shortSessionId` from
+A lint rule holds the boundary. The root `biome.json`'s last four `overrides` hold it: the first
+three turn on `style.noRestrictedImports` at `error` for `packages/dispatch/web/src/**`, and the
+fourth turns the rule off for `features/shell/chunk-loads.ts`, the one module that may import
+React's `lazy`, which takes the ban below off that file too.
+Tests are included: no import of `actorAttribution`, `actorLabel`, `actorName`, `sessionLabel` or
+`shortSessionId` from
 either specifier that answers them (the package index `@legion/contracts` and
 `@legion/contracts/actor-label`, the module's own subpath, which the dashboard reads it
 through), and no `AGENT_LIVE_PATH` from a `**/refs/routes` or `./routes` specifier.
@@ -2075,9 +2078,9 @@ different stacks, and a file whose rows must run in order says so itself, with
 
 Every other mode runs on that default one worker, and so one stack: the deployed
 run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode
-(`bun run e2e:multiprocess`), the wall-clock run (`bun run e2e:clock`, which
-writes that one worker out as `--workers=1` beside its three projects, since a
-reading of the clock rests on it), a run
+(`bun run e2e:multiprocess`), the wall-clock run (`bun run e2e:clock`, whose
+`e2e:clock:run` writes that one worker out as `--workers=1` beside its three
+projects, since a reading of the clock rests on it), a run
 against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 `e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
 `docs/site/media/broker/seed.ts`,
@@ -2134,8 +2137,9 @@ dispatch://INFRA-1109 delivers: no job can read another run, so what the suite c
 day's own default branch is read after the run, by R4 and R5 of that issue, each a ratio.
 It was 2,040 s until 2026-11-12 and 2,400 s from then, when the machines got slower and this
 suite did not: between run 43150379433 (2,003 s) and run 43192333526 (2,285 s) the `binaries`
-job that runs no row rose 31 per cent with the same `package.json` and `bun.lock`, and the head's
-lane stayed 0.72 to 0.75 of a default-branch lane read the same day.
+job that runs no row rose 31 per cent with the same `package.json` and `bun.lock`, and the two
+runs read 0.69 and 0.78 of the median of that day's twelve green default-branch runs of the
+suite, each lane read with its merge job apart.
 It became 2,700 s on 2026-11-15, when two runs of one tree cost 2,252 and 2,450 s
 (43664675139, 43667557013) with real-stack row medians of 2,746 and 3,126 ms, against the
 thirteen green merge-queue runs of the default branch that day up to 15:03Z, at 2,975 to 3,347 s
@@ -2833,7 +2837,8 @@ Its two halves are scripts of their own: `build:web-b` writes the second bundle,
 `DISPATCH_E2E_WEB_DIST_B` assignment above is that second half's, so a caller of
 `e2e:multiprocess` or of `e2e:multiprocess:run` keeps the B it named.
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs `e2e:multiprocess:run`
-and no build, on the full lane alone: both bundles come out of the `binaries` job's artefact
+and builds no bundle, on the full lane alone: its one build is `@legion/contracts` (the step
+`Build contracts for dispatch e2e`), and both bundles come out of the `binaries` job's artefact
 (dispatch://INFRA-1109). CI's `dispatch-two-builds` job runs `cross-build.multiprocess` twice,
 with `DISPATCH_E2E_BINARY_B` and `DISPATCH_E2E_WEB_DIST_B` naming the previous release's build
 and then the first-rollout release's, the newest release before the one that registers its

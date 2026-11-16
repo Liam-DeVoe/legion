@@ -689,18 +689,20 @@ export const deliverySettingsQuery = () =>
   });
 
 // ---------------------------------------------------------------------------------------------
-// The landing: the one read a cold page makes, and the seed of every key above that it answers.
+// The landing: the one read a cold page makes, and the seed of every key that it answers.
 //
-// Why every key the landing answers is declared in this file, and the seed with them: the seed
-// and each reader of a key take it from the one factory above. The seed writes
+// Why every key the landing answers has one factory, and the seed with them: the seed and each
+// reader of a key take it from that factory. The seed writes
 // `client.setQueryData(factory(args).queryKey, part)`, and the reader mounts
 // `useQuery(factory(args))`, or spreads the factory and adds its own `enabled`. So a key changed
 // in its factory moves the seed and every reader of it together, and no reader types a key a
 // second time for the seed to fall out of step with. `setQueryData` also holds the part to the
 // type the factory's own read answers, so a part whose shape no longer matches its route's does
-// not compile. The factories are here rather than beside their readers because the entry
-// imports this file: a factory the seed imported from a reader's module would bring that module
-// into the entry with it.
+// not compile. Every factory but two is in this file rather than beside its readers, because the
+// entry imports this file: a factory the seed imported from a reader's module would bring that
+// module into the entry with it. The two are `credentialPendingQuery`
+// (`features/credentials/pending.ts`) and `agentsQuery` (`features/refs/agent-registry.ts`),
+// which the seed imports from their readers' modules, so both modules load with the entry.
 //
 // It is a cache seed and never a second data path - each part is written under the key the
 // route it stands in for already uses, and the client's default `staleTime` is 30,000 ms
