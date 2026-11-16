@@ -3,7 +3,6 @@ package specform
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -87,10 +86,14 @@ func breaks(c Context, people map[string]bool, text Text) []broken {
 	return unique
 }
 
-// formBreaks is the sentence count of a statement, each sentence over maxWords, and each hard
-// finding of ste-lint, all as ste-lint reads the line.
+// formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
+// sentence count of a statement and each sentence over maxWords, as sentencesOf reads the line,
+// and each hard finding of ste-lint.
 func formBreaks(kind Kind, line string) []broken {
 	var found []broken
+	for _, word := range stopsWithNoSpace(line) {
+		found = append(found, broken{ruleStopNoSpace, stopNoSpaceDetail(word)})
+	}
 	sentences := sentencesOf(line)
 	if kind == KindStatement && (len(sentences) < 1 || len(sentences) > 2) {
 		found = append(found, broken{ruleSentences, fmt.Sprintf("it has %d sentences, and a statement has one or two", len(sentences))})
@@ -107,55 +110,6 @@ func formBreaks(kind Kind, line string) []broken {
 		}
 	}
 	return found
-}
-
-// sentencesOf is each sentence of line, as its words, that a rule of the form counts: each piece
-// that ste-lint's splitter cuts (ste.Sentences, the one place that says where a sentence ends),
-// cut again after each stop that an upper-case letter follows directly (joinedStops), that holds
-// a word with a letter. A piece with no such word, such as "42", "...", "—" or "12:30.", is no
-// sentence, so a text of such pieces alone has no sentence. The count rules read English text, and
-// a text in another language is the reviewer's to name.
-func sentencesOf(line string) [][]string {
-	var sentences [][]string
-	for _, sentence := range ste.Sentences(line) {
-		for _, piece := range joinedStops(sentence) {
-			if slices.ContainsFunc(piece, hasLetter) {
-				sentences = append(sentences, piece)
-			}
-		}
-	}
-	return sentences
-}
-
-// joinedStops cuts a sentence, as its words, after each ".", "!" or "?" that an upper-case letter
-// follows directly, as in "comment.Dispatch": ste-lint's splitter ends a sentence only where white
-// space follows the stop. A lower-case letter or a digit after the stop ends none, so "1.5" and
-// "terms.md" stay one word.
-func joinedStops(words []string) [][]string {
-	var pieces [][]string
-	var piece []string
-	for _, word := range words {
-		for at := joinedStop(word); at > 0; at = joinedStop(word) {
-			pieces = append(pieces, append(piece, word[:at]))
-			piece, word = nil, word[at:]
-		}
-		piece = append(piece, word)
-	}
-	return append(pieces, piece)
-}
-
-// joinedStop is the index in word just after its first ".", "!" or "?" that an upper-case letter
-// follows directly, or 0 when it has none.
-func joinedStop(word string) int {
-	for index, letter := range word {
-		if letter != '.' && letter != '!' && letter != '?' {
-			continue
-		}
-		if next, _ := utf8.DecodeRuneInString(word[index+1:]); unicode.IsUpper(next) {
-			return index + 1
-		}
-	}
-	return 0
 }
 
 // hasLetter reports whether word holds a letter of any script.
