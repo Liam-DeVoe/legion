@@ -41,25 +41,30 @@ func TestProjectReleaseRefusesARuntimeThatRunsNoPod(t *testing.T) {
 }
 
 // releaseRecord is a project release's store with the release's own record in memory: the start
-// records release 1 with the stop set it is given, the finish hands its result to finished, and
-// the claims are the ones the machines store (claims). finishFails is how many finish writes it
-// refuses before it takes one, and with loseFinishAnswer the write it takes answers an error all
+// records release 1 with the stop set it is given and answers takenOver as the idle releases it
+// took over, the finish hands its result to finished, and the claims are the ones the machines
+// store (claims), after claimsFails reads of them that fail. finishFails is how many finish writes
+// it refuses before it takes one, and with loseFinishAnswer the write it takes answers an error all
 // the same, as one whose answer the connection lost; once a write was taken, every later one is
-// refused as the store refuses a write of a finished release. finishes counts the writes asked.
+// refused as the store refuses a write of a finished release. finishes counts the writes asked,
+// and reads the reads of the claims.
 type releaseRecord struct {
 	stop             []store.ProjectReleaseClaim
+	takenOver        []store.TakenOverIdleRelease
 	claims           *outboxClaimStore
 	finished         chan json.RawMessage
 	finishFails      int
 	loseFinishAnswer bool
+	claimsFails      int
 
 	mu       sync.Mutex
 	finishes int
 	taken    bool
+	reads    int
 }
 
 func (s *releaseRecord) StartProjectRelease(_ context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {
-	return store.ProjectRelease{ID: 1, Project: project, StartedAt: startedAt, BoundAt: boundAt}, nil, s.stop, nil
+	return store.ProjectRelease{ID: 1, Project: project, StartedAt: startedAt, BoundAt: boundAt}, s.takenOver, s.stop, nil
 }
 
 func (*releaseRecord) RecordProjectRelease(context.Context, int64, json.RawMessage) error { return nil }
@@ -105,6 +110,13 @@ func (s *releaseRecord) ClaimByToken(_ context.Context, token claim.Token) (supe
 }
 
 func (s *releaseRecord) Claims(context.Context) ([]supervise.Claim, error) {
+	s.mu.Lock()
+	s.reads++
+	refused := s.reads <= s.claimsFails
+	s.mu.Unlock()
+	if refused {
+		return nil, errors.New("the store refused the read of the claims")
+	}
 	s.claims.mu.Lock()
 	defer s.claims.mu.Unlock()
 	claims := make([]supervise.Claim, 0, len(s.claims.claims))
@@ -114,21 +126,31 @@ func (s *releaseRecord) Claims(context.Context) ([]supervise.Claim, error) {
 	return claims, nil
 }
 
+// claimReads is how many reads of the claims the store was asked.
+func (s *releaseRecord) claimReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
+}
+
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue
 // pod's delete asks its authorize and records the issue it deleted, each other Sandbox's delete
 // records its name, and each release of the controller's claim records the claim and answers
-// releaseErr. The API server lists the same Sandboxes as its store, after listFails lists of it
-// that fail; lists counts the lists asked of it.
+// releaseErr. The runtime's store lists the Sandboxes after storeListFails lists of it that fail,
+// and the API server lists the same Sandboxes as its store after listFails lists of it that fail;
+// storeLists and lists count the lists asked of each.
 type releasePods struct {
-	sandboxes  []runtime.ProjectSandbox
-	listFails  int
-	releaseErr error
+	sandboxes      []runtime.ProjectSandbox
+	storeListFails int
+	listFails      int
+	releaseErr     error
 
-	mu       sync.Mutex
-	deleted  []string
-	removed  []string
-	released []claim.Token
-	lists    int
+	mu         sync.Mutex
+	deleted    []string
+	removed    []string
+	released   []claim.Token
+	storeLists int
+	lists      int
 }
 
 func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
@@ -142,6 +164,12 @@ func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authori
 }
 
 func (p *releasePods) ProjectSandboxes(context.Context) ([]runtime.ProjectSandbox, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.storeLists++
+	if p.storeLists <= p.storeListFails {
+		return nil, errors.New("the Sandbox store may be stale: its watch has failed")
+	}
 	return p.sandboxes, nil
 }
 
@@ -174,21 +202,26 @@ func (p *releasePods) ReleaseProjectController(_ context.Context, token claim.To
 }
 
 // releaseRetry is the first wait before a failed write of a release runRelease runs is tried
-// again, and the pause between two of its lists of the project: short, so a test that fails a
-// write or a list waits milliseconds rather than the daemon's seconds.
+// again, the pause between two tries of its read of the claims or of its arm of a backstop, and
+// the pause between two of its lists of the project: short, so a test that fails a write, a read,
+// an arm or a list waits milliseconds rather than the daemon's seconds.
 const releaseRetry = 10 * time.Millisecond
 
 // runRelease runs a project release of the project legion over sup's machines, pods and records,
 // whose finished channel it reads, with a bound of a second, and answers the result its finish
 // recorded. A claim that never settles costs the bound and then the stop timeout before its pod is
-// left (stopDeadline), so both are short.
-func runRelease(t *testing.T, records *releaseRecord, sup *supervisor, pods *releasePods) api.ProjectReleaseResult {
+// left (stopDeadline), so both are short. Each of configure is applied to the releaser before it
+// starts.
+func runRelease(t *testing.T, records *releaseRecord, sup *supervisor, pods *releasePods, configure ...func(*projectReleaser)) api.ProjectReleaseResult {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	r := &projectReleaser{ctx: ctx, project: "legion", mark: &projectRelease{}, store: records, machines: sup, pods: pods,
 		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
 		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+	for _, c := range configure {
+		c(r)
+	}
 	if _, started, err := r.Start(ctx, time.Second, false); err != nil || !started {
 		t.Fatalf("Start = started %v, %v; want the release started", started, err)
 	}
@@ -316,8 +349,8 @@ func controllerPods() *releasePods {
 // a response, which the rig's line helpers read (releaseLine, releaseClaimLine). The claim is
 // stored suspended by the project release already, so the release's stop of it finds it settled
 // with no process to stop, and the next boot would start it. records reads the claims as the
-// release's machines store them.
-func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePods) api.ProjectReleaseResponse {
+// release's machines store them. Each of configure is applied to the releaser before it starts.
+func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePods, configure ...func(*projectReleaser)) api.ProjectReleaseResponse {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	controller := claim.ControllerToken("legion")
@@ -329,7 +362,7 @@ func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePod
 	records.finished = make(chan json.RawMessage, 1)
 	records.stop = []store.ProjectReleaseClaim{{Token: controller, Role: claim.RoleController, Session: "ses_controller",
 		State: supervise.StateSuspended}}
-	return api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods)}
+	return api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods, configure...)}
 }
 
 // dispatch://INFRA-3583 R6: the release lists the project again from the API server once every
@@ -354,6 +387,77 @@ func TestProjectReleaseListsTheProjectAgainAfterAListThatFailed(t *testing.T) {
 		!slices.Equal(pods.released, []claim.Token{claim.ControllerToken("legion")}) {
 		t.Fatalf("the release listed the API server %d times, deleted %v and released the controllers %v; want two lists, the cache deleted and the controller released",
 			pods.lists, pods.removed, pods.released)
+	}
+}
+
+// dispatch://INFRA-3583 R6: the release's first list of the project's Sandboxes is tried again
+// after a list that failed, as the list once every issue pod is gone is. A release that stopped
+// short there would take no pod of the project while its mark holds every start of the project
+// until the next boot, so one stale read of the runtime's store does not stop it: the release goes
+// on to delete the cache and the controller's pod.
+func TestProjectReleaseListsTheProjectAgainAfterAFirstListThatFailed(t *testing.T) {
+	pods := controllerPods()
+	pods.storeListFails = 1
+	release := releaseTheController(t, &releaseRecord{}, pods)
+	if release.Result.Failure != "" {
+		t.Fatalf("the release stopped short: %s", release.Result.Failure)
+	}
+	for _, name := range []string{releaseCache, releaseController} {
+		if line := releaseLine(t, release, name); line.Outcome != api.ReleaseDeleted {
+			t.Errorf("the line of %s is %+v, want it deleted", name, line)
+		}
+	}
+	pods.mu.Lock()
+	defer pods.mu.Unlock()
+	if pods.storeLists != 2 || !slices.Equal(pods.removed, []string{releaseCache}) ||
+		!slices.Equal(pods.released, []claim.Token{claim.ControllerToken("legion")}) {
+		t.Fatalf("the release listed the runtime's store %d times, deleted %v and released the controllers %v; want two lists, the cache deleted and the controller released",
+			pods.storeLists, pods.removed, pods.released)
+	}
+}
+
+// dispatch://INFRA-3583 R6: each claim's line ends as the store holds the claim at the release's
+// end, and one read of the claims that failed does not leave every line's end unwritten: the read
+// is made again, and the controller's line ends project_release, which the next boot starts.
+func TestProjectReleaseReadsTheClaimsAgainAfterAReadThatFailed(t *testing.T) {
+	records := &releaseRecord{claimsFails: 1}
+	release := releaseTheController(t, records, controllerPods())
+	if line := releaseClaimLine(t, release, claim.ControllerToken("legion")); len(release.Result.Claims) != 1 ||
+		line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts || line.Detail != "" {
+		t.Fatalf("the claim lines are %+v, want the controller's ended project_release, which the next boot starts, with no detail", release.Result.Claims)
+	}
+	if reads := records.claimReads(); reads != 2 {
+		t.Fatalf("the claims were read %d times, want twice: the refused read and the one that answered", reads)
+	}
+}
+
+// dispatch://INFRA-3583 R6: the release arms the backstop each idle release it took over would
+// have armed for the claims it had stopped, which is what wakes those claims after the next boot
+// when no delivery does, and one arm that failed does not leave them without it: the arm is made
+// again. An idle release that had stopped no claim is armed nothing.
+func TestProjectReleaseArmsAgainTheBackstopOfATakenOverReleaseAfterAnArmThatFailed(t *testing.T) {
+	var mu sync.Mutex
+	var tries, armed []string
+	arm := func(_ context.Context, issue string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		tries = append(tries, issue)
+		if len(tries) == 1 {
+			return errors.New("the store refused the backstop")
+		}
+		armed = append(armed, issue)
+		return nil
+	}
+	records := &releaseRecord{takenOver: []store.TakenOverIdleRelease{
+		{Issue: "LEGION-209", Suspended: []claim.Role{claim.RoleReviewer}},
+		{Issue: "LEGION-210"},
+	}}
+	releaseTheController(t, records, controllerPods(), func(r *projectReleaser) { r.armBackstops = arm })
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(tries, []string{"LEGION-209", "LEGION-209"}) || !slices.Equal(armed, []string{"LEGION-209"}) {
+		t.Fatalf("the release tried the arms of %v and armed the backstops of %v; want LEGION-209's tried twice, the refused arm and the one that landed, and armed once",
+			tries, armed)
 	}
 }
 

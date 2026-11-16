@@ -5367,7 +5367,7 @@ The release does five things, in this order:
 
 5. Once every issue pod ended, it lists the project's Sandboxes again, from the Kubernetes API rather than the daemon's watch of it, since a Sandbox whose create the daemon sent just before the mark can land after the first list.
    Each Sandbox that the first list did not hold gets a line: an issue's pod is taken as in steps 2 to 4, from its claims as they stand then, and every other Sandbox goes with the rest of this step.
-   A list that fails here is tried again, up to four tries 10 seconds apart, and one that fails each time stops the release short, as the first one does.
+   A list that fails here is tried again, up to four tries 10 seconds apart, as the release's first list is, and one that fails each time stops the release short.
    Then it stops the claim of the project's controller, where the daemon runs one, and waits for it as for an issue pod's claims, so a controller in a turn is stopped when its turn ends or at the bound.
    Then it deletes the project's other Sandboxes one at a time, in the order of their names, those of the second list after those of the first: the repository caches (`legion-<project>-cache-…`) come before the controller's pod (`legion-<project>-controller`), and any image-probe Sandbox (`legion-probe-<project>-…`) takes its place in that order.
 
