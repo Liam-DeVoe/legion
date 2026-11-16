@@ -28,6 +28,7 @@ import {
   pageWordsText,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
+import { useMarkdownHeadline } from "../refs/markdown-engine";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { DecisionActions } from "./DecisionActions";
@@ -965,7 +966,10 @@ export function NodeEdges({ node }: { node: TreeNode }): ReactNode {
  * address, slug or document name is drawn in its place (R22). A target nothing answers to now
  * says so. A chip whose target the batched reference read has not named yet draws nothing until
  * it does - "the names come last and all at once" (`useIssueTree.ts`) - and neither does one the
- * read named with no words at all: there is nothing to name it by.
+ * read named with no words at all: there is nothing to name it by. A target's name is its stored
+ * excerpt, which is markdown, so it is read as plain words, as a link's text is
+ * (`useMarkdownHeadline`): no mark the author typed is drawn (the tester's finding F18), and the
+ * chip draws nothing until that reading answers.
  */
 function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
@@ -973,7 +977,12 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
   // the grammar cannot read, is text: there is nowhere to go.
   const target = parseNodeReference(chip.ref);
   const word = documentWord(target);
-  const words = word ?? chipWords(chip.name);
+  const plain = useMarkdownHeadline(
+    undefined,
+    Math.max(chip.name.length, 1),
+    word === undefined && chip.name !== "" ? chip.name : undefined
+  );
+  const words = word ?? chipWords(plain?.text ?? "");
   if (!chip.gone && words === "") return null;
   const route = chip.gone ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.

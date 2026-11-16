@@ -615,6 +615,34 @@ test("a chip names its target by its first words and never by an address", () =>
   }
 });
 
+// The tester's finding F18: a target's name is its stored excerpt, which is markdown, and its
+// chip draws the words alone, with no mark the author typed.
+test("a chip draws its target's words with no mark of markdown", () => {
+  const view = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          label: "Needs",
+          name: "**1\\. Stand the harness up and read the rows**",
+          ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
+        },
+      ],
+      id: "plan-md#b-t2",
+      text: "Draw the rows.",
+      type: "plan_task",
+    }),
+    { body: false }
+  );
+  try {
+    const chips = [...view.container.querySelectorAll("[data-node-chip]")];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["Needs 1. Stand the harness up and…"]);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Lays every element out `height` px tall for the rows drawn until the answer is called: no
  *  DOM of a unit test lays anything out, and the cut reads the words' own boxes
  *  (`measureClamp`). */
