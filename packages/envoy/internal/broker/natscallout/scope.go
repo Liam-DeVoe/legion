@@ -36,6 +36,11 @@ import (
 // entry does not name also maps, by a rename or by a second spelling of the lane
 // (Deps.RepoProjects): such a repository is withheld, and counted, since serving it would hand one
 // project's daemon another's events; a lane shared only among the entry's own projects is served.
+// The guard sees only the rows the mapping answers the broker with: a Dispatch that answers each
+// caller with the rows of the projects it may see (INFRA-3862-private) gives the broker's account,
+// which names no person, the public projects' rows alone, so there it covers lanes shared among
+// public projects, and Dispatch itself refuses every mapping write that would share a lane with a
+// private project (REPOSITORY_LANE_SHARED).
 // WithinProjects writes that same reply prefix in place of _INBOX.>. Every answer and the mapping
 // the grant is built from come from one complete pass (heldAccess), never two mixed, narrowed by
 // the refusals of any later pass. It is refused, naming why: an account no exchange entry lists, or
