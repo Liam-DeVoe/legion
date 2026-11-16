@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
@@ -791,6 +791,69 @@ test("the read's names are named as chips once per answer, not once per row", as
   } finally {
     view.unmount();
     named.mockRestore();
+  }
+});
+
+/** Where the router stands, drawn so a test reads it. */
+function Where(): ReactNode {
+  const at = useLocation();
+  return <output data-where="">{`${at.pathname}${at.hash}`}</output>;
+}
+
+// A reference in a row's words is a link of this application: a plain click follows it in place,
+// as a link the router draws does, and never loads the whole page again. A click with a key
+// held is the browser's, which opens it elsewhere. Both the words drawn as stored and the words
+// drawn from their reading, whose links the row's own pass makes, are read.
+test("a reference in a row's words is followed in place on a plain click", async () => {
+  const target = "dispatch://CORE-1/spec#b-r1";
+  const text = `It follows ${target}.`;
+  const names = new Map([[target, "Draw the rows."]]);
+  for (const tree of [undefined, displayTree(text)]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+          <ReferenceNamesProvider>
+            <Named names={names}>
+              <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
+              <Where />
+            </Named>
+          </ReferenceNamesProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    // What the browser was left to do with each click, which the test then stops: the unit
+    // suite's document loads no page.
+    const left: boolean[] = [];
+    const stop = (event: Event) => {
+      left.push(!event.defaultPrevented);
+      event.preventDefault();
+    };
+    document.addEventListener("click", stop);
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector<HTMLAnchorElement>(
+          `a[data-row-reference="${target}"]`
+        );
+        expect(found?.textContent).toBe("Draw the rows.");
+        return found;
+      });
+      const where = () => view.container.querySelector("[data-where]")?.textContent;
+      act(() => {
+        link?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true })
+        );
+      });
+      expect(where(), "a click with a key held was followed in place").toBe("/issues/CORE-1");
+      act(() => {
+        link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      expect(where(), "a plain click was left to load the page").toBe("/issues/CORE-1/spec#b-r1");
+      expect(left).toEqual([true, false]);
+    } finally {
+      document.removeEventListener("click", stop);
+      view.unmount();
+    }
   }
 });
 

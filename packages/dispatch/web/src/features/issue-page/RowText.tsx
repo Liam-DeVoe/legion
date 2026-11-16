@@ -1,5 +1,6 @@
 import {
   Fragment,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -7,10 +8,12 @@ import {
   useMemo,
   useRef,
 } from "react";
+import { useNavigate } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
+import { isPlainClick } from "../refs/picture-lightbox";
 import {
   buildReferencePath,
   type DispatchReferenceRoute,
@@ -199,9 +202,11 @@ function StoredText({
   const read = useKnownReferenceNames();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   const found = useMemo(() => rowReferences(markdown, knownIssueKeys(names)), [markdown, names]);
+  const follow = useFollowInPlace();
   let at = 0;
   return (
-    <p className="whitespace-pre-wrap break-words" {...authorText}>
+    // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
+    <p className="whitespace-pre-wrap break-words" onClick={follow} {...authorText}>
       {found.map((one) => {
         const before = markdown.slice(at, one.start);
         at = one.end;
@@ -230,6 +235,30 @@ function StoredText({
       })}
       {markdown.slice(at)}
     </p>
+  );
+}
+
+/**
+ * Follows an address of this application in a node's words in place, on a plain click, as a link
+ * the router draws does: the words are drawn as HTML (`MarkdownBody`, `linkRowReferences`), and
+ * their links would load the whole page again. A click with a key held or with another button, a
+ * link to a download, to another window or to another origin, and a click a picture already
+ * answered (`DispatchPicture`) are the browser's.
+ */
+function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
+  const navigate = useNavigate();
+  return useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      if (event.defaultPrevented || !isPlainClick(event.nativeEvent)) return;
+      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return;
+      if (anchor.hasAttribute("download") || anchor.getAttribute("target") !== null) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      event.preventDefault();
+      navigate(`${url.pathname}${url.search}${url.hash}`);
+    },
+    [navigate]
   );
 }
 
@@ -297,8 +326,11 @@ function DrawnText({
   }, [names, tabStops]);
   useLayoutEffect(link, [link]);
   useOutOfTabOrder(drawn, !tabStops);
+  const follow = useFollowInPlace();
   return (
-    <div className="min-w-0 break-words" ref={drawn} {...authorText}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
+    <div className="min-w-0 break-words" onClick={follow} ref={drawn} {...authorText}>
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
