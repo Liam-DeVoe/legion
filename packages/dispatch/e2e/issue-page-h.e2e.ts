@@ -346,7 +346,7 @@ test("every property with a value is visible in Details at every width @phone", 
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, parent, three } = seeded.keys;
     const desktopProject = test.info().project.name !== "iphone";
-    // Who opened ONE and how many references point at it, as Dispatch reads them.
+    // ONE as Dispatch reads it, which the readings below take who opened it from.
     const oneRead = await getIssue(one);
     const opener = oneRead.created_by?.id;
     expect(opener, `${one} names no one who opened it`).toBeDefined();
@@ -540,7 +540,7 @@ test("every property with a value is visible in Details at every width @phone", 
       "href",
       buildIssuePath({ key: one, kind: "artifact", slug: firstDocument?.slug ?? "" })
     );
-    // Referenced by's count opens the list of what references ONE.
+    // Referenced by's control opens the list of what references ONE.
     const referencedBy = marginSection(page, "references").getByRole("button", {
       name: /Referenced by/,
     });
