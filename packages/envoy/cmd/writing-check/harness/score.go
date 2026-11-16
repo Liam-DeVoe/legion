@@ -40,13 +40,22 @@ type Applied struct {
 	// Definition is the definition Define gave, for change 6.
 	Definition string
 	// WriterAnswer is the writer's answer to the side question the change asked, if it asked
-	// one; the added-facts judgement counts it as an input.
+	// one; the added-facts judgement counts it as an input. AsksWriter says the change is one
+	// that asks the writer a side question (5 or 6, alone or in a combination), so the case's
+	// line keeps the answer, "" where it asked none.
 	WriterAnswer string
+	AsksWriter   bool
 	// WaitSeconds is the time from the write, or the press, to the text a person sees.
 	WaitSeconds float64
 	// Calls are the change's own model calls, and Trace what each of its steps did.
 	Calls []Call
 	Trace []TraceStep
+	// TextsFrom is the run whose case line gave all of the above (score --texts-from), "" for
+	// a change this run made. AnswerNotKept says that line keeps no writer's answer, though the
+	// change asks the writer a side question and the case has a session part: a line of a run
+	// made before cases.jsonl kept the answer.
+	TextsFrom     string
+	AnswerNotKept bool
 }
 
 // asSeen is change 1: the text as the person saw it. It calls no model and makes no person wait.
@@ -86,6 +95,18 @@ type CaseResult struct {
 	WaitSeconds float64     `json:"wait_seconds"`
 	ChangeCalls []Call      `json:"change_calls,omitempty"`
 	ChangeTrace []TraceStep `json:"change_trace,omitempty"`
+	// WriterAnswer is the writer's answer to the change's side question, which the judgements
+	// read: on each line of a change that asks one (5 or 6, alone or in a combination), ""
+	// where the change asked none or read none. A line of a run made before cases.jsonl kept
+	// the answer has none.
+	WriterAnswer *string `json:"writer_answer,omitempty"`
+	// TextsFrom is the run whose line gave the text, the definition, the trace, the wait, the
+	// change's calls and the writer's answer (score --texts-from): the change's calls are that
+	// run's. WriterAnswerNotKept says that line keeps no writer's answer, though the change asks
+	// the writer a side question and the case has a session part, and a judgement of this line
+	// reads the writer's answer in its input mode: it read none.
+	TextsFrom           string `json:"texts_from,omitempty"`
+	WriterAnswerNotKept bool   `json:"writer_answer_not_kept,omitempty"`
 	// Reader is the fresh reader's answer, and FirstParagraphReader the answer of the one who
 	// read only the first paragraph of an answer case's text.
 	Reader               *Answer              `json:"reader,omitempty"`
@@ -97,10 +118,11 @@ type CaseResult struct {
 
 // calls is every model call the result records as this run's: the change's, the readers' and the
 // grader's. An answer or a grade the run took from another run is that run's call, not this one's;
-// so is a writer's answer that another model's run of a lockstep made (Call.SharedFrom).
+// so is a writer's answer that another model's run of a lockstep made (Call.SharedFrom), and every
+// call of a change whose text the run took from another run (TextsFrom).
 func (r *CaseResult) calls() (change, measure []Call) {
 	for _, c := range r.ChangeCalls {
-		if c.SharedFrom == "" {
+		if c.SharedFrom == "" && r.TextsFrom == "" {
 			change = append(change, c)
 		}
 	}
@@ -110,13 +132,8 @@ func (r *CaseResult) calls() (change, measure []Call) {
 		}
 	}
 	for _, j := range Judgements {
-		g := r.Grades[j]
-		if g == nil || g.Reused {
-			continue
-		}
-		measure = append(measure, g.Refused...)
-		if g.Call != nil && g.Call.Model != "" {
-			measure = append(measure, *g.Call)
+		if g := r.Grades[j]; g != nil {
+			measure = append(measure, g.ownCalls()...)
 		}
 	}
 	return change, measure
@@ -213,7 +230,7 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 		res.SessionStatus = "no_place"
 	}
 	applied, err := change.Apply(ctx, c)
-	res.ChangeCalls, res.WaitSeconds, res.ChangeTrace = applied.Calls, applied.WaitSeconds, applied.Trace
+	res.ChangeCalls, res.WaitSeconds, res.ChangeTrace, res.TextsFrom = applied.Calls, applied.WaitSeconds, applied.Trace, applied.TextsFrom
 	if err != nil {
 		res.Error = "change " + change.Name() + ": " + err.Error()
 		res.Time = time.Now().UTC().Format(time.RFC3339)
@@ -221,6 +238,10 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	}
 	text := applied.Text
 	res.Text, res.TextSHA256, res.Words, res.Definition = text, sha256Hex([]byte(text)), Words(text), applied.Definition
+	if applied.AsksWriter && !applied.AnswerNotKept {
+		answer := applied.WriterAnswer
+		res.WriterAnswer = &answer
+	}
 	record := s.ds.RecordPart(c)
 	question := c.PersonQuestion()
 	reply := c.Group == GroupAnswer
@@ -315,6 +336,11 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	if applied.Definition != "" && s.wants(JDefine) {
 		give(JDefine, "")
 	}
+	// A judgement that reads the writer's answer in its input mode reads none where the line of
+	// --texts-from kept none: the line says so, and the figures count it.
+	res.WriterAnswerNotKept = applied.AnswerNotKept && slices.ContainsFunc(cr.planned, func(in GradeInput) bool {
+		return s.grader.readsWriterAnswer(in.Judgement)
+	})
 	return cr
 }
 
@@ -402,6 +428,10 @@ type RunParams struct {
 	GradesFrom       []string `json:"grades_from,omitempty"`
 	VocabularySHA256 string   `json:"vocabulary_sha256,omitempty"`
 	PromptsSHA256    string   `json:"prompts_sha256"`
+	// AddedGrader is the added grader's variant (--added-grader), and TextsFrom the run whose
+	// texts this run grades again with no call of the change (--texts-from).
+	AddedGrader string `json:"added_grader"`
+	TextsFrom   string `json:"texts_from,omitempty"`
 	// WriterSHA256 is the writer's prompts' digest, and WriterOrder the order of the writer's
 	// user message (--writer-order), for a change that plays the writer.
 	WriterSHA256 string `json:"writer_sha256,omitempty"`
@@ -549,6 +579,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	vocabulary := fs.String("vocabulary", "", "the owner-texts.jsonl.gz that writing-check dataset owner-texts wrote: the undefined judgement reads the words of each text that the owner wrote himself before the case")
 	repeatability := fs.String("repeatability", "", "a repeatability.json (harness compare) whose agreement scores.md gives beside each score")
 	judgementsFlag := fs.String("judgements", "", "the judgements to give, comma-separated (default: every one), for a measurement of a few")
+	addedGrader := fs.String("added-grader", AddedOld, "the added grader: old, the added judgement's request as it was; inputs-first, lost's and added's user message with the question, the record, the writer's answer and the session part first, then the original text and, last, the new text; or verify, the old request, then, for a grade that lists a fact, one more call that asks of each listed fact whether an input holds it")
+	textsFrom := fs.String("texts-from", "", "a run directory, or a lockstep's directory of them, whose texts this run grades again with no call of the change: each case line's text, definition, trace, wait, change calls and writer's answer as they are; the change, its candidates, the part, the groups, the sample and --session-chars are that run's")
 	mf := addModelFlags(fs)
 	mf.addPaceFlag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -561,6 +593,30 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check harness score: %v\n", err)
 		return 1
+	}
+	// --texts-from takes from the run it names what decided the texts: their change, its
+	// candidates, the part, the groups, the sample and the session part's length.
+	var sources []textsSource
+	textsLockstep := false
+	if *textsFrom != "" {
+		var given []string
+		fs.Visit(func(f *flag.Flag) {
+			if slices.Contains(textsFlags, f.Name) {
+				given = append(given, "--"+f.Name)
+			}
+		})
+		if len(given) > 0 {
+			return usage("--texts-from takes the change, its candidates, the part, the groups, the sample and the session part's length from the run it names: give no " + strings.Join(given, ", "))
+		}
+		var err error
+		if sources, textsLockstep, err = readTextsFrom(*textsFrom); err != nil {
+			return usage(err.Error())
+		}
+		p := sources[0].params
+		*changeFlag, *part, *groupsFlag, *sessionChars = p.Change, p.Part, strings.Join(p.Groups, ","), p.SessionChars
+		if p.Sample != nil {
+			*sampleSize, *sampleSeed = p.Sample.Size, p.Sample.Seed
+		}
 	}
 	change, plan, err := resolveChange(*changeFlag)
 	if err != nil {
@@ -578,6 +634,12 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.Visit(func(f *flag.Flag) { groupsSet = groupsSet || f.Name == "groups" })
 	if plan != nil && plan.has(changeDefine) && !groupsSet {
 		groups = []string{GroupQuestion}
+	}
+	// A run of --texts-from makes no change: its plan is the texts' run's, and the run plays no
+	// step of it.
+	textsPlan := plan
+	if len(sources) > 0 {
+		plan = nil
 	}
 	switch {
 	case *casesDir == "" || *sessionsDir == "" || *out == "" || fs.NArg() > 0:
@@ -612,6 +674,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage(fmt.Sprintf("change %s plays no writer: give no --writer-order", change.Name()))
 	case mf.uncachedPerMinute < 0:
 		return usage("--uncached-input-per-minute must not be below 0")
+	case !slices.Contains(AddedGraders, *addedGrader):
+		return usage("--added-grader is " + strings.Join(AddedGraders, ", "))
+	case len(sources) > 0 && *part != PartDevelopment:
+		return usage("--texts-from takes a run of the development part: grading the held-out texts again is a second run of their cells")
 	}
 	if err := outsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
@@ -662,9 +728,6 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage(err.Error())
 	}
 	started := time.Now()
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		return fail(err)
-	}
 	casesSHA, err := fileSHA256(filepath.Join(*casesDir, casesFile))
 	if err != nil {
 		return fail(err)
@@ -673,16 +736,34 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(err)
 	}
+	if len(sources) > 0 {
+		if p := sources[0].params; p.CasesSHA256 != casesSHA || p.SessionsSHA != sessionsSHA {
+			return usage(fmt.Sprintf("--texts-from %s scored other cases or sessions than --cases and --sessions hold: its run.json records cases_sha256 %s and sessions_counts_sha256 %s", *textsFrom, p.CasesSHA256, p.SessionsSHA))
+		}
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return fail(err)
+	}
 	var fallbacks []string
 	for _, f := range cfg.Models.Roles.GraderFallbacks {
 		fallbacks = append(fallbacks, f.ID)
 	}
 	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleGraderFallback: strings.Join(fallbacks, ","), RoleReader: cfg.Models.Roles.Reader.ID}
 	// candidates are the candidate of each lane: the models of --models, in its order, or the one
-	// of --model, "" for a change that calls none.
+	// of --model, "" for a change that calls none; under --texts-from, the candidate of each run
+	// it names.
 	candidates, candidateFlag := lockstep, "--models"
 	if len(lockstep) == 0 {
 		candidates, candidateFlag = []string{*modelFlag}, "--model"
+	}
+	if len(sources) > 0 {
+		candidates = nil
+		for _, src := range sources {
+			candidates = append(candidates, src.params.Model)
+		}
+		if textsLockstep {
+			lockstep = candidates
+		}
 	}
 	var run *changeRun
 	var inst LocalInstance
@@ -717,7 +798,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	selected := selectCases(ds.Cases, groups, 0, 0)
 	params := RunParams{
 		Change: change.Name(), Part: *part, Groups: groups, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
-		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA,
+		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA, AddedGrader: *addedGrader,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
 		UncachedInputPerMinute: mf.uncachedPerMinute,
 	}
@@ -749,6 +830,13 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		selected, sample = drawSample(selected, *sampleSize, *sampleSeed)
 		params.Sample = &sample
 	}
+	if len(sources) > 0 {
+		drawn, _ := json.Marshal(params.Sample)
+		recorded, _ := json.Marshal(sources[0].params.Sample)
+		if string(drawn) != string(recorded) {
+			return fail(fmt.Errorf("the sample drawn from --cases, %s, is not the one --texts-from %s records, %s", drawn, *textsFrom, recorded))
+		}
+	}
 	// Each lane's run.json is the one a run of --model with its candidate writes, so either
 	// command continues the other's directory.
 	lanes := make([]*lane, len(candidates))
@@ -763,6 +851,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		l.params.Models = maps.Clone(models)
 		if m != "" {
 			l.params.Model, l.params.Models[RoleCandidate] = m, m
+		}
+		if len(sources) > 0 {
+			l.change = sources[i].change(textsPlan)
+			sources[i].keep(&l.params)
 		}
 		if err := checkParams(l.out, l.params); err != nil {
 			return fail(err)
@@ -829,6 +921,9 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if len(lockstep) > 0 {
 			with = " with " + l.model
 		}
+		if l.params.TextsFrom != "" {
+			with += ", the texts of " + l.params.TextsFrom
+		}
 		fmt.Fprintf(stderr, "writing-check harness score: change %s%s, part %s: %d cases, %d with a result, %d to score\n",
 			change.Name(), with, *part, len(selected), len(selected)-len(l.todo), len(l.todo))
 	}
@@ -859,6 +954,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return usage(err.Error())
 		}
+		grader.Added = *addedGrader
 		readerModel, err := mf.claudeClient(cfg, cfg.Models.Roles.Reader, runner)
 		if err != nil {
 			return usage(err.Error())

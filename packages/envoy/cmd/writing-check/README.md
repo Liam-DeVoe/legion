@@ -32,8 +32,8 @@ go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bund
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...]] [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
-go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
 go run ./cmd/writing-check harness asked-words --run <run dir> --cases <build dir> --out <file>
@@ -1214,7 +1214,8 @@ Its inputs are in the package, and they are among the paths that decide a score:
   the price of a five-minute write (see "The prompt cache").
 - `prompts/`: `reader.md`, and one `grade-*.md` for each judgement, the system prompt of its
   calls: `answered`, `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`,
-  `harder` and `define`. `parts.md` holds the parts they share.
+  `harder` and `define`. `grade-added-verify.md` is the check of `--added-grader verify` (see "The
+  added grader"). `parts.md` holds the parts they share.
 - `writer/writer.md`: the prompts of the writer the harness plays. They are apart from
   `prompts/`, so change 1's prompt digest does not move with them; a run that plays the writer
   records their digest as `writer_sha256`.
@@ -1252,7 +1253,8 @@ cache (its code at the parent of commit 00f3c570).
   judgement's own reply schema. Its user message holds the parts that the judgement's input mode
   gives, in this order: the question, the subject (the reader's answer, the two texts, the text
   with the owner's own words, or the definition), the record, the writer's answer, and, after a
-  blank line, the session part.
+  blank line, the session part. `--added-grader inputs-first` sends `lost` and `added` the same
+  parts in another order (see "The added grader").
 - `phrases` sends its prompt as its system prompt, and its candidate sentences in their tag.
 - The writer sends Dispatch's record, its text, Dispatch's message and, after a blank line, its
   session part. `score --writer-order session-first` sends the session part after the record,
@@ -1332,6 +1334,7 @@ can report more than its estimate. `grader-test` records the setting and the sam
 Session text reaches Claude models only. Package `claude` reads the session export, and its
 `SessionText` type holds a case's part of a session. No code outside `claude` can read the text:
 the type has no exported field and no method that answers it, and it prints as a placeholder.
+`SessionText.Holds` answers only whether the part holds a quote, for `--added-grader verify`.
 Only `claude.Client.CallWithSession` sends it, and a `claude.Client` always calls a Claude
 model. Package `llm`, which holds the Foundry client, cannot name the type, since `claude`
 imports `llm`. So a call that sends session text to a model of another family does not compile.
@@ -1380,6 +1383,8 @@ model's id, or when no call answers. Then `probe` exits 1. `--out` also writes t
 | `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
 | `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
 | `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
+| `--added-grader` | How the `added` judgement is asked (see "The added grader"): `old` (the default), the request as it was; `inputs-first`, `lost`'s and `added`'s texts after the other parts; or `verify`, the old request, then a check of each fact it lists. `run.json` records it as `added_grader`. |
+| `--texts-from` | A run directory, or a lockstep's directory of them, whose texts this run grades again with no call of the change (see "Texts of another run"). It takes the change, its candidates, the part, the groups, the sample and `--session-chars` from that run. |
 | `--uncached-input-per-minute` | Hold the run's own model calls to this many uncached input tokens in any one minute (default 0: no pacing). See "Pacing". |
 
 For each case, the judgements are:
@@ -1434,12 +1439,15 @@ the model that graded it. `--grader` replaces the grader for one run, and keeps 
 the text the person sees after the change (`text`, the string `text_sha256` hashes: an ask's
 question with its options, one line each, as the dataset writes them; any other kind's body), the
 readers' answers, each grade, each call's tokens and cost, and the change's trace (see "The
-changes"). `cases.jsonl` holds Dispatch text, so the run's directory stays under `$TMPDIR`. A case
-whose line holds an error is scored again by the next run. `scores.json` and `scores.md` hold the
-figures: for the whole part and for the cases with a session (plan Decision 18), and for each
-case group and all groups, the cases by kind and by conversation, each score, the wait, the
-change's own model cost per text, and each model's calls, attempts, prompt tokens at the input
-price, cache write and cache read tokens, reply tokens and cost.
+changes"). A line of a change that asks the writer a side question (5 or 6, alone or in a
+combination) also holds the writer's answer that the judgements read, as `writer_answer` (`""`
+where the change asked none or read none). `cases.jsonl` holds Dispatch text, so the run's
+directory stays under `$TMPDIR`. A case whose line holds an error is scored again by the next
+run. `scores.json` and `scores.md` hold the figures: for the whole part and for the cases with a
+session (plan Decision 18), and for each case group and all groups, the cases by kind and by
+conversation, each score, the wait, the change's own model cost per text, and each model's
+calls, attempts, prompt tokens at the input price, cache write and cache read tokens, reply
+tokens and cost.
 `scores.md` also gives the uncached input of the run's own calls and its busiest minute (see
 "Pacing").
 
@@ -1585,7 +1593,9 @@ are written by hand from development cases and hold Dispatch text, so they are k
 grading model, as `score` takes it, except that a candidate may grade here: no candidate wrote a
 planted output. The report then says the grader is a candidate, and `grader-test.json` records
 the grader and `grader_is_candidate`. `--uncached-input-per-minute` paces the test's calls as it
-paces `score`'s (see "Pacing").
+paces `score`'s (see "Pacing"). `--added-grader` sets the added grader, as `score` takes it (see
+"The added grader"); the report names a variant other than `old`, `grader-test.json` records it
+as `added_grader`, and the cost holds the check's calls.
 
 ### compare and repeatability
 
@@ -1655,16 +1665,17 @@ is the same as its own, byte for byte (`text_sha256`). From such a result it tak
 Each answer and each grade records the SHA-256 of its inputs as `input_sha256`. Two of them read
 the same inputs when that SHA-256 is the same. For a grade, it covers the grader and its
 fallbacks with their effort, the system prompt, the user message, the reply's schema and bound,
-and the session part where the call reads one. The user message holds what the input mode gives
-the judgement: the texts, the reader's answer, the question, the record, the writer's answer, the
-definition and the owner's own words. So the run takes no grade that was made with another input
-mode, another prompt, another layout, another vocabulary or another grader. It gives that
-judgement itself.
+the `--added-grader` variant where it is not `old`, and the session part where the call reads
+one. The user message holds what the input mode gives the judgement: the texts, the reader's
+answer, the question, the record, the writer's answer, the definition and the owner's own words.
+So the run takes no grade that was made with another input mode, another prompt, another layout,
+another added grader, another vocabulary or another grader. It gives that judgement itself.
 
 An answer or a grade that the run takes is marked `reused` and keeps the call of the run that
 made it. The figures count no call and no cost for it: the model table and the cost in
 `scores.md` hold only the calls this run made. The change's own calls are always this run's, but
-for a writer's answer that another model's run of a lockstep made (see "Lockstep").
+for a writer's answer that another model's run of a lockstep made (see "Lockstep"), and for every
+call of a change whose texts the run took from another run (see "Texts of another run").
 `scores.md` gives the number of answers and grades the run took (`reused_answers` and
 `reused_grades` in `scores.json`).
 
@@ -1673,6 +1684,86 @@ for a writer's answer that another model's run of a lockstep made (see "Lockstep
 
 `--readers-from` differs. It takes the readers' answers alone, and it does not compare their
 inputs, so that another grader grades the same answers.
+
+### The added grader
+
+`--added-grader` sets how the `added` judgement is asked. `score` and `grader-test` take it. The
+default, `old`, is the request as it was: every judgement sends, byte for byte, the request that
+the harness sent before the flag. `TestEveryJudgementTheVariantDoesNotChangeSendsItsRequestOfBefore`
+holds each judgement's system prompt, user message and `input_sha256` to those of the code before
+the flag (commit afdb071c), on a fixture written for the test, in the full and the final input
+modes. Under each other variant, the test holds to them each judgement that the variant does not
+change.
+
+- `inputs-first` changes the requests of `lost` and `added` alone. Their system prompt and reply
+  schema do not change. Their user message holds the same parts in this order: the question, the
+  record, the writer's answer, the session part, the original text, and last the new text.
+- `verify` sends the old `added` request. Where the grade lists one or more facts, it makes one
+  more call, the check (`prompts/grade-added-verify.md`). The check reads the inputs that the
+  added call read: the question as context, the original text, the record, the writer's answer
+  and the session part. It does not read the new text. After the session part it reads the listed
+  facts, each with its number. For each fact it answers whether an input states the fact or shows
+  it directly (the definition of `grade-added.md`), with the exact words of the input that hold
+  it. Then the harness looks up those words in the inputs, in the form it looks up each quote:
+  lower case, no Markdown marks, plain quotes, one space. A fact is dropped where the check says
+  an input holds it and an input holds its words. Every other fact is kept: the check says no
+  input holds it, or its words are in no input as given.
+
+A `verify` grade keeps the listed facts as `verify.listed`, the kept facts as `items` and
+`count`, the dropped facts with their words as `verify.held`, the kept facts whose words no input
+holds as `verify.held_words_not_found`, and the check's call, with its tokens and cost, as
+`verify.call`, as for every other call. A grade of `inputs-first` or `verify` records the variant
+as `added_grader`, and its `input_sha256` holds the variant's name and parts. So `--grades-from`
+never takes a grade of one variant for another, also where the two requests have the same bytes.
+Under `verify`, an `old` added grade of the same inputs is the first call: the run takes it from
+`--grades-from` and makes the check alone. That grade's `verify.first_reused` is true, and the
+figures count it as `reused_added_first_calls`. `run.json` records the variant as `added_grader`.
+
+`grade-added-verify.md` is in `prompts/`, so it changes `prompts_sha256`: a directory of a run made
+before it does not continue.
+
+### Texts of another run
+
+`score --texts-from <run dir>` grades the texts of an earlier run again, and makes no call of the
+change. For each case it takes the earlier line's text, definition, change trace, wait, change
+calls and writer's answer as they are. With `--grades-from` that names the same run, it takes
+each grade and answer whose `input_sha256` is unchanged (see "Grades of another run"). So the run
+calls the grader only for the judgements whose request changed. For example, `score
+--added-grader verify --texts-from <r4-c5>/Kimi-K3.1-Pro --grades-from
+<r4-c5>/Kimi-K3.1-Pro,<b4-sample>,<b4-qsample>` makes only the checks of `added`, where the earlier
+lines keep the writer's answer (see below).
+
+- The run takes the change, its candidate, the part, the groups, the sample and `--session-chars`
+  from the earlier run's `run.json`. It refuses each flag that sets them: `--change`, `--model`,
+  `--models`, `--local`, `--loaded`, `--rounds`, `--unedited`, `--writer-order`, `--part`,
+  `--groups`, `--sample`, `--sample-seed`, `--session-chars`, `--commit` and `--new-run`.
+- It refuses an earlier run of other cases or sessions (`cases_sha256`,
+  `sessions_counts_sha256`), a sample that it does not draw again the same, and a run of the
+  held-out part.
+- A lockstep's directory (see "Lockstep") is one earlier run for each directory in it that holds
+  a `run.json`. The runs must be of one change, part, group list, sample, case file and session
+  export, each with a candidate of its own. The regrade writes each model's run to
+  `<out>/<model>`. One model's directory is one run, in `--out`.
+- `run.json` records the earlier run as `texts_from`, and keeps its writer, its writer prompts'
+  digest and order, change 3's settings and the local Dispatch's settings. Each line records the
+  earlier run as `texts_from`. The change's calls are the earlier run's. So the change's cost per
+  text and the wait are the earlier run's, and the calls are not in the model calls. `scores.md`
+  names the earlier run.
+- A case whose earlier line holds no text (its change failed) ends with an error that holds the
+  earlier error. A case with no earlier line ends with an error too. Neither has a result.
+
+The writer's answer. Changes 5 and 6 ask the writer a side question, and the judgements read its
+answer. A line keeps the answer as `writer_answer`. A run made before the harness kept it has no
+`writer_answer` on its lines, so the regrade cannot know the answer that the change had. Such a
+line, of a change that asks the writer a side question, for a case with a session part, is
+graded with no writer's answer. Each judgement that reads the writer's answer in its input mode
+reads none. Its `input_sha256` then differs from the earlier grade's, so the run grades it again.
+Under the `final` modes these are `lost`, `added`, `undefined` and `define`. The regrade's line
+records `writer_answer_not_kept`. `scores.json` counts these lines as `writer_answers_not_kept`,
+and `scores.md` gives the count. A line with no session part had no answer, and is not counted.
+So a regrade of such a run does not call the grader for `added` alone. To grade `added` alone
+again, give `--judgements added`: the run then gives no other judgement and calls no reader. A
+run of change 5 or 6 made with the code that keeps `writer_answer` has none of these lines.
 
 ### phrases-labels and asked-words
 

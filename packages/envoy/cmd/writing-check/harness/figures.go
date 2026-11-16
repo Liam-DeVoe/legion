@@ -41,9 +41,15 @@ type FigureRun struct {
 	UncachedInput llm.PaceUse `json:"uncached_input_this_run"`
 	// ReusedAnswers and ReusedGrades are the readers' answers and the grades that the results
 	// took from other runs (score --readers-from, --grades-from): no call and no cost of them is
-	// among Models.
-	ReusedAnswers int `json:"reused_answers,omitempty"`
-	ReusedGrades  int `json:"reused_grades,omitempty"`
+	// among Models. ReusedFirstCalls counts the added grades of --added-grader verify whose first
+	// call is another run's grade (Verification.FirstReused) and whose check this run made.
+	ReusedAnswers    int `json:"reused_answers,omitempty"`
+	ReusedGrades     int `json:"reused_grades,omitempty"`
+	ReusedFirstCalls int `json:"reused_added_first_calls,omitempty"`
+	// WriterAnswersNotKept counts the results whose --texts-from line keeps no writer's answer
+	// that the change may have had, though a judgement of the result reads one in its input mode
+	// (CaseResult.WriterAnswerNotKept): those judgements read none.
+	WriterAnswersNotKept int `json:"writer_answers_not_kept,omitempty"`
 	// Lockstep are the models of the lockstep process (score --models) that made this run beside
 	// the runs of its other models: WallSeconds and UncachedInput are the whole process's.
 	// SharedAnswers counts the writer's answers that the results took from another model's run of
@@ -165,9 +171,16 @@ func computeFigures(params RunParams, results []CaseResult, selected int, seed u
 			}
 		}
 		for _, g := range r.Grades {
-			if g != nil && g.Reused {
+			switch {
+			case g == nil:
+			case g.Reused:
 				f.Run.ReusedGrades++
+			case g.Verify != nil && g.Verify.FirstReused:
+				f.Run.ReusedFirstCalls++
 			}
+		}
+		if r.WriterAnswerNotKept {
+			f.Run.WriterAnswersNotKept++
 		}
 	}
 	return f
@@ -391,8 +404,21 @@ func (f Figures) markdown() string {
 	if p.VocabularySHA256 != "" {
 		fmt.Fprintf(&b, "The undefined judgement read the words of each text that the owner wrote himself before it (owner texts SHA-256 %s).\n", p.VocabularySHA256)
 	}
-	if f.Run.ReusedAnswers+f.Run.ReusedGrades > 0 {
-		fmt.Fprintf(&b, "Taken from other runs, with no call and no cost in this run: %d readers' answers and %d grades.\n", f.Run.ReusedAnswers, f.Run.ReusedGrades)
+	if p.AddedGrader != "" && p.AddedGrader != AddedOld {
+		fmt.Fprintf(&b, "Added grader: %s (--added-grader).\n", p.AddedGrader)
+	}
+	if f.Run.ReusedAnswers+f.Run.ReusedGrades+f.Run.ReusedFirstCalls > 0 {
+		fmt.Fprintf(&b, "Taken from other runs, with no call and no cost in this run: %d readers' answers and %d grades", f.Run.ReusedAnswers, f.Run.ReusedGrades)
+		if n := f.Run.ReusedFirstCalls; n > 0 {
+			fmt.Fprintf(&b, ", and the first call of %d added grades that this run checked", n)
+		}
+		b.WriteString(".\n")
+	}
+	if p.TextsFrom != "" {
+		fmt.Fprintf(&b, "The texts are those of the run in %s (--texts-from): each case's text, definition, trace, wait, change calls and writer's answer are that run's, and this run made no call of the change. The change's cost per text and its wait are that run's; its calls are not in the model calls below.\n", p.TextsFrom)
+	}
+	if n := f.Run.WriterAnswersNotKept; n > 0 {
+		fmt.Fprintf(&b, "Cases whose line in that run keeps no writer's answer, though the change asks the writer a side question and the case has a session part (a run made before cases.jsonl kept the answer): %d. Their judgements that read the writer's answer read none, so they were graded with less input than the change had (writer_answer_not_kept in cases.jsonl).\n", n)
 	}
 	if n := f.Run.SharedAnswers; n > 0 {
 		fmt.Fprintf(&b, "Taken from another model's run of the lockstep: %d of the writer's answers to a side question (shared_from in cases.jsonl). Their calls count in the change's cost per text and its wait, and not in the model calls below.\n", n)

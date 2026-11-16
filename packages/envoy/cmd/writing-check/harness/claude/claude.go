@@ -37,6 +37,21 @@ func (s SessionText) Empty() bool { return s.text == "" }
 // Digest is the SHA-256 of the session part, for a record of what a call read.
 func (s SessionText) Digest() [sha256.Size]byte { return sha256.Sum256([]byte(s.text)) }
 
+// Holds is whether the session part holds quote, both in QuoteForm. So the harness checks a
+// grader's quote of a session part with no code outside this package reading the text.
+func (s SessionText) Holds(quote string) bool {
+	q := QuoteForm(quote)
+	return q != "" && strings.Contains(QuoteForm(s.text), q)
+}
+
+// QuoteForm is text as a quote is looked up in it: lowercased, without Markdown's emphasis and
+// code marks, with typographic quotes made plain and each run of white space one space. It is in
+// this package so that a session part is looked up in the form every other text is (Holds).
+func QuoteForm(text string) string {
+	text = strings.NewReplacer("*", "", "`", "", "\u2019", "'", "\u2018", "'", "\u201c", "\"", "\u201d", "\"").Replace(strings.ToLower(text))
+	return strings.Join(strings.Fields(text), " ")
+}
+
 // Format prints a placeholder in place of the text, whatever the verb, so no fmt call can carry
 // the text into a string.
 func (s SessionText) Format(f fmt.State, _ rune) {

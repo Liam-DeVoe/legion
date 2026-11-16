@@ -124,6 +124,9 @@ func (p changePlan) writer() bool {
 	return slices.ContainsFunc(p.steps, func(s string) bool { return s != changeReviewRewrite })
 }
 
+// asksWriter is whether a step asks the writer a side question: Rewrite (5) and Define (6).
+func (p changePlan) asksWriter() bool { return p.has(changeRewrite) || p.has(changeDefine) }
+
 // changes are the changes the plan holds, for the exposure log.
 func (p changePlan) changes() []string {
 	out := slices.Clone(p.steps)
@@ -283,7 +286,7 @@ func (r *changeRun) Apply(ctx context.Context, c *Case) (Applied, error) {
 		return Applied{}, fmt.Errorf("a text of kind %q is none the reviewer reads", c.Kind)
 	}
 	t := &textRun{c: c, kind: kind, session: r.sessions[c.ID], text: c.Agent.Text, record: r.ds.RecordPart(c),
-		writer: cmp.Or(c.WriterSession, localWriter)}
+		writer: cmp.Or(c.WriterSession, localWriter), out: Applied{AsksWriter: r.plan.asksWriter()}}
 	if r.plan.local() {
 		loaded, ok := r.loaded[c.ID]
 		if !ok {

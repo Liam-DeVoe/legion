@@ -187,6 +187,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	sessionChars := fs.Int("session-chars", 30000, "the bytes of a case's session, its newest, that a grading call reads")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	graderFlag := fs.String("grader", "", "the grading model of this test in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that plays no other role; a candidate may grade here, since no candidate wrote a planted output (default: roles.grader)")
+	addedGrader := fs.String("added-grader", AddedOld, "the added grader, as score takes it: old, inputs-first or verify")
 	mf := addModelFlags(fs)
 	mf.addPaceFlag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -202,6 +203,9 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if *plantedPath == "" || *casesDir == "" || *sessionsDir == "" || *out == "" || fs.NArg() > 0 {
 		return usage("--planted, --cases, --sessions and --out are required, and nothing else")
+	}
+	if !slices.Contains(AddedGraders, *addedGrader) {
+		return usage("--added-grader is " + strings.Join(AddedGraders, ", "))
 	}
 	if err := outsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
@@ -266,6 +270,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return usage(err.Error())
 	}
+	grader.Added = *addedGrader
 	started := time.Now()
 	results := make([]PlantedResult, len(planted))
 	var wg sync.WaitGroup
@@ -280,8 +285,9 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	wg.Wait()
 	uncached := runner.Pacer.Use()
-	report := graderReport(results, graderID, candidate, time.Since(started)) + paceText(mf.uncachedPerMinute, uncached)
-	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": graderID, "grader_is_candidate": candidate, "grader_inputs": inputs.String(), "prompts_sha256": PromptsDigest(),
+	report := graderReport(results, graderID, candidate, *addedGrader, time.Since(started)) + paceText(mf.uncachedPerMinute, uncached)
+	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": graderID, "grader_is_candidate": candidate, "grader_inputs": inputs.String(),
+		"added_grader": *addedGrader, "prompts_sha256": PromptsDigest(),
 		"uncached_input_per_minute": mf.uncachedPerMinute, "uncached_input": uncached, "results": results}); err != nil {
 		return fail(err)
 	}
@@ -299,13 +305,16 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 
 // graderReport is the grader test's table: for each judgement, the wrong and the right outputs
 // it marked correctly, then each output with what a correct grader answers and what it answered,
-// then what the calls cost. candidate says the grader is a candidate of candidates.yaml, which
-// the report says.
-func graderReport(results []PlantedResult, grader string, candidate bool, elapsed time.Duration) string {
+// then what the calls cost. candidate says the grader is a candidate of candidates.yaml, and
+// added names the added grader's variant, which the report says where it is not the old one.
+func graderReport(results []PlantedResult, grader string, candidate bool, added string, elapsed time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Grader test: %s\n\n", grader)
 	if candidate {
 		fmt.Fprintf(&b, "%s is a candidate of candidates.yaml. It grades here because no candidate wrote a planted output; `harness score` refuses it as the grader (R2).\n\n", grader)
+	}
+	if added != AddedOld {
+		fmt.Fprintf(&b, "The added grader is %s (--added-grader).\n\n", added)
 	}
 	b.WriteString("| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | Correct / total |\n| --- | ---: | ---: | ---: |\n")
 	all, allCorrect := 0, 0
@@ -334,11 +343,8 @@ func graderReport(results []PlantedResult, grader string, candidate bool, elapse
 	fmt.Fprintf(&b, "| all | | | %d / %d |\n\n| Output | Judgement | Planted | A correct grader | The grader | Correct |\n| --- | --- | --- | --- | --- | --- |\n", allCorrect, all)
 	var total Call
 	for _, r := range results {
-		for _, c := range r.Grade.Refused {
+		for _, c := range r.Grade.ownCalls() {
 			total = addCall(total, c)
-		}
-		if r.Grade.Call != nil {
-			total = addCall(total, *r.Grade.Call)
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %t |\n", r.Planted.ID, r.Planted.Judgement, r.Planted.Planted, r.Expect, gradeText(r.Grade), r.Correct)
 	}
@@ -359,6 +365,8 @@ func gradeText(g Grade) string {
 			return fmt.Sprintf("found %t, %d words before", *g.Found, *g.WordsBefore)
 		}
 		return fmt.Sprintf("found %t", *g.Found)
+	case g.Verify != nil:
+		return fmt.Sprintf("%d listed, %d kept after the check", len(g.Verify.Listed), g.Count)
 	}
 	return fmt.Sprintf("%d listed", g.Count)
 }

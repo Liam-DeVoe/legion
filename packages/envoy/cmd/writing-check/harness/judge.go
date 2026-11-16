@@ -313,6 +313,13 @@ func (in GradeInput) user(p contextParts) string {
 	case JDefine:
 		b.WriteString(tag("definition", in.Definition))
 	}
+	b.WriteString(in.contextTags(p))
+	return b.String()
+}
+
+// contextTags are the record and the writer's answer, as far as p reads them.
+func (in GradeInput) contextTags(p contextParts) string {
+	var b strings.Builder
 	if p.Record {
 		b.WriteString(in.Record)
 	}
@@ -320,6 +327,19 @@ func (in GradeInput) user(p contextParts) string {
 		b.WriteString(tag("writer_answer", in.WriterAnswer))
 	}
 	return b.String()
+}
+
+// inputsFirst is lost's or added's user message under --added-grader inputs-first, the session
+// part aside, and after, the part that follows the session part: the question, the record and
+// the writer's answer, as far as p reads them; then, after the session part, the original text
+// and, last, the new text.
+func (in GradeInput) inputsFirst(p contextParts) (user, after string) {
+	var b strings.Builder
+	if p.Question {
+		b.WriteString(tag("question", in.Question))
+	}
+	b.WriteString(in.contextTags(p))
+	return b.String(), tag("original_text", in.Original) + tag("new_text", in.Text)
 }
 
 // Call is one model call as the outputs record it: its prompt tokens read at the input price
@@ -401,6 +421,11 @@ type Grade struct {
 	// (score --grades-from): its calls are that run's, and this run does not count them.
 	InputSHA256 string `json:"input_sha256,omitempty"`
 	Reused      bool   `json:"reused,omitempty"`
+	// AddedGrader is the --added-grader variant that made the grade where it is not the old
+	// request: lost and added under inputs-first, added under verify. Verify is verify's check
+	// of an added grade's facts: Items are then the listed facts that the check kept.
+	AddedGrader string        `json:"added_grader,omitempty"`
+	Verify      *Verification `json:"verify,omitempty"`
 }
 
 // graderMaxTokens bounds one grading reply, the grader's reasoning included.
@@ -413,7 +438,10 @@ type Grader struct {
 	Model     *claude.Client
 	Fallbacks []*claude.Client
 	Inputs    GraderInputs
-	phrases   string
+	// Added is the added grader's variant (--added-grader): AddedOld, or "", sends the lost and
+	// the added requests as they were.
+	Added   string
+	phrases string
 }
 
 // NewGrader is the grader of model and its fallbacks, reading the context inputs gives each
@@ -427,20 +455,26 @@ func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade { return g.Grad
 
 // GradeOrReuse gives one judgement, or, where one of done is a grade with no error whose inputs
 // were the ones this grade reads (InputSHA256), that grade again, marked Reused, with no call.
+// Under --added-grader verify, an added grade of done whose inputs were those of the first call
+// is that call's grade (gradeVerified).
 func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade) Grade {
 	spec, ok := judgementSpecs[in.Judgement]
 	if !ok {
 		return Grade{Error: fmt.Sprintf("no judgement %q", in.Judgement)}
 	}
-	req, p, err := g.request(spec, in)
+	r, err := g.request(spec, in)
 	if err != nil {
 		return Grade{Error: err.Error()}
 	}
-	var session claude.SessionText
-	if p.Session {
-		session = in.Session
+	variant := g.addedGrader(in.Judgement)
+	digest := r.digest
+	var check llm.Request
+	if variant == AddedVerify {
+		if check, err = checkRequest(r.data); err != nil {
+			return Grade{Error: err.Error()}
+		}
+		digest = g.digest(r.req, r.session, "added_grader "+AddedVerify, check.System, string(check.Schema), strconv.Itoa(check.MaxTokens))
 	}
-	digest := requestDigest(append([]*claude.Client{g.Model}, g.Fallbacks...), req, session)
 	for _, d := range done {
 		if d != nil && d.Error == "" && d.InputSHA256 == digest {
 			again := *d
@@ -449,46 +483,97 @@ func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade)
 		}
 	}
 	var grade Grade
-	if spec.sentences {
-		grade = g.gradeSentences(ctx, spec, in, req)
-	} else {
-		grade = g.gradeOnce(ctx, spec, in, req, p)
+	switch {
+	case spec.sentences:
+		grade = g.gradeSentences(ctx, spec, in, r.req)
+	case variant == AddedVerify:
+		grade = g.gradeVerified(ctx, spec, in, r, check, done)
+	default:
+		grade = g.gradeOnce(ctx, spec, in, r)
 	}
 	grade.InputSHA256 = digest
+	if variant != AddedOld {
+		grade.AddedGrader = variant
+	}
 	return grade
 }
 
-// request is the judgement's request and the context parts it reads. A sentence judgement's
-// User is the text, whose candidate sentences its calls read (gradeSentences).
-func (g *Grader) request(spec judgementSpec, in GradeInput) (llm.Request, contextParts, error) {
-	req := llm.Request{Purpose: "grade:" + string(in.Judgement), MaxTokens: graderMaxTokens}
-	var p contextParts
+// addedGrader is the --added-grader variant that judgement j takes: the grader's for added, and
+// for lost under inputs-first; AddedOld for every other judgement.
+func (g *Grader) addedGrader(j Judgement) string {
+	if (j == JAdded && g.Added != "") || (j == JLost && g.Added == AddedInputsFirst) {
+		return g.Added
+	}
+	return AddedOld
+}
+
+// readsWriterAnswer is whether judgement j reads the writer's answer in its input mode, where the
+// case has one. A sentence judgement reads its candidates alone.
+func (g *Grader) readsWriterAnswer(j Judgement) bool {
+	return !judgementSpecs[j].sentences && g.Inputs.context(j).WriterAnswer
+}
+
+// gradeRequest is one call of a judgement, ready to make: its request; the context parts it
+// reads, and the data its system prompt was filled from; the session part it reads, empty for
+// none; after, the part of the user message that follows the session part ("" where the session
+// part ends it); and the SHA-256 of what it reads (requestDigest).
+type gradeRequest struct {
+	req     llm.Request
+	parts   contextParts
+	data    promptData
+	session claude.SessionText
+	after   string
+	digest  string
+}
+
+// request is the judgement's call. A sentence judgement's User is the text, whose candidate
+// sentences its calls read (gradeSentences).
+func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error) {
+	r := gradeRequest{req: llm.Request{Purpose: "grade:" + string(in.Judgement), MaxTokens: graderMaxTokens}}
 	var err error
 	if spec.sentences {
-		req.User, req.Schema = in.Text, phraseSchema(spec.verdicts)
-		req.System, err = render(spec.prompt, promptData{Phrases: g.phrases})
-		return req, p, err
+		r.req.User, r.req.Schema = in.Text, phraseSchema(spec.verdicts)
+		r.req.System, err = render(spec.prompt, promptData{Phrases: g.phrases})
+		r.digest = g.digest(r.req, r.session)
+		return r, err
 	}
-	p = in.parts(g.Inputs.context(in.Judgement))
-	data := promptData{
-		HasQuestion: p.Question, HasRecord: p.Record, HasSession: p.Session, WriterAnswer: p.WriterAnswer,
+	r.parts = in.parts(g.Inputs.context(in.Judgement))
+	r.data = promptData{
+		HasQuestion: r.parts.Question, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
 		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases,
 	}
-	req.System, err = render(spec.prompt, data)
-	req.User, req.Schema = in.user(p), spec.schema()
-	return req, p, err
+	if r.parts.Session {
+		r.session = in.Session
+	}
+	r.req.System, err = render(spec.prompt, r.data)
+	r.req.Schema = spec.schema()
+	var extra []string
+	if g.addedGrader(in.Judgement) == AddedInputsFirst {
+		r.req.User, r.after = in.inputsFirst(r.parts)
+		extra = []string{"added_grader " + AddedInputsFirst, r.after}
+	} else {
+		r.req.User = in.user(r.parts)
+	}
+	r.digest = g.digest(r.req, r.session, extra...)
+	return r, err
+}
+
+// digest is the requestDigest of a call that the grader's models may make.
+func (g *Grader) digest(req llm.Request, session claude.SessionText, extra ...string) string {
+	return requestDigest(append([]*claude.Client{g.Model}, g.Fallbacks...), req, session, extra...)
 }
 
 // requestDigest is the SHA-256 of what a call reads: each model it may call, in order, with its
-// effort; the request's system prompt, user message, schema and bound; and the session part, where
-// the call reads one.
-func requestDigest(models []*claude.Client, req llm.Request, session claude.SessionText) string {
+// effort; the request's system prompt, user message, schema and bound; extra, what else decides
+// the call (an --added-grader variant's name and parts), none for the old request; and the
+// session part, where the call reads one.
+func requestDigest(models []*claude.Client, req llm.Request, session claude.SessionText, extra ...string) string {
 	h := sha256.New()
 	write := func(s string) { fmt.Fprintf(h, "%d:%s\n", len(s), s) }
 	for _, m := range models {
 		write(m.Name() + " " + m.Model().Effort)
 	}
-	for _, s := range []string{req.System, req.User, string(req.Schema), strconv.Itoa(req.MaxTokens)} {
+	for _, s := range append([]string{req.System, req.User, string(req.Schema), strconv.Itoa(req.MaxTokens)}, extra...) {
 		write(s)
 	}
 	if !session.Empty() {
@@ -498,24 +583,34 @@ func requestDigest(models []*claude.Client, req llm.Request, session claude.Sess
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// gradeOnce makes the judgement's call, then a fallback's while each model before it refuses.
-func (g *Grader) gradeOnce(ctx context.Context, spec judgementSpec, in GradeInput, req llm.Request, p contextParts) Grade {
+// call makes r's call with the grader's model, then with each fallback while every model before
+// it refuses, and answers the calls that ended on a refusal.
+func (g *Grader) call(ctx context.Context, r gradeRequest) (llm.Response, []Call, error) {
 	call := func(model *claude.Client) (llm.Response, error) {
-		if p.Session {
-			return model.CallWithSession(ctx, req, in.Session, "")
+		if !r.session.Empty() {
+			return model.CallWithSession(ctx, r.req, r.session, r.after)
 		}
+		req := r.req
+		req.User += r.after
 		return model.Call(ctx, req)
 	}
 	resp, err := call(g.Model)
-	grade := Grade{Inputs: cmp.Or(g.Inputs[in.Judgement], InputsTrimmed), Session: p.Session}
+	var refused []Call
 	for _, fallback := range g.Fallbacks {
 		var callErr *llm.CallError
 		if !errors.As(err, &callErr) || callErr.Fault != agentloop.FaultRefusal {
 			break
 		}
-		grade.Refused = append(grade.Refused, callOf(resp))
+		refused = append(refused, callOf(resp))
 		resp, err = call(fallback)
 	}
+	return resp, refused, err
+}
+
+// gradeOnce makes the judgement's call, then a fallback's while each model before it refuses.
+func (g *Grader) gradeOnce(ctx context.Context, spec judgementSpec, in GradeInput, r gradeRequest) Grade {
+	resp, refused, err := g.call(ctx, r)
+	grade := Grade{Inputs: cmp.Or(g.Inputs[in.Judgement], InputsTrimmed), Session: r.parts.Session, Refused: refused}
 	c := callOf(resp)
 	grade.Call, grade.Reply = &c, resp.Value
 	if err != nil {
@@ -529,11 +624,27 @@ func (g *Grader) gradeOnce(ctx context.Context, spec judgementSpec, in GradeInpu
 	return grade
 }
 
-// quoteForm is text as a quote is looked up in it: lowercased, without Markdown's emphasis and
-// code marks, with typographic quotes made plain and each run of white space one space.
-func quoteForm(text string) string {
-	text = strings.NewReplacer("*", "", "`", "", "\u2019", "'", "\u2018", "'", "\u201c", "\"", "\u201d", "\"").Replace(strings.ToLower(text))
-	return strings.Join(strings.Fields(text), " ")
+// ownCalls are the grade's calls that its run made: none for a grade it took from another run
+// (Reused); else the first call and its refused calls, unless its run took that call's grade
+// (Verification.FirstReused), and the check's calls under --added-grader verify.
+func (g *Grade) ownCalls() []Call {
+	if g.Reused {
+		return nil
+	}
+	var out []Call
+	if g.Verify == nil || !g.Verify.FirstReused {
+		out = append(out, g.Refused...)
+		if g.Call != nil && g.Call.Model != "" {
+			out = append(out, *g.Call)
+		}
+	}
+	if v := g.Verify; v != nil {
+		out = append(out, v.Refused...)
+		if v.Call != nil && v.Call.Model != "" {
+			out = append(out, *v.Call)
+		}
+	}
+	return out
 }
 
 // read fills grade from a reply of the judgement's schema.
@@ -550,7 +661,7 @@ func (s judgementSpec) read(value json.RawMessage, grade *Grade, text string) er
 		}
 		fields := s.itemFields()
 		seen := map[string]bool{}
-		plain := quoteForm(text)
+		plain := claude.QuoteForm(text)
 	items:
 		for _, it := range items {
 			for _, check := range s.itemChecks {
@@ -563,7 +674,7 @@ func (s judgementSpec) read(value json.RawMessage, grade *Grade, text string) er
 			_ = json.Unmarshal(it[key(fields, s.itemQuote)], &item.Quote)
 			_ = json.Unmarshal(it[key(fields, s.itemNote)], &item.Note)
 			if s.inText {
-				q := quoteForm(item.Quote)
+				q := claude.QuoteForm(item.Quote)
 				switch {
 				case q == "" || !strings.Contains(plain, q):
 					grade.NotInText++
