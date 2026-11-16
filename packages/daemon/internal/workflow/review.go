@@ -558,6 +558,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		return intake.Result{}, nil
 	}
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
+	// The commit the reviewer's own review read outlives the round, where the decision does not
+	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
+	// (reviewedPart). A person's review decides the round as before and leaves that commit where
+	// it stands, since the reviewer never read the commit the person did.
+	if head := reviewer.Decision.Head; head != "" && e.byReviewer(fact, reviewerSession) {
+		reviewer.ReviewedHead = head
+	}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
 	}
