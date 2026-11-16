@@ -352,7 +352,7 @@ const renderings = (
       ),
   },
   waited: {
-    header: "Time in queue",
+    header: "Time waiting",
     accessorFn: (item) => ageMs(item.card?.card.waiting?.since),
     sortingFn: emptyLast((item) => ageMs(item.card?.card.waiting?.since), byNumber),
     cell: ({ row }) => {
@@ -365,7 +365,7 @@ const renderings = (
     },
   },
   waiting_reason: {
-    header: "Queue state",
+    header: "Waiting on",
     accessorFn: (item) => item.card?.card.waiting?.reason ?? "",
     sortingFn: emptyLast((item) => {
       const index = (WAITING_REASONS as readonly string[]).indexOf(
@@ -380,7 +380,7 @@ const renderings = (
       return (
         <span className={`text-xs ${textSecondaryOnCanvas}`}>
           {waitingLabel(waiting.reason)}
-          {blockers.length === 0 ? "" : ` by ${blockers.join(", ")}`}
+          {blockers.length === 0 ? "" : ` ${blockers.join(", ")}`}
         </span>
       );
     },

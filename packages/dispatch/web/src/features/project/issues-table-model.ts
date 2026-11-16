@@ -434,7 +434,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: duration((item) => ageMs(item.card?.card.waiting?.since)),
   },
   {
-    // Why a card waits in the queue (the board's `waiting.reason`).
+    // What the card waits on (the board's `waiting.reason`): set for a card in the queue, and
+    // for a root that waits on a person outside it.
     id: "waiting_reason",
     size: 164,
     min: 164,

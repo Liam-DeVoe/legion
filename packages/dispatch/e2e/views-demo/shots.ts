@@ -296,17 +296,84 @@ async function swipeToEnd(page: Page): Promise<number> {
   return scrolled;
 }
 
-/** The Legion columns under their names since the owner's review, and the names they had. */
+/** What a Board card draws badly: a Workers fact reading None, where no worker runs on the
+ *  issue and the card should leave the fact out, or a claimer's name squeezed to its dot. */
+async function cardFaults(page: Page): Promise<string[]> {
+  return page.locator("[data-board-card]").evaluateAll((cards) =>
+    cards.flatMap((card) => {
+      const key = card.getAttribute("data-board-card") ?? "a card";
+      const out: string[] = [];
+      const roles = card.querySelector<HTMLElement>('[data-legion-fact="roles"]');
+      if (roles !== null && /None\s*$/.test(roles.innerText)) out.push(`${key} reads Workers None`);
+      for (const name of card.querySelectorAll('[data-testid="issue-claim"] [data-agent-name]')) {
+        const drawn = Math.round(name.getBoundingClientRect().width);
+        if (drawn < 24) out.push(`${key} draws its claimer's name in ${drawn} px`);
+      }
+      return out;
+    })
+  );
+}
+
+async function checkCards(page: Page, name: string): Promise<void> {
+  const drawn = await page.locator("[data-board-card]").count();
+  const faults = await cardFaults(page);
+  check(
+    faults.length === 0,
+    faults.length === 0
+      ? `${name}: all ${drawn} cards leave out an empty Workers and draw their claimer's name`
+      : `${name}: ${faults.length} of ${drawn} cards read badly (${faults.slice(0, 3).join("; ")})`
+  );
+}
+
+/** Where a column's header stands against the table's visible part, with the table unscrolled:
+ *  whether it is whole there, and how far the table scrolls sideways in all. */
+async function onFirstScreen(
+  page: Page,
+  column: string
+): Promise<{ whole: boolean; scrolled: number; scrolls: number }> {
+  return page.getByTestId("issues-table-scroll").evaluate((box, name) => {
+    const edge = box.getBoundingClientRect();
+    const header = [...box.querySelectorAll("thead th")].find((th) =>
+      th.textContent?.trim().startsWith(name)
+    );
+    const own = header?.getBoundingClientRect();
+    return {
+      whole: own !== undefined && own.left >= edge.left - 1 && own.right <= edge.right + 1,
+      scrolled: box.scrollLeft,
+      scrolls: box.scrollWidth - box.clientWidth,
+    };
+  }, column);
+}
+
+async function checkPhaseOnFirstScreen(page: Page, name: string): Promise<void> {
+  const { whole, scrolled, scrolls } = await onFirstScreen(page, "Time per phase");
+  check(
+    whole && scrolled === 0,
+    `${name}: Time per phase stands whole on Done's first screen (scrollLeft ${scrolled}; the table scrolls ${scrolls} px in all)`
+  );
+}
+
+/** The Legion columns under their names since the owner's reviews, and the names they had. */
 const LEGION_COLUMNS = [
-  "Queue state",
-  "Time in queue",
+  "Waiting on",
+  "Time waiting",
   "Time in Legion phase",
   "Worker state",
   "Workers",
   "Review rounds",
   "Legion tree",
 ];
-const OLD_COLUMN_NAMES = ["Waiting", "Waited", "In phase", "Activity", "Roles", "Rounds", "Tree"];
+const OLD_COLUMN_NAMES = [
+  "Waiting",
+  "Waited",
+  "Queue state",
+  "Time in queue",
+  "In phase",
+  "Activity",
+  "Roles",
+  "Rounds",
+  "Tree",
+];
 
 const afterShots: Shot[] = [
   {
@@ -411,24 +478,25 @@ const afterShots: Shot[] = [
       check(count === 596, `the Done tab reads ${count} for the week`);
     },
   },
-  // Done in Hours, swiped to its last column, Time per phase, as a reader would.
+  // Done in Hours. Done scrolls sideways at 1440, and Time per phase stands on its first screen.
   {
     name: "done-time-per-phase-hours-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await openDoneInHours(page);
-      await swipeToEnd(page);
+      await page.waitForTimeout(500);
+      await checkPhaseOnFirstScreen(page, "done-time-per-phase-hours-1440");
     },
   },
-  // The pointer on the first row's Time per phase cell, its tooltip open. The table is swiped to
-  // that column first; the pointer then moves to the cell's centre as a person's would, rather
-  // than through `hover()`, which scrolls the cell into view itself.
+  // The pointer on the first row's Time per phase cell, its tooltip open. The pointer moves to
+  // the cell's centre as a person's would, rather than through `hover()`, which would scroll the
+  // cell into view itself.
   {
     name: "done-time-per-phase-tooltip-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, view("done"));
-      const swiped = await swipeToEnd(page);
+      await checkPhaseOnFirstScreen(page, "done-time-per-phase-tooltip-1440");
       const cell = page.locator("[data-issue-row]").first().locator("[data-phase-hours]");
       const box = await cell.boundingBox();
       if (box === null) throw new Error("the first row's Time per phase cell is not drawn");
@@ -440,20 +508,43 @@ const afterShots: Shot[] = [
         .getByTestId("issues-table-scroll")
         .evaluate((table) => table.scrollLeft);
       check(
-        scrolled === swiped,
-        `the pointer leaves the table where the swipe put it (scrollLeft ${scrolled} of ${swiped})`
+        scrolled === 0,
+        `the table stands unscrolled under the tooltip (scrollLeft ${scrolled})`
       );
     },
   },
   {
     name: "board-open-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, view("open", "&layout=board")),
+    take: async (page) => {
+      await open(page, view("open", "&layout=board"));
+      await checkCards(page, "board-open-1440");
+    },
   },
   {
     name: "board-open-legion-phase-1440",
     viewport: DESKTOP,
-    take: (page) => openBoardByLegionPhase(page),
+    take: async (page) => {
+      await openBoardByLegionPhase(page);
+      await checkCards(page, "board-open-legion-phase-1440");
+    },
+  },
+  // A browser that kept the old Legion view as its `project.issue-view` choice: Open opens on
+  // its Board by Legion phase, with no `view=` or `layout=` in the address.
+  {
+    name: "legion-choice-board-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await page.addInitScript(() => {
+        window.localStorage.setItem("dispatch.project.issue-view:sami@theorem.dev", "legion");
+      });
+      await open(page, issuesPath, page.locator("[data-board-card]").first());
+      check(
+        (await page.locator('[data-board-by="legion_phase"]').count()) === 1,
+        "the kept legion choice opens Open's Board by Legion phase"
+      );
+      await checkCards(page, "legion-choice-board-1440");
+    },
   },
   // One card of the Board by Legion phase, close up: its Legion facts under the names the
   // owner's review gave them (Time in Legion phase, Work time, Workers).
@@ -601,6 +692,25 @@ const afterShots: Shot[] = [
       );
     },
   },
+  // Waiting on, ticked in the Columns menu, with its filter open: what each card in the queue
+  // waits on (Capacity shows only while a row holds it), and None.
+  {
+    name: "filter-waiting-on-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      await showColumn(page, "Waiting on");
+      await page.getByRole("button", { name: "Filter Waiting on", exact: true }).click();
+      await page.waitForTimeout(500);
+      const choices = await filterChoices(page, "Waiting on");
+      check(
+        ["Ready to start", "A blocker", "A person", "None"].every((reason) =>
+          choices.some((each) => each.startsWith(`${reason}, `))
+        ),
+        `Waiting on filters by ${choices.join("; ")}`
+      );
+    },
+  },
   {
     name: "view-open-info-hint-open-1440",
     viewport: DESKTOP,
@@ -653,13 +763,23 @@ const afterShots: Shot[] = [
   {
     name: "no-daemon-board-open-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, view("open", "&layout=board", flags["no-daemon-project"])),
+    take: async (page) => {
+      await open(page, view("open", "&layout=board", flags["no-daemon-project"]));
+      await checkCards(page, "no-daemon-board-open-1440");
+    },
   },
   // The priority pages (cybermonklabs/legion#3767), whose issue tables are the design's.
   { name: "priorities-1440", viewport: DESKTOP, fullPage: true, take: openPriorities },
   { name: "priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
   { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
-  { name: "board-open-legion-phase-390", viewport: PHONE, take: openBoardByLegionPhase },
+  {
+    name: "board-open-legion-phase-390",
+    viewport: PHONE,
+    take: async (page) => {
+      await openBoardByLegionPhase(page);
+      await checkCards(page, "board-open-legion-phase-390");
+    },
+  },
   {
     name: "done-time-per-phase-hours-390",
     viewport: PHONE,
@@ -674,6 +794,17 @@ const afterShots: Shot[] = [
         box.scrollLeft += phase.getBoundingClientRect().left - key.getBoundingClientRect().right;
       });
       await page.waitForTimeout(500);
+      // The header stacks on a phone, so the whole Share/Hours switch stands in the window.
+      const switchBox = await page
+        .getByRole("group", { name: "Time per phase as" })
+        .evaluate((group) => {
+          const box = group.getBoundingClientRect();
+          return { left: Math.round(box.left), right: Math.round(box.right) };
+        });
+      check(
+        switchBox.left >= 0 && switchBox.right <= PHONE.width,
+        `the Share/Hours switch stands at ${switchBox.left}-${switchBox.right} px of the ${PHONE.width} px window`
+      );
     },
   },
   { name: "priorities-390", viewport: PHONE, fullPage: true, take: openPriorities },

@@ -132,7 +132,7 @@ export function claimIsTakeable(
  *
  * `stacked` is for a host as narrow as a Board card, where one line leaves the name a few
  * pixels: the chip takes the host's whole width and draws "Claimed by <holder>" over its age
- * and state, so the name has the card's width less "Claimed by" to ellipsize in.
+ * and state, the holder's name and its attribution wrapping onto as many lines as they need.
  */
 export function ClaimChip({
   claim,
@@ -240,9 +240,8 @@ export function ClaimChip({
         data-testid="issue-claim"
         title={title}
       >
-        <span className="flex w-full min-w-0 items-center gap-1 whitespace-nowrap">
-          <span className="shrink-0">Claimed by</span>
-          <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
+        <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+          Claimed by <AgentName actor={claim.actor} inline />
         </span>
         <span className="flex w-full min-w-0 flex-wrap items-center gap-1">{state}</span>
       </span>

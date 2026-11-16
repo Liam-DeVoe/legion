@@ -33,16 +33,21 @@ const OPEN: BuiltInView = {
   id: "open",
   name: "Open",
   params: () => [...OPEN_STATUSES, ["sort", "queue"]],
+  // Main's default columns (every column but Updated), with Queue and Legion phase where a
+  // daemon runs. What does not fit scrolls sideways under the pinned columns.
   cols: [
     "priority",
-    "queue",
     "key",
     "title",
+    "queue",
     "status",
     "legion_phase",
     "assignee",
     "author",
+    "labels",
+    "claim",
     "asks",
+    "created",
   ],
   bar: true,
 };
@@ -59,9 +64,19 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
       ["status", "done"],
       ["sort", "-closed"],
     ],
-    // What fits beside the sidebar at 1440 px, with Title at its 240 px minimum and the other
-    // columns sharing the rest; Priority and Created by are in the Columns menu.
-    cols: ["key", "title", "closed", "assignee", "work_hours", "phase_hours"],
+    // Time per phase comes right after Closed, so it is on the first screen at 1440 px; the
+    // columns after it scroll in sideways, as Open's do.
+    cols: [
+      "priority",
+      "key",
+      "title",
+      "closed",
+      "phase_hours",
+      "work_hours",
+      "assignee",
+      "author",
+      "labels",
+    ],
   },
 ];
 

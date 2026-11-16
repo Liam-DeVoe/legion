@@ -76,16 +76,17 @@ export function phaseHours(facts: LegionBoardFacts | undefined): {
   return { phases, total: phases.reduce((sum, [, value]) => sum + value, 0) };
 }
 
-/** Why a card waits in the queue, the Queue state column's values in their order: it is ready
- *  to start, the daemon has no capacity free, a blocker link holds it, or a person has not
- *  answered it. The values are the board route's. */
+/** What a card waits on, the Waiting on column's values in their order: nothing but its turn
+ *  (ready to start), the daemon's capacity, a blocker link, or a person's answer. A card in the
+ *  queue waits, and so does a root waiting on a person outside it. The values are the board
+ *  route's `waiting.reason`. */
 export const WAITING_REASONS = ["ready", "slot", "blocked", "person"] as const;
 export type WaitingReason = (typeof WAITING_REASONS)[number];
 const waitingLabels: Record<WaitingReason, string> = {
-  ready: "Ready",
-  slot: "No capacity",
-  blocked: "Blocked",
-  person: "Waiting on a person",
+  ready: "Ready to start",
+  slot: "Capacity",
+  blocked: "A blocker",
+  person: "A person",
 };
 export function waitingLabel(reason: string): string {
   return (waitingLabels as Record<string, string>)[reason] ?? reason;
