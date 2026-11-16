@@ -2193,7 +2193,10 @@ key, passes no cookie signing key (the server generates one for its process, as
 directory. A caller's environment or `~/.config/legion/envoy.json` /
 `~/.local/share/dispatch/{app.json,signing-key}` therefore cannot point the
 test server at a live Envoy, dashboard origin or GitHub App (every Legion pane
-exports `ENVOY_URL`). `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are required inputs, the fakes'
+exports `ENVOY_URL`). The script reads the roots of The Spec before that sweep:
+`DISPATCH_E2E_SPEC_ROOTS`, which it passes on as the server's `DISPATCH_SPEC_ROOTS`.
+Unset, it is `STE-1`, the root that `e2e/spec-form.e2e.ts` seeds, and empty names no root.
+`FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are required inputs, the fakes'
 reported ports; on the TypeScript side `e2e/harness-ports.ts` is the one place the harness ports
 are resolved. The secrets broker
 the server relays credential requests to is one switch, `DISPATCH_E2E_AGENT_SECRETS_URL`, which
