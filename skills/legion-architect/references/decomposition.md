@@ -43,10 +43,8 @@ EOF
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
   proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
-  the root's pull request or an open child's. Then name every root requirement neither its pull
-  request nor a child carries, every request a person made on the root that the spec does not yet
-  state, every child spec that narrows one, and what of the root's goal the list leaves
-  undelivered. Weigh each separate pull request against combining
+  the root's pull request or an open child's. Then name every root requirement neither its pull request nor a child carries,
+  every request a person made on the root that the spec does not yet state, every child spec that narrows one, and what of the root's goal the list leaves undelivered. Weigh each separate pull request against combining
   its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
   Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
   It can also conflict with the default branch.
