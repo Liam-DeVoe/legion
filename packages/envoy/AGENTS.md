@@ -389,7 +389,7 @@ Each item below names a task and where its code is, then notes on it.
     the check is one CI proves whose `ci_check` is the name of the token's check run (`409 CHECK_NOT_THIS_JOBS`);
     GitHub names that check run at the run's commit (`githubapp.Client.CheckRun`, read through the project route's cache, `403 CHECK_RUN_NOT_THE_RUNS`, or `503 CHECK_RUN_UNREADABLE` where GitHub does not answer);
     and the run's repository is the one the check's issue resolves to (`403 REPOSITORY_NOT_THE_ISSUES`).
-    Its row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
+    Its row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, `observed` kept by the project route's rule (`cutObserved`, below), and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
     A role's row stores no branch, and the fourth rule counts only such rows, so a CI job's result never takes the check from CI and settlement never deletes its `ci_check` for one.
     `GET` also derives a result on every read, and stores nothing of it (`api/results_ci.go`, `deriveCIResults`):
     at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.

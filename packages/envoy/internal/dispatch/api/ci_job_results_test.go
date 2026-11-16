@@ -14,8 +14,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -400,6 +402,52 @@ func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 	}
 	if events := resultEventsOn(t, rig.database, rig.issue); events != 1 {
 		t.Fatalf("%s holds %d result.recorded events, want one", rig.issue, events)
+	}
+}
+
+// TestAJobsObservedTextIsCutByTheProjectRoutesRule: a CI job's result on the issue route keeps
+// what its job observed by the one rule of both results routes (cutObserved). A text of
+// contracts.SpecCheckObservedMax runes is kept whole; a failing test's log of 10,000 runes keeps
+// its first contracts.SpecCheckObservedStart runes, contracts.SpecCheckObservedCutNote and its
+// last contracts.SpecCheckObservedEnd runes, so its first line and its --- FAIL line stay. The
+// answer, the stored row and the read all hold the kept text. The text of the bound is the
+// control: a route that cuts every text, or none, fails one of the two rows.
+func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
+	const first, last = "=== RUN   TestX\n", "--- FAIL: TestX (0.01s)\n"
+	log := first + strings.Repeat("x\n", (10000-len(first)-len(last))/2) + last
+	if utf8.RuneCountInString(log) != 10000 {
+		t.Fatalf("the log holds %d runes, want 10000", utf8.RuneCountInString(log))
+	}
+	bound := strings.Repeat("é", contracts.SpecCheckObservedMax)
+	rig := newCIJobRig(t)
+	for _, row := range []struct{ name, sent, kept string }{
+		{"a text of the bound", bound, bound},
+		{"a failing test's log of 10,000 runes", log,
+			log[:contracts.SpecCheckObservedStart] + contracts.SpecCheckObservedCutNote + log[len(log)-contracts.SpecCheckObservedEnd:]},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			body := jobResultOf("c1", "fail")
+			body["observed"] = row.sent
+			result := jobRecorded(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), body))
+			var stored string
+			if err := rig.database.Pool.QueryRow(context.Background(),
+				`select observed from check_results where id = $1::uuid`, result.ID).Scan(&stored); err != nil {
+				t.Fatalf("read the stored row's observed: %v", err)
+			}
+			read := ""
+			for _, held := range rig.readJobCheck(t, "c1").Results {
+				if held.ID == result.ID {
+					read = held.Observed
+				}
+			}
+			for _, got := range []struct{ where, text string }{{"the answer", result.Observed}, {"the stored row", stored}, {"the read", read}} {
+				if got.text != row.kept || utf8.RuneCountInString(got.text) != contracts.SpecCheckObservedMax {
+					t.Fatalf("%s's observed holds %d runes, starting %q and ending %q; want %d, starting %q and ending %q",
+						got.where, utf8.RuneCountInString(got.text), got.text[:min(len(got.text), 40)], got.text[max(0, len(got.text)-160):],
+						contracts.SpecCheckObservedMax, row.kept[:min(len(row.kept), 40)], row.kept[max(0, len(row.kept)-160):])
+				}
+			}
+		})
 	}
 }
 

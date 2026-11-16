@@ -489,12 +489,12 @@ func resultPrincipal(run oauthwire.CIRun) (string, error) {
 	return oauthwire.ResultPrincipal(run.Repository, workflow), nil
 }
 
-// cutObserved is what a result keeps of what a job observed: the text whole when it is
-// contracts.SpecCheckObservedMax runes or fewer, else its first contracts.SpecCheckObservedStart
-// runes, contracts.SpecCheckObservedCutNote and its last contracts.SpecCheckObservedEnd runes,
-// that many runes in all, so the stored text keeps the test's name at its start and why it failed
-// at its end, and says that the middle was cut. `dispatch result --project` cuts by the same rule
-// before it sends the text.
+// cutObserved is what a result keeps of what a job observed, on both results routes: the text
+// whole when it is contracts.SpecCheckObservedMax runes or fewer, else its first
+// contracts.SpecCheckObservedStart runes, contracts.SpecCheckObservedCutNote and its last
+// contracts.SpecCheckObservedEnd runes, that many runes in all, so the stored text keeps the
+// test's name at its start and why it failed at its end, and says that the middle was cut.
+// `dispatch result --project` cuts by the same rule before it sends the text.
 func cutObserved(text string) string {
 	runes := utf8.RuneCountInString(text)
 	if runes <= contracts.SpecCheckObservedMax {

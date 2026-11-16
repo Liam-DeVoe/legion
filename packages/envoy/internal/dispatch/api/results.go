@@ -849,17 +849,18 @@ func ciJobActor(actor model.Actor) model.Actor {
 
 // ciJobCheckResult is the row a CI job's result is stored as: what its run observed, under the
 // identity its token proved and nothing its body named. Its role is ci and its run the check
-// run's name, as on the result derived from that run (ciAnswerOf); its surface and negative
-// control are the check's; its commit is the run's, which ciJobRefusal held the body's to; its
-// session and actor are the run's (ciJobActor); and Branch is the branch whose push the run ran
-// on, which marks the row a CI job's, so the fourth rule of its check never counts it
+// run's name, as on the result derived from that run (ciAnswerOf); what it observed is kept by
+// the rule of the project's results route (cutObserved); its surface and negative control are
+// the check's; its commit is the run's, which ciJobRefusal held the body's to; its session and
+// actor are the run's (ciJobActor); and Branch is the branch whose push the run ran on, which
+// marks the row a CI job's, so the fourth rule of its check never counts it
 // (docs.CICheckRuleIn).
 func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.CIRun, issueKey string) model.CheckResult {
 	return model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: check.Version, CheckSHA256: check.SHA256,
-		Role: ciResultRole, Surface: check.Surface, Run: run.Name, Observed: input.Observed,
+		Role: ciResultRole, Surface: check.Surface, Run: run.Name, Observed: cutObserved(input.Observed),
 		CommitSHA: ci.SHA, Branch: pushedBranch(ci), NegativeControl: check.Attributes.NegativeControl,
 		Verdict: input.Verdict, Screenshots: []string{},
 		Session: sessionOf(actor), Actor: actor,
