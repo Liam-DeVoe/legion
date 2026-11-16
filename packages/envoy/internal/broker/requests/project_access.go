@@ -288,13 +288,16 @@ func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretP
 
 // JudgeProject answers whether the model judge must leave the request of enrollmentID for name to
 // a person for a project's sake. It must when the secret's dispatch-project tag names a private
-// project or a key Dispatch holds no project for, and when the credential that asked names a
-// private project or one Dispatch does not hold (namedProjects): a private project's pod asking
-// for an untagged secret is that project's request, whose reason is that project's text, and the
-// judge's own token names no person, so it may see no private project. A credential naming a
-// project the broker cannot check (no project-access client) is left to a person too. A request
-// whose secret carries no tag and whose credential names no project answers false and asks
-// Dispatch nothing, so a deployment that tags nothing and names nothing asks it nothing new
+// project or a key Dispatch holds no project for, and when a project the credential that asked
+// names is private (namedProjects): a private project's pod asking for an untagged secret is that
+// project's request, whose reason is that project's text, and the judge's own token names no
+// person, so it may see no private project.
+//
+// A broker with no project-access client answers false for an untagged secret, exactly as the
+// merge base decides (R9): such a broker loads no tagged secret (project-unchecked) and cannot know
+// any project is private, so referring a pod only because its exchange entry names a project
+// would change a deployment with nothing private and protect nothing. A request whose secret
+// carries no tag and whose credential names no project answers false and asks Dispatch nothing
 // (judge.Requests).
 func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name string) (bool, error) {
 	projects, err := m.SecretProjects(ctx, []string{name})
@@ -304,6 +307,9 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name string) (
 	if len(projects) > 0 && projects[0].Private {
 		return true, nil
 	}
+	if m.Projects == nil {
+		return false, nil
+	}
 	enr, err := m.enrollment(ctx, enrollmentID)
 	if err != nil {
 		return false, err
@@ -312,15 +318,12 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name string) (
 	if len(named) == 0 {
 		return false, nil
 	}
-	if m.Projects == nil {
-		return true, nil
-	}
 	answers, err := m.Projects.States(ctx, named)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
 	}
 	for _, project := range named {
-		if answer, held := answers[project]; !held || answer.Private() {
+		if answer, held := answers[project]; held && answer.Private() {
 			return true, nil
 		}
 	}

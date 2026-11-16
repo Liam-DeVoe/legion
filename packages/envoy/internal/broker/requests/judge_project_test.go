@@ -37,3 +37,30 @@ func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 		t.Fatalf("judging an untagged secret for a session naming no project made %d calls to Dispatch; want none", calls)
 	}
 }
+
+// TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore is R9 for the judge: a broker
+// with no project-access client loads no tagged secret and cannot know any project is private, so
+// a pod whose exchange entry names a project asking for an untagged secret is judged exactly as the
+// merge base judged it — JudgeProject false, no call to Dispatch. With a client, a pod whose entry
+// names a public project is judged as before too: only a private named project refers it.
+func TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-team-"+t.Name())
+
+	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
+	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY"); err != nil || private {
+		t.Errorf("JudgeProject(a pod mapped to public TEAM, SHARED_KEY) = %v, %v; want false, as the merge base judged it", private, err)
+	}
+	m.Projects = nil
+	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY"); err != nil || private {
+		t.Errorf("JudgeProject with no project-access client, a pod whose entry names TEAM, SHARED_KEY = %v, %v; want false, as the merge base judged it", private, err)
+	}
+	if got := dispatch.Calls(); got > 1 {
+		t.Errorf("the two judgements made %d calls to Dispatch; want at most the one the client-holding broker makes for TEAM's state", got)
+	}
+}
