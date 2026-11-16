@@ -28,11 +28,12 @@ var poolSizeLine = regexp.MustCompile(`numcpu=(\d+) gomaxprocs=(\d+) maxconns=(\
 
 // Open's pool holds poolConns connections whatever machine it runs on. pgxpool's default,
 // max(4, runtime.NumCPU()), made it the node's CPU count. The row starts this test binary again
-// twice: once on one CPU of this machine with GOMAXPROCS 1, and once on all of them with
-// GOMAXPROCS 64. NumCPU is read from the process's CPU affinity when it starts, so the first child
-// is started from a thread whose affinity is that one CPU, which the child inherits. Each child
-// prints the NumCPU it saw, which is the row's control that the two runs really saw different
-// machines, and its pool's MaxConns, which must be poolConns both times.
+// twice: on one CPU of the set this process may run on, with GOMAXPROCS 1, and on that whole set,
+// with GOMAXPROCS 64. NumCPU is read from the process's CPU affinity when it starts, so the first
+// child is started from a thread whose affinity is that one CPU, which the child inherits. Each
+// child prints its NumCPU and its pool's MaxConns, which must be poolConns both times. Where this
+// process may run on more than one CPU, the two NumCPU values must differ, the row's check that
+// its children really saw two machines; on one CPU there is no second machine to compare.
 func TestOpensPoolSizeIsTheSameOnEveryMachine(t *testing.T) {
 	if os.Getenv(poolSizeChildEnv) != "" {
 		s, err := Open(t.Context(), testDSN(t))
@@ -44,22 +45,39 @@ func TestOpensPoolSizeIsTheSameOnEveryMachine(t *testing.T) {
 		return
 	}
 	testDSN(t)
-	oneCPU, one, oneMax := poolSizeChild(t, true, 1)
-	allCPUs, _, allMax := poolSizeChild(t, false, 64)
-	if oneCPU != 1 || allCPUs <= 1 {
-		t.Fatalf("the children saw NumCPU %d and %d, want 1 and this machine's %d: the affinity did not reach them, so the row proves nothing", oneCPU, allCPUs, runtime.NumCPU())
+	var allowed unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &allowed); err != nil {
+		t.Fatalf("read this process's CPU affinity: %v", err)
 	}
-	if one != 1 {
-		t.Fatalf("the one-CPU child ran with GOMAXPROCS %d, want 1", one)
+	first := -1
+	for cpu := range len(allowed) * 64 {
+		if allowed.IsSet(cpu) {
+			first = cpu
+			break
+		}
+	}
+	if first < 0 {
+		t.Fatalf("this process's CPU affinity names no CPU")
+	}
+	oneCPU, one, oneMax := poolSizeChild(t, first, 1)
+	allCPUs, _, allMax := poolSizeChild(t, -1, 64)
+	if oneCPU != 1 || one != 1 {
+		t.Fatalf("the one-CPU child saw NumCPU %d and GOMAXPROCS %d, want 1 and 1: the affinity did not reach it", oneCPU, one)
 	}
 	if oneMax != poolConns || allMax != poolConns {
 		t.Fatalf("Open's pool holds %d connections on 1 CPU and %d on %d CPUs, want %d on both", oneMax, allMax, allCPUs, poolConns)
 	}
+	if count := allowed.Count(); count > 1 && allCPUs != count {
+		t.Fatalf("the all-CPU child saw NumCPU %d, want the %d CPUs this process may run on", allCPUs, count)
+	} else if count == 1 {
+		t.Logf("this process may run on one CPU, so the two children saw the same machine; both pools hold %d", poolConns)
+	}
 }
 
-// poolSizeChild runs TestOpensPoolSizeIsTheSameOnEveryMachine's child, on CPU 0 alone when oneCPU
-// is set, with GOMAXPROCS gomaxprocs, and answers the NumCPU, GOMAXPROCS and MaxConns it printed.
-func poolSizeChild(t *testing.T, oneCPU bool, gomaxprocs int) (numCPU, procs, maxConns int) {
+// poolSizeChild runs TestOpensPoolSizeIsTheSameOnEveryMachine's child, on CPU cpu alone when cpu
+// is not -1, with GOMAXPROCS gomaxprocs, and answers the NumCPU, GOMAXPROCS and MaxConns it
+// printed.
+func poolSizeChild(t *testing.T, cpu, gomaxprocs int) (numCPU, procs, maxConns int) {
 	t.Helper()
 	child := exec.Command(os.Args[0], "-test.run=^TestOpensPoolSizeIsTheSameOnEveryMachine$", "-test.count=1")
 	child.Env = append(os.Environ(), poolSizeChildEnv+"=1", "GOMAXPROCS="+strconv.Itoa(gomaxprocs))
@@ -71,14 +89,14 @@ func poolSizeChild(t *testing.T, oneCPU bool, gomaxprocs int) (numCPU, procs, ma
 		// is unlocked.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		if oneCPU {
+		if cpu >= 0 {
 			var was, one unix.CPUSet
 			if err := unix.SchedGetaffinity(0, &was); err != nil {
 				t.Fatalf("read this thread's affinity: %v", err)
 			}
-			one.Set(0)
+			one.Set(cpu)
 			if err := unix.SchedSetaffinity(0, &one); err != nil {
-				t.Fatalf("set this thread's affinity to CPU 0: %v", err)
+				t.Fatalf("set this thread's affinity to CPU %d: %v", cpu, err)
 			}
 			defer func() {
 				if err := unix.SchedSetaffinity(0, &was); err != nil {
