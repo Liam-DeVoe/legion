@@ -441,11 +441,11 @@ export const NODE_ROW_LAYOUT = {
    *  square, the least target WCAG 2.5.8 allows, reaching into the 8 px before the words with
    *  its dot kept at the column's middle, where the guide of the level under it hangs. */
   foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[4.5px]`,
-  /** The box the row's parts stand in (the prototype's `.card`). On a phone the words stand 8 px
-   *  past the bullet's column, where the prototype has 6, so the fold control's box is 24 px
-   *  square inside the row (`foldControl`). Not named `card`: `text-on-background.test.ts` reads
-   *  that name as `classes.ts`'s `card` ground, which a row is not drawn on. */
-  box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[761px]:grid-cols-[16px_minmax(0,1fr)] max-[761px]:pr-1",
+  /** The box the row's parts stand in (the prototype's `.card`). Below 768 px the words stand
+   *  6 px past the bullet's column, as the prototype's do (the architect's ruling on this part's
+   *  pull request). Not named `card`: `text-on-background.test.ts` reads that name as
+   *  `classes.ts`'s `card` ground, which a row is not drawn on. */
+  box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[768px]:gap-x-1.5 max-[761px]:grid-cols-[16px_minmax(0,1fr)] max-[761px]:pr-1",
   /** The words' column, and everything the row draws under them. */
   content: "col-start-2 row-start-1 min-w-0",
   /** The column of the tag, the author, the time and the state, and on a phone their line. */
