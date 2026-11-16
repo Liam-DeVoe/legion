@@ -192,6 +192,8 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a user with no nkey", func(a *A) { a.Users[1].NKey = "" }, "users", []string{"users[1]: nkey is required"}},
 		{"a user naming no grant", func(a *A) { a.Users[1].Permissions = nil }, "users", []string{"users[1]: name machineId"}},
 		{"a user's machine id with a slash", func(a *A) { a.Users[0].MachineID = str("a/b") }, "users[0].machineId", []string{"users[0].machineId contains '/'"}},
+		{"githubWebhook beside a machine id", func(a *A) { a.Users[0].GitHubWebhook = true }, "users[0].githubWebhook",
+			[]string{"users[0].githubWebhook is set beside machineId"}},
 		{"a session user with no nkey", func(a *A) { a.SessionUser.NKey = "" }, "sessionUser", []string{"sessionUser.nkey is required"}},
 		{"a session user named as a user", func(a *A) { a.SessionUser.Name = "example-host-a" }, "sessionUser", []string{"name repeats users[0]"}},
 	})

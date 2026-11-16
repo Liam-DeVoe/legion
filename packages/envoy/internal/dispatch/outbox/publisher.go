@@ -29,8 +29,9 @@ const (
 	// batchSize is the most events a batch sends, and the most it reads of one owner.
 	batchSize = 100
 	// dispatchTopicPrefix is the prefix of every owner's topic family: an issue's, a document's
-	// and a project's events are published under it.
-	dispatchTopicPrefix = "notifications.dispatch."
+	// and a project's events are published under it. It is Dispatch's lane, which only Dispatch's
+	// own NATS user may publish (bus.DispatchTopicPrefix).
+	dispatchTopicPrefix = bus.DispatchTopicPrefix
 	documentTopicPrefix = dispatchTopicPrefix + "document."
 	// maxCommentThreadDepth bounds the reply_to walks in loadRootCommentAuthors and
 	// loadCommentRecipients so a malformed cycle (comments.reply_to has no acyclicity constraint)
@@ -1492,9 +1493,9 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 		}
 		topic = documentTopicPrefix + event.Project + "." + slug + "." + event.Type
 	} else if event.IssueKey != nil {
-		topic = "notifications.dispatch.issue." + *event.IssueKey + "." + event.Type
+		topic = dispatchTopicPrefix + "issue." + *event.IssueKey + "." + event.Type
 	} else if event.Project != "" {
-		topic = "notifications.dispatch.project." + event.Project + "." + event.Type
+		topic = dispatchTopicPrefix + "project." + event.Project + "." + event.Type
 	} else {
 		return contracts.Envelope{}, fmt.Errorf("event requires an owner")
 	}

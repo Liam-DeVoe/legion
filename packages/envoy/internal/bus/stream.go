@@ -92,6 +92,12 @@ const NotificationTopicPrefix = "notifications."
 // on ExceptionTopicPrefix followed by its original topic.
 const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 
+// DispatchTopicPrefix begins Dispatch's lane: every topic Dispatch publishes an issue's, a
+// document's or a project's events on, and its own announcements. Only Dispatch's NATS user may
+// publish under it, since the Legion daemon trusts an event there as Dispatch's
+// (packages/envoy/infra/core/permissions.go, listenerGrant).
+const DispatchTopicPrefix = NotificationTopicPrefix + "dispatch."
+
 // LegionWakeTopic is the one topic the listener reports a wake of a released Legion issue pod
 // on: a message published to a role topic with no live holder, a message sent to the agent
 // subject of a session that is gone, and the listener's own `listener_ready`. It is a new leaf
@@ -206,7 +212,7 @@ const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 // own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
-	"notifications.dispatch.>",
+	DispatchTopicPrefix + ">",
 	"notifications.github.>",
 	"notifications.slack.>",
 	// The Go Legion daemon's notices for the project's controller

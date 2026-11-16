@@ -136,7 +136,12 @@ The hub refuses these before it registers anything, with an error naming the inp
   listener's `machineId`. Use it where the listener's process is the only one holding the seed,
   so it keeps its sessions' consumers; a host whose sessions connect as the same user takes
   `machineId` instead, since a session holding this set could create, pull and delete any
-  session's consumer.
+  session's consumer. Set `githubWebhook: true` beside it on the user of the one listener that
+  receives GitHub's webhook (its `ENVOY_WEBHOOKS` names `github`). That user is granted
+  `WebhookListenerHostPermissions(listenerMachineId)`: the same set, which may also publish
+  GitHub's lane, `notifications.github.>`. Every other set denies that lane, so the server
+  refuses every GitHub event a webhook listener publishes as a user without the flag, its webhook
+  deliveries and its CI settlements alike.
 - `dispatchMachineId`: the user shared by `envoy-dispatch` and the listener beside it, granted
   `DispatchPermissions(dispatchMachineId)`. Give it that listener's `machineId`, since the set
   names its durable consumer and queue group.
@@ -145,9 +150,9 @@ The hub refuses these before it registers anything, with an error naming the inp
 - `permissions`: `{publish, subscribe}`, each a `nats:Rules`, an `allow` list and an optional
   `deny` list of subject patterns, for any other client.
 
-`daemon: false` selects no permission set. `nats:Rules` is the one rules type every NATS component
-takes, whatever its cloud, and `nkey` is named as `aws:NatsService`'s users name it, so the two
-components spell a user's key and rules alike.
+`daemon: false` and `githubWebhook: false` select no permission set. `nats:Rules` is the one
+rules type every NATS component takes, whatever its cloud, and `nkey` is named as
+`aws:NatsService`'s users name it, so the two components spell a user's key and rules alike.
 
 `ListenerPermissions`, and through it `ListenerHostPermissions`, `HostPermissions` and
 `DispatchPermissions`, holds the notification stream's stored-message get,
@@ -218,8 +223,11 @@ more ([The hub's listener](#the-hubs-listener)).
 A user is refused when it names more than one of `machineId`, `listenerMachineId`,
 `dispatchMachineId`, `daemon: true` and `permissions`, or none, or when its `nkey` is empty, named
 by its index alone, as `users[1]: nkey is required`, since these come before the authorization has
-checked the names. A `machineId`, `listenerMachineId` or `dispatchMachineId` names the durable
-consumer `listener-<id>` and queue group `envoy-listener-<id>`. The shared machine-ID rule refuses
+checked the names. `githubWebhook: true` beside any kind but `listenerMachineId` is refused,
+naming it, as
+`users[0].githubWebhook is set beside machineId; it names the listener that receives GitHub's webhook, so only a listenerMachineId user takes it`.
+A `machineId`, `listenerMachineId` or `dispatchMachineId` names the durable consumer
+`listener-<id>` and queue group `envoy-listener-<id>`. The shared machine-ID rule refuses
 an empty id; leading or trailing whitespace; `.`, `*`, `>`, `/` or `\`; a control character; and
 any whitespace other than an ordinary space; and any id over 246 bytes, so `listener-<id>` fits
 NATS's 255-byte consumer-name limit. An ordinary space is accepted only inside the id and becomes a hyphen in both names. The refusal names the field itself, as
@@ -616,6 +624,20 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The release that limits Dispatch's lane and GitHub's lane adds a publish deny to every set built
+on the listener grant: `notifications.dispatch.>` and `notifications.github.>` to
+`ListenerPermissions`, `ListenerHostPermissions` and `HostPermissions`, and
+`notifications.github.>` with the listener's resume lane, `notifications.envoy.resume.>`, to
+`DispatchPermissions` (see [Permission sets](../README.md#permission-sets)). That changes the
+rendered users of every hub with a `listener`, a `machineId`, a `listenerMachineId` or a
+`dispatchMachineId` user: upgrading such a hub to it replaces its VM once, with the outage below,
+and a hub with none of them keeps its VM. A clustered hub reloads its users instead
+([A reload, not a replacement](#a-reload-not-a-replacement)). The same release adds
+`githubWebhook`. A deployment whose `listenerMachineId` user is the user of the listener that
+receives GitHub's webhook sets `githubWebhook: true` on that user in the same change that moves
+the pin. If the pin moves without it, the user is rendered with GitHub's lane denied, and the
+server refuses every GitHub event that listener publishes, its webhook deliveries and its CI
+settlements alike, until the input is set.
 The cloud-config is the instance
 template's `user-data`, and a template cannot change. The group then replaces its VM at once
 (`PROACTIVE`, minimal action `REPLACE`), deleting it before it creates the next (`RECREATE`, no

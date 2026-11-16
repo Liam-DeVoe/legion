@@ -2954,7 +2954,8 @@ It publishes to:
 
 - every notification topic, `notifications.>`: the subjects of the `ENVOY_NOTIFICATIONS` stream,
   the role lanes, every exception lane, and every other `notifications.` topic a caller may
-  publish straight onto NATS (one the stream does not capture);
+  publish straight onto NATS (one the stream does not capture), but the two lanes its publish
+  deny names (below);
 - the stream's `$JS.API.STREAM.INFO`, `CREATE` and `UPDATE`, its stored-message get
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, its durable consumer `listener-<m>`'s
   `$JS.API.CONSUMER.INFO` and `CREATE`, the durable's acknowledgements
@@ -2997,6 +2998,22 @@ session entry in `envoy_sessions` and its known-session record in `envoy_known_s
 them.
 dispatch://INFRA-840, which gives each session a NATS user of its own, is the place that narrows
 that reach; nothing here can, since one user serves every session on the host.
+
+Its publish deny names the two lanes of `notifications.>` that one user alone publishes, so the
+server refuses both to every other set built on these entries:
+
+- `notifications.dispatch.>`, Dispatch's lane. Only Dispatch's user publishes it: `envoy-dispatch`'s
+  outbox publishes every issue, document and project event there. `DispatchPermissions` takes
+  this lane off its deny.
+- `notifications.github.>`, GitHub's lane. Only the user of the listener that receives GitHub's
+  webhook publishes it: that listener's webhook route and CI summary loop publish every GitHub
+  event there. `WebhookListenerHostPermissions` takes this lane off its deny.
+
+The Legion daemon trusts an event on Dispatch's lane as Dispatch's, and it applies a merge and a
+deciding review from an event on GitHub's lane. With the deny, a session on a host cannot pose as
+either. Nor can a caller of a listener's `/v1/messages/publish`: the server refuses the publish,
+and the route answers `403`. The exceptions are the two listeners whose user publishes the lane:
+the listener beside `envoy-dispatch`, which shares Dispatch's user, and the webhook listener.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
 `notifications.role.> envoy-roles`, so each role message is forwarded once whichever machine's
@@ -3046,8 +3063,10 @@ session on the host share: in each direction the listener's base entries, the se
 left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
 shared host user's sessions at today's reach until dispatch://INFRA-840;
 a listener connecting as this user can give its sessions no consumer, so it refuses their
-registrations `no_grant`. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
-`listener` holds `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
+registrations `no_grant`. Its publish direction keeps the base entries' deny of Dispatch's lane
+and GitHub's lane, so no session on the host publishes either. A `gcp:NatsHub` user with
+`machineId` holds it, and a hub's own `listener` holds `ListenerPermissions` for the hub's
+hostname. Sharing one user makes the host one
 trust domain: any process that reaches the server as it, a listener's own process or any session on
 the host, holds the whole grant above, host sessions included, since sessions run as the Unix user
 that already reads the host's seed. This repository's listener and a session, connected as one
@@ -3070,7 +3089,15 @@ sets therefore allow the same calls a listener makes; the
 subscribe stays rather than being dropped because a change to a set rewrites every hub's rendered
 authorization, which replaces a VM hub's instance and reaches a clustered hub only as a live
 reload. This repository's listener runs under this set against the real servers below: it answers
-a registration `consumer` and relays a send on the session's relay subject, with no refusal.
+a registration `consumer` and relays a send on the session's relay subject, with no refusal. It
+keeps the base entries' deny of Dispatch's lane and GitHub's lane.
+
+`WebhookListenerHostPermissions(machineID)` is the grant of the user of the listener that
+receives GitHub's webhook, whose `ENVOY_WEBHOOKS` names `github`: `ListenerHostPermissions(machineID)`
+with GitHub's lane, `notifications.github.>`, taken off its publish deny. It still denies
+Dispatch's lane. A `gcp:NatsHub` user with `listenerMachineId` and `githubWebhook: true` holds it.
+A listener that receives GitHub's webhook under any other set has every GitHub event it publishes
+refused, its webhook deliveries and its CI settlements alike.
 
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get
@@ -3095,6 +3122,20 @@ durables; the key-value calls for `envoy_webhook_redelivery`; publication of eve
 agent-stream control subject; and subscription to every session's agent-stream frames. A
 `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
 of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
+Its publish deny is the base entries' with Dispatch's lane, `notifications.dispatch.>`, taken
+off, so it still publishes that lane: `envoy-dispatch` publishes every event there. It still
+denies GitHub's lane: Dispatch publishes nothing there, and its redelivery sweep asks GitHub to
+send a missed delivery to the webhook listener again. It also denies the listener's resume lane,
+`notifications.envoy.resume.>`, which holds each session's resume record: the floor its consumer
+starts again at. Only a listener that holds the session consumers' calls writes a record
+(`bus.SessionConsumers`), and this set holds none of them, so no Dispatch path publishes there. A
+user that could would write a whole record, a floor and the stream's id, which
+`$JS.API.STREAM.INFO` reads. A session that comes back would then start past the messages stored
+while it was away. The listener sets and `HostPermissions` keep the lane. This set keeps the kept
+lane, `notifications.envoy.kept.>`, and the wake topic, `notifications.legion.wake`, since this
+user publishes both: the outbox keeps a role route's copy on the kept lane, and the listener beside
+`envoy-dispatch` keeps a role message with no holder there, moves the kept lane's drain cursors,
+and reports role and agent wakes and its `listener_ready` on the wake topic.
 Whatever holds its seed, `envoy-dispatch` or the listener beside it, can still read every session's
 frames and send control to any session; its filtered create on `delivery-events` lets it create
 that durable on any filter, so it can read any retained notification; and, since NATS checks no

@@ -4379,7 +4379,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   It never carries a relay frame header, so it cannot decode as a frame and move the session's resume point, and a plugin answers it `done` before it decodes anything (`RelayHeader.probe` in `@legion/envoy-client`), as does each stand-in for a session in the tests, the load test and the end-to-end scripts.
   Any other probe error, a publish this listener's own grant denies (`bus.ErrPublishDenied`) or a connection that is reconnecting, counts as `connected` and is logged at WARN:
   it says something about this listener and nothing about the session, and a listener that cannot ask must not call every session stopped.
-  The probe needs no grant of its own: the listener publishes `notifications.>` and subscribes `_INBOX.>`, and a session subscribes its relay subject and publishes `_INBOX.>` (`packages/envoy/infra/README.md`, "Permission sets").
+  The probe needs no grant of its own: the listener's grant publishes the relay subjects under `notifications.>` and subscribes `_INBOX.>`, and a session subscribes its relay subject and publishes `_INBOX.>` (`packages/envoy/infra/README.md`, "Permission sets").
 
 - `connected` promises a live plugin of that session id and never a delivery:
   the listener reads whether anything subscribes the relay subject, not which process answered, and whether the session reads the message is its consumer's business, not this answer's.
@@ -5722,7 +5722,10 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 - The listener subscribes to no topic of its own for a session, so it takes none off the bus:
   a topic published straight onto NATS, bypassing the API, reaches nobody.
   `ENVOY_SUBSCRIBE_ALL_TOPICS` is read no longer, and a start that still carries it logs one WARN naming it (`warnIgnoredEnv`, `cmd/listener/main.go`), as `ENVOY_HOST_BRIDGE` does.
-  The listener's grant publishes all of `notifications.>` either way.
+  The listener's grant publishes all of `notifications.>` either way, but for the two lanes its publish deny names (`packages/envoy/infra/README.md`, "Permission sets").
+  Only Dispatch's own NATS user publishes Dispatch's lane, `notifications.dispatch.>`.
+  Only the user of the listener that receives GitHub's webhook publishes GitHub's lane, `notifications.github.>`, from that listener's webhook route and CI summary loop.
+  So the server refuses a `/v1/messages/publish` to Dispatch's lane on every listener but the one beside `envoy-dispatch`, which shares Dispatch's user, and to GitHub's lane on every listener but the webhook's, and the route answers `403`.
 
 - A failed control delivery publishes `notifications.envoy.exceptions.<original-topic>`, and so does a role send the publish route refused 404 because no live session holds the role (`publishRefusalException`).
 
