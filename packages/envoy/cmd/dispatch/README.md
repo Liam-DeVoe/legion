@@ -2866,8 +2866,21 @@ The kinds are:
   Any count of the three refuses the census, and the first rows of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
   An address past the store's bound is left out, as its writer leaves it out of the store.
 
-It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
-A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it.
+- The kinds of dispatch://INFRA-1150, each held by the triple of holding node, tuple kind and far end, so a tuple that reaches the wrong node is a difference and not a count that still matches:
+  `shaped`, `from_ask` and `decided_by` against `block_refs`, each row by the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node) against every such tuple that node states now;
+  `followed_by` against `ask_followers`, `ask_parent` (the ask's `part_of` and `owned_by`) and `ask_anchor` (its `anchored_to`) against `asks`, each marked row by the ask's node;
+  `reading_parent`, the `document_blocks.parent_block_id` of every reading's node against its `part_of`;
+  and `ask_answer`, which sets each marked ask row's answer, selection, answer time and answerer beside the `answer`, `selected` and `answered_at` values and the `answered_by` and `decided_by` its node holds now, character for character (a selection is compared as the labels its JSON holds).
+  A `part_of` to an ask's node, which a reading in an answered ask states, is read as the ask's block in the reading's own document, the block `parent_block_id` names — the ask's own block, or a copy's, which keeps its source's id — in `block` and `reading_parent` alike.
+  An `asks` or `ask_followers` row that names no node is a row a process of the release before wrote, which `graph_edges`' old arms answer until the decisions step marks it: it is no difference, and each of those kinds prints the count on a `census: store kind=<kind> unmarked_rows=<n>` line of its own.
+  A deployment holds none of these kinds until somebody writes one, so a kind of them with no row and no node prints `holds no row and no node` and is no refusal.
+  The person and session kinds also read who wrote each decision (its `decided_by` row) and each reading (its node's `authored_by`, which no table projects), every person and session a block's `decided_by` or `authored_by` or an ask's `authored_by` ever named — the last holds the author of an ask past the store's bound, whose row names no node while its writer writes the author's node — with the owner the server proved of each such session; every person an ask's `answered_by` or `decided_by` ever named, so a person whose answer was taken off stays held to their node; and every session an `ask.opened` event named as the asker, so a session whose ask an erase removed is held to its node as a follower is by its `ask.follower_added`.
+
+- `copied_from` and `moved_to`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n>` lines: how many the store states now and how many of those reach a far end that does not resolve — a `copied_from` to a live ask node, and a `moved_to` to a block a `document_blocks` row holds, at once or through at most eight more `moved_to` tuples.
+  An unresolved far end refuses the census; a count does not.
+
+It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row and no node.
 A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
