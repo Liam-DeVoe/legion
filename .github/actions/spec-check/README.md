@@ -82,8 +82,8 @@ Each line that the command prints about the directory or an entry of it names th
   Then it holds the line `spec-check: <directory>: <counts>; the tree is refused`.
 
 - **Exit 2: the command did not judge the tree.**
-  The directory does not exist or holds no spec file (without `allow-empty: true`), or it cannot be read.
-  The log holds one line that names the directory and the case.
+  The directory does not exist or holds no spec file (without `allow-empty: true`), or the directory or a spec file in it cannot be read.
+  The log holds one line that names the directory and the case, and the file when a file cannot be read.
   The command prints no count line, so the action sets no `count`.
 
 ## Warnings
