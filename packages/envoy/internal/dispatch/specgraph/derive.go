@@ -40,9 +40,11 @@ type State struct {
 // Own is the state of S over its own checks that read the subject, which a wait on S reads (R29:
 // "its own checks read true there. The statements under it do not count for that wait"; R10:
 // "Only the checks that read the subject count"): not_built when the files do not hold S's current
-// text; else not_met when one of them is false, unknown when one is unknown, and met when all are
-// true, also when S has no check or none of its checks reads the subject. So at the head of main a
-// wait on S never waits for a check of production.
+// text; unknown when S is a leaf that the approved spec gives no check, so a wait on it holds (R6,
+// and R10: "Met means that its checks pass"); else not_met when one of them is false, unknown when
+// one is unknown, and met when all are true, also when S has statements under it and no own check,
+// or none of its checks reads the subject. So at the head of main a wait on S never waits for a
+// check of production.
 func Derive(in Input) State {
 	checks := newCheckJudge(in)
 	s := State{Subject: in.Subject, Checks: checks.states()}

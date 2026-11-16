@@ -212,11 +212,16 @@ func (j *statementJudge) supportedBy(statement, target string) bool {
 
 // ownState is the state of the statement id over those of its own checks that read the subject
 // (R29, with R10: "Only the checks that read the subject count"): not built when the files do not
-// hold its current text; else not met when one of them is false, unknown when one is unknown, and
-// met when all are true, also when it has no check or none of its checks reads the subject.
+// hold its current text; unknown when it is a leaf that the approved spec gives no check (R6: "Each
+// leaf statement has one or more checks"; R10: "Met means that its checks pass"); else not met
+// when one of them is false, unknown when one is unknown, and met when all are true, also when a
+// statement with statements under it has no own check, or none of its checks reads the subject.
 func (j *statementJudge) ownState(id string) string {
 	if j.notBuilt(id) {
 		return statementNotBuilt
+	}
+	if len(j.own[id]) == 0 && len(j.children[id]) == 0 {
+		return statementUnknown
 	}
 	state := statementMet
 	for _, c := range j.own[id] {

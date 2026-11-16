@@ -181,15 +181,22 @@ func TestStatementState(t *testing.T) {
 		}, want: []StatementState{held(Q, "unknown", "supporter_unknown", T, "met"), held(T, "not_met", "check_false", CT, "not_met")}},
 		// R6: "Each leaf statement has one or more checks." R7: "silence is not a pass." A leaf that
 		// the approved spec gives no check reads unknown when the files hold its text, and so does
-		// each statement above it that it would otherwise leave met.
+		// each statement above it that it would otherwise leave met. Its own state for a wait is
+		// unknown too (R10: "Met means that its checks pass"), and the pilot calls the derivation
+		// with no reader that would refuse the files first.
 		{name: "R6: L2, a leaf with no check, reads unknown, and so does T above it", change: func(s *checkCase) { s.remove(C2) },
-			want: []StatementState{held(L2, "unknown", "no_check", L2, "met"), held(T, "unknown", "no_check", L2, "met"), met(L1)}},
+			want: []StatementState{held(L2, "unknown", "no_check", L2, "unknown"), held(T, "unknown", "no_check", L2, "met"), met(L1)}},
 		{name: "R6: P, a supporter with no check, reads unknown, and T reads its supporter unknown", change: func(s *checkCase) { s.remove(CP) },
-			want: []StatementState{held(P, "unknown", "no_check", P, "met"), held(T, "unknown", "supporter_unknown", P, "met")}},
+			want: []StatementState{held(P, "unknown", "no_check", P, "unknown"), held(T, "unknown", "supporter_unknown", P, "met")}},
+		{name: "R29 with R6: at main, a wait on L2 or P, leaves with no check, holds; a wait on T, whose own check is true, ends", change: func(s *checkCase) {
+			s.remove(C2, CP)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{held(L2, "unknown", "no_check", L2, "unknown"), held(P, "unknown", "no_check", P, "unknown"), held(T, "unknown", "no_check", L2, "met")},
+			waits: map[string]bool{L2: false, P: false, T: true}},
 		{name: "precedence: L1 false, L2 a leaf with no check", change: func(s *checkCase) {
 			s.runOutcome(C1, OutcomeFail)
 			s.remove(C2)
-		}, want: []StatementState{held(T, "not_met", "check_false", C1, "met"), held(L2, "unknown", "no_check", L2, "met")}},
+		}, want: []StatementState{held(T, "not_met", "check_false", C1, "met"), held(L2, "unknown", "no_check", L2, "unknown")}},
 		{name: "precedence: L2 a leaf with no check that the files do not hold", change: func(s *checkCase) {
 			s.remove(C2)
 			s.drop(L2)
