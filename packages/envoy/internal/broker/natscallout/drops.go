@@ -20,11 +20,14 @@ const (
 	dropUnopened
 	// dropUnreadable: the opened request is no authorization request JWT.
 	dropUnreadable
+	// dropPendingLimit: nats.go dropped the request on arrival, past the subscription's pending
+	// limits (start), before deliver saw it; the reporter counts these from Subscription.Dropped.
+	dropPendingLimit
 	dropReasons
 )
 
 // dropLabels are the reason labels, by reason.
-var dropLabels = [dropReasons]string{"past_bounds", "hub_gave_up", "unopened", "not_a_request"}
+var dropLabels = [dropReasons]string{"past_bounds", "hub_gave_up", "unopened", "not_a_request", "pending_limit"}
 
 // pastBoundsDetail is the first-drop detail of a drop past both bounds.
 const pastBoundsDetail = "past both bounds of this replica"
@@ -42,6 +45,9 @@ type drops struct {
 	// written; only reportDropped reads or writes them, from the reporter alone.
 	unlogged [dropReasons]int64
 	logged   time.Time
+	// subDropped is Subscription.Dropped as the reporter last read it; only reportDropped reads or
+	// writes it.
+	subDropped int
 }
 
 // add counts one drop for reason, and reports whether the drop's detail is wanted: whether none
@@ -64,6 +70,11 @@ func (d *drops) note(detail string) {
 // (reportWhileRunning).
 func (s *Service) reportDropped() {
 	d := s.answer.drops
+	if dropped, err := s.sub.Dropped(); err == nil && dropped > d.subDropped {
+		d.pending[dropPendingLimit].Add(int64(dropped - d.subDropped))
+		d.note("past the subscription's pending limits, dropped by nats.go on arrival")
+		d.subDropped = dropped
+	}
 	total := int64(0)
 	for reason := range dropReasons {
 		n := d.pending[reason].Swap(0)

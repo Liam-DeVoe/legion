@@ -635,3 +635,30 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	return recorder.Body.String()
 }
+
+// A request nats.go drops on arrival, past the subscription's pending limits (start), never reaches
+// deliver, and is counted all the same: the reporter reads the subscription's own count of them
+// (Subscription.Dropped) into broker_nats_callout_dropped_total under pending_limit. Both bounds
+// are zero here, so the limit is one request; delivery of the first is held, and the two sent
+// behind it find the limit full.
+func TestARequestDroppedPastThePendingLimitIsCounted(t *testing.T) {
+	withWaitingBound(t, 0)
+	withRefusingBound(t, 0)
+	withLiveness(t, 20*time.Millisecond, 10*time.Second)
+	target, entered, release := holdDeliveries(t)
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	registry := metrics.New()
+	service := startService(t, url, keys, Deps{Metrics: NewMetrics(registry)}, Decide)
+	target.Store(service)
+
+	connect := func() { _, _ = nats.Connect(url, nats.NoReconnect(), nats.Timeout(5*time.Second)) }
+	go connect()
+	<-entered
+	go connect()
+	go connect()
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the requests past the pending limit counted", func() bool {
+		return strings.Contains(scrape(t, registry), `broker_nats_callout_dropped_total{reason="pending_limit"} 2`)
+	})
+	release()
+}
