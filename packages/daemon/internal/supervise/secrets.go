@@ -89,15 +89,20 @@ type sessionHold struct {
 // refused with claim.SessionHeldRefusal, which names no other claim; the log names the holder.
 // An empty id is not held, and answers nil.
 //
-// The store's answer is kept for the last session asked about, since a hold never changes once
-// made: the enrollment that follows a registration asks nothing more, and a store that does not
-// answer refuses nothing and is asked again by the next decision.
+// The store's answer is kept for the last session asked about when it names a claim, since a
+// claim's hold never changes once made: the enrollment that follows a registration asks nothing
+// more. An id held for no claim (the empty holder) is asked about again every time, because an
+// operator settles one by recording its rightful holder, and that claim's next registration on
+// this same machine must see it. A store that does not answer refuses nothing and is asked again
+// by the next decision.
 func (m *Machine) holdSession(ctx context.Context, session string) error {
 	if session == "" {
 		return nil
 	}
-	if held := m.sessionHold; held == nil || held.session != session {
-		var holder claim.Token
+	holder := claim.Token("")
+	if held := m.sessionHold; held != nil && held.session == session {
+		holder = held.holder
+	} else {
 		if err := m.write(ctx, func(ctx context.Context) error {
 			var err error
 			holder, err = m.deps.Store.HoldSession(ctx, m.claim.Token, session)
@@ -105,9 +110,11 @@ func (m *Machine) holdSession(ctx context.Context, session string) error {
 		}); err != nil {
 			return fmt.Errorf("hold session %s for %s: %w", session, m.claim.Token, err)
 		}
-		m.sessionHold = &sessionHold{session: session, holder: holder}
+		if holder != "" {
+			m.sessionHold = &sessionHold{session: session, holder: holder}
+		}
 	}
-	if holder := m.sessionHold.holder; holder != m.claim.Token {
+	if holder != m.claim.Token {
 		m.log.Warn("supervise: refused a session another claim recorded first", "session", session, "claim", m.claim.Token, "holder", holder)
 		return fmt.Errorf("%s as session %s: %w", m.claim.Token, session, claim.SessionHeldRefusal(session))
 	}

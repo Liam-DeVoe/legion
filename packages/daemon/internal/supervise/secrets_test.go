@@ -203,6 +203,30 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 			t.Fatalf("the resumed claim records enrollment %+v", c.Enrollment)
 		}
 	})
+
+	// An operator settles an id held for no claim by recording its rightful holder, and that claim's
+	// next registration on the same machine is admitted: the refusal of an id held for no claim is
+	// never kept, as a claim's hold is.
+	t.Run("an id held for no claim, once an operator records this claim as its holder", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.store.holds[session] = ""
+		h.launch()
+		h.helloWithIdentity()
+		registration := RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract}
+		var refusal claim.Refusal
+		if err := h.handle(registration); !errors.As(err, &refusal) {
+			t.Fatalf("registering a session held for no claim = %v, want the refusal", err)
+		}
+		h.store.mu.Lock()
+		h.store.holds[session] = h.token
+		h.store.mu.Unlock()
+		h.must(registration)
+		if enrolled := broker.enrolled(); len(enrolled) != 1 || enrolled[0].Session != session {
+			t.Fatalf("the settled registration enrolled %+v, want one enrollment of %s", enrolled, session)
+		}
+	})
 }
 
 func TestAFailedRevocationIsRetriedThenLeftToTheLease(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -214,6 +215,81 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	for _, grant := range []uuid.UUID{dormantGrant, liveGrant} {
 		if holder := grantHolder(t, svc, grant); holder != next.ID {
 			t.Errorf("grant %s hangs off %s after the session's next enrolment, want %s: a running session keeps its grants across the migration", grant, holder, next.ID)
+		}
+	}
+}
+
+// TestTheCarryMigrationTakesItsRowsInAdoptsOrder: migration 0032 locks the rows it rewrites in id
+// order, the order adopt locks a session's predecessors in, so it cannot deadlock with an older
+// broker replica's adoption of the same rows while the broker rolls, and fail the boot. An
+// adoption holds the lower of two rows of one session; the rewrite waits on it, holding nothing;
+// the adoption then takes the higher row, as adopt's `order by e.id for update` does, and commits;
+// the rewrite completes and rewrites both.
+//
+// The control: the rewrite's `order by e.id desc`; it takes the higher row first and waits on the
+// lower, the adoption waits on the higher, Postgres ends one of the two as a deadlock, and the
+// test fails naming it (the pull request records the run).
+func TestTheCarryMigrationTakesItsRowsInAdoptsOrder(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+	issuer, key := withPodVerifier(t, svc)
+	cred := daemonLogin(t, svc)
+	const session = "ses_rolling"
+	for _, pod := range []string{"pod-roll-1", "pod-roll-2"} {
+		spellAccountAlone(t, svc, enrolPod(t, svc, issuer, key, cred, session, pod).ID)
+	}
+	rows, err := svc.Store.Pool.Query(ctx, `select id from enrollments where session_id = $1 order by id`, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if rows.Err() != nil || len(ids) != 2 {
+		t.Fatalf("the session's rows are %v (%v), want two", ids, rows.Err())
+	}
+	rewrite, err := os.ReadFile("../store/migrations/0032_pod_carry_launcher.up.sql")
+	if err != nil {
+		t.Fatalf("read the migration: %v", err)
+	}
+
+	adoption, err := svc.Store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = adoption.Rollback(ctx) }()
+	if _, err := adoption.Exec(ctx, `select 1 from enrollments where id = $1 for update`, ids[0]); err != nil {
+		t.Fatalf("the adoption's lock of the lower row: %v", err)
+	}
+	migrated := make(chan error, 1)
+	go func() {
+		_, err := svc.Store.Pool.Exec(ctx, string(rewrite))
+		migrated <- err
+	}()
+	storetest.AwaitLockWaiters(t, svc.Store.Pool, adoption, 1)
+	if _, err := adoption.Exec(ctx, `select 1 from enrollments where id = $1 for update`, ids[1]); err != nil {
+		t.Fatalf("the adoption's lock of the higher row while the rewrite waits: %v", err)
+	}
+	if err := adoption.Commit(ctx); err != nil {
+		t.Fatalf("the adoption's commit: %v", err)
+	}
+	select {
+	case err := <-migrated:
+		if err != nil {
+			t.Fatalf("the rewrite beside the adoption: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the rewrite did not complete within 30s once the adoption committed")
+	}
+	want := exchange.PodLaunchPrincipal(carryPodAccount, exchange.AccountPrincipal(carryDaemonAccount))
+	for _, id := range ids {
+		if got := carryPrincipalOf(t, svc, id); got != want {
+			t.Errorf("row %s carries %q after the rewrite, want %q", id, got, want)
 		}
 	}
 }

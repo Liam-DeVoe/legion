@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -24,7 +26,14 @@ import (
 // launches again is refused its registration each time and fails at its launch budget. A store
 // that refuses the read or a suspension refuses the boot, naming what failed, as the controller's
 // boot stop does (stopLaunchedController): the claims it names would otherwise be relaunched into
-// that refusal.
+// that refusal. A suspension the claim holds for later is no failure: a working claim's is held
+// for its turn and stops the process at the operator's stop timeout (holdSuspension), and a
+// launching claim's is held until its agent is ready, which an agent refused its registration
+// never is, so its registration deadline suspends it (registrationDeadline). Neither is relaunched
+// meanwhile, and a restart before either completes asks again.
+//
+// The settle statement is a statement an operator runs, and a session id is the agent's own
+// text, so the id is written into it as a SQL literal (sqlLiteral), never as it came.
 func (s *supervision) suspendSessionsHeldForNone(ctx context.Context) error {
 	held, err := s.supervisor.store.SessionsHeldForNone(ctx)
 	if err != nil {
@@ -33,7 +42,7 @@ func (s *supervision) suspendSessionsHeldForNone(ctx context.Context) error {
 	for _, h := range held {
 		s.log.Error("supervise: a session id recorded by more than one claim is held for none of them; each of them this daemon supervises is suspended until an operator records the rightful holder and resumes it",
 			"session", h.Session, "claims", h.Claims,
-			"settle", fmt.Sprintf("update claim_sessions set claim = '<token>' where session = '%s'", h.Session))
+			"settle", "update claim_sessions set claim = '<token>' where session = "+sqlLiteral(h.Session))
 		for _, token := range h.Claims {
 			m, ok := s.supervisor.Machine(token)
 			if !ok {
@@ -45,12 +54,24 @@ func (s *supervision) suspendSessionsHeldForNone(ctx context.Context) error {
 					"claim", token, "session", h.Session, "state", state)
 				continue
 			}
-			if err := m.Handle(ctx, supervise.RequestSuspend{
+			err := m.Handle(ctx, supervise.RequestSuspend{
 				Claim: token, Reason: "session held twice: " + h.Session, By: supervise.SuspendedByOperator,
-			}); err != nil {
+			})
+			if errors.Is(err, supervise.ErrSuspendHeld) {
+				s.log.Warn("supervise: the suspension of a claim whose session is held for no claim waits for its turn or its launch",
+					"claim", token, "session", h.Session)
+				continue
+			}
+			if err != nil {
 				return fmt.Errorf("suspend %s, whose session %s is held for no claim: %w", token, h.Session, err)
 			}
 		}
 	}
 	return nil
+}
+
+// sqlLiteral is s as a PostgreSQL string literal under standard_conforming_strings, the default
+// since PostgreSQL 9.1: quoted, with each quote doubled, so no text of s ends the literal.
+func sqlLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
