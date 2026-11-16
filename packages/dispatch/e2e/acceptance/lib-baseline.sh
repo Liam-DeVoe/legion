@@ -12,9 +12,48 @@
 # below. The three functions it gives the caller:
 #
 #   baseline_start
-#       Inputs: BASELINE_SHA, the commit the baseline server is built from (any revision this
-#       repository resolves to a commit). LEGION_WORKSPACE names the checkout the commit is read
-#       from; unset, the checkout this file is part of is read instead.
+#       Inputs. Each of these four is optional; the database and the bearer follow them.
+#
+#       BASELINE_SHA, the commit the baseline server is built from (any revision this repository
+#       resolves to a commit). Unset or empty, it is `git merge-base origin/main HEAD` in the
+#       checkout: the commit of main this branch was built on. The upgrade a check reads is then
+#       the one this branch's own commits make, and every check of one branch starts from the
+#       same commit without any of them naming it. A checkout with no origin/main, or one whose
+#       origin/main shares no history with HEAD, has no default, and the run is refused:
+#       BASELINE_SHA names the commit then.
+#
+#       LEGION_WORKSPACE names the checkout the commit is read from, whose
+#       scripts/e2e/lib/held-port.py also holds each server's port; unset, the checkout this file
+#       is part of is read instead.
+#
+#       BASELINE_BINARY, the path of a baseline server already built (a `./cmd/dispatch` binary).
+#       Set, it is the server booted, and nothing is built for it: no `git archive` and no
+#       `go build`, so a caller that runs several checks against one baseline builds it once, not
+#       once a run. No tree is read then, so BASELINE_SHA is not read either, and a checkout whose
+#       commit cannot be resolved is no refusal. The harness cannot tell which commit a binary
+#       came from, so it names the binary and never a commit. A path that is not an executable
+#       file is refused by name before anything is made; a relative one is taken from the
+#       directory baseline_start is called in.
+#
+#       BASELINE_EXTRA_ENV, NAME=value pairs each server gets on top of what the harness gives it.
+#       baseline_boot clears every exported variable before it starts a server, so a setting the
+#       caller needs there (a test hook, say) reaches it this way or not at all. One pair per
+#       line, so that a value may hold spaces, though never a newline; a line that is empty or all
+#       whitespace is skipped. NAME is everything before the line's first `=` and must be a shell
+#       identifier ([A-Za-z_][A-Za-z0-9_]*); the value is everything after it, kept as written. A
+#       line that is not NAME=value with such a NAME is refused, naming its number and its NAME
+#       but never its value, which may be a secret. A NAME the harness sets itself is refused by
+#       name: DATABASE_URL, DISPATCH_AGENT_TOKEN, DISPATCH_DEV_SIGNIN,
+#       DISPATCH_DEV_SIGNIN_SHARED_KEY, DISPATCH_IDENTITY, DISPATCH_INSECURE_COOKIE,
+#       DISPATCH_LISTEN_HOST, DISPATCH_NATS_DISABLED, DISPATCH_WEB_DIST, ENVOY_URL, HOME, PATH,
+#       TMPDIR, XDG_CACHE_HOME, XDG_CONFIG_HOME and XDG_DATA_HOME, which baseline_boot exports, and
+#       DISPATCH_LISTEN_FD, DISPATCH_PORT and DISPATCH_SERVER_URL, which held-port.py sets. The
+#       harness sets each one on purpose, and a pair that silently replaced one would change what
+#       the check proves: a DATABASE_URL pair would leave the check reading a different database
+#       than the one the servers wrote, the failure the paragraph on DATABASE_URL below guards
+#       against. Every server baseline_boot starts gets the pairs, this branch's server under
+#       --selftest too: both serve one database, and whatever made the caller need the setting
+#       holds for both.
 #
 #       The database is the run's when the run gives one. `c-decisions-converted` and `c-derived`
 #       each drop and create an empty database of their own (`infra_1098_decisions`,
@@ -31,16 +70,22 @@
 #       so with DISPATCH_TOKEN set both servers accept exactly it; unset, the harness makes a random
 #       one. A driver calls baseline_start before lib.sh's read_bearer, which unsets DISPATCH_TOKEN.
 #
-#       It takes the commit's tree with `git archive` into a directory of its own under TMPDIR —
-#       a read of the repository: no worktree, no checkout, no write of any kind — builds
-#       `./cmd/dispatch` from that tree's packages/envoy, and boots the binary on the database.
-#       It returns once the server has reported that it is listening, and leaves the caller
+#       Without BASELINE_BINARY, it takes the commit's tree with `git archive` into a directory of
+#       its own under TMPDIR — a read of the repository: no worktree, no checkout, no write of any
+#       kind — and builds `./cmd/dispatch` from that tree's packages/envoy. It boots that binary,
+#       or BASELINE_BINARY's, on the database. It returns once the server has reported that it is
+#       listening, and leaves the caller
 #           baseline_database_url   the database the servers serve, which this branch's server then
 #                                   takes as its own DATABASE_URL
 #           baseline_url            the baseline server's address, http://127.0.0.1:<port>
 #           baseline_token          the agent bearer both servers accept, for a driver that writes
 #                                   the old release's rows through its API. It is printed nowhere.
-#       It prints the first two on stdout, one per line.
+#           baseline_commit         the commit the baseline was built from, in full, whether
+#                                   BASELINE_SHA named it or its default found it; empty when
+#                                   BASELINE_BINARY was booted
+#           baseline_binary         the absolute path of the binary booted as the baseline
+#       It prints, one per line on stdout, `baseline commit <commit>` (or `baseline binary <path>`)
+#       and then the first two, so that a run's log names its baseline even when no input named it.
 #
 #   baseline_stop_server
 #       Stops the baseline server and KEEPS the database. This is the one a caller calls before it
@@ -65,16 +110,20 @@
 #
 # --selftest
 #
-#   `BASELINE_SHA=<commit> bash e2e/acceptance/lib-baseline.sh --selftest`, from packages/dispatch,
-#   proves the harness end to end: it starts the baseline server, prints the high-water mark of
-#   the `schema_migrations` table that server migrated, stops that server while keeping the
-#   database, builds and boots this branch's own server over the same database, prints the mark
-#   again, and passes when the baseline mark is at or below the branch mark. Equal is the expected
-#   state of a branch no migration has landed on yet and passes; the run says which of the two it
-#   is, so that a reader sees the upgrade once a child's migration lands. A baseline mark above the
-#   branch mark fails: this branch would be missing a migration the previous release already has.
-#   It prints one `PASS:` or `FAIL:` line per assertion, exits 2 on a missing input, and exits 1 on
-#   the first failure, as the drivers in this directory do.
+#   `bash e2e/acceptance/lib-baseline.sh --selftest`, from packages/dispatch, takes
+#   baseline_start's inputs above, of which only a database is required (LEGION_TEST_PG_DSN, or
+#   the run's DATABASE_URL), and proves the harness end to end: it starts the baseline server,
+#   prints the high-water mark of the `schema_migrations` table that server migrated, stops that
+#   server while keeping the database, builds and boots this branch's own server over the same
+#   database, prints the mark again, and passes when the baseline mark is at or below the branch
+#   mark. Equal is the expected state of a branch no migration has landed on yet and passes; the
+#   run says which of the two it is, so that a reader sees the upgrade once a child's migration
+#   lands. A baseline mark above the branch mark fails: this branch would be missing a migration
+#   the previous release already has. The baseline's line names the commit it was built from, or
+#   the binary BASELINE_BINARY gave. This branch's server is built whatever the baseline was, so
+#   the run needs go even with BASELINE_BINARY set, and it gets BASELINE_EXTRA_ENV's pairs as the
+#   baseline did. It prints one `PASS:` or `FAIL:` line per assertion, exits 2 on a missing or bad
+#   input, and exits 1 on the first failure, as the drivers in this directory do.
 
 set -euo pipefail
 
@@ -85,9 +134,12 @@ set -euo pipefail
 if ! declare -F usage >/dev/null; then
   usage() {
     cat >&2 <<'USAGE'
-Usage: BASELINE_SHA=<commit> LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable \
+Usage: [BASELINE_SHA=<commit> | BASELINE_BINARY=<path>] [BASELINE_EXTRA_ENV=$'NAME=value\n...'] \
+         LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable \
          bash e2e/acceptance/lib-baseline.sh --selftest
-       (LEGION_WORKSPACE names the checkout BASELINE_SHA is read from; unset, this file's own.
+       (BASELINE_SHA unset is git merge-base origin/main HEAD; BASELINE_BINARY boots that prebuilt
+       server and builds none; BASELINE_EXTRA_ENV is one NAME=value per line, given to every
+       server. LEGION_WORKSPACE names the checkout the commit is read from; unset, this file's own.
        Sourced instead, it gives baseline_start, baseline_stop_server and baseline_stop)
 USAGE
   }
@@ -96,6 +148,10 @@ fi
 # What this run made, each empty until it exists, so that every stop below knows what to undo.
 baseline_workspace=""
 baseline_commit=""
+# The server booted as the baseline: BASELINE_BINARY's, or the one built from baseline_commit.
+baseline_binary=""
+# BASELINE_EXTRA_ENV's NAME=value pairs, each checked, which baseline_boot gives every server.
+baseline_extra_env=()
 baseline_work=""
 baseline_database=""
 baseline_database_url=""
@@ -114,6 +170,16 @@ baseline_boot_url=""
 # How long a server gets to report that it is listening. Its first boot migrates a whole schema
 # from empty, which is the longest this wait ever has to cover.
 readonly baseline_listen_limit=180
+
+# The names BASELINE_EXTRA_ENV may not set: every variable baseline_boot exports itself, and the
+# three held-port.py sets after it. The head comment lists the same names, for the caller who reads
+# only it, and says why each is refused; a name baseline_boot comes to export belongs in both.
+readonly -a baseline_harness_names=(
+  DATABASE_URL DISPATCH_AGENT_TOKEN DISPATCH_DEV_SIGNIN DISPATCH_DEV_SIGNIN_SHARED_KEY
+  DISPATCH_IDENTITY DISPATCH_INSECURE_COOKIE DISPATCH_LISTEN_FD DISPATCH_LISTEN_HOST
+  DISPATCH_NATS_DISABLED DISPATCH_PORT DISPATCH_SERVER_URL DISPATCH_WEB_DIST ENVOY_URL HOME PATH
+  TMPDIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME
+)
 
 # baseline_refuse WORDS…: a missing or bad input. It prints WORDS on stderr and exits the calling
 # script with 2, as lib.sh's require_env does.
@@ -171,6 +237,34 @@ baseline_high_water() {
     baseline_fail "could not read schema_migrations"
 }
 
+# baseline_read_extra_env: checks BASELINE_EXTRA_ENV line by line and keeps its pairs in
+# baseline_extra_env, for baseline_boot to give every server. baseline_start calls it before it
+# makes anything: baseline_boot clears every exported variable, BASELINE_EXTRA_ENV among them when
+# the caller exported it, so its value is read here or never. A refusal names the line by its number
+# and its NAME, never by its value, which may be a secret, as the bearer is printed nowhere.
+baseline_read_extra_env() {
+  local line name reserved number=0
+  baseline_extra_env=()
+  [[ -n "${BASELINE_EXTRA_ENV:-}" ]] || return 0
+  while IFS= read -r line; do
+    number=$((number + 1))
+    [[ "$line" =~ [^[:space:]] ]] || continue
+    [[ "$line" == *=* ]] ||
+      baseline_refuse "BASELINE_EXTRA_ENV line $number holds no '=':" \
+        "each line is one NAME=value pair"
+    name="${line%%=*}"
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
+      baseline_refuse "BASELINE_EXTRA_ENV line $number names '$name'," \
+        "which is not a shell identifier ([A-Za-z_][A-Za-z0-9_]*)"
+    for reserved in "${baseline_harness_names[@]}"; do
+      [[ "$name" != "$reserved" ]] ||
+        baseline_refuse "BASELINE_EXTRA_ENV line $number names $name," \
+          "which the harness sets itself for every server it boots"
+    done
+    baseline_extra_env+=("$line")
+  done <<<"$BASELINE_EXTRA_ENV"
+}
+
 # baseline_boot NAME BINARY DATABASE_URL: starts BINARY against DATABASE_URL, logging to
 # $baseline_work/logs/NAME.log, and waits for the server's own
 #     msg="dispatch: listening" addr=127.0.0.1:<port>
@@ -183,10 +277,11 @@ baseline_high_water() {
 #
 # The server is a test fixture and inherits nothing from the shell that started it: a Legion pane
 # exports the real Dispatch and the real Envoy listener, and an operator's shell can hold an nkey
-# for the real NATS. Every exported variable goes, and the server gets only what is named here.
-# ENVOY_URL names port 1, which nothing in a container can listen on, so every delivery this server
-# attempts is refused at once and none reaches a real listener; this harness proves a migration,
-# not a delivery.
+# for the real NATS. Every exported variable goes, and the server gets only what is named here and
+# the caller's BASELINE_EXTRA_ENV pairs, which baseline_start read and checked before this could
+# clear that variable too. ENVOY_URL names port 1, which nothing in a container can listen on, so
+# every delivery this server attempts is refused at once and none reaches a real listener; this
+# harness proves a migration, not a delivery.
 #
 # Identity is the production cookie, minted at the dev sign-in route. Dev sign-in signs it with a
 # key held for this run alone, so nothing reaches a persistent data directory — without it the
@@ -228,8 +323,11 @@ baseline_boot() {
     export DISPATCH_WEB_DIST="$baseline_work/web-dist"
     export ENVOY_URL=http://127.0.0.1:1
     # held-port.py writes the port it holds in for {port}, and hands the socket over as
-    # DISPATCH_LISTEN_FD.
-    exec python3 "$held" exec --fd-env DISPATCH_LISTEN_FD \
+    # DISPATCH_LISTEN_FD. The caller's pairs go into the environment through env and never through
+    # a variable of this shell, so that a NAME this shell uses too (binary, held, an array) reaches
+    # the server as the caller wrote it and changes nothing here. None can replace one of the
+    # harness's own names, which baseline_read_extra_env refused.
+    exec env "${baseline_extra_env[@]}" python3 "$held" exec --fd-env DISPATCH_LISTEN_FD \
       --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' \
       -- "$binary"
   ) >>"$baseline_log" 2>&1 &
@@ -310,25 +408,50 @@ baseline_stop() {
   baseline_signin_key=""
 }
 
-# baseline_start: the baseline server of BASELINE_SHA, serving the run's database or one of its
-# own. The head comment above is its contract.
+# baseline_start: the baseline server of BASELINE_SHA, of its default, or of BASELINE_BINARY,
+# serving the run's database or one of its own. The head comment above is its contract.
 baseline_start() {
   # Read before anything else: a driver that calls lib.sh's read_bearer after this unsets
   # DISPATCH_TOKEN, and the run's DATABASE_URL must be the one every server here is booted on.
   # shellcheck disable=SC2031 # the run's own DATABASE_URL, which no server's subshell changes
   local given_database_url="${DATABASE_URL:-}" given_token="${DISPATCH_TOKEN:-}"
-  require_env BASELINE_SHA
+  local given_binary="${BASELINE_BINARY:-}" sha="${BASELINE_SHA:-}"
   [[ -n "$given_database_url" ]] || require_env LEGION_TEST_PG_DSN
-  require_commands git go openssl psql python3 sleep tar
+  # A binary given is booted as it is: nothing reads the repository and nothing is built.
+  if [[ -n "$given_binary" ]]; then
+    require_commands env openssl psql python3 sleep
+  else
+    require_commands env git go openssl psql python3 sleep tar
+  fi
+  baseline_read_extra_env
+  # The checkout comes before the commit: BASELINE_SHA's default is read out of it.
   baseline_workspace="${LEGION_WORKSPACE:-}"
   if [[ -z "$baseline_workspace" ]]; then
     baseline_workspace="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)" ||
       baseline_refuse "could not find the checkout this file is part of; set LEGION_WORKSPACE"
   fi
-  git -C "$baseline_workspace" rev-parse --git-dir >/dev/null 2>&1 ||
-    baseline_refuse "$baseline_workspace holds no git repository to read BASELINE_SHA out of"
-  baseline_commit="$(git -C "$baseline_workspace" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" ||
-    baseline_refuse "BASELINE_SHA '$BASELINE_SHA' names no commit of $baseline_workspace"
+  if [[ -n "$given_binary" ]]; then
+    [[ -f "$given_binary" && -x "$given_binary" ]] ||
+      baseline_refuse "BASELINE_BINARY '$given_binary' is not an executable file"
+    # Absolute, so that held-port.py, which executes it, never looks a bare name up on PATH, and a
+    # caller that changes directory before a boot still boots this file.
+    case "$given_binary" in
+      /*) baseline_binary="$given_binary" ;;
+      *) baseline_binary="$PWD/$given_binary" ;;
+    esac
+    baseline_commit=""
+  else
+    git -C "$baseline_workspace" rev-parse --git-dir >/dev/null 2>&1 ||
+      baseline_refuse "$baseline_workspace holds no git repository to read the commit out of"
+    if [[ -z "$sha" ]]; then
+      sha="$(git -C "$baseline_workspace" merge-base origin/main HEAD)" ||
+        baseline_refuse "BASELINE_SHA is unset, and its default, git merge-base origin/main HEAD," \
+          "found no commit in $baseline_workspace:" \
+          "set BASELINE_SHA to the commit the baseline server is built from"
+    fi
+    baseline_commit="$(git -C "$baseline_workspace" rev-parse --verify --quiet "${sha}^{commit}")" ||
+      baseline_refuse "BASELINE_SHA '$sha' names no commit of $baseline_workspace"
+  fi
   if [[ -n "$given_database_url" ]]; then
     # The run's own database, which it dropped and created empty: boot on it, make no other.
     baseline_database=""
@@ -345,12 +468,15 @@ baseline_start() {
     baseline_fail "could not make a work directory under ${TMPDIR:-/tmp}"
   mkdir -p "$baseline_work/tree" "$baseline_work/bin" "$baseline_work/logs" "$baseline_work/web-dist" ||
     baseline_fail "could not make this run's directories under $baseline_work"
-  # The commit's tree is taken out of the repository rather than checked out, so the working copy
-  # is never touched and no worktree is added.
-  git -C "$baseline_workspace" archive "$baseline_commit" | tar -x -C "$baseline_work/tree" ||
-    baseline_fail "could not take the tree of $baseline_commit out of $baseline_workspace"
-  go -C "$baseline_work/tree/packages/envoy" build -o "$baseline_work/bin/dispatch-baseline" ./cmd/dispatch ||
-    baseline_fail "the ./cmd/dispatch of $baseline_commit did not build"
+  if [[ -z "$given_binary" ]]; then
+    # The commit's tree is taken out of the repository rather than checked out, so the working
+    # copy is never touched and no worktree is added.
+    git -C "$baseline_workspace" archive "$baseline_commit" | tar -x -C "$baseline_work/tree" ||
+      baseline_fail "could not take the tree of $baseline_commit out of $baseline_workspace"
+    go -C "$baseline_work/tree/packages/envoy" build -o "$baseline_work/bin/dispatch-baseline" ./cmd/dispatch ||
+      baseline_fail "the ./cmd/dispatch of $baseline_commit did not build"
+    baseline_binary="$baseline_work/bin/dispatch-baseline"
+  fi
 
   if [[ -z "$given_database_url" ]]; then
     baseline_psql "$LEGION_TEST_PG_DSN" -q -c "create database \"$baseline_database\"" >/dev/null ||
@@ -365,9 +491,14 @@ baseline_start() {
   fi
   baseline_signin_key="$(openssl rand -hex 32)" || baseline_fail "could not make a dev sign-in key"
 
-  baseline_boot baseline-server "$baseline_work/bin/dispatch-baseline" "$baseline_database_url"
+  baseline_boot baseline-server "$baseline_binary" "$baseline_database_url"
   baseline_pid="$baseline_boot_pid"
   baseline_url="$baseline_boot_url"
+  if [[ -n "$baseline_commit" ]]; then
+    printf 'baseline commit %s\n' "$baseline_commit"
+  else
+    printf 'baseline binary %s\n' "$baseline_binary"
+  fi
   printf 'baseline database %s\n' "$baseline_database_url"
   printf 'baseline server %s\n' "$baseline_url"
 }
@@ -382,7 +513,10 @@ fi
   usage
   exit 2
 }
-# Both inputs are baseline_start's own, which refuses a missing one by name.
+# Every input is baseline_start's own, which refuses a missing or bad one by name. This run builds
+# this branch's server itself whatever baseline_start boots, so it needs go even when
+# BASELINE_BINARY spares baseline_start its own build.
+require_commands go
 
 pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
 fail() {
@@ -412,7 +546,15 @@ printf 'baseline schema_migrations high-water mark: %s\n' "$baseline_mark"
   fail baseline "the baseline high-water mark is a number" "got '$baseline_mark'"
 [[ "$baseline_mark" -gt 0 ]] ||
   fail baseline "the baseline server migrated its own database" "schema_migrations is still at 0"
-pass baseline "the server of $BASELINE_SHA migrated its own database to $baseline_mark"
+# The baseline is named by what was booted: the commit it was built from, whether BASELINE_SHA
+# named it or its default found it, or the binary BASELINE_BINARY gave, whose commit nothing here
+# can vouch for.
+if [[ -n "$baseline_commit" ]]; then
+  baseline_booted="the server built from $baseline_commit"
+else
+  baseline_booted="the prebuilt server $baseline_binary"
+fi
+pass baseline "$baseline_booted migrated its own database to $baseline_mark"
 
 # The server goes and the database stays: what this branch's server migrates next is the schema the
 # old release wrote.
