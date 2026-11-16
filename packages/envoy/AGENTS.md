@@ -4495,6 +4495,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The role is named in either form, `INFRA.<role>` or `<role>` alone, and a claim is keyed by the bare name whichever form claimed it, so this route, a publish to a role's lane and the lane's own delivery each read the name through `contracts.CanonicalRole` before they resolve the holder:
   a send to `notifications.role.<P>.<role>` reaches the holder that claimed `<role>`.
 
+- A role claim's key is the bare role name in this slice, the claim of the project the name gives (`contracts.RoleProject`), so `/v1/roles/set` answers `400`, naming both projects, for a new form under any other project (`PRIV.legion-zz-controller`, `PRIV.lead-reviewer`), as for every dotted role before; t-c-8 lifts this for a free-form role once a claim keys on its project.
+
 - `/v1/roles/set` (POST)
 
   Claims a role for a live session; the claim alone makes it the holder, and the route also adds the role's topic to its interest record.
@@ -4864,9 +4866,11 @@ The two forms a name is read in never overlap as filters, since they differ in t
 An issue's topic under a wildcard project (`notifications.dispatch.issue.*.<KEY>.>`) has no old form: its old form would overlap it, and the two would reduce to a filter over every project's issues (`bus.ReduceFilterSubjects`), so it stays one filter.
 Nor has an issue's topic over every issue of one project in the new form (`notifications.dispatch.issue.INFRA.>`), since no subject pattern names the issues of one project in the old form.
 **Envoy needs nats-server v2.11.12, v2.12.4, or v2.14.0 and later.**
-A nats-server of 2.10, of 2.11 before v2.11.12 or of 2.12 before v2.12.4 can skip a literal filter beside a wildcard one when it reads a block by subject (`intersectStree`): measured on v2.10.29, a consumer on both forms of a session's agent subject was handed a new-form message and never the old-form one stored just before it, behind 24 other sessions' messages, with no error.
-So the listener refuses to start against such a server, naming its version and the fixed releases: its start opens its session consumers (`bus.ConnectSessionConsumers`), which ask `natsversion.Refusal` of the version the connection answers, and `main` ends the process on the error (`TestTheListenerRefusesAServerThatSkipsAFilter`).
-The Legion daemon refuses it by the same function before it opens its consumers (`intake.OpenConsumers`).
+From v2.10.26 (nats-io/nats-server#7713), and in 2.11 before v2.11.12 and 2.12 before v2.12.4 (a variant, nats-io/nats-server#7726), nats-server can skip a literal filter beside a wildcard one when it reads a block by subject: measured on v2.10.29, a consumer on both forms of a session's agent subject was handed a new-form message and never the old-form one stored just before it, behind 24 other sessions' messages, with no error.
+No 2.10 release has the fix, so the floor refuses every 2.10, and a prerelease counts as before its release, so v2.11.12-RC.1 to RC.3 and v2.12.4-RC.1 and RC.2, which still have the bug, are refused too.
+So the listener refuses to start against such a server, naming its version and the fixed releases: its start opens its session consumers (`bus.ConnectSessionConsumers`), which ask `natsversion.ConnectedRefusal` of the version the connection answers once it is connected, and `main` ends the process on the error (`TestTheListenerRefusesAServerThatSkipsAFilter`).
+The Legion daemon refuses it by the same function before it opens its consumers (`intake.OpenConsumers`); a connection reconnecting at that moment is waited for, within `natsversion.VersionWait`, never read as a server of no version.
+The live proofs that start their own NATS server run the hub's image, which `scripts/e2e/lib/nats-image.sh` reads from `testnats.HubImage`.
 The interest record stores each topic as its caller wrote it, because the plugins read their record back and an unfamiliar form would be unsubscribed or misread;
 the registry's own readers take both forms instead (`store.Registry.Match` through its subject index, `store.Remove`, the role read of a record), and `POST /v1/interests/subscribe` names each topic the caller gave in the old form in its answer's `warnings` with its new form, counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
 Each read of a stored row into a session's consumer filter (a repair, a restart, a fenced filter write: `storedRowFilter`) counts there too each topic the filter carries in the old form, so the counter keeps moving while any record holds one (`store.Registry.CountStoredLegacyTopics`);

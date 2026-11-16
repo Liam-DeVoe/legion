@@ -9,5 +9,7 @@ body: |-
   is no longer acknowledged as another project's event: it is logged at ERROR with its subject, its
   stream sequence and a running count, and terminated as poison. Old-form names are counted, and
   logged at INFO at most once a minute with the count. **The daemon now needs nats-server
-  v2.11.12, v2.12.4, or v2.14.0 and later**, and refuses to open its consumers on an older server,
-  naming its version and those releases, by the rule the Envoy listener refuses one by.
+  v2.11.12, v2.12.4, or v2.14.0 and later**, and refuses to open its consumers on any other,
+  naming its version and those releases, by the rule the Envoy listener refuses one by; a
+  connection that is reconnecting at that moment is waited for, never read as a server of no
+  version.

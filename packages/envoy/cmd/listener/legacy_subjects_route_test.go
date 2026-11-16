@@ -128,11 +128,13 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	}
 }
 
-// A claim's project is decided in one place (contracts.ClaimProject): a Legion role works for the
-// project its own name gives, so a claim naming it under another project is refused with 400, as
-// the merge base refused every dotted role, rather than quietly claiming that project's role for a
-// caller who asked for another. The same role under its own project, and a free-form role under any
-// project, are claimed.
+// In this slice a claim's key is the bare role name, which is the claim of the project the name
+// itself gives (contracts.RoleProject), so a role named in the new form under any other project is
+// refused with 400, naming both projects, as the merge base refused every dotted role: a Legion
+// role under another project's key, and a free-form role (lead-reviewer) under a project, whose
+// claim would otherwise land on the `_` claim of its bare name and take it from its holder while
+// the caller believes it holds that project's. The same role under its own project, and its bare
+// name, are claimed. t-c-8 lifts this for a free-form role once a claim keys on its project.
 func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 	const sessionID = "ses_role_project"
 	rig := newSessionConsumerRig(t)
@@ -143,15 +145,22 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 			strings.NewReader(`{"session_id":"`+sessionID+`","role":"`+role+`"}`)))
 		return recorder
 	}
-	for _, role := range []string{"PRIV.legion-zz-controller", "_.legion-zz-controller"} {
-		if answer := claim(role); answer.Code != http.StatusBadRequest || !strings.Contains(answer.Body.String(), "ZZ") {
-			t.Fatalf("claim %s answered %d %s, want 400 naming the role's own project ZZ", role, answer.Code, answer.Body.String())
+	for _, refused := range []struct{ role, name, own, asked string }{
+		{"PRIV.legion-zz-controller", "legion-zz-controller", "ZZ", "PRIV"},
+		{"_.legion-zz-controller", "legion-zz-controller", "ZZ", "_"},
+		{"PRIV.lead-reviewer", "lead-reviewer", "_", "PRIV"},
+		{"INFRA.reviewer", "reviewer", "_", "INFRA"},
+	} {
+		answer := claim(refused.role)
+		body := answer.Body.String()
+		if answer.Code != http.StatusBadRequest || !strings.Contains(body, "project "+refused.own) || !strings.Contains(body, "project "+refused.asked) {
+			t.Fatalf("claim %s answered %d %s, want 400 naming its own project %s and the asked-for %s", refused.role, answer.Code, body, refused.own, refused.asked)
 		}
-		if holder, err := rig.deps.registry.RoleHolder("legion-zz-controller"); err == nil && holder != "" {
-			t.Fatalf("after the refused claim %s, legion-zz-controller is held by %q, want nobody", role, holder)
+		if holder, err := rig.deps.registry.RoleHolder(refused.name); err == nil && holder != "" {
+			t.Fatalf("after the refused claim %s, %s is held by %q, want nobody", refused.role, refused.name, holder)
 		}
 	}
-	for _, role := range []string{"ZZ.legion-zz-controller", "PRIV.lead-reviewer", "legion-zz-controller"} {
+	for _, role := range []string{"ZZ.legion-zz-controller", "legion-zz-controller", "_.lead-reviewer", "lead-reviewer"} {
 		if answer := claim(role); answer.Code != http.StatusOK {
 			t.Fatalf("claim %s answered %d %s, want 200", role, answer.Code, answer.Body.String())
 		}

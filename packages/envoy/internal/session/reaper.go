@@ -20,7 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// reapStoredMessageCap bounds the reads one reaped session's stored-message count makes, and
+// reapStoredMessageCap bounds the reads one reaped session's stored-message count makes on each
+// form of its agent subject (so twice the cap per session while both forms are read), and
 // reapStoredReadBudget bounds the time a whole pass spends on those counts. A pass holds no
 // caller's deadline, but it shares one bus with every delivery this listener makes, and counts
 // that read a whole retention window per record would take that bus away from them. Each read is
