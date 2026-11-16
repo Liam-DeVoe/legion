@@ -63,7 +63,7 @@ func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("store a list of gated steps holding decisions: %v", err)
 	}
-	if _, err := step.Tick(ctx); err != nil {
+	if err := step.Tick(ctx); err != nil {
 		t.Fatalf("run a tick of the step: %v", err)
 	}
 	gated := owed("after a pass over one list of gated steps holding decisions")

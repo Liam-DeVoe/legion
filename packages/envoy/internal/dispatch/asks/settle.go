@@ -89,8 +89,9 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 // (selected) and its time (answered_at) as values, the person who gave it as the far end of
 // answered_by and decided_by, and the resolution as a value - and retracts each of those the node
 // holds that the change takes away. It then writes the asks row from what it appended, in the same
-// transaction: state, and answer and resolution where the change states them. The row is the
-// projection, and the node is the record every read of an answer reads.
+// transaction: state, and answer and resolution where the change states them. The node is the
+// record and the row its projection, which every reader of an ask's state but a reading's check
+// of its ask (docs' askAnswers) and the decisions step's count still reads.
 //
 // The node holds the answer only once the row names it (asks.node_kind): a row a process of the
 // release before wrote names none until the boot step's backfill states the whole row on the node

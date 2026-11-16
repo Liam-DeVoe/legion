@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,15 +34,20 @@ import (
 //     and never from the row.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
-// (Boot), as FillDocumentSearch does: this release reads every answer from the node, and the
-// release before keeps serving through a roll until this process serves. It then runs on a tick of
-// its own (Run) at BlockIndexReconcileInterval while any phase has work. Phase 1 has work while an
-// unmarked row stands (graphcensus.AsksOwed). Phase 2 has work on each tick while processes.Live
-// lists a process of another build, and once more on the first tick that finds the fleet one build,
-// which is also a process's first tick: the window it reads opens before this process started, so
-// a restart of a process on a fleet that stood whole never misses a write. What the restore and
-// the conversion owe (DecisionStepOwed) is work too, and each pass counts it again, which /healthz
-// answers (Owed).
+// (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
+// its node - a reading's check of its ask (askAnswers) and this step's own count - read an ask
+// phase 1 has not stated yet as open, and the release before keeps serving through a roll until
+// this process serves. It then runs on a tick of its own (Run) every BlockIndexReconcileInterval
+// for as long as the process runs: a process of another build can go live after a tick found
+// nothing to do - a rollback, or a process of the release before that starts late - so the tick
+// never stops for want of work, and a tick with none costs the probes of what each phase owes
+// (probe) and nothing more. Phase 1 has work while an unmarked row stands (graphcensus.AsksOwed).
+// Phase 2 has work on each tick while processes.Live lists a process of another build, once more
+// on the first tick that finds the fleet one build, which is also a process's first tick - the
+// window it reads opens before this process started, so a restart of a process on a fleet that
+// stood whole never misses a write - and again after any pass on which an ask failed. Each tick
+// counts what the restore and the conversion owe (DecisionStepOwed), which /healthz answers
+// (Owed).
 //
 // The runner takes a session advisory lock of its own (decisionStepLock), so two processes that
 // boot together do not run it both at once: a booting process waits for it, so every process has
@@ -51,10 +58,22 @@ type DecisionStep struct {
 	database *store.Store
 	commit   string
 	logger   *slog.Logger
+	// interval is the wait between two ticks of Run: BlockIndexReconcileInterval.
+	interval time.Duration
 	// catchUpOwed is whether phase 2 owes a pass on a tick that finds the fleet one build: true
-	// until the first such tick runs it, and again after any tick that finds another build live.
+	// until the first such tick runs it, and again after any tick that finds another build live or
+	// on which an ask failed.
 	catchUpOwed bool
-	// owed is what the last pass that ran found owed, nil until a pass has run.
+	// horizon marks the event log for the catch-up (writerFloor), and marks are the marks its
+	// passes took, newest first and at most decisionStepMarksKept of them.
+	horizon *events.Horizon
+	marks   []events.Mark
+	// caughtUpThrough and caughtUpAbove are the catch-up's high-water mark: every event of the
+	// window at or below caughtUpThrough, and each event above it whose id caughtUpAbove holds,
+	// was read by a pass on which no ask failed, and so applied or found to need nothing.
+	caughtUpThrough int64
+	caughtUpAbove   []int64
+	// owed is what the last tick found owed, nil until a pass has run.
 	owed atomic.Pointer[DecisionStepOwed]
 }
 
@@ -121,7 +140,10 @@ func NewDecisionStep(database *store.Store, commit string, logger *slog.Logger) 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &DecisionStep{database: database, commit: commit, logger: logger, catchUpOwed: true}
+	return &DecisionStep{
+		database: database, commit: commit, logger: logger, interval: BlockIndexReconcileInterval,
+		catchUpOwed: true, horizon: events.NewHorizon(database.Pool),
+	}
 }
 
 // decisionStepLock is the session advisory lock the step's passes take ("DDECISNS"), a single
@@ -132,8 +154,9 @@ const decisionStepLock int64 = 0x4444454349534E53
 // on.
 const decisionStepApplication = "dispatch-decision-step"
 
-// Boot is the step's pass at boot: it waits for the step's lock, then runs phase 1. It answers
-// phase 1's failure, which stops the boot.
+// Boot is the step's pass at boot: it waits for the step's lock, then probes what each phase owes
+// (probe) and runs phase 1 where a row stands unmarked. It answers a failure of either, which
+// stops the boot.
 func (s *DecisionStep) Boot(ctx context.Context) error {
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
 	if err != nil {
@@ -143,96 +166,112 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
-	_, err = s.pass(ctx, true)
-	return err
+	work, err := s.probe(ctx)
+	if err != nil || !work.backfill {
+		return err
+	}
+	return s.backfill(ctx)
 }
 
-// Tick is one pass of the step on its tick: it skips where another process holds the step's lock,
-// and otherwise runs each phase with work. It reports whether any phase had work, which is whether
-// the tick runs again; a tick that skipped reports true, since its holder's work is not read here.
-func (s *DecisionStep) Tick(ctx context.Context) (bool, error) {
+// Tick is one pass of the step on its tick. It probes what each phase owes first (probe), on the
+// shared pool, so a tick with no work - every tick once the fleet is one build and every row is
+// stated - costs those reads and dials no connection. Otherwise it takes the step's lock on a
+// connection of its own, skips where another process holds it, since the holder is doing the
+// work, and runs each phase with work. A failure of a phase is logged and tried again at the next
+// tick; it answers a failure of the probes or of the lock.
+func (s *DecisionStep) Tick(ctx context.Context) error {
+	work, err := s.probe(ctx)
+	if err != nil {
+		return err
+	}
+	catchUp := work.other || s.catchUpOwed
+	if !work.backfill && !catchUp {
+		return nil
+	}
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
 	if err != nil {
-		return true, fmt.Errorf("open the decision step's connection: %w", err)
+		return fmt.Errorf("open the decision step's connection: %w", err)
 	}
 	defer closeDecisionStepConn(conn)
 	var locked bool
 	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, decisionStepLock).Scan(&locked); err != nil {
-		return true, fmt.Errorf("take the decision step's lock: %w", err)
+		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
 	if !locked {
-		return true, nil
+		return nil
 	}
-	return s.pass(ctx, false)
+	if work.backfill {
+		if err := s.backfill(ctx); err != nil {
+			s.logger.Error("dispatch: decisions step backfill; the next tick tries again", "error", err)
+		}
+	}
+	if catchUp {
+		failed, err := s.catchUp(ctx)
+		if err != nil {
+			s.logger.Error("dispatch: decisions step catch-up; the next tick tries again", "error", err)
+		}
+		s.catchUpOwed = work.other || failed || err != nil
+	}
+	return nil
 }
 
-// Run ticks at once and then every BlockIndexReconcileInterval while the tick reports work, until
-// ctx ends. A tick that fails is logged and tried again at the next one.
+// Run ticks at once and then every interval (BlockIndexReconcileInterval) until ctx ends. It never
+// stops for want of work: a process of another build can go live after a tick found none, and the
+// next tick catches up what it writes. A tick that fails is logged and tried again at the next one.
 func (s *DecisionStep) Run(ctx context.Context) {
 	for {
-		more, err := s.Tick(ctx)
-		if err != nil && ctx.Err() == nil {
+		if err := s.Tick(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Warn("dispatch: decisions step tick; the next tick tries again", "error", err)
-			more = true
-		}
-		if !more {
-			return
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(BlockIndexReconcileInterval):
+		case <-time.After(s.interval):
 		}
 	}
 }
 
-// pass runs one pass under the step's lock: at boot phase 1 alone, whose failure it answers, and
-// on a tick both phases, whose failures it logs. It counts what the restore and the conversion owe
-// first, which Owed answers from then on, and reports whether any phase had work.
-func (s *DecisionStep) pass(ctx context.Context, boot bool) (bool, error) {
+// decisionStepWork is what a pass's probes found the step's phases owe.
+type decisionStepWork struct {
+	// backfill is whether phase 1 has a row to state (graphcensus.AsksOwed).
+	backfill bool
+	// other is whether processes.Live lists a process of another build.
+	other bool
+}
+
+// probe reads what a pass owes: what the restore and the conversion owe, which Owed answers from
+// then on, whether phase 1 has a row to state, and whether a process of another build is live.
+// These are the reads a tick with no work costs: one statement for the counts, one probe of each
+// kind phase 1 states, each stopping at its first row, and one read of the live processes.
+func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	owed, err := countDecisionStepOwed(ctx, s.database.Pool)
 	if err != nil {
-		return true, err
+		return decisionStepWork{}, err
 	}
 	s.owed.Store(&owed)
-	backfillOwed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
+	var work decisionStepWork
+	if work.backfill, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil {
+		return decisionStepWork{}, err
+	}
+	if work.other, err = s.anotherBuildLive(ctx); err != nil {
+		return decisionStepWork{}, err
+	}
+	return work, nil
+}
+
+// backfill runs phase 1 and logs what each of its passes stated.
+func (s *DecisionStep) backfill(ctx context.Context) error {
+	done, err := graphcensus.BackfillAsks(ctx, s.database)
+	for _, kind := range done {
+		if kind.Rows > 0 {
+			s.logger.Info("dispatch: decisions step stated rows written before this release on the store",
+				"kind", kind.Kind, "rows", kind.Rows, "tuples", kind.Tuples, "remaining", kind.Remaining)
+		}
+	}
 	if err != nil {
-		return true, err
+		return fmt.Errorf("decisions step, the backfill: %w", err)
 	}
-	other, err := s.anotherBuildLive(ctx)
-	if err != nil {
-		return true, err
-	}
-	catchUp := other || s.catchUpOwed
-	if !backfillOwed && !catchUp && owed.Total == 0 {
-		return false, nil
-	}
-	if backfillOwed {
-		done, err := graphcensus.BackfillAsks(ctx, s.database)
-		for _, kind := range done {
-			if kind.Rows > 0 {
-				s.logger.Info("dispatch: decisions step stated rows written before this release on the store",
-					"kind", kind.Kind, "rows", kind.Rows, "tuples", kind.Tuples, "remaining", kind.Remaining)
-			}
-		}
-		if err != nil {
-			if boot {
-				return true, fmt.Errorf("decisions step, the backfill: %w", err)
-			}
-			s.logger.Error("dispatch: decisions step backfill; the next tick tries again", "error", err)
-		}
-	}
-	if boot {
-		return true, nil
-	}
-	if catchUp {
-		if err := s.catchUp(ctx); err != nil {
-			s.logger.Error("dispatch: decisions step catch-up; the next tick tries again", "error", err)
-		} else {
-			s.catchUpOwed = other
-		}
-	}
-	return true, nil
+	return nil
 }
 
 // anotherBuildLive reports whether processes.Live lists a process serving a commit other than
@@ -250,28 +289,55 @@ func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// caughtUpTypes are the events phase 2 reads: an answer, a resolution (a decline is one), an
-// opening (a reopen, or settlement's restoration), and a follower added or removed.
-var caughtUpTypes = []string{"ask.answered", "ask.resolved", "ask.opened", "ask.follower_added", "ask.follower_removed"}
-
-// caughtUpAsk is the ask an event of caughtUpTypes names, aliased e: a follower event names it as
-// ask_id, every other as the ask's own id.
+// caughtUpAsk is the ask an event of the catch-up's read names, aliased e: a follower event names
+// it as ask_id, every other as the ask's own id.
 const caughtUpAsk = `case when e.type like 'ask.follower_%' then e.payload->>'ask_id' else e.payload->>'id' end`
 
-// unstatedEvents keeps the events of the window no tuple of their ask's node states: none carries
-// the event's id as its source_event.
-const unstatedEvents = `
-	e.id > $1 and e.type = any($2)
-	and not exists (select 1 from graph_tuples t
-	                where t.from_kind = 'ask' and t.from_id = ` + caughtUpAsk + ` and t.source_event = e.id)`
+// caughtUpRead is the catch-up's one read of a pass: every event of the window above $1 - an
+// answer, a resolution (a decline is one), an opening (a reopen, or settlement's restoration), a
+// follower added or removed - that no tuple of its ask's node states, since none carries the
+// event's id as its source_event, and whose id is none of $2, which an earlier pass read already.
+// Each row is the event and the ask it names, in the order of the asks and, within an ask, of the
+// events' ids. It reads events through their primary key from $1 on, so a pass reads what was
+// appended since the passes before it and not the whole window again, and each event's tuples
+// through an index keyed on its ask's node (TestTheCatchUpReadsItsWindowThroughIndexes). The
+// tuples are looked for by a scalar subquery, `(select … limit 1) is null`, rather than by NOT
+// EXISTS, which Postgres plans as an anti-join over every tuple of every ask, read once and kept
+// beside the events (copied_asks.go's owedCopiesQuery meets the same with a hashed subplan); the
+// subquery runs once for each event, each run one probe of the index.
+const caughtUpRead = `
+	select e.id, e.type, e.payload, e.actor, e.created_at, coalesce(` + caughtUpAsk + `, '') as ask
+	from events e
+	where e.id > $1
+	  and e.type in ('ask.answered', 'ask.resolved', 'ask.opened', 'ask.follower_added', 'ask.follower_removed')
+	  and e.id <> all($2::bigint[])
+	  and (select 1 from graph_tuples t
+	       where t.from_kind = 'ask' and t.from_id = ` + caughtUpAsk + ` and t.source_event = e.id
+	       limit 1) is null
+	order by ask, e.id`
 
-// catchUp is phase 2. Its window opens at the newest server_build_announcements row naming a commit
-// other than this process's own: the fleet last stood whole on another build then, and every
-// process of this build started after it. Where none names another commit, as on a database this
-// build created, it opens at the first event. Each ask with an event in the window that no tuple
-// states is caught up in a transaction of its own (catchUpAsk); a failure on one is logged and
-// leaves the others to go on.
-func (s *DecisionStep) catchUp(ctx context.Context) error {
+// decisionStepMarksKept bounds the marks of the event log the catch-up keeps (writerFloor).
+const decisionStepMarksKept = 8
+
+// catchUp is phase 2, and reports whether an ask failed. Its window opens at the newest
+// server_build_announcements row naming a commit other than this process's own: the fleet last
+// stood whole on another build then, and every process of this build started after it. Where none
+// names another commit, as on a database this build created, it opens at the first event. A pass
+// reads the window's events no tuple states once (caughtUpRead), from the step's high-water mark
+// on, and catches each ask up in a transaction of its own (catchUpAsk); a failure on one is logged
+// and leaves the others to go on.
+//
+// An event that needs nothing - one older than the node's newest tuple of its attribute, a follow
+// the backfill already stated at the sentinel, an event of an ask the backfill has not marked yet -
+// states nothing, so no tuple ever names it and every pass would read it again. The step keeps
+// instead what its passes read. After a pass on which no ask failed, every event at or below the
+// floor it read from (writerFloor) was final before it read, so it read each of them, and the
+// high-water mark moves up to that floor; the ids it read above the floor are kept until the mark
+// passes them. A pass on which an ask failed moves neither, and the next pass reads that ask's
+// events again, with whatever else needed nothing. The mark is the process's own: a process that
+// takes the step over reads its window again from where it opens, and an event already stated is
+// left out of its read as it is of every read.
+func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
 	var start int64
 	if err := s.database.Pool.QueryRow(ctx, `
 		select coalesce((
@@ -280,21 +346,51 @@ func (s *DecisionStep) catchUp(ctx context.Context) error {
 			                      where a.commit <> $1 order by a.seq desc limit 1)
 			order by e.id desc limit 1), 0)
 	`, s.commit).Scan(&start); err != nil {
-		return fmt.Errorf("read where the catch-up's window opens: %w", err)
+		return false, fmt.Errorf("read where the catch-up's window opens: %w", err)
 	}
-	rows, err := s.database.Pool.Query(ctx, `
-		select distinct `+caughtUpAsk+` from events e where `+unstatedEvents+` order by 1
-	`, start, caughtUpTypes)
+	floor, newest, err := s.writerFloor(ctx)
 	if err != nil {
-		return fmt.Errorf("read the asks with events no tuple states: %w", err)
+		return false, fmt.Errorf("read which events the catch-up reads final: %w", err)
 	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if newest < s.caughtUpThrough {
+		// The log holds no event as far as the mark (TRUNCATE ... RESTART IDENTITY): its ids are
+		// a new log's, and nothing the mark says holds of them.
+		s.caughtUpThrough, s.caughtUpAbove = 0, nil
+	}
+	read := s.caughtUpAbove
+	if read == nil {
+		// A nil list is bound as null, and no id is unequal to every member of null.
+		read = []int64{}
+	}
+	rows, err := s.database.Pool.Query(ctx, caughtUpRead, max(start, s.caughtUpThrough), read)
 	if err != nil {
-		return fmt.Errorf("read the asks with events no tuple states: %w", err)
+		return false, fmt.Errorf("read the events no tuple states: %w", err)
 	}
-	for _, askID := range owed {
-		applied, err := s.catchUpAsk(ctx, askID, start)
+	unstated, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (caughtUpEvent, error) {
+		var event caughtUpEvent
+		var actor []byte
+		if err := row.Scan(&event.id, &event.eventType, &event.payload, &actor, &event.at, &event.ask); err != nil {
+			return event, err
+		}
+		if err := json.Unmarshal(actor, &event.actor); err != nil {
+			return event, fmt.Errorf("read the actor of event %d: %w", event.id, err)
+		}
+		return event, nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("read the events no tuple states: %w", err)
+	}
+	failed := false
+	for first := 0; first < len(unstated); {
+		last := first + 1
+		for last < len(unstated) && unstated[last].ask == unstated[first].ask {
+			last++
+		}
+		askID := unstated[first].ask
+		applied, err := s.catchUpAsk(ctx, askID, unstated[first:last])
+		first = last
 		if err != nil {
+			failed = true
 			s.logger.Error("dispatch: decisions step could not catch up an ask; the next tick tries again",
 				"ask", askID, "error", err)
 			continue
@@ -303,67 +399,116 @@ func (s *DecisionStep) catchUp(ctx context.Context) error {
 			s.logger.Info("dispatch: decisions step caught up the events another build wrote", "ask", askID, "events", applied)
 		}
 	}
-	return nil
+	if !failed {
+		s.keepCaughtUp(floor, unstated)
+	}
+	return failed, nil
 }
 
-// caughtUpEvent is one event catchUpAsk applies.
+// writerFloor marks the event log now and answers the highest id at or below which no event can
+// still be open (events.Horizon.WriterFloor), read from the marks the catch-up's passes took,
+// newest first, or, where none of them counts, from the horizon some process persisted, and the
+// newest id the new mark saw. A mark counts once every transaction that holds a write lock on
+// events took its id after it: this pass's own does on a log no write holds open, and under writes
+// that overlap without a break an earlier pass's does, as soon as the writes open when it was
+// taken have ended. It waits on no transaction.
+func (s *DecisionStep) writerFloor(ctx context.Context) (int64, int64, error) {
+	mark, err := s.horizon.Mark(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.marks = slices.Insert(s.marks, 0, mark)
+	if len(s.marks) > decisionStepMarksKept {
+		s.marks = s.marks[:decisionStepMarksKept]
+	}
+	floor, ok, err := s.horizon.WriterFloor(ctx, s.marks...)
+	if err != nil || ok {
+		return floor, mark.Newest, err
+	}
+	persisted, err := s.horizon.Persisted(ctx)
+	return max(floor, persisted), mark.Newest, err
+}
+
+// keepCaughtUp moves the high-water mark over what a pass on which no ask failed read: every event
+// at or below floor, and the ids of what it read above it, beside those an earlier pass read above
+// the mark that it has not passed yet.
+func (s *DecisionStep) keepCaughtUp(floor int64, read []caughtUpEvent) {
+	through := max(s.caughtUpThrough, floor)
+	above := s.caughtUpAbove[:0]
+	for _, id := range s.caughtUpAbove {
+		if id > through {
+			above = append(above, id)
+		}
+	}
+	for _, event := range read {
+		if event.id > through {
+			above = append(above, event.id)
+		}
+	}
+	s.caughtUpThrough, s.caughtUpAbove = through, above
+}
+
+// caughtUpEvent is one event the catch-up read (caughtUpRead): the event, and the ask it names.
 type caughtUpEvent struct {
 	id        int64
 	eventType string
 	payload   []byte
 	actor     model.Actor
 	at        time.Time
+	ask       string
 }
 
-// catchUpAsk applies, in one transaction, every event of askID in the window that no tuple states,
-// in the order of their ids. It locks the ask's row first, as every writer of its answer does, so
-// the events it reads after are every event a committed write of the row appended. An ask whose row
-// is gone, or names no node, is the backfill's: the row is stated whole when it is marked. An
-// answer event older than the node's newest answer_state, and a follower event older than the
-// node's newest followed_by to that session, is skipped, so an old event caught up after a newer
-// write never puts back what that write replaced. Every other answer event is written as asks.Settle
-// writes the event's own state, answer and resolution, under the event, by its actor at its time;
-// a follower event is stated as the row stands (asks.CatchUpFollower). It answers how many events
-// it applied.
-func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, start int64) (int, error) {
+// catchUpAsk applies, in one transaction, the events of askID a pass read (unstated), in the order
+// of their ids. It takes the store's lock order (api/inbox_read.go's markInboxReadThreads), as
+// every writer of an ask's answer does: the ask's owner row first - its issue, or the document an
+// ask on no issue belongs to, read off the row without a lock and taken through
+// events.LockOwnerRows - then the ask's row, `for no key update`, and only then the nodes and the
+// tuples asks.Settle and asks.CatchUpFollower write. An ask whose owner moved between the two is
+// tried again at the next pass. An ask whose row is gone, or names no node, is the backfill's: the
+// row is stated whole when it is marked. An answer event older than the node's newest
+// answer_state, and a follower event older than the node's newest followed_by to that session, is
+// skipped, so an old event caught up after a newer write never puts back what that write replaced.
+// Every other answer event is written as asks.Settle writes the event's own state, answer and
+// resolution, under the event, by its actor at its time; a follower event is stated as the row
+// stands (asks.CatchUpFollower). It answers how many events it applied.
+func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []caughtUpEvent) (int, error) {
+	if askID == "" {
+		return 0, nil
+	}
+	var issue, document string
+	err := s.database.Pool.QueryRow(ctx, `
+		select coalesce(issue_key, ''), coalesce(artifact_id::text, '') from asks where id = $1::uuid
+	`, askID).Scan(&issue, &document)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the owner of ask %s: %w", askID, err)
+	}
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	owners := events.OwnerRows{}
+	owners.Add(issue, document, "ask "+askID)
+	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+		return 0, err
+	}
 	var marked bool
-	err = tx.QueryRow(ctx, `select node_kind is not null from asks where id = $1::uuid for no key update`, askID).Scan(&marked)
+	var heldIssue, heldDocument string
+	err = tx.QueryRow(ctx, `
+		select node_kind is not null, coalesce(issue_key, ''), coalesce(artifact_id::text, '')
+		from asks where id = $1::uuid for no key update
+	`, askID).Scan(&marked, &heldIssue, &heldDocument)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !marked) {
 		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("lock ask %s: %w", askID, err)
 	}
-	rows, err := tx.Query(ctx, `
-		select e.id, e.type, e.payload, e.actor, e.created_at from events e
-		where `+unstatedEvents+` and `+caughtUpAsk+` = $3
-		order by e.id
-	`, start, caughtUpTypes, askID)
-	if err != nil {
-		return 0, fmt.Errorf("read the events of ask %s no tuple states: %w", askID, err)
-	}
-	var unstated []caughtUpEvent
-	for rows.Next() {
-		var event caughtUpEvent
-		var actor []byte
-		if err := rows.Scan(&event.id, &event.eventType, &event.payload, &actor, &event.at); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("read an event of ask %s: %w", askID, err)
-		}
-		if err := json.Unmarshal(actor, &event.actor); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("read the actor of event %d: %w", event.id, err)
-		}
-		unstated = append(unstated, event)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("read the events of ask %s no tuple states: %w", askID, err)
+	if heldIssue != issue || heldDocument != document {
+		return 0, fmt.Errorf("ask %s moved to another owner while its catch-up took the owner's row", askID)
 	}
 	applied := 0
 	for _, event := range unstated {
@@ -381,7 +526,8 @@ func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, start int64
 	return applied, nil
 }
 
-// applyCaughtUpEvent applies one event catchUpAsk read, and reports whether it stated anything.
+// applyCaughtUpEvent applies one event a pass read, in catchUpAsk's transaction, and reports
+// whether it stated anything.
 func applyCaughtUpEvent(ctx context.Context, tx pgx.Tx, askID string, event caughtUpEvent) (bool, error) {
 	if event.eventType == "ask.follower_added" || event.eventType == "ask.follower_removed" {
 		var payload model.AskFollowerEventPayload

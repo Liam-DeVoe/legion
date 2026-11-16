@@ -143,6 +143,51 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 	}
 }
 
+// A copy names its source's document as the source ask's node holds it - the far end of the ask's
+// part_of, the record of where the ask is - and not as the source's row names it: once the node is
+// part of another document of the issue, as the restore states a move of an ask
+// (graphstore.AskClaims), a copy settled after that names the other document. A source whose row
+// names no node yet, which the boot step's backfill marks, has no part_of to read, and its copy
+// names the document its row does.
+func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
+	service, original := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	source := copiedAskSource(t, service, original)["copy-open"]
+	elsewhere := createIssueDocument(t, service.store, 1, "# Elsewhere")
+	var elsewhereKey string
+	if err := service.store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, elsewhere).Scan(&elsewhereKey); err != nil {
+		t.Fatalf("read the other document's address: %v", err)
+	}
+	arms, params, err := graphstore.WriteArms(1, nil, nil, graphstore.AskClaims(source,
+		graphstore.AskPlaces{Anchor: elsewhereKey, Document: elsewhereKey},
+		model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent))
+	if err != nil {
+		t.Fatalf("build the move of the source ask's node: %v", err)
+	}
+	if _, err := service.store.Pool.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
+		t.Fatalf("state the source ask's node part of the other document: %v", err)
+	}
+	openCopyOf := func(document string) string {
+		return `:::ask{#copy-open urgency="med" multiple="false" state="open" ` + copiedFrom(t, service, source, document) + `}`
+	}
+
+	copied := createIssueDocument(t, service.store, 1, "# Copy")
+	seedServiceText(t, service, copied, copiedAsksDocument)
+	settleCurrentGeneration(t, service, copied)
+	requireCopiedStates(t, service, copied, openCopyOf(elsewhere))
+
+	if _, err := service.store.Pool.Exec(ctx, `update asks set node_kind = null, node_address = null where id = $1::uuid`, source); err != nil {
+		t.Fatalf("leave the source ask's row naming no node: %v", err)
+	}
+	editLiveTree(t, service, copied, func(tree *pmdoc.Node) *pmdoc.Node {
+		tree.Children[0].Children[0].Text = "Context, revisited"
+		return tree
+	})
+	settleCurrentGeneration(t, service, copied)
+	requireCopiedStates(t, service, copied, openCopyOf(original))
+}
+
 // openAskBlocksOn is the block ids of document's open asks, in order.
 func openAskBlocksOn(t *testing.T, service *Service, document string) string {
 	t.Helper()

@@ -387,10 +387,11 @@ func main() {
 
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
-	// this process serves, as document_search is filled above. This release reads every answer
-	// from the node, so a failure stops the boot, and the release before keeps serving in a roll
-	// until this process can. The process waits here for another booting process that holds the
-	// step. Its catch-up and its later passes run on its own tick once the server listens, below.
+	// this process serves, as document_search is filled above. A reading's check of its ask takes
+	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// failure stops the boot, and the release before keeps serving in a roll until this process
+	// can. The process waits here for another booting process that holds the step. Its catch-up
+	// and its later passes run on its own tick once the server listens, below.
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	if !boot.HoldDecisionsStep {
 		if err := decisionStep.Boot(ctx); err != nil {
@@ -910,8 +911,9 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
-	// The decisions step's tick: the backfill while a row the release before wrote stands
-	// unmarked, and the catch-up of what a process of another build writes while one lives.
+	// The decisions step's tick, for as long as the process runs: the backfill while a row the
+	// release before wrote stands unmarked, and the catch-up of what a process of another build
+	// writes while one lives.
 	if !boot.HoldDecisionsStep {
 		go decisionStep.Run(ctx)
 	}
