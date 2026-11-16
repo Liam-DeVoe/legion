@@ -212,12 +212,15 @@ type ActorOrigin struct {
 }
 
 // AgentToken is the safely displayable metadata for a human-owned agent token. Scopes is the
-// OAuth scopes the token holds, the set its bearer may act within.
+// OAuth scopes the token holds, the set its bearer may act within. Projects is the list of
+// projects it may use, sorted, and absent for a token that lists none, which uses the public
+// projects its person sees.
 type AgentToken struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
 	Scopes     []string   `json:"scopes"`
+	Projects   []string   `json:"projects,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
