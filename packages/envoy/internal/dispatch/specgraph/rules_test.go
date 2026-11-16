@@ -265,6 +265,21 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(9), "work-unit", "code-in-text", "code-in-text: name names code: read_set"},
 		},
 		{
+			name: "a program procedure that names its go test in curly quotes",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program runs \u201cTestARestartKeepsTheClaim\u201d. It must find the claim."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestARestartKeepsTheClaim"},
+		},
+		{
+			name: "a component whose name is only spaces",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Name = "   " })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is only a zero-width space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "\u200b" })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
 			name: "a component whose purpose is two sentences",
 			tree: Tree{Components: []Component{component("dispatch", func(c *Component) {
 				c.Purpose = "It keeps each message until its session reads it. It also deletes each message after a week."

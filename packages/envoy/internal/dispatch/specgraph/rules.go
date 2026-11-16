@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Options are the inputs of Validate beyond the files.
@@ -253,8 +254,14 @@ const sentenceSpace = `\s\v\x{1c}-\x{1f}\x{85}\p{Z}`
 // Node.js, ends no sentence.
 var sentenceEnd = regexp.MustCompile(`[.!?][` + sentenceSpace + `]+[^` + sentenceSpace + `]`)
 
+// hasWord reports whether s holds a letter or a digit: a name or a purpose of only spaces, or of
+// only a format character such as U+200B, is a missing one (R15).
+func hasWord(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
+}
+
 func (v *validator) component(c Component) {
-	if c.Name == "" || c.Purpose == "" || sentenceEnd.MatchString(c.Purpose) {
+	if !hasWord(c.Name) || !hasWord(c.Purpose) || sentenceEnd.MatchString(c.Purpose) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
