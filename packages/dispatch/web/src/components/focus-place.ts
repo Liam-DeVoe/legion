@@ -2,6 +2,7 @@ import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } f
 
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { CONTROL } from "./control-names";
 
 /** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
  *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
@@ -87,7 +88,9 @@ interface Place {
  * reader had scrolled out of their sight (`outOfSight`), the page's rescue's rule read from the
  * rescue's own record: a live update taking a control out of a row drawn beyond the view, or
  * Mark all read going while the reader is scrolled away, pulls neither a list nor the page back
- * to the control at its place.
+ * to the control at its place. Nor does a going the reader did not cause (`causedByReader`): the
+ * hand-off moves the focus to a row only for a loss the reader caused, and the page's rescue
+ * answers an uncaused one into no row and with no scroll.
  */
 export function useFocusPlace(
   containerOf: (element: Element) => Element | null,
@@ -108,6 +111,7 @@ export function useFocusPlace(
     }
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
+    if (!causedByReader(held.element)) return;
     const placed = held.container.isConnected
       ? placesFrom(focusableIn(held.container), held.index)[0]
       : undefined;
@@ -135,6 +139,18 @@ export function useFocusPlace(
 /** A dialog, modal or not: the search bar, the Inbox drawer, every `useDialog` dialog, and the
  *  panel a `PanelTrigger` opens. */
 const DIALOG = '[role="dialog"]';
+
+/** What a row of a table or list is: a `<tr>`, anything given a row role, or an Inbox row. A loss
+ *  the reader did not cause lands in none of these, and in no control inside one. */
+const ROW = 'tr, [role="row"], [data-inbox-row]';
+
+/** The one checkbox a row draws for its mark (the project List's `Select <key>`, the Inbox's
+ *  mark): the reader empties a selection from a row by it, from the bar itself otherwise. */
+const MARK = 'input[type="checkbox"]';
+
+/** The region a press that empties a selection could land in and still be the reader's own: a
+ *  dialog or a panel (both `role="dialog"`), or the selection bar. */
+const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
 
 /** How long the rescue waits for a control a press disabled to be enabled again before it hands
  *  the focus on as if that control had gone: the app's write deadline, past which a write is
@@ -271,6 +287,60 @@ export function outOfSight(element: Element): boolean {
   return sight?.element === element && !sight.seen;
 }
 
+/** Whether a focus rescue is mounted, so the page is recording the reader's presses. Where none
+ *  is - a component read in a unit test without the shell - every loss keeps the base hand-off,
+ *  as it did before this rule. */
+let rescueMounted = false;
+
+/** The reader's latest act, a `pointerdown`, a `keydown` or a `change` they committed, with when
+ *  it was made: what tells a loss the reader caused from one an update made under them. */
+let lastPress: { at: number; target: Element } | null = null;
+
+/** The reader's latest press while it is still recent enough to have caused a loss: within the
+ *  rescue's wait (`RESCUE_WAIT_MS`), the bound a write a press started can take. */
+function recentPress(): { target: Element } | null {
+  if (lastPress === null) return null;
+  return performance.now() - lastPress.at <= RESCUE_WAIT_MS ? lastPress : null;
+}
+
+/** The places a press could have taken `element`'s focus from and still be the reader's own doing:
+ *  the element itself, the row it is in, and the dialog, panel or selection bar it was lost from. */
+function pressPlaces(element: Element): Element[] {
+  const places: Element[] = [element];
+  const row = element.closest(ROW);
+  if (row !== null) places.push(row);
+  const region = element.closest(PRESS_REGION);
+  if (region !== null) places.push(region);
+  return places;
+}
+
+/**
+ * Whether the reader caused the loss of `element`'s focus: an act of theirs - a `pointerdown`, a
+ * `keydown`, or a `change` they committed (a select's pick) - came within the wait before it and
+ * landed on the element, inside the row it was in, or inside the dialog, panel or selection bar it
+ * was lost from (`pressPlaces`). A loss the
+ * reader caused keeps the hand-off that pulls the focus to the control now at the lost one's
+ * place; one they did not - a live update taking a row away, a refetch emptying a bar - moves the
+ * focus into no row and scrolls nothing. The rescue and every component hand-off that can move the
+ * focus to a row read this one rule.
+ */
+export function causedByReader(element: Element): boolean {
+  if (!rescueMounted) return true;
+  const press = recentPress();
+  if (press === null) return false;
+  return pressPlaces(element).some(
+    (place) => place === press.target || place.contains(press.target)
+  );
+}
+
+/** Whether the reader's latest press, within the wait, was on a row's mark: the selection bar
+ *  reads this beside `causedByReader`, since unticking the last row by its mark empties the bar
+ *  while the focus may rest in it (a checkbox a click leaves unfocused, as WebKit does). */
+export function pressOnRowMark(): boolean {
+  const press = recentPress();
+  return press !== null && press.target.closest(ROW) !== null && press.target.matches(MARK);
+}
+
 /** Answers a loss the reader can no longer see, in a region still in the page: nothing scrolls,
  *  and the focus goes to no control the reader did not pick. It stays where it is, on the body,
  *  except in a dialog, which takes the focus itself so that the page behind a modal one is
@@ -288,6 +358,7 @@ function leaveUnseen(region: Element): void {
  *  reader moving off it, and - in a dialog - the loss the dialog was opened from (`opener`):
  *  the place the focus left for it, or null for a dialog the focus entered from the body. */
 interface Loss {
+  readonly caused: boolean;
   readonly element: HTMLElement;
   readonly index: number;
   readonly opener: Loss | null;
@@ -363,22 +434,77 @@ function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLEleme
   return index;
 }
 
+/** Focuses `target` without a scroll, so a loss the reader did not cause never scrolls the page.
+ *  Answers whether it took the focus. */
+function focusNoScroll(target: HTMLElement): boolean {
+  target.focus({ preventScroll: true });
+  return document.activeElement === target;
+}
+
+/** The box a loss the reader did not cause lands in rather than a row: the nearest box around
+ *  `row` that clips what overflows it and sits inside `region` (`clippingBoxes`), so the focus
+ *  stays by the list; else the region itself, unless that is the page's body, which is no target. */
+function boxAround(row: Element, region: Element): HTMLElement | null {
+  for (const box of clippingBoxes(row)) {
+    if (region.contains(box) && box instanceof HTMLElement) return box;
+  }
+  return region instanceof HTMLElement && region !== document.body ? region : null;
+}
+
+/** Focuses a box or region a loss the reader did not cause lands on, and only while the reader can
+ *  see it (`inSight`), so the focus never lands where they cannot see it. One with no Tab stop of
+ *  its own is given `tabindex="-1"` for the focus and has it taken off again once the focus leaves,
+ *  so the engine's own Tab order is left as it was. Answers whether it took the focus. */
+function landBox(box: HTMLElement): boolean {
+  if (!box.isConnected || !rendered(box) || !inSight(box, clippingBoxes(box))) return false;
+  const needsStop = !box.hasAttribute("tabindex");
+  if (needsStop) box.tabIndex = -1;
+  const took = focusNoScroll(box);
+  if (needsStop) {
+    if (took) box.addEventListener("blur", () => box.removeAttribute("tabindex"), { once: true });
+    else box.removeAttribute("tabindex");
+  }
+  return took;
+}
+
+/** Hands a loss the reader did not cause to no row and with no scroll: the first candidate in no
+ *  row takes the focus where it is, since the loss itself was in sight; a candidate in a row sends
+ *  the focus to the box that row is drawn in instead (`boxAround`), never into the row and only
+ *  while the reader can see the box; where none takes it, the region itself does if the reader can
+ *  see it, else the focus stays on the body, where the base left it. */
+function handOnQuietly(candidates: readonly HTMLElement[], region: Element): void {
+  for (const candidate of candidates) {
+    if (!candidate.isConnected || !rendered(candidate)) continue;
+    const row = candidate.closest(ROW);
+    if (row === null) {
+      if (focusNoScroll(candidate)) return;
+    } else {
+      const box = boxAround(row, region);
+      if (box !== null && landBox(box)) return;
+    }
+  }
+  if (present(region) && region instanceof HTMLElement && region !== document.body) {
+    landBox(region);
+  }
+}
+
 /** Hands on the focus `loss`'s element took with it when it went, inside the region it was lost
- *  in while that region is still in the page and drawn (`present`): to the control the region now
- *  draws at its place, else the nearest one before it however many went together
- *  (`placesFrom`), else the region itself, which is every region but the document (the body
- *  holding the focus is the loss itself). The main content's search box and filter trigger are
- *  among the controls it draws, so the walk reaches them in their turn. A dialog that has no Tab
- *  stop of its own is given `tabindex="-1"` only when the focus is landed on it, so that it can
- *  take it. The page behind a modal dialog is never reached. From a region that has gone - a
- *  dialog that closed, or one hidden while it stays mounted - only back to the place the dialog
- *  was opened from (its `opener`, or that dialog's own opener where it has gone too): that
- *  element, the control that opened it, if it can still take the focus, else the control now at
- *  its place, else the nearest one before it. A dialog opened from the body hands the focus
- *  nowhere: the body is where the reader was. */
-function handOn(loss: Loss, main: HTMLElement | null): void {
+ *  in while that region is still in the page and drawn (`present`). A loss the reader caused keeps
+ *  the walk it always had: to the control the region now draws at its place, else the nearest one
+ *  before it however many went together (`placesFrom`), else the region itself, which is every
+ *  region but the document, and that control is scrolled into view (`land`). A loss they did not
+ *  cause lands in no row and scrolls nothing (`handOnQuietly`): a candidate in no row takes the
+ *  focus where it is, a candidate in a row sends it to the box that row is drawn in, and nothing
+ *  moves where the reader cannot see it. From a region that has gone - a dialog that closed, or
+ *  one hidden while it stays mounted - the focus goes only back to the place the dialog was opened
+ *  from (its `opener`, or that dialog's own opener where it has gone too): that element, the
+ *  control that opened it, if it can still take the focus, else the control now at its place, else
+ *  the nearest one before it. A dialog opened from the body hands the focus nowhere: the body is
+ *  where the reader was. */
+function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
   const { region } = loss;
   let candidates: HTMLElement[] = [];
+  let answerRegion: Element = region;
   if (present(region)) {
     candidates = placesFrom(drawnIn(region, main), loss.index);
   } else {
@@ -386,7 +512,12 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     while (opener !== null && !present(opener.region)) opener = opener.opener;
     if (opener !== null && opener.path === loss.path) {
       candidates = [opener.element, ...placesFrom(drawnIn(opener.region, main), opener.index)];
+      answerRegion = opener.region;
     }
+  }
+  if (!caused) {
+    handOnQuietly(candidates, answerRegion);
+    return;
   }
   for (const candidate of candidates) {
     if (!candidate.isConnected || !rendered(candidate)) continue;
@@ -415,7 +546,8 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * (a MutationObserver over the document) in every engine, since Firefox and WebKit fire no
  * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
  * Each loss holds its element, its region, its place among the controls the region draws, the
- * path, whether the page took the element (`taken`), and its dialog's opener. A move from one
+ * path, whether the page took the element (`taken`), whether the reader caused the loss
+ * (`causedByReader`), and its dialog's opener. A move from one
  * control to another in the same region is no loss. A new loss cancels whatever is still out for
  * the one before it.
  *
@@ -431,9 +563,13 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * Inbox's and the Board's Escape. A taken element that is back by then gets the focus back.
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
- * the focus on (`handOn`) inside the region it was lost in: to the control the region now draws at
- * its place, else the nearest one before it however many went together, else the region itself,
- * so the page behind a modal dialog is never reached. Only a region that has gone hands the focus
+ * the focus on (`handOn`) inside the region it was lost in. A loss the reader caused - a press of
+ * theirs within the wait on the lost control, inside its row, or inside the region (`causedByReader`)
+ * - goes to the control the region now draws at its place, else the nearest one before it however
+ * many went together, else the region itself, and that control is scrolled into view; a loss they
+ * did not cause goes into no row and scrolls nothing (`handOnQuietly`), to a control in no row, or
+ * to the box a lost row was drawn in while the reader can see it, else the body. So the page behind
+ * a modal dialog is never reached. Only a region that has gone hands the focus
  * out of it: from a dialog that closed it goes only back to the place the dialog was opened from; a
  * dialog opened from the body - a single-key shortcut with nothing focused - leaves the focus on
  * the body, where the reader was, and never puts it in a text box whose next key would be typed.
@@ -447,8 +583,8 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * pulls back a focus the reader left on the page. So is the reader's Escape: a control it takes
  * away or leaves - the issue title's editor, whose heading would open it again if it took the
  * focus - is the reader leaving it, and the focus stays where Escape left it, as the Inbox's and
- * the Board's own Escape leave it on the page. The element the rescue lands on is scrolled into
- * view (`land`).
+ * the Board's own Escape leave it on the page. The element a loss the reader caused lands on is
+ * scrolled into view (`land`); a loss they did not cause scrolls nothing.
  *
  * A loss the reader can no longer see is not answered: the element was scrolled out of their
  * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
@@ -470,6 +606,7 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
+    rescueMounted = true;
     /** The element holding the focus, its region and the path it was focused on, until it loses
      *  the focus by a `focusout`; one still noted here once it has left the page went with no
      *  `focusout` at all. */
@@ -497,8 +634,10 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
           leaveUnseen(loss.region);
           return;
         }
-        if (element.isConnected && rendered(element) && land(element)) return;
-        handOn(loss, main.current);
+        if (element.isConnected && rendered(element)) {
+          if (loss.caused ? land(element) : focusNoScroll(element)) return;
+        }
+        handOn(loss, main.current, loss.caused);
       };
       // The element enabled again, gone, or the wait run out: settled a frame and a task later,
       // as the first check is, so a component answering the same change - its own watcher,
@@ -539,11 +678,12 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       if (unseen(loss)) {
         leaveUnseen(loss.region);
       } else if (!element.isConnected || !rendered(element)) {
-        handOn(loss, main.current);
+        handOn(loss, main.current, loss.caused);
       } else if (element.matches(":disabled")) {
         pending = wait(loss);
       } else if (loss.taken) {
-        land(element);
+        if (loss.caused) land(element);
+        else focusNoScroll(element);
       }
     };
 
@@ -581,6 +721,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         return;
       }
       const loss: Loss = {
+        caused: causedByReader(element),
         element,
         index: countBefore(drawnIn(region, main.current), element),
         opener: openedFrom.get(region) ?? null,
@@ -609,6 +750,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
           : placeOfRemoval(held.region, removal, main.current);
       pending?.();
       const loss: Loss = {
+        caused: causedByReader(held.element),
         ...held,
         index,
         opener: openedFrom.get(held.region) ?? null,
@@ -648,14 +790,24 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       for (const box of clippingBoxes(watched.element)) watched.boxes.add(box);
       watched.seen = inSight(watched.element, watched.boxes);
     };
-    const readerMoved = () => {
+    /** Records the reader's own act - a `pointerdown`, a `keydown`, or a `change` they committed, a
+     *  select's pick that Playwright and assistive tech make without a key or a pointer - so a loss
+     *  after it can be told from one an update made under them (`causedByReader`). */
+    const notePress = (event: Event) => {
+      if (event.target instanceof Element) {
+        lastPress = { at: performance.now(), target: event.target };
+      }
+    };
+    const readerMoved = (event: Event) => {
+      notePress(event);
       pending?.();
       pending = null;
     };
     /** Whether the reader's Escape is being answered: set by its `keydown` until the next task,
      *  by when the commit it caused has run. */
     let leaving = false;
-    const noteEscape = (event: KeyboardEvent) => {
+    const noteKey = (event: KeyboardEvent) => {
+      notePress(event);
       if (event.key !== "Escape") return;
       leaving = true;
       window.setTimeout(() => {
@@ -665,7 +817,8 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     document.addEventListener("focusin", noteFocus, true);
     document.addEventListener("focusout", record, true);
     document.addEventListener("pointerdown", readerMoved, true);
-    document.addEventListener("keydown", noteEscape, true);
+    document.addEventListener("keydown", noteKey, true);
+    document.addEventListener("change", notePress, true);
     document.addEventListener("scroll", noteScroll, { capture: true, passive: true });
     window.addEventListener("resize", noteResize);
     return () => {
@@ -673,11 +826,14 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       document.removeEventListener("focusin", noteFocus, true);
       document.removeEventListener("focusout", record, true);
       document.removeEventListener("pointerdown", readerMoved, true);
-      document.removeEventListener("keydown", noteEscape, true);
+      document.removeEventListener("keydown", noteKey, true);
+      document.removeEventListener("change", notePress, true);
       document.removeEventListener("scroll", noteScroll, true);
       window.removeEventListener("resize", noteResize);
       pending?.();
       sight = null;
+      rescueMounted = false;
+      lastPress = null;
     };
   }, [main]);
 }

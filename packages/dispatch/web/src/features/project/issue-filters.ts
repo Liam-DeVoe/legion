@@ -27,7 +27,7 @@ export interface IssueFiltersState {
   /** Why the Unclaimed filter cannot tell which claims are takeable while it is on: the agent
    *  list is `refilling`, or its read failed (`unreachable`). Until it can, every session's
    *  claim counts as held - no claim is called free from a list that did not answer - and the
-   *  strip says so. `undefined` while the filter is off or the list is current or loading. */
+   *  control row says so. `undefined` while the filter is off or the list is current or loading. */
   readonly unclaimedUnchecked: "refilling" | "unreachable" | undefined;
   readonly activeFilterCount: number;
   /** The Board's chips, one per narrowing that is on, as `filterChips` draws them. */
@@ -67,7 +67,7 @@ const ISSUE_FILTER_PARAMS = {
 
 /**
  * The project page's issue filters, read from and written to the URL - `?label=` (repeatable),
- * `?q=`, `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the strip and the issues table share
+ * `?q=`, `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the control row and the issues table share
  * one filter state and a filtered view survives a reload. Every write replaces the history
  * entry, as the label filter always has. The table's own `?status=` column filter is its
  * business, not this hook's.

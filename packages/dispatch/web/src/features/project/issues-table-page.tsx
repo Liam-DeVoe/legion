@@ -144,7 +144,7 @@ export function IssueTableToolbar({
   const setExpanded = table.setExpanded;
   // Unclaimed is the Claimed by column's "Nobody or lapsed", which this table writes as
   // `?unclaimed=1` under its own prefix (`issues-table-model.ts`) - the parameter the Board's
-  // strip writes too - so the flag is read from and written to that column, and a table drawn
+  // control row writes too - so the flag is read from and written to that column, and a table drawn
   // under a prefix narrows itself rather than the page's bare address.
   const claim = table.getColumn("claim");
   const claimPicks = (claim?.getFilterValue() as string[] | undefined) ?? [];

@@ -377,7 +377,7 @@ export function IssueBoard({
     setPressedOpen(open);
     if (open !== filtersExpanded) setFiltersExpanded(open);
   };
-  /** The strip's client-side filters against this viewer's read state: what the board renders,
+  /** The control row's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
   const isVisible = useCallback(
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),

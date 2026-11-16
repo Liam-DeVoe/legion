@@ -10,7 +10,7 @@ import {
 import { focusOnDocument } from "../features/shell/roving";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL } from "./control-names";
-import { outOfSight } from "./focus-place";
+import { causedByReader, outOfSight, pressOnRowMark } from "./focus-place";
 
 export interface SelectionBarProps {
   /** The bar's own element, for a page whose keymap puts the reader on it: Escape from a control
@@ -51,8 +51,9 @@ export interface SelectionBarProps {
  * onto a second line would make the bar taller under the reader's hand - and a notice, which is
  * the one thing that takes a line of its own.
  *
- * A bar that goes while it holds the keyboard focus - **Clear selection** pressed, Escape from a
- * control inside it, a press that took every marked row away - hands the focus to what the page's
+ * A bar that goes while it holds the keyboard focus because the reader caused it - **Clear
+ * selection** pressed, Escape from a control inside it, a press on a row's mark that took the last
+ * marked row away (`causedByReader`, `pressOnRowMark`) - hands the focus to what the page's
  * `returnFocus` names, rather than drop it onto the page, where a keyboard reader would start
  * again from the page's first link. So does a bar that stays while the control holding the focus
  * goes from it: **Select all**, which the bar stops offering once it has run. The page only names
@@ -60,7 +61,9 @@ export interface SelectionBarProps {
  * nothing, and neither does one whose going left the focus somewhere other than the body, since
  * the reader put it there, nor the later going of a control the reader had moved the focus off,
  * nor the going of one they had scrolled out of their sight - the bar's line of actions scrolls
- * sideways - which the page's focus rescue answers as it answers every such loss (`outOfSight`).
+ * sideways (`outOfSight`). A going the reader did not cause - a refetch that drops every marked
+ * row and empties the bar - the bar leaves to the page's focus rescue, which lands it in no row
+ * and scrolls nothing.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's
@@ -77,7 +80,9 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
     const held = wentHolding.current;
     if (held === null) return;
     wentHolding.current = null;
-    if (focusOnDocument() && !outOfSight(held)) returnFocus?.()?.focus();
+    if (focusOnDocument() && !outOfSight(held) && (causedByReader(held) || pressOnRowMark())) {
+      returnFocus?.()?.focus();
+    }
   });
   if (bar.count === 0 && bar.state === undefined) return null;
   return <DrawnBar {...bar} wentHolding={wentHolding} />;

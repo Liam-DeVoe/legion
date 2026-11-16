@@ -626,7 +626,7 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
         ]
       : [];
   });
-  // `?unclaimed=1` is the Board strip's own parameter and what shared List links carry: it picks
+  // `?unclaimed=1` is the Board control row's own parameter and what shared List links carry: it picks
   // the Claimed by filter's "Nobody or lapsed", so both views read one URL.
   if (params.get(key("unclaimed")) === "1") {
     const claim = filters.find((filter) => filter.id === "claim");
