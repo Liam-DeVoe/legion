@@ -1,0 +1,258 @@
+package kvwatch_test
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/testnats"
+)
+
+// The keys of TestAReadKeepsAWriteThatLandedAfterItsConsumerWasMade.
+const (
+	// writtenInTheWindow is written into the bucket, and into the copy as a write-through, after the
+	// read's watch made its consumer and before the read began: the read's scan does not deliver it,
+	// and the bucket holds it.
+	writtenInTheWindow = "written-in-the-window"
+	// deletedInTheWindow is written and then deleted in the same window, bucket and copy both.
+	deletedInTheWindow = "deleted-in-the-window"
+	// goneFromTheBucket is a row the copy holds whose every record was purged from the bucket
+	// before the read's watch read the stream, leaving no delete marker: no read delivers it again.
+	goneFromTheBucket = "gone-from-the-bucket"
+)
+
+// A write that lands after a read's watch made its consumer and before the read began
+// (Cache.BeginRead) is not in that read's scan: the consumer delivers it only after the scan's end.
+// The read's completion must keep the row such a write left in the copy, which the bucket holds,
+// rather than sweep it as a row the read found no evidence of: a swept row is missing from a copy
+// that serves as complete until that later delivery, and TestSessionsHandler_IncludesTitle
+// (cmd/listener) saw a session it had just written go missing so (INFRA-4048). Every read path
+// begins its read this way: the first read (Start), a reconnect's read (Rewatch, here through
+// WatchOn on the handle a Rewatch would open) and a resync (a scheduled read, re-read through the
+// current handle).
+//
+// The other two keys are the control that the read still removes what it should: a key deleted in
+// the same window is not in the copy once the read completes, and a row whose records the bucket
+// no longer holds at all is swept. A read that kept every row would fail the second.
+func TestAReadKeepsAWriteThatLandedAfterItsConsumerWasMade(t *testing.T) {
+	for _, path := range []struct {
+		name string
+		// read is which read the watcher begins is the one under test: 1 for its first.
+		read int
+		// handle is the handle the watcher starts on, whose watch held, when it holds one, is the
+		// read under test's.
+		handle func(kv bus.KeyValue, held *heldCreate) bus.KeyValue
+		// options are the watcher's options beyond the ones every path sets.
+		options []kvwatch.Option
+		// begin begins the read under test, whose watch holds in held once it made its consumer,
+		// and returns what waits for begin's own call to return once held lets the watch go.
+		begin func(t *testing.T, w *kvwatch.Watcher, kv bus.KeyValue, held *heldCreate, timers *pending) func()
+	}{
+		{
+			name:   "the first read",
+			read:   1,
+			handle: func(kv bus.KeyValue, held *heldCreate) bus.KeyValue { return scripted(kv, held.step()).handle() },
+			begin: func(_ *testing.T, w *kvwatch.Watcher, _ bus.KeyValue, _ *heldCreate, _ *pending) func() {
+				w.Start()
+				return func() {}
+			},
+		},
+		{
+			name:   "a reconnect's read",
+			read:   2,
+			handle: func(kv bus.KeyValue, _ *heldCreate) bus.KeyValue { return kv },
+			begin: func(t *testing.T, w *kvwatch.Watcher, kv bus.KeyValue, held *heldCreate, _ *pending) func() {
+				w.Disconnected()
+				done := make(chan error, 1)
+				go func() { done <- kvwatch.WatchOn(w, scripted(kv, held.step()).handle()) }()
+				return func() {
+					t.Helper()
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Fatalf("the reconnect's watch: %v", err)
+						}
+					case <-time.After(10 * time.Second):
+						t.Fatal("timed out waiting for the reconnect's watch to return")
+					}
+				}
+			},
+		},
+		{
+			name: "a resync",
+			read: 2,
+			handle: func(kv bus.KeyValue, held *heldCreate) bus.KeyValue {
+				return scripted(kv, nil, held.step()).handle()
+			},
+			options: []kvwatch.Option{kvwatch.WithScheduledRead(scheduledEvery)},
+			begin: func(t *testing.T, _ *kvwatch.Watcher, _ bus.KeyValue, _ *heldCreate, timers *pending) func() {
+				scheduled := timers.last(t, scheduledEvery)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					scheduled.fire()
+				}()
+				return func() {
+					t.Helper()
+					wait(t, done, "the scheduled read's watch to return")
+				}
+			},
+		},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			uri := testnats.URL(t)
+			conn, kv := bucket(t, uri)
+			goneRevision, err := kv.Put(goneFromTheBucket, []byte("1"))
+			if err != nil {
+				t.Fatalf("put %s: %v", goneFromTheBucket, err)
+			}
+			held := newHeldCreate(t)
+			window := &windowDeliveries{into: newSeen(), read: path.read, let: make(chan struct{})}
+			timers := &pending{}
+			options := append([]kvwatch.Option{kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0)}, path.options...)
+			w := kvwatch.New("test cache", path.handle(kv, held), withApply{seen: window.into, before: window.before}, options...)
+			t.Cleanup(w.Stop)
+			// Runs before Stop: a delivery held after the read under test completed holds the
+			// watcher's apply lock.
+			t.Cleanup(window.letGo)
+
+			// The copy holds the gone key before the read under test: the first read's copy as a
+			// write-through left it, a later read's as the first read delivered it.
+			if path.read == 1 {
+				if outcome := window.into.put(w, goneFromTheBucket, goneRevision); outcome != kvwatch.Applied {
+					t.Fatalf("the write of %s into the copy came to outcome %d, want Applied (%d)", goneFromTheBucket, outcome, kvwatch.Applied)
+				}
+			} else {
+				w.Start()
+				eventually(t, "the first read's completion", func() bool { return len(window.into.completions()) == 1 })
+				if !window.into.has(goneFromTheBucket) {
+					t.Fatalf("the first read did not deliver %s", goneFromTheBucket)
+				}
+			}
+			purgeKey(t, conn, goneFromTheBucket)
+			if _, err := kv.Get(goneFromTheBucket); !errors.Is(err, natsgo.ErrKeyNotFound) {
+				t.Fatalf("read %s after the purge: %v, want %v", goneFromTheBucket, err, natsgo.ErrKeyNotFound)
+			}
+
+			returned := path.begin(t, w, kv, held, timers)
+			wait(t, held.created, "the read's watch to make its consumer")
+			// The window: the watch has made its consumer and holds before it takes the watcher's
+			// locks, so the read has not begun. Each write reaches the copy as a store's
+			// write-through does once its write answered.
+			revision, err := kv.Put(writtenInTheWindow, []byte("1"))
+			if err != nil {
+				t.Fatalf("put %s: %v", writtenInTheWindow, err)
+			}
+			if outcome := window.into.put(w, writtenInTheWindow, revision); outcome != kvwatch.Applied {
+				t.Fatalf("the write of %s into the copy came to outcome %d, want Applied (%d)", writtenInTheWindow, outcome, kvwatch.Applied)
+			}
+			revision, err = kv.Put(deletedInTheWindow, []byte("1"))
+			if err != nil {
+				t.Fatalf("put %s: %v", deletedInTheWindow, err)
+			}
+			if outcome := window.into.put(w, deletedInTheWindow, revision); outcome != kvwatch.Applied {
+				t.Fatalf("the write of %s into the copy came to outcome %d, want Applied (%d)", deletedInTheWindow, outcome, kvwatch.Applied)
+			}
+			if err := kv.Delete(deletedInTheWindow); err != nil {
+				t.Fatalf("delete %s: %v", deletedInTheWindow, err)
+			}
+			if outcome := window.into.evict(w, deletedInTheWindow, lastRevision(t, kv, deletedInTheWindow)); outcome != kvwatch.Applied {
+				t.Fatalf("the delete of %s from the copy came to outcome %d, want Applied (%d)", deletedInTheWindow, outcome, kvwatch.Applied)
+			}
+
+			held.let()
+			returned()
+			eventually(t, "the read's completion", func() bool { return len(window.into.completions()) == path.read })
+			if scanned := window.scannedKeys(); slices.Contains(scanned, writtenInTheWindow) || slices.Contains(scanned, deletedInTheWindow) {
+				t.Fatalf("the read's scan delivered %v: the writes did not land after its consumer was made", scanned)
+			}
+			if got, want := bucketKeys(t, kv), []string{writtenInTheWindow}; !slices.Equal(got, want) {
+				t.Fatalf("the bucket holds %v, want %v", got, want)
+			}
+			// The control first: the read still removes what it should.
+			if window.into.has(deletedInTheWindow) || window.into.has(goneFromTheBucket) {
+				t.Fatalf("the completed read left the copy holding %v, want %s and %s out of it", window.into.keyList(), deletedInTheWindow, goneFromTheBucket)
+			}
+			if !window.into.has(writtenInTheWindow) {
+				t.Fatalf("the completed read swept %s, which the bucket holds: the copy holds %v", writtenInTheWindow, window.into.keyList())
+			}
+
+			// Once the deliveries after the scan go on, the copy holds what the bucket holds.
+			window.letGo()
+			eventually(t, "the copy to hold what the bucket holds", func() bool {
+				return slices.Equal(window.into.keyList(), bucketKeys(t, kv))
+			})
+		})
+	}
+}
+
+// windowDeliveries is the apply hook of TestAReadKeepsAWriteThatLandedAfterItsConsumerWasMade
+// (withApply): it records the keys the scan of the read under test delivers, and holds every
+// record delivered once that read has completed until let closes, so the copy that read's
+// completion left can be read before any later delivery changes it.
+type windowDeliveries struct {
+	into *seen
+	// read is which read the watcher begins is the one under test: 1 for its first.
+	read    int
+	let     chan struct{}
+	letOnce sync.Once
+	mu      sync.Mutex
+	scanned []string
+}
+
+func (d *windowDeliveries) before(entry natsgo.KeyValueEntry) {
+	switch done := len(d.into.completions()); {
+	case done >= d.read:
+		<-d.let
+	case len(d.into.reads()) == d.read:
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		d.scanned = append(d.scanned, entry.Key())
+	}
+}
+
+func (d *windowDeliveries) letGo() { d.letOnce.Do(func() { close(d.let) }) }
+
+func (d *windowDeliveries) scannedKeys() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.scanned)
+}
+
+// evict hands the copy the delete of key at revision, made through a handle of the watcher's
+// current epoch, as a store's delete does when it cannot read its own record back
+// (kvwatch.Copy.Evict), and returns what became of it.
+func (s *seen) evict(w *kvwatch.Watcher, key string, revision uint64) kvwatch.Outcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keys.Evict(w, w.Epoch(), key, revision)
+}
+
+// purgeKey removes every record of key from the test bucket's stream and leaves no marker in
+// their place, so no read of the bucket delivers key again.
+func purgeKey(t *testing.T, conn *natsgo.Conn, key string) {
+	t.Helper()
+	subject := "$KV." + testBucketName + "." + key
+	if err := jetStream(t, conn).PurgeStream("KV_"+testBucketName, &natsgo.StreamPurgeRequest{Subject: subject}); err != nil {
+		t.Fatalf("purge %s: %v", subject, err)
+	}
+}
+
+// lastRevision is the revision of key's latest record in the bucket kv is a handle on: a delete's
+// own marker once key was deleted.
+func lastRevision(t *testing.T, kv bus.KeyValue, key string) uint64 {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	history, err := kv.ReadHistory(ctx, key)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("read %s's history: %d records, %v", key, len(history), err)
+	}
+	return history[len(history)-1].Revision()
+}

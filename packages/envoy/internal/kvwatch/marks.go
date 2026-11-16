@@ -1,16 +1,18 @@
 package kvwatch
 
 // marks is the set of keys a copy has evidence of from the current read: the keys that read
-// delivered, and those a write-through, read-through or delete of the current incarnation touched.
-// A copy begins it in BeginRead, marks a key on each piece of such evidence, and once the read
-// completes removes every entry the read left unmarked (sweep) and ends it: the bucket no longer
-// holds those entries. A key is marked before any revision fence is compared, so a delivered value
-// older than a local write still keeps that key through the sweep.
+// delivered, those a write-through, read-through or delete of the current incarnation touched, and
+// those the copy took at a revision past the stream's last sequence the read's watch read before it
+// made its consumer (Copy.BeginRead). A copy begins it in BeginRead, marks a key on each piece of
+// such evidence, and once the read completes removes every entry the read left unmarked (sweep) and
+// ends it: the bucket no longer holds those entries. A key is marked before any revision fence is
+// compared, so a delivered value older than a local write still keeps that key through the sweep.
 //
 // Marks are collected only while a read is under way: between a completed read and the next
 // BeginRead nothing reads them, so mark records nothing then, and a copy that follows its bucket
-// keeps no set of every key it has seen. A read that times out or ends before its end marker never
-// ends its marks, which stay collected until the next read begins.
+// keeps no set of every key it has seen. What the copy took between the next read's consumer and
+// its BeginRead is what BeginRead marks by revision. A read that times out or ends before its end
+// marker never ends its marks, which stay collected until the next read begins.
 //
 // The zero value is an empty set that collects nothing. It has no lock of its own: Copy uses it
 // under the mutex of the cache that keeps the copy.

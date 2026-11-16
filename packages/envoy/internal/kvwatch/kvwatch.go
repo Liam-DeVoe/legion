@@ -88,6 +88,12 @@ type Read struct {
 	// MaxAge is the stream's MaxAge, the bucket's TTL, as the watch read it before it installed
 	// this read: a bucket recreated with another TTL moves it. 0 keeps records for good.
 	MaxAge time.Duration
+	// LastSeq is the stream's last sequence as the watch read it, before it made the consumer
+	// this read's scan comes from. A record past it may have landed after that consumer was made,
+	// and then the scan does not deliver it: the watcher delivers it after the scan's end. The
+	// copy keeps what it took at a revision past LastSeq through this read's sweep
+	// (Copy.BeginRead). A read of an empty stream has 0.
+	LastSeq uint64
 }
 
 // Watcher is one cache's KV watcher, from New.
@@ -533,7 +539,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	idle := make(chan struct{}, 1)
 	idleSince := w.now()
 	w.armIdle(w.scanIdle, idle)
-	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge}
+	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge, LastSeq: state.LastSeq}
 	w.mu.Unlock()
 	w.cache.BeginRead(read)
 	w.applyMu.Unlock()

@@ -89,11 +89,26 @@ func (c *Copy[V]) Remove(key string) {
 // BeginRead starts a read of the bucket (Cache.BeginRead): a fresh set of marks, the read's epoch
 // as the one the fence belongs to, and, for a recreated bucket whose revisions number from 1
 // again, no fence. Every entry stays.
+//
+// The read's watch read the stream (Read.LastSeq) before it made its consumer, and the read begins
+// only once that consumer is made: a record that landed in between is past the read's scan, which
+// delivers it only after its end. So every key the copy took at a revision past LastSeq - a
+// write-through, a read-through, a delete, or a record the watcher this read replaces delivered -
+// is marked for the read here, and its completion keeps the entry and its fence. The read cannot
+// vouch that the bucket no longer holds it; the records that follow its scan say. A recreated
+// bucket's fence holds another stream's revisions, which say nothing of this stream's sequence,
+// and is dropped instead: its read delivers what the new bucket holds (Dropped).
 func (c *Copy[V]) BeginRead(read Read) {
 	c.marks.begin()
 	c.readEpoch = read.Epoch
 	if read.Recreated {
 		clear(c.revisions)
+		return
+	}
+	for key, revision := range c.revisions {
+		if revision > read.LastSeq {
+			c.marks.mark(key)
+		}
 	}
 }
 

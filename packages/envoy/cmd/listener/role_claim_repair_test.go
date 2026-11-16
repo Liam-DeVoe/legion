@@ -22,6 +22,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -160,6 +161,23 @@ func loseRoleFromCopy(t *testing.T, registry *store.Registry, role string) {
 	roleCopy.Remove(role)
 }
 
+// surplusRoleInCopy makes registry's copy of the role bucket name holder for role while the bucket
+// holds no record of a claim on it, as a delete the copy missed leaves it once the bucket's marker
+// is gone, at revision 1: a revision the bucket's stream has passed, as the claim write the copy
+// took before that delete was, so the next whole read of the bucket takes the claim out.
+// holdRoleInCopy's drift is not that one: it holds the role at a revision past any the bucket
+// reaches, which a read keeps as a write that landed after its consumer was made (kvwatch.Read's
+// LastSeq), so no read repairs it.
+func surplusRoleInCopy(t *testing.T, registry *store.Registry, role, holder string) {
+	t.Helper()
+	guard, roleCopy, watcher := roleClaimCopy(t, registry)
+	guard.Lock()
+	defer guard.Unlock()
+	if outcome := roleCopy.Put(watcher, watcher.Epoch(), role, holder, 1); outcome != kvwatch.Applied {
+		t.Fatalf("give %s role %s in the copy: outcome %d, want it applied", holder, role, outcome)
+	}
+}
+
 // c-repair-bound, the listener's half. /healthz carries the role claim copy's last whole read -
 // when it completed, how long ago on the registry's clock, the bound, and what it put back and took
 // out - and /metrics carries the same as three gauges with no sample before a read has completed.
@@ -201,7 +219,7 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 	loseRoleFromCopy(t, rig.deps.registry, lost)
 	requireDrift(t, rig.deps.registry, lost, "", holder)
 	for _, role := range surplus {
-		holdRoleInCopy(t, rig.deps.registry, role, holder)
+		surplusRoleInCopy(t, rig.deps.registry, role, holder)
 		requireDrift(t, rig.deps.registry, role, holder, "")
 	}
 	late := store.RoleClaimRepairBound + time.Second
