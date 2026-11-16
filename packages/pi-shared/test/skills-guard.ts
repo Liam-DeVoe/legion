@@ -453,7 +453,42 @@ const FIRST_EJECTION_GOES_BACK =
 const NO_WAIT_FOR_A_RUNNING_LANE =
   /\b(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b/i;
 
-/** The six rules INFRA-1303 retired, in the order they are written above. */
+/**
+ * The grant INFRA-1303 retired from every text that offers the re-run as one choice among others to
+ * whoever was told of a red: the architect's prompt part's "re-run it, wait for it, or have the
+ * implementer fix the code", the worker prompt part's "whether it is re-run, waited for or fixed is
+ * a decision for the roles it reached" (packages/daemon/internal/prompts/go/worker-common.md), the
+ * troubleshooting page's "Re-run a check that failed on itself, have the implementer fix code that
+ * is at fault, or leave it to GitHub", and the concepts page's "re-run a check that failed on
+ * itself, fix code that is at fault, or wait". Each reached a role that holds no phase, the merger
+ * among them, and a re-run that role presses spends the head's one re-run
+ * (`skill://legion-worker/references/red-at-the-head.md`). Two rounds of a case-sensitive grep for
+ * the wording missed two of them, so the shape is pinned, not the words.
+ *
+ * The shape is a list of alternatives that starts with the re-run: the bare word `re-run`, a comma
+ * within 40 characters, a second choice (`have`, `fix`, `wait`, `leave`), then `or` and a third.
+ * `\bre-?run\b` does not match `re-runs`, which is what lets the sentences that replaced them
+ * pass: "the tester in `testing`, the reviewer in `reviewing` or the implementer while it holds
+ * `implementing` re-runs a check that failed on itself once at that head, the implementer fixes
+ * code that is at fault, and a check still running is waited for" (concepts.md).
+ */
+const RERUN_AMONG_THE_CHOICES =
+  /\bre-?run\b[^,.;]{0,40},\s+(?:have|fix|wait|leave)\w*\b[^.;]{0,60}?,?\s+or\s+(?:have|fix|wait|leave)\w*\b/i;
+
+/**
+ * The same grant written as a decision handed to every role the daemon told: worker-common.md's "a
+ * decision for the roles it reached", merge-gate.md's "leaves the decision to the roles it told",
+ * and the concepts page's "A red is for those roles to decide on". The daemon tells the architect,
+ * the phase's worker and the implementer, and only one of them holds the phase.
+ *
+ * The plural `roles` and the told or reached roles are what it reads, so the singular that replaced
+ * the concepts page's sentence passes: "A red is for the role that holds the issue's phase to act
+ * on", and so does "the daemon names the checks GitHub reported and judges none of them".
+ */
+const DECISION_FOR_THE_ROLES_TOLD =
+  /\b(?:decision|decide)\b[^.]{0,20}?\b(?:for|to)\s+the\s+roles\s+(?:it|they)\s+(?:told|reached)\b|\bfor\s+(?:the|those)\s+roles\b[^.]{0,30}?\bto\s+decide\b/i;
+
+/** The eight rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
   NO_LANE_IS_RERUN,
   RERUN_NONE_OF_THEM_YOURSELF,
@@ -461,16 +496,18 @@ const RETIRED_RERUN_PROHIBITIONS = [
   ONLY_THE_IMPLEMENTER_WAITS,
   FIRST_EJECTION_GOES_BACK,
   NO_WAIT_FOR_A_RUNNING_LANE,
+  RERUN_AMONG_THE_CHOICES,
+  DECISION_FOR_THE_ROLES_TOLD,
 ];
 
 /**
  * Every place in the Markdown files under `roots` that still carries a rule INFRA-1303 retired,
  * each as one `<file>:<line>`: a sentence that forbids the re-run it turned on or the wait on that
  * re-run, gives the wait to the wrong role, or sends the work back on the first `failed_checks`
- * ejection the merger now queues once more. The six were deleted from skill files and daemon
- * prompt parts at once, and a forward merge keeps both sides of a deletion in silence, so the rule
- * is written over whole partitions rather than over the files it cleared: another file that
- * acquires one fails here too.
+ * ejection the merger now queues once more, or offers the re-run to every role told of a red. They
+ * were deleted from skill files and daemon prompt parts at once, and a forward merge keeps both
+ * sides of a deletion in silence, so the rule is written over whole partitions rather than over
+ * the files it cleared: another file that acquires one fails here too.
  *
  * Each prohibition is matched against the whitespace-collapsed text `prosePinFaults` reads, both
  * of them the same collapse, because these files are wrapped and a prohibition can cross a line

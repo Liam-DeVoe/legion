@@ -185,6 +185,71 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     2,
   ],
+  [
+    'architect-common.md\'s "re-run it, wait for it, or have the implementer fix the code"',
+    [
+      "A `checks-red` notice is one thing only: the head of an issue in `testing` conflicts with its",
+      "base. A red is yours to decide on — re-run",
+      "it, wait for it, or have the implementer fix the code — and GitHub's to hold the merge for.",
+    ],
+    2,
+  ],
+  // worker-common.md's one sentence carries both grant shapes, so it is two rows, each shortened
+  // to the half its own pattern reads.
+  [
+    'worker-common.md\'s "whether it is re-run, waited for or fixed"',
+    [
+      "When CI settles on the pull request's head, the daemon names every check GitHub reported. A red",
+      "check is information, not a verdict: whether it is re-run,",
+      "waited for or fixed, and whether the pull request merges, is GitHub's under its own rules.",
+    ],
+    2,
+  ],
+  [
+    'worker-common.md\'s "is a decision for the roles it reached"',
+    [
+      "When CI settles on the pull request's head, the daemon names every check GitHub reported. What",
+      "becomes of a red is a decision",
+      "for the roles it reached, and whether the pull request merges is GitHub's.",
+    ],
+    2,
+  ],
+  [
+    'troubleshooting.md\'s "Re-run a check that failed on itself, have the implementer fix code"',
+    [
+      "- **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the",
+      "  conclusion GitHub gave it, and judges none of them. Re-run a check that failed",
+      "  on itself, have the implementer fix code that is at fault, or leave it to GitHub, which holds",
+      "  the merge under the base branch's own required checks.",
+    ],
+    2,
+  ],
+  [
+    'review.go\'s message, "decide whether to re-run the checks, wait for them, or fix the code"',
+    [
+      "The daemon's message to the three roles told of a settlement read: decide whether to",
+      "re-run the checks, wait for them, or fix the code.",
+    ],
+    2,
+  ],
+  [
+    'merge-gate.md\'s "leaves the decision to the roles it told"',
+    [
+      "  CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names",
+      "  the checks GitHub reported and leaves the decision",
+      "  to the roles it told. Read the head's checks on GitHub yourself before you accept.",
+    ],
+    2,
+  ],
+  [
+    'concepts.md\'s "A red is for those roles to decide on"',
+    [
+      "  them: it sends one message each to the tree's architect, the worker of the issue's current",
+      "  phase and the implementer, and moves the issue nowhere. A red is for those",
+      "  roles to decide on, and for GitHub to hold the merge over.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retired)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -320,6 +385,51 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
       "  `ci_check` job. A lane GitHub shows `queued` or `in progress` is read as such, and the tester",
       "  waits for none of them but the re-run `skill://legion-worker/references/red-at-the-head.md`",
       "  gives it, since the reviewer reads the head's checks before it approves.",
+    ],
+  ],
+  [
+    "worker-common.md's \"only the role that holds the issue's phase re-runs one the change did not make\"",
+    [
+      "A red check is information, not a verdict: only the role that holds the issue's phase re-runs",
+      "one the change did not make, once at that head and after it records the failure — the tester",
+      "in `testing`, the reviewer in `reviewing` or the implementer while it holds `implementing`,",
+      "never the merger — a red the change made is the implementer's to fix, and whether the pull",
+      "request merges is GitHub's.",
+    ],
+  ],
+  [
+    'troubleshooting.md\'s "re-runs a check that failed on itself once at that head"',
+    [
+      "  issue's current phase and the implementer, and judges none of them. The tester in `testing`,",
+      "  the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs a check",
+      "  that failed on itself once at that head, after it records the failure, and no other role",
+      "  re-runs one; the implementer fixes code that is at fault; and GitHub holds the merge.",
+    ],
+  ],
+  [
+    "concepts.md's \"A red is for the role that holds the issue's phase to act on\"",
+    [
+      "  and the implementer whose code the checks ran on, and moves the issue nowhere. A red is for",
+      "  the role that holds the issue's phase to act on — the tester in `testing`, the reviewer in",
+      "  `reviewing` or the implementer while it holds `implementing` re-runs a check that failed on",
+      "  itself once at that head, the implementer fixes code that is at fault, and a check still running",
+      "  is waited for — and for GitHub to hold the merge over.",
+    ],
+  ],
+  [
+    'merge-gate.md\'s "the daemon names the checks GitHub reported and judges none of them"',
+    [
+      "  CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names",
+      "  the checks GitHub reported and judges none of them. Read the head's checks",
+    ],
+  ],
+  [
+    "architect-common.md's \"where the head's one re-run is already spent it is the implementer's too\"",
+    [
+      "a red required check the change made is the implementer's, `request_backward_move` to",
+      "`implementing`; one it did not make is the reviewer's to re-run once, so tell the reviewer on",
+      "its topic, and where the head's one re-run is already spent it is the implementer's too",
+      "(`skill://legion-worker/references/red-at-the-head.md` decides which);",
     ],
   ],
   [
