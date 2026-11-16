@@ -109,11 +109,21 @@ section() {
   done
 }
 
+# The port of ste-lint's hard rules (internal/dispatch/specform/ste) is code of this repository
+# under ste-lint's MIT License, which go-licenses, reading modules, does not see. Its directory,
+# when the packages compile it in, holds that license.
+# shellcheck disable=SC2086
+ste_dir="$("$go_cmd" list -deps -f '{{if eq .ImportPath "github.com/sjawhar/envoy/internal/dispatch/specform/ste"}}{{.Dir}}{{end}}' $packages | awk 'NF')"
+
 {
   echo "Third-party software compiled into the Go programs these notices ship with, with each module's license."
   echo "Each module's source is published at the version shown under its module path, or, where a"
   echo "Source line names a replacement, under that path instead."
   section "Go standard library and runtime $go_version" "BSD-3-Clause" "$goroot/LICENSE"
+  if [ -n "$ste_dir" ]; then
+    section "ste-lint hard rules, ported into internal/dispatch/specform/ste" "MIT" "$ste_dir/LICENSE" \
+      "github.com/danyuchn/asd-ste100-skill@32511c6992ecb5f1971e46a2943f2e6adceedafe"
+  fi
   while IFS="$tab" read -r name version licenses path replaced; do
     section "$name@$version" "$licenses" "$path" "$replaced"
   done <"$scratch/modules.tsv"
