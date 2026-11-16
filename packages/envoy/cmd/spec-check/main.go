@@ -24,7 +24,10 @@
 // "spec-check: no statement changed", and exits 0; a statement that only moved to another file is
 // no change. checks prints the program checks that name the job as one line of JSON,
 // [{"id","runner","selector","job","procedure_sha256"}], [] when none, and exits 0. Both exit 2,
-// with the problems on standard error, when a tree they read has any problem.
+// with the problems on standard error, when a tree they read has any problem. Both read a
+// directory that does not exist as the empty tree, with a line on standard error that says so,
+// since git keeps no empty directory: the first change that adds a spec file lists each of its
+// statements as added, and a checkout with no spec file has no program check.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is

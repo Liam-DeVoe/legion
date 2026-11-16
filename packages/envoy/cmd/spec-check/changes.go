@@ -1,17 +1,20 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // runChanges is "spec-check changes --base <dir> --dir <dir>": it prints one line for each
 // statement that changed from the base to the directory, or one line that none did, and answers
 // 0; 2 when either tree has a problem, with the problems of both on stderr, or for a directory it
-// cannot read or arguments it does not take.
+// cannot read or arguments it does not take. A directory that does not exist is the empty tree
+// (judgeOrEmpty).
 func runChanges(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("changes", flag.ContinueOnError)
 	baseFlag := flags.String("base", "", "the directory of spec files of the earlier version")
@@ -26,7 +29,7 @@ func runChanges(args []string, stdout, stderr io.Writer) int {
 		if !ok {
 			return 2
 		}
-		j, err := judge(stderr, dir, specgraph.Options{})
+		j, err := judgeOrEmpty(stderr, dir)
 		if err != nil {
 			return cannotJudge(stderr, dir, err)
 		}
@@ -45,4 +48,18 @@ func runChanges(args []string, stdout, stderr io.Writer) int {
 		say(stdout, "%s: %s", c.ID, strings.Join(c.What, ", "))
 	}
 	return 0
+}
+
+// judgeOrEmpty is judge with no retired list, but a directory that does not exist is the empty
+// tree, with a line on stderr that says so: git keeps no empty directory, so a version with no spec
+// file has no directory, and the importer reads a missing directory as the empty set. So the first
+// change that adds a spec file lists each of its statements as added, and a checkout with no spec
+// file has no program check.
+func judgeOrEmpty(stderr io.Writer, dir string) (judged, error) {
+	j, err := judge(stderr, dir, specgraph.Options{})
+	if errors.Is(err, notes.ErrNoDirectory) {
+		say(stderr, "%s: does not exist, so it is read as the empty tree", dir)
+		return j, nil
+	}
+	return j, err
 }

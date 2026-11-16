@@ -5,6 +5,13 @@
 // that Parse reads back as that node, and Digest names a node's content apart from the file and
 // the line it is on.
 //
+// Validate refuses as code only the names that no plain word or product name has the shape of
+// (CodeNames), and as a second sentence of a purpose only one that ste-lint also splits off, so a
+// word with a capital at the start of each part, such as ReadSet, a bare package word, such as
+// pmdoc, and a sentence that ends in a closing quote, a closing parenthesis or an ellipsis, or
+// that has no space after its stop, are for the reviewer of R25, who judges what no program
+// decides (R49).
+//
 // The package is logic over bytes and values: it reaches no store, no route and no database
 // (TestSpecgraphReachesNoStore), so the spec-check command, Dispatch's importer and the pilot can
 // all call the same rules.
