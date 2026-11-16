@@ -224,7 +224,7 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	}
 
 	for _, child := range []model.IssueChild{blocked, claimed} {
-		own := readIssue(t, fixture.handler, child.Key)
+		own := readTestIssue(t, fixture.handler, child.Key)
 		if !slices.Equal(child.Needs, own.BlockedBy) {
 			t.Errorf("%s needs %v as a child and is blocked by %v as an issue", child.Key, child.Needs, own.BlockedBy)
 		}
@@ -255,7 +255,7 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	}
 }
 
-// readIssueChildren is the children of key's issue read, and readIssue the issue itself.
+// readIssueChildren is the children of key's issue read.
 func readIssueChildren(t *testing.T, handler http.Handler, key string) []model.IssueChild {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
@@ -265,13 +265,4 @@ func readIssueChildren(t *testing.T, handler http.Handler, key string) []model.I
 	return decodeBody[struct {
 		Children []model.IssueChild `json:"children"`
 	}](t, response).Children
-}
-
-func readIssue(t *testing.T, handler http.Handler, key string) model.Issue {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
-	}
-	return decodeBody[model.Issue](t, response)
 }

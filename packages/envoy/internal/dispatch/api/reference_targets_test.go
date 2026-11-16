@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,22 +12,11 @@ import (
 )
 
 // referenceTargetsRequest reads what references point at, as alice, with etag, when set, as
-// If-None-Match. Each reference rides as its own ?ref=, in the order given: url.Values keeps the
-// order of one key's values.
+// If-None-Match (listRead). Each reference rides as its own ?ref=, in the order given
+// (referenceTargetsOf).
 func referenceTargetsRequest(t *testing.T, handler http.Handler, references []string, etag string) *httptest.ResponseRecorder {
 	t.Helper()
-	query := url.Values{}
-	for _, reference := range references {
-		query.Add("ref", reference)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/reference-targets?"+query.Encode(), nil)
-	request.Header.Set("X-Dispatch-User", "alice")
-	if etag != "" {
-		request.Header.Set("If-None-Match", etag)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return listRead(t, handler, referenceTargetsOf(references...), listReadOptions{etag: etag})
 }
 
 // referenceTargets is the answer of a read that must succeed.

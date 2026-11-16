@@ -404,7 +404,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **Words and trees of check and requirement blocks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/reference_targets.go`
 
-  A check's and a requirement's `text` is its words with every link and `dispatch://` reference dropped (`blockWords`), which is what the pull-request body line reads.
+  A check's and a requirement's `text` is its words with every link and `dispatch://` reference dropped (`blockWords`): a check's is what the `dispatch results` lines print, and a requirement's is what the Spec tab shows.
   A caller that sent `Dispatch-Trees: 1` is given the block's whole content beside it as `text_tree`, links and references kept: the tree is read from the block's slice of the live rendering (`typedBlocksIn`) through `blockTextContent`, the rule `GET /api/v1/reference-targets` uses, and read for display as a decision's section is, through the request's one tree reader.
   So one block answers one tree in the three reads: its content when its stored text reads back as that block alone, and its whole stored text when it does not (a typed block in a quote).
   `GET /api/v1/reference-targets` answers the same for every member that names a block, a plan task among them, whose `name` is the stored excerpt and so holds the directive line and stops at 480 runes: the block's whole text is read from the block index, one statement per kind of block (`refs.BlockTexts`), a typed block's is cut to its own content when it reads back as that block alone (`blockTextContent`), and no document is loaded; the read's ETag hashes each tree.

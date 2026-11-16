@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,21 +13,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// referenceTargetsMax is how many references one batched read may name. A page draws a chip per
-// reference it holds, and the point of this read is that one page's whole first load is one
-// request, so the cap is set above the heaviest set a page can hold rather than at a round guess.
+// referenceTargetsMax is how many references one batched read may name. It is set above the
+// heaviest set a page was seen to name, rather than at a round guess, so that the count of
+// references does not split one page's first load into more requests.
 // Measured on 2026-11-05 against this repository's own Dispatch, on dispatch://INFRA-1196, its
 // heaviest issue: its spec, plan and verification documents write 177 edges, 174 of them neither
 // part_of nor attached_to, naming 72 distinct targets; the renders of that issue and of its four
-// largest documents name 247 distinct references in all. The tabs this page replaces send one
-// GET /api/v1/references per chip, 14 on the heaviest of them. 256 is above all of those, so no
-// first load needs a second request, and a set at the cap still costs one statement per node
-// kind (refs.TargetNames), not one per reference.
+// largest documents name 247 distinct references in all. Today's issue page sends one
+// GET /api/v1/references per chip, 14 on its heaviest tab. 256 is above all of those, so the
+// count of references splits no such load into a second request, and a set at the cap costs one
+// statement per node kind (refs.TargetNames), not one per reference. REFERENCE_TARGETS_MAX in
+// packages/dispatch/web/src/api/client.ts holds the same 256, and a change of one must change
+// the other.
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
-// own on: those 247 references encode to about 17 KB of query string, and a load balancer in
-// front of Dispatch admits a request line of its own size (16 KB on an AWS one). A caller whose
-// references are long enough to meet that reads them in two requests, as it would past the cap.
+// own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load
+// balancer's. The client keeps each request's query string within a budget of its own,
+// REFERENCE_TARGETS_MAX_QUERY_CHARS in the same file, 12,000 characters, which is set under that
+// one known limit and not measured against the deployed Dispatch. Those 247 references encode to
+// about 17 KB of query string, so that budget splits such a load into two requests where the cap
+// splits none.
 const referenceTargetsMax = 256
 
 // getReferenceTargets resolves many dispatch:// references in one read. For each ?ref= it answers
@@ -62,9 +68,7 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 	}
 	trees.resolve()
 	etag := referenceTargetsETag(targets)
-	w.Header().Set("ETag", etag)
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
+	if answerNotModified(w, r, etag) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, model.ReferenceTargets{Targets: targets})
@@ -93,8 +97,6 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 	}
 	answers := make([]model.ReferenceTarget, len(raw))
 	named := make([]refs.Target, len(raw))
-	targets := make([]refs.Target, 0, len(raw))
-	seen := make(map[refs.Target]struct{}, len(raw))
 	for index, value := range raw {
 		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.ServerURL)
 		if err != nil {
@@ -105,12 +107,8 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		target, _ := refs.TargetOf(ref)
 		answers[index] = model.ReferenceTarget{Ref: value, Kind: ref.Kind, Gone: true}
 		named[index] = target
-		if _, duplicate := seen[target]; !duplicate {
-			seen[target] = struct{}{}
-			targets = append(targets, target)
-		}
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, targets)
+	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +117,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 			answers[index].Name, answers[index].Gone = name, false
 		}
 	}
-	if err := s.blockTrees(r, answers, named, trees); err != nil {
+	if err := s.blockTrees(r.Context(), answers, named, trees); err != nil {
 		return nil, err
 	}
 	return answers, nil
@@ -133,7 +131,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 // the names cost, and no document is loaded or parsed for them.
 //
 // answers must have stopped growing: what is registered is a pointer into each member.
-func (s *server) blockTrees(r *http.Request, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {
+func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {
 	if trees == nil {
 		return nil
 	}
@@ -151,7 +149,7 @@ func (s *server) blockTrees(r *http.Request, answers []model.ReferenceTarget, na
 	if len(blocks) == 0 {
 		return nil
 	}
-	texts, err := refs.BlockTexts(r.Context(), s.deps.Store.Pool, blocks)
+	texts, err := refs.BlockTexts(ctx, s.deps.Store.Pool, blocks)
 	if err != nil {
 		return err
 	}
@@ -190,9 +188,9 @@ func blockTextContent(whole string) string {
 // whether it is gone, its name and its tree, each of the last two after its length so no name's
 // own line endings can read as another member's fields. The answer depends on nothing else, so a
 // set whose members all stand as they did is answered 304, and a member renamed, deleted or
-// restored, or a block whose text changed anywhere, changes the tag. A caller given trees and
-// one given none are answered different bodies wherever a block is named, and different tags
-// with them.
+// restored changes the tag; for a caller given trees, a block whose text changed anywhere changes
+// the tag. A caller given trees and one given none are answered different bodies wherever a
+// block is named, and different tags with them.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
 	for _, target := range targets {

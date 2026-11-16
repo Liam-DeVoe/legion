@@ -86,22 +86,19 @@ func treeAt(t *testing.T, handler http.Handler, target, path string) json.RawMes
 	return tree
 }
 
-// storedBlockText is the latest text document_block_texts records for block id of a document:
-// the block's slice of the document's rendering, which is the text GET /api/v1/reference-targets
-// reads the block's tree from (refs.BlockTexts).
+// storedBlockText is the latest text document_block_texts records for block id of a document
+// (refs.CurrentBlockText): the block's slice of the document's rendering, which is the text GET
+// /api/v1/reference-targets reads the block's tree from (refs.BlockTexts).
 func storedBlockText(t *testing.T, database *store.Store, artifactID, id string) string {
 	t.Helper()
-	var stored *string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select text from document_block_texts where artifact_id = $1 and block_id = $2
-		order by version desc limit 1
-	`, artifactID, id).Scan(&stored); err != nil {
+	stored, err := refs.CurrentBlockText(context.Background(), database.Pool, artifactID, id)
+	if err != nil {
 		t.Fatalf("read the stored text of %s of document %s: %v", id, artifactID, err)
 	}
-	if stored == nil {
-		t.Fatalf("the block index records %s of document %s as deleted", id, artifactID)
+	if stored == "" {
+		t.Fatalf("the block index records no text for %s of document %s: it is deleted or was never recorded", id, artifactID)
 	}
-	return *stored
+	return stored
 }
 
 // referenceTargetOf is the one member of a batched reference read of reference made with
@@ -388,13 +385,7 @@ func TestTheReferenceTargetsETagCoversABlocksWholeText(t *testing.T) {
 	target := referenceTargetsOf("dispatch://" + issue.Key + "/artifact/plan-md#b-t1")
 	conditional := func(etag string) *httptest.ResponseRecorder {
 		t.Helper()
-		request := httptest.NewRequest(http.MethodGet, target, nil)
-		request.Header.Set("X-Dispatch-User", "alice")
-		request.Header.Set("Dispatch-Trees", "1")
-		request.Header.Set("If-None-Match", etag)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
+		return listRead(t, handler, target, listReadOptions{trees: true, etag: etag})
 	}
 
 	first := treesRequest(t, handler, target, true)
