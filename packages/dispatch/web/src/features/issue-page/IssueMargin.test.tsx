@@ -1212,6 +1212,31 @@ test("a request for the Labels row opens a closed Development in the drawer that
   }
 });
 
+// R2 and the part's source note: each row draws its name one time. The Labels row of an issue
+// with no label reads its name, None, and a control that adds the first label; that control's
+// visible word is not the row's name again (found by the tester on the preview of d4344116, where
+// INFRA-3570's row read "Labels None Labels").
+test("the Labels row of an issue with no label draws its name one time", async () => {
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    const row = await waitFor(() => rowAt("labels"));
+    expect(row).toHaveTextContent(CONTROL_LABELS.none);
+    expect(
+      within(row).getByRole("button", { name: "Edit labels" }),
+      "the Labels row of an issue with no label draws no Edit labels"
+    ).toBeEnabled();
+    expect(
+      (row.textContent ?? "").split(PROPERTY_LABELS.labels).length - 1,
+      "the Labels row draws its name two times on an issue with no label"
+    ).toBe(1);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // R3: the header's Set parent issue presses the Parent row's first control (`useOpenDetailsAt`,
 // which presses a row's first control), so that control is the one that opens the parent's
 // editor, and it stands before the parent's link.
