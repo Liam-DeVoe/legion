@@ -351,7 +351,7 @@ func recordInputs(record reviewer.Record) []string {
 	if len(record.WriterTexts) > 0 {
 		inputs = append(inputs, "writer_texts")
 	}
-	if len(record.ReaderWords) > 0 {
+	if len(record.ShownReaderWords()) > 0 {
 		inputs = append(inputs, "reader_words")
 	}
 	return inputs

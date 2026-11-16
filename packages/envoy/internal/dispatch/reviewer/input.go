@@ -27,7 +27,8 @@ const (
 
 // extra is what a call's user message holds besides the record.
 type extra struct {
-	// readerWords shows the reader's words: the reader_words rule set is on.
+	// readerWords shows the reader's words but the function words (readerStopWord): the
+	// reader_words rule set is on.
 	readerWords bool
 	// structure and detector are the findings of writingcheck's structure rules and of its
 	// detector, shown where their rule set is on.
@@ -78,11 +79,12 @@ func (r Record) input(x extra) string {
 	}
 	if x.readerWords {
 		b.WriteString("\n<reader_words>\n")
-		if len(r.ReaderWords) == 0 {
-			b.WriteString("The reader asked about no word before this text.\n")
-		}
-		for _, word := range r.ReaderWords {
+		shown := r.ShownReaderWords()
+		for _, word := range shown {
 			b.WriteString("- " + word + "\n")
+		}
+		if len(shown) == 0 {
+			b.WriteString("The reader asked about no word before this text.\n")
 		}
 		b.WriteString("</reader_words>\n")
 	}

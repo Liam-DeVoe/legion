@@ -21,6 +21,14 @@ const (
 	// words is a stub or a summary in place of the text ("placeholder", "(no change)", an empty
 	// body), which the reader would read in place of the whole text.
 	KeepMostWords Keep = "most_words"
+	// KeepNoRecordTags: no tag of the record's markup (recordTags) that the text does not hold,
+	// for every kind. A rewrite that holds one pasted the record, or a part of it, into the text
+	// ("<issue key=", "<document name="), which the reader would read as the writer's.
+	KeepNoRecordTags Keep = "no_record_tags"
+	// KeepFenceLines: each line of the text that starts with ":::", a typed block's fence, byte
+	// for byte and as often as the text holds it, for every kind. A rewrite that changes or
+	// drops one writes the block as prose, or breaks it.
+	KeepFenceLines Keep = "fence_lines"
 	// KeepOptionCount: an ask's number of options.
 	KeepOptionCount Keep = "option_count"
 	// KeepOptionOrder: the order of an ask's options.
@@ -64,7 +72,8 @@ func (n *NotApplied) Error() string {
 
 // Preserve weighs rewrite against the text of record by the rules of what a rewrite keeps, in
 // the order of Keep's constants, and answers the first rule it breaks; nil where it breaks none.
-// Every kind keeps a third of its words or more. An ask and a decision block keep their
+// Every kind keeps a third of its words or more and each of its typed blocks' fences, and holds
+// no tag of the record that the text does not hold. An ask and a decision block keep their
 // options, their choice, their first line, their `Ref: ` line, their picture lines and their
 // links; a decision block also keeps the option lines its document's ask-edit route does not
 // rewrite, which Preserve weighs where the record holds the document and the block's id; a
@@ -72,6 +81,12 @@ func (n *NotApplied) Error() string {
 func Preserve(record Record, rewrite Text) *NotApplied {
 	original := record.Text
 	if broken := keepMostWords(original, rewrite); broken != nil {
+		return broken
+	}
+	if broken := keepNoRecordTags(original, rewrite); broken != nil {
+		return broken
+	}
+	if broken := keepFenceLines(original.Body, rewrite.Body); broken != nil {
 		return broken
 	}
 	switch {
@@ -113,6 +128,54 @@ func wordCount(text Text) int {
 		n += len(strings.Fields(option.Label)) + len(strings.Fields(option.Description))
 	}
 	return n
+}
+
+// readerFields is every field of text a reader sees, the title, the body and each option's label
+// and description, one after the other on lines of their own.
+func readerFields(text Text) string {
+	var b strings.Builder
+	b.WriteString(text.Title + "\n" + text.Body)
+	for _, option := range text.Options {
+		b.WriteString("\n" + option.Label + "\n" + option.Description)
+	}
+	return b.String()
+}
+
+// keepNoRecordTags weighs a rewrite's fields against the text's: the rewrite holds no tag of the
+// record's markup, opening or closing, that the text does not hold. A text that holds such a tag
+// as its own words, an HTML title for one, keeps it in its rewrite.
+func keepNoRecordTags(original, rewrite Text) *NotApplied {
+	held := recordTag.FindAllStringSubmatch(readerFields(original), -1)
+	for _, tag := range recordTag.FindAllStringSubmatch(readerFields(rewrite), -1) {
+		if !slices.ContainsFunc(held, func(own []string) bool { return own[1] == tag[1] }) {
+			return &NotApplied{KeepNoRecordTags, fmt.Sprintf("the rewrite holds %s, a tag of the record, which the text does not hold", strconv.Quote(tag[1]+">"))}
+		}
+	}
+	return nil
+}
+
+// fence starts each line of a typed block's fence: its opening (":::check{#c1}") and its close.
+const fence = ":::"
+
+// keepFenceLines weighs a rewrite's body against the text's: it holds each line of the text that
+// starts with a fence, as many times as the text holds it.
+func keepFenceLines(was, now string) *NotApplied {
+	held := map[string]int{}
+	for _, line := range lines(now) {
+		if strings.HasPrefix(line, fence) {
+			held[line]++
+		}
+	}
+	for _, line := range lines(was) {
+		if !strings.HasPrefix(line, fence) {
+			continue
+		}
+		if held[line] == 0 {
+			return &NotApplied{KeepFenceLines, "the rewrite drops or changes the line " + strconv.Quote(line)}
+		}
+		held[line]--
+	}
+	return nil
 }
 
 // keepOptions weighs a rewrite's options and choice against the ask's: their number, their
@@ -237,6 +300,14 @@ func lines(text string) []string {
 	return strings.Split(text, "\n")
 }
 
+// recordTags are the names of the tags a call's user message wraps the record and its other
+// inputs in (Record.input, textPart, entryPart, findingsPart).
+var recordTags = []string{
+	"text", "question", "options", "title", "spec", "thread", "entry", "issue", "project", "document",
+	"decisions", "writer_texts", "reader_words", "structure_findings", "detector_findings",
+	"question_to_writer", "writer_answer", "words",
+}
+
 var (
 	// pictureLine is a line that holds only a picture, or pictures: Markdown images and the
 	// space around them.
@@ -245,6 +316,9 @@ var (
 	// the text as it is.
 	linkTarget = regexp.MustCompile(`\]\(\s*<?([^)\s>]+)`)
 	bareLink   = regexp.MustCompile(`(?:https?|dispatch)://[^\s<>()\[\]"'` + "`" + `]+`)
+	// recordTag is a tag of recordTags, opening or closing, as a call's user message writes it:
+	// its name followed by its attributes or its ">". Its group is the tag up to its name.
+	recordTag = regexp.MustCompile(`(</?(?:` + strings.Join(recordTags, "|") + `))[\s>]`)
 )
 
 // links is each link of text once: each Markdown link's address and each address written bare,

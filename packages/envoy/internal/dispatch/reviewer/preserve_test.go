@@ -1,6 +1,8 @@
 package reviewer
 
 import (
+	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -196,5 +198,95 @@ func TestADecisionBlockKeepsTheOptionLinesItsDocumentHolds(t *testing.T) {
 	missing.Document = &Document{Markdown: "# Plan\n", Holds: true, BlockID: "blk"}
 	if got := Preserve(missing, marked); got == nil || got.Rule != KeepOptionLines || !strings.HasPrefix(got.Reason, "the decision block cannot be read in its document") {
 		t.Errorf("Preserve of a block its document lacks = %+v", got)
+	}
+}
+
+// A rewrite that holds a tag of the record that the text does not hold pasted the record, or a
+// part of it, into the text, and is not applied, for every kind. A tag the text holds as its own
+// words stays in its rewrite.
+func TestARewriteThatHoldsTheRecordsTagsIsNotApplied(t *testing.T) {
+	body := "The store keeps one row for each run, and the test waits for the store to answer."
+	for _, test := range []struct{ name, rewrite, reason string }{
+		{"the whole record", body + "\n\n" + askRecord().input(extra{readerWords: true}),
+			`the rewrite holds "<text>", a tag of the record, which the text does not hold`},
+		{"the issue", body + "\n\n<issue key=\"PRJ-1\">\nShip the reviewer\n</issue>",
+			`the rewrite holds "<issue>", a tag of the record, which the text does not hold`},
+		{"the document", body + "\n\n<document name=\"spec\" role=\"primary document of the issue\">\n# Spec\n",
+			`the rewrite holds "<document>", a tag of the record, which the text does not hold`},
+		{"the close of a writer's text", body + "\nI moved the store.\n</entry>\n</writer_texts>",
+			`the rewrite holds "</entry>", a tag of the record, which the text does not hold`},
+	} {
+		for _, kind := range []Kind{KindComment, KindMessage, KindIssue, KindDocument} {
+			got := Preserve(Record{Text: Text{Kind: kind, Body: body}}, Text{Kind: kind, Body: test.rewrite})
+			if got == nil || got.Rule != KeepNoRecordTags || got.Reason != test.reason {
+				t.Errorf("%s, %s: Preserve = %+v, want not applied: %s", test.name, kind, got, test.reason)
+			}
+		}
+	}
+	// An ask's options are weighed with its question.
+	ask := pictureAsk()
+	ask.Options[1].Description = "Wait <writer_answer>The node is the test server.</writer_answer>"
+	if got := Preserve(Record{Text: pictureAsk()}, ask); got == nil || got.Rule != KeepNoRecordTags {
+		t.Errorf("an option that holds the writer's answer: Preserve = %+v", got)
+	}
+
+	html := Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head, and the test reads it."}
+	if got := Preserve(Record{Text: html}, Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head. The test reads that title."}); got != nil {
+		t.Errorf("a rewrite that keeps the text's own <title>: %v", got)
+	}
+	if got := Preserve(Record{Text: html}, Text{Kind: KindComment, Body: html.Body + "\n<spec>\nThe spec.\n</spec>"}); got == nil || got.Rule != KeepNoRecordTags ||
+		got.Reason != `the rewrite holds "<spec>", a tag of the record, which the text does not hold` {
+		t.Errorf("a rewrite that adds <spec> to a text that holds <title>: Preserve = %+v", got)
+	}
+}
+
+// recordTags names each tag a call's user message writes, so a rewrite that pastes in any part
+// of it is weighed.
+func TestRecordTagsAreTheTagsOfTheInput(t *testing.T) {
+	full := askRecord()
+	full.Project = "Project One"
+	x := extra{readerWords: true, structureOn: true, detectorOn: true, question: "What is the node?", answer: "The test server.", words: []string{"node"}}
+	issue := Record{Text: Text{Kind: KindIssue, Title: "Land it", Body: "The spec."}}
+	opening := regexp.MustCompile(`<([a-z_]+)[\s>]`)
+	written := map[string]bool{}
+	for _, input := range []string{full.input(x), issue.input(extra{})} {
+		for _, match := range opening.FindAllStringSubmatch(input, -1) {
+			written[match[1]] = true
+		}
+	}
+	if got, want := slices.Sorted(maps.Keys(written)), slices.Sorted(slices.Values(recordTags)); !slices.Equal(got, want) {
+		t.Errorf("the input writes the tags %q, and recordTags holds %q", got, want)
+	}
+}
+
+// A rewrite keeps each line of the text that starts with ":::", a typed block's fence, byte for
+// byte and as often as the text holds it, for every kind; it may change the words in the block.
+func TestARewriteKeepsEachFenceLine(t *testing.T) {
+	check := ":::check{#c1 kind=\"ci\"}\nThe server builds at the head.\n:::\n"
+	text := "The run checks the store.\n\n" + check + "\n:::requirement{#r1}\nThe store keeps one row for each run.\n:::\n"
+	for _, test := range []struct {
+		name, rewrite string
+		reason        string
+	}{
+		{"the words in a block", strings.Replace(text, "builds at the head.", "builds at each head of the branch.", 1), ""},
+		{"a block as prose", strings.Replace(text, check, "Check c1: the server builds at the head.\n", 1),
+			`the rewrite drops or changes the line ":::check{#c1 kind=\"ci\"}"`},
+		{"a fence's attributes", strings.Replace(text, ":::check{#c1 kind=\"ci\"}", ":::check{#c1}", 1),
+			`the rewrite drops or changes the line ":::check{#c1 kind=\"ci\"}"`},
+		{"one close of two", strings.TrimSuffix(text, ":::\n") + "The rest of the spec.\n",
+			`the rewrite drops or changes the line ":::"`},
+	} {
+		for _, kind := range []Kind{KindIssue, KindComment, KindMessage, KindDocument} {
+			got := Preserve(Record{Text: Text{Kind: kind, Body: text}}, Text{Kind: kind, Body: test.rewrite})
+			if test.reason == "" {
+				if got != nil {
+					t.Errorf("%s, %s: Preserve = %v, want applied", test.name, kind, got)
+				}
+				continue
+			}
+			if got == nil || got.Rule != KeepFenceLines || got.Reason != test.reason {
+				t.Errorf("%s, %s: Preserve = %+v, want not applied: %s", test.name, kind, got, test.reason)
+			}
+		}
 	}
 }

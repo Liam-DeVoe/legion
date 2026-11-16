@@ -97,9 +97,41 @@ type Record struct {
 	// Project is the project's name, for a text of a project document, which has no issue.
 	Project string
 	// Reader is the login of the person who reads the text, and ReaderWords the words that
-	// person asked about before the text was written (R8's records, the newest first).
+	// person asked about before the text was written (R8's records, the newest first). A call's
+	// user message shows each of them but a function word (readerStopWord).
 	Reader      string
 	ReaderWords []string
+}
+
+// readerStopWords are the function words a call does not show among the reader's words: the
+// articles, the pronouns, the forms of "be", "do" and "have", and the most common conjunctions
+// and prepositions. A word record holds one where the records job took it from a reader's
+// question ("what is it?"). It is no term the reader did not know, and the reader_words rule set
+// on it made a rewrite put other words in place of each "it" or "you" of a text (INFRA-3231's
+// round 2).
+var readerStopWords = func() map[string]bool {
+	words := map[string]bool{}
+	for _, word := range strings.Fields(`
+		a an the
+		i me my you your we us our he him his she her it its they them their
+		this that these those there here what which who
+		am is are was were be been do does did have has had
+		and or but if so not no of to in on at for with by from as about`) {
+		words[word] = true
+	}
+	return words
+}()
+
+// ShownReaderWords is the reader's words a call shows: ReaderWords less the function words
+// (readerStopWords), matched in any case and with the space around them, in their order.
+func (r Record) ShownReaderWords() []string {
+	var shown []string
+	for _, word := range r.ReaderWords {
+		if !readerStopWords[strings.ToLower(strings.TrimSpace(word))] {
+			shown = append(shown, word)
+		}
+	}
+	return shown
 }
 
 // Subject names one text and where it stands, for BuildRecord to read its record.

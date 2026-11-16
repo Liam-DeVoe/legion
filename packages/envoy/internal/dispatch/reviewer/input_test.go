@@ -47,6 +47,20 @@ func TestTheInputShowsEachPartOfTheRecord(t *testing.T) {
 	}
 }
 
+// The reader's words leave out the function words (readerStopWords), in any case and with the
+// space around them, and keep every other word and phrase in its order. A record of function
+// words alone shows no word.
+func TestTheReaderWordsLeaveOutFunctionWords(t *testing.T) {
+	record := Record{Text: Text{Kind: KindMessage, Body: "Hi."}, ReaderWords: []string{"it", "store", " You ", "There", "the node", "is", "lane", "THAT", "eval"}}
+	if input := record.input(extra{readerWords: true}); !strings.Contains(input, "<reader_words>\n- store\n- the node\n- lane\n- eval\n</reader_words>") {
+		t.Errorf("the reader's words with function words among them:\n%s", input)
+	}
+	record.ReaderWords = []string{"we", "This", "a", "an", "are"}
+	if input := record.input(extra{readerWords: true}); !strings.Contains(input, "<reader_words>\nThe reader asked about no word before this text.\n</reader_words>") {
+		t.Errorf("the reader's words of function words alone:\n%s", input)
+	}
+}
+
 // A document the text stands in shows the part around the text's place, and one it does not
 // stand in shows its start; a document's own text is not shown twice.
 func TestTheDocumentShowsThePartAroundTheText(t *testing.T) {

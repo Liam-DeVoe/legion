@@ -8,8 +8,10 @@ The reader did not see the work of the writer agent. The reader must understand 
 
 ## How to write the rewrite
 
-- Put first what the reader must decide or know.
-- Use the words that the reader uses. If the text uses a word or a name that the reader cannot know, say what it is.
+- Put first what the reader must decide or know. If the text answers a question of the reader, its answer stays first.
+- Use the words that the reader uses.
+- Say what a word or a name means only where the record{{if .Answer}} or the answer of the writer agent{{end}} says what it means. Say it once, at its first use, in a few words. Do not say what a word means from your own knowledge.
+- The reader knows the names of their own people, systems, tools, machines, agents, projects and issues. Do not say what they are.
 - Use only facts that are in the record{{if .Answer}} or in the answer of the writer agent{{end}}. Do not guess a fact.
 - Obey each rule of this prompt.
 {{- template "own-voice" .}}
