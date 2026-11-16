@@ -2646,17 +2646,17 @@ func TestARetractedPassDoesNotStand(t *testing.T) {
 }
 
 // A check CI proves takes no result from any role: a tester's and an implementer's are both
-// refused, 409 CHECK_PROVED_BY_CI naming the block and the check run, and nothing is stored. The
-// refusal comes before the commit is asked of GitHub: the commit here is one the repository does
-// not hold, which would otherwise be refused as RESULT_COMMIT_UNKNOWN. The same call against an
-// ordinary check of the same document is recorded.
+// refused, 409 CHECK_PROVED_BY_CI naming the block and the CI job that records its result, and
+// nothing is stored. The refusal comes before the commit is asked of GitHub: the commit here is
+// one the repository does not hold, which would otherwise be refused as RESULT_COMMIT_UNKNOWN.
+// The same call against an ordinary check of the same document is recorded.
 func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
 	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
 		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESCI", "acme/widgets", "Proved by CI")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept)+"\n"+twoChecks)
 
-	want := `check c1 is proved by CI run "` + ciCheckRun + `": dispatch results reads its result from that run, and no role records one`
+	want := `check c1 names CI job "` + ciCheckRun + `": only a run of that job records its result, through the secrets broker`
 	for _, role := range []string{"tester", "implementer"} {
 		refused := recordResult(t, handler, issue.Key, resultBody("c1", "pass", nearHeadCommit, map[string]any{"role": role}))
 		if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" || text != want {

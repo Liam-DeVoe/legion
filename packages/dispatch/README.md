@@ -514,8 +514,8 @@ Verification document, and each runs that check's `run` and asserts its `negativ
   holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
   of one name are decided by the higher id, in both orders of their conclusions.
 - `k4`: a tester's and an implementer's result for a check CI proves are refused `409
-  CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
-  recorded and `dispatch results` shows it.
+  CHECK_PROVED_BY_CI`, naming the block and the CI job; the same call against an ordinary check
+  is recorded and `dispatch results` shows it.
 - `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
   stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
   GitHub serves that Dispatch's own head record does not hold yet.

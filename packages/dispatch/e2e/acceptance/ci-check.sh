@@ -20,8 +20,8 @@
 # - k3: the eleven outcomes of the run, among them the fake GitHub's 500 and a read held past the
 #   server's real 10 s deadline, and two runs of one name decided by the higher id in both orders.
 # - k4: a tester's and an implementer's result for a check CI proves are refused 409
-#   CHECK_PROVED_BY_CI naming the block and the run, and the same call against an ordinary check
-#   is recorded and shown.
+#   CHECK_PROVED_BY_CI naming the block and the CI job, and the same call against an ordinary
+#   check is recorded and shown.
 # - k5: the whole line the reviewer's gate reads, then a failed run, a head moved to a commit the
 #   run does not cover, and a head GitHub serves that Dispatch's head record does not hold yet.
 #
@@ -755,11 +755,11 @@ derived k3 "the run of the higher id decides: a fail, where the first listed pas
 
 # --- k4: no role records a result for a check CI proves ------------------------------------------
 
-readonly proved_refusal='check c-fresh is proved by CI run "contracts": dispatch results reads its result from that run, and no role records one'
+readonly proved_refusal='check c-fresh names CI job "contracts": only a run of that job records its result, through the secrets broker'
 for role in tester implementer; do
   cli result --issue "$k1" --check c-fresh --role "$role" --verdict pass --commit "$plain_commit" \
     >"$work/out" 2>&1 && fail k4 "the $role's result for c-fresh is refused" "it was recorded: $(<"$work/out")"
-  line k4 "the $role's result for c-fresh is refused CHECK_PROVED_BY_CI, naming the block and the run" \
+  line k4 "the $role's result for c-fresh is refused CHECK_PROVED_BY_CI, naming the block and the CI job" \
     "CHECK_PROVED_BY_CI: $proved_refusal"
 done
 no_rows k4 "nothing is stored for c-fresh" "$k1_artifact" c-fresh

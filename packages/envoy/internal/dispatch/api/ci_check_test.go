@@ -133,7 +133,9 @@ func TestEveryDocumentWriteRefusesACICheckThatBreaksARule(t *testing.T) {
 // A check holding a recorded result does not become CI's: giving it a ci_check is refused with the
 // fourth rule through a replacement, a retype and a rebuild, and so is a new block written under
 // its id once it is deleted, since the results still stand against that id. A ci_check on a fresh
-// block id of the same document is written.
+// block id of the same document is written. A result a CI job recorded is no result a role
+// recorded: a new block under the id of a check whose only result is a CI job's takes a
+// ci_check with no refusal.
 func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
 	handler, _, broken := newBrokenTestServer(t)
 	issue := createInteractionIssue(t, handler, "CIR", "CI checks", "A spec\n")
@@ -173,6 +175,18 @@ func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
 	expectRefusal(t, "a new block under the old id", applyOp(t, handler, id, map[string]any{
 		"op": "insert", "after": "end", "markdown": ciCheckBlock("c1", ciCheckKept),
 	}), http.StatusBadRequest, "INVALID_CI_CHECK", want)
+
+	job := newCIJobRig(t)
+	jobRecorded(t, "the job's result for c1", job.post(t, job.issue, job.jobToken(nil), jobResultOf("c1", "pass")))
+	if response := applyOp(t, job.handler, job.verification, map[string]any{"op": "delete", "block": "c1"}); response.Code != http.StatusOK {
+		t.Fatalf("delete the job's c1: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	if response := applyOp(t, job.handler, job.verification, map[string]any{
+		"op": "insert", "after": "end", "markdown": ciCheckBlock("c1", ciCheckKept),
+	}); response.Code != http.StatusOK {
+		t.Fatalf("a ci_check on a new block under the id of a check whose only result is a CI job's: status=%d body=%s, want 200",
+			response.Code, response.Body.String())
+	}
 }
 
 // A block another writer left breaking a rule - a browser's, which settlement repairs - refuses no

@@ -1439,6 +1439,11 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// Branch is the branch whose push the CI job that recorded this result ran on: the ref of its
+	// results token without refs/heads/. It is set on a result a CI job recorded and on no other,
+	// and left out of the JSON wherever it is empty: a role's result and a derived result carry
+	// none.
+	Branch string `json:"branch,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
@@ -1472,8 +1477,10 @@ type CheckResultRetraction struct {
 // result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
-// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run.
+// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check
+// holds no result a role recorded: its results are the one derived from that run (id
+// `ci-run:<check run id>`) beside each result a run of its CI job recorded (role `ci`, Branch
+// set), newest first, so a reader finds the derived one by its id and not by its place.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`

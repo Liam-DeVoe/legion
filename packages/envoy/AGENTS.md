@@ -356,7 +356,7 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`, `store/migrations/20261116132624_check_results_branch.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
@@ -378,13 +378,22 @@ Each item below names a task and where its code is, then notes on it.
     a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
     A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
-  - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run`, it names a `negative_control` and no result is recorded against it (`validCICheck`, `docs.CICheckRuleIn`) - takes no recorded result:
-    `POST` refuses one with `409 CHECK_PROVED_BY_CI` for every role, right after `resolveCheck` and again inside its transaction (`refuseCheckProvedByCI`).
-    `GET` reads its one result on every read instead, and stores nothing (`api/results_ci.go`, `deriveCIResults`):
+  - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run`, it names a `negative_control` and no result a role recorded stands against it (`validCICheck`, `docs.CICheckRuleIn`) - takes no result from a role:
+    `POST` refuses one with `409 CHECK_PROVED_BY_CI` from every credential but a results token, right after `resolveCheck` and again inside its transaction (`refuseResultOfAnotherRecorder`).
+    The CI job that its `ci_check` names records the check's result there, under its own results token (`model.Credential.ResultsOnly`; the route is on `resultsScopeRoutes`):
+    the body is `{check, commit, verdict, observed}`, and any other member is `400 RESULT_INPUT` naming it;
+    the commit is the run's (`403 COMMIT_NOT_THE_RUNS`) and the run a push of a branch (`403 REF_NOT_A_BRANCH`);
+    the check is one CI proves whose `ci_check` is the name of the token's check run (`409 CHECK_NOT_THIS_JOBS`);
+    GitHub names that check run at the run's commit (`githubapp.Client.CheckRun`, read through the project route's cache, `403 CHECK_RUN_NOT_THE_RUNS`, or `503 CHECK_RUN_UNREADABLE` where GitHub does not answer);
+    and the run's repository is the one the check's issue resolves to (`403 REPOSITORY_NOT_THE_ISSUES`).
+    Its row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
+    A role's row stores no branch, and the fourth rule counts only such rows, so a CI job's result never takes the check from CI and settlement never deletes its `ci_check` for one.
+    `GET` also derives a result on every read, and stores nothing of it (`api/results_ci.go`, `deriveCIResults`):
     at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
     The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
+    The derived result comes beside each result the CI job recorded, newest first, so a reader finds it by its id and not by its place.
     `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
-    A check carrying a `ci_check` that breaks a rule, or one that holds a recorded result, reads as an ordinary check.
+    A check carrying a `ci_check` that breaks a rule, or one that holds a result a role recorded, reads as an ordinary check.
 
   - each result of a read that names no commit also answers `currency`, a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it and read none of the fields above (`results_currency.go`, `compatibilityCurrency`):
     `current` at a basis under the check's words now with no retraction, `older` at another commit or at a basis under words that moved, and left out otherwise, so those clients print "unknown".
@@ -405,7 +414,7 @@ Each item below names a task and where its code is, then notes on it.
 - **Results of the spec checks a CI job ran**: `internal/dispatch/api/spec_results.go`, `internal/dispatch/githubapp/check_run.go`, `store/migrations/20261116094741_spec_check_results.up.sql`
 
   `POST /api/v1/projects/{key}/results` takes one result of one check of the spec files, written by the CI job that ran its test, under a results token (`brokertoken.Caller.ResultsOnly`):
-  the one route the results list names (`resultsScopeRoutes`), and the one credential it takes (`403 RESULTS_SCOPE_REQUIRED` for every other).
+  one of the two routes the results list names (`resultsScopeRoutes`), and the one credential it takes (`403 RESULTS_SCOPE_REQUIRED` for every other).
   The body is `{commit, check, verdict, observed}`, verdict `pass`, `fail` or `could_not_run`, and any other member is `400 RESULT_INPUT` naming it, since the identity on a result is the one the token proved and never a field the caller set.
   Dispatch reads the rest from the token, from GitHub and from `.dispatch/spec` at the run's commit, in this order:
   the commit is the run's (`403 COMMIT_NOT_THE_RUNS`, naming both);
@@ -2377,7 +2386,7 @@ The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (
 `plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
 and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
-A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
+A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no result a role recorded (`docs.CICheckRuleIn`: a result its CI job recorded, which names a branch, does not count), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
 an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
 
 A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs` and a check's `serves`.
@@ -2534,7 +2543,7 @@ An open ask's indexed row stays open and unchanged; an answered or resolved ask 
 Repairing its body clears `invalid` before updating the ask row, and writes a decided ask's decided wording back into the block.
 An emptied question is repaired by an ask edit carrying one, the route's own path above;
 every other reading failure is repaired where a person writes it, or by the document edit the refusal names.
-A browser-written check block carrying a `ci_check` that breaks one of its four rules (`docs.CICheckRuleIn`: no `run`, `when` of `before_merge`, a `negative_control`, no recorded result against the block, read in the settlement's transaction) loses that `ci_check` at settlement (`reconcileCICheckBlocks`), and one `block.invalid` names the block, the rule as `reason` and `block_type: "check"`; a block it repaired carries no `ci_check`, so no later settlement repairs it again.
+A browser-written check block carrying a `ci_check` that breaks one of its four rules (`docs.CICheckRuleIn`: no `run`, `when` of `before_merge`, a `negative_control`, no result a role recorded against the block, read in the settlement's transaction) loses that `ci_check` at settlement (`reconcileCICheckBlocks`), and one `block.invalid` names the block, the rule as `reason` and `block_type: "check"`; a block it repaired carries no `ci_check`, so no later settlement repairs it again.
 Markdown that becomes a whole document - a spec at issue creation, an uploaded document or version - is refused with `400 INVALID_ASK_BLOCK` when an ask's body breaks its content rule, `paragraph+ bullet_list?` - one or more paragraphs, then at most one bullet list, last (`pmdoc.AskContentError`) - as the browser editor's parser refuses to build such a block.
 A new document is held to it for every ask, and so are a version that repairs a stored tree outside the schema, which has no readable asks to compare with, and a rebuild from supplied markdown;
 any other new version only for each ask it writes or changes (`refuseChangedAsks`), comparing the ask's rendering with the current one (`newAskMarkdown`, the asks of one check sharing one budget of span cells, spent in document order as the document's own render spent it, so a live ask over a table with colspans or rowspans matches the cells its stored markdown wrote them out as while that budget lasts), since a version is markdown and cannot carry a comment's anchor mark or the id a reader's browser derives for a heading;
@@ -3888,7 +3897,7 @@ A verifier built without the switch answers that token `brokertoken.ErrNotASessi
 A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKFLOWS`): it holds the OAuth scope `results` alone and the project scope `results`, names a person, one project, the session of its workflow and the run it was minted for (`ci`, every field set), and names no service.
 A verifier built with `brokertoken.Options.ServesResults` accepts it and marks its caller `brokertoken.Caller.ResultsOnly`, with the run as `brokertoken.Caller.CI`;
 a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
-Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), today `POST /api/v1/projects/{key}/results` alone;
+Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`;
 `brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseResultsOnlyToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.

@@ -1,0 +1,25 @@
+-- 20261116132624_check_results_branch.up.sql
+--
+-- The branch whose push a CI job ran on, for a result that job recorded against a check its
+-- ci_check names (POST /api/v1/issues/{key}/results under a results token):
+--
+--   branch   the ref of the token's run without refs/heads/, set on every row a CI job
+--            recorded and on no other. It is null on every row a role recorded, and on every row
+--            stored before this migration, since no CI job recorded one before it.
+--
+-- The fourth rule of a check carrying ci_check counts only the rows whose branch is null
+-- (docs.CICheckRuleIn), so a result a CI job recorded never takes a check away from CI, and
+-- settlement never deletes that check's ci_check for it.
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on check_results, which every recorded result and every results read
+-- touches, and holds it only for the catalog write; the runner bounds its wait at
+-- pgmigrate.LockTimeout and tries again up to pgmigrate.LockTimeoutAttempts times.
+--
+-- The release before this one neither reads nor writes the column, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"): it records a role's result with no branch, as
+-- this release does, and it refuses a results token on this route, so it writes no CI job's row.
+-- Its fourth rule counts every row, a CI job's included, so while it serves, a settlement it runs
+-- can still take a check from CI for a CI job's result; that ends when it stops serving. Rolling
+-- back past this migration is an image rollback alone; the column left behind is read by nothing.
+alter table check_results add column branch text;

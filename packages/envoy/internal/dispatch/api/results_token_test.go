@@ -87,9 +87,10 @@ func readOnlyLimitedToken() limitedToken {
 }
 
 // resultsLimitedToken is the results token as the walks take it: one of project TEST, the
-// project a probe's {key} names, which the seed creates, so the listed row's project check
-// (withinProjectScope) finds the project the token names. Its listed row answers the mounted
-// walk's probe body, which names actor, 400 RESULT_INPUT: the handler's own answer.
+// project a probe's {key} names, which the seed creates with its issue TEST-1, the issue a
+// probe's issue {key} names, so each listed row's project check (withinProjectScope) finds the
+// project the token names. Each listed row answers the mounted walk's probe body, which names
+// actor, 400 RESULT_INPUT: the handler's own answer.
 func resultsLimitedToken() limitedToken {
 	return limitedToken{
 		kind:    "a results token",
@@ -99,11 +100,15 @@ func resultsLimitedToken() limitedToken {
 		refusal: codeResultsOnlyToken,
 		listAnswers: map[string]limitedAnswer{
 			"POST /api/v1/projects/{key}/results": {http.StatusBadRequest, "RESULT_INPUT"},
+			"POST /api/v1/issues/{key}/results":   {http.StatusBadRequest, "RESULT_INPUT"},
 		},
 		seed: func(t *testing.T, rig *brokerTokenRig) {
 			t.Helper()
 			if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": resultsTokenProject, "name": "Test"}); created.Code != http.StatusCreated {
 				t.Fatalf("create project %s: status=%d body=%s", resultsTokenProject, created.Code, created.Body.String())
+			}
+			if filed := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": resultsTokenProject, "title": "Probe", "spec": "A spec\n"}); filed.Code != http.StatusCreated {
+				t.Fatalf("create issue %s-1: status=%d body=%s", resultsTokenProject, filed.Code, filed.Body.String())
 			}
 		},
 	}
@@ -246,13 +251,13 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 }
 
 // TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler: a results token
-// reaches the handler of the one row the results list names and of no other row, and no socket.
+// reaches the handlers of the rows the results list names and of no other row, and no socket.
 func TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler(t *testing.T) {
 	walkEveryChainWith(t, resultsLimitedToken())
 }
 
 // TestTheMountedServerServesAResultsTokenOnTheResultsListAlone: the mounted server answers a
-// results token 403 RESULTS_ONLY_TOKEN on every row but the listed one, whose handler answers it.
+// results token 403 RESULTS_ONLY_TOKEN on every row but the listed ones, whose handlers answer it.
 func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) {
 	walkTheMountedServerWith(t, resultsLimitedToken())
 }

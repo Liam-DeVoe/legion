@@ -152,9 +152,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Commit != run.SHA {
-		writeError(w, codeCommitNotTheRuns, http.StatusForbidden, fmt.Sprintf(
-			"the result is for commit %s, and this token's run tested commit %s: a job writes results only for the commit that it tested",
-			input.Commit, run.SHA))
+		s.writeHandlerError(w, commitNotTheRuns(input.Commit, run.SHA))
 		return
 	}
 	numbers, err := runNumbersOf(run)
@@ -184,9 +182,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if checkRun.HeadSHA != run.SHA {
-		writeError(w, codeCheckRunNotTheRuns, http.StatusForbidden, fmt.Sprintf(
-			"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
-			checkRun.HeadSHA, numbers.checkRun, run.SHA))
+		s.writeHandlerError(w, checkRunNotTheRuns(checkRun.HeadSHA, numbers.checkRun, run.SHA))
 		return
 	}
 	job, leg := jobAndLeg(checkRun.Name)
@@ -270,6 +266,22 @@ func validSpecCheckResultInput(input specCheckResultInput, body []byte) error {
 		return errorf(http.StatusBadRequest, codeResultInput, "verdict is pass, fail or could_not_run")
 	}
 	return nil
+}
+
+// commitNotTheRuns refuses a result for commit, another commit than tested, the commit the run of
+// the results token tested. Both results routes answer it.
+func commitNotTheRuns(commit, tested string) *apiError {
+	return errorf(http.StatusForbidden, codeCommitNotTheRuns,
+		"the result is for commit %s, and this token's run tested commit %s: a job writes results only for the commit that it tested",
+		commit, tested)
+}
+
+// checkRunNotTheRuns refuses a results token whose check run, checkRun, GitHub names at named,
+// another commit than tested, the commit its run tested. Both results routes answer it.
+func checkRunNotTheRuns(named string, checkRun int64, tested string) *apiError {
+	return errorf(http.StatusForbidden, codeCheckRunNotTheRuns,
+		"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
+		named, checkRun, tested)
 }
 
 // runNumbers is the three numbers of a run, read from its token: its check run, its workflow run

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,11 +17,13 @@ import (
 )
 
 // results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
-// role records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it
-// either: each read takes the newest pull request head of the issue
+// role records a result for such a check (refuseResultOfAnotherRecorder), and nothing is stored
+// of the run its `ci_check` names: each read takes the newest pull request head of the issue
 // (delivery.NewestPullRequestHead), reads that commit's check runs from GitHub once, and derives
-// the check's one result from the run its `ci_check` names. The derived result goes through the
-// same comparisonReader a recorded result does, so one rule judges where both kinds stand.
+// a result from the run its `ci_check` names. A check CI proves holds that derived result beside
+// each result a run of its CI job recorded through the job's results token (role ci, Branch
+// set), newest first. The derived result goes through the same comparisonReader a recorded
+// result does, so one rule judges where both kinds stand.
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together: the route is read inside a role's turn and inside the reviewer's gate, and a read
@@ -84,17 +87,19 @@ type ciRun struct {
 }
 
 // deriveCIResults answers every check CI proves among checks: its `ci` member, and, where the
-// run that decides it passed or failed, its one result. Each check carries the results the read
-// loaded for it, which say whether it holds a recorded result and so is CI's at all. An issue
-// holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
-// issue, whose Verification document holds the checks and whose pull request heads they are read
-// at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
-// case of the answer.
+// run that decides it passed or failed, the result derived from that run, merged into the
+// results the read loaded for it, newest first (newestResultsFirst). Each check carries the
+// results the read loaded for it, which say whether a role recorded one and so whether it is
+// CI's at all: a result its CI job recorded (Branch set) is no role's. An issue holding no check
+// CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
+// Verification document holds the checks and whose pull request heads they are read at. Only a
+// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
+// answer.
 func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
-		if validCICheck(checks[index], len(checks[index].Results) > 0) {
+		if validCICheck(checks[index], holdsRoleResult(checks[index].Results)) {
 			name := docs.CheckAttributesOfBlock(checks[index]).CICheck
 			proved = append(proved, provedCI{check: &checks[index], name: name})
 			names[name] = struct{}{}
@@ -126,10 +131,29 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		var result *model.CheckResult
 		p.check.CI, result = ciAnswerOf(*p.check, p.name, head, runs[p.name])
 		if result != nil {
-			p.check.Results = []model.CheckResult{*result}
+			p.check.Results = newestResultsFirst(append(p.check.Results, *result))
 		}
 	}
 	return nil
+}
+
+// holdsRoleResult reports whether results, every result recorded against one check, hold one a
+// role recorded: a row with no branch, which the fourth rule of a check carrying `ci_check`
+// counts (docs.CICheckRuleIn).
+func holdsRoleResult(results []model.CheckResult) bool {
+	return slices.ContainsFunc(results, func(result model.CheckResult) bool { return result.Branch == "" })
+}
+
+// newestResultsFirst orders results as the read of the stored ones does (loadCheckResults):
+// newest first by CreatedAt, the higher ID first between two of one time.
+func newestResultsFirst(results []model.CheckResult) []model.CheckResult {
+	slices.SortStableFunc(results, func(a, b model.CheckResult) int {
+		if order := b.CreatedAt.Compare(a.CreatedAt); order != 0 {
+			return order
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
+	return results
 }
 
 // provedCI is a check CI proves and name, the run its `ci_check` names as the rules read it,

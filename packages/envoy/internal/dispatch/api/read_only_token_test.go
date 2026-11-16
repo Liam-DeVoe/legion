@@ -14,7 +14,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -47,17 +49,20 @@ func readOnlyProbePath(pattern string) string {
 	return path
 }
 
-// readOnlyProbeKey is the Idempotency-Key every probe below carries: a well-formed one, so a row
-// that reached its keyed layer would claim it rather than refuse it.
+// readOnlyProbeKey is what the Idempotency-Key every probe below carries begins with: a
+// well-formed key, so a row that reached its keyed layer would claim it rather than refuse it.
 const readOnlyProbeKey = "read-only-probe"
 
 // presentingProbe is the request a caller sends route when it walks the table: the probe path and
-// body (readOnlyProbePath, routeProbeBody), a valid Idempotency-Key, and token under the DPoP
-// scheme with a fresh proof for that method and target.
+// body (readOnlyProbePath, routeProbeBody), an Idempotency-Key of the row's own, and token under
+// the DPoP scheme with a fresh proof for that method and target. The key is the row's own because
+// a key is the caller's for every route: two keyed rows a list names would otherwise answer the
+// second 422 KEY_REUSED for the first's body, and never reach its handler.
 func (c *brokerCaller) presentingProbe(t *testing.T, route apiRoute, token string) *http.Request {
 	t.Helper()
 	request := c.presenting(t, route.Method, readOnlyProbePath(route.Pattern), token, json.RawMessage(routeProbeBody(route)))
-	request.Header.Set(contracts.IdempotencyKeyHeader, readOnlyProbeKey)
+	row := sha256.Sum256([]byte(route.Method + " " + route.Pattern))
+	request.Header.Set(contracts.IdempotencyKeyHeader, readOnlyProbeKey+"-"+hex.EncodeToString(row[:8]))
 	return request
 }
 

@@ -217,7 +217,8 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 A results token is the token the broker mints from a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
 It holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
 `brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
-Dispatch serves it on the routes its results list names (`resultsScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `POST /api/v1/projects/{key}/results` alone, where a CI job writes the result of a check of the spec files at its commit.
+Dispatch serves it on the routes its results list names (`resultsScopeRoutes` in `internal/dispatch/api/routes_table.go`):
+`POST /api/v1/projects/{key}/results`, where a CI job writes the result of a check of the spec files at its commit, and `POST /api/v1/issues/{key}/results`, where it records the result of a check whose `ci_check` names its job (`/api/v1/issues/{key}/results` below).
 Every other route of the table, and `GET /ws/live`, answers it `403 RESULTS_ONLY_TOKEN` with no `WWW-Authenticate` challenge (`refuseResultsOnlyToken`), before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler.
 A service whose verifier does not set that switch, the Envoy listener among them, answers a results token `401`.
 
@@ -4247,7 +4248,7 @@ Each item below names a path with its method and identity, then its purpose.
   a bearer reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
   While the message is owed a block index, `indexed` is `false` and `blocks` empty; the read writes nothing.
 
-- `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer; POST also a CI job's results token)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
   `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
@@ -4307,8 +4308,8 @@ Each item below names a path with its method and identity, then its purpose.
     — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row;
     or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
-  A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
-  No role records its result (POST below refuses one), and nothing is stored for it:
+  A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result a role recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
+  No role records its result (POST below refuses one), and nothing is stored of the run that `ci_check` names:
   each read takes the head of the issue's `open` pull request of the highest number, else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads that commit's check runs once, every page, under one 10-second deadline (`api/results_ci.go`, `deriveCIResults`).
   Of the runs named exactly as `ci_check` says, the one of the highest id decides.
   An issue holding no such check makes no read of check runs at all.
@@ -4320,26 +4321,38 @@ Each item below names a path with its method and identity, then its purpose.
     `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
     `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are cut as a recorded line's reading is, at a word, to at most 80 runes, with `…` where they were cut.
 
-  - For a pass or a fail its `results` hold the one result derived from that run, and nothing else:
-    `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, and no `event_seq`.
+  - For a pass or a fail its `results` hold the result derived from that run:
+    `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, no `branch` and no `event_seq`.
     It is judged as a recorded result is (`comparisonReader`), so its `commit_stands` and the check's `pass_stands` read as a recorded result's would.
 
-  A check carrying `ci_check` that breaks one of those rules, or that holds a recorded result, reads as an ordinary check with its recorded results.
+  - Beside it are the results that runs of the check's CI job recorded through POST below, each with `role` `ci`, `run` the check run's name and `branch` the branch whose push the job ran on, all newest first by `created_at`.
+    A client that reads one result of such a check finds the derived one by its `id`, not as the first.
+    `branch` is set on a result that a CI job recorded, and on no other result.
+
+  A check carrying `ci_check` that breaks one of those rules, or that holds a result a role recorded, reads as an ordinary check with its recorded results.
 
   The issue a result was recorded on is read for nothing here, so a child's pull request is never a basis for a check above it.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
 
-  POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
+  POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}` from a role, and `{check, commit, verdict, observed}` from a CI job's results token.
   What it takes, and what it refuses:
 
   - `{key}` is the issue the result is recorded on;
     `check` names a check of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical block reference (`409 CHECK_AMBIGUOUS`); any other id is `400 UNKNOWN_CHECK`.
 
-  - A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every role, naming the block and the check run, since its result is read from that run;
-    the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a result is recorded against the block is read again.
+  - A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every credential but a CI job's results token, naming the block and the CI job, since only a run of that job records its result (`refuseResultOfAnotherRecorder`);
+    the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a role recorded a result against the block is read again.
 
-  - `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
+  - A CI job's results token records the result of a check CI proves whose `ci_check` is the name of the token's check run, and no other.
+    Its body is `{check, commit, verdict, observed}`, `verdict` `pass` or `fail`, and any other member is `400 RESULT_INPUT` naming it, since Dispatch reads who recorded the result from the token and from GitHub, never from the body.
+    `commit` is the commit the token's run tested (`403 COMMIT_NOT_THE_RUNS`, naming both), and the run is a push of a branch (`403 REF_NOT_A_BRANCH`).
+    A check that is not one CI proves, or whose `ci_check` names another check run, is `409 CHECK_NOT_THIS_JOBS`, naming the check, its `ci_check` or that it carries none, and the check run.
+    GitHub names the token's check run at the run's commit (`403 CHECK_RUN_NOT_THE_RUNS`, naming both; `503 CHECK_RUN_UNREADABLE` where GitHub does not answer, and nothing is stored), read once a process for each check run, as the project's results route reads it.
+    The run's repository is the one the check's issue resolves to, compared without case (`403 REPOSITORY_NOT_THE_ISSUES`, naming both).
+    The result is stored with `role` `ci`, `run` the check run's name, `surface` and `negative_control` the check's, `session` the token's, `commit_sha` the run's, and `branch` the run's ref without `refs/heads/`.
+
+  - From a role, `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
     a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
 
   - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything, and refuses a result at one it does not with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
@@ -4836,6 +4849,7 @@ Each item below names a status and code, then its meaning.
   A document write leaves a check block carrying `ci_check` that breaks one of the four rules of a check CI proves (`docs.CICheckRuleIn`), and the message names the block, its `ci_check` and the rule: `check <id> (ci_check "<name>"): <rule>`.
   The rules, in the order they are read: `a check proved by CI carries no run`; `ci_check takes when of before_merge`; `a check proved by CI names its negative control`;
   and, read in the write's transaction, `this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one`.
+  The fourth rule counts a result that a role recorded, and never a result that a CI job recorded (`docs.CICheckRuleIn`).
   Every route that writes a document refuses it - an issue's create, an upload of a document or a version, `POST /edits` and its attribute operations (never wrapped into `INVALID_OP`), and a rebuild from supplied markdown - for each check block the write adds and each one whose `ci_check`, `run`, `when` or `negative_control` it changes, compared by block id with the document before the write;
   an edit elsewhere in a document never meets another writer's block.
   A blank `ci_check` names no run.
