@@ -10,8 +10,10 @@ import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
 import { githubSubject } from "../../../packages/contracts/src/subject";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
 import {
-  natsErrorForLog,
+  NATS_ADDRESS_NOT_SHOWN,
   natsServerForLog,
+  natsUnnamedParts,
+  replaceEachOnce,
 } from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
@@ -90,16 +92,17 @@ const upstreamNatsUrl =
 
 // The operator's upstream names production infrastructure, so a client error that quotes the
 // value, its user info or its host is printed with the variable's name in their place.
-export function redactUpstream(text: string, upstreamUrl: string): string {
+function upstreamReplacements(upstreamUrl: string): (readonly [string, string])[] {
   const [, userInfo, host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
-  // One pass, longest first, over the text as the client wrote it: the variable's name a match
-  // puts in is never searched again.
-  const values = [upstreamUrl, userInfo, host]
-    .filter((value): value is string => value !== undefined && value !== "")
-    .sort((a, b) => b.length - a.length)
-    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (values.length === 0) return text;
-  return text.replace(new RegExp(values.join("|"), "gi"), "SMOKE_UPSTREAM_NATS");
+  return [upstreamUrl, userInfo, host]
+    .filter((value): value is string => value !== undefined)
+    .map((value) => [value, "SMOKE_UPSTREAM_NATS"] as const);
+}
+
+// One pass over the text as the client wrote it (replaceEachOnce): the variable's name a match
+// puts in is never searched again.
+export function redactUpstream(text: string, upstreamUrl: string): string {
+  return replaceEachOnce(text, upstreamReplacements(upstreamUrl));
 }
 
 /** The line the bridge prints once both connections answer. The rig's server is named as a log
@@ -109,11 +112,16 @@ export function bridgeReadyLine(config: BridgeConfig): string {
 }
 
 /** The line the bridge prints when it stops on `error`: the client's own text, with neither
- *  connection's credential in it (natsErrorForLog for the rig's, redactUpstream for the
- *  operator's) and the upstream's host not named. */
+ *  connection's credential in it (natsUnnamedParts for the rig's) and the upstream's host not
+ *  named. Both in one pass: replaced one after the other, a rig credential that is a label of
+ *  the upstream's host broke the whole-host match, and the rest of the host was printed. A part
+ *  of both is the upstream's. */
 export function bridgeFailureLine(error: unknown, config: BridgeConfig): string {
   const message = error instanceof Error ? error.message : String(error);
-  return `BRIDGE UNHEALTHY ${redactUpstream(natsErrorForLog(message, [config.downstreamUrl]), config.upstreamUrl)}`;
+  const rig = natsUnnamedParts([config.downstreamUrl]).map(
+    (part) => [part, NATS_ADDRESS_NOT_SHOWN] as const
+  );
+  return `BRIDGE UNHEALTHY ${replaceEachOnce(message, [...rig, ...upstreamReplacements(config.upstreamUrl)])}`;
 }
 
 export function envelopeValidation(data: string | Uint8Array): EnvelopeValidation {

@@ -5,7 +5,9 @@ body: |-
   not at all where its address does not read as a host (a pasted nkey seed or token parses as one);
   and in nats.js's own error text neither such an address, as written or as its host, nor any
   credential a URL holds, whatever its case, also for a URL nats.js cannot parse. Each part is
-  replaced once, in one pass over the text as nats.js wrote it. A broker token's `ready` waits at
+  replaced once, in one pass over the text as nats.js wrote it; `natsUnnamedParts(servers)` and
+  `replaceEachOnce(text, replacements)` are the two halves, for a log that hides other parts in the
+  same pass. A broker token's `ready` waits at
   most 20 s, nats.js's own dial timeout, for the secrets broker to answer the trade, and then fails
   naming the setting that chose the broker token, rather than holding a session's start in silence.
 time: 2026-11-16T13:03:12Z

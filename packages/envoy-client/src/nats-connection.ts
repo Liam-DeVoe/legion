@@ -105,38 +105,65 @@ function serverParts(server: string): { secrets: string[]; hostname: string } {
 }
 
 /**
- * `text` (a NATS connect error's, which nats.js's resolver errors fill with the host they looked
- * up, lowercased) with every address of `servers` a log does not name (`natsServerForLog`), as
- * written and as its host name, and every user, password or token a URL of them holds, replaced
- * by `NATS_ADDRESS_NOT_SHOWN` whatever its case. One pass over `text` as nats.js wrote it: a
- * stand-in is never searched again, so a part that is a word of the stand-in (a user `a`) does
- * not grow the text, however many servers repeat it.
+ * Every part of `servers` a log does not name: each address `natsServerForLog` does not name, as
+ * written and as its host name, and every user, password or token a URL of them holds, as written
+ * and decoded.
  */
-export function natsErrorForLog(text: string, servers: readonly string[]): string {
-  // Keyed lowercased: the search ignores case, so one spelling of a part is enough.
-  const parts = new Map<string, string>();
-  const add = (part: string): void => {
-    if (part.trim() !== "") parts.set(part.toLowerCase(), part);
-  };
+export function natsUnnamedParts(servers: readonly string[]): string[] {
+  const parts: string[] = [];
   for (const server of servers) {
     const { secrets, hostname } = serverParts(server);
     for (const secret of secrets) {
-      add(secret);
+      parts.push(secret);
       try {
-        add(decodeURIComponent(secret));
+        parts.push(decodeURIComponent(secret));
       } catch {
         // A malformed escape: the part as written is what the text can carry.
       }
     }
     if (natsServerForLog(server) !== UNNAMED_NATS_SERVER) continue;
-    add(server);
-    add(hostname);
+    parts.push(server, hostname);
   }
-  if (parts.size === 0) return text;
-  // Longest first: at any one place the longest part that matches is the one replaced, so a part
-  // inside another leaves nothing of the longer behind.
-  const alternatives = [...parts.values()]
+  return parts;
+}
+
+/**
+ * `text` with each part of `replacements` replaced by its stand-in, whatever its case, in one pass
+ * over `text` as written: a stand-in is never searched again, so a part that is a word of one (a
+ * user `a`) does not grow the text, and no replacement can break a longer part's match for
+ * another. Longest first: at any one place the longest part that matches is the one replaced, so a
+ * part inside another leaves nothing of the longer behind. Of two entries for one part (whatever
+ * its case) the later's stand-in is used.
+ */
+export function replaceEachOnce(
+  text: string,
+  replacements: Iterable<readonly [part: string, standIn: string]>
+): string {
+  const standIns = new Map<string, string>();
+  for (const [part, standIn] of replacements) {
+    if (part.trim() !== "") standIns.set(part.toLowerCase(), standIn);
+  }
+  if (standIns.size === 0) return text;
+  const alternatives = [...standIns.keys()]
     .sort((a, b) => b.length - a.length)
     .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return text.replace(new RegExp(alternatives.join("|"), "gi"), NATS_ADDRESS_NOT_SHOWN);
+  // A match whose lowercasing is not its part's (a case fold the search makes and toLowerCase
+  // does not) still gets a stand-in: the first, which hides it as well as its own would.
+  const fallback = standIns.values().next().value as string;
+  return text.replace(
+    new RegExp(alternatives.join("|"), "gi"),
+    (match) => standIns.get(match.toLowerCase()) ?? fallback
+  );
+}
+
+/**
+ * `text` (a NATS connect error's, which nats.js's resolver errors fill with the host they looked
+ * up, lowercased) with every part of `servers` a log does not name (`natsUnnamedParts`) replaced
+ * by `NATS_ADDRESS_NOT_SHOWN`, in one pass (`replaceEachOnce`).
+ */
+export function natsErrorForLog(text: string, servers: readonly string[]): string {
+  return replaceEachOnce(
+    text,
+    natsUnnamedParts(servers).map((part) => [part, NATS_ADDRESS_NOT_SHOWN] as const)
+  );
 }

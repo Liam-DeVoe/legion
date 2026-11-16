@@ -192,6 +192,22 @@ describe("the bridge's output lines", () => {
       expect(line.toLowerCase()).not.toContain("canary");
     }
   });
+
+  test("a rig credential that is a label of the upstream's host leaves none of that host", () => {
+    // Replaced the rig's first, `private` broke the whole-host match the upstream's needs, and
+    // the rest of the host was printed. A rig user that is no part of the host is the control.
+    for (const user of ["private", "unrelated"]) {
+      const overlapping = bridgeConfigFromEnvironment({
+        SMOKE_REPO: "a/b",
+        SMOKE_RIG_NATS: `nats://${userinfo(user, "pw")}172.30.0.1:31000`,
+        SMOKE_UPSTREAM_NATS: "nats://private.e2-proof-does-not-exist.invalid:4222",
+      });
+      const failure = new Error("getaddrinfo ENOTFOUND private.e2-proof-does-not-exist.invalid");
+      expect(bridgeFailureLine(failure, overlapping)).toBe(
+        "BRIDGE UNHEALTHY getaddrinfo ENOTFOUND SMOKE_UPSTREAM_NATS"
+      );
+    }
+  });
 });
 
 describe("envelopeValidation", () => {

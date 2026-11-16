@@ -169,7 +169,9 @@ default 120 s interval left a frozen path for up to 6 minutes. A failed connect 
 and port alone, and an address that does not read as a host (a pasted nkey seed or token parses as
 one) is not named at all, nor is it, or any credential a URL holds, left in nats.js's own error text,
 whose resolver errors name the host they looked up. Each part goes in one pass over that text, so a
-part that is a word of the stand-in is never searched again.
+part that is a word of the stand-in is never searched again. Its two halves,
+`natsUnnamedParts(servers)` and `replaceEachOnce(text, replacements)`, serve a log that hides other
+parts in that same pass, as the e2e bridge hides its upstream beside its rig's credential.
 
 A session's NATS credential (`@legion/envoy-client/nats-credential`) is one of three: the nkey user
 a seed names, the session's broker token, or none. The broker token is the session's own, the one
