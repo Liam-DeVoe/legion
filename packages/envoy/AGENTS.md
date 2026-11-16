@@ -4344,6 +4344,15 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 Every `/v1` request with a body must set `Content-Type: application/json`;
 parameters such as `charset=utf-8` are accepted, and every other type receives a JSON 415 error.
 Webhook routes keep their own signature and content handling.
+Every route that reads a request body reads it through `http.MaxBytesReader`, to a limit above the largest real request of that route.
+A body past the limit is answered 413 with an error that names the limit in bytes and in MiB, and the route does nothing else: no store write, no publish, no consumer.
+Every `/v1` route reads to 4 MiB (`apiBodyLimit`, `cmd/listener/body_limit.go`) and answers `413 {"error":"body too large: the limit is 4194304 bytes (4 MiB)"}`;
+the send and publish routes record it `too_large`.
+The largest real `/v1` request is a send or a publish whose message and payload each come near the NATS max payload, the server's default of 1 MiB, which no deployment changes:
+the envelope must fit that payload, and it carries the payload and only a one-line summary of the message, so such a body is about 2 MB.
+The largest registration the live listener held on 2026-11-16 named 802 topics in about 35 KB.
+The webhook routes read to limits of their own and answer the same words as text:
+GitHub's 25 MiB (`githubMaxBody`, GitHub's documented 25 MB cap), Slack's 1 MiB (`slackMaxBody`: Slack documents no cap on an event and cuts a message's text at 40,000 characters) and Ghost Wispr's 1 MiB (`ghostWisprMaxBody`).
 
 A listener with no bearer configured (neither `ENVOY_API_TOKEN` nor the OIDC pair) serves `/v1` only to a request whose `Host` names it:
 `localhost`, a loopback address (`127.0.0.0/8`, `::1`) or one of `ENVOY_ALLOWED_HOSTS`, comma-separated names or addresses with no port.
@@ -4790,7 +4799,7 @@ Each item below names an endpoint and its method, then its contract, and an item
 - `/v1/legion/agents` (GET, PUT)
 
   GET `?issue=<KEY>` answers `{"entries":[…]}`, every session of the issue by role in workflow order (architect, planner, implementer, tester, reviewer, merger), then newest first; `[]` when none.
-  PUT records a batch, `{"entries":[…]}` of at most 256 entries in a body of at most 1 MiB (413 past either), every entry validated and checked against what is stored before the first write, so one bad entry refuses the batch with a 400 (or a 409) naming its index (`entries[3]: …`) and nothing written.
+  PUT records a batch, `{"entries":[…]}` of at most 256 entries in a body of at most 4 MiB, the `/v1` body limit (413 past either), every entry validated and checked against what is stored before the first write, so one bad entry refuses the batch with a 400 (or a 409) naming its index (`entries[3]: …`) and nothing written.
   A batch that fails after those checks answers `{"error":"…wrote <n> of <m> legion agents, then entries[<i>]: …","written":<n>}` with the failed entry's own status: a 503 with `Retry-After: 1` for a read or write the bucket did not answer, which the caller sends again (every write is idempotent); a 409 for a session another write claimed after the batch read it; a 400 or 413 for a key NATS refuses, as the single PUT answers it.
 
 The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
@@ -5552,7 +5561,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The bounds are absolute: a body is kept only if it arrives within 60 s (10 MB at about 170 KB/s, the 25 MB cap at about 440 KB/s), and a sender that stalls holds its connection for up to about 70 s (the header's 10 s, then 60 s) and at most twice the bytes it has sent (`bodyBudget`) for 60 s.
   A delivery waiting for room behind it reads its body under the same 60 s (a context deadline, since nothing reads its connection while it waits), so its wait ends there and it is answered 400.
   Only the GitHub route's answer can outlast the HTTP shutdown's 10 s.
-  A body read that fails is logged `github body read failed` with the delivery id, event, declared length, bytes read and elapsed time, and answered 400 (413 past GitHub's 25 MB cap).
+  A body read that fails is logged `github body read failed` with the delivery id, event, declared length, bytes read and elapsed time, and answered 400 (413 past GitHub's 25 MB cap, naming the limit).
 
 - A webhook's bus work ends with its request (`webhook.Publisher`, `bus.Client.PublishWithin`), so a silent bus is answered the 503 a failed publish or record always got inside its caller's wait.
   A Slack event's publishes end 2.5 s after the handler's start (`slackAnswerBudget`), inside the 3 s Slack waits before it retries, where the bus's own 5 s bound let Slack give up first.

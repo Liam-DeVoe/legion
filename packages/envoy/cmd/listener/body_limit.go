@@ -1,0 +1,50 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+)
+
+// apiBodyLimit bounds the body of every /v1 route that reads one: 4 MiB, twice the largest request
+// a caller sends. That request is a send or a publish (POST /v1/messages/send and
+// /v1/messages/publish). Its envelope must fit the NATS max payload, the server's default of
+// 1 MiB, which no deployment changes. The envelope carries the request's payload and only a
+// one-line summary of its message (messageEnvelope), so a body whose message and payload each come
+// near 1 MiB, about 2 MiB in all, is served. The bodies of the other routes are smaller. The
+// largest registration (POST /v1/interests/subscribe) that the live listener held on 2026-11-16
+// named 802 topics in about 35 KB, and a registration's topics and its entry's fields each go into
+// one KV value under the same 1 MiB. A role claim is a few hundred bytes. A Legion agent batch is at
+// most legionagents.MaxBatch entries of bounded fields, under 2 MiB.
+const apiBodyLimit = 4 << 20
+
+// apiBodyTooLarge is the error a /v1 route answers, with 413, to a body past apiBodyLimit.
+var apiBodyTooLarge = fmt.Sprintf("body too large: the limit is %d bytes (%d MiB)", apiBodyLimit, apiBodyLimit>>20)
+
+// readAPIBody decodes the JSON body of a /v1 request into into. It reads the body through
+// http.MaxBytesReader, so it reads and parses no more than apiBodyLimit bytes of it. When the body
+// does not decode, it returns the refusal the route answers: 413 naming the limit for a body past
+// it, and 400 "invalid json" for any other. The status is 0 when the body decoded.
+func readAPIBody(w http.ResponseWriter, r *http.Request, into any) (status int, message string) {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, apiBodyLimit)).Decode(into)
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		return http.StatusRequestEntityTooLarge, apiBodyTooLarge
+	case err != nil:
+		return http.StatusBadRequest, "invalid json"
+	}
+	return 0, ""
+}
+
+// decodeAPIBody is readAPIBody for a route that answers its refusal with writeJSONError. It
+// reports whether the handler goes on.
+func decodeAPIBody(w http.ResponseWriter, r *http.Request, into any) bool {
+	status, message := readAPIBody(w, r, into)
+	if status != 0 {
+		writeJSONError(w, status, message)
+		return false
+	}
+	return true
+}

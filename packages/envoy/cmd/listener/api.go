@@ -838,8 +838,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// client, nothing changes.
 			ConnectedOnly bool `json:"connected_only"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "invalid json")
+		if status, message := readAPIBody(w, r, &request); status != 0 {
+			record.refuseBody(w, status, message)
 			return
 		}
 		body = request.messageBody
@@ -1192,8 +1192,8 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			Topic string `json:"topic"`
 			Keep  *bool  `json:"keep"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "invalid json")
+		if status, message := readAPIBody(w, r, &request); status != 0 {
+			record.refuseBody(w, status, message)
 			return
 		}
 		// The topic is recorded as the envelope will carry it, untrimmed, so a request refused for
@@ -2061,8 +2061,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// by the renewal alone, since an absent instance matches no claim.
 			ClientInstanceID string `json:"client_instance_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid json")
+		if !decodeAPIBody(w, r, &body) {
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
@@ -2944,8 +2943,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			return
 		}
 		var body subscribeBody
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid json")
+		if !decodeAPIBody(w, r, &body) {
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
@@ -3192,8 +3190,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 			// the session's other topics.
 			ClientInstanceID string `json:"client_instance_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid json")
+		if !decodeAPIBody(w, r, &body) {
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -16,6 +17,30 @@ import (
 // which also keeps the bus's own five-second bound).
 type Publisher interface {
 	PublishWithin(context.Context, contracts.Envelope) error
+}
+
+// readBody reads r's whole body for a route that checks its signature over the bytes it read. It
+// reads the body through http.MaxBytesReader, so it reads no more than limit bytes of it. A body
+// past limit is answered 413 naming the limit (refuseBodyTooLarge), and a read that failed any
+// other way 400 "invalid body". It reports whether the handler goes on.
+func readBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			refuseBodyTooLarge(w, limit)
+			return nil, false
+		}
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return nil, false
+	}
+	return body, true
+}
+
+// refuseBodyTooLarge answers a body past the route's limit: 413, naming the limit in bytes and in
+// MiB. Every limit is a whole number of MiB.
+func refuseBodyTooLarge(w http.ResponseWriter, limit int64) {
+	http.Error(w, fmt.Sprintf("body too large: the limit is %d bytes (%d MiB)", limit, limit>>20), http.StatusRequestEntityTooLarge)
 }
 
 // deliveryFailed answers a delivery whose envelope the listener did not publish, and logs
