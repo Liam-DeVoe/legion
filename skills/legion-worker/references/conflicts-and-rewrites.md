@@ -20,11 +20,14 @@ Every path it cites is in cybermonklabs/legion.
   record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge can change a
   function's signature under the branch's own callers. Before you race another tree's pull request on
   shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
-  merge once, after it. A forward merge that leaves the branch's diff unchanged is a
-  confirmation, not a new round (see *The unchanged-diff check* below), unless a spec version,
-  or for the tester a Verification-document one, was approved since. The check compares the
-  pull request's own lines file by file: a changed file sends the head through the tester again,
-  and your comment names it. Before merging, record
+  merge once, after it.
+  A forward merge that leaves the branch's diff unchanged is a confirmation, not a new round
+  (see *The unchanged-diff check* below), unless a spec version, or for the tester a
+  Verification-document one, was approved since, or it is a parent's last round, a full round
+  for the reviewer and the tester.
+  The check compares the pull request's own lines file by file: a changed file sends the head
+  through the tester again, and your comment names it.
+  Before merging, record
   the fingerprint at the current tip; after pushing the merged branch, record it at the new
   tip; post one PR comment (Legion footer):
   `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`.
