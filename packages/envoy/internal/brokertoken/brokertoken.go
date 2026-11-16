@@ -370,13 +370,15 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	//
 	// The rest is the scope and the list the Projects beside it are read under: a word this
 	// package does not know is a token it cannot read, and is refused here rather than taken as
-	// a token that names no project at all (ErrNotASession). A named scope naming no project is
-	// the same case, refused rather than read as a caller no project check covers; a list no
-	// exchange mints (oauthwire.ValidProjects) and a service's token naming a project, which the
-	// exchange refuses to mint, are refused for the same reason.
+	// a token that names no project at all (ErrNotASession). A named token is an operator's
+	// entry's, which names one project, or none for an account entry that names none, and always
+	// a person: a named answer naming two or more projects, which a reader holding a write to one
+	// project would take as no limit at all, or naming none and no person, is the same case. A
+	// list no exchange mints (oauthwire.ValidProjects) and a service's token naming a project,
+	// which the exchange refuses to mint, are refused for the same reason.
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		(answer.ProjectScope != ProjectScopeNamed && answer.ProjectScope != ProjectScopePerson) ||
-		(answer.ProjectScope == ProjectScopeNamed && len(answer.Projects) == 0) ||
+		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
 		return "", Introspection{}, ErrNotASession
