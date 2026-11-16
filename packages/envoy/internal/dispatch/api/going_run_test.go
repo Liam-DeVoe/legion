@@ -25,10 +25,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// goingDecisionModel is the measured model the decision tests configure: a name the committed
-// record holds, whose thresholds every expectation below reads from the record rather than
-// writing a number.
-const goingDecisionModel = "jev-latest"
+// goingDecisionModel is the measured model the decision tests configure: the one the committed
+// record names chosen, whose thresholds every expectation below reads from the record rather
+// than writing a number, so the tests run what production runs.
+const goingDecisionModel = "jev-preview"
 
 // decisionStandIn is a System One endpoint that answers each decision with the answer the test
 // last set, counts the calls and keeps each body it was sent. It calls nothing and holds no
