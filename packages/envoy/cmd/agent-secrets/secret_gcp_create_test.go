@@ -491,7 +491,7 @@ func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) 
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	s, err := openSession(context.Background(), io.Discard, "secret create", "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,10 +731,11 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 		}, func() (string, string, string) {
 			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
 		}},
-		{"a gcloud configuration --profile names", []string{"--profile", "theorem"}, func(t *testing.T) {
+		{"a gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names", nil, func(t *testing.T) {
 			useGcloudConfigurations(t, "box", orderConfigurations)
+			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
 		}, func() (string, string, string) {
-			return "", " --profile theorem", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
+			return "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem ", "", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
 		}},
 	} {
 		for _, scenario := range []struct {
@@ -790,7 +791,7 @@ func TestCreateSignalAfterAFailedBeginPrintsNothingMore(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	s, err := openSession(context.Background(), io.Discard, "secret create", "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
