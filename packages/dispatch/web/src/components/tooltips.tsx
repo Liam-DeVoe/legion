@@ -18,6 +18,7 @@ export interface PageWords {
   readonly AUTHOR_KIND_WORDS: Words<"agent">;
   readonly CONTROL_LABELS: Words<
     | "add"
+    | "add_label"
     | "add_priority"
     | "advances_inherited"
     | "approval_latest"

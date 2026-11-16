@@ -1903,14 +1903,26 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
       expect(title).toContain("[overflow-wrap:anywhere]");
       expect(title).not.toContain("truncate");
       expect(title).not.toContain("max-w-[18ch]");
-      expect(linkTo(root, "https://example.com/notes").textContent).toBe(
-        "https://example.com/notes"
-      );
-      const unsafe = within(root).getByText("javascript:alert(1)").parentElement;
+      const plain = linkTo(root, "https://example.com/notes");
+      expect(plain.textContent).toBe("https://example.com/notes");
+      const unsafeAddress = within(root).getByText("javascript:alert(1)");
+      const unsafe = unsafeAddress.parentElement;
       expect(unsafe === null ? [] : childTexts(unsafe)).toEqual([
         "javascript:alert(1)",
         `(${CONTROL_LABELS.external_link_unsafe})`,
       ]);
+      // The plain link and the unsafe address wrap whole too, where `main` cuts each at 18
+      // characters and leaves the rest to a `title`: the address breaks anywhere, and no element
+      // of its box truncates or narrows it.
+      const wrapsWhole = (address: Element, box: Element) => {
+        expect(classOf(address)).toContain("[overflow-wrap:anywhere]");
+        const cut = [box, ...box.querySelectorAll("*")].filter((element) =>
+          classOf(element).some((token) => token === "truncate" || token === "max-w-[18ch]")
+        );
+        expect(cut.map((element) => element.outerHTML)).toEqual([]);
+      };
+      wrapsWhole(plain, plain);
+      wrapsWhole(unsafeAddress, unsafe ?? unsafeAddress);
     }
   );
   await readDrawn(githubUnread, "inside", (view) => {
@@ -2107,7 +2119,7 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
   });
   await readDrawn(labelsEmptyAndSaving, "inside", (view) => {
     expectMarks(view.container, [
-      [PROPERTY_LABELS.labels, "page-chrome"],
+      [CONTROL_LABELS.add_label, "page-chrome"],
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
     ]);

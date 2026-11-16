@@ -95,6 +95,7 @@ function ApprovalVersionLink({
 function StepState({
   actions,
   actionsOn,
+  actionsTogether,
   entry,
   primaryArtifactId,
   size,
@@ -102,6 +103,7 @@ function StepState({
 }: {
   actions: boolean;
   actionsOn: readonly string[] | undefined;
+  actionsTogether: boolean;
   entry: StepEntry;
   primaryArtifactId: string;
   size: "compact" | "default";
@@ -133,6 +135,7 @@ function StepState({
     <>
       <ApprovalChip
         artifact={document}
+        keepActionsTogether={actionsTogether}
         layout="contents"
         showActions={
           actions &&
@@ -215,6 +218,7 @@ export function ApprovalSteps({
   actions = true,
   actionsOn,
   entries,
+  layout = "block",
   primaryArtifactId,
   reasons = true,
   size = "default",
@@ -231,6 +235,13 @@ export function ApprovalSteps({
    *  the reader (dispatch://INFRA-3935 R10). */
   actionsOn?: readonly string[];
   entries: StepEntry[];
+  /** `block` draws the list and each entry as boxes of their own, each wrapping within itself,
+   *  as on `main`. `contents` draws no box for the list or for an entry, so each entry's name,
+   *  its chip, and its Approve and Request changes, kept together in one box that does not wrap
+   *  (`ApprovalChip`'s `keepActionsTogether`), are items of the caller's line, which sets their
+   *  gaps; the reasons, when drawn, follow them there. Part P's header uses it
+   *  (dispatch://INFRA-3935 R10, decision 86 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+  layout?: "block" | "contents";
   primaryArtifactId: string;
   /** Whether each step a reviewer sent back says why, under the list. */
   reasons?: boolean;
@@ -246,23 +257,27 @@ export function ApprovalSteps({
   versions?: ApprovalVersions;
 }): ReactNode {
   const page = usePageWords();
+  const contents = layout === "contents";
   return (
     // The list takes the header row's full width and wraps within itself: three steps, their
     // chips and the two actions never fit a phone's line, and a row that cannot wrap scrolls
-    // the page sideways. With no reasons under it, the list is its host's own flex item.
-    <div className={reasons ? "flex w-full min-w-0 flex-col gap-2" : "contents"}>
+    // the page sideways. With no reasons under it, the list is its host's own flex item; at
+    // `layout="contents"` the host, the list and each entry draw no box at all (R10).
+    <div className={reasons && !contents ? "flex w-full min-w-0 flex-col gap-2" : "contents"}>
       <ul
         aria-label="Approvals"
         className={
-          size === "compact"
-            ? "flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1"
-            : "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2"
+          contents
+            ? "contents"
+            : size === "compact"
+              ? "flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1"
+              : "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2"
         }
         data-testid={testId}
       >
         {entries.map((entry) => (
           <li
-            className="flex min-w-0 flex-wrap items-center gap-2"
+            className={contents ? "contents" : "flex min-w-0 flex-wrap items-center gap-2"}
             data-approval-step={entry.step}
             key={entry.step}
           >
@@ -276,6 +291,7 @@ export function ApprovalSteps({
             <StepState
               actions={actions}
               actionsOn={actionsOn}
+              actionsTogether={contents}
               entry={entry}
               primaryArtifactId={primaryArtifactId}
               size={size}
