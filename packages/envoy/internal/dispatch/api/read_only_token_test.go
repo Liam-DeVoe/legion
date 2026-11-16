@@ -27,6 +27,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -198,6 +199,107 @@ func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	t.Logf("walked %d rows of the mounted table (test hooks in), GET %s and GET /ws/doc/{room}", walked, liveSocketPattern)
+}
+
+// resultsOnlyToken is the broker's answer for a result entry's token
+// (BROKER_EXCHANGE_RESULT_WORKFLOWS): live, bound to jkt, the scope results alone beside the
+// project scope results, the person and the project the entry names, the session of its
+// workflow, and the run it was minted for.
+func resultsOnlyToken(jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml",
+		Person:       "ada@example.com",
+		ProjectScope: brokertoken.ProjectScopeResults,
+		Project:      "ACME",
+		Scope:        brokertoken.ScopeResults,
+		CI: &brokertoken.CIRun{
+			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
+			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
+		},
+		ExpiresAt:  time.Now().Add(time.Hour).Unix(),
+		ClientID:   brokertoken.ExchangeClientID,
+		Thumbprint: jkt,
+	}
+}
+
+// TestEveryRowRefusesAResultsTokenWhileDispatchServesNone walks every row of the table, test
+// hooks in, and GET /ws/live with a result entry's token, on a verifier built as Dispatch builds
+// its own (cmd/dispatch, brokerTokenVerifier), which serves no such token yet. Each row's chain is
+// built as register does (routeHandler), with the row's handler replaced by one that resolves its
+// caller as a handler does (requireAuthenticated) and counts a caller it resolved; the socket is
+// replaced the same way. The verifier refuses the token, and decideBrokerToken carries that
+// refusal to every layer, so no row resolves a caller from it: each row answers 401
+// BROKER_TOKEN_NOT_A_SESSION, from a layer of its chain (the scope gate, the sign-in check) or
+// from its handler's first resolution, and no handler and no socket gets past that resolution. A
+// row whose real handler resolves no caller at all serves the token what it serves a request
+// with no credential, and so serves it nothing a session gets. A row is counted once its
+// assertions have run, and the count is held to the rows the registered server mounts, so a walk
+// that skipped a row, or walked none, fails.
+func TestEveryRowRefusesAResultsTokenWhileDispatchServesNone(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
+	caller := newBrokerCaller(t)
+	const token = "a-results-token-walking-every-chain"
+	rig.broker.Says(token, resultsOnlyToken(caller.jkt))
+	notTheRefusal := func(response *httptest.ResponseRecorder) string {
+		var refusal refusalAnswer
+		_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+		if response.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
+			return "answered " + http.StatusText(response.Code) + " " + strings.TrimSpace(response.Body.String())
+		}
+		return ""
+	}
+	// resolving stands in for a handler: it resolves its caller first, as every handler that
+	// acts for one does, and counts in resolved a caller it got.
+	resolving := func(resolved *int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !rig.served.requireAuthenticated(w, r) {
+				return
+			}
+			*resolved++
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}
+
+	replays := rig.served.keyedReplays()
+	walked, byHandler := 0, 0
+	for _, route := range readOnlyTable() {
+		name := route.Method + " " + route.Pattern
+		resolved, reached := 0, 0
+		inner := resolving(&resolved)
+		route.Handler = func(w http.ResponseWriter, r *http.Request) {
+			reached++
+			inner(w, r)
+		}
+		response := httptest.NewRecorder()
+		rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token))
+		if resolved != 0 {
+			t.Errorf("%s resolved a caller from a results token %d times, want none", name, resolved)
+		}
+		if why := notTheRefusal(response); why != "" {
+			t.Errorf("%s %s, want 401 BROKER_TOKEN_NOT_A_SESSION", name, why)
+		}
+		byHandler += reached
+		walked++
+	}
+
+	opened := 0
+	live := rig.served.liveSocketHandler(resolving(&opened))
+	response := httptest.NewRecorder()
+	live.ServeHTTP(response, caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
+	if opened != 0 {
+		t.Errorf("GET %s resolved a caller from a results token %d times, want none, so no socket opens", liveSocketPattern, opened)
+	}
+	if why := notTheRefusal(response); why != "" {
+		t.Errorf("GET %s %s, want 401 BROKER_TOKEN_NOT_A_SESSION", liveSocketPattern, why)
+	}
+
+	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
+	}
+	t.Logf("walked %d rows of the table (test hooks in) and GET %s: each answered a results token 401 BROKER_TOKEN_NOT_A_SESSION and resolved no caller; %d rows at their handler's resolution, %d at a layer before it",
+		walked, liveSocketPattern, byHandler, walked-byHandler)
 }
 
 // registerRefusal is the refusal Register panics with on the table as it stands, and empty when

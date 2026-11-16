@@ -37,6 +37,11 @@ const (
 	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
 	// only under Options.ServesReadOnly.
 	ProjectScopeNone = oauthwire.ProjectScopeNone
+	// ProjectScopeResults means Project is the one project whose results the token writes, for
+	// the run it carries, and it writes nothing else: a results token, which holds ScopeResults
+	// and nothing else beside it (shapeOf) and which a verifier accepts only under
+	// Options.ServesResults.
+	ProjectScopeResults = oauthwire.ProjectScopeResults
 )
 
 // ScopeRead is the one OAuth scope a read-only token holds, in the answer's space-separated
@@ -44,6 +49,15 @@ const (
 // ProjectScopeNone it is a read-only token, and beside any other project scope it is no
 // session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
+
+// ScopeResults is the one OAuth scope a results token holds, carried here for the reason
+// ScopeRead is. Beside ProjectScopeResults it is a results token, and beside any other project
+// scope it is no session's credential (ErrNotASession).
+const ScopeResults = oauthwire.ScopeResults
+
+// CIRun is the GitHub Actions run a results token was minted for, as the broker answers it
+// (Introspection.CI), carried here for the reason the project scopes are.
+type CIRun = oauthwire.CIRun
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
@@ -70,15 +84,17 @@ func expiryOf(answer Introspection) time.Time {
 }
 
 // callerOf is the Caller a live answer names, the one shape both checks hand back. The named
-// scope is read here rather than left to a reader: Project is the project a named-scope answer
-// names, and nothing at all for an answer scoped to its person, who writes wherever they may,
-// or for a read-only answer, which writes nothing. The service is carried as the broker
-// answered it, which is set exactly where the person is not (live refuses an answer naming
-// neither). ProjectScope is carried whole beside them, because a reader deciding what the token
-// may do needs the scope itself and not only the project rule read off it. ReadOnly is shapeOf's
-// verdict on the answer, which live reached and hands over as shape: callerOf runs only on an
-// answer live accepted, and live lets a read-only answer through only a verifier that serves
-// one, so a Caller marked read-only is one such a verifier accepted.
+// scope is read here rather than left to a reader: Project is the project a named-scope or
+// results answer names, and nothing at all for an answer scoped to its person, who writes
+// wherever they may, or for a read-only answer, which writes nothing. The service is carried as
+// the broker answered it, which is set exactly where the person is not (live refuses an answer
+// naming neither). ProjectScope is carried whole beside them, because a reader deciding what the
+// token may do needs the scope itself and not only the project rule read off it. ReadOnly and
+// ResultsOnly are shapeOf's verdict on the answer, which live reached and hands over as shape:
+// callerOf runs only on an answer live accepted, and live lets a read-only or a results answer
+// through only a verifier that serves one, so a Caller marked either way is one such a verifier
+// accepted. The run of a results answer is copied, so a reader of the Caller shares nothing with
+// the answer the cache keeps for the next request.
 func callerOf(answer Introspection, shape tokenShape) Caller {
 	caller := Caller{
 		Session:      answer.Session,
@@ -86,9 +102,17 @@ func callerOf(answer Introspection, shape tokenShape) Caller {
 		Service:      answer.Service,
 		ProjectScope: answer.ProjectScope,
 		ReadOnly:     shape == shapeReadOnly,
+		ResultsOnly:  shape == shapeResults,
 	}
-	if answer.ProjectScope == ProjectScopeNamed {
+	switch shape {
+	case shapeResults:
 		caller.Project = answer.Project
+		run := *answer.CI
+		caller.CI = &run
+	case shapeOrdinary:
+		if answer.ProjectScope == ProjectScopeNamed {
+			caller.Project = answer.Project
+		}
 	}
 	return caller
 }
