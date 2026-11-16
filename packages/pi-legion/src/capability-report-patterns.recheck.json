@@ -24,11 +24,11 @@
       "ms": 89489
     },
     "api-key-header": {
-      "source": "((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\\\?[\"']?[ \\ufffe\\uffff]*[:=][ \\ufffe\\uffff]*\\\\?[\"']?)(?:[A-Za-z0-9._~+/=*-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?)+",
+      "source": "((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\\\?[\"']?[ \\ufffe\\uffff]*[:=][ \\ufffe\\uffff]*\\\\?[\"']?)(?:[^ \"'\\\\)\\]}>,;:.!?]|[\\\\)\\]}>,;:.!?]+[^ \"'\\\\)\\]}>,;:.!?])+",
       "flags": "gi",
       "status": "safe",
       "verdict": "linear",
-      "ms": 52862
+      "ms": 5049
     },
     "json-member": {
       "source": "(\\\\?[\"'](?:api_key|access_token)\\\\?[\"'][ \\ufffe\\uffff]*:[ \\ufffe\\uffff]*\\\\?[\"'])[^\"'\\\\]+",
@@ -36,13 +36,6 @@
       "status": "safe",
       "verdict": "linear",
       "ms": 1835
-    },
-    "bearer": {
-      "source": "\\b(bearer[ \\ufffe\\uffff]+)(?:[A-Za-z0-9._~+/=*-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?)+",
-      "flags": "gi",
-      "status": "safe",
-      "verdict": "linear",
-      "ms": 2366
     },
     "github-token": {
       "source": "\\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?){20,}",
