@@ -538,7 +538,9 @@ that other work shares.
   20,000 processes, and the binary pays it at each of its starts. Such a test drives its container
   through the docker CLI, with `--cpus` and `--memory` on `docker create`, as
   `packages/daemon/internal/testnats/container.go` does, whose reaper removes the containers of a
-  test binary that is killed before it removes them.
+  test binary that is killed before it removes them. It publishes and dials on the machine of the
+  daemon the docker CLI itself resolves (`docker context inspect`), so the order in which
+  `DOCKER_HOST`, `DOCKER_CONTEXT` and the current context win is the CLI's, not a copy of it.
   `TestThisTestBinaryLinksNoTestcontainers` in the daemon's `cmd/legion`, `internal/daemon` and
   `internal/testnats` calls `internal/testbinary`'s `LinksNoTestcontainers`, which fails when the
   library is linked again; `.github/scripts/testcontainers_links.py` holds every command and every

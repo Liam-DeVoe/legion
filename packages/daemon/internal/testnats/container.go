@@ -276,42 +276,39 @@ func (d dockerDaemon) publish(port string) string {
 // address is the address this process dials for a published port.
 func (d dockerDaemon) address(port string) string { return net.JoinHostPort(d.dial, port) }
 
-// reachedDaemon is daemonHost for this process, read once from DOCKER_CONTEXT, DOCKER_HOST and
-// the docker CLI's contexts.
+// reachedDaemon is daemonHost of the endpoint the docker CLI resolves (cliEndpoint), read once per
+// process: every `docker create`, `start` and `port` of this file runs that CLI in this process's
+// environment, so it acts on that daemon.
 var reachedDaemon = sync.OnceValues(func() (dockerDaemon, error) {
-	return daemonHost(os.Getenv("DOCKER_CONTEXT"), os.Getenv("DOCKER_HOST"), func(name string) (string, error) {
-		args := []string{"context", "inspect", "--format", "{{.Endpoints.docker.Host}}"}
-		if name != "" {
-			args = append(args, name)
-		}
-		return docker(context.Background(), nil, args...)
-	})
+	endpoint, err := cliEndpoint(context.Background())
+	if err != nil {
+		return dockerDaemon{}, err
+	}
+	return daemonHost(endpoint)
 })
 
-// daemonHost is the daemon the docker CLI reaches, found in the CLI's order (its documented
-// environment variables: DOCKER_CONTEXT "overrides DOCKER_HOST env var and default context set
-// with docker context use"): the endpoint of the context dockerContext names when it is set; else
-// dockerHost when it is set; else the endpoint of the CLI's current context. contextEndpoint
-// answers a context's endpoint, the current one for "". A daemon on a unix socket, a named pipe
-// or a loopback address runs on this machine: its ports are published on 127.0.0.1 alone and
-// dialled there, so a shared machine exposes no test server. A daemon on another machine (tcp://
-// or ssh:// to a host that is not loopback) publishes on every interface of that machine, and its
-// ports are dialled at its host name, as testcontainers-go dialled them.
-func daemonHost(dockerContext, dockerHost string, contextEndpoint func(name string) (string, error)) (dockerDaemon, error) {
-	var endpoint string
-	var err error
-	switch {
-	case dockerContext != "":
-		if endpoint, err = contextEndpoint(dockerContext); err != nil {
-			return dockerDaemon{}, fmt.Errorf("read the docker context %s that DOCKER_CONTEXT names: %w", dockerContext, err)
-		}
-	case dockerHost != "":
-		endpoint = dockerHost
-	default:
-		if endpoint, err = contextEndpoint(""); err != nil {
-			return dockerDaemon{}, fmt.Errorf("read the docker CLI's current context, which names the daemon when neither DOCKER_CONTEXT nor DOCKER_HOST is set: %w", err)
-		}
+// cliEndpoint is the endpoint of the Docker daemon the docker CLI reaches from this process's
+// environment, as the CLI itself resolves it. `docker context inspect` with no name inspects the
+// context the CLI resolves, which reads DOCKER_HOST, DOCKER_CONTEXT and the configuration's
+// current context in the CLI's own order: in docker/cli's resolveContextName a non-empty
+// DOCKER_HOST selects the default context, whose endpoint it is, over DOCKER_CONTEXT. Asking the
+// CLI keeps the fixture on the daemon its commands reach whatever that order is in the CLI
+// installed, rather than on a copy of the order that can drift from it.
+func cliEndpoint(ctx context.Context) (string, error) {
+	endpoint, err := docker(ctx, nil, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
+	if err != nil {
+		return "", fmt.Errorf("read the Docker endpoint the docker CLI resolves: %w", err)
 	}
+	return endpoint, nil
+}
+
+// daemonHost is where the daemon at endpoint publishes a container's ports and where this process
+// dials them. A daemon on a unix socket, a named pipe or a loopback address runs on this machine:
+// its ports are published on 127.0.0.1 alone and dialled there, so a shared machine exposes no
+// test server. A daemon on another machine (tcp:// or ssh:// to a host that is not loopback)
+// publishes on every interface of that machine, and its ports are dialled at its host name, as
+// testcontainers-go dialled them.
+func daemonHost(endpoint string) (dockerDaemon, error) {
 	local := dockerDaemon{dial: "127.0.0.1", bind: "127.0.0.1"}
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
