@@ -1,6 +1,6 @@
 import { decodeBlockId, itemFromSearch } from "@legion/contracts";
 
-import type { Comment, MessageRead } from "../../api/types";
+import type { Ask, Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
@@ -194,15 +194,18 @@ export function issueAddress(
 /**
  * The id `target` names where it is a comment or a message an agent wrote outside every thread
  * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
- * for every other target, and while the reads that tell are not in (`agents-only.ts`).
+ * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
+ * is the asks read, which tells a reply under a question the outline draws from one under an
+ * approval request, which it does not; without it a reply under any ask is the outline's.
  */
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
   comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
-  messages: readonly MessageRead[] | undefined
+  messages: readonly MessageRead[] | undefined,
+  asks?: readonly Pick<Ask, "id" | "kind">[]
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
-  return agentsOnlyIds(comments, messages).has(target.id) ? target.id : undefined;
+  return agentsOnlyIds(comments, messages, asks).has(target.id) ? target.id : undefined;
 }
 
 /** The chain from `root` down to the first node `wanted` answers for, the root first, or

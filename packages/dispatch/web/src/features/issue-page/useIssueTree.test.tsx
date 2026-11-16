@@ -8,10 +8,12 @@ import type {
   Artifact,
   ArtifactBlock,
   Comment,
+  DisplayTree,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
+import { PRESET_NAMES } from "./page-words";
 import { ReferenceNamesProvider, useKnownReferenceName } from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
@@ -338,7 +340,8 @@ test("The names are read in one batched request, after every other read has answ
 
 // The tester's F17: one block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
-// documents, whose typed blocks the page draws, and of no other document.
+// documents, whose typed blocks the page draws, and of no other document: each the one the issue
+// read names by its id, as the server answers which document plays which part.
 test("Only the spec and the plan, Verification and decisions documents have their blocks read", async () => {
   const notes = issueDocument("artifact-notes", "notes-md");
   const read = [
@@ -347,7 +350,14 @@ test("Only the spec and the plan, Verification and decisions documents have thei
     issueDocument("artifact-verification", "verification-md", { role: "verification" }),
     issueDocument("artifact-decisions", "decisions-md", { role: "decisions" }),
   ];
-  const withDocuments: IssueDetails = { ...issue, artifacts: [...read, notes] };
+  const withDocuments: IssueDetails = {
+    ...issue,
+    artifacts: [...read, notes],
+    decisions_artifact_id: "artifact-decisions",
+    plan_artifact_id: plan.id,
+    primary_artifact_id: "artifact-spec",
+    verification_artifact_id: "artifact-verification",
+  };
   let named = 0;
   const stubs = stubTreeReads(async (refs) => {
     named += 1;
@@ -369,5 +379,85 @@ test("Only the spec and the plan, Verification and decisions documents have thei
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The reviewer's finding on `useIssueTree.ts:119`: the server gives a document its part by its
+// role, or, for a row a rolling deploy left with no role, by the slug that part is made under,
+// and it omits `role` on such a row. The issue read names the document all the same
+// (`plan_artifact_id`), and the tree reads its blocks, and names it, by that id.
+test("A plan with no role that the issue names by its id has its blocks read and is named the plan", async () => {
+  const roleless = issueDocument(plan.id, PLAN);
+  const named: IssueDetails = { ...issue, artifacts: [roleless], plan_artifact_id: roleless.id };
+  const cites = `dispatch://${KEY}/artifact/${PLAN}`;
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    comments: [{ ...comment, body: `The tasks are in ${cites}.` }],
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(named).root, { wrapper });
+    // The plan's task is a row of the tree, which only its blocks being read puts there.
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
+    // A comment citing the whole plan carries a chip that names it as the plan.
+    const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
+    expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([
+      { name: PRESET_NAMES.plan, ref: cites },
+    ]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The reviewer's finding on `useIssueTree.ts:197`: the batched read names a typed block by its
+// stored excerpt, which opens on the block's directive line. Every link that reads the page's
+// published names draws the name as it is, so the page publishes the block's words: the server's
+// reading of them where the read sends one, and the excerpt with its directive left out where
+// it sends none.
+test("A published name is a typed block's words, never its directive line", async () => {
+  const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [{ marks: [{ type: "strong" }], text: TASK_WORDS, type: "text" }],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  for (const [sent, answer] of [
+    ["a reading", { name: `${opener}\n**${TASK_WORDS}**\n:::`, text_tree: reading }],
+    ["no reading", { name: `${opener}\n${TASK_WORDS}\n:::` }],
+  ] as const) {
+    const stubs = stubTreeReads(async (refs) => ({
+      targets: namedTargets(refs).targets.map((target) =>
+        target.ref === TASK_REF ? { ...target, ...answer } : target
+      ),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+    try {
+      const view = renderHook(
+        () => {
+          useIssueTree(issue);
+          return useKnownReferenceName(TASK_REF);
+        },
+        { wrapper }
+      );
+      await waitFor(() => expect(view.result.current, `the read sent ${sent}`).toBe(TASK_WORDS));
+      expect(view.result.current).not.toContain(":::");
+      expect(view.result.current).not.toContain("{#");
+      view.unmount();
+    } finally {
+      for (const stub of stubs) stub.mockRestore();
+    }
   }
 });

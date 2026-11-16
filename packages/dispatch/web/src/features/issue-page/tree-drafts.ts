@@ -8,6 +8,7 @@ import type {
   Decision,
   DisplayTree,
   IssueChild,
+  IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -223,9 +224,11 @@ export function treeContext(
       return reading === undefined ? "" : lineOf(wordsOf(reading));
     }
     // Another issue's document is named by no role of this issue's.
-    if (route?.kind === "spec") return documentWord(route.key === key ? spec : undefined);
+    if (route?.kind === "spec") {
+      return documentWord(reads.issue, route.key === key ? spec : undefined);
+    }
     if (route?.kind === "artifact") {
-      return documentWord(route.key === key ? documents.get(route.slug) : undefined);
+      return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
     }
     return blockWords(target?.name ?? "");
   };
@@ -259,12 +262,28 @@ export function treeContext(
  * plan, Verification and decisions documents, and the page's word for a document
  * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
  * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
+ *
+ * Which document plays which part is the issue read's answer, the id it names for each
+ * (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
+ * `decisions_artifact_id`), the same ids the tree reads the documents' blocks by
+ * (`useIssueTree.ts`): the artifact's own `role` is absent on a document a rolling deploy left
+ * with none, which the server still finds by its slug. The document's own flag and role answer
+ * only where the issue names no id for that part: no spec (`""`), and a Dispatch older than
+ * document roles (absent).
  */
-function documentWord(document: Pick<ArtifactWithTrees, "primary" | "role"> | undefined): string {
-  if (document?.primary === true) return PRESET_NAMES.spec;
-  const role = document?.role;
-  if (role === "plan" || role === "verification" || role === "decisions") {
-    return PRESET_NAMES[role];
+function documentWord(
+  issue: IssueDetails,
+  document: Pick<ArtifactWithTrees, "id" | "primary" | "role"> | undefined
+): string {
+  if (document === undefined) return NODE_TYPE_NAMES.document;
+  const spec = issue.primary_artifact_id;
+  if (spec === "" ? document.primary : document.id === spec) return PRESET_NAMES.spec;
+  for (const [role, id] of [
+    ["plan", issue.plan_artifact_id],
+    ["verification", issue.verification_artifact_id],
+    ["decisions", issue.decisions_artifact_id],
+  ] as const) {
+    if (id === undefined ? document.role === role : document.id === id) return PRESET_NAMES[role];
   }
   return NODE_TYPE_NAMES.document;
 }
@@ -382,7 +401,7 @@ function addDocumentChips(
       if (draft.chips.some((chip) => chip.ref === ref)) continue;
       draft.chips = [
         ...draft.chips,
-        { answered: true, gone: false, name: documentWord(artifact), ref },
+        { answered: true, gone: false, name: documentWord(reads.issue, artifact), ref },
       ];
     }
   }
@@ -621,7 +640,9 @@ interface Turn {
  * `comments.answers` existed (migration 20261105014808) carries none, and its thread's head is
  * then the one entry it names. A reply to an ask names the ask alone (`ask_id`) and is drawn
  * under the ask's node, whatever state the ask is in, a resolved one included
- * (dispatch://INFRA-3677). A message carries no such column, so its thread stays as
+ * (dispatch://INFRA-3677). An approval request is no node (`addAsks`), so the replies under one
+ * are no node either where only agents wrote them, and sit under the issue once a person has
+ * written among them. A message carries no such column, so its thread stays as
  * `in_reply_to` holds it. A comment that is a change a person asked of a decision, and answers
  * nothing else, is drawn under that decision (`decision-review.ts`'s `decisionChanges`), so the
  * change stands tied to the decision it changes.
@@ -636,7 +657,12 @@ function addTurns(
   asks: ReadonlyMap<string, string>,
   changes: ReadonlyMap<string, ChangeComment>
 ): void {
-  const history = agentsOnlyIds(reads.comments, reads.messages);
+  // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
+  // tree draws from one under an approval request, which it does not.
+  const history = agentsOnlyIds(reads.comments, reads.messages, [
+    ...(reads.issue.open_asks ?? []),
+    ...(reads.asks ?? []),
+  ]);
   const changeOf = new Map([...changes].map(([ref, comment]) => [comment.id, ref]));
   const turns: Turn[] = [
     ...(reads.comments ?? []).map((comment) => ({
@@ -709,12 +735,19 @@ function addDecisions(
     const draft = add(drafts, blank(id, "decision", ROOT_ORDER.decision + index));
     const answers = decision.asks ?? [];
     // A target with no address of its own is named by nothing, so there is no chip to draw for
-    // it (`GraphNode.ref` is optional).
+    // it (`GraphNode.ref` is optional). The section links a block once for each of its
+    // paragraphs that links it, and names an ask once for each that cites it
+    // (`api/decisions.go`), so each target is one chip, stale where any of its links is.
+    const linked = new Map<string, NodeChip>();
+    for (const link of decision.links ?? []) {
+      const ref = link.to.ref;
+      if (ref === undefined) continue;
+      const stale = link.stale || linked.get(ref)?.stale === true;
+      linked.set(ref, { ...context.chipOf(ref), stale });
+    }
     draft.chips = [
-      ...(decision.links ?? []).flatMap((link) =>
-        link.to.ref === undefined ? [] : [{ ...context.chipOf(link.to.ref), stale: link.stale }]
-      ),
-      ...answers
+      ...linked.values(),
+      ...[...new Set(answers)]
         .filter((ask) => !asks.has(ask))
         .map((ask) =>
           context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))

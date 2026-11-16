@@ -2,6 +2,7 @@ import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
+import { primarySpec, roleDocument } from "../../api/issue-cache";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
@@ -11,6 +12,7 @@ import {
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { wordsOf } from "../refs/tree-fragment";
 import {
   buildIssueTree,
   type DocumentBlocks,
@@ -20,10 +22,11 @@ import {
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
+import { blockWords } from "./tree-drafts";
 
 /** The issue's tree, and how far the reads it is built from have got. */
 export interface IssueTreeView {
-  /** Whether the blocks of every document the tree reads (`TREE_DOCUMENT_ROLES`) have been read.
+  /** Whether the blocks of every document the tree reads (`treeDocumentIds`) have been read.
    *  Until then a typed block - the spec's summary among them - may be missing from `root`
    *  because it has not arrived rather than because its document holds none, which is what the
    *  head waits on before it says a spec has no summary (`IssueThreeThings.tsx`). A read that
@@ -34,16 +37,31 @@ export interface IssueTreeView {
 }
 
 /**
- * The roles of the documents whose blocks the tree reads beside the spec's: the typed blocks the
- * page draws are theirs (the root spec's R2). A block read for every document of the issue was 25
- * of a first load's 47 requests on the tester's built page (the tester's finding F17 on
- * dispatch://INFRA-1196), so no other document's blocks are read.
+ * The documents whose blocks the tree reads: the spec and the plan, Verification and decisions
+ * documents, whose typed blocks are the ones the page draws (the root spec's R2), each the one
+ * the issue read names by its id (`primarySpec`, `roleDocument`). That id is the server's own
+ * answer to which document plays the part - the one in that role, or a role-less one under the
+ * role's slug, which is how a row a rolling deploy left with no role still plays it
+ * (`api/artifacts.go`'s `documentPlays`) - and the coverage and results reads find the
+ * document by the same rule. The artifact's own `role` is no answer: the server omits it on
+ * such a row, so a plan read by its role would leave that plan's tasks out of the tree while
+ * the coverage counts them. A block read for every document of the issue was 25 of a first
+ * load's 47 requests on the tester's built page (the tester's finding F17 on
+ * dispatch://INFRA-1196), so no other document's blocks are read: four reads at most, and
+ * fewer where one document plays two parts or the issue holds none in a part.
  */
-const TREE_DOCUMENT_ROLES: Readonly<Record<string, true>> = {
-  decisions: true,
-  plan: true,
-  verification: true,
-};
+function treeDocumentIds(issue: IssueDetails): string[] {
+  const ids = new Set<string>();
+  for (const document of [
+    primarySpec(issue),
+    roleDocument(issue, "plan"),
+    roleDocument(issue, "verification"),
+    roleDocument(issue, "decisions"),
+  ]) {
+    if (document !== undefined) ids.add(document.id);
+  }
+  return [...ids];
+}
 
 /**
  * Every `dispatch://` address the tree holds: each node's own, so a block's words can be read,
@@ -74,7 +92,7 @@ function treeReferences(root: TreeNode): string[] {
  *
  * The reads are the issue's own (handed in, because the page already has it), the coverage, the
  * decisions, the results, the issue's asks, and the blocks of the spec and of the plan,
- * Verification and decisions documents (`TREE_DOCUMENT_ROLES`) - ids, types and
+ * Verification and decisions documents (`treeDocumentIds`) - ids, types and
  * attributes, never text, which is how a `serves` edge is held without reading a document the
  * reader has not opened (R20). Every one of them is a key another surface of this issue already
  * reads, so opening the Conversation or the Decisions panel after the tree finds them answered
@@ -113,13 +131,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // one read of who is signed in, so it costs no request of its own.
   const who = useQuery(whoAmIQuery());
   const viewer = who.data?.login;
-  const documentIds = (issue.artifacts ?? [])
-    .filter(
-      (artifact) =>
-        artifact.kind === "doc" &&
-        (artifact.primary || TREE_DOCUMENT_ROLES[artifact.role ?? ""] === true)
-    )
-    .map((artifact) => artifact.id);
+  const documentIds = treeDocumentIds(issue);
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
   // replaces it only when a document's own read changes, where a map over the results would be a
   // new array every render and build the tree again with it. It answers whether any of them is
@@ -197,13 +209,23 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const named = targets.data === undefined ? undefined : (targets.data.targets ?? []);
   // The same answer every link of this page would otherwise read one pointer at a time: a
   // block's own words, which a link in a document, in a decision's card or in a comment's
-  // preview shows (`reference-names.tsx`, R20).
+  // preview shows (`reference-names.tsx`, R20). Every one of those draws the name it is given
+  // as it is, so what is published is a name's words and no markup: the server's reading of a
+  // block where the read sends one (`ReferenceTarget.text_tree`), since the read's `name` for a
+  // block is its stored excerpt, which opens on a typed block's directive line
+  // (`:::plan_task{#t1 …}`), and that name with its directive left out where it sends none
+  // (`blockWords`), which is every other target's name as it stands.
   const names = useMemo(
     () =>
       new Map(
         (named ?? [])
           .filter((target) => !target.gone && target.name !== null)
-          .map((target) => [target.ref, target.name ?? ""])
+          .map((target) => [
+            target.ref,
+            target.text_tree === undefined
+              ? blockWords(target.name ?? "")
+              : wordsOf(target.text_tree),
+          ])
       ),
     [named]
   );

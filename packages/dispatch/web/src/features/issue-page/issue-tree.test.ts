@@ -22,6 +22,7 @@ import type {
   RequirementCoverage,
 } from "../../api/types";
 import { askResolutionBadge } from "../refs/actor";
+import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
   drawnLine,
@@ -932,6 +933,35 @@ test("a decision sits under the ask it answers, and one that answers none under 
   ]);
 });
 
+// The reviewer's finding on `issue-tree.ts:348`: the server builds a decision's asks and links
+// paragraph by paragraph and keeps every repeat (`api/decisions.go`), so a decision whose two
+// paragraphs cite one question and link one statement names each twice. It is one placement
+// under that question, counted once in what the question holds, and one chip for the
+// statement, stale where either of its links is.
+test("a decision naming one question and one statement twice is drawn once, with one chip", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const twice = decision("d1", "Answers one question in two paragraphs.", ["r1", "r1"]);
+  const root = buildIssueTree({
+    asks: [question("ask-1")],
+    decisions: decisions([
+      {
+        ...twice,
+        asks: ["ask-1", "ask-1"],
+        links: (twice.links ?? []).map((link, index) => ({ ...link, stale: index === 1 })),
+      },
+    ]),
+    issue: issueDetails([spec, made]),
+  });
+
+  const id = blockNodeId("decisions-md", "d1");
+  expect(placementsOf(root, id).map((one) => one.parent)).toEqual(["ask-1"]);
+  expect(nodeOf(root, "ask-1")?.held).toBe(1);
+  expect(nodeOf(root, id)?.chips.map(({ ref, stale }) => ({ ref, stale }))).toEqual([
+    { ref: `dispatch://${KEY}/spec#b-r1`, stale: true },
+  ]);
+});
+
 // R4: a decision is never a requirement's parent, whatever the requirement's own `from` names:
 // the requirement sits under the issue instead.
 test("a requirement whose `from` names a decision sits under the issue", () => {
@@ -1477,6 +1507,34 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
   expect(placementsOf(root, "joined").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "person").map((one) => one.parent)).toEqual(["joined"]);
   expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
+});
+
+// The reviewer's finding on `agents-only.ts:31`: the tree draws no approval request, so the
+// replies under one are in no node's thread. Those only agents wrote, under a request no person
+// answered, are no node of the outline, and the address of one lands in the history, as any
+// thread only agents wrote in does. Once a person writes under the request the thread is the
+// conversation's, the agents' turns in it included, drawn under the issue, since the request
+// itself is no node.
+test("an agent's reply under an approval request is no node until a person replies there", () => {
+  const agent = { id: "planner", kind: "session" as const };
+  const asks = [
+    question("approval-quiet", { kind: "approval" }),
+    question("approval-joined", { kind: "approval" }),
+  ];
+  const comments = [
+    { ...comment("quiet", "2026-11-04T09:00:00Z"), ask_id: "approval-quiet", author: agent },
+    { ...comment("asked", "2026-11-04T10:00:00Z"), ask_id: "approval-joined", author: agent },
+    { ...comment("answered", "2026-11-04T11:00:00Z"), ask_id: "approval-joined" },
+  ];
+  const root = buildIssueTree({ asks, comments, issue: issueDetails([]) });
+
+  expect(nodeOf(root, "approval-quiet")).toBeUndefined();
+  expect(nodeOf(root, "quiet"), "the agents' reply is drawn in the outline").toBeUndefined();
+  expect(placementsOf(root, "asked").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
+  const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, undefined, asks);
+  expect(landing("quiet")).toBe("quiet");
+  expect(landing("asked")).toBeUndefined();
 });
 
 // R4: the ring is opened at a member of the ring and never at a node hanging off one. A plan

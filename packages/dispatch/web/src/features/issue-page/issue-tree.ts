@@ -356,7 +356,10 @@ function assemble(
   const placements = new Map<string, readonly string[]>();
   for (const draft of drafts) {
     references.set(draft.id, draft.reference ?? draft.id);
-    const named = draft.parents.filter((parent) => known.has(parent));
+    // A parent named twice is one placement: a decision whose paragraphs each cite the same
+    // question arrives naming it once per paragraph (`api/decisions.go`), and drawing it twice
+    // there would count it twice in `held` and give both rows one key (`tree-keys.ts`).
+    const named = [...new Set(draft.parents)].filter((parent) => known.has(parent));
     placements.set(draft.id, named.length === 0 ? [key] : named);
   }
   bringHome(key, drafts, placements);
