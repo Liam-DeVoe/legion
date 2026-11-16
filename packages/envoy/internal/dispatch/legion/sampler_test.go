@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -150,7 +151,8 @@ func reads(t *testing.T, database *store.Store, project string) []readRow {
 
 // TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone is the sampler's whole rule: a pass
 // writes a row for each value that moved and nothing for the rest, a field the issue carries none
-// of writes no first null, and a role the read does not name keeps the observation it has.
+// of writes no first null, and a role the read no longer names is written null, since its claim is
+// gone from the daemon's state.
 func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, sampler := configured(t, daemon.URL)
@@ -178,16 +180,18 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 	}
 
 	// The phase moves and the planner hands over to the implementer: the phase and the new
-	// claim are written, the status and the slot are not, and the planner's own last
-	// observation stands, since a role this read does not name has said nothing.
+	// claim are written, the status and the slot are not, and the planner's claim, which this
+	// read no longer carries, is written null.
 	daemon.serves(stateOf("implementing", "implementer"))
 	sampler.Pass(t.Context())
 	moved := observations(t, database, "INFRA")[len(first):]
-	if len(moved) != 2 {
-		t.Fatalf("the third pass wrote %v, want the phase and the implementer's claim", moved)
+	wantMoved := []string{
+		`INFRA-1/claim.implementer="working"`,
+		`INFRA-1/claim.planner=null`,
+		`INFRA-1/phase="implementing"`,
 	}
-	if moved[0] != `INFRA-1/claim.implementer="working"` || moved[1] != `INFRA-1/phase="implementing"` {
-		t.Errorf("the third pass wrote %v, want the implementer's claim and the new phase", moved)
+	if !slices.Equal(moved, wantMoved) {
+		t.Errorf("the third pass wrote %v, want %v", moved, wantMoved)
 	}
 
 	if served := reads(t, database, "INFRA"); len(served) != 3 {
@@ -233,6 +237,52 @@ func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T)
 	}
 	if served[2].bytes == 0 {
 		t.Errorf("the unparseable read's bytes = 0, want what the daemon sent")
+	}
+}
+
+// TestANULInAStringDoesNotLoseTheRead: jsonb refuses the NUL escape ("unsupported Unicode escape
+// sequence", SQLSTATE 22P05), and a read's observations go in one statement, so one wait whose
+// text carries a NUL failed every observation of the read, at every read. The NUL is stored as
+// U+FFFD and the rest of the read with it, while an escaped backslash before `u0000` is six
+// characters of text and no NUL, and is stored as the daemon sent it.
+func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
+	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
+	database, sampler := configured(t, daemon.URL)
+	sampler.Pass(t.Context())
+
+	daemon.serves(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person",
+		"slot":{"index":0},
+		"waitingOn":{"kind":"ask","detail":"a\u0000b","path":"c\\u0000d"},
+		"workers":{"planner":{"claim":{"state":"working"}}}}}}`)
+	sampler.Pass(t.Context())
+
+	served := reads(t, database, "INFRA")
+	if len(served) != 2 || !served[1].ok || served[1].error != nil {
+		t.Fatalf("legion_reads = %v, want the second read stored as a good read", served)
+	}
+	// newest is the text at path of the field's newest value, the value itself for no path.
+	newest := func(field string, path ...string) string {
+		t.Helper()
+		var value string
+		if err := database.Pool.QueryRow(t.Context(), `
+			select value #>> $2::text[]
+			from legion_observations
+			where project = 'INFRA' and issue_key = 'INFRA-1' and field = $1
+			order by observed_at desc
+			limit 1
+		`, field, append([]string{}, path...)).Scan(&value); err != nil {
+			t.Fatalf("read the newest %s: %v", field, err)
+		}
+		return value
+	}
+	if phase := newest(FieldPhase); phase != PhaseAwaitingPerson {
+		t.Errorf("the newest phase = %q, want %q: the read's other observations are stored beside the NUL", phase, PhaseAwaitingPerson)
+	}
+	if detail := newest(FieldWaitingOn, "detail"); detail != "a\uFFFDb" {
+		t.Errorf("the wait's detail = %q, want the NUL stored as U+FFFD", detail)
+	}
+	if path := newest(FieldWaitingOn, "path"); path != `c\u0000d` {
+		t.Errorf("the wait's path = %q, want the escaped backslash's text as the daemon sent it", path)
 	}
 }
 
@@ -323,7 +373,7 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 	aged := func(project string, age time.Duration) {
 		t.Helper()
 		at := time.Now().UTC().Add(-age)
-		if err := RecordRead(t.Context(), database.Pool, project, at, 2048, nil); err != nil {
+		if _, err := RecordRead(t.Context(), database.Pool, project, at, 2048, nil); err != nil {
 			t.Fatalf("record a read of %s: %v", project, err)
 		}
 	}

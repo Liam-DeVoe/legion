@@ -610,22 +610,28 @@ func (p *Population) readObservations(ctx context.Context, pool *store.Pool, pro
 }
 
 // readReported reads what the daemon reports of every issue of the project: one row per issue
-// the sampler has recorded any observation of — the set the Legion board's own population holds
-// (api/legion_board.go's readObservations) — against the newest `tree` it recorded for that
-// issue, which is the row the board takes too. It reads the whole project rather than the
-// window's keys because both halves answer legion.TreeNode, and an issue's tree is a fact of
-// the project; it takes one row per issue and not the rows themselves, which readObservations
-// takes for the issues whose timelines the metrics measure.
+// with a field whose newest observation holds a value — the set the Legion board's own
+// population holds (api/legion_board.go's readObservations) — against the newest `tree` it
+// recorded for that issue, which is the row the board takes too. A field whose newest row is
+// `null` holds nothing as of the newest good read, and the sampler writes that row for every
+// field of an issue that leaves the daemon's state (legion's recordObservations), so an issue the
+// daemon no longer reports is out of the set, as it is off the board. It reads the whole project
+// rather than the window's keys because both halves answer legion.TreeNode, and an issue's tree
+// is a fact of the project; it takes one row per issue and not the rows themselves, which
+// readObservations takes for the issues whose timelines the metrics measure.
 //
 // The rows under legion.AdmissionKey belong to no issue — the admission block and the daemon's
 // settings — so they report nothing.
 func (p *Population) readReported(ctx context.Context, pool *store.Pool, project string) error {
 	rows, err := pool.Query(ctx, `
-		select issue_key,
-			coalesce((array_agg(value::text order by observed_at desc, id desc)
-				filter (where field = $3))[1], '')
-		from legion_observations
-		where project = $1 and issue_key <> $2
+		select issue_key, coalesce((array_agg(value::text) filter (where field = $3))[1], '')
+		from (
+			select distinct on (issue_key, field) issue_key, field, value
+			from legion_observations
+			where project = $1 and issue_key <> $2
+			order by issue_key, field, observed_at desc, id desc
+		) newest
+		where value <> 'null'::jsonb
 		group by issue_key
 	`, project, legion.AdmissionKey, legion.FieldTree)
 	if err != nil {

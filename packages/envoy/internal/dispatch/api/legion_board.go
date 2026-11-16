@@ -208,8 +208,8 @@ type legionBoardPopulation struct {
 	// settings is the daemon's own settings block as the newest read recorded it, nil while no
 	// read has recorded one.
 	settings map[string]json.RawMessage
-	// issues is every issue the daemon reported, by key, with what Dispatch holds of it beside the
-	// observations.
+	// issues is every issue the newest good read reported, by key, with what Dispatch holds of it
+	// beside the observations (readObservations).
 	issues map[string]*legionBoardIssue
 	// parents is the parent Dispatch records for every issue of the project, the chain the tree
 	// walk climbs: an issue the daemon reports nothing of can still be the Legion issue above one
@@ -302,14 +302,23 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, pool *store.
 
 // readObservations reads the newest value of every field the sampler recorded for the project: one
 // row per issue and field, which the unique index (project, issue_key, field, observed_at) answers
-// in order. The rows under legion.AdmissionKey belong to no issue: the admission block and the
+// in order. A field whose newest value is `null` holds nothing as of the newest good read — the
+// issue carries none, or the read no longer carried it at all, an issue gone from the daemon's
+// state or a role's claim gone from an issue, for which the sampler writes that row (legion's
+// recordObservations) — so it is left out, and an issue none of whose fields holds a value is on
+// no card and in no tree walk: the board answers the newest good read and nothing an older one
+// held. The rows under legion.AdmissionKey belong to no issue: the admission block and the
 // daemon's settings.
 func (p *legionBoardPopulation) readObservations(ctx context.Context, pool *store.Pool) error {
 	rows, err := pool.Query(ctx, `
-		select distinct on (issue_key, field) issue_key, field, value, observed_at
-		from legion_observations
-		where project = $1
-		order by issue_key, field, observed_at desc
+		select issue_key, field, value, observed_at
+		from (
+			select distinct on (issue_key, field) issue_key, field, value, observed_at
+			from legion_observations
+			where project = $1
+			order by issue_key, field, observed_at desc
+		) newest
+		where value <> 'null'::jsonb
 	`, p.project)
 	if err != nil {
 		return err
