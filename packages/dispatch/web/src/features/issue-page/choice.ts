@@ -26,13 +26,16 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/** Where this browser keeps `login`'s choice. */
+function storageKey(login: string): string {
+  return userPreferenceStorageKey(login, "issue.page");
+}
+
 /** The stored choice of `login`. Nobody signed in, nothing stored, and a stored word that is
  *  neither page's all read as today's page. */
 function storedChoice(login: string | undefined): IssuePageChoice {
   if (login === undefined) return "tabs";
-  return window.localStorage.getItem(userPreferenceStorageKey(login, "issue.page")) === "outline"
-    ? "outline"
-    : "tabs";
+  return window.localStorage.getItem(storageKey(login)) === "outline" ? "outline" : "tabs";
 }
 
 /**
@@ -57,7 +60,7 @@ export function useIssuePageChoice(): [IssuePageChoice, (next: IssuePageChoice) 
     (next: IssuePageChoice) => {
       if (login === undefined) return;
       try {
-        window.localStorage.setItem(userPreferenceStorageKey(login, "issue.page"), next);
+        window.localStorage.setItem(storageKey(login), next);
       } catch {
         // The browser kept nothing, so every caller keeps the page it has.
         return;
