@@ -833,15 +833,6 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	waitingOn := threadTarget.waitingOnAfter(turn)
-	// A session writing in an ask's thread follows the ask, and is a node of the store from this
-	// write on; its node learns the comment.created event below once that is appended.
-	var followed asks.Followed
-	if input.AskID != nil {
-		if followed, err = asks.FollowAuthor(r.Context(), tx, *input.AskID, actor, createdAt, graphstore.NoEvent); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	comment.ID = rowID
 	comment.IssueKey = owner.IssueKey
 	comment.ArtifactID = owner.ArtifactID
@@ -1015,15 +1006,23 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// Who wrote it, as the node and tuple store holds it: the author's node and the comment's
 	// authored_by tuple, beside the stamp and under the event that caused both. A comment left out
 	// of the store has no node to author, so this is skipped with the rest of its write.
 	if !stored.unprojected {
 		if err := graphstore.Authored(r.Context(), tx, graphstore.KindComment, comment.ID, actor, comment.CreatedAt, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// A session writing in an ask's thread follows the ask, and is a node of the store from this
+	// write on, caused by the comment.created event appended above. It comes after the author's
+	// own write, which takes the author's person node and their session node in one statement
+	// in ascending (kind, id): a follow before it would take the session first and leave the
+	// person to that statement, which is the pair in the other order, and two such writes
+	// racing over a session and an owner the store holds neither of would deadlock (R17).
+	if input.AskID != nil {
+		if _, err := asks.FollowAuthor(r.Context(), tx, *input.AskID, actor, createdAt, event.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

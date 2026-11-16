@@ -711,8 +711,9 @@ func (s *server) completeMessageDelivery(
 				return settled, err
 			}
 			// The session this attempt reached, in the transaction that records that it did
-			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
-			// this moment, a pending or failed one reached nobody and writes nothing.
+			// (graphstore.Reached): an attempt the listener took, sent or queued
+			// (model.DeliveryTaken), is a delivery and its session is a node from this moment, a
+			// pending or failed one reached nobody and writes nothing.
 			reached, err = graphstore.Reached(ctx, tx, settled.State, settled.SessionID, actor, settled.CreatedAt)
 			return settled, err
 		},
@@ -1039,6 +1040,15 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			update message_deliveries set reply_id = $3, state = 'sent', error = null
 			where message_id = $1 and attempt = $2
 		`, message.ID, input.Attempt, reply.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// So the session that attempt names is a node of the store from this write on, as a
+		// settle's is. This child writes no message node, so the answer states the node alone
+		// and no delivered_to (recordAnsweredDelivery).
+		if err := recordAnsweredDelivery(r.Context(), tx, answeredDelivery{
+			session: attempt.SessionID, was: attempt.State,
+		}, actor, answered.CreatedAt, answered.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

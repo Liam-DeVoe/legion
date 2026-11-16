@@ -143,6 +143,17 @@ func Install(value BlockSchema) error {
 // normalizeVersions reads it. An element it keeps keeps its creatable_since, so one this build
 // reads but may not create yet stays one it does not create. It writes nothing of value's own:
 // every slice and map it changes is a new one.
+//
+// Two of the store's own values cannot stand once the elements they name are gone, and each is
+// answered here rather than left to the validation that would refuse the whole manifest and
+// fail the boot with it (Install, cmd/dispatch's main). An enum default the store moved to a
+// choice added later reads as this build's own default for that attribute
+// (enumDefaultThisBuildReads). A `block[]` attribute every target of which names a typed block
+// this build leaves out goes altogether: an empty target set means "any block"
+// (CheckBlockPointers), so keeping it would let an older build accept at any block the pointers
+// a newer one holds to a type it does not know. An enum attribute every choice of which is newer
+// than this build goes the same way: an enum with no choice is one validateAttributeSchema
+// refuses, which would fail the boot, and no value of it is one this build could read.
 func asOfVersion(value BlockSchema, version int) BlockSchema {
 	reads := func(since int) bool { return max(since, 1) <= version }
 	dropped := make(map[string]bool)
@@ -179,9 +190,18 @@ func asOfVersion(value BlockSchema, version int) BlockSchema {
 					}
 				}
 				attr.Choices, attr.ChoiceVersions = choices, versions
+				if len(choices) == 0 {
+					continue
+				}
+			}
+			if attr.Kind == BlockAttributeEnum {
+				attr.Default = enumDefaultThisBuildReads(typ.Name, attribute.Name, attr)
 			}
 			if len(attr.Targets) > 0 {
 				attr.Targets = slices.DeleteFunc(slices.Clone(attr.Targets), func(target string) bool { return dropped[target] })
+				if len(attr.Targets) == 0 {
+					continue
+				}
 			}
 			attributes = append(attributes, BlockAttribute{Name: attribute.Name, BlockAttributeSchema: attr})
 		}
@@ -190,6 +210,28 @@ func asOfVersion(value BlockSchema, version int) BlockSchema {
 	value.Types = types
 	value.Version = version
 	return value
+}
+
+// enumDefaultThisBuildReads is the default of the enum attribute named attribute of typed block
+// typeName, as a build reading only the choices attr still holds takes it: the store's own
+// default while that is one of them, and this build's own default for that attribute otherwise,
+// which is a choice this build was compiled against. An attribute this build does not declare,
+// and one whose own default is no choice the store still holds, keeps none: an attribute with
+// no default is left out of a block that does not hold it (writtenDefault), which is what a
+// build that cannot name a value has to do.
+func enumDefaultThisBuildReads(typeName, attribute string, attr BlockAttributeSchema) any {
+	held, named := attr.Default.(string)
+	if !named || slices.Contains(attr.Choices, held) {
+		return attr.Default
+	}
+	own, declared := embedded.types[typeName].Attributes.Lookup(attribute)
+	if !declared {
+		return nil
+	}
+	if text, names := own.Default.(string); names && slices.Contains(attr.Choices, text) {
+		return own.Default
+	}
+	return nil
 }
 
 // embeddedElements is the nodes and marks the embedded manifest declares, as blocks.json writes

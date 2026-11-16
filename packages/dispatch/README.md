@@ -552,10 +552,11 @@ with no blocks counts as indexed, since it owes no nodes.
 
 `e2e/acceptance/graph-store.sh` drives the people and the agents of the node and tuple store: what
 each person authored, what reached each session, a comment that reached nobody, a failed attempt,
-and the role, the session and the page a delivery writes. It takes the first three inputs,
+an attempt the listener queued for a session that is not running, and the role, the session and
+the page a delivery writes. It takes the first three inputs,
 `DATABASE_URL` (the database that server serves, on this machine, which it reads the tuples no
 route answers through) and `FAKE_ENVOY_PORT` (the harness's fake Envoy, whose session fixture it
-adds a role-less session and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN`
+adds role-less sessions, one of them stopped, and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN`
 optional. Its delivery checks need the server to have a bus: `bun run dispatch:local` leaves NATS
 off, and without `DISPATCH_E2E_NATS_URLS` (which `e2e/run-server.sh` hands the server as its
 `NATS_URLS`) the publisher writes no `delivered_to` tuple and those checks wait out their 30 s

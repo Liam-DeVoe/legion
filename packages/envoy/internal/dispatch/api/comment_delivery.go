@@ -477,8 +477,9 @@ func (s *server) completeCommentDelivery(
 				return settled, err
 			}
 			// The session this attempt reached, in the transaction that records that it did
-			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
-			// this moment, a pending or failed one reached nobody and writes nothing. A row
+			// (graphstore.Reached): an attempt the listener took, sent or queued
+			// (model.DeliveryTaken), is a delivery and its session is a node from this moment,
+			// a pending or failed one reached nobody and writes nothing. A row
 			// whose resolution named no session carries a null, which records nothing either.
 			// The rest of what the delivery states - its delivered_to tuple, the session's page
 			// and that page's part_of - is the publisher's, recorded under the receipt this
@@ -1258,15 +1259,6 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	waitingOn := thread.waitingOnAfter(turn)
-	// A session replying in an ask's thread follows the ask, and is a node of the store from this
-	// write on; its node learns the comment.answered event below once that is appended.
-	var followed asks.Followed
-	if thread.AskID != nil {
-		if followed, err = asks.FollowAuthor(r.Context(), tx, *thread.AskID, actor, createdAt, graphstore.NoEvent); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, reply.ID, reply.Body, s.deps.ServerURL, reply.CreatedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1313,10 +1305,6 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// Who wrote the reply, as the node and tuple store holds it: a session answering a mention
 	// is the first write that records that session, so its node is made here (graphstore.Authored).
 	// A reply left out of the store has no node to author, so this is skipped with the rest.
@@ -1326,6 +1314,27 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A session replying in an ask's thread follows the ask, and is a node of the store from
+	// this write on, caused by the comment.answered event appended above. It comes after the
+	// author's own write for the reason the comment path takes them in that order: that write
+	// takes the author's person node and their session node in one statement in ascending
+	// (kind, id), and a follow before it would take the pair in the other order (R17).
+	if thread.AskID != nil {
+		if _, err := asks.FollowAuthor(r.Context(), tx, *thread.AskID, actor, createdAt, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// What the answer makes of the attempt it answers: the flip above records it sent, and an
+	// attempt that reads sent is one the store owes its session a node for.
+	answered := answeredDelivery{was: attempt.State, itemKind: graphstore.KindComment, itemID: comment.ID}
+	if attempt.SessionID != nil {
+		answered.session = *attempt.SessionID
+	}
+	if err := recordAnsweredDelivery(r.Context(), tx, answered, actor, event.CreatedAt, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1333,4 +1342,62 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	s.publish(r.Context(), event)
 	s.storeDisplayTrees(r.Context(), reply.ID, reply.Body)
 	WriteJSON(w, http.StatusCreated, commentWriteResponse{shapedComment: newShapedComment(reply, wantsDisplayTrees(r)), AskWaitingOn: waitingOn})
+}
+
+// answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
+// names, the state the row recorded before the answer, and the thing the attempt carried as the
+// store addresses it. itemID is empty for a thing this child gives no node, which a message is
+// (dispatch://INFRA-1152 owns messages and their deliveries).
+type answeredDelivery struct {
+	session  string
+	was      string
+	itemKind string
+	itemID   string
+}
+
+// recordAnsweredDelivery records, in the answering transaction and under the event that records
+// the answer, what that answer makes of the attempt it answers. An answer flips its attempt to
+// `sent` whatever the row recorded before: a failed attempt - a stale receipt, an error the
+// session itself reported, a reply callback that failed a frame the session plainly received -
+// reads as sent and answered (replyComment, replyMessage). An attempt that reads sent is one
+// the listener took, so the session it names is one the store owes a node for (R14,
+// graphcensus's recordedSessions), and this answer is the write that moves the attempt into
+// that set: without it the census holds the store to a node no writer ever wrote, for good.
+//
+// The node is written as a settle writes one (graphstore.Reached): `do nothing`, so a session
+// another write recorded keeps that write's cause, and nothing at all for a session past the
+// store's address bound. The event is in hand here, so the node states its own two base
+// attributes under it and no fact of this write waits for a cause.
+//
+// The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.
+// An attempt the listener had already taken carries its own comment.delivery receipt, and the
+// outbox's record of that receipt states the tuple (outbox's mentionReached); stating it again
+// under this event would write one delivery as two. A thing this child gives no node carries no
+// tuple at all, and a session past the bound is no far end the store can key.
+//
+// It runs after the write that records who answered (graphstore.Authored), which takes the
+// author's person node and their session node in one statement in ascending (kind, id). The
+// session recorded here is that same session, so taking it first would be the pair in the other
+// order, which is the cycle R17's node order exists to keep out.
+func recordAnsweredDelivery(
+	ctx context.Context, tx pgx.Tx, answered answeredDelivery, actor model.Actor, at time.Time, event int64,
+) error {
+	session := strings.TrimSpace(answered.session)
+	if session == "" {
+		return nil
+	}
+	if _, err := graphstore.SessionRecorded(ctx, tx, session, actor, at, event); err != nil {
+		return fmt.Errorf("record the session the answered attempt reached: %w", err)
+	}
+	if answered.itemID == "" || model.DeliveryTaken(answered.was) || !graphstore.AddressFits(session) {
+		return nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+		FromKind: answered.itemKind, FromID: answered.itemID, Kind: graphstore.TupleDeliveredTo,
+		ToKind: graphstore.KindSession, ToID: session,
+		At: at, Who: actor, SourceEvent: event, Asserted: true,
+	}}); err != nil {
+		return fmt.Errorf("record what the answered attempt delivered: %w", err)
+	}
+	return nil
 }

@@ -428,6 +428,10 @@ func (r *Registration) beat(ctx context.Context) error {
 // never later than the moment this transaction acquires the lock the registrant held, so a row the
 // registrant counted as gone is one this transaction counts as lapsed too: a process never stamps
 // itself live again past a registrant that did not check its keys against it.
+//
+// It takes the registry pool's one connection, for its transaction, and then r.mu, to read the
+// instance it rejoins with. That is the one order the two are taken in, and RefreshSchema takes
+// them in it as well.
 func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -485,14 +489,26 @@ func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 // schema, before it closes its document sockets, and the reconnects are admitted against the
 // numbers it serves now. current is called under the registration's lock, so of two refreshes
 // that race the one that read last writes last.
+//
+// The registry's pool holds one connection, and this takes it before r.mu, which is the order
+// renew takes the two: renew begins its transaction on that connection and only then reads
+// r.instance under r.mu, so a refresh holding r.mu while it waited for the connection would
+// wait on a heartbeat that waits on it. Both waits would then run out - the heartbeat at
+// heartbeatTimeout, holding the registry's advisory lock all the while, so every other process
+// misses a beat - and the numbers this writes would stay stale until the next switch.
 func (r *Registration) RefreshSchema(ctx context.Context, current func() (version, creatable int)) error {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("refresh this server process's schema numbers: %w", err)
+	}
+	defer conn.Release()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	version, creatable := current()
 	if version == r.instance.SchemaVersion && creatable == r.instance.SchemaCreatable {
 		return nil
 	}
-	if _, err := r.pool.Exec(ctx, `
+	if _, err := conn.Exec(ctx, `
 		update server_processes set schema_version = $2, schema_creatable = $3 where instance = $1`,
 		r.ID, version, creatable); err != nil {
 		return fmt.Errorf("refresh this server process's schema numbers: %w", err)

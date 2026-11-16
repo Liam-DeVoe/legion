@@ -31,10 +31,11 @@ var peopleLockAt = time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 // (recorded_as), since each arm is ordered after the node arm on its own. An author the store
 // already holds has no node row Authored locks, since the node arm upserts `do nothing`.
 //
-// Reached writes the session's node and the two base attributes of a node it made. Its node is
-// held the same way and Reached must queue behind it. Its attributes carry the sentinel, which no
-// repeat key covers, so a held copy of them stops nothing: Reached's tuple step locks no row, and
-// so cannot be taken out of order. A session the store already holds has no row Reached locks.
+// Reached writes the session's node alone, and the settle appends that node's two base
+// attributes under the receipt it appends after it (Caused). Its node is held the same way and
+// the settle must queue behind it, and only then behind a held copy of one of those attributes
+// under the same receipt, which the value repeat key covers. A session the store already holds
+// has no row Reached locks and no attribute the settle restates.
 func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -133,79 +134,90 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		requirePeopleRows(t, database, node, 1, tuple, 1)
 	})
 
-	t.Run("Reached waits at a new session's node", func(t *testing.T) {
+	t.Run("the settle waits at a new session's node", func(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
+		const receipt = int64(9400101)
 		node := SessionNode("reached-new", who, peopleLockAt, NoEvent)
 		holder, release := beginHolder(t, ctx, database)
 		insertNodeRow(t, ctx, holder, node)
 
-		conn, pid, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
-			return err
-		})
-		requireQueued(t, holder, conn, done, "Reached of a new session")
-		t.Logf("held at the session's node, Reached waits on: %s", runningStatement(t, ctx, database, pid))
+		conn, pid, done := startPeopleWrite(t, ctx, database, settleWrite(node.ID, who, receipt))
+		requireQueued(t, holder, conn, done, "the settle of a new session")
+		t.Logf("held at the session's node, the settle waits on: %s", runningStatement(t, ctx, database, pid))
 		release()
-		requireCommitted(t, done, "Reached of a new session")
+		requireCommitted(t, done, "the settle of a new session")
 
 		requirePeopleRows(t, database, node, 1, Tuple{
 			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
-			SourceEvent: NoEvent, Asserted: true,
+			SourceEvent: receipt, Asserted: true,
 		}, 1)
 	})
 
-	t.Run("Reached appends its base attributes without waiting on any other writer", func(t *testing.T) {
+	t.Run("the settle appends its base attributes after the session's node", func(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
+		const receipt = int64(9400102)
 		node := SessionNode("reached-attributes", who, peopleLockAt, NoEvent)
-		holder, release := beginHolder(t, ctx, database)
-		for _, attribute := range []struct{ kind, value string }{
-			{AttributeVisibility, node.Visibility},
-			{AttributeState, node.State},
-		} {
-			insertTupleRow(t, ctx, holder, Tuple{
-				FromKind: node.Kind, FromID: node.ID, Kind: attribute.kind, ToKind: KindValue, ToID: attribute.value,
-				At: peopleLockAt, Who: who, SourceEvent: NoEvent, Asserted: true,
-			})
+		visibility := Tuple{
+			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: node.Visibility,
+			At: peopleLockAt, Who: who, SourceEvent: receipt, Asserted: true,
 		}
+		nodeHolder, releaseNode := beginHolder(t, ctx, database)
+		insertNodeRow(t, ctx, nodeHolder, node)
+		tupleHolder, releaseTuple := beginHolder(t, ctx, database)
+		insertTupleRow(t, ctx, tupleHolder, visibility)
 
-		_, pid, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
-			return err
-		})
-		requireUnblockedBy(t, ctx, database, holder, pid, done, "Reached while another transaction holds a copy of its base attributes",
-			"its attributes carry the sentinel, which no repeat key covers, so appending them locks no row and waits on no other writer")
-		release()
+		conn, _, done := startPeopleWrite(t, ctx, database, settleWrite(node.ID, who, receipt))
+		behindNode, behindTuple := waitForTheHolderItWaitsOn(t, ctx, nodeHolder, tupleHolder, conn, done, "the settle")
+		if behindTuple || !behindNode {
+			t.Errorf("the settle waits on the transaction holding its session's visibility (%v) rather than on the one holding its node %s/%s (%v): it appended a base attribute before it wrote the node the attribute is about",
+				behindTuple, node.Kind, node.ID, behindNode)
+		}
+		releaseNode()
+		requireQueued(t, tupleHolder, conn, done, "the settle past its session's node")
+		releaseTuple()
+		requireCommitted(t, done, "the settle")
 
-		requirePeopleRows(t, database, node, 1, Tuple{
-			FromKind: node.Kind, FromID: node.ID, Kind: AttributeState, ToKind: KindValue, ToID: StateLive,
-			SourceEvent: NoEvent, Asserted: true,
-		}, 1)
+		requirePeopleRows(t, database, node, 1, visibility, 1)
 	})
 
-	t.Run("Reached takes no row of a session the store already holds", func(t *testing.T) {
+	t.Run("the settle takes no row of a session the store already holds", func(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
+		const first, second = int64(9400103), int64(9400104)
 		node := SessionNode("reached-again", who, peopleLockAt, NoEvent)
-		runPeopleWrite(t, ctx, database, "the session's first Reached", func(ctx context.Context, tx pgx.Tx) error {
-			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt)
-			return err
-		})
+		runPeopleWrite(t, ctx, database, "the session's first settle", settleWrite(node.ID, who, first))
 		holder, release := beginHolder(t, ctx, database)
 		lockNodeRow(t, ctx, holder, node)
 
-		_, pid, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := Reached(ctx, tx, DeliverySent, node.ID, who, peopleLockAt.Add(time.Hour))
-			return err
-		})
-		requireUnblockedBy(t, ctx, database, holder, pid, done, "Reached of a known session while another transaction holds its row",
-			"the node arm upserts `do nothing`, which locks no row that is already there")
+		_, pid, done := startPeopleWrite(t, ctx, database, settleWrite(node.ID, who, second))
+		requireUnblockedBy(t, ctx, database, holder, pid, done, "the settle of a known session while another transaction holds its row",
+			"the node arm upserts `do nothing`, which locks no row that is already there, and a settle that made no node states no base attribute")
 		release()
 
-		// The second attempt reaching the session appends nothing: the node was already there.
+		// The second attempt reaching the session appends nothing: the node was already there,
+		// and its base attributes are the first settle's to state.
 		requirePeopleRows(t, database, node, 1, Tuple{
 			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
-			SourceEvent: NoEvent, Asserted: true,
+			SourceEvent: first, Asserted: true,
 		}, 1)
+		requirePeopleRows(t, database, node, 1, Tuple{
+			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: VisibilityProject,
+			SourceEvent: second, Asserted: true,
+		}, 0)
 	})
+}
+
+// settleWrite is the settle of a delivery attempt as the API runs it: the session the attempt
+// reached recorded in the settling transaction (Reached), and the receipt appended after it,
+// which moves that node onto itself and appends its base attributes under it (Caused, as
+// api's completeCommentDelivery runs the pair).
+func settleWrite(session string, who model.Actor, receipt int64) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		reached, err := Reached(ctx, tx, model.DeliveryStateSent, session, who, peopleLockAt)
+		if err != nil {
+			return err
+		}
+		return Caused(ctx, tx, reached, receipt)
+	}
 }
 
 // startPeopleWrite runs write in a transaction of its own on a connection of its own, so the test

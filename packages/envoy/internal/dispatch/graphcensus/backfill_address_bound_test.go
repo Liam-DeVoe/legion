@@ -83,6 +83,68 @@ func TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound(t *testing.T) {
 	}
 }
 
+// TestTheCensusHoldsNoAuthorOfACommentPastTheBound is the same bound on the census's two sides
+// that have no projection table. A comment owned by a document whose ref_key is past the
+// store's address bound is left whole out of the store, by the writer (api's commentStored) and
+// by the backfill alike, so it states no authored_by tuple and makes no node of its author. A
+// person whose only comment is such a one, and a session that wrote only such a one, are
+// therefore no nodes of the store, and the census may hold the store to neither: counting them
+// on the row side left a difference nothing could ever close.
+func TestTheCensusHoldsNoAuthorOfACommentPastTheBound(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seedAgreeingStore(t, database)
+
+	if _, err := database.Pool.Exec(ctx,
+		`insert into projects (key, name, default_assignee) values ('LKY', 'Long keys', 'alice')`); err != nil {
+		t.Fatalf("create the project: %v", err)
+	}
+	// ref_key LKY/<slug> is 2,692 incompressible bytes: past the store's bound and inside the
+	// btree bound artifacts_ref_key_key holds its own rows to.
+	slug := randText(2688)
+	var artifactID, refKey string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (project_key, slug, name, kind, created_by)
+		values ('LKY', $1, $1, 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`, slug).Scan(&artifactID, &refKey); err != nil {
+		t.Fatalf("create the long-keyed document: %v", err)
+	}
+	if graphstore.AddressFits(refKey) {
+		t.Fatalf("the document's ref_key fits the store bound, so this proves nothing")
+	}
+
+	// Two comments on that document, each by a writer no other row of this database names: a
+	// person, and a session. Both rows are written as the comment path leaves one it cannot
+	// key - no node, and null node columns - and the backfill passes over them too.
+	const longKeyPerson, longKeySession = "longkey-person", "longkey-session"
+	for _, author := range []string{
+		`{"kind":"user","id":"` + longKeyPerson + `"}`,
+		`{"kind":"session","id":"` + longKeySession + `"}`,
+	} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into comments (artifact_id, author, body)
+			values ($1::uuid, $2::jsonb, 'A remark on a long-keyed document.')
+		`, artifactID, author); err != nil {
+			t.Fatalf("write the comment by %s: %v", author, err)
+		}
+	}
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the store: %v", err)
+	}
+
+	for _, held := range []struct{ kind, id string }{
+		{graphstore.KindPerson, longKeyPerson},
+		{graphstore.KindSession, longKeySession},
+	} {
+		if _, got, err := graphstore.ReadNode(ctx, database.Pool, held.kind, held.id); err != nil || got {
+			t.Fatalf("the store holds a %s node for %s: %t (err %v), want none: their only comment is past the bound",
+				held.kind, held.id, got, err)
+		}
+	}
+	requireTheCensusAgrees(t, "the census over a comment past the bound", storeCensusOf(t, database))
+}
+
 // randText is an incompressible string of n lower-case alphanumeric bytes: a btree compresses a
 // run of one byte, so a control needs an address the index cannot shrink under its bound.
 func randText(n int) string {

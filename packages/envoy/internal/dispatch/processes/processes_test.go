@@ -717,3 +717,87 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	}
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
 }
+
+// A schema refresh and a heartbeat that has to rejoin, running at once, both finish. The two
+// want the same two things: the registry pool's one connection and the registration's lock.
+// renew takes the connection for its transaction and then the lock to read the instance it
+// rejoins with, so a refresh that held the lock while it waited for the connection would wait
+// on the heartbeat that waits on it, and neither would move until the refresh's own context ran
+// out - with the heartbeat sitting on the registry's advisory lock all the while, so every
+// other process misses a beat.
+//
+// The interleaving is arranged, not raced for: the refresh is held inside the function that
+// reads the numbers, which it calls under the lock, and the heartbeat is started and given the
+// pool's connection before the refresh is let go.
+func TestARefreshAndALapsedHeartbeatAtOnceBothFinish(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, time.Hour)
+	database := storetest.Open(t)
+	registration := mustRegister(t, database, "c1", "K0")
+	// The heartbeat's own goroutine is stopped, so the two runs below are the only callers of
+	// the registry's pool and the test drives renew itself. Deregister stops it again, which
+	// costs nothing, and closes the pool.
+	registration.stop()
+	<-registration.stopped
+	// A row still live is stamped and nothing else is read: the heartbeat reads the instance
+	// only where its row dropped out of Live and it has to rejoin (renew).
+	ageHeartbeat(t, database, registration.ID, LiveWindow+time.Second)
+
+	// Each call is bounded, so the pair that waits on each other ends rather than hanging the
+	// test; the bound is far above what either takes.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reading, release := make(chan struct{}), make(chan struct{})
+	refreshed := make(chan error, 1)
+	go func() {
+		refreshed <- registration.RefreshSchema(ctx, func() (int, int) {
+			close(reading)
+			<-release
+			return 7, 7
+		})
+	}()
+	<-reading
+	renewed := make(chan error, 1)
+	go func() {
+		refusal, err := registration.renew(ctx)
+		renewed <- errors.Join(refusal, err)
+	}()
+	// What the heartbeat holds before it asks for the other: the pool's one connection, which
+	// it takes for its transaction. Where the refresh already holds it, this reads so at once,
+	// which is the order that cannot deadlock.
+	waitForConnectionHeld(t, registration)
+	close(release)
+
+	started := time.Now()
+	bound := time.NewTimer(time.Second)
+	defer bound.Stop()
+	for _, run := range []struct {
+		name   string
+		result <-chan error
+	}{{"the refresh", refreshed}, {"the heartbeat", renewed}} {
+		select {
+		case err := <-run.result:
+			if err != nil {
+				t.Fatalf("%s run beside the other: %v", run.name, err)
+			}
+		case <-bound.C:
+			t.Fatalf("%s had not finished a second after the two were let go (%v): the refresh and the heartbeat take the registry's connection and the registration's lock in two orders",
+				run.name, time.Since(started))
+		}
+	}
+	if got := liveProcess(t, database, registration.ID); got.SchemaVersion != 7 || got.SchemaCreatable != 7 {
+		t.Errorf("the row after both ran holds schema version %d and creatable %d, want 7 and 7", got.SchemaVersion, got.SchemaCreatable)
+	}
+}
+
+// waitForConnectionHeld waits until the registry's pool has its one connection out, which is
+// what renew holds from the moment its transaction begins.
+func waitForConnectionHeld(t *testing.T, registration *Registration) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for registration.pool.Stat().AcquiredConns() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the registry's one connection was taken by neither run within five seconds")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

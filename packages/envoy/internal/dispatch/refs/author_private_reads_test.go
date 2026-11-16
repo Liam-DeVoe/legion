@@ -280,8 +280,11 @@ func TestStoredExcerptsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testi
 	}
 }
 
-// A private block is no block another person reads a reply as answering, and no block of its
-// comment they may name. Its author reads it either way.
+// A block of a comment reserved for its author is no block another person reads a reply as
+// answering, and no block of that comment they may name: a block's text is its comment's text.
+// Its author reads it either way. The node reserved is the comment's own, the one the store
+// holds (graphstore.KindComment): nothing writes a node of kind comment_block, so a read that
+// tested one would answer the text to everybody.
 func TestReplyBlocksAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
 	ctx := context.Background()
@@ -303,7 +306,7 @@ func TestReplyBlocksAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	`, parent, node).Scan(&reply); err != nil {
 		t.Fatalf("write the reply: %v", err)
 	}
-	reserveForAuthor(t, tx, ItemComment.BlockKind(), node)
+	reserveForAuthor(t, tx, graphstore.KindComment, parent)
 
 	for _, read := range []struct {
 		who  model.Actor

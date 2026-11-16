@@ -894,13 +894,19 @@ func (s *server) renewApprovalAsk(
 	}
 	// The requester follows the request again. Its events are appended by now, so a session
 	// requester's node is caused by the last of them; a retry appends none, and the node it
-	// makes, if the store holds none yet, stays at the sentinel.
+	// makes, if the store holds none yet, stays at the sentinel. A follow given no cause states
+	// no base attribute of its own and holds the node's two for this call, which appends them
+	// at the cause the follow was given, the sentinel included (asks.Followed).
 	cause, at := graphstore.NoEvent, open.CreatedAt
 	if len(events) > 0 {
 		last := events[len(events)-1]
 		cause, at = last.ID, last.CreatedAt
 	}
-	if _, err := asks.FollowAuthor(ctx, tx, open.ID, actor, at, cause); err != nil {
+	followed, err := asks.FollowAuthor(ctx, tx, open.ID, actor, at, cause)
+	if err != nil {
+		return nil, err
+	}
+	if err := graphstore.Caused(ctx, tx, followed.Uncaused, cause); err != nil {
 		return nil, err
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {

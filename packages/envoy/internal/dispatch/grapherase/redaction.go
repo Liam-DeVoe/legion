@@ -29,6 +29,12 @@ type redactedEvent struct {
 // document (`artifact.*` and `block.*`, whose payload names it as `artifact_id`), which carries
 // its versions and their diffs. Any other event that holds the same bytes - another person's
 // comment, another document's version - is about another node, and stays.
+//
+// A document event's payload carries the whole document, so it holds the erased block's text
+// beside every sibling's: it is redacted where the erased text stands as a block of its own
+// (redactBlockQuote) and nowhere else, which leaves a sibling's line in a version's markdown or
+// in a diff as it was written. A comment's own event carries that comment's body and nothing
+// else of anybody's, so every one of those bytes goes wherever it stands.
 func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -59,7 +65,7 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
 	for _, event := range found {
-		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker())
+		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil)
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
@@ -78,7 +84,10 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // shape, so an erase of `kind` leaves every "kind" key and redacts a body reading "kind". The
 // payload is a jsonb's text, so its numbers are read as the literals they are and its key order
 // is the one jsonb keeps whatever order it is written back in.
-func redactPayload(payload []byte, texts []string, marker string) ([]byte, []string, error) {
+//
+// quoted says the payload quotes a document, whose blocks are other nodes': a text is then
+// replaced only where it stands as a block of its own (redactBlockQuote).
+func redactPayload(payload []byte, texts []string, marker string, quoted bool) ([]byte, []string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
 	var value any
@@ -91,8 +100,12 @@ func redactPayload(payload []byte, texts []string, marker string) ([]byte, []str
 		switch held := value.(type) {
 		case string:
 			rewritten := held
-			for _, text := range texts {
-				rewritten = strings.ReplaceAll(rewritten, text, marker)
+			if quoted {
+				rewritten = redactBlockQuote(held, texts, marker)
+			} else {
+				for _, text := range texts {
+					rewritten = strings.ReplaceAll(rewritten, text, marker)
+				}
 			}
 			if rewritten != held {
 				originals = append(originals, held)
@@ -136,66 +149,139 @@ func (e *Erasure) redactEvents(ctx context.Context, tx pgx.Tx, redacted []redact
 	return nil
 }
 
-// redactBlocks rewrites the text and the excerpt of every block that holds the node's block and
-// quotes it (erasedRead.ancestors): a container's text is the document cut across the blocks
-// inside it. Those rows are rewritten and not deleted because each projects a block node of its
-// own, which the erase does not remove, and a live node no row projects is a difference the store
-// census reads (c-census).
+// redactedBlockText is the text one block of the node's document held at one version, as the
+// redaction leaves it.
+type redactedBlockText struct {
+	blockID string
+	version int32
+	text    string
+}
+
+// redactedExcerpt is the excerpt of one block of the node's document, as the redaction leaves
+// it, with the node that block projects, which names it on the listing.
+type redactedExcerpt struct {
+	blockID, nodeID, excerpt string
+}
+
+// redactBlocks writes back the text and the excerpt of every block that holds the node's block
+// and quotes it, as the read under the run's locks left them (readAncestors). Those rows are
+// rewritten and not deleted because each projects a block node of its own, which the erase does
+// not remove, and a live node no row projects is a difference the store census reads (c-census).
+//
+// It writes the rows the listing named and no others: the redaction was computed from the same
+// read, so a block of the same document holding the erased words where the node's own block does
+// not stand is none of these.
 //
 // An excerpt is cut from the rewritten text the way the indexer cuts it (refs.IndexBlocks), so a
 // reader of the excerpt and a reader of the text are told the same thing, and an excerpt that
-// held only the first part of a long erased text is rewritten too. A block that rewrite does not
-// reach - one whose text document_block_texts does not hold - has its excerpt rewritten by the
-// statement after it.
+// held only the first part of a long erased text is rewritten too.
 //
 // text_sha256 stands as it is. It is the digest of the bytes the version stated, which is what
 // the indexer compares a later version's block against: moved to the digest of the redacted
 // text, a version restating the erased bytes would read as a change and write them back in.
 func (e *Erasure) redactBlocks(ctx context.Context, tx pgx.Tx, read erasedRead) error {
-	if read.document == nil || len(read.ancestors) == 0 {
+	if read.document == nil {
 		return nil
 	}
-	rewritten := redaction("held.text", read.texts)
-	var blockTexts, recut int64
-	if err := tx.QueryRow(ctx, `
-		with redacted as (
-			update document_block_texts held set text = `+rewritten+`
-			where held.artifact_id = $3::uuid and held.block_id = any($4::text[]) and held.text <> `+rewritten+`
-			returning held.artifact_id, held.block_id, held.version, held.text
-		), recut as (
-			update document_blocks block set excerpt = left(redacted.text, `+blockExcerpt+`)
-			from redacted
-			where redacted.artifact_id = block.artifact_id and redacted.block_id = block.block_id
-			  and redacted.version = block.changed_version
-			  and block.excerpt <> left(redacted.text, `+blockExcerpt+`)
-			returning 1
-		)
-		select (select count(*) from redacted), (select count(*) from recut)`,
-		e.marker(), read.texts, read.document.artifact, read.ancestors).Scan(&blockTexts, &recut); err != nil {
-		return fmt.Errorf("redact the texts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+	if len(read.blockTexts) > 0 {
+		blocks := make([]string, len(read.blockTexts))
+		versions := make([]int32, len(read.blockTexts))
+		texts := make([]string, len(read.blockTexts))
+		for index, held := range read.blockTexts {
+			blocks[index], versions[index], texts[index] = held.blockID, held.version, held.text
+		}
+		tag, err := tx.Exec(ctx, `
+			update document_block_texts held set text = redacted.text
+			from unnest($2::text[], $3::int[], $4::text[]) as redacted (block_id, version, text)
+			where held.artifact_id = $1::uuid and held.block_id = redacted.block_id and held.version = redacted.version`,
+			read.document.artifact, blocks, versions, texts)
+		if err != nil {
+			return fmt.Errorf("redact the texts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+		}
+		e.redacted("document_block_texts", tag.RowsAffected())
 	}
-	excerpt := redaction("held.excerpt", read.texts)
-	tag, err := tx.Exec(ctx, `update document_blocks held set excerpt = `+excerpt+`
-		where held.artifact_id = $3::uuid and held.block_id = any($4::text[]) and held.excerpt <> `+excerpt,
-		e.marker(), read.texts, read.document.artifact, read.ancestors)
-	if err != nil {
-		return fmt.Errorf("redact the excerpts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+	if len(read.excerpts) > 0 {
+		blocks := make([]string, len(read.excerpts))
+		excerpts := make([]string, len(read.excerpts))
+		for index, held := range read.excerpts {
+			blocks[index], excerpts[index] = held.blockID, held.excerpt
+		}
+		tag, err := tx.Exec(ctx, `
+			update document_blocks held set excerpt = redacted.excerpt
+			from unnest($2::text[], $3::text[]) as redacted (block_id, excerpt)
+			where held.artifact_id = $1::uuid and held.block_id = redacted.block_id`,
+			read.document.artifact, blocks, excerpts)
+		if err != nil {
+			return fmt.Errorf("redact the excerpts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+		}
+		e.redacted("document_blocks", tag.RowsAffected())
 	}
-	e.redacted("document_block_texts", blockTexts)
-	e.redacted("document_blocks", recut+tag.RowsAffected())
 	return nil
 }
 
-// redaction is one column with every erased text replaced by the marker, as a statement spells
-// it: $1 is the marker and $2 the texts, longest first (readTexts), replaced one after the other
-// so a row holding two of them is rewritten by one pass. A text holding another is replaced
-// whole before the shorter one can cut it.
-func redaction(column string, texts []string) string {
-	rewritten := column
-	for index := range texts {
-		rewritten = fmt.Sprintf("replace(%s, ($2::text[])[%d], $1::text)", rewritten, index+1)
+// blockFraming are the bytes a line of markdown can carry before a block's own text begins: the
+// indent and the marker of a list item, a quote or a heading, the pipe of a table row, and the
+// space, `+` or `-` a line of a diff opens with.
+const blockFraming = " \t>-*+#.)|0123456789"
+
+// redactBlockQuote replaces each erased text with the marker in a text that quotes a whole
+// document - a version's markdown, a diff of one, the text of a block that holds other blocks -
+// where that text stands as a block of its own, and leaves it standing anywhere else.
+//
+// A block's stored text is the slice of its document's markdown the block was rendered into
+// (refs.IndexBlocks), so the erased block stands in such a quote at a line of its own, after
+// whatever framing the line carries, and ends a line. Words of it inside a longer line are
+// another block's text: a sibling that repeats them is a node of its own, which R5 has the run
+// list and leave for an erase of that node.
+//
+// Two blocks of one document whose whole text is the same cannot be told apart in a quote of
+// that document, and both read as the erased one. A text read from a block's excerpt rather than
+// from its stored text (readTexts) is the first refs.BlockExcerptRunes runes of a long block, so
+// it ends a line only where the block does, and a quote that holds no more than those runes of
+// it keeps them.
+func redactBlockQuote(quote string, texts []string, marker string) string {
+	redacted := quote
+	for _, text := range texts {
+		if text == "" {
+			continue
+		}
+		var written strings.Builder
+		rest := redacted
+		for {
+			at := strings.Index(rest, text)
+			if at < 0 {
+				break
+			}
+			end := at + len(text)
+			if standsAsBlock(rest, at, end) {
+				written.WriteString(rest[:at])
+				written.WriteString(marker)
+			} else {
+				written.WriteString(rest[:end])
+			}
+			rest = rest[end:]
+		}
+		if written.Len() == 0 {
+			continue
+		}
+		written.WriteString(rest)
+		redacted = written.String()
 	}
-	return rewritten
+	return redacted
+}
+
+// standsAsBlock reports whether quote[at:end] stands as a block of its own: its line holds
+// nothing but framing before it (blockFraming), and it ends the quote or its line.
+func standsAsBlock(quote string, at, end int) bool {
+	for index := at - 1; index >= 0; index-- {
+		if quote[index] == '\n' {
+			break
+		}
+		if strings.IndexByte(blockFraming, quote[index]) < 0 {
+			return false
+		}
+	}
+	return end == len(quote) || quote[end] == '\n' || quote[end] == '\r'
 }
 
 // clearExcerpts takes away the excerpt every mention of the node's document shows when it was

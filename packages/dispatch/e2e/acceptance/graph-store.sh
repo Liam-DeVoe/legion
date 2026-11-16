@@ -2,9 +2,10 @@
 # Drives the people and the agents of the node and tuple store end to end against a running
 # server (dispatch://INFRA-1149's c-person-graph). It writes comments, a message and an ask
 # through the real HTTP API, has the server deliver them to sessions and to a role, adds one
-# comment that no session receives and one delivery attempt that fails, and then reads the store back
-# and checks each tuple: what each person authored, what reached each session, and that a failed
-# or pending attempt earns no tuple. It checks the role, the session and the page, and it holds
+# comment that no session receives, one delivery attempt that fails and one the listener queues
+# for a session that is not running, and then reads the store back and checks each tuple: what
+# each person authored, what reached each session, that a failed or pending attempt earns no
+# tuple and that a queued one earns one. It checks the role, the session and the page, and it holds
 # every read against a table of identities a person wrote into this driver. A message earns no
 # tuple in this child - only a comment has a node on the near end of a delivery, and
 # dispatch://INFRA-1152 gives a message its own - so what the driver reads of the message is the
@@ -28,8 +29,8 @@
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
 # server serves), FAKE_ENVOY_PORT (the harness's fake Envoy listener, e2e/fake-envoy.ts, whose
-# session fixture this driver adds a role-less session and a role's holder to - as
-# block-graph.sh takes FAKE_GITHUB_PORT for the fixture it needs), and optionally
+# session fixture this driver adds role-less sessions, one of them stopped, and a role's holder
+# to - as block-graph.sh takes FAKE_GITHUB_PORT for the fixture it needs), and optionally
 # DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs in. Each unmet input
 # is exit 2.
 #
@@ -88,11 +89,14 @@ readonly stamp
 session="graph-store-$stamp"
 readonly session
 # The sessions this run adds to the listener's fixture: one that claims no role, which the issue's
-# route names; another that claims no role, which a mention reaches; and one holding a role of
-# this run's own, so the role this driver routes a comment to is nobody else's.
+# route names; another that claims no role, which a mention reaches; a third that claims no role
+# and that the listener holds stopped, which a mention reaches through the message the listener
+# stores for it; and one holding a role of this run's own, so the role this driver routes a
+# comment to is nobody else's.
 readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
 readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
 readonly mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
+readonly stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
 readonly role="acceptance-$stamp"
 # The role the message of G10 is delivered to, the route of an issue of that section's own: no
 # other issue or write of this run names it, so its role and page nodes are that route's and the
@@ -252,11 +256,13 @@ jq -e 'type == "array" and length > 0' "$work/sessions.json" >/dev/null ||
   fail setup "read the listener's sessions" "$(head -c 300 "$work/sessions.json")"
 fixture_saved=1
 jq -c --arg loose "$loose_session" --arg mentioned "$mentioned_session" \
-  --arg holder "$holder_session" --arg role "$role" \
+  --arg stopped "$stopped_session" --arg holder "$holder_session" --arg role "$role" \
   '[.[] | {session_id, title, dir, machine_id, host, roles, capabilities}]
    + [{session_id: $loose, title: "Acceptance loose", machine_id: "acceptance", roles: [],
        capabilities: ["aside", "btw", "steer"]},
       {session_id: $mentioned, title: "Acceptance mentioned", machine_id: "acceptance", roles: [],
+       capabilities: ["aside", "btw", "steer"]},
+      {session_id: $stopped, title: "Acceptance stopped", machine_id: "acceptance", roles: [],
        capabilities: ["aside", "btw", "steer"]},
       {session_id: $holder, title: "Acceptance holder", machine_id: "acceptance", roles: [$role],
        capabilities: ["aside", "btw", "steer"]}]' \
@@ -265,7 +271,16 @@ jq -c --arg loose "$loose_session" --arg mentioned "$mentioned_session" \
 curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
   --data-binary "@$work/fixture.json" "$envoy/__fixture/sessions" 2>"$work/curl" ||
   fail setup "seed the session fixture" "curl: $(<"$work/curl")"
-pass setup "the listener holds $loose_session and $mentioned_session (no role) and $holder_session (role $role)"
+# A seeded session is a running one. Stopping it leaves the listener knowing it by its
+# known-session record alone (e2e/fake-envoy.ts, `stopped`): Dispatch's delivery read, which asks
+# for stopped sessions too, still resolves it, and a send to it is stored and answered
+# `state: stopped`. The reseed on exit starts every session over, this one with the rest.
+curl -sS -o "$work/stopped.json" -X PATCH -H 'Content-Type: application/json' \
+  --data-binary '{"stopped": true}' "$envoy/__fixture/sessions/$stopped_session" 2>"$work/curl" ||
+  fail setup "stop $stopped_session in the session fixture" "curl: $(<"$work/curl")"
+jq -e '.stopped == true and .live == false' "$work/stopped.json" >/dev/null ||
+  fail setup "stop $stopped_session in the session fixture" "$(head -c 300 "$work/stopped.json")"
+pass setup "the listener holds $loose_session and $mentioned_session (no role), $stopped_session (no role, stopped) and $holder_session (role $role)"
 
 send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
   '{project: $p, title: "Person and agent graph check", spec: "What the store holds of people and agents.", actor: {kind: "session", id: $s}}')"
@@ -423,21 +438,58 @@ want_value G5 "the mention's delivery is a delivered_to tuple into that session"
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$mention_comment'
      and kind = 'delivered_to' and to_kind = 'session' and to_id = '$mentioned_session' and asserted"
 
-# Every session a sent attempt reached is a node. The read spans every run's attempts, so it is
-# held to this run's own first: a read over no attempt of this issue reads zero for nothing.
-query G5 "count this run's sent attempts" \
-  "select count(*) from comment_deliveries d join comments c on c.id = d.comment_id
-   where c.issue_key = '$key' and d.state = 'sent'"
-[[ "$answer" -ge 1 ]] ||
-  fail G5 "this run's issue holds a sent attempt" "read $answer sent attempt(s) on $key"
-sent_here="$answer"
-query G5 "count the sessions a sent attempt reached" \
+# G5d: an attempt the listener queued is a delivery. The mention names the session the listener
+# holds stopped: it knows that session by its known-session record and no plugin runs it, so the
+# send is stored for it and answered `state: stopped`, and Dispatch records the attempt `queued`
+# (cybermonklabs/legion#2643). A queued attempt is one the listener took (model.DeliveryTaken), so
+# its settle writes the session's node (graphstore.Reached) and the outbox's record of its receipt
+# states the comment delivered to that session, once (outbox's mentionReached). Before #2643 the
+# same send ended failed, wrote no node, and a fallback copy carried the comment instead.
+#
+# The person who owns the session would read the comment on their own page, but this fixture
+# proves no owner: the alias_of tuple a delivery reaches a person through is written only for a
+# token the secrets broker scoped to a person, which no shell driver can present (the identity
+# table's missing row, above). TestAMentionQueuedForAStoppedSessionReachesItsPerson in
+# packages/envoy carries that half. What this driver reads is the other half of the same rule: a
+# session no credential proved is nobody's, so the comment its person wrote is on that person's
+# page as authored and not as received.
+comment G5 "a comment mentioning a session the listener holds stopped" "person:$person" \
+  "A mention for a session that is not running." "session:$stopped_session"
+readonly queued_comment="$comment"
+settles G5 "the mention's attempt settles queued against the stopped session" "queued|$stopped_session" \
+  "select coalesce(max(state || '|' || coalesce(session_id, '')), 'none') from comment_deliveries
+   where comment_id = '$queued_comment'"
+settles G5 "the comment states one delivered_to tuple into the stopped session" 1 \
+  "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$queued_comment'
+     and kind = 'delivered_to' and to_kind = 'session' and to_id = '$stopped_session' and asserted"
+want_value G5 "the stopped session is a node" 1 \
+  "select count(*) from graph_nodes where kind = 'session' and id = '$stopped_session' and state = 'live'"
+request "person:$person" GET "/api/v1/people/$(q "$person")/nodes"
+want_status 200 G5 "read $person's page after the queued delivery"
+expect G5 "a delivery to a session no credential proved is on no person's page as received" \
+  '["authored_by"]' --arg id "$queued_comment" '.rows[] | select(.id == $id) | .relations'
+
+# Every session an attempt the listener took reached is a node: a sent attempt's, and a queued
+# one's (model.DeliveryTaken, the test graphcensus's recordedSessions binds its session rows by).
+# The read spans every run's attempts, so it is held to this run's own first: a read over no
+# attempt of this issue reads zero for nothing, and one over no queued attempt proves nothing of
+# the queued half.
+query G5 "count this run's sent and queued attempts" \
+  "select count(*) filter (where d.state = 'sent') || '|' || count(*) filter (where d.state = 'queued')
+   from comment_deliveries d join comments c on c.id = d.comment_id
+   where c.issue_key = '$key'"
+sent_here="${answer%|*}"
+queued_here="${answer#*|}"
+[[ "$sent_here" -ge 1 && "$queued_here" -ge 1 ]] ||
+  fail G5 "this run's issue holds a sent attempt and a queued one" \
+    "read $sent_here sent and $queued_here queued attempt(s) on $key"
+query G5 "count the sessions a sent or queued attempt reached" \
   "select count(distinct session_id) from comment_deliveries
-   where state = 'sent' and coalesce(session_id, '') <> ''"
-sent_sessions="$answer"
-want_value G5 "every session a sent attempt reached is a node ($sent_sessions session(s), $sent_here sent attempt(s) on $key)" 0 \
+   where state in ('sent', 'queued') and coalesce(session_id, '') <> ''"
+taken_sessions="$answer"
+want_value G5 "every session a sent or queued attempt reached is a node ($taken_sessions session(s); $sent_here sent and $queued_here queued attempt(s) on $key)" 0 \
   "select count(distinct d.session_id) from comment_deliveries d
-   where d.state = 'sent' and coalesce(d.session_id, '') <> ''
+   where d.state in ('sent', 'queued') and coalesce(d.session_id, '') <> ''
      and not exists (select 1 from graph_nodes n
                      where n.kind = 'session' and n.id = d.session_id and n.state = 'live')"
 want_value G5 "a session no projected row names is no node of this writer's" 0 \
@@ -521,14 +573,14 @@ settles G8 "the attempt settles failed" "failed" \
 want_value G8 "a failed attempt earns no tuple" 0 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$failed_comment'
      and kind = 'delivered_to' and to_id = '$dead_session'"
-want_value G8 "no delivered_to tuple stands on an attempt that is not sent" 0 \
+want_value G8 "no delivered_to tuple stands on an attempt the listener did not take" 0 \
   "select count(*) from graph_tuples t
    where t.kind = 'delivered_to' and t.to_kind = 'session'
      and exists (select 1 from comment_deliveries d
                  where d.comment_id::text = t.from_id and d.session_id = t.to_id)
      and not exists (select 1 from comment_deliveries d
                      where d.comment_id::text = t.from_id and d.session_id = t.to_id
-                       and d.state = 'sent')"
+                       and d.state in ('sent', 'queued'))"
 
 # G9: a delivery to a role ends at the role node and not on a person; the role carries its page
 # and its held_by claim, and the session it resolved to is part_of that role.
@@ -643,7 +695,7 @@ send POST "/api/v1/issues/$key/asks" "$(jq -cn --arg s "$session" \
   '{question: "Which sessions does the store hold?", actor: {kind: "session", id: $s}}')"
 want_status 201 G11 "open an ask"
 ask="$(jq -er '.id' "$work/body")" || fail G11 "open an ask" "no ask id: $(body)"
-readonly followed_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
+readonly followed_session="019a1c09-8888-7000-8000-$(printf '%012d' "$$")"
 readonly unseen_session="019a1c09-5555-7000-8000-$(printf '%012d' "$$")"
 for follower in "$session" "$followed_session"; do
   request "person:$person" PUT "/api/v1/asks/$ask/followers/$follower"

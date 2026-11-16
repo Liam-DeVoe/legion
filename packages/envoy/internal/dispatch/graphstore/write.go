@@ -431,11 +431,51 @@ func statesAttribute(base []Tuple, own map[baseAttribute]struct{}, node Node, at
 	if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
 		return base
 	}
-	return append(base, Tuple{
+	return append(base, baseAttributeTuple(node, attribute, value))
+}
+
+// baseAttributeTuple is one base attribute of a node as the write that made the node states it,
+// carrying that write's time, writer and cause.
+func baseAttributeTuple(node Node, attribute, value string) Tuple {
+	return Tuple{
 		FromKind: node.Kind, FromID: node.ID, Kind: attribute,
 		ToKind: KindValue, ToID: value,
 		At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-	})
+	}
+}
+
+// BaseAttributeFacts is the base attributes of each node, as facts a writer holds for the event
+// it appends after its node write (Uncaused): its visibility and state, and its project and
+// parties where it carries them, as the node arm states them. A writer that splices the node arm
+// into a statement of its own and has no cause yet (WriteArmsUncaused) states none of them there
+// and hands these to Caused instead, so the node row and its base tuples name one event. The
+// nodes given are the ones that write made: a node it found there is another write's to
+// describe.
+func BaseAttributeFacts(nodes []Node) []UncausedTuple {
+	if len(nodes) == 0 {
+		return nil
+	}
+	facts := make([]UncausedTuple, 0, len(baseAttributes)*len(nodes))
+	for _, node := range nodes {
+		for _, attribute := range baseAttributes {
+			var value string
+			switch attribute {
+			case AttributeVisibility:
+				value = node.Visibility
+			case AttributeState:
+				value = node.State
+			case AttributeProject:
+				value = node.Project
+			case AttributeParties:
+				value = PartiesValue(node.Parties)
+			}
+			if value == "" {
+				continue
+			}
+			facts = append(facts, UncausedTuple{Tuple: baseAttributeTuple(node, attribute, value)})
+		}
+	}
+	return facts
 }
 
 // appendTuples appends the relations and the attributes in two statements, because the two carry

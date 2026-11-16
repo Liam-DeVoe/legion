@@ -193,8 +193,9 @@ func storeKinds() []StoreKind {
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
 		Name: "delivery", MovedBy: movedHere, Tuples: 1,
-		Driver: "comment_deliveries.created_at, sent: a delivered_to for each attempt that reached its destination",
-		count:  `(select count(*) from comment_deliveries where state = '` + graphstore.DeliverySent + `' and created_at > ` + sizingWindow + `)`,
+		Driver: "comment_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its destination",
+		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
+			` and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 4,
 		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility" +
@@ -224,8 +225,9 @@ func storeKinds() []StoreKind {
 		count:  `(select count(*) from sized_texts where written)`,
 	}, {
 		Name: "message_delivery", MovedBy: movedWithInbox, Tuples: 1,
-		Driver: "message_deliveries.created_at, sent: a delivered_to for each attempt that reached its session",
-		count:  `(select count(*) from message_deliveries where state = '` + graphstore.DeliverySent + `' and created_at > ` + sizingWindow + `)`,
+		Driver: "message_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its session",
+		count: `(select count(*) from message_deliveries where state in ` + model.DeliveryTakenStatesSQL +
+			` and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "read_mark", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "user_threads.read_through and user_agent_read.read_through in the window, and user_agent_reply_read" +

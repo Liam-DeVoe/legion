@@ -137,43 +137,39 @@ func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	return nil
 }
 
-// readExcerpts lists the excerpts cut from the node's text that rows of other blocks hold: the
-// text at each version and the excerpt of every block holding the node's block (readAncestors),
-// which redactBlocks rewrites, and the excerpt each mention of the node's document shows when it
-// was cut from the node's block or from one of those (refs.RecordExcerpts), which clearExcerpts
-// takes away for the reconciliation to cut again from the latest version left. A mention's
-// excerpt is the first refs.BlockExcerptRunes runes of its block, so it is taken whether or not it
-// holds a whole erased text.
+// readExcerpts lists the rows of other blocks that quote the node's text and that the run
+// rewrites: the text and the excerpt the redaction moves in every block holding the node's block
+// (readAncestors, written back by redactBlocks), and the excerpt each mention of the node's
+// document shows when it was cut from the node's block or from one of those
+// (refs.RecordExcerpts), which clearExcerpts takes away for the reconciliation to cut again from
+// the latest version left. A mention's excerpt is the first refs.BlockExcerptRunes runes of its
+// block, so it is taken whether or not it holds a whole erased text.
 func (e *Erasure) readExcerpts(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if read.document == nil || len(read.texts) == 0 {
 		return nil
 	}
-	blocks := append([]string{read.blockID}, read.ancestors...)
+	for _, text := range read.blockTexts {
+		read.listing.excerpts = append(read.listing.excerpts,
+			fmt.Sprintf("redact document_block_texts %s#%s version %d", read.document.refKey, text.blockID, text.version))
+	}
+	for _, excerpt := range read.excerpts {
+		read.listing.excerpts = append(read.listing.excerpts, "redact document_blocks "+excerpt.nodeID+" excerpt")
+	}
 	rows, err := tx.Query(ctx, `
-		select 'redact document_block_texts ' || $4::text || '#' || t.block_id || ' version ' || t.version
-		from document_block_texts t
-		where t.artifact_id = $1::uuid and t.block_id = any($2::text[])
-		  and exists (select 1 from unnest($3::text[]) erased (text) where position(erased.text in t.text) > 0)
-		union all
-		select 'redact document_blocks ' || b.node_id || ' excerpt' from document_blocks b
-		where b.artifact_id = $1::uuid and b.block_id = any($2::text[])
-		  and exists (select 1 from unnest($3::text[]) erased (text)
-		              where position(erased.text in b.excerpt) > 0
-		                 or exists (select 1 from document_block_texts t
-		                            where t.artifact_id = b.artifact_id and t.block_id = b.block_id
-		                              and t.version = b.changed_version and position(erased.text in t.text) > 0))
-		union all
-		select 'rewrite refs ' || $4::text || ' -> ' || r.to_kind || ':' || r.to_id || ' excerpt' from refs r
-		where r.from_kind = 'artifact' and r.from_id = $1::uuid::text and r.excerpt_block_id = any($5::text[])
+		select 'rewrite refs ' || $3::text || ' -> ' || r.to_kind || ':' || r.to_id || ' excerpt' from refs r
+		where r.from_kind = 'artifact' and r.from_id = $1::uuid::text and r.excerpt_block_id = any($2::text[])
 		  and r.excerpt_text is not null
 		order by 1`,
-		read.document.artifact, read.ancestors, read.texts, read.document.refKey, blocks)
+		read.document.artifact, append([]string{read.blockID}, read.ancestors...), read.document.refKey)
 	if err != nil {
 		return fmt.Errorf("read the excerpts quoting %s:%s: %w", e.Kind, e.ID, err)
 	}
-	if read.listing.excerpts, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+	mentions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return fmt.Errorf("read the excerpts quoting %s:%s: %w", e.Kind, e.ID, err)
 	}
+	read.listing.excerpts = append(read.listing.excerpts, mentions...)
+	slices.Sort(read.listing.excerpts)
 	return nil
 }
 
@@ -214,19 +210,19 @@ var derivedTables = map[string][]derivedRows{
 		or (bound.window_kind <> '' and held.kind = bound.window_kind and split_part(held.id, '#', 1) = bound.owner_key)
 		or (bound.document <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.document)
 		or (bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue)`}},
-	"doc_updates":       {{where: `held.artifact_id = nullif(bound.document, '')::uuid`}},
-	"doc_checkpoints":   {{where: `held.artifact_id = nullif(bound.document, '')::uuid`}},
-	"doc_snapshots":     {{where: `held.artifact_id = nullif(bound.document, '')::uuid`}},
+	"doc_updates":       {{where: `held.artifact_id::text = any(bound.histories)`}},
+	"doc_checkpoints":   {{where: `held.artifact_id::text = any(bound.histories)`}},
+	"doc_snapshots":     {{where: `held.artifact_id::text = any(bound.histories)`}},
 	"refs":              {{where: `bound.document <> '' and held.from_kind = 'artifact' and held.from_id = bound.document and (held.excerpt_block_id = bound.block or held.excerpt_block_id = any(bound.ancestors))`}},
 	"events":            {{where: `held.id = any(bound.events)`}},
 	"search_term_stats": {{where: `bound.project <> '' and held.project_key = bound.project`}},
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
-// each binds the same twelve parameters whichever of them its table's predicate names.
+// each binds the same thirteen parameters whichever of them its table's predicate names.
 const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::text[] as texts, $4::text as document,
 	$5::text as block, $6::text[] as ancestors, $7::bigint[] as events, $8::int[] as numbers, $9::text as window_kind,
-	$10::text as owner_key, $11::text as spec_issue, $12::text as project)`
+	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories)`
 
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
@@ -261,8 +257,12 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 	for index, event := range read.events {
 		eventIDs[index] = event.id
 	}
+	histories := make([]string, 0, len(read.margins)+1)
+	for _, replaced := range read.replacedHistories() {
+		histories = append(histories, replaced.document.artifact)
+	}
 	args := []any{e.Kind, e.ID, read.texts, document, read.blockID, read.ancestors, eventIDs, read.numbers,
-		windowKind, ownerKey, read.document.specIssue(), read.project}
+		windowKind, ownerKey, read.document.specIssue(), read.project, histories}
 	held := map[string][]string{}
 	for _, column := range columns {
 		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {

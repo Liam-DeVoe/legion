@@ -13,6 +13,39 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
+// TestBaseAttributeFactsHoldEachAttributesOwnValue holds the facts a writer with no cause yet
+// hands to Caused (WriteArmsUncaused) to what the node arm states for a node it makes: its
+// visibility and state, its project or its parties where it carries one, each under its own
+// value, and nothing of an attribute it does not carry.
+func TestBaseAttributeFactsHoldEachAttributesOwnValue(t *testing.T) {
+	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	who := model.Actor{Kind: "user", ID: "alice"}
+	for name, test := range map[string]struct {
+		node Node
+		want map[string]string
+	}{
+		"a node in a project": {IssueNode("CORE-9", "CORE", who, at), map[string]string{
+			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeProject: "CORE",
+		}},
+		"a node between parties": {MessageNode("m-9", "", []string{PartySession("s-9"), PartyPerson("Bob")}, who, at), map[string]string{
+			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeParties: "person:bob session:s-9",
+		}},
+		"a node of neither": {PersonNode("carol", who, at, NoEvent), map[string]string{
+			AttributeVisibility: VisibilityProject, AttributeState: StateLive,
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			held := map[string]string{}
+			for _, fact := range BaseAttributeFacts([]Node{test.node}) {
+				held[fact.Kind] = fact.ToID
+			}
+			if !maps.Equal(held, test.want) {
+				t.Errorf("BaseAttributeFacts holds %v, want %v", held, test.want)
+			}
+		})
+	}
+}
+
 // A node's project and the parties it is between are base attributes of the store, as its
 // visibility and state are (dispatch://INFRA-3862, slice N of its plan): each is a value tuple the
 // write that stores the node appends, and graph_nodes.project_key and graph_nodes.parties are

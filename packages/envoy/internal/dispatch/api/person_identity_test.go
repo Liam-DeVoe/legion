@@ -246,7 +246,7 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 	}, "bob"))
 	attempts := settledCommentDeliveries(t, rig.database, mention.ID)
 	if !slices.ContainsFunc(attempts, func(attempt model.CommentDelivery) bool {
-		return attempt.SessionID != nil && *attempt.SessionID == brokerTestSession && attempt.State == graphstore.DeliverySent
+		return attempt.SessionID != nil && *attempt.SessionID == brokerTestSession && attempt.State == model.DeliveryStateSent
 	}) {
 		t.Fatalf("the mention of the proved session settled %+v, want one attempt sent to it", attempts)
 	}
@@ -294,9 +294,17 @@ func newIdentityRig(t *testing.T) *identityRig {
 		}
 	}))
 	t.Cleanup(listener.Close)
+	return newIdentityRigOn(t, listener.URL)
+}
+
+// newIdentityRigOn is that rig over the Envoy listener at envoyURL, for a test that needs the
+// proved session answered some other way: stopped, so that every send to it is stored for it
+// and its attempts settle queued (queued_delivery_store_test.go).
+func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
+	t.Helper()
 	broker := brokertokentest.NewStubBroker(t)
 	handler, database, deps := newTestServer(t, testServerOptions{
-		envoyURL: listener.URL,
+		envoyURL: envoyURL,
 		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
 			verifier, err := brokertoken.New(brokertoken.Options{
 				BrokerURL: broker.Server.URL,

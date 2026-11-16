@@ -52,6 +52,21 @@ type Claim struct {
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
+	return writeArms(first, nodes, tuples, claims, true)
+}
+
+// WriteArmsUncaused is WriteArms for a writer whose cause is appended after these arms run: the
+// nodes it makes state no base attribute here, and the writer appends them under that event
+// instead (BaseAttributeFacts, Caused). No tuple may be updated to learn its cause, and the
+// node row moves onto the event (causeNodes), so a node made at the sentinel whose base
+// attributes were stated here would be a row naming one event and base tuples naming another.
+func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
+	return writeArms(first, nodes, tuples, claims, false)
+}
+
+// writeArms is both: states says whether the node arm states the base attributes of each node
+// it makes.
+func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, error) {
 	relations, values := splitTuples(tuples)
 	if len(nodes) == 0 && len(relations) == 0 && len(values) == 0 && len(claims) == 0 {
 		return "", nil, nil
@@ -72,7 +87,7 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 		if err != nil {
 			return "", nil, err
 		}
-		add(nodeArm, args)
+		add(func(at int) string { return nodeArm(at, states) }, args)
 		after = nodesWrittenFirst
 	}
 	if len(relations) > 0 {
@@ -118,23 +133,31 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 // row - every node was already there - must still let every tuple through.
 const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 
-// nodeArm writes the nodes and states the base attributes of each node it made. The node rows
-// arrive in ascending (kind, id), as every write of this store takes them (writeNodes), and the
-// upsert moves nothing on a node that is already there: a record of what a delivery reached
-// learns nothing about a node another write made, and its own made_at, made_by and source_event
-// would otherwise overwrite that write's. The base attributes are read off the rows the insert
-// returned, so they are stated once, by the write that made the node, rather than per event: its
-// visibility and state always, and its project and parties where it carries them.
+// nodeArm writes the nodes and, where states says so, the base attributes of each node it made.
+// The node rows arrive in ascending (kind, id), as every write of this store takes them
+// (writeNodes), and the upsert moves nothing on a node that is already there: a record of what
+// a delivery reached learns nothing about a node another write made, and its own made_at,
+// made_by and source_event would otherwise overwrite that write's. The base attributes are read
+// off the rows the insert returned, so they are stated once, by the write that made the node,
+// rather than per event: its visibility and state always, and its project and parties where it
+// carries them.
 //
 // That is the rule Write follows too, and the arm needs no second half of it: this upsert moves
 // no stored state, so there is never a state of a node already there for it to state.
-func nodeArm(first int) string {
-	return `graph_nodes_written as (
+//
+// states is false for a writer whose cause is appended after these arms (WriteArmsUncaused),
+// which holds those same attributes for that event instead (BaseAttributeFacts).
+func nodeArm(first int, states bool) string {
+	written := `graph_nodes_written as (
 	insert into graph_nodes (` + nodeColumns + `)
 	` + nodeRows(first) + `
 	on conflict (kind, id) do nothing
 	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
-),
+)`
+	if !states {
+		return written
+	}
+	return written + `,
 graph_node_attributes as (
 	insert into graph_tuples (` + tupleWriteColumns + `)
 	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
