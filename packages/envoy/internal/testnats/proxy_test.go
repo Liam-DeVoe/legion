@@ -1,9 +1,11 @@
 package testnats
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,5 +180,82 @@ func TestAProxyWithLatencyHoldsEachLegHalfTheRoundTrip(t *testing.T) {
 	fake.Advance(rtt / 2)
 	if answer := testwait.Receive(t, "the bytes echoed back through the proxy", echoed); answer != "ping" {
 		t.Fatalf("the client read %q through the proxy, want the bytes it wrote", answer)
+	}
+}
+
+// sinkListener takes every connection's bytes and counts them, the far end a rate proxy's
+// throughput is read at: the proxy relays bytes whatever protocol they belong to, so this needs no
+// NATS, and the test drives the proxy's clock with no handshake of its own to carry.
+func sinkListener(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the sink: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	var received atomic.Int64
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buffer := make([]byte, 32<<10)
+				for {
+					read, err := conn.Read(buffer)
+					received.Add(int64(read))
+					if err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return listener.Addr().String(), &received
+}
+
+// ProxyRate moves no faster than its rate, on the proxy's own clock: after each read it relays it
+// waits the read's length at the rate before it reads again, so a payload of twice the rate
+// crosses only once the test has moved the clock through at least that payload's time at the
+// rate. The proxy forwards each read before it waits for it, so the last read of the payload, up
+// to proxyReadBuffer bytes, crosses uncharged; the bound allows exactly that and nothing more.
+// The test moves the fake to each wait the proxy arms and sums the waits, so what it reads is the
+// proxy's own charge for the bytes and no machine's speed.
+func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
+	const rate = 200_000
+	fake := clocktest.New(time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC))
+	sink, received := sinkListener(t)
+	proxy := StartProxy(t, "nats://"+sink, ProxyRate(rate), ProxyClock(fake))
+	client, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL(), "nats://"))
+	if err != nil {
+		t.Fatalf("dial the proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	total := int64(2 * rate)
+	// The write backs up behind the proxy's rate, so it runs beside the test, which moves the
+	// clock; a write that failed leaves the sink short, which the wait below names.
+	go func() { _, _ = client.Write(make([]byte, total)) }()
+
+	var charged time.Duration
+	for {
+		crossed := testwait.Until(t, "the proxy's next wait on its rate, or the whole payload across it", func() (string, bool) {
+			if got := received.Load(); got >= total {
+				return "all", true
+			} else if len(fake.Armed()) == 0 {
+				return fmt.Sprintf("%d of %d bytes across, and no wait armed", got, total), false
+			}
+			return "a wait armed", true
+		})
+		if crossed == "all" {
+			break
+		}
+		at := fake.Armed()[0]
+		charged += at.Sub(fake.Now())
+		fake.Set(at)
+	}
+	if least := time.Duration(total-proxyReadBuffer) * time.Second / rate; charged < least {
+		t.Fatalf("the proxy charged %v on its clock for %d bytes at %d B/s, want at least %v", charged, total, rate, least)
 	}
 }

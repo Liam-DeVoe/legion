@@ -16,18 +16,21 @@ import (
 // NATS while every other client keeps its own connection: Cut drops it, as a network that ends a
 // connection does, and Freeze silences it, as a network that drops packets does, and Restore ends
 // either. A Proxy started with ProxyLatency adds a round trip's delay to everything it relays, as
-// the route to a remote NATS hub does.
+// the route to a remote NATS hub does, and one started with ProxyRate moves no faster than its
+// rate, as a slow link does. Both run on the proxy's clock (ProxyClock).
 type Proxy struct {
 	listener net.Listener
 	target   string
 	url      string
 	delay    time.Duration
-	// clock is the clock the delay runs on: clock.Real for a test that takes the latency as it
-	// comes, and a clocktest.Fake for one that asserts what the proxy holds back.
+	// clock is the clock the delay and the rate run on: clock.Real for a test that takes the
+	// latency as it comes, and a clocktest.Fake for one that asserts what the proxy holds back.
 	clock   clock.Clock
 	ctx     context.Context
 	stop    context.CancelFunc
 	closing sync.Once
+	// rate is the bytes a second each direction of each connection reads at, 0 for no limit.
+	rate int
 
 	mu sync.Mutex
 	// conns are both ends of every connection the proxy is relaying.
@@ -49,11 +52,18 @@ func ProxyLatency(rtt time.Duration) ProxyOption {
 	return func(p *Proxy) { p.delay = rtt / 2 }
 }
 
-// ProxyClock is the clock the proxy's latency runs on, clock.Real by default: a test that asserts
-// what a round trip through the proxy costs hands it a clocktest.Fake, whose armed deadlines are
-// the chunks the proxy is holding and which moves only when the test moves it.
+// ProxyClock is the clock the proxy's latency and rate run on, clock.Real by default: a test that
+// asserts what a round trip through the proxy costs hands it a clocktest.Fake, whose armed
+// deadlines are the chunks the proxy is holding and which moves only when the test moves it.
 func ProxyClock(c clock.Clock) ProxyOption {
 	return func(p *Proxy) { p.clock = c }
+}
+
+// ProxyRate reads each direction of each connection at about bytesPerSecond, so a sender's socket
+// backs up as it does behind a slow link: the throttle is on the read, so the proxy's queue never
+// holds more than one read ahead of the rate, and the sender, not the proxy, buffers the rest.
+func ProxyRate(bytesPerSecond int) ProxyOption {
+	return func(p *Proxy) { p.rate = bytesPerSecond }
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
@@ -186,8 +196,14 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 	}
 }
 
-// relay copies src to dst, each chunk written the proxy's delay after it was read, on the proxy's
-// clock, until either ends; then it closes both, which ends the other direction too.
+// proxyReadBuffer is the most one read of a relayed connection takes. With ProxyRate the reader
+// forwards each read before it waits for it, so a direction can run up to proxyReadBuffer bytes
+// ahead of its rate.
+const proxyReadBuffer = 64 << 10
+
+// relay copies src to dst, each chunk written the proxy's delay after it was read and each read
+// held to the proxy's rate, both on the proxy's clock, until either ends; then it closes both,
+// which ends the other direction too.
 func (p *Proxy) relay(dst, src net.Conn) {
 	defer p.untrack(dst, src)
 	type chunk struct {
@@ -197,12 +213,17 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	queue := make(chan chunk, 4096)
 	go func() {
 		defer close(queue)
-		buffer := make([]byte, 64<<10)
+		buffer := make([]byte, proxyReadBuffer)
 		for {
 			p.pass()
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: p.clock.Now().Add(p.delay)}
+				if p.rate > 0 {
+					if err := p.clock.Sleep(p.ctx, time.Duration(read)*time.Second/time.Duration(p.rate)); err != nil {
+						return
+					}
+				}
 			}
 			if err != nil {
 				return
