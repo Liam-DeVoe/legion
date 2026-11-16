@@ -419,7 +419,7 @@ func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
 	for attempt := range 5 {
 		_, err := store.HoldSessions(ctx, "legion", holder, session(full+attempt))
 		if !errors.Is(err, supervise.ErrHeldNamesCap) {
-			t.Fatalf("a session past the cap (attempt %d) answers %v, want supervise.ErrHeldNamesCap", attempt, err)
+			t.Errorf("a session past the cap (attempt %d) answers %v, want supervise.ErrHeldNamesCap", attempt, err)
 		}
 	}
 	if got := heldBy(holder); got != supervise.MaxHeldNamesPerClaim {
