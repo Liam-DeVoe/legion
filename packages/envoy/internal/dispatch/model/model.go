@@ -13,6 +13,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
@@ -149,10 +150,11 @@ func sameActorName(left, right *string) bool {
 	return *left == *right
 }
 
-// CanonicalLogin is the stored form of a person's email: trimmed and lowercased, the form the
-// identity implementations name a person by and the people table holds.
+// CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
+// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// the people table holds.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -1925,13 +1927,18 @@ type AskEditEventPayload struct {
 	ReferenceChangesPayload
 	Previous AskEditPrevious `json:"previous"`
 	EditedBy Actor           `json:"edited_by"`
-	// Quiet marks a version move of an approval request that an earlier version already moved
-	// since it was opened or last handed back (requested_version below the version it named): it
-	// changes only the version the request names, so like a human's unnamed artifact.version it
-	// wakes nobody (events.Broker.Notify) and reaches no follower (the outbox's follower routes),
-	// while the event log and the event feed carry it as they carry every event. The first move
-	// after an opening or a hand-back is not quiet, even when a thread reply left the request
-	// waiting on its agent. Every rewrite's edit (Rewrite set) is quiet too, so a rewrite starts
+	// Quiet marks either of two version moves of an approval request: a move of a request
+	// that an earlier version already moved since it was opened or last handed back
+	// (requested_version below the version it named), which changes only the version the request
+	// names, and a settlement's move that keeps the request waiting on the human because the new
+	// version, which a settlement wrote, holds byte for byte the text of the version the request
+	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
+	// version a route writes moves the request to its agent whatever text it holds. Like a human's
+	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
+	// follower (the outbox's follower routes), while the event log and the event feed carry it as
+	// they carry every event. The first move after an opening or a hand-back is not quiet, even
+	// when a thread reply left the request waiting on its agent, unless it keeps the request
+	// waiting on the human. Every rewrite's edit (Rewrite set) is quiet too, so a rewrite starts
 	// no turn of any agent (INFRA-3552's R3).
 	Quiet bool `json:"quiet,omitempty"`
 	// Rewrite is set on the ask.edited of a rewrite (INFRA-3231's Decision 23): whose rewrite it
@@ -2311,6 +2318,14 @@ type AskResolution struct {
 // issue's declined asks (api), and the list of what people wrote to a session
 // (sessionanswers) - and api imports the other two, so neither can import api.
 const AskResolutionDeclined = "declined"
+
+// AskResolutionWithdrawn is the AskResolution kind an issue's close records on each open ask it
+// withdraws. Only the server writes it (the resolve route admits retracted and resolved alone), so
+// the kind alone tells a close's withdrawal: the issue's reopen restores every ask resolved so,
+// and a settlement of the closed issue's document treats none as decided, since the reopen undoes
+// it. It is a constant of this package because the close and the reopen (api) and that settlement
+// (docs) read it, and api imports docs, so docs cannot import api.
+const AskResolutionWithdrawn = "withdrawn"
 
 // DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
 // answer: the four sentences the asking agent reads to decide what to do next.
