@@ -60,11 +60,12 @@ import { assertPageFits } from "./unclipped";
  * Each row's first reading is an assertion of its own on the view, so on a build whose slot
  * draws nothing it fails there and not on its deadline.
  *
- * A row that waits for a part not yet under K's base is written whole and held with
- * `test.fixme` (decision 8 of the plan), and the comment above it names what it waits for: rows
- * (1), (2) and (4) wait for part I's fix of `seedPlanOrder`, row (5) for part F's fix and part
- * G's chip fix, and one reading of row (2) at 390 px, which is a comment and no assertion yet,
- * for part P.
+ * Every row runs on K's base (decision 8 of the plan): rows (1), (2) and (4) read part I's
+ * `seedPlanOrder`, whose second write deletes the gone task by its block id; row (5) reads part
+ * F's names (decisions 49 and 51 of dispatch://INFRA-1196: a block chip named by the words of its
+ * `text_tree`, and a number label kept with its sentence) as part G's chip draws them (decision
+ * 66). One reading of row (2) at 390 px waits for part P (dispatch://INFRA-3943), which is not
+ * under K's base: it is a comment in that row and no assertion (t13 of the plan).
  */
 
 /** The phone every row reads: 390 px wide, and as tall as the iPhone 13's viewport. */
@@ -253,13 +254,10 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
 // Beyond the check (t10 of the plan): the head row's three columns, the box's place, R4's name
 // and R6's group, the breakpoints at 760, 761, 1240 and 1241 px and 1000 px, and the words
 // filter, which keeps the whole plan's places.
-// Held (decision 8 of the plan): I's `seedPlanOrder` (e2e/issue-layout-seed.ts:841) fails its
-// second write with 404 TARGET_NOT_FOUND, because its `replace` quotes the raw markdown of the
-// directive it removes, and the server matches a quote against a block's text as it is drawn.
-// The fix (`{ op: "delete", block: "t9" }`) is part I's (dispatch://INFRA-3944), and the row is
-// held until that fix is under K's base.
+// The plan is I's `seedPlanOrder` (e2e/issue-layout-seed.ts), whose second write deletes the gone
+// task by its block id, which leaves the loose task's need pointing at no task the plan holds.
 // SLOW(>=2s): a seeded plan read at seven widths, under both drawings and at a second address.
-test.fixme("the Plan filter draws the tasks as ordered steps @phone", async ({ browser }) => {
+test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedPlanOrder, async (page, seeded) => {
     const { bars, charted, step, stepped } = await planOrderPlaces(seeded);
@@ -565,15 +563,10 @@ test.fixme("the Plan filter draws the tasks as ordered steps @phone", async ({ b
 // address naming a task of a cycle puts the focus on the cycle's row, an address naming a node
 // that is no task draws the plan as /plan does, Escape gives a row back from its link, and a
 // press of the switch under an address leaves the focus on the button pressed.
-// Held (decision 8 of the plan): I's `seedPlanOrder` (e2e/issue-layout-seed.ts:841) fails its
-// second write with 404 TARGET_NOT_FOUND, because its `replace` quotes the raw markdown of the
-// directive it removes, and the server matches a quote against a block's text as it is drawn.
-// The fix (`{ op: "delete", block: "t9" }`) is part I's (dispatch://INFRA-3944), and the row is
-// held until that fix is under K's base.
+// The plan is I's `seedPlanOrder`, as row (1) reads it. Its readings at 390 px after End and
+// after Home wait for part P, and are a comment at the row's end.
 // SLOW(>=2s): a seeded plan walked by the keyboard at two widths and at five addresses.
-test.fixme("the Plan view's chart is reached in order with the keyboard @phone", async ({
-  browser,
-}) => {
+test("the Plan view's chart is reached in order with the keyboard @phone", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedPlanOrder, async (page, seeded) => {
     const { charted, step, stepped } = await planOrderPlaces(seeded);
@@ -868,13 +861,9 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
 // no head row and no curve, and the page does not scroll sideways from 320 px (R5). "No size"
 // is read as R5's line under the track, with the needs and the statements (departure 4 of the
 // plan): t3's line wraps, so it is not the card's last line of text.
-// Held (decision 8 of the plan): I's `seedPlanOrder` (e2e/issue-layout-seed.ts:841) fails its
-// second write with 404 TARGET_NOT_FOUND, because its `replace` quotes the raw markdown of the
-// directive it removes, and the server matches a quote against a block's text as it is drawn.
-// The fix (`{ op: "delete", block: "t9" }`) is part I's (dispatch://INFRA-3944), and the row is
-// held until that fix is under K's base.
+// The plan is I's `seedPlanOrder`, as row (1) reads it.
 // SLOW(>=2s): a seeded plan read at two phone widths, with a key pressed between.
-test.fixme("on a phone the Plan chart is one card for each step @phone @phone-only", async ({
+test("on a phone the Plan chart is one card for each step @phone @phone-only", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -954,16 +943,14 @@ test.fixme("on a phone the Plan chart is one card for each step @phone @phone-on
 // Beyond the check (the architect's reading): the chart's first reading is that each step's row
 // names its step by its words past the number they start with, and a statement chip draws no
 // `*` or `\` either.
-// Held (decision 8 of the plan): the row waits for part F's fix (commit a5714d8515, decisions 49
-// and 51 of dispatch://INFRA-1196: a block chip named by the words of its `text_tree`, and a
-// number label kept with its sentence) and part G's chip fix (decision 66: G's `Chip` draws
-// `chipWords(chip.name)` with no markdown pass) to be under K's base. Until both are, F's
-// `firstLineOf` ends a task's first line at its number's dot, so each chart row reads `1.` or
-// `2.`, and a task's `needs` chip is named by the raw excerpt of the task's text, so the chart
-// draws a need with its marks: the row fails on its own readings; t13 of the plan takes the
-// `fixme` off once they land.
+// The names are part F's (decisions 49 and 51 of dispatch://INFRA-1196): a task's first line is
+// R1's first line of its first block's words, its number label kept with its sentence, so each
+// chart row reads past `1.` and `2.`; a task's `needs` chip is named by that line of the needed
+// task's `text_tree`, so a need holds none of its markdown. Part G's chip draws
+// `chipWords(chip.name)` with no markdown pass (decision 66), so the steps' needs chip draws the
+// same words.
 // SLOW(>=2s): a seeded plan read under both drawings at two widths.
-test.fixme("the Plan view names a needed task by its words, with no mark of their source @phone", async ({
+test("the Plan view names a needed task by its words, with no mark of their source @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);

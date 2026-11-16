@@ -5,8 +5,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery } from "../../../api/queries";
 import { buildIssuePath } from "../../refs/routes";
+import { useAddressTarget } from "../address-target";
 import { IssuePresetPanels } from "../IssuePresetPanels";
-import { type AddressTarget, issueAddress, pathToTarget } from "../issue-address";
+import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
@@ -33,24 +34,17 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   const { root } = useIssueTree(issue);
-  // The address's own node, resolved against the whole tree and read by what it says, as the
-  // outline resolves it (`slots/body.tsx`): a step it names takes the focus (R7).
-  const targetKind = address.target?.kind;
-  const targetId = address.target?.id;
-  const targetDocument = address.target?.kind === "block" ? address.target.document : undefined;
-  const target = useMemo<AddressTarget | undefined>(() => {
-    if (targetKind === undefined || targetId === undefined) return undefined;
-    if (targetKind === "block") return { document: targetDocument, id: targetId, kind: "block" };
-    return { id: targetId, kind: targetKind } as AddressTarget;
-  }, [targetDocument, targetId, targetKind]);
-  const found = useMemo(() => pathToTarget(root, target), [root, target]);
+  // The address's own node, resolved against the whole tree as the outline resolves it
+  // (`useAddressTarget`, decision 94 of dispatch://INFRA-1196; `slots/body.tsx`): a step it names
+  // takes the focus (R7).
+  const found = useAddressTarget(root, address).reveal;
   // Plan draws no node but a task (dispatch://INFRA-3938 R1, decision 1 of its plan; root
   // dispatch://INFRA-1196 R26), so the address's node is kept in the view, and given the focus,
   // only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
-  // `filterView`): handed every node, `/plan?comment=<id>` would draw the comment as a bar and
-  // `/plan#b-<statement>` the statement as a bar with its tasks under it, out of the chart.
-  // Handed the node only where it is a task, both draw every task and no other node, as `/plan`
-  // does.
+  // `filterView`), as `AddressedNode.named` names it: handed every node, `/plan?comment=<id>`
+  // would draw the comment as a bar and `/plan#b-<statement>` the statement as a bar with its
+  // tasks under it, out of the chart. Handed the node only where it is a task, both draw every
+  // task and no other node, as `/plan` does.
   const reveal = useMemo(() => (found?.at(-1)?.type === "plan_task" ? found : undefined), [found]);
   const named = useMemo(() => {
     const node = reveal?.at(-1);

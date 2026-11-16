@@ -29,11 +29,10 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
-import { IssueTree } from "../IssueTree";
+import { focusedNodeOf, IssueTree, useReleaseFocus } from "../IssueTree";
 import { bringOnScreen } from "../identity-block";
 import { documentOfNode } from "../issue-artifacts";
-import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
-import { DETAILS_ATTRIBUTE } from "../margin-slot";
+import { drawnLine, firstLineOf, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { authorText, pageChrome } from "../page-structure";
@@ -297,29 +296,26 @@ function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boo
   );
 }
 
-/** The task's own first line, which is the one line the page draws for it wherever it draws
- *  one (R1, R26: "each bar labelled with the task's first line"), from the server's reading of
- *  its text where the page holds one (`nodeWords`). `words` is the line as the chart and a
- *  cycle's line draw it: with part F's ellipsis where the cut falls inside a sentence
- *  (`drawnLine`, ruling 1 of dispatch://INFRA-1196), as G's row draws the same task under
- *  "Steps" (`NodeRow.tsx`), so the switch changes the drawing alone (dispatch://INFRA-3938 R4
- *  and R6). `title` is the line Details is given, which is the outline's title for a row: the
- *  line itself, with no ellipsis (`IssueTree.tsx`'s `takeFocus`). A task that holds no words is
- *  named by the page's word for its kind in both, and never by its id (R22,
- *  dispatch://INFRA-3938 R3). The marks say whose words the line is, and F's name of a `needs`
- *  chip pointing at the task: the author's, or the page's own for a task that holds none, since
- *  both are then its kind's word. */
+/** The task's one line, the line the page draws for it wherever it draws one (R1, R26: "each
+ *  bar labelled with the task's first line"), by part F's one-line rule: R1's first line of the
+ *  words of its first block that holds any (`lineWords`), so a heading is never run into the
+ *  paragraph after it, drawn with F's ellipsis where the cut falls inside a sentence
+ *  (`drawnLine`, ruling 1 and decision 51 of dispatch://INFRA-1196). It is the line G's row
+ *  draws for the same task under "Steps" (`NodeRow.tsx`) and F's name of a `needs` chip pointing
+ *  at it (`buildIssueTree`), so the switch changes the drawing alone (dispatch://INFRA-3938 R4
+ *  and R6). A task that holds no words is named by the page's word for its kind
+ *  (`NODE_TYPE_NAMES`), never by its id (R22, dispatch://INFRA-3938 R3), as a parent's line
+ *  under a filter is (`presets.ts`'s `parentLineOf`). The marks say whose words the line is,
+ *  and F's name of a `needs` chip pointing at the task: the author's, or the page's own for a
+ *  task that holds none, since both are then its kind's word. */
 function taskLine(task: TreeNode): {
   readonly marks: Readonly<Record<string, string>>;
-  readonly title: string;
   readonly words: string;
 } {
-  const first = firstLineOf(nodeWords(task));
-  if (first.line === "") {
-    const kind = NODE_TYPE_NAMES[task.type];
-    return { marks: pageChrome, title: kind, words: kind };
-  }
-  return { marks: authorText, title: first.line, words: drawnLine(first) };
+  const words = lineWords(task);
+  return words === ""
+    ? { marks: pageChrome, words: NODE_TYPE_NAMES[task.type] }
+    : { marks: authorText, words: drawnLine(firstLineOf(words)) };
 }
 
 /** One task of a cycle, by its own first line, as the link a reader follows to it: in no tab
@@ -464,20 +460,25 @@ function PlanChart({
     ? stop
     : (rows.find((place) => place.row.kind === "bar") ?? rows[0])?.key;
 
+  // The focused row gives its task to Details (`focused-node.tsx`) as the outline gives a focused
+  // node, by the outline's own facts of it (`focusedNodeOf`: who wrote it, the item it is, its
+  // address, its state, its first line as its title, its kind), so a step's facts in Details
+  // are the same in the chart and under "Steps" (dispatch://INFRA-3938 R6 and R7;
+  // dispatch://INFRA-1196 R14).
   const takeFocus = useCallback(
     (key: string, task: TreeNode) => {
       setFocused(key);
       setStop(key);
-      setFocusedNode({
-        ...(task.author === undefined ? {} : { author: task.author }),
-        id: task.id,
-        ...(task.reference === undefined ? {} : { reference: task.reference }),
-        title: taskLine(task).title,
-        type: task.type,
-      });
+      setFocusedNode(focusedNodeOf(task));
     },
     [setFocusedNode]
   );
+  // The focus leaving the chart lets go of its focused row, and gives Details back to the
+  // issue's own facts unless it moved into Details, by the outline's rule (`useReleaseFocus`;
+  // dispatch://INFRA-1196 R14). A focus moving within the chart keeps both. The chart edits no
+  // row (Enter goes to the conversation), so no edit holds the focus.
+  const leave = useCallback(() => setFocused(undefined), []);
+  const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // An address that names a task puts the focus on its row, a cycle's included, and holds the
   // row on screen until the reader acts, as the outline's address does (`IssueTree.tsx`): the
   // rows around it are still arriving and push it down the page. A row already inside the
@@ -734,18 +735,7 @@ function PlanChart({
           {PLAN_WORDS.serves}
         </span>
       </div>
-      <div
-        aria-label={CONTROL_LABELS.tree}
-        className="min-w-0"
-        onBlur={(event) => {
-          const to = event.relatedTarget;
-          if (to instanceof Node && event.currentTarget.contains(to)) return;
-          setFocused(undefined);
-          if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
-          setFocusedNode(undefined);
-        }}
-        role="tree"
-      >
+      <div aria-label={CONTROL_LABELS.tree} className="min-w-0" onBlur={releaseFocus} role="tree">
         {rows.map((place) =>
           place.row.kind === "cycle" ? (
             <CycleRow
