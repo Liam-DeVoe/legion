@@ -2,7 +2,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createIssue, createProject, editArtifact, getAsk, listIssueAsks, patchIssue } from "./api";
+import {
+  createIssue,
+  createProject,
+  editArtifact,
+  getAsk,
+  listIssueAsks,
+  patchIssue,
+  requestApproval,
+  withOpenedAsk,
+} from "./api";
 import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
 import { inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { expect, test } from "./test";
@@ -110,7 +119,39 @@ async function seedTree(home: string) {
   };
   await patchIssue(header.key, { parent: root.key });
   await patchIssue(card.key, { parent: root.key });
-  return { asks, card, header, reopened, requested };
+  return { asks, card, header, outside: outside.key, reopened, requested };
+}
+
+/** An issue whose spec holds `count` statements of three sentences, each a finding, and whose
+ *  request the agent opened outside the root before the issue moved under it, so the person's
+ *  approval of it is judged. */
+async function brokenRequestUnderRoot(outside: string, count: number): Promise<string> {
+  const blocks = Array.from(
+    { length: count },
+    (_, index) => `:::requirement{#s${index + 1}}\n${threeSentences}\n:::\n`
+  );
+  const issue = await createIssue({
+    force: true,
+    parent: outside,
+    project: "STE",
+    spec: `# Spec\n\n${blocks.join("\n")}`,
+    title: `${count} broken statements`,
+  });
+  const opened = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: "The statements." }, agent)
+  );
+  await patchIssue(issue.key, { parent: ROOT });
+  return opened.ask.id;
+}
+
+/** The height of the reason field and of the text it holds, and the height of the window. */
+function reasonFit(field: HTMLTextAreaElement) {
+  return {
+    held: field.scrollHeight,
+    shown: field.clientHeight,
+    tall: field.getBoundingClientRect().height,
+    window: window.innerHeight,
+  };
 }
 
 // SLOW(>=2s): eight cold `bun` starts of the real `dispatch` command around one Inbox page load.
@@ -304,5 +345,87 @@ test("a reopen leaves a broken request under the root resolved with its finding,
     await page.goto("/");
     await expect(inboxRow(page, tree.asks.card)).toBeVisible();
     await expect(inboxRow(page, tree.asks.reopened)).toHaveCount(0);
+  });
+});
+
+// The issue page's Needs you card is a second place where the person presses Approve. The
+// answer takes the request's row out of the Inbox read while it is out, and the refusal puts it
+// back, which draws the card again: the refusal, the pick and the focus survive that redraw, and
+// one more press sends the findings to the author.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the issue page and an answer written in it.
+test("the person's Approve on the Needs you card of the issue page shows Dispatch's refusal and picks Request changes with the findings", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${tree.card.key}`);
+    const card = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    // The compact card's disclosure, "Add a note or answer in your own words", also holds the word.
+    const answer = card.getByRole("button", { exact: true, name: "Answer" });
+    await answer.click();
+    await expect(card.getByRole("alert")).toContainText(
+      "Dispatch refused this approval, because 1 text breaks the form of The Spec."
+    );
+    await expect(card.getByRole("alert")).toContainText(findingLine);
+    await expect(card.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(card.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+    await expect(card.getByLabel("Reason (required)")).toHaveValue(changesReason);
+    await expect(answer).toBeFocused();
+
+    await answer.click();
+    await expect.poll(async () => (await getAsk(tree.asks.card)).ask.state).toBe("answered");
+    const ref = `dispatch://${tree.card.key}/ask/${tree.asks.card}`;
+    const read = await runDispatch(["read", "--ref", ref], home);
+    expect(read.code, printed(read)).toBe(0);
+    expect(read.stdout).toContain("- Selected: Request changes");
+    expect(read.stdout).toContain(`- Text: ${changesReason}`);
+  });
+});
+
+// The reason field of the Inbox card grows with the reason Dispatch wrote, up to half the height
+// of the window, and scrolls past that: a reason of three findings that is shorter than half the
+// window shows whole on a phone, and one of twenty-five stops at half the window, so Answer stays
+// on the screen. The refusal above the field lists each finding.
+// SLOW(>=2s): three cold `bun` starts of the real `dispatch` command around the Inbox and two refused answers.
+test("the Inbox card's reason field at 390 px shows a refusal of three findings whole, and stops a refusal of twenty-five at half the window", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    const three = await brokenRequestUnderRoot(tree.outside, 3);
+    const many = await brokenRequestUnderRoot(tree.outside, 25);
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto("/");
+    for (const [ask, whole] of [
+      [three, true],
+      [many, false],
+    ] as const) {
+      const card = page.getByTestId(`ask-${ask}`);
+      await card.getByRole("radio", { name: /^Approve / }).check();
+      await card.getByRole("button", { name: "Answer" }).click();
+      await expect(card.getByRole("alert")).toContainText("Dispatch refused this approval");
+      const field = card.getByLabel("Reason (required)");
+      await expect(field).toHaveValue(/^Dispatch refused my approval/);
+      // Each poll answers what it measured, so a failure names the heights it read.
+      const measured = async () => {
+        const fit = await field.evaluate(reasonFit);
+        const shape =
+          fit.held <= fit.shown
+            ? "whole"
+            : Math.abs(fit.tall - fit.window / 2) <= 1
+              ? "stops at half the window"
+              : "scrolls under half the window";
+        return `${shape}: ${fit.held} px of text, a field of ${fit.shown} px, a window of ${fit.window} px`;
+      };
+      await expect.poll(measured).toMatch(whole ? /^whole:/ : /^stops at half the window:/);
+    }
   });
 });
