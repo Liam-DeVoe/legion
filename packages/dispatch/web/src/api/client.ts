@@ -160,8 +160,10 @@ export const REQUEST_DEADLINE_MS = 30_000;
  *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
 export { REFERENCE_TARGETS_MAX };
 
-/** How many characters of query string one `getReferenceTargets` may write. The server bounds a
- *  batch by the count alone and says so (`referenceTargetsMax` in
+/** The budget, in characters of query string, that the batches of `referenceTargetsQuery` keep
+ *  each `getReferenceTargets` call inside (`referenceTargetBatches` in `queries.ts`):
+ *  `getReferenceTargets` itself writes every reference it is given and applies no budget. The
+ *  server bounds a batch by the count alone and says so (`referenceTargetsMax` in
  *  `packages/envoy/internal/dispatch/api/reference_targets.go`): it sets no limit on the
  *  request line itself, but a proxy in front of it can set one, and 16 KB is one known such
  *  limit (an AWS load balancer's). A full batch of comment or message references encodes to

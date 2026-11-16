@@ -192,9 +192,13 @@ func referenceTargetsOf(references ...string) string {
 // to an older version of its document answers the newest version's tree, as it answers the
 // newest name. A typed block nested in a quote, whose stored text does not read back as one
 // block alone, answers the tree of that whole text, while one in a list item answers its
-// content. A block of no declared type, of a comment, of a message and of an ask answers the
-// tree of its own whole text; a member that names no block carries none, and neither does any
-// member of a read that asked for none. The names are the same either way.
+// content, and so does one after the marker `10. `, whose lines stand four columns in: its
+// content reads as paragraphs, not as an indented code block. A block of no declared type, of a
+// comment, of a message and of an ask answers the tree of its own whole text, and a comment's
+// typed block that holds another, neither written with an id, answers its content as the
+// comment wrote it: no read gives the inner block an id, so two reads answer one tree under one
+// ETag, and that tag sent back is answered 304. A member that names no block carries no tree,
+// and neither does any member of a read that asked for none. The names are the same either way.
 //
 // The texts cost one statement however many blocks of a document the set names: a set of 20
 // blocks of one document makes as many statements as a set of 2, and one of them reads the
@@ -227,9 +231,13 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notes[index] = "Note " + strconv.Itoa(index+1) + " of the twenty."
 	}
 	const listed = "Nested in a list."
+	// After the marker `10. ` an item's content stands four columns in, so each line of the
+	// requirement's stored text but its first carries four spaces.
+	const numbered = "Nested in item 10.\n\nIts second paragraph."
 	notesDocument := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md",
 		"> :::requirement{#q1}\n> Nested in a quote.\n> :::\n\n"+
 			"- An item:\n\n  :::requirement{#l1}\n  "+listed+"\n  :::\n\n"+
+			"10. An item:\n\n    :::requirement{#l10}\n    "+strings.ReplaceAll(numbered, "\n\n", "\n\n    ")+"\n    :::\n\n"+
 			strings.Join(notes, "\n\n")+"\n")
 	notesRef := "dispatch://" + issue.Key + "/artifact/" + notesDocument.Artifact.Slug
 	quoted := storedBlockText(t, database, notesDocument.Artifact.ID, "q1")
@@ -239,8 +247,16 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	if stored := storedBlockText(t, database, notesDocument.Artifact.ID, "l1"); !strings.Contains(stored, "requirement{") {
 		t.Fatalf("the listed requirement's stored text is %q, want its opening line in it", stored)
 	}
+	if stored := storedBlockText(t, database, notesDocument.Artifact.ID, "l10"); !strings.Contains(stored, "\n    Nested in item 10.") {
+		t.Fatalf("the requirement in item 10 has the stored text %q, want its lines four spaces in", stored)
+	}
 	const commentBlock = "Its second block, with [a link](https://example.com/second)."
 	comment := createReferenceAPIComment(t, handler, issue.Key, "A comment's first block.\n\n"+commentBlock)
+	// A comment's typed block that holds another, neither written with an id: each parse gives
+	// the inner block a new random id, which a rendering of the content would write into its
+	// opening line.
+	const nestedCallout = "::::callout{}\n:::callout{}\nInner words.\n:::\n::::"
+	nested := createReferenceAPIComment(t, handler, issue.Key, nestedCallout)
 	const messageBlock = "A message's second block, with dispatch://TBT-1 in it."
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message's first block.\n\n" + messageBlock}, "alice")
 	ask := readPartAsk(t, handler, createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -263,6 +279,8 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		askPartRef(issue.Key, ask.ID, ask.Options[0].ID),
 		notesRef + "#b-q1",
 		notesRef + "#b-l1",
+		notesRef + "#b-l10",
+		"dispatch://" + issue.Key + "/comment/" + nested.ID + "#b-b1",
 	}
 	target := referenceTargetsOf(references...)
 	plain := treesRequest(t, handler, target, false)
@@ -294,7 +312,10 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 			runes, task.Name, refs.BlockExcerptRunes)
 	}
 	requireWholeBlockTree(t, "the plan task's text_tree", json.RawMessage(task.TextTree), issue.Key, wholeBlockTail)
-	for index, content := range map[int]string{1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed} {
+	for index, content := range map[int]string{
+		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
+		8: numbered, 9: ":::callout{}\nInner words.\n:::",
+	} {
 		want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 		if read[index].TextTree == nil {
 			t.Errorf("%s carries no text_tree, want the tree of %q", read[index].Ref, content)
@@ -312,6 +333,31 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	}
 	if strings.Contains(string(read[7].TextTree), "requirement{") {
 		t.Errorf("the listed requirement's text_tree holds its opening line:\n\t%s", read[7].TextTree)
+	}
+	if tree := string(read[8].TextTree); strings.Contains(tree, "code_block") || strings.Count(tree, `"paragraph"`) != 2 {
+		t.Errorf("the requirement in item 10 answers the text_tree\n\t%s\nwant its content as two paragraphs, not a code block", tree)
+	}
+
+	nestedTarget := referenceTargetsOf(references[9])
+	firstRead, secondRead := treesRequest(t, handler, nestedTarget, true), treesRequest(t, handler, nestedTarget, true)
+	first := decodeBody[model.ReferenceTargets](t, firstRead).Targets
+	second := decodeBody[model.ReferenceTargets](t, secondRead).Targets
+	if len(first) != 1 || len(second) != 1 || first[0].TextTree == nil {
+		t.Fatalf("the reads of the nested callout answered %#v and %#v, want one member with a text_tree each", first, second)
+	}
+	if !bytes.Equal(first[0].TextTree, second[0].TextTree) {
+		t.Errorf("two reads of the nested callout answered the text_trees\n\t%s\nand\n\t%s\nwant the same bytes",
+			first[0].TextTree, second[0].TextTree)
+	}
+	if strings.Contains(string(first[0].TextTree), pmdoc.BlockIDAttr) {
+		t.Errorf("the nested callout's text_tree holds a block id the comment never wrote:\n\t%s", first[0].TextTree)
+	}
+	etag := firstRead.Header().Get("ETag")
+	if etag == "" || secondRead.Header().Get("ETag") != etag {
+		t.Errorf("two reads of the nested callout carry the ETags %q and %q, want one tag", etag, secondRead.Header().Get("ETag"))
+	}
+	if unchanged := listRead(t, handler, nestedTarget, listReadOptions{trees: true, etag: etag}); unchanged.Code != http.StatusNotModified {
+		t.Errorf("the nested callout's first tag sent back answered status=%d body=%q, want 304", unchanged.Code, unchanged.Body.String())
 	}
 
 	ids := blockIDsByText(t, handler, notesDocument.Artifact.ID)
