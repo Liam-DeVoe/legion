@@ -221,7 +221,7 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	if config.Replicas != 0 {
 		t.Errorf("replicas = %d, want 0 (the stream's)", config.Replicas)
 	}
-	if want := []string{contracts.LegacyAgentSubject("ses_settings"), "notifications.github.o.r.>"}; !slices.Equal(config.FilterSubjects, want) {
+	if want := []string{"notifications.agent.*.ses_settings", contracts.LegacyAgentSubject("ses_settings"), "notifications.github.o.r.>"}; !slices.Equal(config.FilterSubjects, want) {
 		t.Errorf("filters = %q, want %q", config.FilterSubjects, want)
 	}
 
@@ -417,8 +417,14 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 	if !after.Created.Equal(before.Created) {
 		t.Fatalf("the consumer was created again at %s, want the one created at %s kept", after.Created, before.Created)
 	}
-	if got := slices.Sorted(slices.Values(after.Config.FilterSubjects)); !slices.Equal(got, ReduceFilterSubjects(followed)) {
-		t.Fatalf("the kept consumer filters on %v, want %v", got, ReduceFilterSubjects(followed))
+	// The filters every form of the followed topics reduces to (sessionConsumerTarget): the
+	// session's own agent subject in the old form and under any project, and the GitHub topic.
+	_, want, err := sessionConsumerTarget(session, followed)
+	if err != nil {
+		t.Fatalf("target: %v", err)
+	}
+	if got := slices.Sorted(slices.Values(after.Config.FilterSubjects)); !slices.Equal(got, want) {
+		t.Fatalf("the kept consumer filters on %v, want %v", got, want)
 	}
 
 	nextOne := publishStored(t, owner, "notifications.github.o.r.push", "next")
@@ -821,8 +827,8 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("info: %v", err)
 	}
-	if !slices.Equal(info.Config.FilterSubjects, []string{agent}) {
-		t.Fatalf("filters after UpdateFilter = %q, want only %s", info.Config.FilterSubjects, agent)
+	if want := []string{"notifications.agent.*." + session, agent}; !slices.Equal(info.Config.FilterSubjects, want) {
+		t.Fatalf("filters after UpdateFilter = %q, want only %s in both forms", info.Config.FilterSubjects, agent)
 	}
 	if err := consumers.UpdateFilter(ctx, "ses_missing", []string{agent}); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("UpdateFilter of a missing consumer = %v, want ErrSessionConsumerNotFound", err)
