@@ -66,7 +66,7 @@ Create children, each past the red-team check in
 `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own next phase does not start
 while Dispatch shows an open child under it, one you filed and have not released included, and a
-notice names each one with the Dispatch status that holds it: file every child
+daemon notice names each one with the Dispatch status that holds it: file every child
 at once, release every child that should run, and move each other child as section 3 of
 `skill://legion-architect` says, so that your issue's own work follows theirs and its head
 carries their merges. Park between
@@ -130,7 +130,7 @@ repository setting or an App permission a person must change — reaches you, fr
 ## Completion
 
 Your last act is `sign_off` of this child in `accepting`, once its evidence holds and, when it has
-children of its own, its head holds their merges
+children of its own, its head carries all their merges
 (`skill://legion-architect`, sections 4, 6 and 7); the merge then closes it, and its `done` reaches
 the architect above you as a `child-closed` notice. Like the root architect, you run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role

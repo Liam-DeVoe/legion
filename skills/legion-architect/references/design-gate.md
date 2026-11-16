@@ -382,8 +382,13 @@ A root with a Dispatch parent can open a gated step on an ancestor's approval, w
 its own. Its spec is then a view on the ancestor: it holds no requirement of its own, and each of
 its checks proves a requirement of the ancestor. The children of an approved issue together do all
 of what it states, and only that. So a requirement that the root needs and the ancestor does not
-state goes into the ancestor's spec, never into the root's. This section is the whole rule, for the
-root's architect and for the ancestor's architect.
+state goes into the ancestor's spec, never into the root's. Work that needs code from the
+ancestor's own pull request is not filed as a root under that ancestor. The ancestor starts no
+phase while a child of it is open, so it would wait on that root. That work goes into the
+ancestor's spec, by the route of "A requirement the ancestor does not state" below where the spec
+does not state it yet, and the ancestor's own pull request builds it. The architect decides this
+and asks no person. This section is the whole rule, for the root's architect and for the
+ancestor's architect.
 
 ### When the root is a view
 
