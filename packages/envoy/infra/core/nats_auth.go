@@ -104,7 +104,6 @@ func (a Authorization) Validate() error {
 	return a.validateCallout()
 }
 
-// validateFallback refuses a noAuthUser that names no user, a pending user or a user with a seed.
 func (a Authorization) validateFallback() error {
 	if a.NoAuthUser == "" {
 		return nil
@@ -264,7 +263,7 @@ func isSubjectPattern(s string) bool {
 // Render returns the authorization block nats-server reads: the header lines, each as
 // "# <line>", then the block. Each keyed user is a comment naming it and one JSON object (keys
 // sorted, non-ASCII raw: nats-server's config strings take no \u escape); a pending user is not
-// rendered. With a callout, its timeout and auth_callout lines follow the users inside the block
+// rendered. With a callout, its auth_callout block follows the users inside the block
 // (AuthCallout.render); without one the text is exactly what it was before callouts existed.
 // no_auth_user is a top-level option, so it follows the block, naming the fallback user's key. The
 // text ends with one newline.
@@ -312,11 +311,7 @@ func (a Authorization) render(header []string) string {
 		b.WriteString("    # " + u.Name + "\n")
 		b.WriteString("    " + PyJSON(user, PyJSONOptions{SortKeys: true}) + "\n")
 	}
-	b.WriteString("  ]\n")
-	if a.Callout != nil {
-		a.Callout.render(&b, a.Users)
-	}
-	b.WriteString("}\n")
+	b.WriteString("  ]\n" + a.CalloutBlock() + "}\n")
 	if a.NoAuthUser != "" {
 		fallback, _ := a.user(a.NoAuthUser) // Validate has checked it names a keyed user
 		b.WriteString("# " + a.NoAuthUser + ": a client presenting no credential becomes this user\n")
@@ -335,12 +330,13 @@ func (r *Rules) object() Object {
 }
 
 // StartScript returns the `sh -c` script that writes Render's text to configPath and execs
-// nats-server with --config configPath and serverArgs. It refuses a config path or a server
-// argument that holds an nkey seed (bus.HoldsSeed), which the script would carry, naming it and
-// never the value, and a server argument that would set aside the rendered authorization
-// (authorizationFlags). Each refusal is an InputError naming its input as a component's schema
-// does: authorization (Validate's refusal, run once here), configPath, serverArgs and
-// configHeader, checked in that order, so a caller passes a refusal on as it is.
+// nats-server with --config configPath and serverArgs. With PrivateProjects the written text ends
+// with privateMonitorLines, which bind nats-server's monitoring to loopback. It refuses a config
+// path or a server argument that holds an nkey seed (bus.HoldsSeed), which the script would carry,
+// naming it and never the value, and a server argument that would set aside the rendered
+// authorization (authorizationFlags). Each refusal is an InputError naming its input as a
+// component's schema does: authorization (Validate's refusal, run once here), configPath,
+// serverArgs and configHeader, checked in that order, so a caller passes a refusal on as it is.
 func (a Authorization) StartScript(configHeader, serverArgs []string, configPath string) (string, error) {
 	if err := a.Validate(); err != nil {
 		return "", InputErrorf("authorization", "authorization: %w", err)
@@ -364,9 +360,35 @@ func (a Authorization) StartScript(configHeader, serverArgs []string, configPath
 	if err := checkHeader(configHeader); err != nil {
 		return "", InputErrorf("configHeader", "configHeader: %w", err)
 	}
+	config := a.render(configHeader)
+	if a.PrivateProjects {
+		config += privateMonitorLines
+	}
 	command := append([]string{"nats-server", "--config", configPath}, serverArgs...)
-	return "set -eu; printf '%s' " + ShellQuote(a.render(configHeader)) + " > " + ShellQuote(configPath) + "; exec " + ShellJoin(command), nil
+	return "set -eu; printf '%s' " + ShellQuote(config) + " > " + ShellQuote(configPath) + "; exec " + ShellJoin(command), nil
 }
+
+// PrivateMonitorHost is the address a start script binds nats-server's monitoring to beside
+// private projects (privateMonitorLines), and so the address a health check in the task reads it on:
+// localhost would not do, since busybox wget on the hub's image takes ::1 for it whenever the
+// loopback has IPv6, and nothing listens there.
+const PrivateMonitorHost = "127.0.0.1"
+
+// privateMonitorLines end a start script's configuration beside private projects. nats-server's
+// monitoring answers /connz, /subsz and /jsz with no authentication, and they name every client's
+// subjects, connections and consumers, a private project's among them. The `http` key sets the
+// monitoring host (nats-server v2.15.1 server/opts.go:1278-1286), which no flag sets: a server
+// argument's -m or --http_port replaces only the port (opts.go:5987-5989), and without the key the
+// host is the client host, every address by default (opts.go:6068-6070). So the listener binds
+// PrivateMonitorHost (server.go:3150, :3163), where aws:NatsService's container health check reads
+// /healthz beside private projects (aws/rendering NatsLaunch), and no peer of the task reaches it,
+// whatever its security group admits. Port 0 opens no listener of its own (server.go:3060, :4443):
+// monitoring runs only where serverArgs open it, as before. The hubs render no such line: their
+// servers' monitoring answers health checks from outside the server, which their own rules bound
+// (gcp:ClusteredNatsHub refuses monitorNamespaces beside privateProjects; gcp:NatsHub admits only
+// Google Cloud's health-check ranges).
+const privateMonitorLines = "# private projects: monitoring answers on loopback alone, so no peer of the task reads /connz, /subsz or /jsz\n" +
+	"http: \"" + PrivateMonitorHost + ":0\"\n"
 
 // authorizationFlags are the nats-server flags a server argument must not set, with what each does
 // to the rendered authorization. nats-server parses its arguments with Go's flag package, so each

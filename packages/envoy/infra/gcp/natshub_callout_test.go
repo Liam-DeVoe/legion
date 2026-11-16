@@ -28,7 +28,6 @@ func calloutNatsHub() *gcp.NatsHubArgs {
 	return args
 }
 
-// calloutClusteredHub is clusteredArgs behind the auth service, as calloutNatsHub is exampleArgs.
 func calloutClusteredHub() *gcp.ClusteredNatsHubArgs {
 	args := withoutTailnet(clusteredArgs())
 	args.Users = append(args.Users, authServiceUser())
@@ -46,7 +45,6 @@ func calloutBlock(keys ...string) string {
 		"  }\n"
 }
 
-// otherXKey is a curve public key other than calloutXKey, made fresh for the test.
 func otherXKey(t *testing.T) string {
 	t.Helper()
 	curve, err := nkeys.CreateCurveKeys()
@@ -455,4 +453,36 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	args = calloutClusteredHub()
 	args.Users[1].Permissions.Publish.Allow = []string{"notifications.>"}
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
+}
+
+// TestClusteredNatsHubHashesTheRenderedCalloutBlock: the pods' roll annotation is the SHA-256 of
+// the callout block exactly as the hub's auth.conf holds it, cut from the rendered text (what
+// follows the users' closing "  ]" line, up to the authorization block's own "}" line), so the hash
+// cannot drift from what the servers read. For each hub shape it changes, the callout's own,
+// another xkey and an added user.
+//
+// Control: make core's Render write its own block and CalloutBlock leave out the last user's key;
+// every row fails.
+func TestClusteredNatsHubHashesTheRenderedCalloutBlock(t *testing.T) {
+	withXKey := calloutClusteredHub()
+	withXKey.AuthCallout.XKey = otherXKey(t)
+	_, added := testnats.User(t)
+	withUser := calloutClusteredHub()
+	withUser.Users = append(withUser.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
+	for name, args := range map[string]*gcp.ClusteredNatsHubArgs{
+		"the callout's own": calloutClusteredHub(), "another xkey": withXKey, "an added user": withUser,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := gcp.ResolveClusteredNatsHub(args)
+			require.NoError(t, err)
+			_, afterUsers, found := strings.Cut(s.AuthConf, "\n  ]\n")
+			require.True(t, found, "no users list in %q", s.AuthConf)
+			block, _, found := strings.Cut(afterUsers, "\n}\n")
+			require.True(t, found, "no closing authorization line in %q", s.AuthConf)
+			require.True(t, strings.HasPrefix(block, "  auth_callout {\n"), "%q", block)
+			sum := sha256.Sum256([]byte(block + "\n"))
+			require.Equal(t, hex.EncodeToString(sum[:]),
+				podAnnotations(chartValues(t, runClusteredHub(t, args)))["envoy-infra.sjawhar.dev/auth-callout"])
+		})
+	}
 }

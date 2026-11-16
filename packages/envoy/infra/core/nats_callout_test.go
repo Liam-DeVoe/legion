@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -18,8 +19,6 @@ const (
 	calloutXKey    = "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
 )
 
-// authService is the user the auth service connects as: it answers the server's authorization
-// requests and publishes nothing else.
 func authService() core.User {
 	return core.User{
 		Name:      "example-auth",
@@ -78,14 +77,29 @@ func TestAuthCalloutRendersNoAuthorizationTimeout(t *testing.T) {
 		"}\n", text)
 }
 
+// renderedCalloutBlock is the callout's lines cut from text, a Render text: what follows the users'
+// closing "  ]" line, up to the authorization block's own closing "}" line.
+func renderedCalloutBlock(t *testing.T, text string) string {
+	t.Helper()
+	_, afterUsers, found := strings.Cut(text, "\n  ]\n")
+	require.True(t, found, "no users list in %q", text)
+	block, _, found := strings.Cut(afterUsers, "\n}\n")
+	require.True(t, found, "no closing authorization line in %q", text)
+	return block + "\n"
+}
+
 // CalloutBlock is exactly the callout's lines of Render's text, which a component that reloads its
 // servers rolls them on, and empty without a callout.
+//
+// Control: make Render write its own block (a.Callout.block(a.Users) in place of a.CalloutBlock())
+// and CalloutBlock leave out the last user's key; this test fails, and so does gcp's
+// TestClusteredNatsHubHashesTheRenderedCalloutBlock.
 func TestCalloutBlockIsTheRenderedCalloutLines(t *testing.T) {
 	text, err := withCallout().Render(hubHeader)
 	require.NoError(t, err)
 	block := withCallout().CalloutBlock()
 	require.True(t, strings.HasPrefix(block, "  auth_callout {\n"), "%q", block)
-	require.Contains(t, text, "  ]\n"+block+"}\n")
+	require.Equal(t, renderedCalloutBlock(t, text), block)
 	require.Empty(t, hubShaped().CalloutBlock())
 }
 
@@ -124,63 +138,67 @@ func TestValidateRefusesACalloutThatCannotKeepAProjectApart(t *testing.T) {
 		}
 	}
 	const wider = "is wider than the auth service's grant, which subscribes $SYS.REQ.USER.AUTH and publishes only its replies under $SYS._INBOX."
+	// Each row names the input its refusal is a core.InputError for: callout, or privateProjects; or
+	// "" for a seed, whose refusal is a plain error and must quote no seed.
+	const callouts, private, seedRow = "callout", "privateProjects", ""
 	rows := []struct {
 		name   string
 		base   func() core.Authorization
 		change func(a *core.Authorization)
+		input  string
 		err    string
 	}{
 		// A seed is refused before anything quotes the field, and never echoed.
-		{"an account seed for the issuer", withCallout, issuer(string(accountSeed)), "callout.issuer holds an nkey seed (not echoed)"},
-		{"a curve seed for the xkey", withCallout, xkey(string(curveSeed)), "callout.xkey holds an nkey seed (not echoed)"},
-		{"a seed for the service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = string(userSeed) }, "callout.serviceUser holds an nkey seed (not echoed)"},
+		{"an account seed for the issuer", withCallout, issuer(string(accountSeed)), seedRow, "callout.issuer holds an nkey seed (not echoed)"},
+		{"a curve seed for the xkey", withCallout, xkey(string(curveSeed)), seedRow, "callout.xkey holds an nkey seed (not echoed)"},
+		{"a seed for the service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = string(userSeed) }, seedRow, "callout.serviceUser holds an nkey seed (not echoed)"},
 
-		{"no issuer", withCallout, issuer(""), "callout.issuer is not an account public key"},
-		{"a user key for the issuer", withCallout, issuer(userKey), "callout.issuer is not an account public key"},
-		{"a curve key for the issuer", withCallout, issuer(calloutXKey), "callout.issuer is not an account public key"},
-		{"an issuer whose checksum fails", withCallout, issuer(calloutIssuer[:55] + "A"), "callout.issuer is not an account public key"},
-		{"a lower-case issuer", withCallout, issuer(strings.ToLower(calloutIssuer)), "callout.issuer is not an account public key"},
-		{"a user key for the xkey", withCallout, xkey(userKey), "callout.xkey is not a curve public key"},
-		{"an account key for the xkey", withCallout, xkey(calloutIssuer), "callout.xkey is not a curve public key"},
-		{"an xkey of another length", withCallout, xkey(calloutXKey[:55]), "callout.xkey is not a curve public key"},
+		{"no issuer", withCallout, issuer(""), callouts, "callout.issuer is not an account public key"},
+		{"a user key for the issuer", withCallout, issuer(userKey), callouts, "callout.issuer is not an account public key"},
+		{"a curve key for the issuer", withCallout, issuer(calloutXKey), callouts, "callout.issuer is not an account public key"},
+		{"an issuer whose checksum fails", withCallout, issuer(calloutIssuer[:55] + "A"), callouts, "callout.issuer is not an account public key"},
+		{"a lower-case issuer", withCallout, issuer(strings.ToLower(calloutIssuer)), callouts, "callout.issuer is not an account public key"},
+		{"a user key for the xkey", withCallout, xkey(userKey), callouts, "callout.xkey is not a curve public key"},
+		{"an account key for the xkey", withCallout, xkey(calloutIssuer), callouts, "callout.xkey is not a curve public key"},
+		{"an xkey of another length", withCallout, xkey(calloutXKey[:55]), callouts, "callout.xkey is not a curve public key"},
 		// Without an xkey nats-server sends each client's token to the service unsealed.
-		{"no xkey", withCallout, xkey(""), "callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on $SYS.REQ.USER.AUTH"},
-		{"no service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "" }, `callout.serviceUser "" names no keyed user`},
-		{"a service user naming nobody", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-nobody" }, `callout.serviceUser "example-nobody" names no keyed user`},
-		{"a pending service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-pending" }, `callout.serviceUser "example-pending" names no keyed user`},
+		{"no xkey", withCallout, xkey(""), callouts, "callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on $SYS.REQ.USER.AUTH"},
+		{"no service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "" }, callouts, `callout.serviceUser "" names no keyed user`},
+		{"a service user naming nobody", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-nobody" }, callouts, `callout.serviceUser "example-nobody" names no keyed user`},
+		{"a pending service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-pending" }, callouts, `callout.serviceUser "example-pending" names no keyed user`},
 		// A client presenting no credential would hold the service's grant and answer every
 		// connection's authorization itself.
-		{"the session user as the service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-sessions" },
+		{"the session user as the service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-sessions" }, callouts,
 			`callout.serviceUser "example-sessions" is noAuthUser: a client presenting no credential would become the auth service`},
 
-		{"private projects without the callout", privateOnly, func(a *core.Authorization) { a.Callout = nil },
+		{"private projects without the callout", privateOnly, func(a *core.Authorization) { a.Callout = nil }, private,
 			"privateProjects: a project can be private only while the server admits each client through the auth service, and the authorization has no callout"},
-		{"private projects beside a session user", privateOnly, sessions,
+		{"private projects beside a session user", privateOnly, sessions, private,
 			`privateProjects: users[1] "example-sessions" is noAuthUser: a client presenting no credential would become it while a project is private`},
 		// The service user is admitted by its seed alone, so a grant wider than NATS's own for an
 		// auth service makes it a client that connects past the service.
-		{"private projects with a service user publishing everywhere", privateOnly, grant([]string{">"}, []string{"$SYS.REQ.USER.AUTH"}),
+		{"private projects with a service user publishing everywhere", privateOnly, grant([]string{">"}, []string{"$SYS.REQ.USER.AUTH"}), private,
 			`privateProjects: callout.serviceUser "example-auth": publish.allow[0] ">" ` + wider},
-		{"private projects with a service user publishing beyond its replies", privateOnly, grant([]string{"$SYS._INBOX.>", "notifications.>"}, []string{"$SYS.REQ.USER.AUTH"}),
+		{"private projects with a service user publishing beyond its replies", privateOnly, grant([]string{"$SYS._INBOX.>", "notifications.>"}, []string{"$SYS.REQ.USER.AUTH"}), private,
 			`privateProjects: callout.serviceUser "example-auth": publish.allow[1] "notifications.>" ` + wider},
-		{"private projects with a service user publishing to a look-alike inbox", privateOnly, grant([]string{"$SYS._INBOX_.>"}, []string{"$SYS.REQ.USER.AUTH"}),
+		{"private projects with a service user publishing to a look-alike inbox", privateOnly, grant([]string{"$SYS._INBOX_.>"}, []string{"$SYS.REQ.USER.AUTH"}), private,
 			`privateProjects: callout.serviceUser "example-auth": publish.allow[0] "$SYS._INBOX_.>" ` + wider},
-		{"private projects with a service user subscribing to $SYS", privateOnly, grant([]string{"$SYS._INBOX.>"}, []string{"$SYS.>"}),
+		{"private projects with a service user subscribing to $SYS", privateOnly, grant([]string{"$SYS._INBOX.>"}, []string{"$SYS.>"}), private,
 			`privateProjects: callout.serviceUser "example-auth": subscribe.allow[0] "$SYS.>" ` + wider},
-		{"private projects with a service user subscribing to its inbox too", privateOnly, grant([]string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH", "_INBOX.>"}),
+		{"private projects with a service user subscribing to its inbox too", privateOnly, grant([]string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH", "_INBOX.>"}), private,
 			`privateProjects: callout.serviceUser "example-auth": subscribe.allow[1] "_INBOX.>" ` + wider},
-		{"private projects beside a client user with a seed", privateOnly, func(a *core.Authorization) { a.Users = append(a.Users, hubShaped().Users[1]) },
+		{"private projects beside a client user with a seed", privateOnly, func(a *core.Authorization) { a.Users = append(a.Users, hubShaped().Users[1]) }, private,
 			`privateProjects: users[1] "example-dispatch": a stored client seed while a project is private`},
-		{"private projects beside a pending client user", privateOnly, func(a *core.Authorization) { a.Users = append(a.Users, hubShaped().Users[3]) },
+		{"private projects beside a pending client user", privateOnly, func(a *core.Authorization) { a.Users = append(a.Users, hubShaped().Users[3]) }, private,
 			`privateProjects: users[1] "example-pending": a stored client seed while a project is private`},
 		{"private projects beside a keyed client user without a seed", privateOnly, func(a *core.Authorization) {
 			u := hubShaped().Users[1]
 			u.HasSeed = false
 			a.Users = append(a.Users, u)
-		}, `privateProjects: users[1] "example-dispatch": a static client user while a project is private`},
+		}, private, `privateProjects: users[1] "example-dispatch": a static client user while a project is private`},
 		{"private projects beside a client user named before the service's", privateOnly, func(a *core.Authorization) {
 			a.Users = append([]core.User{hubShaped().Users[0]}, a.Users...)
-		}, `privateProjects: users[0] "example-hub": a stored client seed while a project is private`},
+		}, private, `privateProjects: users[0] "example-hub": a stored client seed while a project is private`},
 	}
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
@@ -189,18 +207,19 @@ func TestValidateRefusesACalloutThatCannotKeepAProjectApart(t *testing.T) {
 			r.change(&a)
 			require.ErrorContains(t, a.Validate(), r.err)
 			// A component that carries the callout or privateProjects under its own input name finds
-			// which was refused with errors.As: each refusal but a seed's names its input.
-			for prefix, input := range map[string]string{"callout.": "callout", "privateProjects": "privateProjects"} {
-				if strings.HasPrefix(r.err, prefix) && !strings.Contains(r.err, "seed (not echoed)") {
-					requireInputError(t, a.Validate(), input, r.err)
-				}
+			// which was refused with errors.As; a seed's refusal names no input.
+			var input *core.InputError
+			if r.input == seedRow {
+				require.False(t, errors.As(a.Validate(), &input), "a seed's refusal is a plain error: %v", a.Validate())
+			} else {
+				requireInputError(t, a.Validate(), r.input, r.err)
 			}
 			_, err := a.Render(hubHeader)
 			require.ErrorContains(t, err, r.err, "Render renders only what Validate accepts")
 			_, err = a.StartScript(hubHeader, nil, "/tmp/nats-server.conf")
 			requireInputError(t, err, "authorization", r.err)
 			require.EqualError(t, err, "authorization: "+a.Validate().Error(), "StartScript renders only what Validate accepts")
-			if strings.Contains(r.err, "seed (not echoed)") {
+			if r.input == seedRow {
 				for _, seed := range [][]byte{userSeed, accountSeed, curveSeed} {
 					require.NotContains(t, err.Error(), string(seed))
 				}

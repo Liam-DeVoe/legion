@@ -3,7 +3,6 @@
 package core_test
 
 import (
-	"context"
 	"regexp"
 	"strconv"
 	"testing"
@@ -36,32 +35,6 @@ func renderedTimeout(t *testing.T, text string) int {
 	return seconds
 }
 
-// restartWithAuthServiceDelay is calloutRig.restart with an auth service that holds each answer for
-// delay before it gives it.
-func (r *calloutRig) restartWithAuthServiceDelay(t *testing.T, ctr hubContainer, config string, delay time.Duration) string {
-	t.Helper()
-	ctx := context.Background()
-	stop := 10 * time.Second
-	require.NoError(t, ctr.Stop(ctx, &stop))
-	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
-	require.NoError(t, ctr.Start(ctx))
-	uri, err := ctr.ConnectionString(ctx)
-	require.NoError(t, err)
-	var conn *natsgo.Conn
-	require.Eventually(t, func() bool {
-		conn, err = testnats.ConnectSeed(t, uri, r.serviceSeed)
-		return err == nil
-	}, 30*time.Second, 100*time.Millisecond, "the auth service's user could not connect to the restarted hub")
-	t.Cleanup(conn.Close)
-	_, err = conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
-		time.Sleep(delay)
-		r.answer(t, m)
-	})
-	require.NoError(t, err)
-	require.NoError(t, conn.Flush())
-	return uri
-}
-
 // TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient (found in the acceptance of
 // dispatch://INFRA-3884, cybermonklabs/legion#4118 at e7c174fa1b): a nats.go client is the client
 // every Go service of this repository connects with, and it is admitted only if the auth service's
@@ -75,9 +48,11 @@ func (r *calloutRig) restartWithAuthServiceDelay(t *testing.T, ctr hubContainer,
 // (DisableShortFirstPing is `json:"-"` in server/opts.go). So the block renders no timeout, the
 // server's default of 2 s stands, and the service's budget is 1.5 s.
 //
-// Each row's answer comes inside both: 1.5 s before the rendered timeout (0.5 s at the default),
-// and at the stated budget. The control that the rig would admit a client at all is an answer at
-// 0.5 s, which e7c174fa1b admitted while it refused the 3.5 s one.
+// Each row's answer comes inside both: 0.5 s before the rendered timeout (1.5 s at the default),
+// and at the stated budget. The first row is the guard against a longer timeout: a block that
+// rendered `timeout: 3` or more would put that answer at 2.5 s or later, past the first PING, and
+// the row fails. The control that the rig would admit a client at all is an answer at 0.5 s, which
+// e7c174fa1b admitted while it refused the 3.5 s one.
 func TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient(t *testing.T) {
 	rig := newCalloutRig(t, false)
 	text := rig.render(t, true)
@@ -86,12 +61,12 @@ func TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient(t *testing.T) {
 		name  string
 		delay time.Duration
 	}{
-		{"1.5 s before the rendered timeout", time.Duration(timeout)*time.Second - 1500*time.Millisecond},
+		{"0.5 s before the rendered timeout", time.Duration(timeout)*time.Second - 500*time.Millisecond},
 		{"at the stated budget", calloutAnswerBudget},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctr, _ := rig.startHub(t)
-			uri := rig.restartWithAuthServiceDelay(t, ctr, text, row.delay)
+			uri := rig.restart(t, ctr, text, row.delay)
 			before := rig.requests.Load()
 			start := time.Now()
 			conn, err := testnats.ConnectSeed(t, uri, "", natsgo.Token(sessionToken), natsgo.Timeout(time.Duration(timeout+5)*time.Second))

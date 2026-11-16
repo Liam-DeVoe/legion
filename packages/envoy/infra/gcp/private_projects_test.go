@@ -19,8 +19,6 @@ const (
 	calloutXKey   = "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
 )
 
-// authServiceUser is the user the auth service connects as: it answers the server's authorization
-// requests and publishes nothing else.
 func authServiceUser() gcp.NATSUserArgs {
 	return gcp.NATSUserArgs{Name: "example-auth", NKey: keyAuth, Permissions: &gcp.PermissionsArgs{
 		Publish:   nats.RulesArgs{Allow: []string{"$SYS._INBOX.>"}},
@@ -28,7 +26,6 @@ func authServiceUser() gcp.NATSUserArgs {
 	}}
 }
 
-// authCallout is a callout naming authServiceUser.
 func authCallout() *nats.AuthCalloutArgs {
 	return &nats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: "example-auth"}
 }
@@ -53,34 +50,13 @@ func privateClusteredHub() *gcp.ClusteredNatsHubArgs {
 	return args
 }
 
-// privateProjectsRefusal is one hub privateProjects cannot be set on: the private hub with a
-// session user, with a client user that has a seed, with no callout, with a client's user named
-// as the auth service's, or with a service user granted more than an auth service needs. who names
-// what a client could connect as past the auth service, and want is the refusal.
+// privateProjectsRefusal is one hub privateProjects cannot be set on: edit makes the private hub's
+// users, session user and callout into it, who names what a client could connect as past the auth
+// service, and want is the refusal.
 type privateProjectsRefusal struct {
-	name, who                                             string
-	session, client, noCallout, hostService, broadService bool
-	want                                                  string
-}
-
-// apply makes the row of a private hub's users, session user and callout.
-func (row privateProjectsRefusal) apply(users *[]gcp.NATSUserArgs, session **gcp.SessionUserArgs, callout **nats.AuthCalloutArgs) {
-	if row.session {
-		*session = &gcp.SessionUserArgs{Name: "example-sessions", NKey: keySessions}
-	}
-	if row.client {
-		*users = append(*users, exampleArgs().Users[0])
-	}
-	if row.noCallout {
-		*callout = nil
-	}
-	if row.hostService {
-		*users = []gcp.NATSUserArgs{exampleArgs().Users[0]}
-		(*callout).ServiceUser = "example-host-a"
-	}
-	if row.broadService {
-		(*users)[0].Permissions = &gcp.PermissionsArgs{Publish: nats.RulesArgs{Allow: []string{">"}}, Subscribe: nats.RulesArgs{Allow: []string{">"}}}
-	}
+	name, who string
+	edit      func(users *[]gcp.NATSUserArgs, session **gcp.SessionUserArgs, callout **nats.AuthCalloutArgs)
+	want      string
 }
 
 // privateProjectsRefusals are the ways a hub could hold a private project while a client can
@@ -92,23 +68,37 @@ func (row privateProjectsRefusal) apply(users *[]gcp.NATSUserArgs, session **gcp
 func privateProjectsRefusals() []privateProjectsRefusal {
 	return []privateProjectsRefusal{
 		{
-			name: "beside a session user", who: `the session user "example-sessions"`, session: true,
+			name: "beside a session user", who: `the session user "example-sessions"`,
+			edit: func(_ *[]gcp.NATSUserArgs, session **gcp.SessionUserArgs, _ **nats.AuthCalloutArgs) {
+				*session = &gcp.SessionUserArgs{Name: "example-sessions", NKey: keySessions}
+			},
 			want: `privateProjects: sessionUser "example-sessions" is noAuthUser: a client presenting no credential would become it while a project is private`,
 		},
 		{
-			name: "beside a client user with a seed", who: `the user "example-host-a", whose seed its host stores`, client: true,
+			name: "beside a client user with a seed", who: `the user "example-host-a", whose seed its host stores`,
+			edit: func(users *[]gcp.NATSUserArgs, _ **gcp.SessionUserArgs, _ **nats.AuthCalloutArgs) {
+				*users = append(*users, exampleArgs().Users[0])
+			},
 			want: `privateProjects: users[1] "example-host-a": a stored client seed while a project is private`,
 		},
 		{
-			name: "without authCallout", who: "no callout", noCallout: true,
+			name: "without authCallout", who: "no callout",
+			edit: func(_ *[]gcp.NATSUserArgs, _ **gcp.SessionUserArgs, callout **nats.AuthCalloutArgs) { *callout = nil },
 			want: "privateProjects: a project can be private only while the server admits each client through the auth service, and the authorization has no callout",
 		},
 		{
-			name: "with a host user as the auth service's user", who: `the host user "example-host-a" as the auth service's user`, hostService: true,
+			name: "with a host user as the auth service's user", who: `the host user "example-host-a" as the auth service's user`,
+			edit: func(users *[]gcp.NATSUserArgs, _ **gcp.SessionUserArgs, callout **nats.AuthCalloutArgs) {
+				*users = []gcp.NATSUserArgs{exampleArgs().Users[0]}
+				(*callout).ServiceUser = "example-host-a"
+			},
 			want: `privateProjects: authCallout.serviceUser "example-host-a" names users[0], a machineId user, whose seed its client stores; the auth service connects as a permissions user of its own`,
 		},
 		{
-			name: "with a service user granted everything", who: `the service user "example-auth" granted everything`, broadService: true,
+			name: "with a service user granted everything", who: `the service user "example-auth" granted everything`,
+			edit: func(users *[]gcp.NATSUserArgs, _ **gcp.SessionUserArgs, _ **nats.AuthCalloutArgs) {
+				(*users)[0].Permissions = &gcp.PermissionsArgs{Publish: nats.RulesArgs{Allow: []string{">"}}, Subscribe: nats.RulesArgs{Allow: []string{">"}}}
+			},
 			want: `privateProjects: callout.serviceUser "example-auth": publish.allow[0] ">" is wider than the auth service's grant`,
 		},
 	}
@@ -151,12 +141,15 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 //     The host rows fail with "privateProjects was taken beside the host user "example-host-a" as
 //     the auth service's user". Deleting the kind check alone leaves the grant check refusing the
 //     host's wide grant, with its own message: the two refusals are two doors.
+//   - Let a private clustered hub open its monitoring port: delete gcp/clusteredhub.go's refusal
+//     of monitorNamespaces beside privateProjects. The monitorNamespaces row fails with
+//     "privateProjects was taken beside the monitoring port open to the namespace "legion"".
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {
 			t.Run(row.name, func(t *testing.T) {
 				args := privateNatsHub()
-				row.apply(&args.Users, &args.SessionUser, &args.AuthCallout)
+				row.edit(&args.Users, &args.SessionUser, &args.AuthCallout)
 				requirePrivateProjectsRefusal(t, row, gcp.ResolveNatsHub(args))
 				m, err := run(t, args, nil, true)
 				require.ErrorContains(t, err, row.want)
@@ -174,7 +167,7 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {
 			t.Run(row.name, func(t *testing.T) {
 				args := privateClusteredHub()
-				row.apply(&args.Users, &args.SessionUser, &args.AuthCallout)
+				row.edit(&args.Users, &args.SessionUser, &args.AuthCallout)
 				_, err := gcp.ResolveClusteredNatsHub(args)
 				requirePrivateProjectsRefusal(t, row, err)
 				m, err := runClustered(t, "example-clustered-hub", args, nil)
@@ -182,12 +175,33 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 				require.Empty(t, m.Registrations(), "nothing registered")
 			})
 		}
-		t.Run("with authCallout and the service's user alone, it registers", func(t *testing.T) {
+		// nats-server's monitoring port answers /connz, /subsz and /jsz with no authentication,
+		// naming the subjects, connections and consumers of every client, a private project's
+		// among them, so a private hub opens it to no namespace.
+		t.Run("beside monitorNamespaces", func(t *testing.T) {
+			args := privateClusteredHub()
+			args.MonitorNamespaces = []string{"legion"}
+			_, err := gcp.ResolveClusteredNatsHub(args)
+			const want = `monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication`
+			require.ErrorContains(t, err, want, `privateProjects was taken beside the monitoring port open to the namespace "legion"`)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "monitorNamespaces", input.Input, "%v", err)
+			m, err := runClustered(t, "example-clustered-hub", args, nil)
+			require.ErrorContains(t, err, want)
+			require.Empty(t, m.Registrations(), "nothing registered")
+		})
+		t.Run("with authCallout and the service's user alone, it registers, opening no monitoring port", func(t *testing.T) {
 			_, err := gcp.ResolveClusteredNatsHub(privateClusteredHub())
 			require.NoError(t, err)
 			m, err := runClustered(t, "example-clustered-hub", privateClusteredHub(), nil)
 			require.NoError(t, err)
 			require.Contains(t, m.Types(), clusteredHubType)
+			for _, rule := range clusteredPolicyRules(t, m) {
+				for _, port := range rule.(map[string]any)["ports"].([]any) {
+					require.NotEqual(t, 8222.0, port.(map[string]any)["port"], "the private hub's NetworkPolicy admits the monitoring port: %v", rule)
+				}
+			}
 		})
 	})
 }

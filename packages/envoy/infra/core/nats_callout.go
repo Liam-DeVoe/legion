@@ -16,7 +16,9 @@ import (
 // $G, beside the static users.
 type AuthCallout struct {
 	// Issuer is the public key of the account (A and 55 base32 characters) whose seed signs the
-	// auth service's answers; the server refuses an answer another key signed.
+	// auth service's answers. The server admits only a user whose JWT that key issued (v2.15.1
+	// server/auth_callout.go:166-193); for a sealed answer it does not check who signed the answer
+	// itself (:135-152), so the issuer of the user is the check that holds.
 	Issuer string `json:"issuer"`
 	// XKey is a curve public key (X and 55 base32 characters). The server seals each request to the
 	// service with it, so only the service reads a client's token; without it the request, the
@@ -34,7 +36,8 @@ type AuthCallout struct {
 // as an error ("nats: expected 'PONG', got 'PING'"), so a Go client fails at about 2 s whatever
 // timeout is set (nats_callout_timeout_live_test.go). nats.js 2.29.3 waits out that PING and was
 // admitted on an answer at 1.0 s, 1.8 s and, under a 5 s timeout, 3.5 s. No nats-server 2.15.1
-// setting moves the first PING (DisableShortFirstPing is `json:"-"` in server/opts.go).
+// setting delays the first PING past 2 s: a ping_interval below 2 s moves it earlier, and
+// DisableShortFirstPing is `json:"-"` in server/opts.go (server/client.go:7122-7139).
 
 // The auth service's grant as NATS defines it: the service subscribes to the authorization
 // requests (server/auth_callout.go AuthCalloutSubject) and publishes only its answers, to the
@@ -44,8 +47,6 @@ const (
 	calloutReplyPrefix    = "$SYS._INBOX."
 )
 
-// seedField names, by its path, the first of the callout's fields that holds an nkey seed, or
-// returns "".
 func (c AuthCallout) seedField() string {
 	for _, f := range []struct{ field, value string }{
 		{"callout.issuer", c.Issuer}, {"callout.xkey", c.XKey}, {"callout.serviceUser", c.ServiceUser},
@@ -146,26 +147,25 @@ func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 }
 
 // CalloutBlock is the callout's lines of Render's text, "" without a callout, for an authorization
-// Validate accepts. nats-server v2.15.1 refuses a whole reload that changes its callout ("config
-// reload not supported for AuthCallout": server/reload.go diffOptions has no case for it), so a
-// server takes a changed block only when it restarts; a component that reloads its servers rolls
-// them when this text changes. auth_users is in it, so a keyed user added or removed changes it.
+// Validate accepts; Render writes the block from it, so a hash of it is a hash of what the server
+// reads. nats-server v2.15.1 refuses a whole reload that changes its callout ("config reload not
+// supported for AuthCallout": server/reload.go diffOptions has no case for it), so a server takes a
+// changed block only when it restarts; a component that reloads its servers rolls them when this
+// text changes. auth_users is in it, so a keyed user added or removed changes it.
 func (a Authorization) CalloutBlock() string {
 	if a.Callout == nil {
 		return ""
 	}
-	var b strings.Builder
-	a.Callout.render(&b, a.Users)
-	return b.String()
+	return a.Callout.block(a.Users)
 }
 
-// render writes the callout's lines of the authorization block, which follow its users:
-// auth_callout naming the issuer, the key of every keyed user of users in their order, and the
-// xkey. It writes no authorization timeout (see the budget above). auth_users is derived from
-// users and never given: in config mode nats-server sends a keyed user it does not list to the
-// callout, even one whose nkey signature was valid (v2.15.1 server/auth.go:739-761), so a static
-// user left out of it would be refused at connect.
-func (c AuthCallout) render(b *strings.Builder, users []User) {
+// block is the callout's lines of the authorization block, which follow its users: auth_callout
+// naming the issuer, the key of every keyed user of users in their order, and the xkey. It writes
+// no authorization timeout (see the budget above). auth_users is derived from users and never
+// given: in config mode nats-server sends a keyed user it does not list to the callout, even one
+// whose nkey signature was valid (v2.15.1 server/auth.go:739-761), so a static user left out of it
+// would be sent to the auth service, which knows no such client.
+func (c AuthCallout) block(users []User) string {
 	keys := []string{}
 	for _, u := range users {
 		if u.NKey != "" {
@@ -173,9 +173,9 @@ func (c AuthCallout) render(b *strings.Builder, users []User) {
 		}
 	}
 	ascii := PyJSONOptions{EnsureASCII: true}
-	b.WriteString("  auth_callout {\n")
-	b.WriteString("    issuer: " + PyJSON(c.Issuer, ascii) + "\n")
-	b.WriteString("    auth_users: " + PyJSON(keys, ascii) + "\n")
-	b.WriteString("    xkey: " + PyJSON(c.XKey, ascii) + "\n")
-	b.WriteString("  }\n")
+	return "  auth_callout {\n" +
+		"    issuer: " + PyJSON(c.Issuer, ascii) + "\n" +
+		"    auth_users: " + PyJSON(keys, ascii) + "\n" +
+		"    xkey: " + PyJSON(c.XKey, ascii) + "\n" +
+		"  }\n"
 }

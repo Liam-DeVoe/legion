@@ -294,16 +294,16 @@ func NewNatsService(ctx *pulumi.Context, name string, args *NatsServiceArgs, opt
 // naming its input: a plain input holding a seed (seededPlainInput), configHeader and configPath
 // against authorization, then the authorization, configHeader and serverArgs (through
 // rendering.NatsLaunch), then the service's. It returns the NATS container's launch.
-func (args *NatsServiceArgs) validate() ([]core.Field, error) {
+func (args *NatsServiceArgs) validate() (rendering.Launch, error) {
 	if err := seededPlainInput(*args); err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	owner := rendering.Owner{Name: "authorization", Present: args.Authorization != nil, Absent: "which is not given"}
 	if err := rendering.CheckOwnedInputs([]rendering.OwnedInput{
 		{Owner: owner, Field: "configHeader", Given: args.ConfigHeader != nil, Set: args.ConfigHeader != nil},
 		{Owner: owner, Field: "configPath", Given: args.ConfigPath != nil, Set: args.ConfigPath != nil && *args.ConfigPath != ""},
 	}); err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	var authorization *core.Authorization
 	configPath := ""
@@ -312,16 +312,16 @@ func (args *NatsServiceArgs) validate() ([]core.Field, error) {
 	}
 	launch, err := rendering.NatsLaunch(authorization, args.ConfigHeader, args.ServerArgs, configPath)
 	if err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	if len(args.SubnetIds) == 0 {
-		return nil, errors.New("subnetIds names no subnet: each file system needs a mount target where the task runs")
+		return rendering.Launch{}, errors.New("subnetIds names no subnet: each file system needs a mount target where the task runs")
 	}
 	if len(args.TailnetTags) == 0 {
-		return nil, errors.New("tailnetTags names no tag: an auth key made from an OAuth client must advertise one")
+		return rendering.Launch{}, errors.New("tailnetTags names no tag: an auth key made from an OAuth client must advertise one")
 	}
 	if err := refuseServiceTag(args.BaseTags); err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	return launch, nil
 }

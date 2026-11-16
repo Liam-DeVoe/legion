@@ -163,8 +163,6 @@ const calloutUsers = `"users": [
     {"name": "example-auth", "nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}, "hasSeed": true}
   ]`
 
-// calloutJSON is the callout of the nats-start-script rows below, as the authorization file holds
-// it.
 const calloutJSON = `"callout": {"issuer": "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G", "xkey": "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL", "serviceUser": "example-auth"}`
 
 // startScriptWithout is the script `envoy-infra render nats-start-script` printed, at

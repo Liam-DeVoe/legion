@@ -159,7 +159,8 @@ type ClusteredNatsHubArgs struct {
 	PriorityClassName *string `pulumi:"priorityClassName,optional"`
 	// The namespaces admitted to NATS's client port: at least one.
 	ClientNamespaces []string `pulumi:"clientNamespaces"`
-	// The namespaces admitted to NATS's monitoring port; none when unset.
+	// The namespaces admitted to NATS's monitoring port; none when unset. Refused beside
+	// privateProjects (monitorBesidePrivateProjects).
 	MonitorNamespaces []string `pulumi:"monitorNamespaces,optional"`
 	// The namespaces admitted to the exporter's metrics port: gmp-system and gke-gmp-system,
 	// Google Managed Prometheus's, when unset.
@@ -356,7 +357,7 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		}
 	}
 	for _, f := range calloutSeedFields(args.AuthCallout) {
-		fields = append(fields, field{f[0], f[1]})
+		fields = append(fields, f)
 	}
 	for _, f := range fields {
 		if bus.HoldsSeed(f.value) {
@@ -443,6 +444,9 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 			return clusteredHubSettings{}, err
 		}
 	}
+	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
+		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
+	}
 	var listener *listenerUser
 	if s.tailnet, listener, err = newClusteredHubTailnet(args, s); err != nil {
 		return clusteredHubSettings{}, err
@@ -462,6 +466,20 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 		s.calloutDigest = hex.EncodeToString(sum[:])
 	}
 	return s, nil
+}
+
+// monitorBesidePrivateProjects refuses monitorNamespaces beside privateProjects. nats-server's
+// monitoring port answers /connz, /subsz and /jsz with no authentication (v2.15.1
+// server/monitor.go), naming the subjects, connections and consumers of every client, a private
+// project's among them, to every pod of each namespace the NetworkPolicy admits to it. No reader
+// needs that reach: the kubelet probes from the pod's own node, which the NetworkPolicy does not
+// fence; the exporter in each pod reads localhost:8222; an operator's kubectl port-forward and exec
+// reach the pod through the API server; and Managed Prometheus scrapes the exporter's own port,
+// metricsNamespaces'.
+func monitorBesidePrivateProjects(namespaces []string) error {
+	return core.InputErrorf("monitorNamespaces", "monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
+		"naming the subjects, connections and consumers of every client, a private project's among them, to every pod of %q; "+
+		"leave monitorNamespaces empty: the kubelet's probes, the exporter in each pod, kubectl port-forward and exec, and Managed Prometheus need none of it", namespaces)
 }
 
 // hubSizing resolves each hub pod's volume (diskSizeGb), JetStream's file store within it

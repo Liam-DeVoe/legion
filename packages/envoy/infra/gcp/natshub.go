@@ -468,7 +468,7 @@ func seededInput(args *NatsHubArgs) (string, bool) {
 		}
 	}
 	for _, f := range calloutSeedFields(args.AuthCallout) {
-		fields = append(fields, field{f[0], f[1]})
+		fields = append(fields, f)
 	}
 	for _, f := range fields {
 		if bus.HoldsSeed(f.value) {
@@ -486,11 +486,11 @@ func seedRefused(input string) error {
 // calloutSeedFields are the paths and values of callout's fields, by the hub's own input name,
 // none without a callout: core refuses a seed in each, but would name it by core's field,
 // callout.issuer, and not the hub's, authCallout.issuer.
-func calloutSeedFields(callout *nats.AuthCalloutArgs) [][2]string {
+func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value string } {
 	if callout == nil {
 		return nil
 	}
-	return [][2]string{
+	return []struct{ path, value string }{
 		{"authCallout.issuer", callout.Issuer}, {"authCallout.xkey", callout.XKey}, {"authCallout.serviceUser", callout.ServiceUser},
 	}
 }
