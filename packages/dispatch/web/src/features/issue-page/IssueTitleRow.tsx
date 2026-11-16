@@ -13,7 +13,8 @@ import { authorText } from "./page-structure";
 
 /**
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
- * editor it becomes when the reader puts the caret in it.
+ * editor it becomes when the reader presses it: a click, Enter or Space on the heading, or the
+ * header's `e` key, which clicks it (`useHeaderKeys.ts`).
  *
  * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
  * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it (dispatch://
@@ -31,8 +32,10 @@ import { authorText } from "./page-structure";
  * only then clamps it again.
  *
  * Escape and Enter end the edit from the keyboard, and give the focus back to the heading the
- * reader opened the editor from, so the keyboard reader is where they were (R11); the heading's
- * own focus, which opens the editor, does not reopen it then.
+ * reader opened the editor from, so the keyboard reader is where they were (R11). A focus alone
+ * never opens the editor: the page gives the focus back to the heading on its own - Details
+ * closing onto the control that opened it, a return to the window - and an editor opened then
+ * would take the next shortcut key as text of the title.
  */
 export function IssueTitleRow({
   drafts,
@@ -45,12 +48,15 @@ export function IssueTitleRow({
   // Whether a mouse button is down right now, read by the editor's blur: a blur a press caused
   // keeps the heading at the editor's height until that press is released and its click has
   // been dispatched. A tap's mousedown comes after its pointerup, so the mouse's own events are
-  // the ones that bracket the press on every input.
+  // the ones that bracket the press on every input. They are listened to while the row is
+  // drawn, not only while it edits: the blur a press causes ends the edit inside the press's
+  // mousedown, so a listener taken away with the editor missed the mouseup, and the next edit a
+  // key ended read a press that was over and held the title unclamped.
   const pressing = useRef(false);
   const [held, setHeld] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
-  // back to it, and its `onFocus` - which opens the editor - lets that one focus pass.
+  // back to it.
   const returning = useRef(false);
   useEffect(() => {
     if (editing || !returning.current) return;
@@ -58,7 +64,6 @@ export function IssueTitleRow({
     returning.current = false;
   }, [editing]);
   useEffect(() => {
-    if (!editing) return;
     const down = () => {
       pressing.current = true;
     };
@@ -71,7 +76,7 @@ export function IssueTitleRow({
       window.removeEventListener("mousedown", down, true);
       window.removeEventListener("mouseup", up, true);
     };
-  }, [editing]);
+  }, []);
 
   const type = "text-xl leading-[26px] min-[761px]:text-[22px] min-[761px]:leading-[29px]";
   // The box both views share, to the pixel: the font, the wrapping and the rule the editor
@@ -91,9 +96,6 @@ export function IssueTitleRow({
         }`}
         onClick={() => {
           if (!isClosed) setEditing(true);
-        }}
-        onFocus={() => {
-          if (!isClosed && !returning.current) setEditing(true);
         }}
         onKeyDown={(event) => {
           if (!isClosed && (event.key === "Enter" || event.key === " ")) {

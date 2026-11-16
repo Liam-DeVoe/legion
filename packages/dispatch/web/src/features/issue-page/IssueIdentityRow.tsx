@@ -82,8 +82,11 @@ export function IssueIdentityRow({
         <span className={`shrink-0 font-semibold ${pageInkText}`} {...authorText}>
           {issueKey}
         </span>
+        {/* 24 by 24 px at every width, the least a target may be (WCAG 2.5.8) and the height of
+            row one's other controls, so the row keeps its height. `!` wins over the shared
+            control's own floors, 44 px and 32 px from `md`. */}
         <CopyRefButton
-          className="size-[22px] min-h-6! min-w-6! min-[761px]:min-h-0! min-[761px]:min-w-0!"
+          className="size-6 min-h-6! min-w-6!"
           primary={{ label: `issue key ${issueKey}`, value: issueKey }}
           route={{ key: issueKey, kind: "issue" }}
         />

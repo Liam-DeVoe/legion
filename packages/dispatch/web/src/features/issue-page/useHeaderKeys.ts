@@ -94,12 +94,14 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
-      // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
-      // `onFocus` does not open the editor, so the key is offered exactly while it edits.
+      // The heading's click opens the editor, and a focus does not, so the key clicks it: a
+      // heading that already holds the focus - where Escape and Enter leave it - takes no new
+      // focus. The selector finds the heading only while the issue is open and not edited
+      // (otherwise its `tabIndex` is -1), so the key is offered exactly while a click opens it.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
+      run: () => usableControl(TITLE_HEADING)?.click(),
       when: () => usableControl(TITLE_HEADING) !== null,
     },
     {

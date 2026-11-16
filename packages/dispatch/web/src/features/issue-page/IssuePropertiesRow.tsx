@@ -170,7 +170,7 @@ export function IssuePropertiesRow({
 
   return (
     <div
-      className={`flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3.5 pt-1 pb-2.5 text-sm leading-5 min-[761px]:gap-x-3.5 min-[761px]:px-7 min-[761px]:pt-0.5 min-[761px]:pb-[7px] ${pageLineBorder} ${pageMutedText}`}
+      className={`flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3.5 pt-1 pb-2.5 text-sm leading-5 min-[761px]:gap-x-3 min-[761px]:px-7 min-[761px]:pt-0.5 min-[761px]:pb-[7px] ${pageLineBorder} ${pageMutedText}`}
       data-testid="issue-state-actions"
       ref={line}
     >
@@ -227,7 +227,12 @@ export function IssuePropertiesRow({
           {...pageChrome}
         >
           <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
-          {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+          {/* The words are one item, so the flex gap is the dot's alone: as items of their own,
+              the brackets and the number each took the gap and the count drew "Waiting on
+              you ( 2 )". */}
+          <span>
+            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+          </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (
         <span
@@ -235,7 +240,11 @@ export function IssuePropertiesRow({
           data-testid="issue-whose-turn"
           {...pageChrome}
         >
-          {PROPERTY_LABELS.waiting_on_agents} (<span {...authorText}>{agentsTurn}</span>)
+          {/* One item, as the count's words are above, so they are laid out as a line of words
+              and not as flex items side by side. */}
+          <span>
+            {PROPERTY_LABELS.waiting_on_agents} (<span {...authorText}>{agentsTurn}</span>)
+          </span>
         </span>
       ) : null}
       {/* The approval control (R31): a root issue of a gated project reads its gate step by
@@ -279,15 +288,24 @@ export function IssuePropertiesRow({
   );
 }
 
-/** How many segments the bar draws one child each before it is one bar instead: past this a
- *  row of segments is wider than the counts beside it. */
+/** How many segments the bar draws one child each before it is one bar instead: past this the
+ *  segments, sharing the bar's 48 px at 760 px and below with a 2 px gap between each two, are
+ *  each under 2 px wide, too narrow to tell one child from the next. */
 const MOST_SEGMENTS = 12;
 
 /**
  * The children's progress (R13, the prototype's `.kids-prog`): the direct children done of
- * total, the bar, one segment per child, and the whole subtree done of total, each count with
- * its label, because the two numbers differ and a reader cannot tell which is which from the
- * numbers alone. An issue with no children draws none of it.
+ * total, the bar, and the whole subtree done of total, each count with its label, because the
+ * two numbers differ and a reader cannot tell which is which from the numbers alone. An issue
+ * with no children draws none of it.
+ *
+ * Each count draws "Children 3 of 24" and "All issues under it 3 of 24", with no "done" at any
+ * width, and carries its whole sentence as its name, "3 of 24 children done", for a reader who
+ * hears it; the bar is 48 px wide at 760 px and below and 64 px above, whatever the number of
+ * children: up to `MOST_SEGMENTS` children share it as one segment each, and past that it is one
+ * bar filled to the share done. That keeps the line of a root as wide as INFRA-1196 - 24
+ * children, a gated step waiting on the reader, 20 labels - inside R3's limits (decision 86 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md).
  */
 function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] }): ReactNode {
   if (childIssues.length === 0) return null;
@@ -305,26 +323,46 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
       child.status === "testing" ||
       child.status === "needs_review"
   ).length;
+  // The words a reader hears, in the order a sentence reads them; the drawn words lead with
+  // the label, as the line does, and leave "done" to this name.
+  const childrenName = [
+    done,
+    CONTROL_LABELS.count_of,
+    childIssues.length,
+    CONTROL_LABELS.children.toLowerCase(),
+    CONTROL_LABELS.count_done,
+  ].join(" ");
+  const subtreeName = [
+    subtree.done,
+    CONTROL_LABELS.count_of,
+    subtree.total,
+    CONTROL_LABELS.count_of,
+    CONTROL_LABELS.whole_tree.toLowerCase(),
+    CONTROL_LABELS.count_done,
+  ].join(" ");
   return (
     // Two items from 761 px up; at 760 px and below one item, the direct count, the bar, then
     // the whole tree's count, so the line wraps around it rather than between the two
     // (dispatch://INFRA-1196/artifact/build-rulings-md, ruling 3), and the item wraps inside
     // itself only where a line is narrower than it, as at 320 px.
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 min-[761px]:contents">
+      {/* `role="img"`: a span's own name is not read, and an image's is, in place of what it
+          draws, so the count is heard once, whole. */}
       <span
+        aria-label={childrenName}
         className={`inline-flex shrink-0 items-center gap-2 font-medium ${pageInkText}`}
         data-testid="issue-progress-children"
+        role="img"
         {...pageChrome}
       >
         <span>
           {CONTROL_LABELS.children} <span {...authorText}>{done}</span> {CONTROL_LABELS.count_of}{" "}
           <span {...authorText}>{childIssues.length}</span>
-          <span className="hidden min-[761px]:inline"> {CONTROL_LABELS.count_done}</span>
         </span>
-        <span aria-hidden="true" className="inline-flex gap-0.5">
+        <span aria-hidden="true" className="inline-flex w-12 shrink-0 gap-0.5 min-[761px]:w-16">
           {childIssues.length > MOST_SEGMENTS ? (
             <span
-              className={`relative block h-2 w-16 overflow-hidden rounded-sm min-[761px]:w-24 ${pageSegmentBg}`}
+              className={`relative block h-2 flex-1 overflow-hidden rounded-sm ${pageSegmentBg}`}
             >
               <span
                 className={`absolute inset-y-0 left-0 block ${pageSegmentDoneBg}`}
@@ -334,7 +372,7 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
           ) : (
             childIssues.map((child, index) => (
               <span
-                className={`block h-2 w-2 rounded-sm min-[761px]:w-3 ${
+                className={`block h-2 flex-1 rounded-sm ${
                   index < done
                     ? pageSegmentDoneBg
                     : index < done + moving
@@ -348,13 +386,14 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
         </span>
       </span>
       <span
+        aria-label={subtreeName}
         className={`shrink-0 text-xs leading-5 ${pageMutedText}`}
         data-testid="issue-progress-subtree"
+        role="img"
         {...pageChrome}
       >
         {CONTROL_LABELS.whole_tree} <span {...authorText}>{subtree.done}</span>{" "}
-        {CONTROL_LABELS.count_of} <span {...authorText}>{subtree.total}</span>{" "}
-        {CONTROL_LABELS.count_done}
+        {CONTROL_LABELS.count_of} <span {...authorText}>{subtree.total}</span>
       </span>
     </span>
   );
@@ -369,8 +408,11 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * gone on to the next line anyway, the labels go on with it.
  *
  * What fits is read off the page, never guessed at a width the typeface decides: every chip is
- * laid out once, with the count drawn at its widest, and the chips past the end of the box's
- * first line are then left out, so the line holds no word it hides. That reading is taken in
+ * laid out, first with no count drawn, and where they all fit on the box's first line the line
+ * draws them all and no count; otherwise they are laid out again with the count drawn at its
+ * widest, and the chips past the end of the box's first line are then left out, so the line
+ * holds no word it hides. The count keeps the width it had in that reading, so the line breaks
+ * around it as it did then and the count names every chip left out. That reading is taken in
  * the commit that lays the chips out whenever the labels change, and again on the next frame
  * whenever the line's width does. The frame between draws the last reading's chips at the new
  * width: the box wraps and draws its first line only, so a chip that no longer fits goes onto a
@@ -394,14 +436,28 @@ function HeaderLabels({
     const element = box.current;
     if (shown !== null || element === null) return;
     element.style.minWidth = "";
+    const counter = count.current;
+    // First with no count, and from its own width again after: labels that all fit on the line
+    // alone draw no count (R2), where a reading with the count beside them would leave one out
+    // for the count's room.
+    if (counter !== null) {
+      counter.style.minWidth = "";
+      counter.style.display = "none";
+    }
+    const all = labelsThatFit(element) === labels.length;
+    if (counter !== null) counter.style.display = "";
+    if (all) {
+      setFit({ key, shown: labels.length });
+      return;
+    }
     let fits = labelsThatFit(element);
     // Where what is left of a line holds not even the first chip and the count has gone on to
     // the next line anyway, the box takes that chip's width, or the line's where the chip is
     // wider, and so goes on with the count: that costs the header no line and draws the labels
-    // the next line has room for (R13: a property with a value is drawn). Both readings are
+    // the next line has room for (R13: a property with a value is drawn). Every reading is
     // taken before the commit is drawn.
     const first = element.querySelector<HTMLElement>("[data-header-label]");
-    const countTop = count.current?.getBoundingClientRect().top;
+    const countTop = counter?.getBoundingClientRect().top;
     if (
       fits === 0 &&
       first !== null &&
@@ -411,6 +467,11 @@ function HeaderLabels({
       element.style.minWidth = `min(${Math.ceil(first.getBoundingClientRect().width)}px, 100%)`;
       fits = labelsThatFit(element);
     }
+    // The count drawn next names fewer labels and can be narrower: at its own width it would
+    // leave room the line breaks differently around - onto the line it had wrapped from - and
+    // the box, narrower then, would hide chips the count does not name. Held at the width it
+    // has in this reading, the line breaks as it was read.
+    if (counter !== null) counter.style.minWidth = `${counter.getBoundingClientRect().width}px`;
     setFit({ key, shown: fits });
   });
   // A width the line changes to is read again on the next frame, so the reading is a commit
@@ -460,9 +521,9 @@ function HeaderLabels({
         ))}
       </div>
       {left === 0 ? null : (
-        // Tabular digits, so the count read at its widest is as wide as any count of as many
-        // digits it then draws. 24 px tall at every width (WCAG 2.5.8, finding F13 of
-        // dispatch://INFRA-1196/artifact/tester-findings-md).
+        // 24 px tall at every width (WCAG 2.5.8, finding F13 of
+        // dispatch://INFRA-1196/artifact/tester-findings-md). Tabular digits, so a count is as
+        // wide as any other of as many digits.
         <button
           className={`inline-flex min-h-6 shrink-0 items-center text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing}`}
           data-testid="issue-labels-left"
@@ -471,8 +532,12 @@ function HeaderLabels({
           type="button"
           {...pageChrome}
         >
-          +<span {...authorText}>{left}</span>{" "}
-          {left === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}
+          {/* One inline item for the words: a flex box drops the text that is only a space, and
+              the count drew "+1label". */}
+          <span>
+            +<span {...authorText}>{left}</span>{" "}
+            {left === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}
+          </span>
         </button>
       )}
     </>
