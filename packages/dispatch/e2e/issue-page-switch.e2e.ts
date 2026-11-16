@@ -1,3 +1,4 @@
+import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
@@ -95,7 +96,8 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
- *  tab, the view row that part D fills, and nothing else. */
+ *  tab, the view row that part D fills, the outline's one line for an issue that holds nothing,
+ *  and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -103,9 +105,13 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // The part that fills a slot changes these two: part D fills the view row
-  // (`[data-filter-row]`), and each other slot drawn so far adds no text or control.
+  // (`[data-filter-row]`), part I's outline draws its one line for an issue that holds nothing at
+  // the issue's own address, and each other slot drawn so far adds no text or control: a view's
+  // address (`/spec`) draws nothing in the body until part J fills it.
   const row = newPage.locator("[data-filter-row]");
   await expect(row).toHaveCount(1);
+  const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
+  const body = atIssue ? ` ${EMPTY_STATE_LINES.conversation}` : "";
   await expect
     .poll(
       () =>
@@ -115,7 +121,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         }),
       { message: "the new page draws text outside its header and its view row" }
     )
-    .toBe(`${issue.key} ${issue.title}`);
+    .toBe(`${issue.key} ${issue.title}${body}`);
   const controls = "button, a, input, select, textarea";
   expect(
     await newPage.locator(controls).count(),
