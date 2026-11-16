@@ -450,10 +450,10 @@ test("every property with a value is visible in Details at every width @phone", 
           ),
         ],
         [
-          "Referenced by's count",
+          "Referenced by's control",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: "Referenced by",
+            name: PROPERTY_LABELS.referenced_by,
           }),
         ],
         [

@@ -6,9 +6,13 @@ import type { Page } from "@playwright/test";
  * The history is drawn in Details (dispatch://INFRA-1196 R15), which scrolls in a box of its own
  * at every width (`features/margin/MarginSheet.tsx`'s drawer box, `overflow-y-auto`), and in the
  * page's own column wherever no drawer holds the panel. So where the reader is is that box's
- * scroll, and scrolling the window instead moves the history not at all. The page answers the
- * same question the same way (`features/issue-page/IssueHistory.tsx`'s `scrollingAncestor`, which
- * its `ViewportAnchor` holds the reader's place in).
+ * scroll, and scrolling the window instead moves the history not at all. The box is the nearest
+ * ancestor of the history whose `overflow-y` is `auto` or `scroll` and whose content is taller
+ * than it, searched up to the root, or the window where there is none. The page's own search
+ * (`features/issue-page/IssueHistory.tsx`'s `scrollingAncestor`, which its `ViewportAnchor`
+ * holds the reader's place in) differs: it takes the nearest such box whether or not its
+ * content is taller than it, and stops below `body`. The two find the same box where that
+ * nearest box below `body` has content to scroll.
  */
 const FIND_SCROLLPORT = `(() => {
   const history = document.querySelector('[data-testid="issue-history"]');
@@ -58,14 +62,4 @@ export function historyViewport(page: Page): Promise<{ bottom: number; top: numb
     const box = port.getBoundingClientRect();
     return { bottom: box.bottom, top: box.top };
   })()`) as Promise<{ bottom: number; top: number }>;
-}
-
-/** Takes the reader away from the newest entry, which in a history drawn newest first is the
- *  foot of the box it scrolls in. */
-export async function scrollAwayFromLatest(page: Page): Promise<void> {
-  await page.evaluate(`(() => {
-    const port = ${FIND_SCROLLPORT};
-    if (port === null) window.scrollTo(0, document.documentElement.scrollHeight);
-    else port.scrollTo({ top: port.scrollHeight });
-  })()`);
 }

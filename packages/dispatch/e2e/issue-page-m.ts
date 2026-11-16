@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
-import { focusRow, unfoldEveryBranch } from "./issue-page-g";
+import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
 
 /**
@@ -51,13 +51,28 @@ export function focusedNodeFacts(page: Page): Locator {
 /**
  * Opens the issue, puts the focus on node `id`'s row as a reader's press does, and opens Details
  * at its facts. An item's own address (`/asks/<id>`, `/comments/<id>`) puts the focus on its
- * node only once part N lands, so a row reaches the node through the outline instead: every
- * branch the outline folds is opened first, so the row is drawn wherever it stands.
+ * node only once part N lands, so a row reaches the node through the outline instead
+ * (`focusedRowFacts`).
  */
 export async function rowFacts(page: Page, issueKey: string, id: string): Promise<Locator> {
   await gotoIssue(page, `/issues/${issueKey}`);
-  await unfoldEveryBranch(page);
-  await openEveryDeeperBranch(page);
+  return focusedRowFacts(page, id);
+}
+
+/**
+ * On a page already on the issue, puts the focus on node `id`'s row and opens Details at its
+ * facts. The comments, messages and questions arrive after the tree (`useIssueTree.ts`), and a
+ * node that arrives late may arrive folded, so every branch the outline folds is opened again
+ * until the row is drawn, as `expectSeedDrawn` does.
+ */
+export async function focusedRowFacts(page: Page, id: string): Promise<Locator> {
+  await expect
+    .poll(async () => {
+      await unfoldEveryBranch(page);
+      await openEveryDeeperBranch(page);
+      return nodeRow(page, id).count();
+    }, `${id} is never drawn as a row of the outline`)
+    .toBeGreaterThan(0);
   await focusRow(page, id);
   await expect.poll(() => focusedNodeId(page), `${id} did not take the focus`).toBe(id);
   await openDetails(page);
