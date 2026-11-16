@@ -76,7 +76,8 @@ func unindexedAskBlockIDs(blocks []askBlock, rows map[string]model.Ask) []string
 
 // readCopiedAskSources is copiedAskSources for the blocks of blocks under the ids unindexed, which
 // takes no copy lock: its caller has taken the one owner needs, or owner is an issue, whose
-// documents need none (lockProjectCopies).
+// documents need none (lockProjectCopies), or its caller opens no ask from what it reads (a write's
+// refusal of a reading, refuseReadingsWithoutAnswers).
 func readCopiedAskSources(
 	ctx context.Context,
 	tx pgx.Tx,

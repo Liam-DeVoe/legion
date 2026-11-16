@@ -420,13 +420,6 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
-	// A reading stands only in an ask a person answered. Every write that takes markdown refuses
-	// one in any other ask (refuseReadingsWithoutAnswers); a browser's write is never refused, so
-	// settlement flags such an ask block with that reason, as it flags one the strict read refuses.
-	blocks, invalidBlocks, err = flagReadingsWithoutAnswers(ctx, tx, artifactID, blocks, invalidBlocks)
-	if err != nil {
-		return settlementReconciliation{}, err
-	}
 	rows, err := loadAskBlocks(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
@@ -436,6 +429,21 @@ func (s *Service) reconcileAskBlocks(
 		return settlementReconciliation{}, err
 	}
 	restoredDecided, err := s.restoreDocumentDecidedWordings(ctx, tx, rows)
+	if err != nil {
+		return settlementReconciliation{}, err
+	}
+	sources, err := copiedAskSources(ctx, tx, artifactID, owner, blocks, rows)
+	if err != nil {
+		return settlementReconciliation{}, err
+	}
+	// A reading stands only in an ask a person answered. Every write that takes markdown refuses
+	// one in any other ask (refuseReadingsWithoutAnswers); a browser's write is never refused, so
+	// settlement flags such an ask block with that reason, as it flags one the strict read refuses.
+	// Whether the ask holds an answer is decided once the block's ask is resolved
+	// (readingAnswers): a copy shows its source's (sources), and a block bringing back an ask
+	// settlement retracted shows the state the restoration below gives it. So the flag is read
+	// after the rows and the sources, and before the loop that restores.
+	blocks, invalidBlocks, err = flagReadingsWithoutAnswers(ctx, tx, blocks, invalidBlocks, rows, sources)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
@@ -457,10 +465,6 @@ func (s *Service) reconcileAskBlocks(
 				},
 			))
 		}
-	}
-	sources, err := copiedAskSources(ctx, tx, artifactID, owner, blocks, rows)
-	if err != nil {
-		return settlementReconciliation{}, err
 	}
 	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
 	// claimCopies once the version's blocks are indexed.
@@ -1087,25 +1091,14 @@ func createAskBlock(
 }
 
 // restoreRetractedAsk gives an ask settlement retracted, whose block came back, the state and the
-// answer it held before the retraction - read from the newest ask.opened, ask.edited or
-// ask.answered that recorded it - and takes the retraction off, through the one writer of an
-// ask's answer state (asks.Settle) in who's name. What that writes on the ask's node waits in held
-// for the event the settlement appends for the restoration (causeSettledAnswers).
+// answer it held before the retraction (stateBeforeRetraction) and takes the retraction off,
+// through the one writer of an ask's answer state (asks.Settle) in who's name. What that writes on
+// the ask's node waits in held for the event the settlement appends for the restoration
+// (causeSettledAnswers).
 func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
-	var payload []byte
-	if err := tx.QueryRow(ctx, `
-		select payload from events
-		where type in ('ask.opened', 'ask.edited', 'ask.answered') and payload->>'id' = $1
-		order by id desc limit 1
-	`, ask.ID).Scan(&payload); err != nil {
-		return model.Ask{}, fmt.Errorf("load ask state before retraction: %w", err)
-	}
-	var prior model.Ask
-	if err := json.Unmarshal(payload, &prior); err != nil {
-		return model.Ask{}, fmt.Errorf("decode ask state before retraction: %w", err)
-	}
-	if prior.State != asks.StateOpen && prior.State != asks.StateAnswered {
-		return model.Ask{}, fmt.Errorf("ask %q state before retraction is %q", ask.ID, prior.State)
+	prior, err := stateBeforeRetraction(ctx, tx, ask.ID)
+	if err != nil {
+		return model.Ask{}, err
 	}
 	change := asks.Restored(prior.State, prior.Answer)
 	change.Who, change.At, change.Held = who, time.Now().UTC(), held
@@ -1115,6 +1108,29 @@ func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who mode
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
 	return ask, nil
+}
+
+// stateBeforeRetraction is the ask askID as it stood before settlement retracted it, read from
+// the newest ask.opened, ask.edited or ask.answered that recorded it: open, or answered with its
+// answer. It is the state the restoration gives the ask back (restoreRetractedAsk), and the one a
+// reading inside its returning block is held to (readingAnswers).
+func stateBeforeRetraction(ctx context.Context, tx pgx.Tx, askID string) (model.Ask, error) {
+	var payload []byte
+	if err := tx.QueryRow(ctx, `
+		select payload from events
+		where type in ('ask.opened', 'ask.edited', 'ask.answered') and payload->>'id' = $1
+		order by id desc limit 1
+	`, askID).Scan(&payload); err != nil {
+		return model.Ask{}, fmt.Errorf("load ask state before retraction: %w", err)
+	}
+	var prior model.Ask
+	if err := json.Unmarshal(payload, &prior); err != nil {
+		return model.Ask{}, fmt.Errorf("decode ask state before retraction: %w", err)
+	}
+	if prior.State != asks.StateOpen && prior.State != asks.StateAnswered {
+		return model.Ask{}, fmt.Errorf("ask %q state before retraction is %q", askID, prior.State)
+	}
+	return prior, nil
 }
 
 // askServerAttributeNames are the attributes of an ask block the server keeps in agreement with
