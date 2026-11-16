@@ -468,8 +468,8 @@ func TestProjectReleaseHoldsADeliveryANoticeAndABackstopUntilTheNextBoot(t *test
 			t.Fatalf("while released the tester is %s with %d resumes, holding %+v; want it suspended, unresumed, given nothing",
 				got.State, len(rt.CallsOf("Resume")), got.Pending)
 		}
-		if attempts, lastError, present := outboxRowState(t, pool, root.Key); !present || attempts != 1 || !strings.Contains(lastError, api.ProjectReleaseHeldSentence) {
-			t.Fatalf("the start row is present=%t after %d attempts with %q, want it waiting in the outbox on the release", present, attempts, lastError)
+		if attempts, lastError, present := outboxRowState(t, pool, root.Key); !present || attempts != 0 || !strings.Contains(lastError, api.ProjectReleaseHeldSentence) {
+			t.Fatalf("the start row is present=%t after %d attempts with %q, want it waiting in the outbox on the release with no attempt counted", present, attempts, lastError)
 		}
 
 		later := func() time.Time { return time.Now().Add(time.Hour) }

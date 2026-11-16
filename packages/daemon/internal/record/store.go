@@ -2849,6 +2849,16 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
+// HoldOutbox is RetryOutbox without the attempt: it puts back a row its lane claimed and did not
+// run, which is a row the daemon's project release holds (the daemon's outbox.runRow).
+func (s *Postgres) HoldOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error {
+	if _, err := tx.Exec(ctx, `update outbox set next_at = $3, last_error = $4,
+		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, lastErr); err != nil {
+		return fmt.Errorf("hold outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
 // RoleRun reads one role's run of an issue generation as the store holds it. RoleRuns owns the
 // query shape, so the one-role caller and a state-report batch share it.
 func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error) {

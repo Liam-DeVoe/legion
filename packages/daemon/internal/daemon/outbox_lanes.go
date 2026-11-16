@@ -275,9 +275,9 @@ func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.Outbo
 // is no one's failure and is passed over silently. A claimed row whose kind spends a GitHub budget
 // a limit still stands on (deferral) runs nothing and is retried at that limit's end, so it never
 // meets the limit again. A claimed row the daemon's project release holds runs nothing either and
-// waits on its backoff (releaseHolds). The settle runs even once ctx has ended: the effect ran, so
-// what it came to is recorded on a bounded context of its own (outboxSettleTimeout) rather than
-// left to run again at the next boot.
+// is put back unrun, with no attempt counted (releaseHolds, holdForRelease). The settle runs even
+// once ctx has ended: the effect ran, so what it came to is recorded on a bounded context of its
+// own (outboxSettleTimeout) rather than left to run again at the next boot.
 func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	now := r.now().UTC()
 	var row record.OutboxRow
@@ -303,10 +303,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		return nil
 	}
 	if r.releaseHolds(row) {
-		// The row waits in the database, unrun, and runs on its backoff once the daemon's next
-		// boot has ended the release (dispatch://INFRA-3583 R7); the settle records the wait as
-		// every wait is recorded.
-		r.settle(ctx, row, fmt.Errorf("outbox row %d: %w", row.ID, errProjectReleased))
+		r.holdForRelease(ctx, row)
 		return nil
 	}
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
@@ -347,6 +344,30 @@ func (r *outbox) releaseHolds(row record.OutboxRow) bool {
 		return false
 	}
 	return record.HeldByProjectRelease(payload, r.release.ownRound())
+}
+
+// holdForRelease puts a row the project release holds (releaseHolds) back in the outbox, unrun,
+// until the daemon's next boot has ended the release (dispatch://INFRA-3583 R7). The row is due
+// again after releaseHoldSpacing and keeps its attempts (record.Store.HoldOutbox): nothing of it
+// was tried, and a kind that bounds its work by its attempts, as the merge-queue read bounds its
+// reads of GitHub (mergeStateLadderReads), would otherwise spend that bound on the release. The
+// wait is routine (errProjectReleased), so it is logged at info the first time the release holds
+// the row, which is while the row's last error is not yet this wait, and at debug from then on.
+// A hold that is not recorded is logged and the row left leased, as settle leaves one.
+func (r *outbox) holdForRelease(ctx context.Context, row record.OutboxRow) {
+	cause := fmt.Errorf("outbox row %d: %w", row.ID, errProjectReleased)
+	level := slog.LevelDebug
+	if row.LastError != cause.Error() {
+		level = slog.LevelInfo
+	}
+	r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
+		"attempts", row.Attempts, "error", cause)
+	nextAt := r.now().UTC().Add(releaseHoldSpacing)
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.HoldOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
+	}); err != nil {
+		r.log.Error("outbox row hold not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
+	}
 }
 
 // leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run

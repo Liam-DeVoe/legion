@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -70,8 +73,9 @@ func (r *projectRelease) finish() {
 // unmark clears the mark of a release whose record did not commit, the one way the mark is
 // cleared before the process ends: nothing of that release ran, so nothing of the project is
 // held for it. A task a machine held back while the mark stood is sent at once (unmarked) rather
-// than at the claim's next event; a held outbox row runs on its backoff, a launch the launch
-// check refused at its probe-interval retry, and the periodic work at its next tick.
+// than at the claim's next event; a held outbox row runs at its next read, within
+// releaseHoldSpacing, a launch the launch check refused at its probe-interval retry, and the
+// periodic work at its next tick.
 func (r *projectRelease) unmark() {
 	r.id.Store(0)
 	r.marked.Store(false)
@@ -121,7 +125,63 @@ func projectReleaseRound(id int64) string {
 // every claim the controller's included (launchGatedStore), and the outbox's wait for a row that
 // would start or prompt a role. It is a wait (wait.ErrWaiting), since the start is due again once
 // the daemon's next boot has ended the release: a machine whose relaunch it refuses keeps the
-// claim waiting uncharged (supervise's relaunchRefused), and a row it holds runs again on its
-// backoff. The wait is routine (routineWaitError): the operator who released the project knows
-// what it holds, so a row held for the whole bound stays at debug after its first line.
+// claim waiting uncharged (supervise's relaunchRefused), and a row it holds is put back unrun,
+// with no attempt counted, and read again every releaseHoldSpacing (outbox.holdForRelease). The
+// wait is routine (routineWaitError): the operator who released the project knows what it holds,
+// so a row held for the whole bound stays at debug after its first line.
 var errProjectReleased error = routineWaitError{err: wait.New(api.ProjectReleaseHeldSentence)}
+
+// releaseStoppedClaims is the claims this process's boot read stored suspended by a project
+// release (supervise.SuspendedByProjectRelease) that have not reported ready, working or failed
+// since. The boot starts such a claim again through an outbox start, which the wake pacing lets
+// out in its turn (workflow's booted), and between that start and its session's ready the claim
+// reads as any claim coming up does. So the set is what tells it from a claim no release
+// stopped: a delivery waits for the first (outbox.awaitsBootStart), and one for the second is
+// ended when nobody holds its role. attach builds the set from the claims supervision read at
+// the boot, and the daemon's durable-state callback takes a claim out
+// (workflowRuntime.claimDurableState). A nil set holds no claim: an outbox or a runtime a test
+// built by hand reads every claim as one no release stopped.
+type releaseStoppedClaims struct {
+	mu     sync.Mutex
+	tokens map[claim.Token]struct{}
+}
+
+// newReleaseStoppedClaims is the set over claims, the boot's read of the store: each claim that
+// reads stopped by the project release (supervise.Claim.ProjectReleased).
+func newReleaseStoppedClaims(claims []supervise.Claim) *releaseStoppedClaims {
+	stopped := &releaseStoppedClaims{tokens: map[claim.Token]struct{}{}}
+	for _, c := range claims {
+		if c.ProjectReleased() {
+			stopped.tokens[c.Token] = struct{}{}
+		}
+	}
+	return stopped
+}
+
+// comingBack is whether held's claim is in the set and on its way up: started, with a session
+// that does not hold its role yet. Such a claim reads launching, shim_connected or registered.
+func (s *releaseStoppedClaims) comingBack(held supervise.ClaimView) bool {
+	if s == nil {
+		return false
+	}
+	switch held.State {
+	case supervise.StateLaunching, supervise.StateShimConnected, supervise.StateRegistered:
+	default:
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, stopped := s.tokens[held.Token]
+	return stopped
+}
+
+// back takes token's claim out of the set: its session holds its role again, or the claim
+// failed, and either way no delivery waits for the boot's start of it any longer.
+func (s *releaseStoppedClaims) back(token claim.Token) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tokens, token)
+}

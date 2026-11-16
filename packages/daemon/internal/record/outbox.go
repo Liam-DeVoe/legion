@@ -968,7 +968,9 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
 // with no live holder is told nothing: the row finishes, since the message is of a moment that
 // has passed by the time anyone claims the role, and every recipient can read the pull request's
-// checks on GitHub for itself.
+// checks on GitHub for itself. The exception is a role the daemon's boot starts after a project
+// release: the row waits until that role's session holds the role again and is published then
+// (the daemon's roleMessage, dispatch://INFRA-3583 R8).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`

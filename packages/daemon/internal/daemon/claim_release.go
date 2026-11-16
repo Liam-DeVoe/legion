@@ -171,8 +171,11 @@ func claimContendedWait(issue string) error {
 // (claimHeldWait), which the hour claimReleaseWait caps, or a contended answer
 // (claimContendedWait), where Dispatch applied nothing and the row has only to ask again; a holder
 // that has not stopped yet is not something an operator should be woken for, and the hour running
-// out is a line of its own. And a row the project release holds until the daemon's next boot
-// (errProjectReleased), which the operator who released the project asked for.
+// out is a line of its own. And the project release's refusal of a start (errProjectReleased),
+// which the operator who released the project asked for: a row that meets it while it runs,
+// because the release set its mark after the row began, is retried under this rule, and a row
+// the release holds before it runs is put back with no attempt counted and logged at debug after
+// its first line (outbox.holdForRelease).
 type routineWaitError struct{ err error }
 
 func (c routineWaitError) Error() string { return c.err.Error() }

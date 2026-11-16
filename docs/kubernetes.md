@@ -5403,7 +5403,8 @@ A claim that admission's pass or the cutover's repair starts at the same boot ge
 A claim of an issue that left the workflow, or of a tree that lingers or waits in the line, is left to the close, the re-admission or the promotion that starts it, as the boot's resume by rule leaves it.
 The release's ask is no task, and no daemon sends it again.
 Each new pod builds its workspace from the issue's pushed branch, and the release gives it no bundle.
-A delivery that waited reaches its claim after the start.
+A delivery that waited reaches its claim after the start: a role message, a phase-ended message and a hook prompt wait on until the start's session holds the claim's role again.
+One for a claim that failed, retired or was suspended again by an operator or the daemon is handled as any delivery for a role nobody holds.
 The release and the starts charge no launch failure and no death, and the release changes no claim that was suspended, failed or retired before it.
 A restart on the configuration of the release's own cluster also adopts each pod the release did not reach, as after any restart.
 A restart on another cluster's configuration finds none of those pods, so the move changes the configuration only once the release ended with no pod left.

@@ -216,18 +216,16 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // for (deliverResuming); these four publish to a live session instead, so the row's own retry is
 // what waits for the pod, and this is what makes the pod come back for it to find.
 //
-// It answers whether the claim was released and a resume of it is under way. The role's one open
-// resume is what makes the wake one wake however often the row retries, so a notice that backs
-// off for ten minutes resumes the claim once. A claim of an issue that has left the workflow, or
-// whose tree lingers, is not woken: that pod is a close's to stop. An outbox with no supervisor —
-// a test's, which supervises nothing — wakes nothing: there is no machine to read a claim's state
-// from.
+// It answers whether the delivery waits for the claim to come back. For a claim an idle release
+// released that is a resume of it under way: the role's one open resume is what makes the wake
+// one wake however often the row retries, so a notice that backs off for ten minutes resumes the
+// claim once. A claim of an issue that has left the workflow, or whose tree lingers, is not
+// woken: that pod is a close's to stop. An outbox with no supervisor — a test's, which supervises
+// nothing — wakes nothing: there is no machine to read a claim's state from.
 //
-// A claim the project release stopped answers true as well, and is woken by nothing here: its
-// resume is the start the daemon's boot queued for it (workflow's booted), which the wake pacing
-// lets out in its turn. So the delivery waits for that start on its own row's retry, as it waits
-// for a released pod coming back, rather than publishing to a role nobody holds yet — which drops
-// a phase-ended message or a hook prompt — and the boot's start stays the claim's one start.
+// A claim the daemon's boot starts after a project release answers true as well, and is woken by
+// nothing here (awaitsBootStart): the delivery waits on its own row's retry, as it waits for a
+// released pod coming back, until the claim's session holds its role again.
 //
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
@@ -242,24 +240,16 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		return false, nil
 	}
 	held := machine.View()
-	if !held.Released() && !held.ProjectReleased() {
+	if waits, err := r.awaitsBootStart(ctx, held); waits || err != nil {
+		return waits, err
+	}
+	if !held.Released() {
 		return false, nil
 	}
-	issue, err := r.issue(ctx, held.Issue)
-	if err != nil {
+	if live, err := r.inLiveWorkflow(ctx, held.Issue); !live || err != nil {
 		return false, err
 	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return false, err
-	}
-	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-		return false, nil
-	}
-	if held.ProjectReleased() {
-		return true, nil
-	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
+	taken, err := r.trees.TakePodWake(ctx, r.project, held.Issue, held.Role, pods.WakeDelivery, r.now().UTC())
 	if err != nil {
 		return false, err
 	}
@@ -281,15 +271,59 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
+			"issue", held.Issue, "role", held.Role, "detail", detail)
 	} else {
 		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
+			"issue", held.Issue, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 		return false, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
 	}
 	return true, nil
+}
+
+// awaitsBootStart is whether a delivery for held's claim waits for the start the daemon's boot
+// gives a claim the project release stopped (workflow's booted), which the wake pacing lets out
+// in its turn. Nothing here wakes such a claim: that start is its one start. The delivery waits
+// for it on its own row's retry rather than publishing to a role nobody holds yet, which ends a
+// role message, a phase-ended message or a hook prompt undelivered (dispatch://INFRA-3583 R8).
+// Two claims wait:
+//
+//   - one that still reads stopped by the release (supervise.Claim.ProjectReleased), while its
+//     issue stands in the workflow under a tree that does not linger (inLiveWorkflow): a claim
+//     of an issue that has left the workflow, or of a tree that lingers, may never be started
+//     again, and no delivery waits on that;
+//   - one this process's boot found stopped by the release, from its start until its session
+//     holds its role again (releaseStoppedClaims.comingBack), which reads launching,
+//     shim_connected or registered meanwhile.
+//
+// A claim whose session is back, ready, working or idle, waits for nothing and is published to.
+// A claim that failed or retired, or that anything but the release suspended, does not wait
+// either and is delivered as a claim no release stopped is, so no row waits for a start that
+// does not come.
+func (r *outbox) awaitsBootStart(ctx context.Context, held supervise.ClaimView) (bool, error) {
+	if r.releaseStopped.comingBack(held) {
+		return true, nil
+	}
+	if !held.ProjectReleased() {
+		return false, nil
+	}
+	return r.inLiveWorkflow(ctx, held.Issue)
+}
+
+// inLiveWorkflow is whether the issue key names stands in the workflow under a tree that does
+// not linger (pods.InWorkflowNotLingering): the issues whose stopped claim a delivery wakes
+// (wakeForDelivery) or waits for the boot's start of (awaitsBootStart).
+func (r *outbox) inLiveWorkflow(ctx context.Context, key string) (bool, error) {
+	issue, err := r.issue(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return false, err
+	}
+	return root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
