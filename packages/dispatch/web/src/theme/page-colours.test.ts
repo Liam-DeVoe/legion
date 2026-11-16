@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { PAGE_COLORS } from "./classes";
+import { type ColorPair, PAGE_COLORS } from "./classes";
 import { oklchToSrgb8 } from "./contrast";
 import type { Swatch } from "./palette";
 
@@ -192,9 +192,11 @@ function hexOf(swatch: Swatch): string {
  */
 function paletteDifferences(): string[] {
   const problems: string[] = [];
+  // A key read from the table's token may name no colour of `PAGE_COLORS`.
+  const pageColors: Readonly<Partial<Record<string, ColorPair>>> = PAGE_COLORS;
   for (const [token, light, dark] of DESIGN) {
     const key = token.slice("--color-".length);
-    const colors = PAGE_COLORS[key];
+    const colors = pageColors[key];
     if (colors === undefined) {
       problems.push(`${token}: PAGE_COLORS has no "${key}", the design has ${light}`);
       continue;
