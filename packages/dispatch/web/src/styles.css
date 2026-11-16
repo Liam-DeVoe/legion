@@ -317,6 +317,13 @@ a {
   html {
     scroll-padding-bottom: 5rem;
   }
+  /* The padding keeps what a scroll brings into view clear of the review sheet at the foot of
+     the screen. The new issue page has no such sheet: its panel is Details, which opens over the
+     page (dispatch://INFRA-1196 R14), so nothing covers the foot there, and a landing centred on
+     a passage is centred on the screen rather than 80 px above it. */
+  html:has([data-issue-page]) {
+    scroll-padding-bottom: 0;
+  }
   button,
   a:not(.prose a):not(.dispatch-inline-link),
   input:not([type="checkbox"]):not([type="radio"]),
@@ -324,6 +331,16 @@ a {
   textarea {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
+     (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md), so its controls take WCAG
+     2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
+     keeps the floor. */
+  html:has([data-issue-page]) [data-filter-row]
+    :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: 24px;
+    min-height: 24px;
   }
 
   button,
