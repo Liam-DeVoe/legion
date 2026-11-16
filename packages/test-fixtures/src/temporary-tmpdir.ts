@@ -41,10 +41,10 @@ export function temporaryTmpdir(prefix: string): string {
   // correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms, charges against
   // hooks whose own work was a fraction of this one's, since a starved host charges a hook for
   // the time it is not scheduled. 60_000 is 3.8 times the worst of those charges, and sits well
-  // inside the consumers' timeout-minutes: 10 (.github/workflows/ci.yaml, 600 s), so a capture
-  // that never returns reddens with this file named instead of cancelling the job, which names
-  // nothing. Bun reports a timed-out `beforeAll` as `(unnamed)`, so the file is as far as that
-  // naming goes.
+  // inside every consumer job's `timeout-minutes`, 10 for the tightest (.github/workflows/ci.yaml,
+  // 600 s), so a capture that never returns reddens with this file named instead of cancelling
+  // the job, which names nothing. Bun reports a timed-out `beforeAll` as `(unnamed)`, so the file
+  // is as far as that naming goes.
   beforeAll(() => {
     // `??=`, so a `beforeAll` that runs a second time without its `afterAll` between captures
     // nothing: it would capture the root this fixture set, and the restore would then point
@@ -60,10 +60,10 @@ export function temporaryTmpdir(prefix: string): string {
   // that loses that removal also leaves TMPDIR pointed at the directory it removed. That default
   // is what failed correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms,
   // charges against hooks whose own work was a fraction of this one's, so the limit is sized
-  // from them: 60_000 is 3.8 times the worst, and sits well inside the consumers'
-  // timeout-minutes: 10 (.github/workflows/ci.yaml, 600 s), so a restore that never returns
-  // reddens with this file named instead of cancelling the job, which names nothing. Bun reports
-  // a timed-out `afterAll` as `(unnamed)`, so the row itself is not named.
+  // from them: 60_000 is 3.8 times the worst, and sits well inside every consumer job's
+  // `timeout-minutes`, 10 for the tightest (.github/workflows/ci.yaml, 600 s), so a restore that
+  // never returns reddens with this file named instead of cancelling the job, which names
+  // nothing. Bun reports a timed-out `afterAll` as `(unnamed)`, so the row itself is not named.
   afterAll(() => {
     restore?.();
     restore = undefined;
