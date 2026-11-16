@@ -1,10 +1,11 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
-// approved spec and prints the approved text, and checks that no CI file of a repository runs that
-// comparison. It reads the directory as the Dispatch server's importer reads
-// .dispatch/architecture: notes.ReadSet takes each .md file directly in it, within the size
-// bound, and passes over every other entry. Every rule is specgraph's (Parse, Validate, Compare and
-// CIFilesThatCompare); the command states none of its own.
+// approved spec and prints the approved text, checks that no CI file of a repository runs that
+// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
+// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
+// within the size bound, and passes over every other entry. Every rule is specgraph's (Parse,
+// Validate, Compare, CIFilesThatCompare, ReadScenario, Derive and WaitCycle); the command states
+// none of its own.
 //
 // Usage:
 //
@@ -14,6 +15,7 @@
 //	spec-check compare --dir <dir> --approved <approved.json>
 //	spec-check print --approved <approved.json> --id <id> [--id <id>...]
 //	spec-check guard --root <dir>
+//	spec-check state --scenario <dir> [--json]
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -57,15 +59,32 @@
 // since an instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>:
 // no line of <k> CI files runs the comparison".
 //
+// state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
+// internal/dispatch/specgraph/testdata/scenarios) and derives the state of each check and each
+// statement at each subject of it. For each subject it prints "spec-check: subject <commit>, the
+// head of <branch>" or "spec-check: subject <commit>, the commit that production runs at deploy
+// <deploy>", then each current approved statement in preorder, "statement <id>: met", "met, partly
+// checked", "not built (…)", "not met (…)" or "unknown (…)", each followed by its own checks that
+// read the subject, "  check <id>: true (passed, counted from <commit>)", "false (failed, counted
+// from <commit>)" or "unknown (<reason>)". With units.json, at the head of main, it prints "wait of
+// <unit> on <statement>: ends" or "holds (<own state>)" for each wait, and after the last subject
+// "spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>" or "spec-check: cycle of
+// waits: none". --json prints the states as one line of JSON instead, []State, or with units.json
+// {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
+// error naming the file and the fault, for one it does not: a file or a field that the format does
+// not hold, a missing file, or a spec file that does not parse.
+//
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
-// Paths are printed absolute. Every line but the usage, the JSON of checks and the blocks of print
-// is written by runnerlog.Say with the prefix "spec-check: ", so no text a file name, a file or an
-// argument holds starts a line of the runner's log or names a workflow command. The JSON line holds
-// no raw line break, as encoding/json escapes each control character, and checks writes the "[" of
-// each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block as the
-// approved spec holds it, since a change copies it byte for byte; no CI job runs print.
+// Paths are printed absolute. Every line but the usage, the JSON of checks and of state, the
+// blocks of print, and the statement, check and wait lines of state is written by runnerlog.Say
+// with the prefix "spec-check: ", so no text a file name, a file or an argument holds starts a line
+// of the runner's log or names a workflow command. Each statement, check and wait line starts with
+// its fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no
+// raw line break, as encoding/json escapes each control character, and checks and state write the
+// "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block
+// as the approved spec holds it, since a change copies it byte for byte; no CI job runs print.
 package main
 
 import (
@@ -87,10 +106,11 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check checks --dir <dir> --job <job>
        spec-check compare --dir <dir> --approved <approved.json>
        spec-check print --approved <approved.json> --id <id> [--id <id>...]
-       spec-check guard --root <dir>`
+       spec-check guard --root <dir>
+       spec-check state --scenario <dir> [--json]`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
-// checks and the blocks of print.
+// checks and of state, the blocks of print, and the statement, check and wait lines of state.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
@@ -102,6 +122,7 @@ var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"compare": runCompare,
 	"print":   runPrint,
 	"guard":   runGuard,
+	"state":   runState,
 }
 
 func main() {
